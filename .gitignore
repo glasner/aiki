@@ -1,0 +1,22 @@
+# Rust
+target/
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Aiki runtime
+.aiki/
+
+# Test artifacts
+*.db
+*.db-shm
+*.db-wal
