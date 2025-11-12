@@ -1,0 +1,134 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use std::fs;
+use tempfile::tempdir;
+
+// Helper to check if jj is available
+fn jj_available() -> bool {
+    std::process::Command::new("jj")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+// Helper to initialize a JJ workspace
+fn init_jj_workspace(path: &std::path::Path) -> anyhow::Result<()> {
+    let output = std::process::Command::new("jj")
+        .arg("git")
+        .arg("init")
+        .arg("--colocate")
+        .current_dir(path)
+        .output()?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to initialize JJ workspace");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_record_change_with_valid_json() {
+    // Skip if jj not available
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempdir().unwrap();
+
+    // Create necessary directory structure
+    fs::create_dir_all(temp_dir.path().join(".aiki/provenance")).unwrap();
+
+    // Initialize JJ workspace
+    if let Err(e) = init_jj_workspace(temp_dir.path()) {
+        eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+        return;
+    }
+
+    // Create a test file
+    let test_file = temp_dir.path().join("test.txt");
+    fs::write(&test_file, "original content").unwrap();
+
+    // Create mock hook input
+    let hook_input = serde_json::json!({
+        "session_id": "test-session-123",
+        "transcript_path": "/path/to/transcript.json",
+        "cwd": temp_dir.path().to_string_lossy(),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": test_file.to_string_lossy(),
+            "old_string": "original",
+            "new_string": "modified"
+        },
+        "tool_output": "Successfully edited file"
+    });
+
+    let mut cmd = Command::cargo_bin("aiki").unwrap();
+    cmd.arg("record-change")
+        .write_stdin(serde_json::to_string(&hook_input).unwrap())
+        .current_dir(temp_dir.path())
+        .assert()
+        .success();
+
+    // Verify database was created and contains the record
+    let db_path = temp_dir.path().join(".aiki/provenance/attribution.db");
+    assert!(db_path.exists());
+}
+
+#[test]
+fn test_record_change_fails_with_invalid_json() {
+    let mut cmd = Command::cargo_bin("aiki").unwrap();
+    cmd.arg("record-change")
+        .write_stdin("not valid json")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Failed to parse"));
+}
+
+#[test]
+fn test_record_change_handles_write_tool() {
+    // Skip if jj not available
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
+    let temp_dir = tempdir().unwrap();
+
+    // Create necessary directory structure
+    fs::create_dir_all(temp_dir.path().join(".aiki/provenance")).unwrap();
+
+    // Initialize JJ workspace
+    if let Err(e) = init_jj_workspace(temp_dir.path()) {
+        eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+        return;
+    }
+
+    let test_file = temp_dir.path().join("new_file.txt");
+
+    // Create mock hook input for Write tool
+    let hook_input = serde_json::json!({
+        "session_id": "test-session-456",
+        "cwd": temp_dir.path().to_string_lossy(),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": test_file.to_string_lossy(),
+            "new_string": "new content"
+        },
+        "tool_output": "Successfully wrote file"
+    });
+
+    let mut cmd = Command::cargo_bin("aiki").unwrap();
+    cmd.arg("record-change")
+        .write_stdin(serde_json::to_string(&hook_input).unwrap())
+        .current_dir(temp_dir.path())
+        .assert()
+        .success();
+
+    // Verify database was created
+    let db_path = temp_dir.path().join(".aiki/provenance/attribution.db");
+    assert!(db_path.exists());
+}
