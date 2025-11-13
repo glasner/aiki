@@ -1,10 +1,9 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{init_jj_workspace, jj_available, wait_for_description_update};
+use common::{init_jj_workspace, jj_available};
 use predicates::prelude::*;
 use std::fs;
-use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
@@ -51,17 +50,12 @@ fn test_record_change_with_valid_json() {
         .assert()
         .success();
 
-    // Wait for background thread to complete (up to 5 seconds)
-    assert!(
-        wait_for_description_update(temp_dir.path(), "[aiki]", Duration::from_secs(5)),
-        "Background thread did not complete within 5 seconds"
-    );
-
-    // Verify commit description contains aiki metadata
+    // After the hook completes, the metadata should be on the parent change (@-)
+    // because `jj new` was run, creating a new working copy change
     let output = std::process::Command::new("jj")
         .arg("log")
         .arg("-r")
-        .arg("@")
+        .arg("@-")
         .arg("-T")
         .arg("description")
         .current_dir(temp_dir.path())
@@ -84,6 +78,23 @@ fn test_record_change_with_valid_json() {
     assert!(
         description.contains("tool=Edit"),
         "Description should contain tool=Edit"
+    );
+
+    // Verify @ is a new empty change
+    let output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("description")
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+
+    let current_desc = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        current_desc.trim().is_empty() || !current_desc.contains("[aiki]"),
+        "Current working copy should be a new change without metadata"
     );
 }
 
@@ -163,17 +174,12 @@ fn test_record_change_handles_write_tool() {
         .assert()
         .success();
 
-    // Wait for background thread to complete (up to 5 seconds)
-    assert!(
-        wait_for_description_update(temp_dir.path(), "[aiki]", Duration::from_secs(5)),
-        "Background thread did not complete within 5 seconds"
-    );
-
-    // Verify commit description contains aiki metadata
+    // After the hook completes, the metadata should be on the parent change (@-)
+    // because `jj new` was run, creating a new working copy change
     let output = std::process::Command::new("jj")
         .arg("log")
         .arg("-r")
-        .arg("@")
+        .arg("@-")
         .arg("-T")
         .arg("description")
         .current_dir(temp_dir.path())

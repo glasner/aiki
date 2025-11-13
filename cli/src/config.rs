@@ -41,9 +41,9 @@ pub struct WorkersConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitConfig {
-    /// Block commits on critical issues
+    /// Block changes from being exported to git on critical issues
     pub block_on_critical: bool,
-    /// Block commits on warnings
+    /// Block changes from being exported to git on warnings
     pub block_on_warnings: bool,
     /// Auto-escalate to human after N failed attempts
     pub auto_escalate_after: u32,

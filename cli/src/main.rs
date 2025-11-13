@@ -30,6 +30,9 @@ enum Commands {
         /// Record change from Claude Code
         #[arg(long)]
         claude_code: bool,
+        /// Run synchronously (for testing - waits for background thread)
+        #[arg(long)]
+        sync: bool,
     },
     /// Show line-by-line AI attribution for a file
     Blame {
@@ -43,9 +46,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => init_command(),
-        Commands::RecordChange { claude_code } => {
+        Commands::RecordChange { claude_code, sync } => {
             if claude_code {
-                record_change::record_change(provenance::AgentType::ClaudeCode)
+                record_change::record_change(provenance::AgentType::ClaudeCode, sync)
             } else {
                 eprintln!("Error: Agent type flag required (e.g., --claude-code)");
                 std::process::exit(1);

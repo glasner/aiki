@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::io::{self, Read};
-use std::thread;
+use std::path::Path;
+use std::process::Command;
 
 use crate::provenance::{
     AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
@@ -29,7 +30,13 @@ struct ToolInput {
 }
 
 /// Handle the record-change command (called by AI editor hooks)
-pub fn record_change(agent_type: AgentType) -> Result<()> {
+///
+/// This command runs synchronously and executes:
+/// 1. Parse JSON input from stdin
+/// 2. Build provenance metadata
+/// 3. Run `jj describe -m` to add metadata to current change
+/// 4. Run `jj new` to create a new change for the next edit
+pub fn record_change(agent_type: AgentType, _sync: bool) -> Result<()> {
     eprintln!("=== AIKI HOOK CALLED ===");
     eprintln!("Agent type: {:?}", agent_type);
 
@@ -52,12 +59,6 @@ pub fn record_change(agent_type: AgentType) -> Result<()> {
     eprintln!("  Tool: {}", hook_data.tool_name);
     eprintln!("  File: {}", hook_data.tool_input.file_path);
 
-    // Get change_id from the working copy
-    eprintln!("Getting working copy change ID...");
-    let change_id = get_working_copy_change_id(&hook_data.cwd)
-        .context("Failed to get working copy change ID. Is the repository initialized with JJ?")?;
-    eprintln!("  Change ID: {}", change_id);
-
     // Build provenance record (only metadata, jj knows the rest)
     eprintln!("Building provenance record...");
     let provenance = ProvenanceRecord {
@@ -77,179 +78,62 @@ pub fn record_change(agent_type: AgentType) -> Result<()> {
     eprintln!("  Session: {}", provenance.session_id);
     eprintln!("  Tool: {}", provenance.tool_name);
 
-    // Spawn background thread to set the change description
-    // This keeps the hook response time under 10ms
-    let repo_path = hook_data.cwd.clone();
-    let change_id_for_thread = change_id.clone();
-    let provenance_for_thread = provenance.clone();
-
-    eprintln!("Spawning background thread to set change description...");
-    thread::spawn(move || {
-        eprintln!("Background thread: Setting change description...");
-        // Set the change description with full provenance metadata
-        if let Err(e) =
-            set_change_description(&repo_path, &change_id_for_thread, &provenance_for_thread)
-        {
-            eprintln!(
-                "Warning: Failed to set change description in background: {}",
-                e
-            );
-        } else {
-            eprintln!("Background thread: Successfully set change description");
-        }
-    });
-
-    eprintln!("=== AIKI HOOK COMPLETED SUCCESSFULLY ===");
-    // Return immediately - the hook is now fast!
-    Ok(())
-}
-
-/// Get the working copy change ID from JJ using jj-lib
-///
-/// The change_id is a stable identifier that persists across rewrites,
-/// unlike commit_id which changes every time the commit content changes.
-///
-/// NOTE: This reads the current working copy change without snapshotting.
-/// In the typical Claude Code workflow, files are already tracked by git/jj,
-/// so the working copy should reflect recent changes.
-fn get_working_copy_change_id(repo_path: &str) -> Result<String> {
-    use jj_lib::object_id::ObjectId;
-    use jj_lib::repo::{Repo, StoreFactories};
-    use jj_lib::workspace::{default_working_copy_factories, Workspace};
-    use std::path::Path;
-
-    // Create settings
-    let settings = crate::jj::JJWorkspace::create_user_settings()?;
-
-    // Get default factories
-    let store_factories = StoreFactories::default();
-    let working_copy_factories = default_working_copy_factories();
-
-    // Load workspace
-    let workspace = Workspace::load(
-        &settings,
-        Path::new(repo_path),
-        &store_factories,
-        &working_copy_factories,
-    )
-    .context("Failed to load JJ workspace. Is the repository initialized with JJ?")?;
-
-    // Load repo at head
-    let repo = workspace
-        .repo_loader()
-        .load_at_head()
-        .context("Failed to load repository at head operation")?;
-
-    // Get working copy commit
-    let workspace_id = workspace.workspace_name();
-    let wc_commit_id = repo
-        .view()
-        .get_wc_commit_id(workspace_id)
-        .context("No working copy commit found for workspace")?;
-
-    // Load the commit to get its change_id
-    let commit = repo
-        .store()
-        .get_commit(wc_commit_id)
-        .context("Failed to load working copy commit")?;
-
-    // Return the change_id (stable identifier)
-    Ok(commit.change_id().hex())
-}
-
-/// Set the description on a change to embed provenance metadata
-///
-/// This embeds the full provenance metadata in the commit description using
-/// the [aiki]...[/aiki] format. Since change_id is stable, this metadata
-/// persists even as the commit is rewritten.
-fn set_change_description(
-    repo_path: &str,
-    change_id_str: &str,
-    provenance: &ProvenanceRecord,
-) -> Result<()> {
-    use jj_lib::backend::ChangeId;
-    use jj_lib::object_id::ObjectId;
-    use jj_lib::repo::{Repo, StoreFactories};
-    use jj_lib::workspace::{default_working_copy_factories, Workspace};
-    use std::path::Path;
-
-    // Create settings
-    let settings = crate::jj::JJWorkspace::create_user_settings()?;
-
-    // Get default factories
-    let store_factories = StoreFactories::default();
-    let working_copy_factories = default_working_copy_factories();
-
-    // Load workspace
-    let workspace = Workspace::load(
-        &settings,
-        Path::new(repo_path),
-        &store_factories,
-        &working_copy_factories,
-    )
-    .context("Failed to load JJ workspace")?;
-
-    // Parse change ID from hex string
-    let change_id_bytes = hex::decode(change_id_str).context("Invalid change ID: not valid hex")?;
-    let change_id = ChangeId::new(change_id_bytes);
-
-    // Load repo at head
-    let repo = workspace
-        .repo_loader()
-        .load_at_head()
-        .context("Failed to load repository at head")?;
-
-    // Start transaction
-    let mut tx = repo.start_transaction();
-
-    // Find the commit with this change_id
-    // Get the working copy commit (it should have this change_id)
-    let workspace_id = workspace.workspace_name();
-    let wc_commit_id = tx
-        .repo()
-        .view()
-        .get_wc_commit_id(workspace_id)
-        .context("No working copy commit found")?;
-
-    let commit = tx
-        .repo()
-        .store()
-        .get_commit(wc_commit_id)
-        .context("Failed to load working copy commit")?;
-
-    // Verify this is the right change
-    if commit.change_id() != &change_id {
-        anyhow::bail!(
-            "Change ID mismatch: expected {}, got {}",
-            change_id_str,
-            commit.change_id().hex()
-        );
-    }
-
-    // Rewrite commit with provenance metadata in description
+    // Convert provenance to description format
     let description = provenance.to_description();
     eprintln!("Setting description:\n{}", description);
 
-    let new_commit = tx
-        .repo_mut()
-        .rewrite_commit(&commit)
-        .set_description(description)
-        .write()
-        .context("Failed to write rewritten commit")?;
+    // Run jj describe to add metadata to current change
+    run_jj_describe(Path::new(&hook_data.cwd), &description)?;
 
-    // Rebase descendants if any
-    let num_rebased = tx.repo_mut().rebase_descendants()?;
-    if num_rebased > 0 {
-        eprintln!("Rebased {} descendant commits", num_rebased);
+    // Run jj new to create a new change for the next edit
+    run_jj_new(Path::new(&hook_data.cwd))?;
+
+    eprintln!("=== AIKI HOOK COMPLETED SUCCESSFULLY ===");
+    Ok(())
+}
+
+/// Run `jj describe -m` to set the change description
+///
+/// Logs a warning if the command fails, but doesn't fail the hook.
+fn run_jj_describe(cwd: &Path, description: &str) -> Result<()> {
+    eprintln!("Running: jj describe -m [metadata]");
+
+    let output = Command::new("jj")
+        .args(["describe", "-m", description])
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute jj describe command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Warning: jj describe failed: {}", stderr);
+        eprintln!("  Status: {}", output.status);
+    } else {
+        eprintln!("Successfully set change description");
     }
 
-    // Update working copy pointer
-    tx.repo_mut()
-        .set_wc_commit(workspace_id.into(), new_commit.id().clone())?;
+    Ok(())
+}
 
-    // Commit transaction
-    tx.commit("aiki: embed provenance metadata")
-        .context("Failed to commit transaction")?;
+/// Run `jj new` to create a new change
+///
+/// Logs a warning if the command fails, but doesn't fail the hook.
+fn run_jj_new(cwd: &Path) -> Result<()> {
+    eprintln!("Running: jj new");
+
+    let output = Command::new("jj")
+        .args(["new"])
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute jj new command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Warning: jj new failed: {}", stderr);
+        eprintln!("  Status: {}", output.status);
+    } else {
+        eprintln!("Successfully created new change");
+    }
 
     Ok(())
 }
@@ -284,37 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_working_copy_change_id_not_initialized() {
-        // Test error when JJ is not initialized
-        let temp_dir = tempdir().unwrap();
-
-        let result = get_working_copy_change_id(temp_dir.path().to_str().unwrap());
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Failed to load JJ workspace") || err_msg.contains("not initialized"),
-            "Expected error about uninitialized workspace, got: {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn test_get_working_copy_change_id_invalid_path() {
-        // Test error with non-existent path
-        let result = get_working_copy_change_id("/nonexistent/path/to/repo");
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Failed to load JJ workspace"),
-            "Expected workspace load error, got: {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn test_get_working_copy_change_id_success() {
+    fn test_run_jj_describe_success() {
         if !jj_available() {
             eprintln!("Skipping test: jj binary not found in PATH");
             return;
@@ -328,156 +182,17 @@ mod tests {
             return;
         }
 
-        // Should successfully get change ID
-        let result = get_working_copy_change_id(temp_dir.path().to_str().unwrap());
+        let description = "[aiki]\nagent=claude-code\nsession=test\ntool=Edit\n[/aiki]";
 
-        assert!(
-            result.is_ok(),
-            "Expected success, got error: {:?}",
-            result.err()
-        );
-        let change_id = result.unwrap();
-
-        // Change ID should be a hex string
-        assert!(!change_id.is_empty());
-        assert!(change_id.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn test_set_change_description_invalid_change_id() {
-        if !jj_available() {
-            eprintln!("Skipping test: jj binary not found in PATH");
-            return;
-        }
-
-        let temp_dir = tempdir().unwrap();
-
-        // Initialize JJ workspace
-        if let Err(e) = init_jj_workspace(temp_dir.path()) {
-            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
-            return;
-        }
-
-        let provenance = ProvenanceRecord {
-            agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
-                version: None,
-                detected_at: chrono::Utc::now(),
-                confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
-            },
-            session_id: "test-session".to_string(),
-            tool_name: "Edit".to_string(),
-        };
-
-        // Test with invalid hex string
-        let result = set_change_description(
-            temp_dir.path().to_str().unwrap(),
-            "not-valid-hex",
-            &provenance,
-        );
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Invalid change ID") || err_msg.contains("not valid hex"),
-            "Expected invalid change ID error, got: {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn test_set_change_description_wrong_change_id() {
-        if !jj_available() {
-            eprintln!("Skipping test: jj binary not found in PATH");
-            return;
-        }
-
-        let temp_dir = tempdir().unwrap();
-
-        // Initialize JJ workspace
-        if let Err(e) = init_jj_workspace(temp_dir.path()) {
-            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
-            return;
-        }
-
-        let provenance = ProvenanceRecord {
-            agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
-                version: None,
-                detected_at: chrono::Utc::now(),
-                confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
-            },
-            session_id: "test-session".to_string(),
-            tool_name: "Edit".to_string(),
-        };
-
-        // Use a valid hex string but wrong change ID (all zeros)
-        let fake_change_id = "0".repeat(64);
-
-        let result = set_change_description(
-            temp_dir.path().to_str().unwrap(),
-            &fake_change_id,
-            &provenance,
-        );
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("Change ID mismatch"),
-            "Expected change ID mismatch error, got: {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn test_set_change_description_success() {
-        if !jj_available() {
-            eprintln!("Skipping test: jj binary not found in PATH");
-            return;
-        }
-
-        let temp_dir = tempdir().unwrap();
-
-        // Initialize JJ workspace
-        if let Err(e) = init_jj_workspace(temp_dir.path()) {
-            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
-            return;
-        }
-
-        // Get the actual change ID
-        let change_id = match get_working_copy_change_id(temp_dir.path().to_str().unwrap()) {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("Skipping test: Failed to get change ID: {}", e);
-                return;
-            }
-        };
-
-        let provenance = ProvenanceRecord {
-            agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
-                version: None,
-                detected_at: chrono::Utc::now(),
-                confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
-            },
-            session_id: "test-session-success".to_string(),
-            tool_name: "Write".to_string(),
-        };
-
-        // Should successfully set description
-        let result =
-            set_change_description(temp_dir.path().to_str().unwrap(), &change_id, &provenance);
-
+        // Should succeed
+        let result = run_jj_describe(temp_dir.path(), description);
         assert!(
             result.is_ok(),
             "Expected success, got error: {:?}",
             result.err()
         );
 
-        // Verify the description was actually set
+        // Verify description was set
         let output = std::process::Command::new("jj")
             .arg("log")
             .arg("-r")
@@ -488,11 +203,57 @@ mod tests {
             .output()
             .unwrap();
 
-        let description = String::from_utf8_lossy(&output.stdout);
-        assert!(description.contains("[aiki]"));
-        assert!(description.contains("agent=claude-code"));
-        assert!(description.contains("session=test-session-success"));
-        assert!(description.contains("tool=Write"));
+        let desc = String::from_utf8_lossy(&output.stdout);
+        assert!(desc.contains("[aiki]"));
+        assert!(desc.contains("agent=claude-code"));
+    }
+
+    #[test]
+    fn test_run_jj_new_success() {
+        if !jj_available() {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+
+        // Initialize JJ workspace
+        if let Err(e) = init_jj_workspace(temp_dir.path()) {
+            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+            return;
+        }
+
+        // Get initial change count
+        let output_before = std::process::Command::new("jj")
+            .arg("log")
+            .arg("-T")
+            .arg("change_id")
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let changes_before = String::from_utf8_lossy(&output_before.stdout);
+        let count_before = changes_before.lines().count();
+
+        // Should succeed
+        let result = run_jj_new(temp_dir.path());
+        assert!(
+            result.is_ok(),
+            "Expected success, got error: {:?}",
+            result.err()
+        );
+
+        // Verify new change was created
+        let output_after = std::process::Command::new("jj")
+            .arg("log")
+            .arg("-T")
+            .arg("change_id")
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let changes_after = String::from_utf8_lossy(&output_after.stdout);
+        let count_after = changes_after.lines().count();
+
+        assert_eq!(count_after, count_before + 1, "Expected one new change");
     }
 
     #[test]

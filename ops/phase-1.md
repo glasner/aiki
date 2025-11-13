@@ -1,14 +1,33 @@
 # Phase 1: Claude Code Provenance (Hook-Based) - Implementation Plan
 
+## JJ Terminology Guide
+
+**IMPORTANT**: Aiki uses Jujutsu (jj) which has different terminology from Git:
+
+- **Change**: The atomic unit in jj (analogous to a git commit, but mutable)
+- **Change ID**: Stable identifier that persists across rewrites (e.g., `28be28a352aca126`)
+- **Commit ID**: Content-based hash that changes when a change is rewritten
+- **Change Description**: Where we store `[aiki]` metadata (mutable field on a change)
+
+**Throughout this codebase:**
+- We use **"change"** to refer to jj's atomic unit of version control
+- We use **"commit"** only when referring to Git commits or jj operation log commits
+- **Change IDs are our primary identifier** (not commit IDs, which are transient)
+- Metadata is stored in **change descriptions** using `[aiki]...[/aiki]` blocks
+
+**Key distinction**: In Git, commits are immutable. In jj, changes are mutable and have stable change_ids that persist across rewrites. This is fundamental to Aiki's architecture.
+
+---
+
 ## Overview
 
 Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. This phase focuses on answering the question: **"Which code changes did Claude Code make?"** with 100% accuracy.
 
 **Scope**: Claude Code attribution via PostToolUse hooks, transparent tracking with automatic JJ integration, edit-level attribution, and provenance CLI.
 
-**Key Architecture Decision:** Use Claude Code's native PostToolUse hooks for 100% accurate attribution. Metadata stored directly in JJ commit descriptions - no SQLite database needed.
+**Key Architecture Decision:** Use Claude Code's native PostToolUse hooks for 100% accurate attribution. Metadata stored directly in JJ change descriptions - no SQLite database needed.
 
-**Data Storage:** All provenance metadata embedded in JJ commit descriptions using `[aiki]...[/aiki]` format. JJ is the single source of truth for all data (metadata, file paths, diffs, timestamps).
+**Data Storage:** All provenance metadata embedded in JJ change descriptions using `[aiki]...[/aiki]` format. JJ is the single source of truth for all data (metadata, file paths, diffs, timestamps, change IDs).
 
 **Multi-Agent Support:** Architecture proven with Claude Code. Phase 2 extends to Cursor and Windsurf using same pattern.
 
@@ -54,18 +73,18 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 │         • timestamp=<ISO8601>                               │
 │    5. Spawn background thread:                              │
 │       → Serialize to [aiki]...[/aiki] format (~150 bytes)   │
-│       → Rewrite commit description with metadata            │
+│       → Rewrite change description with metadata            │
 │       → Change_id stays stable across rewrite               │
 │    6. Return immediately (total: ~7-8ms)                    │
 └───────────────────────┬─────────────────────────────────────┘
                         │
-                        ↓ (commit description updated by background thread)
+                        ↓ (change description updated by background thread)
                         │
                         ↓ (jj operation created with metadata in description)
                         │
 ┌─────────────────────────────────────────────────────────────┐
-│  JJ Commit Graph (Single Source of Truth)                   │
-│    ├─ Commit description contains [aiki]...[/aiki] block    │
+│  JJ Change Graph (Single Source of Truth)                   │
+│    ├─ Change description contains [aiki]...[/aiki] block    │
 │    ├─ File paths: query via "jj log -r <id> --summary"      │
 │    ├─ Diffs: query via "jj diff -r <id>"                    │
 │    ├─ Change ID: stable identifier (persists across rewrites)│
@@ -102,7 +121,7 @@ Future: jj's native `annotate` API provides line-level attribution
 - [x] Implement `aiki record-change` command (no --claude-code flag needed)
 - [x] Parse PostToolUse JSON payload
 - [x] Extract session ID and tool name (file path/changes queried from JJ)
-- [x] Record provenance with High confidence in JJ commit descriptions
+- [x] Record provenance with High confidence in JJ change descriptions
 - [x] Add hook installation to `aiki init`
 - [x] Implement provenance serialization to `[aiki]...[/aiki]` format
 - [x] Write unit tests for record-change handler (41/41 tests passing)
@@ -308,7 +327,7 @@ pub struct ProvenanceRecord {
 }
 ```
 
-**Metadata format in commit description:**
+**Metadata format in change description:**
 ```
 [aiki]
 agent=claude-code
@@ -375,10 +394,10 @@ impl InitCommand {
 ### Success Criteria (Milestone 1.1 Complete ✅)
 - ✅ Hook handler receives and parses Claude Code JSON
 - ✅ JJ change_id retrieved via jj-lib (stable identifier across rewrites)
-- ✅ **Commit description updated** with `[aiki]...[/aiki]` metadata (~120 bytes)
+- ✅ **Change description updated** with `[aiki]...[/aiki]` metadata (~120 bytes)
 - ✅ Hook completes in <10ms (actual: ~7-8ms via background threading)
-- ✅ No race conditions - commit description updates happen via background thread
-- ✅ Provenance metadata embedded in JJ commit descriptions (no separate DB)
+- ✅ No race conditions - change description updates happen via background thread
+- ✅ Provenance metadata embedded in JJ change descriptions (no separate DB)
 - ✅ Session IDs tracked in metadata
 - ✅ Change details (file paths, diffs) queried from JJ when needed (not stored in metadata)
 - ✅ Works with both Edit and Write tools
@@ -390,17 +409,17 @@ impl InitCommand {
 - Hook handler is a subcommand (`aiki record-change`) not a separate binary
 - **Two-step process**:
   1. Parse hook data and create ProvenanceRecord (~1-2ms)
-  2. Spawn background thread to update commit description with `[aiki]` block (~5-6ms async)
-- No SQLite database - JJ commit descriptions are single source of truth
+  2. Spawn background thread to update change description with `[aiki]` block (~5-6ms async)
+- No SQLite database - JJ change descriptions are single source of truth
 - Metadata format: `[aiki]\nagent=...\nsession=...\ntool=...\nconfidence=...\nmethod=...\n[/aiki]`
 - Size: ~120 bytes per change
 - Returns immediately after spawning background thread (~7-8ms total)
 - Exit code 0 = success (Claude continues normally)
 - Exit code handling ensures Claude Code isn't blocked by errors
-- Background thread handles commit description updates asynchronously
-- **Automatic snapshot** - JJ creates commits automatically when files change
+- Background thread handles change description updates asynchronously
+- **Automatic snapshot** - JJ creates changes automatically when files change
 - Uses jj-lib for direct JJ operations (no external binary needed)
-- Provenance stored in commit descriptions, queryable via JJ revsets
+- Provenance stored in change descriptions, queryable via JJ revsets
 - File paths, diffs, timestamps retrieved from JJ APIs when needed (not stored redundantly)
 - **Race-condition free** - Background thread ensures safe async updates
 - **Flexible format** - Easy to extend `[aiki]` block with additional fields

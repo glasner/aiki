@@ -1,11 +1,11 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{init_git_repo, jj_available, wait_for_description_update};
+use common::{init_git_repo, jj_available};
 use predicates::prelude::*;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tempfile::tempdir;
 
 #[test]
@@ -179,23 +179,19 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     let elapsed = start.elapsed();
 
     println!(
-        "⏱️  Hook execution time: {:.2}ms (target: <10ms)",
+        "⏱️  Hook execution time: {:.2}ms",
         elapsed.as_secs_f64() * 1000.0
     );
 
-    // Note: With background threading, the hook should return in <10ms
-    // The description embedding happens asynchronously
-    // Wait for background thread to complete (up to 5 seconds)
-    assert!(
-        wait_for_description_update(repo_path, "[aiki]", Duration::from_secs(5)),
-        "Background thread did not complete within 5 seconds"
-    );
+    // Note: With synchronous execution, the hook blocks until complete
+    // After completion, `jj new` has created a new working copy change,
+    // so the metadata is on the parent change (@-)
 
-    // Step 10: Verify provenance was recorded in commit description
+    // Step 10: Verify provenance was recorded in parent change description
     let output = std::process::Command::new("jj")
         .arg("log")
         .arg("-r")
-        .arg("@")
+        .arg("@-")
         .arg("-T")
         .arg("description")
         .current_dir(repo_path)
@@ -230,92 +226,22 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         "Description should contain method=Hook"
     );
 
-    // Step 11: Get the change ID for further verification
-    let output = std::process::Command::new("jj")
-        .arg("log")
-        .arg("-r")
-        .arg("@")
-        .arg("-T")
-        .arg("change_id")
-        .arg("--no-graph")
-        .current_dir(repo_path)
-        .output()
-        .expect("Failed to get change ID");
-
-    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    assert!(!change_id.is_empty(), "JJ change ID should not be empty");
-    assert!(
-        change_id.len() >= 16,
-        "JJ change ID should be at least 16 characters (hex)"
-    );
-
-    // Step 12: Verify the actual file contains the edited content
+    // Step 11: Verify the actual file contains the edited content
     let final_content = fs::read_to_string(&test_file).unwrap();
     assert!(
         final_content.contains("Hello, World!"),
         "File should contain edited content"
     );
 
-    // Step 13: Verify we can find the commit with this change_id using jj-lib
-    // This validates that the change_id we got from jj is valid and has the provenance metadata
-    use jj_lib::backend::ChangeId;
-    use jj_lib::repo::{Repo, StoreFactories};
-    use jj_lib::workspace::{default_working_copy_factories, Workspace};
-
-    let settings = {
-        use jj_lib::config::StackedConfig;
-        use jj_lib::settings::UserSettings;
-        let config = StackedConfig::with_defaults();
-        UserSettings::from_config(config).unwrap()
-    };
-
-    let store_factories = StoreFactories::default();
-    let working_copy_factories = default_working_copy_factories();
-
-    let workspace = Workspace::load(
-        &settings,
-        repo_path,
-        &store_factories,
-        &working_copy_factories,
-    )
-    .expect("Failed to load workspace");
-
-    let repo = workspace
-        .repo_loader()
-        .load_at_head()
-        .expect("Failed to load repo");
-
-    // Get the working copy commit and verify it has the expected change_id
-    let workspace_id = workspace.workspace_name();
-    let wc_commit_id = repo
-        .view()
-        .get_wc_commit_id(workspace_id)
-        .expect("No working copy commit found");
-
-    let commit = repo
-        .store()
-        .get_commit(wc_commit_id)
-        .expect("Failed to load working copy commit");
-
-    let change_id_bytes = hex::decode(&change_id).expect("Invalid change ID hex");
-    let expected_change_id = ChangeId::new(change_id_bytes);
-
-    assert_eq!(
-        commit.change_id(),
-        &expected_change_id,
-        "Working copy commit should have the recorded change_id"
-    );
-
     println!("✅ End-to-end test passed!");
     println!("  ✓ aiki init created all necessary files");
     println!("  ✓ Plugin configuration is correct");
     println!("  ✓ File was edited: test.rs");
-    println!("  ✓ record-change captured working copy change ID");
-    println!("  ✓ Provenance data stored correctly in database");
-    println!("  ✓ JJ change ID captured: {}", change_id);
-    println!("  ✓ JJ change ID is valid (stable across rewrites)");
+    println!("  ✓ record-change completed successfully");
+    println!("  ✓ Provenance metadata embedded in parent change description");
+    println!("  ✓ Metadata format validated");
     println!("  ✓ File content verified: {:?}", final_content.trim());
-    println!("  ✓ Background threading keeps hook fast (<25ms target)");
+    println!("  ✓ jj new created new working copy change");
 }
 
 /// Helper to recursively copy a directory
