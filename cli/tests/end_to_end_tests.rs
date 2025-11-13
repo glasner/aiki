@@ -1,26 +1,12 @@
+mod common;
+
 use assert_cmd::Command;
+use common::{init_git_repo, jj_available, wait_for_description_update};
 use predicates::prelude::*;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
-
-/// Helper to check if jj is available
-fn jj_available() -> bool {
-    std::process::Command::new("jj")
-        .arg("--version")
-        .output()
-        .is_ok()
-}
-
-/// Helper to initialize a Git repository
-fn init_git_repo(path: &std::path::Path) {
-    std::process::Command::new("git")
-        .args(&["init"])
-        .current_dir(path)
-        .output()
-        .expect("Failed to initialize Git repository");
-}
 
 #[test]
 #[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
@@ -199,8 +185,11 @@ fn test_complete_workflow_init_to_provenance_tracking() {
 
     // Note: With background threading, the hook should return in <10ms
     // The description embedding happens asynchronously
-    // We'll wait a bit to let the background work complete for testing
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Wait for background thread to complete (up to 5 seconds)
+    assert!(
+        wait_for_description_update(repo_path, "[aiki]", Duration::from_secs(5)),
+        "Background thread did not complete within 5 seconds"
+    );
 
     // Step 10: Verify provenance was recorded in commit description
     let output = std::process::Command::new("jj")

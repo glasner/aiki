@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use jj_lib::config::StackedConfig;
+use jj_lib::git;
+use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
-use jj_lib::workspace::Workspace;
+use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use std::path::Path;
 
 /// Wrapper for JJ workspace operations using jj-lib
@@ -63,6 +65,36 @@ impl JJWorkspace {
         // Initialize the colocated workspace
         let (_workspace, _repo) = Workspace::init_colocated_git(&settings, &self.workspace_root)
             .context("Failed to initialize colocated JJ workspace")?;
+
+        Ok(())
+    }
+
+    /// Import Git refs and commits into JJ
+    /// This should be called after init_with_git_dir() to import existing Git history
+    pub fn git_import(&self) -> Result<()> {
+        let settings = Self::create_user_settings()?;
+        let store_factories = StoreFactories::default();
+        let working_copy_factories = default_working_copy_factories();
+
+        // Load the workspace
+        let workspace = Workspace::load(
+            &settings,
+            &self.workspace_root,
+            &store_factories,
+            &working_copy_factories,
+        )
+        .context("Failed to load JJ workspace for git import")?;
+
+        let repo = workspace
+            .repo_loader()
+            .load_at_head()
+            .context("Failed to load repository")?;
+
+        // Import Git refs
+        let mut tx = repo.start_transaction();
+        let git_settings = settings.git_settings()?;
+        git::import_refs(tx.repo_mut(), &git_settings)?;
+        tx.commit("import git refs")?;
 
         Ok(())
     }

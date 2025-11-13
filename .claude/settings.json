@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "aiki@aiki": true
+  },
+  "extraKnownMarketplaces": {
+    "aiki": {
+      "source": {
+        "path": "./claude-code-plugin",
+        "source": "directory"
+      }
+    }
+  }
+}

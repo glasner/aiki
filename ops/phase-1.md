@@ -418,7 +418,7 @@ impl InitCommand {
 ### Tasks
 - [ ] Implement `aiki blame <file>` command
 - [ ] Use jj-lib's `FileAnnotator` API for line-level attribution
-- [ ] Parse commit descriptions to extract agent metadata
+- [ ] Parse change descriptions to extract agent metadata
 - [ ] Cross-reference jj's blame output with provenance metadata
 - [ ] Display enriched blame with agent info and confidence
 - [ ] Write unit tests for blame parsing
@@ -647,48 +647,6 @@ impl AttributionProcessor {
         })
     }
 }
-```
-
-### Attribution Database Schema
-
-```sql
--- Provenance records (written by hook handler, updated by op_heads watcher)
-CREATE TABLE provenance_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_path TEXT NOT NULL,
-    agent_type TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    detection_method TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    tool_name TEXT NOT NULL,  -- "Edit" or "Write"
-    timestamp TEXT NOT NULL,
-    change_summary TEXT,      -- JSON with old/new strings
-    jj_commit_id TEXT,        -- JJ commit ID from snapshot (filled by hook)
-    jj_operation_id TEXT UNIQUE  -- JJ operation ID (filled by op_heads watcher)
-);
-
-CREATE INDEX idx_prov_file ON provenance_records(file_path);
-CREATE INDEX idx_prov_timestamp ON provenance_records(timestamp);
-CREATE INDEX idx_prov_session ON provenance_records(session_id);
-CREATE INDEX idx_prov_commit ON provenance_records(jj_commit_id);
-CREATE INDEX idx_prov_operation ON provenance_records(jj_operation_id);
-
--- Line-level attribution
-CREATE TABLE line_attribution (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_path TEXT NOT NULL,
-    line_number INTEGER NOT NULL,
-    agent_type TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    detection_method TEXT NOT NULL,
-    op_id TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    UNIQUE(file_path, line_number)
-);
-
-CREATE INDEX idx_line_file ON line_attribution(file_path);
-CREATE INDEX idx_line_op ON line_attribution(op_id);
-CREATE INDEX idx_line_agent ON line_attribution(agent_type);
 ```
 
 ### Success Criteria
