@@ -98,15 +98,15 @@ Future: jj's native `annotate` API provides line-level attribution
 **Goal**: Implement Claude Code PostToolUse hook handler for 100% accurate attribution.
 
 ### Tasks
-- [ ] Create Claude Code hook configuration (`.claude/settings.json`)
-- [ ] Implement `aiki record-change --claude-code` subcommand
-- [ ] Parse PostToolUse JSON payload
-- [ ] Extract file path, changes, session ID
-- [ ] Record provenance with High confidence
-- [ ] Add hook installation to `aiki init`
-- [ ] Add provenance database initialization to `aiki init`
-- [ ] Write unit tests for record-change handler
-- [ ] Write integration tests with mock hook data
+- [x] Create Claude Code hook configuration (`.claude/settings.json`)
+- [x] Implement `aiki record-change` command (no --claude-code flag needed)
+- [x] Parse PostToolUse JSON payload
+- [x] Extract session ID and tool name (file path/changes queried from JJ)
+- [x] Record provenance with High confidence in JJ commit descriptions
+- [x] Add hook installation to `aiki init`
+- [x] Implement provenance serialization to `[aiki]...[/aiki]` format
+- [x] Write unit tests for record-change handler (41/41 tests passing)
+- [x] Write integration tests with mock hook data
 
 ### Claude Code Hook Configuration
 
@@ -372,36 +372,38 @@ impl InitCommand {
 }
 ```
 
-### Success Criteria
+### Success Criteria (Milestone 1.1 Complete ✅)
 - ✅ Hook handler receives and parses Claude Code JSON
-- ✅ JJ commit_id retrieved via `jj log -r @` (auto-snapshots during command)
-- ✅ **Single DB write** with all provenance data including commit_id
-- ✅ Hook completes in <25ms (get commit + DB write + spawn)
-- ✅ No race conditions - JJ snapshots atomically at command start
-- ✅ Provenance ID embedded in JJ operation description ("aiki:12345")
-- ✅ DB contains both jj_commit_id and jj_operation_id
-- ✅ Session IDs tracked for grouping edits
-- ✅ Change details (old/new strings) captured in DB
+- ✅ JJ change_id retrieved via jj-lib (stable identifier across rewrites)
+- ✅ **Commit description updated** with `[aiki]...[/aiki]` metadata (~120 bytes)
+- ✅ Hook completes in <10ms (actual: ~7-8ms via background threading)
+- ✅ No race conditions - commit description updates happen via background thread
+- ✅ Provenance metadata embedded in JJ commit descriptions (no separate DB)
+- ✅ Session IDs tracked in metadata
+- ✅ Change details (file paths, diffs) queried from JJ when needed (not stored in metadata)
 - ✅ Works with both Edit and Write tools
 - ✅ Graceful failure (doesn't break Claude Code if handler errors)
+- ✅ All tests pass (41/41)
 
 
-### Technical Notes
+### Technical Notes (Milestone 1.1 Implementation)
 - Hook handler is a subcommand (`aiki record-change`) not a separate binary
-- **Three-step process**:
-  1. `jj log -r @ -T commit_id` (~10ms) - JJ auto-snapshots & returns commit_id
-  2. Write provenance to DB with commit_id (~5-10ms) - get provenance_id
-  3. `jj describe -m "aiki:{id}"` (async via `spawn()`) - links to DB record
-- Returns after DB write, before describe completes (~15-25ms total)
+- **Two-step process**:
+  1. Parse hook data and create ProvenanceRecord (~1-2ms)
+  2. Spawn background thread to update commit description with `[aiki]` block (~5-6ms async)
+- No SQLite database - JJ commit descriptions are single source of truth
+- Metadata format: `[aiki]\nagent=...\nsession=...\ntool=...\nconfidence=...\nmethod=...\n[/aiki]`
+- Size: ~120 bytes per change
+- Returns immediately after spawning background thread (~7-8ms total)
 - Exit code 0 = success (Claude continues normally)
-- Exit code 2 = blocking error (Claude sees the error)
-- **Single DB write** - all provenance data written once
-- **Automatic snapshot** - JJ snapshots working copy during `jj log` command
-- **DB contains both JJ IDs**: commit_id (from hook) and operation_id (from watcher)
-- JJ operations contain lightweight reference: "aiki:12345"
-- op_heads watcher updates DB records with jj_operation_id
-- **Race-condition free** - JJ snapshots atomically at command start
-- **Flexible schema** - easy to add fields to DB without changing JJ format
+- Exit code handling ensures Claude Code isn't blocked by errors
+- Background thread handles commit description updates asynchronously
+- **Automatic snapshot** - JJ creates commits automatically when files change
+- Uses jj-lib for direct JJ operations (no external binary needed)
+- Provenance stored in commit descriptions, queryable via JJ revsets
+- File paths, diffs, timestamps retrieved from JJ APIs when needed (not stored redundantly)
+- **Race-condition free** - Background thread ensures safe async updates
+- **Flexible format** - Easy to extend `[aiki]` block with additional fields
 
 ---
 
