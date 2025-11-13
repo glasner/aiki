@@ -6,9 +6,11 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 
 **Scope**: Claude Code attribution via PostToolUse hooks, transparent tracking with automatic JJ integration, edit-level attribution, and provenance CLI.
 
-**Key Architecture Decision:** Use Claude Code's native PostToolUse hooks for 100% accurate attribution. This provides perfect accuracy with dramatically simpler implementation compared to file watching approaches.
+**Key Architecture Decision:** Use Claude Code's native PostToolUse hooks for 100% accurate attribution. Metadata stored directly in JJ commit descriptions - no SQLite database needed.
 
-**Multi-Agent Support:** Deferred to Phase 3. Phase 1 focuses exclusively on proving the hook-based architecture with Claude Code.
+**Data Storage:** All provenance metadata embedded in JJ commit descriptions using `[aiki]...[/aiki]` format. JJ is the single source of truth for all data (metadata, file paths, diffs, timestamps).
+
+**Multi-Agent Support:** Architecture proven with Claude Code. Phase 2 extends to Cursor and Windsurf using same pattern.
 
 **Platform Focus:** Cross-platform (hooks work on macOS, Linux, Windows).
 
@@ -75,19 +77,19 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 Future: jj's native `annotate` API provides line-level attribution
 ```
 
-**Why hook-based approach is optimal:**
+**Why this architecture is optimal:**
 - **100% accuracy** - Claude Code tells us exactly what happened
-- **Dramatically simple** - No process detection, no file watching
-- **Race-condition free** - `jj snapshot` captures exact state immediately
-- **Fast enough** - ~50ms for snapshot (acceptable for edit workflow)
-- **DB is source of truth** - Full provenance data in queryable database
-- **JJ operations are lightweight** - Just contain provenance_id reference
-- **Flexible** - Easy to add fields to DB without changing JJ format
-- **Perfect timeline** - Complete history in JJ operation log
-- **Fast** - 2-3 weeks implementation vs 4-6 weeks for multi-layer detection
+- **Dramatically simple** - No SQLite, no process detection, no file watching
+- **Single source of truth** - JJ commit graph contains all data
+- **No sync issues** - Metadata can't drift from commits
+- **Fast** - Hook executes in ~7-8ms (metadata embed happens async)
+- **Lightweight** - Only ~120 bytes of metadata per commit
+- **No duplication** - File paths, diffs, timestamps queried from JJ when needed
+- **Flexible** - Can add new metadata fields without migration
+- **Ready for revsets** - Future: `jj log -r 'description("agent=claude-code")'`
 - **Cross-platform** - Hooks work on macOS, Linux, Windows
-- **Low maintenance** - No OS-specific code, no heuristics
-- **Proves architecture** - Validates provenance system before expanding
+- **Low maintenance** - No database, no OS-specific code
+- **Proven architecture** - Ready to extend to other AI agents (Phase 2)
 
 ---
 
@@ -285,36 +287,43 @@ pub enum AgentType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttributionConfidence {
     High,    // 100% - Hook-based detection
-    Medium,  // 70-80% - lsof or directory check (Phase 3)
-    Low,     // 40-60% - Heuristic (Phase 3)
+    Medium,  // 70-80% - Future: other detection methods
+    Low,     // 40-60% - Future: heuristic detection
     Unknown, // No detection succeeded
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DetectionMethod {
-    Hook,                   // Claude Code PostToolUse hook
-    Unknown,               // Fallback (Phase 3)
+    Hook,    // PostToolUse hook (Claude Code, Cursor, etc.)
+    Unknown, // Future: other detection methods
 }
 
+/// Simplified provenance record - stores only what JJ doesn't know
+/// File paths, diffs, timestamps, and change IDs come from JJ
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceRecord {
-    id: Option<i64>,       // Database ID (auto-generated)
     agent: AgentInfo,
-    file_path: PathBuf,
     session_id: String,
-    tool_name: String,     // "Edit" or "Write"
-    timestamp: DateTime<Utc>,
-    change_summary: Option<ChangeSummary>,
-    jj_commit_id: Option<String>,     // JJ commit ID from snapshot
-    jj_operation_id: Option<String>,  // JJ operation ID from op_heads watcher
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangeSummary {
-    old_string: Option<String>,
-    new_string: Option<String>,
+    tool_name: String,  // "Edit" or "Write"
 }
 ```
+
+**Metadata format in commit description:**
+```
+[aiki]
+agent=claude-code
+session=claude-session-xyz
+tool=Edit
+confidence=High
+method=Hook
+[/aiki]
+```
+
+**Querying data from JJ:**
+- File paths: `jj log -r <change_id> --summary`
+- Diffs: `jj diff -r <change_id>`
+- Timestamp: `jj log -r <change_id> -T 'committer.timestamp()'`
+- Metadata: Parse `[aiki]` block from description
 
 ### Hook Installation (in `aiki init`)
 
@@ -396,44 +405,48 @@ impl InitCommand {
 
 ---
 
-## Milestone 1.2: op_heads Watcher + Attribution Processing
+## Milestone 1.2: Line-Level Attribution (Using JJ's Native API)
 
-**Goal**: Watch for JJ operations and compute line-level attribution asynchronously.
+**Goal**: Implement `aiki blame` command using jj's native `annotate` API.
+
+**Status**: Architecture simplified - no op_heads watcher or separate attribution database needed.
+
+**Note**: The implementation details below are from the original SQLite-based design and need to be updated to reflect the new jj-native approach using `FileAnnotator` API. See research summary for jj's native annotate capabilities.
 
 ### Tasks
-- [ ] Implement op_heads file watcher (`.jj/repo/op_heads/heads`)
-- [ ] Read provenance_id from operation descriptions ("aiki:12345")
-- [ ] **Update DB record with jj_operation_id** (link JJ op to DB)
-- [ ] Extract changed files from operations
-- [ ] Compute line-level diffs using JJ's diff
-- [ ] Build attribution index with confidence tracking
-- [ ] Write unit tests for attribution computation
-- [ ] Write integration tests with real operations
-- [ ] Include functionality in real claude integration test
+- [ ] Implement `aiki blame <file>` command
+- [ ] Use jj-lib's `FileAnnotator` API for line-level attribution
+- [ ] Parse commit descriptions to extract agent metadata
+- [ ] Cross-reference jj's blame output with provenance metadata
+- [ ] Display enriched blame with agent info and confidence
+- [ ] Write unit tests for blame parsing
+- [ ] Write integration tests with real commits
+- [ ] Include functionality in end-to-end tests
 
-### op_heads Watcher Implementation
+### Blame Implementation Using JJ's API
 
 ```rust
-pub struct OpHeadsWatcher {
+use jj_lib::annotate::FileAnnotator;
+
+pub struct BlameCommand {
     repo_path: PathBuf,
-    event_tx: mpsc::Sender<OpHeadEvent>,
 }
 
-pub enum OpHeadEvent {
-    OperationDetected {
-        op_id: OperationId,
-        provenance: ProvenanceRecord,
-        changed_files: Vec<PathBuf>,
-    },
+pub struct LineBlame {
+    line_number: usize,
+    line_text: String,
+    agent_type: AgentType,
+    confidence: AttributionConfidence,
+    session_id: String,
+    change_id: String,
 }
 
-impl OpHeadsWatcher {
-    pub async fn watch(&self) -> Result<()> {
-        let op_heads_path = self.repo_path
-            .join(".jj")
-            .join("repo")
-            .join("op_heads")
-            .join("heads");
+impl BlameCommand {
+    pub fn blame_file(&self, file_path: &Path) -> Result<Vec<LineBlame>> {
+        // 1. Use jj-lib's FileAnnotator to get line-by-line attribution
+        let workspace = Workspace::load(&self.repo_path, ...)?;
+        let repo = workspace.repo_loader().load_at_head()?;
+        let wc_commit = /* get working copy commit */;
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |res| {
