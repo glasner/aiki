@@ -61,9 +61,7 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 │  aiki record-change (CLI Subcommand)                        │
 │    1. Parse JSON from stdin                                 │
 │    2. Extract: session_id, tool_name, agent_type            │
-│    3. Load JJ workspace via jj-lib                          │
-│       → Get working copy change_id (stable identifier)      │
-│    4. Build lightweight ProvenanceRecord:                   │
+│    3. Build lightweight ProvenanceRecord:                   │
 │       → Only metadata jj doesn't know:                      │
 │         • agent=claude-code                                 │
 │         • session=<session_id>                              │
@@ -71,16 +69,17 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 │         • confidence=High                                   │
 │         • method=Hook                                       │
 │         • timestamp=<ISO8601>                               │
-│    5. Spawn background thread:                              │
-│       → Serialize to [aiki]...[/aiki] format (~150 bytes)   │
-│       → Rewrite change description with metadata            │
-│       → Change_id stays stable across rewrite               │
-│    6. Return immediately (total: ~7-8ms)                    │
+│    4. Run shell command: jj describe -m "[aiki]...[/aiki]"  │
+│       → Adds metadata to current working copy change        │
+│    5. Run shell command: jj new                             │
+│       → Creates new empty change for next edit              │
+│       → Previous change now has metadata + file changes     │
+│    6. Return (total: ~180-200ms, synchronous)               │
 └───────────────────────┬─────────────────────────────────────┘
                         │
-                        ↓ (change description updated by background thread)
+                        ↓ (metadata embedded in change description)
                         │
-                        ↓ (jj operation created with metadata in description)
+                        ↓ (new empty change created for next edit)
                         │
 ┌─────────────────────────────────────────────────────────────┐
 │  JJ Change Graph (Single Source of Truth)                   │
@@ -98,10 +97,13 @@ Future: jj's native `annotate` API provides line-level attribution
 
 **Why this architecture is optimal:**
 - **100% accuracy** - Claude Code tells us exactly what happened
+- **Simplicity** - Shell commands instead of complex jj-lib API
+- **One change per edit** - Each tool use gets its own dedicated change
+- **Easy debugging** - Can run `jj describe` and `jj new` manually
 - **Dramatically simple** - No SQLite, no process detection, no file watching
 - **Single source of truth** - JJ commit graph contains all data
 - **No sync issues** - Metadata can't drift from commits
-- **Fast** - Hook executes in ~7-8ms (metadata embed happens async)
+- **Reasonable performance** - Hook executes in ~180-200ms (synchronous)
 - **Lightweight** - Only ~120 bytes of metadata per commit
 - **No duplication** - File paths, diffs, timestamps queried from JJ when needed
 - **Flexible** - Can add new metadata fields without migration
@@ -170,13 +172,13 @@ Future: jj's native `annotate` API provides line-level attribution
 
 ```rust
 // cli/src/record_change.rs
-// Called via: aiki record-change (subcommand, not separate binary)
+// Called via: aiki record-change --claude-code
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::Command;
-use chrono::Utc;
 
 #[derive(Deserialize)]
 struct HookInput {
@@ -189,98 +191,66 @@ struct HookInput {
 #[derive(Deserialize)]
 struct ToolInput {
     file_path: String,
-    #[serde(default)]
-    old_string: Option<String>,
-    #[serde(default)]
-    new_string: Option<String>,
 }
 
-pub fn record_change() -> Result<()> {
-    // Read JSON from stdin
+pub fn record_change(agent_type: AgentType) -> Result<()> {
+    // 1. Read JSON from stdin
     let mut stdin = io::stdin();
     let mut buffer = String::new();
     stdin.read_to_string(&mut buffer)?;
 
-    // Parse hook data
+    // 2. Parse hook data
     let hook_data: HookInput = serde_json::from_str(&buffer)?;
 
-    // Get commit_id (JJ auto-snapshots working copy during this command)
-    let commit_id = get_working_copy_commit_id(&hook_data.cwd)?;
-
-    // Build provenance record with commit_id
+    // 3. Build provenance record
     let provenance = ProvenanceRecord {
-        id: None,
         agent: AgentInfo {
-            agent_type: AgentType::ClaudeCode,
+            agent_type,
             version: None,
-            detected_at: Utc::now(),
+            detected_at: chrono::Utc::now(),
             confidence: AttributionConfidence::High,
             detection_method: DetectionMethod::Hook,
         },
-        file_path: PathBuf::from(&hook_data.tool_input.file_path),
         session_id: hook_data.session_id.clone(),
         tool_name: hook_data.tool_name.clone(),
-        timestamp: Utc::now(),
-        change_summary: Some(ChangeSummary {
-            old_string: hook_data.tool_input.old_string.clone(),
-            new_string: hook_data.tool_input.new_string.clone(),
-        }),
-        jj_commit_id: Some(commit_id),  // From snapshot
-        jj_operation_id: None,          // Will be filled by op_heads watcher
     };
 
-    // Single DB write with all data
-    let db_path = PathBuf::from(&hook_data.cwd).join(".aiki/provenance/attribution.db");
-    let db = ProvenanceDatabase::open(&db_path)?;
-    let provenance_id = db.insert_provenance(&provenance)?;
+    // 4. Convert to [aiki] description format
+    let description = provenance.to_description();
 
-    // Link JJ operation to DB record (async, describe the specific commit)
-    link_jj_operation(&hook_data.cwd, &commit_id, provenance_id)?;
+    // 5. Run jj describe to add metadata to current change
+    run_jj_describe(Path::new(&hook_data.cwd), &description)?;
 
-    // Return - total time ~15-25ms
+    // 6. Run jj new to create a new change for next edit
+    run_jj_new(Path::new(&hook_data.cwd))?;
+
+    // 7. Return (total: ~180-200ms)
     Ok(())
 }
 
-fn get_working_copy_commit_id(repo_path: &str) -> Result<String> {
-    // JJ automatically snapshots the working copy when running commands
-    // This command gets the commit ID and triggers the snapshot
+fn run_jj_describe(cwd: &Path, description: &str) -> Result<()> {
     let output = Command::new("jj")
-        .arg("log")
-        .arg("-r")
-        .arg("@")
-        .arg("--no-graph")
-        .arg("-T")
-        .arg("commit_id")
-        .current_dir(repo_path)
+        .args(["describe", "-m", description])
+        .current_dir(cwd)
         .output()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("jj log failed: {}", stderr));
+        eprintln!("Warning: jj describe failed: {}", 
+                  String::from_utf8_lossy(&output.stderr));
     }
-
-    let commit_id = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
-
-    Ok(commit_id)
+    Ok(())
 }
 
-fn link_jj_operation(repo_path: &str, commit_id: &str, provenance_id: i64) -> Result<()> {
-    // Create lightweight description with just the provenance_id
-    let description = format!("aiki:{}", provenance_id);
+fn run_jj_new(cwd: &Path) -> Result<()> {
+    let output = Command::new("jj")
+        .args(["new"])
+        .current_dir(cwd)
+        .output()?;
 
-    // Describe the specific commit (not working copy which might have changed)
-    // This can be async since the commit is already created
-    Command::new("jj")
-        .arg("describe")
-        .arg("-r")
-        .arg(commit_id)  // Specify exact commit to describe
-        .arg("-m")
-        .arg(&description)
-        .current_dir(repo_path)
-        .spawn()?; // spawn() - doesn't wait for describe to finish
-
+    if !output.status.success() {
+        eprintln!("Warning: jj new failed: {}", 
+                  String::from_utf8_lossy(&output.stderr));
+    }
     Ok(())
 }
 ```
