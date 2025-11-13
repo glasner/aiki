@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 /// Wait for background thread to update change description (using jj-lib, not jj binary)
+#[allow(dead_code)]
 fn wait_for_description_update_jjlib(
     repo_path: &Path,
     expected_content: &str,

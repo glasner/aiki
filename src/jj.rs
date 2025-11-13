@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use jj_lib::config::StackedConfig;
 use jj_lib::git;
-use jj_lib::repo::{Repo, StoreFactories};
+use jj_lib::repo::StoreFactories;
 use jj_lib::settings::UserSettings;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use std::path::Path;
