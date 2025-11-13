@@ -58,8 +58,8 @@ pub struct ProvenanceRecord {
     pub timestamp: DateTime<Utc>,
     /// Details about what changed
     pub change_summary: Option<ChangeSummary>,
-    /// JJ commit ID from snapshot
-    pub jj_commit_id: Option<String>,
+    /// JJ change ID (stable identifier that persists across rewrites)
+    pub jj_change_id: Option<String>,
     /// JJ operation ID from op_heads watcher (filled later)
     pub jj_operation_id: Option<String>,
 }

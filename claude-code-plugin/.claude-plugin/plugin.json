@@ -1,0 +1,9 @@
+{
+  "name": "aiki",
+  "version": "0.1.0",
+  "description": "AI code provenance tracking - automatically track which AI agents made which code changes",
+  "author": {
+    "name": "Aiki Team"
+  },
+  "hooks": "./hooks/hooks.json"
+}

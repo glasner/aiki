@@ -1,0 +1,17 @@
+{
+  "description": "Track AI code changes for provenance analysis. Records every Edit/Write operation to build a complete attribution history.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/glasner/code/aiki/cli/target/release/aiki record-change --claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

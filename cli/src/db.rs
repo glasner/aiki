@@ -36,14 +36,14 @@ impl ProvenanceDatabase {
                 timestamp TEXT NOT NULL,
                 old_string TEXT,
                 new_string TEXT,
-                jj_commit_id TEXT,
+                jj_change_id TEXT,
                 jj_operation_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_session_id ON provenance_records(session_id);
             CREATE INDEX IF NOT EXISTS idx_file_path ON provenance_records(file_path);
             CREATE INDEX IF NOT EXISTS idx_timestamp ON provenance_records(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_jj_commit_id ON provenance_records(jj_commit_id);
+            CREATE INDEX IF NOT EXISTS idx_jj_change_id ON provenance_records(jj_change_id);
             CREATE INDEX IF NOT EXISTS idx_jj_operation_id ON provenance_records(jj_operation_id);
             "#,
             )
@@ -87,7 +87,7 @@ impl ProvenanceDatabase {
             INSERT INTO provenance_records (
                 agent_type, agent_version, detected_at, confidence, detection_method,
                 file_path, session_id, tool_name, timestamp,
-                old_string, new_string, jj_commit_id, jj_operation_id
+                old_string, new_string, jj_change_id, jj_operation_id
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
                 params![
@@ -102,7 +102,7 @@ impl ProvenanceDatabase {
                     record.timestamp.to_rfc3339(),
                     old_string,
                     new_string,
-                    record.jj_commit_id.as_deref(),
+                    record.jj_change_id.as_deref(),
                     record.jj_operation_id.as_deref(),
                 ],
             )
@@ -184,7 +184,7 @@ mod tests {
                 old_string: Some("old".to_string()),
                 new_string: Some("new".to_string()),
             }),
-            jj_commit_id: Some("abc123".to_string()),
+            jj_change_id: Some("abc123".to_string()),
             jj_operation_id: None,
         };
 
@@ -214,7 +214,7 @@ mod tests {
             tool_name: "Write".to_string(),
             timestamp: Utc::now(),
             change_summary: None,
-            jj_commit_id: Some("abc123".to_string()),
+            jj_change_id: Some("abc123".to_string()),
             jj_operation_id: None,
         };
 

@@ -32,27 +32,28 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 │    │   • old_string → new_string (exact changes)            │
 │    │   • session_id (grouping edits)                        │
 │    │   • tool_name (Edit or Write)                          │
-│    └─ Calls: aiki-hook-handler                              │
+│    └─ Calls: aiki record-change --claude-code               │
 └───────────────────────┬─────────────────────────────────────┘
                         │
                         ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  aiki-hook-handler (Lightweight Binary)                     │
+│  aiki record-change (CLI Subcommand)                        │
 │    1. Parse JSON from stdin                                 │
 │    2. Extract: file, session, changes                       │
-│    3. Run: jj log -r @ -T commit_id (SYNC, ~10ms)           │
-│       → JJ auto-snapshots working copy & returns commit_id  │
-│    4. Build provenance record with commit_id                │
+│    3. Load JJ workspace via jj-lib                          │
+│       → Get working copy change_id (stable identifier)      │
+│    4. Build provenance record with change_id                │
 │    5. Write provenance to DB → get provenance_id            │
-│    6. Spawn: jj describe -r {commit_id} -m "aiki:{id}"      │
-│       → Links specific commit to provenance record (ASYNC)  │
-│    7. Return immediately (total: ~15-25ms)                  │
+│    6. Spawn background thread:                              │
+│       → set_change_description(change_id, "aiki:{id}")      │
+│       → Rewrites commit description (change_id stays same)  │
+│    7. Return immediately (total: ~8-10ms)                   │
 └───────────────────────┬─────────────────────────────────────┘
                         │
-                        ↓ (op_heads file updated)
+                        ↓ (op_heads file updated by background thread)
                         │
 ┌─────────────────────────────────────────────────────────────┐
-│  op_heads Watcher (background daemon)                       │
+│  op_heads Watcher (background daemon) [PLANNED]             │
 │    ├─ Detects new operation via file watch                  │
 │    ├─ Reads provenance_id from operation description        │
 │    ├─ Updates provenance record with jj_operation_id        │
@@ -83,7 +84,7 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 
 ### Tasks
 - [ ] Create Claude Code hook configuration (`.claude/settings.json`)
-- [ ] Implement `aiki record-change` subcommand
+- [ ] Implement `aiki record-change --claude-code` subcommand
 - [ ] Parse PostToolUse JSON payload
 - [ ] Extract file path, changes, session ID
 - [ ] Record provenance with High confidence
@@ -395,6 +396,7 @@ impl InitCommand {
 - [ ] Build attribution index with confidence tracking
 - [ ] Write unit tests for attribution computation
 - [ ] Write integration tests with real operations
+- [ ] Include functionality in real claude integration test
 
 ### op_heads Watcher Implementation
 

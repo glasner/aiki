@@ -23,9 +23,13 @@ struct Cli {
 enum Commands {
     /// Initialize Aiki in the current repository
     Init,
-    /// Record an AI-generated change (called by Claude Code hooks)
+    /// Record an AI-generated change (called by AI editor hooks)
     #[command(name = "record-change")]
-    RecordChange,
+    RecordChange {
+        /// Record change from Claude Code
+        #[arg(long)]
+        claude_code: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -33,7 +37,14 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => init_command(),
-        Commands::RecordChange => record_change::record_change(),
+        Commands::RecordChange { claude_code } => {
+            if claude_code {
+                record_change::record_change(provenance::AgentType::ClaudeCode)
+            } else {
+                eprintln!("Error: Agent type flag required (e.g., --claude-code)");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
