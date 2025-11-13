@@ -6,6 +6,8 @@ Expand AI provenance tracking beyond Claude Code to support Cursor and Windsurf 
 
 **Key Innovation**: Analyze git history to detect AI coding patterns and automatically install the right hooks, making setup zero-config for users.
 
+**Architecture Note**: Phase 1 has validated a SQLite-free architecture using JJ commit descriptions for provenance storage. Phase 2 extends this proven approach to additional editors (Cursor, Windsurf). All editors will use the same lightweight `[aiki]...[/aiki]` metadata format (~120 bytes per change) embedded in JJ commit descriptions.
+
 ## Goals
 
 1. **Intelligent Editor Detection** - Analyze git history to identify which AI editors are being used
@@ -358,7 +360,7 @@ fn init_command() -> Result<()> {
 ### Cursor Provenance Record
 
 ```rust
-// Update AgentType enum
+// Update AgentType enum in cli/src/provenance.rs
 pub enum AgentType {
     ClaudeCode,
     Cursor,        // NEW
@@ -366,6 +368,30 @@ pub enum AgentType {
     Unknown,
 }
 ```
+
+The same ProvenanceRecord structure will be used for all editors:
+
+```rust
+pub struct ProvenanceRecord {
+    pub agent: AgentInfo,      // Contains agent_type (ClaudeCode, Cursor, or Windsurf)
+    pub session_id: String,
+    pub tool_name: String,
+}
+```
+
+This record will be serialized to the same `[aiki]...[/aiki]` format in JJ commit descriptions. Example for Cursor:
+
+```
+[aiki]
+agent=cursor
+session=550e8400-e29b-41d4-a716-446655440001
+tool=ai_edit
+confidence=high
+method=hook
+[/aiki]
+```
+
+No database is needed - all provenance data is stored in JJ commit descriptions (~120 bytes per change).
 
 ### Alternative: Git Hook-Based Tracking
 
@@ -383,11 +409,12 @@ fi
 ```
 
 ### Success Criteria
-- ✅ Cursor AI edits are captured in provenance database
-- ✅ Cursor sessions are tracked separately from Claude Code
+- ✅ Cursor AI edits are captured in JJ commit descriptions (no database needed)
+- ✅ Cursor sessions are tracked separately from Claude Code (via agent type field)
 - ✅ Works with Cursor's actual API/hook mechanism
-- ✅ Minimal performance impact on Cursor workflow
+- ✅ Minimal performance impact on Cursor workflow (<10ms target)
 - ✅ User documentation is clear and complete
+- ✅ Same ~120 byte metadata format as Claude Code integration
 
 ## Milestone 2.3: Windsurf Hook Integration
 
@@ -416,9 +443,11 @@ fi
 ```
 
 ### Success Criteria
-- ✅ Windsurf AI edits captured in provenance database
-- ✅ Windsurf sessions tracked independently
+- ✅ Windsurf AI edits captured in JJ commit descriptions (no database needed)
+- ✅ Windsurf sessions tracked independently (via agent type field)
 - ✅ Integration works with Windsurf's actual API
+- ✅ Minimal performance impact (<10ms target)
+- ✅ Same ~120 byte metadata format as other editors
 - ✅ Documentation complete
 
 ## Milestone 2.4: Multi-Editor Query Support
@@ -430,7 +459,7 @@ fi
 - [ ] Update `aiki status` to show editor breakdown
 - [ ] Add `aiki stats --by-editor` command
 - [ ] Add `aiki history --editor=cursor` filtering
-- [ ] Update database queries for efficient editor filtering
+- [ ] Implement JJ revset queries for efficient editor filtering (using `description(glob:"*agent=cursor*")`)
 - [ ] Write tests for multi-editor queries
 
 ### Enhanced Status Output
@@ -452,11 +481,33 @@ AI Activity Summary:
     • Windsurf:    2 changes
 ```
 
+### Query Implementation Using JJ Revsets
+
+Phase 2 will leverage JJ's native revset queries for efficient filtering:
+
+```rust
+// Query all Cursor changes
+jj log -r 'description(glob:"*agent=cursor*")' --no-graph
+
+// Query all changes in last 24 hours for specific editor
+jj log -r 'description(glob:"*agent=claude*") & (author_date(after:"24 hours ago"))' --no-graph
+
+// Count changes by editor
+jj log -r 'description(glob:"*[aiki]*")' --no-graph | grep "agent=" | sort | uniq -c
+```
+
+This approach:
+- No database queries needed - JJ is the single source of truth
+- Fast: JJ's revset engine is optimized for commit graph queries
+- Flexible: Can combine with other revset predicates (dates, authors, files)
+- Consistent: Same query language for all provenance operations
+
 ### Success Criteria
 - ✅ Users can see breakdown by editor
-- ✅ Filtering works across all query commands
-- ✅ Performance remains fast with multi-editor data
+- ✅ Filtering works across all query commands using JJ revsets
+- ✅ Performance remains fast with multi-editor data (JJ's native revset engine)
 - ✅ Statistics are accurate and useful
+- ✅ No database maintenance or schema migrations needed
 
 ## Milestone 2.5: Hook Management CLI
 
@@ -659,10 +710,10 @@ Running hook diagnostics...
     Syntax: ✗ Invalid JSON (line 12: unexpected token)
     Fix: Run 'aiki hooks install cursor --force'
     
-✓ Checking database
-  Location: .aiki/provenance/attribution.db
+✓ Checking provenance data
+  Storage: JJ commit descriptions
   Status: ✓ Accessible
-  Records: 234
+  Records: 234 changes with [aiki] metadata
   
 ✓ Checking recent activity
   Last 24 hours: 12 changes
@@ -936,8 +987,16 @@ fn test_init_installs_multiple_hooks() {
 
 ```toml
 [dependencies]
-# Existing dependencies...
+# Existing dependencies from Phase 1
+jj-lib = "0.22.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+
 # No new dependencies needed for Phase 2!
+# All editors use the same JJ-based storage mechanism
 ```
 
 ## Success Metrics
@@ -959,17 +1018,18 @@ fn test_init_installs_multiple_hooks() {
 ### Technical Goals
 - **Accurate detection**: >95% accuracy in editor identification
 - **Extensible architecture**: Easy to add new editors in future
-- **Minimal overhead**: Hook handlers remain <25ms
-- **Database efficiency**: Editor filtering doesn't slow queries
+- **Minimal overhead**: Hook handlers remain <10ms (proven in Phase 1)
+- **Query efficiency**: JJ revset filtering remains fast (<100ms for typical queries)
+- **Storage efficiency**: ~120 bytes per change (proven in Phase 1)
 
 ## Future Extensions (Phase 3+)
 
-- **GitHub Copilot** integration
-- **Tabnine** integration
-- **Amazon CodeWhisperer** integration
+- **GitHub Copilot** integration (same JJ-based storage approach)
+- **Tabnine** integration (same JJ-based storage approach)
+- **Amazon CodeWhisperer** integration (same JJ-based storage approach)
 - **Plugin system** for community-contributed editor integrations
-- **Cloud sync** for provenance across machines
-- **Team dashboards** showing AI usage patterns
+- **Advanced revset queries** for complex provenance analysis
+- **Team dashboards** showing AI usage patterns (query JJ commit graph)
 
 ## Next Phase
 
