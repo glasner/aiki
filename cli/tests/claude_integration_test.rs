@@ -217,71 +217,69 @@ fn test_real_claude_code_integration() {
         String::from_utf8_lossy(&which_output.stdout).trim()
     );
 
-    // Step 7: Check that provenance was recorded
-    let db_path = repo_path.join(".aiki/provenance/attribution.db");
+    // Step 7: Wait a bit for background thread to complete
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    if !db_path.exists() {
-        eprintln!("⚠️  Database not found. Hook may not have triggered.");
+    // Step 8: Check that provenance was recorded in commit description
+    let output = Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("description")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj log");
+
+    if !output.status.success() {
+        eprintln!("⚠️  Failed to get commit description. JJ may not be working properly.");
+        panic!("jj log failed");
+    }
+
+    let description = String::from_utf8_lossy(&output.stdout);
+
+    if !description.contains("[aiki]") {
+        eprintln!("⚠️  No [aiki] marker found in commit description!");
         eprintln!("This could mean:");
         eprintln!("  - Claude Code didn't use Edit/Write tool");
         eprintln!("  - Hook wasn't properly configured");
         eprintln!("  - Plugin wasn't loaded by Claude Code");
-
-        panic!("Provenance database not created");
+        eprintln!("\nCommit description:\n{}", description);
+        panic!("No provenance metadata found");
     }
 
-    println!("✓ Provenance database exists");
+    println!("✓ Found [aiki] marker in commit description");
 
-    // Step 8: Query the database to verify provenance was recorded
-    use rusqlite::Connection;
-    let conn = Connection::open(&db_path).expect("Failed to open database");
-
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM provenance_records", [], |row| {
-            row.get(0)
-        })
-        .expect("Failed to query database");
-
-    if count == 0 {
-        eprintln!("⚠️  No provenance records found!");
-        eprintln!("The hook may not have been triggered by Claude Code.");
-        panic!("No provenance records in database");
+    // Parse and verify provenance metadata
+    println!("📊 Provenance metadata:");
+    if description.contains("agent=claude-code") {
+        println!("   Agent: claude-code");
+    }
+    if let Some(session_line) = description.lines().find(|l| l.contains("session=")) {
+        println!("   {}", session_line.trim());
+    }
+    if description.contains("tool=") {
+        if let Some(tool_line) = description.lines().find(|l| l.contains("tool=")) {
+            println!("   {}", tool_line.trim());
+        }
+    }
+    if description.contains("confidence=High") {
+        println!("   Confidence: High");
     }
 
-    println!("✓ Found {} provenance record(s)", count);
-
-    // Query the actual record
-    let mut stmt = conn
-        .prepare("SELECT file_path, agent_type, tool_name, confidence FROM provenance_records")
-        .unwrap();
-
-    let records: Vec<(String, String, String, String)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?, // file_path
-                row.get(1)?, // agent_type
-                row.get(2)?, // tool_name
-                row.get(3)?, // confidence
-            ))
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-
-    for (file_path, agent_type, tool_name, confidence) in &records {
-        println!("📊 Provenance record:");
-        println!("   File: {}", file_path);
-        println!("   Agent: {}", agent_type);
-        println!("   Tool: {}", tool_name);
-        println!("   Confidence: {}", confidence);
-
-        assert!(
-            file_path.contains("calculator.py"),
-            "Should track calculator.py"
-        );
-        assert_eq!(agent_type, "ClaudeCode");
-        assert_eq!(confidence, "High");
-    }
+    // Verify expected metadata
+    assert!(
+        description.contains("agent=claude-code"),
+        "Should have agent=claude-code"
+    );
+    assert!(
+        description.contains("confidence=High"),
+        "Should have confidence=High"
+    );
+    assert!(
+        description.contains("method=Hook"),
+        "Should have method=Hook"
+    );
 
     println!("\n✅ Real Claude Code integration test passed!");
     println!("   ✓ Claude Code CLI invoked successfully");
