@@ -2,12 +2,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Deserialize;
 use std::io::{self, Read};
-use std::path::PathBuf;
 use std::thread;
 
-use crate::db::ProvenanceDatabase;
 use crate::provenance::{
-    AgentInfo, AgentType, AttributionConfidence, ChangeSummary, DetectionMethod, ProvenanceRecord,
+    AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
 };
 
 /// Input data structure from Claude Code hook
@@ -65,10 +63,9 @@ pub fn record_change(agent_type: AgentType) -> Result<()> {
         .context("Failed to get working copy change ID. Is the repository initialized with JJ?")?;
     eprintln!("  Change ID: {}", change_id);
 
-    // Build provenance record with change_id
+    // Build provenance record (only metadata, jj knows the rest)
     eprintln!("Building provenance record...");
     let provenance = ProvenanceRecord {
-        id: None,
         agent: AgentInfo {
             agent_type,
             version: None,
@@ -76,42 +73,29 @@ pub fn record_change(agent_type: AgentType) -> Result<()> {
             confidence: AttributionConfidence::High,
             detection_method: DetectionMethod::Hook,
         },
-        file_path: PathBuf::from(&hook_data.tool_input.file_path),
         session_id: hook_data.session_id.clone(),
         tool_name: hook_data.tool_name.clone(),
         timestamp: Utc::now(),
-        change_summary: Some(ChangeSummary {
-            old_string: hook_data.tool_input.old_string.clone(),
-            new_string: hook_data.tool_input.new_string.clone(),
-        }),
-        jj_change_id: Some(change_id.clone()),
-        jj_operation_id: None, // Will be filled by op_heads watcher
     };
 
-    // Write to database
-    let db_path = PathBuf::from(&hook_data.cwd)
-        .join(".aiki")
-        .join("provenance")
-        .join("attribution.db");
-    eprintln!("Database path: {}", db_path.display());
-
-    eprintln!("Opening database...");
-    let db = ProvenanceDatabase::open(&db_path)?;
-
-    eprintln!("Inserting provenance record...");
-    let provenance_id = db.insert_provenance(&provenance)?;
-    eprintln!("  Provenance ID: {}", provenance_id);
+    eprintln!("Provenance record built");
+    eprintln!("  Agent: {:?}", provenance.agent.agent_type);
+    eprintln!("  Session: {}", provenance.session_id);
+    eprintln!("  Tool: {}", provenance.tool_name);
 
     // Spawn background thread to set the change description
-    // This keeps the hook response time under 25ms
+    // This keeps the hook response time under 10ms
     let repo_path = hook_data.cwd.clone();
     let change_id_for_thread = change_id.clone();
+    let provenance_for_thread = provenance.clone();
 
     eprintln!("Spawning background thread to set change description...");
     thread::spawn(move || {
         eprintln!("Background thread: Setting change description...");
-        // Set the change description to link it to the provenance record
-        if let Err(e) = set_change_description(&repo_path, &change_id_for_thread, provenance_id) {
+        // Set the change description with full provenance metadata
+        if let Err(e) =
+            set_change_description(&repo_path, &change_id_for_thread, &provenance_for_thread)
+        {
             eprintln!(
                 "Warning: Failed to set change description in background: {}",
                 e
@@ -179,12 +163,16 @@ fn get_working_copy_change_id(repo_path: &str) -> Result<String> {
     Ok(commit.change_id().hex())
 }
 
-/// Set the description on a change to link it to a provenance record
+/// Set the description on a change to embed provenance metadata
 ///
-/// This updates the change description to "aiki:{provenance_id}" which allows
-/// us to track which provenance record corresponds to which JJ change.
-/// Since change_id is stable, this link persists even as the commit is rewritten.
-fn set_change_description(repo_path: &str, change_id_str: &str, provenance_id: i64) -> Result<()> {
+/// This embeds the full provenance metadata in the commit description using
+/// the [aiki]...[/aiki] format. Since change_id is stable, this metadata
+/// persists even as the commit is rewritten.
+fn set_change_description(
+    repo_path: &str,
+    change_id_str: &str,
+    provenance: &ProvenanceRecord,
+) -> Result<()> {
     use jj_lib::backend::ChangeId;
     use jj_lib::object_id::ObjectId;
     use jj_lib::repo::{Repo, StoreFactories};
@@ -244,8 +232,10 @@ fn set_change_description(repo_path: &str, change_id_str: &str, provenance_id: i
         );
     }
 
-    // Rewrite commit with new description
-    let description = format!("aiki:{}", provenance_id);
+    // Rewrite commit with provenance metadata in description
+    let description = provenance.to_description();
+    eprintln!("Setting description:\n{}", description);
+
     let new_commit = tx
         .repo_mut()
         .rewrite_commit(&commit)
@@ -264,7 +254,7 @@ fn set_change_description(repo_path: &str, change_id_str: &str, provenance_id: i
         .set_wc_commit(workspace_id.into(), new_commit.id().clone())?;
 
     // Commit transaction
-    tx.commit(format!("aiki: link provenance {}", provenance_id))
+    tx.commit("aiki: embed provenance metadata")
         .context("Failed to commit transaction")?;
 
     Ok(())

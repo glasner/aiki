@@ -1,5 +1,4 @@
 mod config;
-mod db;
 mod jj;
 mod provenance;
 mod record_change;
@@ -101,10 +100,6 @@ fn init_command() -> Result<()> {
 
     // Install Claude Code hooks
     config::install_claude_code_hooks(&repo_root)?;
-
-    // Initialize provenance database
-    db::initialize_provenance_db(&repo_root)?;
-    println!("✓ Initialized provenance database");
 
     println!("\n✓ Aiki initialized successfully!");
     println!("\nNext steps:");

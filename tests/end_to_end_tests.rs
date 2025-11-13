@@ -1,10 +1,17 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 use tempfile::tempdir;
+
+/// Helper to check if jj is available
+fn jj_available() -> bool {
+    std::process::Command::new("jj")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
 
 /// Helper to initialize a Git repository
 fn init_git_repo(path: &std::path::Path) {
@@ -18,6 +25,12 @@ fn init_git_repo(path: &std::path::Path) {
 #[test]
 #[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
 fn test_complete_workflow_init_to_provenance_tracking() {
+    // Skip if jj not available
+    if !jj_available() {
+        eprintln!("Skipping test: jj binary not found in PATH");
+        return;
+    }
+
     let temp_dir = tempdir().unwrap();
     let repo_path = temp_dir.path();
 
@@ -53,9 +66,6 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         .stdout(predicate::str::contains("✓ Initialized JJ repository"))
         .stdout(predicate::str::contains("✓ Created .aiki directory"))
         .stdout(predicate::str::contains("✓ Configured Claude Code plugin"))
-        .stdout(predicate::str::contains(
-            "✓ Initialized provenance database",
-        ))
         .stdout(predicate::str::contains("✓ Aiki initialized successfully"));
 
     // Step 4: Verify directory structure created
@@ -82,14 +92,6 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     assert!(
         repo_path.join(".aiki/config.toml").exists(),
         "config.toml not created"
-    );
-    assert!(
-        repo_path.join(".aiki/provenance").exists(),
-        "provenance directory not created"
-    );
-    assert!(
-        repo_path.join(".aiki/provenance/attribution.db").exists(),
-        "attribution.db not created"
     );
 
     // Step 5: Verify Claude Code plugin configuration
@@ -191,78 +193,71 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     let elapsed = start.elapsed();
 
     println!(
-        "⏱️  Hook execution time: {:.2}ms (target: <25ms)",
+        "⏱️  Hook execution time: {:.2}ms (target: <10ms)",
         elapsed.as_secs_f64() * 1000.0
     );
 
-    // Note: With background threading, the hook should return in <25ms
-    // The heavy link_jj_operation work happens asynchronously
+    // Note: With background threading, the hook should return in <10ms
+    // The description embedding happens asynchronously
     // We'll wait a bit to let the background work complete for testing
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // Step 10: Verify provenance was recorded in database
-    let db_path = repo_path.join(".aiki/provenance/attribution.db");
-    let conn = Connection::open(&db_path).expect("Failed to open database");
+    // Step 10: Verify provenance was recorded in commit description
+    let output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("description")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj log");
 
-    // Check that a record was inserted
-    let mut stmt = conn
-        .prepare("SELECT COUNT(*) FROM provenance_records")
-        .unwrap();
-    let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap();
-    assert_eq!(count, 1, "Expected 1 provenance record, found {}", count);
+    let description = String::from_utf8_lossy(&output.stdout);
 
-    // Verify record contents
-    let mut stmt = conn
-        .prepare(
-            "SELECT file_path, agent_type, session_id, tool_name, confidence, detection_method, \
-             old_string, new_string, jj_change_id FROM provenance_records",
-        )
-        .unwrap();
-
-    let record = stmt
-        .query_row([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,         // file_path
-                row.get::<_, String>(1)?,         // agent_type
-                row.get::<_, String>(2)?,         // session_id
-                row.get::<_, String>(3)?,         // tool_name
-                row.get::<_, String>(4)?,         // confidence
-                row.get::<_, String>(5)?,         // detection_method
-                row.get::<_, Option<String>>(6)?, // old_string
-                row.get::<_, Option<String>>(7)?, // new_string
-                row.get::<_, Option<String>>(8)?, // jj_change_id
-            ))
-        })
-        .unwrap();
-
-    let (
-        file_path,
-        agent_type,
-        session_id,
-        tool_name,
-        confidence,
-        detection_method,
-        old_string,
-        new_string,
-        jj_change_id,
-    ) = record;
-
+    // Parse provenance metadata from description
     assert!(
-        file_path.ends_with("test.rs"),
-        "File path should end with test.rs, got: {}",
-        file_path
+        description.contains("[aiki]"),
+        "Description should contain [aiki] marker"
     );
-    assert_eq!(agent_type, "ClaudeCode");
-    assert_eq!(session_id, "test-session-e2e");
-    assert_eq!(tool_name, "Edit");
-    assert_eq!(confidence, "High");
-    assert_eq!(detection_method, "Hook");
-    assert_eq!(old_string, Some("println!(\"Hello\")".to_string()));
-    assert_eq!(new_string, Some("println!(\"Hello, World!\")".to_string()));
-    assert!(jj_change_id.is_some(), "JJ change ID should be recorded");
+    assert!(
+        description.contains("agent=claude-code"),
+        "Description should contain agent=claude-code"
+    );
+    assert!(
+        description.contains("session=test-session-e2e"),
+        "Description should contain session ID"
+    );
+    assert!(
+        description.contains("tool=Edit"),
+        "Description should contain tool=Edit"
+    );
+    assert!(
+        description.contains("confidence=High"),
+        "Description should contain confidence=High"
+    );
+    assert!(
+        description.contains("method=Hook"),
+        "Description should contain method=Hook"
+    );
+    assert!(
+        description.contains("timestamp="),
+        "Description should contain timestamp"
+    );
 
-    // Step 11: Verify JJ change exists and is valid
-    let change_id = jj_change_id.unwrap();
+    // Step 11: Get the change ID for further verification
+    let output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("change_id")
+        .arg("--no-graph")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to get change ID");
+
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert!(!change_id.is_empty(), "JJ change ID should not be empty");
     assert!(
         change_id.len() >= 16,
@@ -277,7 +272,7 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     );
 
     // Step 13: Verify we can find the commit with this change_id using jj-lib
-    // This validates that the change_id in the database is valid
+    // This validates that the change_id we got from jj is valid and has the provenance metadata
     use jj_lib::backend::ChangeId;
     use jj_lib::repo::{Repo, StoreFactories};
     use jj_lib::workspace::{default_working_copy_factories, Workspace};

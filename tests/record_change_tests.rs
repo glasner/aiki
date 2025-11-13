@@ -38,9 +38,6 @@ fn test_record_change_with_valid_json() {
 
     let temp_dir = tempdir().unwrap();
 
-    // Create necessary directory structure
-    fs::create_dir_all(temp_dir.path().join(".aiki/provenance")).unwrap();
-
     // Initialize JJ workspace
     if let Err(e) = init_jj_workspace(temp_dir.path()) {
         eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
@@ -74,9 +71,37 @@ fn test_record_change_with_valid_json() {
         .assert()
         .success();
 
-    // Verify database was created and contains the record
-    let db_path = temp_dir.path().join(".aiki/provenance/attribution.db");
-    assert!(db_path.exists());
+    // Give background thread time to complete
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Verify commit description contains aiki metadata
+    let output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("description")
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+
+    let description = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        description.contains("[aiki]"),
+        "Description should contain [aiki] marker"
+    );
+    assert!(
+        description.contains("agent=claude-code"),
+        "Description should contain agent=claude-code"
+    );
+    assert!(
+        description.contains("session=test-session-123"),
+        "Description should contain session ID"
+    );
+    assert!(
+        description.contains("tool=Edit"),
+        "Description should contain tool=Edit"
+    );
 }
 
 #[test]
@@ -126,9 +151,6 @@ fn test_record_change_handles_write_tool() {
 
     let temp_dir = tempdir().unwrap();
 
-    // Create necessary directory structure
-    fs::create_dir_all(temp_dir.path().join(".aiki/provenance")).unwrap();
-
     // Initialize JJ workspace
     if let Err(e) = init_jj_workspace(temp_dir.path()) {
         eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
@@ -158,7 +180,27 @@ fn test_record_change_handles_write_tool() {
         .assert()
         .success();
 
-    // Verify database was created
-    let db_path = temp_dir.path().join(".aiki/provenance/attribution.db");
-    assert!(db_path.exists());
+    // Give background thread time to complete
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Verify commit description contains aiki metadata
+    let output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg("description")
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+
+    let description = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        description.contains("[aiki]"),
+        "Description should contain [aiki] marker"
+    );
+    assert!(
+        description.contains("tool=Write"),
+        "Description should contain tool=Write"
+    );
 }
