@@ -169,14 +169,28 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     // Measure hook performance
     let start = Instant::now();
     let mut record_cmd = Command::cargo_bin("aiki").unwrap();
-    record_cmd
+    let output = record_cmd
         .arg("record-change")
         .arg("--claude-code")
         .write_stdin(serde_json::to_string(&hook_input).unwrap())
         .current_dir(repo_path)
-        .assert()
-        .success();
+        .output()
+        .expect("Failed to run record-change");
+
     let elapsed = start.elapsed();
+
+    // Debug: Print record-change output
+    println!(
+        "record-change stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    println!(
+        "record-change stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("record-change status: {}", output.status);
+
+    assert!(output.status.success(), "record-change should succeed");
 
     println!(
         "⏱️  Hook execution time: {:.2}ms",
@@ -186,6 +200,68 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     // Note: With synchronous execution, the hook blocks until complete
     // After completion, `jj new` has created a new working copy change,
     // so the metadata is on the parent change (@-)
+
+    // Debug: Show operation log first
+    let op_log_output = std::process::Command::new("jj")
+        .arg("op")
+        .arg("log")
+        .arg("--limit")
+        .arg("10")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj op log");
+    println!(
+        "Operation log:\n{}",
+        String::from_utf8_lossy(&op_log_output.stdout)
+    );
+
+    // Debug: Show the log at the operation right after our hook finished
+    // Use --at-op to prevent auto-snapshotting from modifying the state
+    let log_at_hook_output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("--at-op")
+        .arg("@") // The head operation after our hook
+        .arg("-r")
+        .arg("all()")
+        .arg("-T")
+        .arg("change_id.short() ++ \" \" ++ description.first_line()")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj log at op");
+    println!(
+        "Log immediately after hook (at op @):\n{}",
+        String::from_utf8_lossy(&log_at_hook_output.stdout)
+    );
+
+    // Debug: Show full log (this will auto-snapshot)
+    let log_output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("all()")
+        .arg("-T")
+        .arg("change_id.short() ++ \" \" ++ description.first_line()")
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj log");
+    println!(
+        "Full jj log (after auto-snapshot):\n{}",
+        String::from_utf8_lossy(&log_output.stdout)
+    );
+
+    // Show what @ actually is
+    let at_output = std::process::Command::new("jj")
+        .arg("log")
+        .arg("-r")
+        .arg("@")
+        .arg("-T")
+        .arg(r#"change_id.short() ++ " parents: " ++ parents.map(|p| p.change_id().short()).join(", ")"#)
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run jj log @");
+    println!(
+        "@ (working copy) parents: {}",
+        String::from_utf8_lossy(&at_output.stdout)
+    );
 
     // Step 10: Verify provenance was recorded in parent change description
     let output = std::process::Command::new("jj")
@@ -200,10 +276,14 @@ fn test_complete_workflow_init_to_provenance_tracking() {
 
     let description = String::from_utf8_lossy(&output.stdout);
 
+    // Debug: Print the actual description
+    println!("Parent change (@-) description: '{}'", description);
+
     // Parse provenance metadata from description
     assert!(
         description.contains("[aiki]"),
-        "Description should contain [aiki] marker"
+        "Description should contain [aiki] marker. Got: '{}'",
+        description
     );
     assert!(
         description.contains("agent=claude-code"),

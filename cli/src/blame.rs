@@ -15,11 +15,13 @@ use crate::provenance::{AgentType, AttributionConfidence, ProvenanceRecord};
 pub struct LineAttribution {
     pub line_number: usize,
     pub line_text: String,
+    #[allow(dead_code)]
     pub change_id: String,
     pub commit_id: String,
     pub agent_type: AgentType,
     pub confidence: Option<AttributionConfidence>,
     pub session_id: Option<String>,
+    #[allow(dead_code)]
     pub tool_name: Option<String>,
 }
 
@@ -60,30 +62,55 @@ impl BlameCommand {
         let repo_path =
             RepoPath::from_internal_string(path_str).context("Invalid repository path")?;
 
-        // Find the latest change with content (from git import or recorded changes)
-        // Use the heads of the repo - these are the latest changes
-        let heads = repo.view().heads();
-        let head_ids: Vec<_> = heads.iter().collect();
+        // Get the working copy commit - this is the most recent state
+        let wc_commit_id = repo
+            .view()
+            .get_wc_commit_id(workspace.workspace_name())
+            .context("Failed to get working copy commit ID")?;
 
-        if head_ids.is_empty() {
-            anyhow::bail!("No heads found in repository");
-        }
+        let wc_commit = repo
+            .store()
+            .get_commit(wc_commit_id)
+            .context("Failed to load working copy commit")?;
 
-        // Try each head until we find one that has the file
-        let mut commit_to_use = None;
-        for head_id in &head_ids {
-            let commit = repo.store().get_commit(head_id)?;
-            let tree = commit.tree()?;
+        eprintln!(
+            "DEBUG: Working copy change ID: {}",
+            wc_commit.change_id().hex()
+        );
+        eprintln!(
+            "DEBUG: Working copy description: {}",
+            wc_commit.description().lines().next().unwrap_or("")
+        );
 
-            let file_value = tree.path_value(repo_path)?;
-            if file_value.is_present() {
-                commit_to_use = Some(commit);
-                break;
+        // Check if the file exists in the working copy
+        let tree = wc_commit.tree()?;
+        let file_value = tree.path_value(repo_path)?;
+
+        let commit_to_use = if file_value.is_present() {
+            eprintln!("DEBUG: File found in working copy");
+            wc_commit
+        } else {
+            eprintln!("DEBUG: File not in working copy, checking parent");
+            // File not in working copy, try the parent (might have been deleted in WC)
+            let parent_ids = wc_commit.parent_ids();
+            if parent_ids.is_empty() {
+                anyhow::bail!("File not found in working copy and no parents available");
             }
-        }
 
-        let commit_to_use = commit_to_use
-            .context("File not found in any head changes. Has the file been tracked in jj?")?;
+            let parent_commit = repo.store().get_commit(&parent_ids[0])?;
+            let parent_tree = parent_commit.tree()?;
+            let parent_file_value = parent_tree.path_value(repo_path)?;
+
+            if parent_file_value.is_present() {
+                eprintln!(
+                    "DEBUG: File found in parent commit {}",
+                    parent_commit.change_id().hex()
+                );
+                parent_commit
+            } else {
+                anyhow::bail!("File not found in working copy or its parent. Has the file been tracked in jj?");
+            }
+        };
 
         // Create file annotator using from_commit
         let mut file_annotator = FileAnnotator::from_commit(&commit_to_use, repo_path)
