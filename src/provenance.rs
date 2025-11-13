@@ -45,7 +45,7 @@ pub enum DetectionMethod {
 /// A complete provenance record for a change
 ///
 /// This struct stores only metadata that JJ doesn't know about.
-/// File paths, diffs, timestamps, and commit IDs are retrieved from JJ when needed.
+/// File paths, diffs, timestamps, and change IDs are retrieved from JJ when needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceRecord {
     /// Information about the agent that made the change
@@ -57,7 +57,10 @@ pub struct ProvenanceRecord {
 }
 
 impl ProvenanceRecord {
-    /// Serialize provenance metadata to commit description format
+    /// Serialize provenance metadata to change description format
+    ///
+    /// Note: In jj, every working copy state is a "change" with a stable change_id.
+    /// The metadata is stored in the change's description field.
     ///
     /// Format:
     /// ```text
@@ -115,9 +118,9 @@ impl ProvenanceRecord {
         )
     }
 
-    /// Parse provenance metadata from commit description
+    /// Parse provenance metadata from change description
     ///
-    /// Returns None if no [aiki] metadata found (human commit or pre-aiki commit)
+    /// Returns None if no [aiki] metadata found (human change or pre-aiki change)
     /// Returns Some(record) if valid aiki metadata is found
     pub fn from_description(description: &str) -> Result<Option<Self>> {
         // Look for [aiki]...[/aiki] block
@@ -126,7 +129,7 @@ impl ProvenanceRecord {
 
         let start = match description.find(start_marker) {
             Some(pos) => pos,
-            None => return Ok(None), // No aiki metadata - human commit
+            None => return Ok(None), // No aiki metadata - human change
         };
 
         let end = description
@@ -183,7 +186,7 @@ impl ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
                 version: None,
-                detected_at: Utc::now(), // Timestamp comes from jj commit, not stored here
+                detected_at: Utc::now(), // Timestamp comes from jj change, not stored here
                 confidence,
                 detection_method: method,
             },

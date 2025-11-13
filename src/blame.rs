@@ -82,15 +82,15 @@ impl BlameCommand {
             }
         }
 
-        let commit_to_use =
-            commit_to_use.context("File not found in any head commits. Has it been committed?")?;
+        let commit_to_use = commit_to_use
+            .context("File not found in any head changes. Has the file been tracked in jj?")?;
 
         // Create file annotator using from_commit
         let mut file_annotator = FileAnnotator::from_commit(&commit_to_use, repo_path)
             .context("Failed to create file annotator")?;
 
-        // Create a revset expression for all commits (the default domain for blame)
-        // We use "all()" to include all commits in the repository
+        // Create a revset expression for all changes (the default domain for blame)
+        // We use "all()" to include all changes in the repository
         let revset_expr = RevsetExpression::all();
 
         // Compute the annotations
@@ -111,11 +111,11 @@ impl BlameCommand {
             // Extract the commit_id (either Ok or Err variant both contain CommitId)
             let commit_id = match commit_id_result {
                 Ok(id) => id,
-                Err(id) => id, // Err means the line couldn't be attributed to a single commit
+                Err(id) => id, // Err means the line couldn't be attributed to a single change
             };
-            // Load the commit to get its change_id and description
+            // Load the commit object (represents a change in jj) to get its change_id and description
             let commit = repo.store().get_commit(&commit_id)?;
-            let change_id = commit.change_id();
+            let change_id = commit.change_id(); // The stable change identifier
             let description = commit.description();
 
             // Parse provenance metadata from description
