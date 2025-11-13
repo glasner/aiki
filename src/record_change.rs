@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use serde::Deserialize;
 use std::io::{self, Read};
 use std::thread;
@@ -69,13 +68,12 @@ pub fn record_change(agent_type: AgentType) -> Result<()> {
         agent: AgentInfo {
             agent_type,
             version: None,
-            detected_at: Utc::now(),
+            detected_at: chrono::Utc::now(),
             confidence: AttributionConfidence::High,
             detection_method: DetectionMethod::Hook,
         },
         session_id: hook_data.session_id.clone(),
         tool_name: hook_data.tool_name.clone(),
-        timestamp: Utc::now(),
     };
 
     eprintln!("Provenance record built");

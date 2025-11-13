@@ -240,10 +240,6 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         description.contains("method=Hook"),
         "Description should contain method=Hook"
     );
-    assert!(
-        description.contains("timestamp="),
-        "Description should contain timestamp"
-    );
 
     // Step 11: Get the change ID for further verification
     let output = std::process::Command::new("jj")
