@@ -1,31 +1,11 @@
+mod common;
+
 use assert_cmd::Command;
+use common::{init_jj_workspace, jj_available, wait_for_description_update};
 use predicates::prelude::*;
 use std::fs;
+use std::time::Duration;
 use tempfile::tempdir;
-
-// Helper to check if jj is available
-fn jj_available() -> bool {
-    std::process::Command::new("jj")
-        .arg("--version")
-        .output()
-        .is_ok()
-}
-
-// Helper to initialize a JJ workspace
-fn init_jj_workspace(path: &std::path::Path) -> anyhow::Result<()> {
-    let output = std::process::Command::new("jj")
-        .arg("git")
-        .arg("init")
-        .arg("--colocate")
-        .current_dir(path)
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!("Failed to initialize JJ workspace");
-    }
-
-    Ok(())
-}
 
 #[test]
 #[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
@@ -71,8 +51,11 @@ fn test_record_change_with_valid_json() {
         .assert()
         .success();
 
-    // Give background thread time to complete
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Wait for background thread to complete (up to 5 seconds)
+    assert!(
+        wait_for_description_update(temp_dir.path(), "[aiki]", Duration::from_secs(5)),
+        "Background thread did not complete within 5 seconds"
+    );
 
     // Verify commit description contains aiki metadata
     let output = std::process::Command::new("jj")
@@ -180,8 +163,11 @@ fn test_record_change_handles_write_tool() {
         .assert()
         .success();
 
-    // Give background thread time to complete
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Wait for background thread to complete (up to 5 seconds)
+    assert!(
+        wait_for_description_update(temp_dir.path(), "[aiki]", Duration::from_secs(5)),
+        "Background thread did not complete within 5 seconds"
+    );
 
     // Verify commit description contains aiki metadata
     let output = std::process::Command::new("jj")

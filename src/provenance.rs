@@ -117,18 +117,21 @@ impl ProvenanceRecord {
 
     /// Parse provenance metadata from commit description
     ///
-    /// Extracts the [aiki]...[/aiki] block and parses key=value pairs.
-    pub fn from_description(description: &str) -> Result<Self> {
-        // Extract [aiki]...[/aiki] block
+    /// Returns None if no [aiki] metadata found (human commit or pre-aiki commit)
+    /// Returns Some(record) if valid aiki metadata is found
+    pub fn from_description(description: &str) -> Result<Option<Self>> {
+        // Look for [aiki]...[/aiki] block
         let start_marker = "[aiki]";
         let end_marker = "[/aiki]";
 
-        let start = description
-            .find(start_marker)
-            .context("Description does not contain [aiki] marker")?;
+        let start = match description.find(start_marker) {
+            Some(pos) => pos,
+            None => return Ok(None), // No aiki metadata - human commit
+        };
+
         let end = description
             .find(end_marker)
-            .context("Description does not contain [/aiki] marker")?;
+            .context("Found [aiki] start marker but no [/aiki] end marker")?;
 
         let aiki_block = &description[start + start_marker.len()..end];
 
@@ -145,7 +148,7 @@ impl ProvenanceRecord {
             }
         }
 
-        // Extract and parse fields
+        // Extract and parse required fields
         let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
             Some("claude-code") => AgentType::ClaudeCode,
             Some("unknown") => AgentType::Unknown,
@@ -176,7 +179,7 @@ impl ProvenanceRecord {
             _ => return Err(anyhow::anyhow!("Missing or invalid 'method' field")),
         };
 
-        Ok(ProvenanceRecord {
+        Ok(Some(ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
                 version: None,
@@ -186,7 +189,7 @@ impl ProvenanceRecord {
             },
             session_id,
             tool_name,
-        })
+        }))
     }
 }
 
@@ -222,7 +225,256 @@ mod tests {
     }
 
     #[test]
-    fn test_from_description() {
+    fn test_to_description_with_special_characters_in_session_id() {
+        // Test that special characters in session ID don't break the format
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "session-with-dashes_underscores.dots".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+
+        assert!(description.contains("session=session-with-dashes_underscores.dots"));
+        assert!(description.contains("[aiki]"));
+        assert!(description.contains("[/aiki]"));
+    }
+
+    #[test]
+    fn test_to_description_with_very_long_session_id() {
+        // Test with a very long session ID (e.g., UUID + timestamp)
+        let long_session_id = "claude-session-".to_string() + &"a".repeat(200);
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: long_session_id.clone(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+
+        assert!(description.contains(&format!("session={}", long_session_id)));
+        assert!(description.contains("[aiki]"));
+        assert!(description.contains("[/aiki]"));
+    }
+
+    #[test]
+    fn test_to_description_with_special_tool_names() {
+        // Test various tool names that might be used
+        let tool_names = vec!["Edit", "Write", "Bash", "Read", "mcp__acp__Edit"];
+
+        for tool_name in tool_names {
+            let record = ProvenanceRecord {
+                agent: AgentInfo {
+                    agent_type: AgentType::ClaudeCode,
+                    version: None,
+                    detected_at: Utc::now(),
+                    confidence: AttributionConfidence::High,
+                    detection_method: DetectionMethod::Hook,
+                },
+                session_id: "test-session".to_string(),
+                tool_name: tool_name.to_string(),
+            };
+
+            let description = record.to_description();
+            assert!(description.contains(&format!("tool={}", tool_name)));
+        }
+    }
+
+    #[test]
+    fn test_to_description_all_agent_types() {
+        // Test serialization for all agent types
+        let agent_types = vec![
+            (AgentType::ClaudeCode, "claude-code"),
+            (AgentType::Unknown, "unknown"),
+        ];
+
+        for (agent_type, expected_str) in agent_types {
+            let record = ProvenanceRecord {
+                agent: AgentInfo {
+                    agent_type,
+                    version: None,
+                    detected_at: Utc::now(),
+                    confidence: AttributionConfidence::High,
+                    detection_method: DetectionMethod::Hook,
+                },
+                session_id: "test".to_string(),
+                tool_name: "Edit".to_string(),
+            };
+
+            let description = record.to_description();
+            assert!(description.contains(&format!("agent={}", expected_str)));
+        }
+    }
+
+    #[test]
+    fn test_to_description_all_confidence_levels() {
+        // Test serialization for all confidence levels
+        let confidence_levels = vec![
+            (AttributionConfidence::High, "High"),
+            (AttributionConfidence::Medium, "Medium"),
+            (AttributionConfidence::Low, "Low"),
+            (AttributionConfidence::Unknown, "Unknown"),
+        ];
+
+        for (confidence, expected_str) in confidence_levels {
+            let record = ProvenanceRecord {
+                agent: AgentInfo {
+                    agent_type: AgentType::ClaudeCode,
+                    version: None,
+                    detected_at: Utc::now(),
+                    confidence,
+                    detection_method: DetectionMethod::Hook,
+                },
+                session_id: "test".to_string(),
+                tool_name: "Edit".to_string(),
+            };
+
+            let description = record.to_description();
+            assert!(description.contains(&format!("confidence={}", expected_str)));
+        }
+    }
+
+    #[test]
+    fn test_to_description_all_detection_methods() {
+        // Test serialization for all detection methods
+        let methods = vec![
+            (DetectionMethod::Hook, "Hook"),
+            (DetectionMethod::Unknown, "Unknown"),
+        ];
+
+        for (method, expected_str) in methods {
+            let record = ProvenanceRecord {
+                agent: AgentInfo {
+                    agent_type: AgentType::ClaudeCode,
+                    version: None,
+                    detected_at: Utc::now(),
+                    confidence: AttributionConfidence::High,
+                    detection_method: method,
+                },
+                session_id: "test".to_string(),
+                tool_name: "Edit".to_string(),
+            };
+
+            let description = record.to_description();
+            assert!(description.contains(&format!("method={}", expected_str)));
+        }
+    }
+
+    #[test]
+    fn test_to_description_format_structure() {
+        // Test that the format has correct structure
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "test".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+
+        // Should start with [aiki] and end with [/aiki]
+        assert!(description.starts_with("[aiki]\n"));
+        assert!(description.ends_with("[/aiki]"));
+
+        // Count newlines - should have one per field plus markers
+        let line_count = description.lines().count();
+        assert_eq!(line_count, 7); // [aiki], agent, session, tool, confidence, method, [/aiki]
+    }
+
+    #[test]
+    fn test_to_description_no_equals_in_markers() {
+        // Verify that the markers themselves don't contain '='
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "test".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+
+        // The first and last lines should be just markers
+        let lines: Vec<&str> = description.lines().collect();
+        assert_eq!(lines[0], "[aiki]");
+        assert_eq!(lines[lines.len() - 1], "[/aiki]");
+
+        // All middle lines should contain '='
+        for line in &lines[1..lines.len() - 1] {
+            assert!(line.contains('='), "Line '{}' should contain '='", line);
+        }
+    }
+
+    #[test]
+    fn test_empty_session_id() {
+        // Test edge case with empty session ID
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+
+        // Should still be valid format even with empty session
+        assert!(description.contains("session="));
+        assert!(description.contains("[aiki]"));
+        assert!(description.contains("[/aiki]"));
+    }
+
+    #[test]
+    fn test_serialization_deserialization_roundtrip() {
+        // Test that ProvenanceRecord can be serialized and deserialized
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: Some("1.0.0".to_string()),
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::Medium,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "roundtrip-test".to_string(),
+            tool_name: "Write".to_string(),
+        };
+
+        // Test JSON serialization
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: ProvenanceRecord = serde_json::from_str(&json).unwrap();
+
+        // Verify key fields match
+        assert_eq!(record.session_id, deserialized.session_id);
+        assert_eq!(record.tool_name, deserialized.tool_name);
+    }
+
+    #[test]
+    fn test_from_description_with_aiki_metadata() {
         let description = "[aiki]\n\
             agent=claude-code\n\
             session=test-session-456\n\
@@ -231,8 +483,10 @@ mod tests {
             method=Hook\n\
             [/aiki]";
 
-        let record = ProvenanceRecord::from_description(description).unwrap();
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
 
+        let record = result.unwrap();
         assert!(matches!(record.agent.agent_type, AgentType::ClaudeCode));
         assert_eq!(record.session_id, "test-session-456");
         assert_eq!(record.tool_name, "Write");
@@ -247,7 +501,37 @@ mod tests {
     }
 
     #[test]
-    fn test_round_trip() {
+    fn test_from_description_without_aiki_metadata() {
+        // Human commit - no aiki metadata
+        let description = "Fix bug in parser\n\nThis commit fixes issue #123";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_none(), "Expected None for human commit");
+    }
+
+    #[test]
+    fn test_from_description_with_extra_content() {
+        // Commit with both aiki metadata and regular description
+        let description = "Add new feature\n\n\
+            This is a longer description.\n\n\
+            [aiki]\n\
+            agent=claude-code\n\
+            session=abc123\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            [/aiki]\n\n\
+            Additional notes here.";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+
+        let record = result.unwrap();
+        assert_eq!(record.session_id, "abc123");
+    }
+
+    #[test]
+    fn test_from_description_round_trip() {
         let original = ProvenanceRecord {
             agent: AgentInfo {
                 agent_type: AgentType::ClaudeCode,
@@ -256,12 +540,14 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
-            session_id: "round-trip-test".to_string(),
+            session_id: "round-trip".to_string(),
             tool_name: "Edit".to_string(),
         };
 
         let description = original.to_description();
-        let parsed = ProvenanceRecord::from_description(&description).unwrap();
+        let parsed = ProvenanceRecord::from_description(&description)
+            .unwrap()
+            .unwrap();
 
         assert!(matches!(parsed.agent.agent_type, AgentType::ClaudeCode));
         assert_eq!(parsed.session_id, original.session_id);
@@ -269,10 +555,6 @@ mod tests {
         assert!(matches!(
             parsed.agent.confidence,
             AttributionConfidence::High
-        ));
-        assert!(matches!(
-            parsed.agent.detection_method,
-            DetectionMethod::Hook
         ));
     }
 

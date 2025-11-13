@@ -26,10 +26,6 @@ struct HookInput {
 #[derive(Deserialize, Debug)]
 struct ToolInput {
     file_path: String,
-    #[serde(default)]
-    old_string: Option<String>,
-    #[serde(default)]
-    new_string: Option<String>,
 }
 
 /// Handle the record-change command (called by AI editor hooks)
@@ -256,4 +252,308 @@ fn set_change_description(
         .context("Failed to commit transaction")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Helper to check if jj is available for testing
+    fn jj_available() -> bool {
+        std::process::Command::new("jj")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
+    /// Helper to initialize a JJ workspace for testing
+    fn init_jj_workspace(path: &std::path::Path) -> Result<()> {
+        let output = std::process::Command::new("jj")
+            .arg("git")
+            .arg("init")
+            .arg("--colocate")
+            .current_dir(path)
+            .output()?;
+
+        if !output.status.success() {
+            anyhow::bail!("Failed to initialize JJ workspace");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_working_copy_change_id_not_initialized() {
+        // Test error when JJ is not initialized
+        let temp_dir = tempdir().unwrap();
+
+        let result = get_working_copy_change_id(temp_dir.path().to_str().unwrap());
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to load JJ workspace") || err_msg.contains("not initialized"),
+            "Expected error about uninitialized workspace, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_get_working_copy_change_id_invalid_path() {
+        // Test error with non-existent path
+        let result = get_working_copy_change_id("/nonexistent/path/to/repo");
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to load JJ workspace"),
+            "Expected workspace load error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_get_working_copy_change_id_success() {
+        if !jj_available() {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+
+        // Initialize JJ workspace
+        if let Err(e) = init_jj_workspace(temp_dir.path()) {
+            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+            return;
+        }
+
+        // Should successfully get change ID
+        let result = get_working_copy_change_id(temp_dir.path().to_str().unwrap());
+
+        assert!(
+            result.is_ok(),
+            "Expected success, got error: {:?}",
+            result.err()
+        );
+        let change_id = result.unwrap();
+
+        // Change ID should be a hex string
+        assert!(!change_id.is_empty());
+        assert!(change_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_set_change_description_invalid_change_id() {
+        if !jj_available() {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+
+        // Initialize JJ workspace
+        if let Err(e) = init_jj_workspace(temp_dir.path()) {
+            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+            return;
+        }
+
+        let provenance = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: chrono::Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        // Test with invalid hex string
+        let result = set_change_description(
+            temp_dir.path().to_str().unwrap(),
+            "not-valid-hex",
+            &provenance,
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Invalid change ID") || err_msg.contains("not valid hex"),
+            "Expected invalid change ID error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_set_change_description_wrong_change_id() {
+        if !jj_available() {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+
+        // Initialize JJ workspace
+        if let Err(e) = init_jj_workspace(temp_dir.path()) {
+            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+            return;
+        }
+
+        let provenance = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: chrono::Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        // Use a valid hex string but wrong change ID (all zeros)
+        let fake_change_id = "0".repeat(64);
+
+        let result = set_change_description(
+            temp_dir.path().to_str().unwrap(),
+            &fake_change_id,
+            &provenance,
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Change ID mismatch"),
+            "Expected change ID mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_set_change_description_success() {
+        if !jj_available() {
+            eprintln!("Skipping test: jj binary not found in PATH");
+            return;
+        }
+
+        let temp_dir = tempdir().unwrap();
+
+        // Initialize JJ workspace
+        if let Err(e) = init_jj_workspace(temp_dir.path()) {
+            eprintln!("Skipping test: Failed to initialize JJ workspace: {}", e);
+            return;
+        }
+
+        // Get the actual change ID
+        let change_id = match get_working_copy_change_id(temp_dir.path().to_str().unwrap()) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("Skipping test: Failed to get change ID: {}", e);
+                return;
+            }
+        };
+
+        let provenance = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: chrono::Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "test-session-success".to_string(),
+            tool_name: "Write".to_string(),
+        };
+
+        // Should successfully set description
+        let result =
+            set_change_description(temp_dir.path().to_str().unwrap(), &change_id, &provenance);
+
+        assert!(
+            result.is_ok(),
+            "Expected success, got error: {:?}",
+            result.err()
+        );
+
+        // Verify the description was actually set
+        let output = std::process::Command::new("jj")
+            .arg("log")
+            .arg("-r")
+            .arg("@")
+            .arg("-T")
+            .arg("description")
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        let description = String::from_utf8_lossy(&output.stdout);
+        assert!(description.contains("[aiki]"));
+        assert!(description.contains("agent=claude-code"));
+        assert!(description.contains("session=test-session-success"));
+        assert!(description.contains("tool=Write"));
+    }
+
+    #[test]
+    fn test_hook_input_parsing_valid() {
+        let json = r#"{
+            "session_id": "test-123",
+            "transcript_path": "/path/to/transcript",
+            "cwd": "/tmp/repo",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/tmp/repo/file.txt"
+            },
+            "tool_output": "Success"
+        }"#;
+
+        let result: Result<HookInput, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+
+        let hook_input = result.unwrap();
+        assert_eq!(hook_input.session_id, "test-123");
+        assert_eq!(hook_input.cwd, "/tmp/repo");
+        assert_eq!(hook_input.tool_name, "Edit");
+        assert_eq!(hook_input.tool_input.file_path, "/tmp/repo/file.txt");
+    }
+
+    #[test]
+    fn test_hook_input_parsing_missing_required_field() {
+        // Missing session_id
+        let json = r#"{
+            "cwd": "/tmp/repo",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/tmp/repo/file.txt"
+            }
+        }"#;
+
+        let result: Result<HookInput, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hook_input_parsing_optional_fields() {
+        // transcript_path and tool_output are optional
+        let json = r#"{
+            "session_id": "test-456",
+            "cwd": "/tmp/repo",
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/tmp/repo/new_file.txt"
+            }
+        }"#;
+
+        let result: Result<HookInput, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+
+        let hook_input = result.unwrap();
+        assert_eq!(hook_input.session_id, "test-456");
+        assert!(hook_input.transcript_path.is_none());
+        assert!(hook_input.tool_output.is_none());
+    }
 }
