@@ -28,6 +28,7 @@ fn init_jj_workspace(path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 #[test]
+#[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
 fn test_record_change_with_valid_json() {
     // Skip if jj not available
     if !jj_available() {
@@ -67,6 +68,7 @@ fn test_record_change_with_valid_json() {
 
     let mut cmd = Command::cargo_bin("aiki").unwrap();
     cmd.arg("record-change")
+        .arg("--claude-code")
         .write_stdin(serde_json::to_string(&hook_input).unwrap())
         .current_dir(temp_dir.path())
         .assert()
@@ -78,9 +80,11 @@ fn test_record_change_with_valid_json() {
 }
 
 #[test]
+#[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
 fn test_record_change_fails_with_invalid_json() {
     let mut cmd = Command::cargo_bin("aiki").unwrap();
     cmd.arg("record-change")
+        .arg("--claude-code")
         .write_stdin("not valid json")
         .assert()
         .failure()
@@ -88,6 +92,31 @@ fn test_record_change_fails_with_invalid_json() {
 }
 
 #[test]
+#[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
+fn test_record_change_requires_agent_flag() {
+    let hook_input = serde_json::json!({
+        "session_id": "test",
+        "cwd": "/tmp",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/tmp/test.txt",
+            "old_string": "old",
+            "new_string": "new"
+        }
+    });
+
+    let mut cmd = Command::cargo_bin("aiki").unwrap();
+    cmd.arg("record-change")
+        .write_stdin(serde_json::to_string(&hook_input).unwrap())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("Agent type flag required"));
+}
+
+#[test]
+#[allow(deprecated)] // cargo_bin deprecated but replacement cargo_bin! macro not yet documented
 fn test_record_change_handles_write_tool() {
     // Skip if jj not available
     if !jj_available() {
@@ -123,6 +152,7 @@ fn test_record_change_handles_write_tool() {
 
     let mut cmd = Command::cargo_bin("aiki").unwrap();
     cmd.arg("record-change")
+        .arg("--claude-code")
         .write_stdin(serde_json::to_string(&hook_input).unwrap())
         .current_dir(temp_dir.path())
         .assert()

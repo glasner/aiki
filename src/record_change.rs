@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::thread;
 
 use crate::db::ProvenanceDatabase;
 use crate::provenance::{
@@ -34,8 +35,11 @@ struct ToolInput {
     new_string: Option<String>,
 }
 
-/// Handle the record-change command (called by Claude Code hooks)
-pub fn record_change() -> Result<()> {
+/// Handle the record-change command (called by AI editor hooks)
+pub fn record_change(agent_type: AgentType) -> Result<()> {
+    eprintln!("=== AIKI HOOK CALLED ===");
+    eprintln!("Agent type: {:?}", agent_type);
+
     // Read JSON from stdin
     let mut stdin = io::stdin();
     let mut buffer = String::new();
@@ -43,20 +47,30 @@ pub fn record_change() -> Result<()> {
         .read_to_string(&mut buffer)
         .context("Failed to read JSON from stdin")?;
 
+    eprintln!("Hook input JSON length: {} bytes", buffer.len());
+
     // Parse hook data
     let hook_data: HookInput =
         serde_json::from_str(&buffer).context("Failed to parse hook JSON")?;
 
-    // Get commit_id (JJ auto-snapshots working copy during this command)
-    let commit_id = get_working_copy_commit_id(&hook_data.cwd).context(
-        "Failed to get working copy commit ID. Is jj installed and the repository initialized?",
-    )?;
+    eprintln!("Hook data parsed successfully");
+    eprintln!("  Session ID: {}", hook_data.session_id);
+    eprintln!("  CWD: {}", hook_data.cwd);
+    eprintln!("  Tool: {}", hook_data.tool_name);
+    eprintln!("  File: {}", hook_data.tool_input.file_path);
 
-    // Build provenance record with commit_id
+    // Get change_id from the working copy
+    eprintln!("Getting working copy change ID...");
+    let change_id = get_working_copy_change_id(&hook_data.cwd)
+        .context("Failed to get working copy change ID. Is the repository initialized with JJ?")?;
+    eprintln!("  Change ID: {}", change_id);
+
+    // Build provenance record with change_id
+    eprintln!("Building provenance record...");
     let provenance = ProvenanceRecord {
         id: None,
         agent: AgentInfo {
-            agent_type: AgentType::ClaudeCode,
+            agent_type,
             version: None,
             detected_at: Utc::now(),
             confidence: AttributionConfidence::High,
@@ -70,7 +84,7 @@ pub fn record_change() -> Result<()> {
             old_string: hook_data.tool_input.old_string.clone(),
             new_string: hook_data.tool_input.new_string.clone(),
         }),
-        jj_commit_id: Some(commit_id.clone()),
+        jj_change_id: Some(change_id.clone()),
         jj_operation_id: None, // Will be filled by op_heads watcher
     };
 
@@ -79,21 +93,50 @@ pub fn record_change() -> Result<()> {
         .join(".aiki")
         .join("provenance")
         .join("attribution.db");
+    eprintln!("Database path: {}", db_path.display());
+
+    eprintln!("Opening database...");
     let db = ProvenanceDatabase::open(&db_path)?;
+
+    eprintln!("Inserting provenance record...");
     let provenance_id = db.insert_provenance(&provenance)?;
+    eprintln!("  Provenance ID: {}", provenance_id);
 
-    // Link JJ operation to DB record (async, describe the specific commit)
-    link_jj_operation(&hook_data.cwd, &commit_id, provenance_id)?;
+    // Spawn background thread to set the change description
+    // This keeps the hook response time under 25ms
+    let repo_path = hook_data.cwd.clone();
+    let change_id_for_thread = change_id.clone();
 
+    eprintln!("Spawning background thread to set change description...");
+    thread::spawn(move || {
+        eprintln!("Background thread: Setting change description...");
+        // Set the change description to link it to the provenance record
+        if let Err(e) = set_change_description(&repo_path, &change_id_for_thread, provenance_id) {
+            eprintln!(
+                "Warning: Failed to set change description in background: {}",
+                e
+            );
+        } else {
+            eprintln!("Background thread: Successfully set change description");
+        }
+    });
+
+    eprintln!("=== AIKI HOOK COMPLETED SUCCESSFULLY ===");
+    // Return immediately - the hook is now fast!
     Ok(())
 }
 
-/// Get the working copy commit ID from JJ using jj-lib
+/// Get the working copy change ID from JJ using jj-lib
 ///
-/// JJ automatically snapshots the working copy when running commands.
-fn get_working_copy_commit_id(repo_path: &str) -> Result<String> {
+/// The change_id is a stable identifier that persists across rewrites,
+/// unlike commit_id which changes every time the commit content changes.
+///
+/// NOTE: This reads the current working copy change without snapshotting.
+/// In the typical Claude Code workflow, files are already tracked by git/jj,
+/// so the working copy should reflect recent changes.
+fn get_working_copy_change_id(repo_path: &str) -> Result<String> {
     use jj_lib::object_id::ObjectId;
-    use jj_lib::repo::StoreFactories;
+    use jj_lib::repo::{Repo, StoreFactories};
     use jj_lib::workspace::{default_working_copy_factories, Workspace};
     use std::path::Path;
 
@@ -119,20 +162,31 @@ fn get_working_copy_commit_id(repo_path: &str) -> Result<String> {
         .load_at_head()
         .context("Failed to load repository at head operation")?;
 
-    // Get working copy commit ID
+    // Get working copy commit
     let workspace_id = workspace.workspace_name();
     let wc_commit_id = repo
         .view()
         .get_wc_commit_id(workspace_id)
         .context("No working copy commit found for workspace")?;
 
-    // Convert to hex string
-    Ok(wc_commit_id.hex())
+    // Load the commit to get its change_id
+    let commit = repo
+        .store()
+        .get_commit(wc_commit_id)
+        .context("Failed to load working copy commit")?;
+
+    // Return the change_id (stable identifier)
+    Ok(commit.change_id().hex())
 }
 
-/// Link the JJ operation to the database record using jj-lib
-fn link_jj_operation(repo_path: &str, commit_id_str: &str, provenance_id: i64) -> Result<()> {
-    use jj_lib::backend::CommitId;
+/// Set the description on a change to link it to a provenance record
+///
+/// This updates the change description to "aiki:{provenance_id}" which allows
+/// us to track which provenance record corresponds to which JJ change.
+/// Since change_id is stable, this link persists even as the commit is rewritten.
+fn set_change_description(repo_path: &str, change_id_str: &str, provenance_id: i64) -> Result<()> {
+    use jj_lib::backend::ChangeId;
+    use jj_lib::object_id::ObjectId;
     use jj_lib::repo::{Repo, StoreFactories};
     use jj_lib::workspace::{default_working_copy_factories, Workspace};
     use std::path::Path;
@@ -153,9 +207,9 @@ fn link_jj_operation(repo_path: &str, commit_id_str: &str, provenance_id: i64) -
     )
     .context("Failed to load JJ workspace")?;
 
-    // Parse commit ID from hex string
-    let commit_id_bytes = hex::decode(commit_id_str).context("Invalid commit ID: not valid hex")?;
-    let commit_id = CommitId::new(commit_id_bytes);
+    // Parse change ID from hex string
+    let change_id_bytes = hex::decode(change_id_str).context("Invalid change ID: not valid hex")?;
+    let change_id = ChangeId::new(change_id_bytes);
 
     // Load repo at head
     let repo = workspace
@@ -166,21 +220,48 @@ fn link_jj_operation(repo_path: &str, commit_id_str: &str, provenance_id: i64) -
     // Start transaction
     let mut tx = repo.start_transaction();
 
-    // Get commit to rewrite
+    // Find the commit with this change_id
+    // Get the working copy commit (it should have this change_id)
+    let workspace_id = workspace.workspace_name();
+    let wc_commit_id = tx
+        .repo()
+        .view()
+        .get_wc_commit_id(workspace_id)
+        .context("No working copy commit found")?;
+
     let commit = tx
         .repo()
         .store()
-        .get_commit(&commit_id)
-        .context("Failed to load commit from store")?;
+        .get_commit(wc_commit_id)
+        .context("Failed to load working copy commit")?;
+
+    // Verify this is the right change
+    if commit.change_id() != &change_id {
+        anyhow::bail!(
+            "Change ID mismatch: expected {}, got {}",
+            change_id_str,
+            commit.change_id().hex()
+        );
+    }
 
     // Rewrite commit with new description
     let description = format!("aiki:{}", provenance_id);
-    let _new_commit = tx
+    let new_commit = tx
         .repo_mut()
         .rewrite_commit(&commit)
         .set_description(description)
         .write()
         .context("Failed to write rewritten commit")?;
+
+    // Rebase descendants if any
+    let num_rebased = tx.repo_mut().rebase_descendants()?;
+    if num_rebased > 0 {
+        eprintln!("Rebased {} descendant commits", num_rebased);
+    }
+
+    // Update working copy pointer
+    tx.repo_mut()
+        .set_wc_commit(workspace_id.into(), new_commit.id().clone())?;
 
     // Commit transaction
     tx.commit(format!("aiki: link provenance {}", provenance_id))

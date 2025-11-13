@@ -155,7 +155,7 @@ fn update_gitignore(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Install Claude Code hooks for provenance tracking
+/// Install Claude Code plugin configuration for provenance tracking
 pub fn install_claude_code_hooks(repo_root: &Path) -> Result<()> {
     let settings_dir = repo_root.join(".claude");
     let settings_file = settings_dir.join("settings.json");
@@ -171,30 +171,34 @@ pub fn install_claude_code_hooks(repo_root: &Path) -> Result<()> {
         serde_json::json!({})
     };
 
-    // Add PostToolUse hooks
-    if settings.get("hooks").is_none() {
-        settings["hooks"] = serde_json::json!({});
+    // Add aiki marketplace to extraKnownMarketplaces
+    if settings.get("extraKnownMarketplaces").is_none() {
+        settings["extraKnownMarketplaces"] = serde_json::json!({});
     }
 
-    settings["hooks"]["PostToolUse"] = serde_json::json!([
-        {
-            "matcher": "Edit|Write",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "aiki record-change",
-                    "timeout": 5
-                }
-            ]
+    // Use local plugin directory (relative to repo root)
+    settings["extraKnownMarketplaces"]["aiki"] = serde_json::json!({
+        "source": {
+            "source": "directory",
+            "path": "./claude-code-plugin"
         }
-    ]);
+    });
+
+    // Enable aiki plugin
+    if settings.get("enabledPlugins").is_none() {
+        settings["enabledPlugins"] = serde_json::json!({});
+    }
+
+    settings["enabledPlugins"]["aiki@aiki"] = serde_json::json!(true);
 
     // Write back
     let settings_json =
         serde_json::to_string_pretty(&settings).context("Failed to serialize settings")?;
     fs::write(&settings_file, settings_json).context("Failed to write settings.json")?;
 
-    println!("✓ Installed Claude Code hooks (.claude/settings.json)");
+    println!("✓ Configured Claude Code plugin (.claude/settings.json)");
+    println!("  → Aiki plugin will auto-install when you open this project in Claude Code");
+    println!("  → After trusting the repository, restart Claude Code to activate the plugin");
 
     Ok(())
 }
@@ -270,16 +274,17 @@ mod tests {
         let content = fs::read_to_string(&settings_file).unwrap();
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-        assert!(settings.get("hooks").is_some());
-        assert!(settings["hooks"].get("PostToolUse").is_some());
+        // Verify extraKnownMarketplaces
+        assert!(settings.get("extraKnownMarketplaces").is_some());
+        assert!(settings["extraKnownMarketplaces"].get("aiki").is_some());
 
-        let hooks = settings["hooks"]["PostToolUse"].as_array().unwrap();
-        assert_eq!(hooks.len(), 1);
+        let marketplace = &settings["extraKnownMarketplaces"]["aiki"];
+        assert_eq!(marketplace["source"]["source"], "directory");
+        assert_eq!(marketplace["source"]["path"], "./claude-code-plugin");
 
-        let hook = &hooks[0];
-        assert_eq!(hook["matcher"], "Edit|Write");
-        assert_eq!(hook["hooks"][0]["command"], "aiki record-change");
-        assert_eq!(hook["hooks"][0]["timeout"], 5);
+        // Verify enabledPlugins
+        assert!(settings.get("enabledPlugins").is_some());
+        assert_eq!(settings["enabledPlugins"]["aiki@aiki"], true);
     }
 
     #[test]
@@ -292,8 +297,13 @@ mod tests {
         fs::create_dir_all(&settings_dir).unwrap();
         let existing = serde_json::json!({
             "other_setting": "value",
-            "hooks": {
-                "OtherHook": []
+            "extraKnownMarketplaces": {
+                "other-marketplace": {
+                    "source": {
+                        "source": "github",
+                        "repo": "other/repo"
+                    }
+                }
             }
         });
         fs::write(
@@ -302,7 +312,7 @@ mod tests {
         )
         .unwrap();
 
-        // Install hooks
+        // Install plugin configuration
         let result = install_claude_code_hooks(temp_dir.path());
         assert!(result.is_ok());
 
@@ -311,9 +321,9 @@ mod tests {
         let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
 
         assert_eq!(settings["other_setting"], "value");
-        assert!(settings["hooks"]["PostToolUse"].is_array());
-        // Note: OtherHook would be overwritten if hooks object was replaced entirely
-        // but our implementation only sets PostToolUse
+        assert!(settings["extraKnownMarketplaces"]["other-marketplace"].is_object());
+        assert!(settings["extraKnownMarketplaces"]["aiki"].is_object());
+        assert_eq!(settings["enabledPlugins"]["aiki@aiki"], true);
     }
 
     #[test]
