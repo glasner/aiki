@@ -506,7 +506,233 @@ impl BlameCommand {
 
 ---
 
-## Milestone 1.3: Provenance Query API & CLI
+## Milestone 1.3: Git Pre-Commit Hook for Co-Author Attribution
+
+**Goal**: Add a Git pre-commit hook that automatically adds `Co-authored-by:` lines to commit messages for any AI agents that contributed to the staged changes.
+
+**Why**: This provides Git-native attribution that:
+- Shows up in `git log` and GitHub's UI
+- Is compatible with standard Git workflows
+- Gives credit to AI contributors in a way other developers understand
+- Works even when changes are squashed/rebased in Git
+
+### Tasks
+- [ ] Create `prepare-commit-msg` Git hook template
+- [ ] Implement logic to analyze staged changes for AI attribution
+- [ ] Query JJ changes that touch the same lines as staged changes
+- [ ] Extract agent info from change descriptions
+- [ ] Format as standard Git co-author trailers
+- [ ] Install hook during `aiki init`
+- [ ] Handle edge cases (no AI changes, multiple agents, etc.)
+- [ ] Write unit tests for co-author extraction
+- [ ] Write integration tests for hook execution
+
+### Implementation Design
+
+```bash
+# Example Git commit message with AI co-authors
+Fix authentication bug in login flow
+
+- Updated token validation logic
+- Added better error messages
+- Fixed session timeout handling
+
+Co-authored-by: Claude Code <claude-code@anthropic.com>
+Co-authored-by: Cursor <cursor@cursor.sh>
+```
+
+### Hook Implementation
+
+```bash
+#!/bin/bash
+# .git/hooks/prepare-commit-msg
+# Installed by: aiki init
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Only add co-authors for normal commits (not merge, squash, etc.)
+if [ "$COMMIT_SOURCE" != "message" ] && [ "$COMMIT_SOURCE" != "" ]; then
+    exit 0
+fi
+
+# Call aiki to analyze staged changes and get co-authors
+COAUTHORS=$(aiki git-coauthors 2>/dev/null)
+
+if [ -n "$COAUTHORS" ]; then
+    # Add blank line if commit message doesn't end with one
+    if [ -n "$(tail -c 1 "$COMMIT_MSG_FILE")" ]; then
+        echo "" >> "$COMMIT_MSG_FILE"
+    fi
+    
+    # Append co-author lines
+    echo "$COAUTHORS" >> "$COMMIT_MSG_FILE"
+fi
+```
+
+### CLI Command: `aiki git-coauthors`
+
+```rust
+// cli/src/git_coauthors.rs
+
+use anyhow::{Context, Result};
+use std::collections::HashSet;
+use std::path::Path;
+use std::process::Command;
+
+pub struct GitCoAuthorsCommand {
+    repo_path: PathBuf,
+}
+
+impl GitCoAuthorsCommand {
+    pub fn run(&self) -> Result<()> {
+        // 1. Get staged files from git
+        let staged_files = self.get_staged_files()?;
+        
+        // 2. For each staged file, get line ranges being changed
+        let changed_lines = self.get_staged_line_ranges(&staged_files)?;
+        
+        // 3. Query JJ for changes that touch those lines
+        let mut agents: HashSet<AgentInfo> = HashSet::new();
+        for (file, line_ranges) in changed_lines {
+            let file_agents = self.get_agents_for_lines(&file, &line_ranges)?;
+            agents.extend(file_agents);
+        }
+        
+        // 4. Format as Git co-author lines
+        for agent in agents {
+            println!("{}", self.format_coauthor(&agent));
+        }
+        
+        Ok(())
+    }
+    
+    fn get_staged_files(&self) -> Result<Vec<PathBuf>> {
+        let output = Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(&self.repo_path)
+            .output()?;
+        
+        // Parse output into file paths...
+    }
+    
+    fn get_staged_line_ranges(&self, files: &[PathBuf]) -> Result<HashMap<PathBuf, Vec<LineRange>>> {
+        // Use git diff --cached -U0 to get exact line numbers
+        // Parse unified diff format to extract line ranges
+    }
+    
+    fn get_agents_for_lines(&self, file: &Path, line_ranges: &[LineRange]) -> Result<HashSet<AgentInfo>> {
+        // Use aiki blame logic to get line attribution
+        // Filter to only lines in the given ranges
+        // Extract unique agents
+    }
+    
+    fn format_coauthor(&self, agent: &AgentInfo) -> String {
+        match agent.agent_type {
+            AgentType::ClaudeCode => {
+                format!("Co-authored-by: Claude Code <claude-code@anthropic.com>")
+            }
+            AgentType::Cursor => {
+                format!("Co-authored-by: Cursor <cursor@cursor.sh>")
+            }
+            AgentType::Windsurf => {
+                format!("Co-authored-by: Windsurf <windsurf@codeium.com>")
+            }
+            _ => {
+                format!("Co-authored-by: AI Assistant <ai@aiki-provenance.dev>")
+            }
+        }
+    }
+}
+
+struct LineRange {
+    start: usize,
+    end: usize,
+}
+```
+
+### Hook Installation
+
+```rust
+// cli/src/config.rs
+
+impl Config {
+    pub fn install_git_hooks(&self, repo_path: &Path) -> Result<()> {
+        let hooks_dir = repo_path.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_dir)?;
+        
+        // Install prepare-commit-msg hook
+        let hook_path = hooks_dir.join("prepare-commit-msg");
+        let hook_content = include_str!("../templates/prepare-commit-msg.sh");
+        std::fs::write(&hook_path, hook_content)?;
+        
+        // Make executable (Unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&hook_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&hook_path, perms)?;
+        }
+        
+        Ok(())
+    }
+}
+```
+
+### Example Workflows
+
+#### Scenario 1: Claude Code made all changes
+```bash
+$ git add src/auth.py
+$ git commit -m "Fix authentication bug"
+
+# Hook adds:
+Co-authored-by: Claude Code <claude-code@anthropic.com>
+```
+
+#### Scenario 2: Multiple AI contributors
+```bash
+$ git add src/auth.py src/utils.py
+# auth.py touched by Claude Code
+# utils.py touched by Cursor
+
+$ git commit -m "Refactor authentication and utilities"
+
+# Hook adds:
+Co-authored-by: Claude Code <claude-code@anthropic.com>
+Co-authored-by: Cursor <cursor@cursor.sh>
+```
+
+#### Scenario 3: Human-only changes
+```bash
+$ git add README.md
+# README.md has no AI changes in JJ history
+
+$ git commit -m "Update documentation"
+
+# Hook adds nothing (no co-authors)
+```
+
+### Success Criteria
+- [ ] Hook installed during `aiki init`
+- [ ] `aiki git-coauthors` correctly identifies AI contributors to staged changes
+- [ ] Co-author lines formatted according to Git standards
+- [ ] Hook works on macOS, Linux, and Windows
+- [ ] Hook handles edge cases gracefully (no staged files, binary files, etc.)
+- [ ] Integration test verifies full commit workflow
+- [ ] Hook performance acceptable (<100ms for typical commits)
+
+### Benefits
+1. **Git-native** - Works with standard Git workflows
+2. **GitHub visible** - Shows up in GitHub's commit UI and insights
+3. **Survives squashing** - Co-author info preserved during rebase/squash
+4. **Industry standard** - Uses well-known Git trailer format
+5. **Zero config** - Automatically installed by `aiki init`
+
+---
+
+## Milestone 1.4: Provenance Query API & CLI
 
 **Goal**: Provide commands to query and view provenance data.
 
