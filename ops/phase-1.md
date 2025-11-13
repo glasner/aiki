@@ -541,12 +541,34 @@ Co-authored-by: Claude Code <claude-code@anthropic.com>
 Co-authored-by: Cursor <cursor@cursor.sh>
 ```
 
+### Distribution Strategy: `core.hooksPath` with Versioned Hooks
+
+**Approach**: Use Git's native `core.hooksPath` feature to point to a version-controlled `.githooks/` directory.
+
+**Why this approach:**
+- ✅ Language-agnostic (works in any Git repo)
+- ✅ No third-party dependencies (pure Git feature)
+- ✅ Version-controlled hooks (committed to repo)
+- ✅ Team-friendly (everyone gets same hooks automatically)
+- ✅ Git 2.9+ native feature (widely supported since 2016)
+
+**Directory structure:**
+```
+repo/
+├── .githooks/
+│   └── prepare-commit-msg
+├── .aiki/
+├── .jj/
+└── src/
+```
+
 ### Hook Implementation
 
 ```bash
 #!/bin/bash
-# .git/hooks/prepare-commit-msg
+# .githooks/prepare-commit-msg
 # Installed by: aiki init
+# Version-controlled hook script
 
 COMMIT_MSG_FILE=$1
 COMMIT_SOURCE=$2
@@ -651,22 +673,23 @@ struct LineRange {
 }
 ```
 
-### Hook Installation
+### Hook Installation During `aiki init`
 
 ```rust
 // cli/src/config.rs
 
 impl Config {
     pub fn install_git_hooks(&self, repo_path: &Path) -> Result<()> {
-        let hooks_dir = repo_path.join(".git").join("hooks");
-        std::fs::create_dir_all(&hooks_dir)?;
+        // 1. Create .githooks directory (version-controlled)
+        let githooks_dir = repo_path.join(".githooks");
+        std::fs::create_dir_all(&githooks_dir)?;
         
-        // Install prepare-commit-msg hook
-        let hook_path = hooks_dir.join("prepare-commit-msg");
+        // 2. Write prepare-commit-msg hook to .githooks/
+        let hook_path = githooks_dir.join("prepare-commit-msg");
         let hook_content = include_str!("../templates/prepare-commit-msg.sh");
         std::fs::write(&hook_path, hook_content)?;
         
-        // Make executable (Unix)
+        // 3. Make executable (Unix/macOS/Linux)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -675,9 +698,53 @@ impl Config {
             std::fs::set_permissions(&hook_path, perms)?;
         }
         
+        // 4. Configure Git to use .githooks directory
+        std::process::Command::new("git")
+            .args(["config", "core.hooksPath", ".githooks"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to configure git core.hooksPath")?;
+        
+        eprintln!("✓ Installed Git hooks to .githooks/");
+        eprintln!("  Configured git config core.hooksPath=.githooks");
+        eprintln!("  Note: .githooks/ is version-controlled - commit it to share with team");
+        
         Ok(())
     }
 }
+```
+
+### Post-Installation: Committing Hooks to Version Control
+
+After `aiki init` runs, users should commit the `.githooks/` directory:
+
+```bash
+$ aiki init
+✓ Installed Git hooks to .githooks/
+  Configured git config core.hooksPath=.githooks
+  Note: .githooks/ is version-controlled - commit it to share with team
+
+$ git add .githooks/
+$ git commit -m "Add aiki Git hooks for AI co-author attribution"
+$ git push
+```
+
+**Team members** who clone the repo will need to run `aiki init` once to configure their local `core.hooksPath`:
+
+```bash
+$ git clone <repo>
+$ cd <repo>
+$ aiki init  # Sets git config core.hooksPath=.githooks
+```
+
+**Alternative**: Add a setup script to your project's README:
+
+```bash
+# scripts/setup.sh
+#!/bin/bash
+# Run after cloning to set up Git hooks
+git config core.hooksPath .githooks
+echo "✓ Git hooks configured"
 ```
 
 ### Example Workflows
@@ -715,13 +782,25 @@ $ git commit -m "Update documentation"
 ```
 
 ### Success Criteria
-- [ ] Hook installed during `aiki init`
+- [ ] `.githooks/` directory created during `aiki init`
+- [ ] Hook script written to `.githooks/prepare-commit-msg`
+- [ ] Hook script made executable on Unix systems
+- [ ] `git config core.hooksPath .githooks` configured automatically
 - [ ] `aiki git-coauthors` correctly identifies AI contributors to staged changes
 - [ ] Co-author lines formatted according to Git standards
-- [ ] Hook works on macOS, Linux, and Windows
+- [ ] Hook works on macOS, Linux, and Windows (Git Bash)
 - [ ] Hook handles edge cases gracefully (no staged files, binary files, etc.)
 - [ ] Integration test verifies full commit workflow
 - [ ] Hook performance acceptable (<100ms for typical commits)
+- [ ] Documentation explains how to commit `.githooks/` to share with team
+
+### Platform Compatibility
+
+**Unix/macOS/Linux**: Full support with bash script
+**Windows**: Requires Git Bash (included with Git for Windows)
+- Git for Windows includes bash interpreter
+- Hook scripts work identically in Git Bash
+- No PowerShell conversion needed
 
 ### Benefits
 1. **Git-native** - Works with standard Git workflows
@@ -729,6 +808,8 @@ $ git commit -m "Update documentation"
 3. **Survives squashing** - Co-author info preserved during rebase/squash
 4. **Industry standard** - Uses well-known Git trailer format
 5. **Zero config** - Automatically installed by `aiki init`
+6. **Version-controlled** - Hooks committed to repo, shared with team
+7. **No dependencies** - Pure Git feature (2.9+, released 2016)
 
 ---
 
