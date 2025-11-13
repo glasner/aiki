@@ -45,7 +45,7 @@ pub enum DetectionMethod {
 /// A complete provenance record for a change
 ///
 /// This struct stores only metadata that JJ doesn't know about.
-/// File paths, diffs, and commit IDs are retrieved from JJ when needed.
+/// File paths, diffs, timestamps, and commit IDs are retrieved from JJ when needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceRecord {
     /// Information about the agent that made the change
@@ -54,8 +54,6 @@ pub struct ProvenanceRecord {
     pub session_id: String,
     /// Tool name used (e.g., "Edit" or "Write")
     pub tool_name: String,
-    /// When the change was made
-    pub timestamp: DateTime<Utc>,
 }
 
 impl ProvenanceRecord {
@@ -69,7 +67,6 @@ impl ProvenanceRecord {
     /// tool=Edit
     /// confidence=High
     /// method=Hook
-    /// timestamp=2025-01-13T10:30:15Z
     /// [/aiki]
     /// ```
     ///
@@ -88,7 +85,6 @@ impl ProvenanceRecord {
     ///     },
     ///     session_id: "test-session".to_string(),
     ///     tool_name: "Edit".to_string(),
-    ///     timestamp: Utc::now(),
     /// };
     ///
     /// let description = record.to_description();
@@ -114,13 +110,8 @@ impl ProvenanceRecord {
         };
 
         format!(
-            "[aiki]\nagent={}\nsession={}\ntool={}\nconfidence={}\nmethod={}\ntimestamp={}\n[/aiki]",
-            agent_type,
-            self.session_id,
-            self.tool_name,
-            confidence,
-            method,
-            self.timestamp.to_rfc3339()
+            "[aiki]\nagent={}\nsession={}\ntool={}\nconfidence={}\nmethod={}\n[/aiki]",
+            agent_type, self.session_id, self.tool_name, confidence, method
         )
     }
 
@@ -185,24 +176,16 @@ impl ProvenanceRecord {
             _ => return Err(anyhow::anyhow!("Missing or invalid 'method' field")),
         };
 
-        let timestamp_str = metadata
-            .get("timestamp")
-            .context("Missing 'timestamp' field")?;
-        let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
-            .context("Invalid timestamp format")?
-            .with_timezone(&Utc);
-
         Ok(ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
                 version: None,
-                detected_at: timestamp, // Use same timestamp for detected_at
+                detected_at: Utc::now(), // Timestamp comes from jj commit, not stored here
                 confidence,
                 detection_method: method,
             },
             session_id,
             tool_name,
-            timestamp,
         })
     }
 }
@@ -223,7 +206,6 @@ mod tests {
             },
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
-            timestamp: "2025-01-13T10:30:15Z".parse::<DateTime<Utc>>().unwrap(),
         };
 
         let description = record.to_description();
@@ -236,7 +218,7 @@ mod tests {
         assert!(description.contains("tool=Edit"));
         assert!(description.contains("confidence=High"));
         assert!(description.contains("method=Hook"));
-        assert!(description.contains("timestamp=2025-01-13T10:30:15"));
+        // Note: timestamp not stored, comes from jj commit
     }
 
     #[test]
@@ -247,7 +229,6 @@ mod tests {
             tool=Write\n\
             confidence=High\n\
             method=Hook\n\
-            timestamp=2025-01-13T14:25:30Z\n\
             [/aiki]";
 
         let record = ProvenanceRecord::from_description(description).unwrap();
@@ -263,7 +244,6 @@ mod tests {
             record.agent.detection_method,
             DetectionMethod::Hook
         ));
-        assert_eq!(record.timestamp.to_rfc3339(), "2025-01-13T14:25:30+00:00");
     }
 
     #[test]
@@ -278,7 +258,6 @@ mod tests {
             },
             session_id: "round-trip-test".to_string(),
             tool_name: "Edit".to_string(),
-            timestamp: "2025-01-13T10:30:15Z".parse::<DateTime<Utc>>().unwrap(),
         };
 
         let description = original.to_description();
@@ -295,7 +274,6 @@ mod tests {
             parsed.agent.detection_method,
             DetectionMethod::Hook
         ));
-        assert_eq!(parsed.timestamp, original.timestamp);
     }
 
     #[test]
@@ -318,7 +296,6 @@ mod tests {
             tool=Edit\n\
             confidence=High\n\
             method=Hook\n\
-            timestamp=2025-01-13T10:30:15Z\n\
             [/aiki]";
 
         let result = ProvenanceRecord::from_description(description);
