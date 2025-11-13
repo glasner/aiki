@@ -16,7 +16,7 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 
 ---
 
-## Architecture: Hook-Based Detection Only
+## Architecture: Hook-Based Detection Only (No SQLite)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -28,8 +28,8 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 │  Claude Code PostToolUse Hook (AUTOMATIC)                   │
 │    ├─ Triggered immediately after Edit/Write                │
 │    ├─ Receives JSON via stdin:                              │
-│    │   • file_path (exact file edited)                      │
-│    │   • old_string → new_string (exact changes)            │
+│    │   • file_path (for context, not stored)                │
+│    │   • old_string → new_string (not stored, jj has diff)  │
 │    │   • session_id (grouping edits)                        │
 │    │   • tool_name (Edit or Write)                          │
 │    └─ Calls: aiki record-change --claude-code               │
@@ -39,27 +39,40 @@ Phase 1 establishes hook-based provenance tracking exclusively for Claude Code. 
 ┌─────────────────────────────────────────────────────────────┐
 │  aiki record-change (CLI Subcommand)                        │
 │    1. Parse JSON from stdin                                 │
-│    2. Extract: file, session, changes                       │
+│    2. Extract: session_id, tool_name, agent_type            │
 │    3. Load JJ workspace via jj-lib                          │
 │       → Get working copy change_id (stable identifier)      │
-│    4. Build provenance record with change_id                │
-│    5. Write provenance to DB → get provenance_id            │
-│    6. Spawn background thread:                              │
-│       → set_change_description(change_id, "aiki:{id}")      │
-│       → Rewrites commit description (change_id stays same)  │
-│    7. Return immediately (total: ~8-10ms)                   │
+│    4. Build lightweight ProvenanceRecord:                   │
+│       → Only metadata jj doesn't know:                      │
+│         • agent=claude-code                                 │
+│         • session=<session_id>                              │
+│         • tool=Edit|Write                                   │
+│         • confidence=High                                   │
+│         • method=Hook                                       │
+│         • timestamp=<ISO8601>                               │
+│    5. Spawn background thread:                              │
+│       → Serialize to [aiki]...[/aiki] format (~150 bytes)   │
+│       → Rewrite commit description with metadata            │
+│       → Change_id stays stable across rewrite               │
+│    6. Return immediately (total: ~7-8ms)                    │
 └───────────────────────┬─────────────────────────────────────┘
                         │
-                        ↓ (op_heads file updated by background thread)
+                        ↓ (commit description updated by background thread)
+                        │
+                        ↓ (jj operation created with metadata in description)
                         │
 ┌─────────────────────────────────────────────────────────────┐
-│  op_heads Watcher (background daemon) [PLANNED]             │
-│    ├─ Detects new operation via file watch                  │
-│    ├─ Reads provenance_id from operation description        │
-│    ├─ Updates provenance record with jj_operation_id        │
-│    ├─ Computes line-level attribution                       │
-│    └─ Updates attribution database                          │
+│  JJ Commit Graph (Single Source of Truth)                   │
+│    ├─ Commit description contains [aiki]...[/aiki] block    │
+│    ├─ File paths: query via "jj log -r <id> --summary"      │
+│    ├─ Diffs: query via "jj diff -r <id>"                    │
+│    ├─ Change ID: stable identifier (persists across rewrites)│
+│    └─ Ready for revset queries (future):                    │
+│       → jj log -r 'description("agent=claude-code")'        │
+│       → jj log -r 'description("session=xyz")'              │
 └─────────────────────────────────────────────────────────────┘
+
+Future: jj's native `annotate` API provides line-level attribution
 ```
 
 **Why hook-based approach is optimal:**
