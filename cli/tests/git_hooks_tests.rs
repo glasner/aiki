@@ -19,6 +19,278 @@ fn run_aiki_init(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// ========================================
+// Multi-Editor Test Scenarios
+// ========================================
+
+#[test]
+fn test_git_hook_includes_multiple_editors() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    init_git_repo(temp_dir.path())?;
+    run_aiki_init(temp_dir.path())?;
+
+    // Initialize JJ repo for provenance tracking
+    Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create file with Claude Code attribution
+    let file1 = temp_dir.path().join("file1.txt");
+    fs::write(&file1, "Line 1\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create new change for Cursor
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Modify same file with Cursor attribution
+    fs::write(&file1, "Line 1\nLine 2 from Cursor\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Stage the file in Git
+    Command::new("git")
+        .args(["add", "file1.txt"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Run aiki authors with git format
+    let output = Command::new(env!("CARGO_BIN_EXE_aiki"))
+        .args(["authors", "--format=git", "--changes=staged"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should include Cursor as co-author (the current change)
+    assert!(
+        stdout.contains("Co-authored-by: Cursor <cursor@cursor.sh>"),
+        "Should include Cursor co-author: {}",
+        stdout
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_git_hook_deduplicates_same_editor() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    init_git_repo(temp_dir.path())?;
+    run_aiki_init(temp_dir.path())?;
+
+    // Initialize JJ repo
+    Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create first file with Claude Code
+    let file1 = temp_dir.path().join("file1.txt");
+    fs::write(&file1, "First change\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=claude-code\nsession=session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create new change with same editor (different session)
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let file2 = temp_dir.path().join("file2.txt");
+    fs::write(&file2, "Second change\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=claude-code\nsession=session-2\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Stage both files
+    Command::new("git")
+        .args(["add", "file1.txt", "file2.txt"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Run aiki authors
+    let output = Command::new(env!("CARGO_BIN_EXE_aiki"))
+        .args(["authors", "--format=git", "--changes=staged"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should only have ONE co-author line (deduplicated by email)
+    let coauthor_count = stdout.matches("Co-authored-by: Claude Code").count();
+    assert_eq!(
+        coauthor_count, 1,
+        "Should deduplicate same editor to one co-author: {}",
+        stdout
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_git_authors_json_format_multiple_editors() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    init_git_repo(temp_dir.path())?;
+    run_aiki_init(temp_dir.path())?;
+
+    // Initialize JJ repo
+    Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create file with Claude Code
+    let file1 = temp_dir.path().join("file1.txt");
+    fs::write(&file1, "Line 1\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=claude-code\nsession=claude-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create new change with Cursor
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    fs::write(&file1, "Line 1\nLine 2 by Cursor\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=cursor\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Stage the file
+    Command::new("git")
+        .args(["add", "file1.txt"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Run authors with JSON format
+    let output = Command::new(env!("CARGO_BIN_EXE_aiki"))
+        .args(["authors", "--format=json", "--changes=staged"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should be valid JSON with Cursor
+    assert!(stdout.contains("Cursor"), "Should include Cursor");
+    assert!(
+        stdout.contains("cursor@cursor.sh"),
+        "Should include Cursor email"
+    );
+
+    // Verify it's valid JSON
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    Ok(())
+}
+
+#[test]
+fn test_git_hook_only_shows_ai_contributors() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    init_git_repo(temp_dir.path())?;
+    run_aiki_init(temp_dir.path())?;
+
+    // Initialize JJ repo
+    Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create file with AI attribution
+    let ai_file = temp_dir.path().join("ai_file.txt");
+    fs::write(&ai_file, "AI change\n")?;
+    Command::new("jj")
+        .args([
+            "describe",
+            "-m",
+            "[aiki]\nagent=cursor\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        ])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Create new change without AI attribution (human change)
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let human_file = temp_dir.path().join("human_file.txt");
+    fs::write(&human_file, "Human change\n")?;
+    Command::new("jj")
+        .args(["describe", "-m", "Manual change by human"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Stage only the human file (from working copy)
+    Command::new("git")
+        .args(["add", "human_file.txt"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    // Run authors
+    let output = Command::new(env!("CARGO_BIN_EXE_aiki"))
+        .args(["authors", "--format=git", "--changes=staged"])
+        .current_dir(temp_dir.path())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should be empty since human_file has no AI attribution
+    // This test verifies that human changes (without [aiki] metadata) are filtered out
+    assert!(
+        !stdout.contains("Unknown"),
+        "Should not include Unknown agent: {}",
+        stdout
+    );
+
+    // Should have zero co-author lines (no AI contributors in staged changes)
+    let coauthor_count = stdout.matches("Co-authored-by:").count();
+    assert_eq!(
+        coauthor_count, 0,
+        "Should have zero AI co-authors for human changes: {}",
+        stdout
+    );
+
+    Ok(())
+}
+
 /// Helper to initialize a git repository
 fn init_git_repo(dir: &Path) -> Result<()> {
     Command::new("git")

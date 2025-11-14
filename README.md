@@ -44,6 +44,22 @@ This will:
 - Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
 - Offer to automatically restart editors if they're running
 
+### Check Configuration Health
+
+```bash
+aiki doctor
+```
+
+This checks:
+- Repository setup (JJ, Git, Aiki directory)
+- Global hooks installation (Git, Claude Code, Cursor)
+- Local configuration (Git core.hooksPath)
+
+Add `--fix` to automatically repair issues:
+```bash
+aiki doctor --fix
+```
+
 ## Usage
 
 ### View AI Attribution for a File
@@ -55,10 +71,20 @@ aiki blame src/main.rs
 Output shows which AI agent contributed each line:
 
 ```
-abc12345 (ClaudeCode   session-123  High  )    1| fn main() {
-abc12345 (ClaudeCode   session-123  High  )    2|     println!("Hello, world!");
-def67890 (Unknown      -            -     )    3|     // Human-written comment
-abc12345 (ClaudeCode   session-123  High  )    4| }
+abc12345 (Claude Code   session-123  High  )    1| fn main() {
+abc12345 (Claude Code   session-123  High  )    2|     println!("Hello, world!");
+def67890 (Cursor        session-456  High  )    3|     // Added by Cursor
+abc12345 (Claude Code   session-123  High  )    4| }
+```
+
+Filter by specific editor:
+
+```bash
+# Show only Claude Code contributions
+aiki blame src/main.rs --agent claude-code
+
+# Show only Cursor contributions
+aiki blame src/main.rs --agent cursor
 ```
 
 ### Automatic Git Co-Author Attribution
@@ -83,22 +109,30 @@ These co-author lines appear in:
 You can view which AI agents contributed to your changes:
 
 ```bash
-# Show authors for working copy changes (default)
+# Show all AI authors for working copy changes (default)
 aiki authors
 Claude Code <claude-code@anthropic.ai>
+Cursor <cursor@cursor.sh>
 
 # Show authors for Git staged changes
 aiki authors --changes=staged
 Claude Code <claude-code@anthropic.ai>
+Cursor <cursor@cursor.sh>
 
 # Git trailer format (for commit messages)
 aiki authors --format=git --changes=staged
 Co-authored-by: Claude Code <claude-code@anthropic.ai>
+Co-authored-by: Cursor <cursor@cursor.sh>
 
 # JSON format (for tooling)
 aiki authors --format=json
-[{"name":"Claude Code","email":"claude-code@anthropic.ai","agent_type":"ClaudeCode"}]
+[
+  {"name":"Claude Code","email":"claude-code@anthropic.ai","agent_type":"ClaudeCode"},
+  {"name":"Cursor","email":"cursor@cursor.sh","agent_type":"Cursor"}
+]
 ```
+
+**Note:** The `authors` command always shows all AI contributors. Use `blame --agent <type>` to filter by specific editor.
 
 ## How It Works
 
@@ -192,10 +226,15 @@ aiki/
 - ✅ Milestone 1.2: Line-level attribution with `aiki blame`
 - ✅ Milestone 1.3: Git co-author attribution
 
-**Phase 2: Multi-Agent Support** - Planned
-- Cursor integration
-- Windsurf integration
-- Unified multi-agent tracking
+**Phase 2: Cursor Support** - In Progress 🚧
+- ✅ Milestone 2.1: Cursor hook installation and provenance tracking
+- ✅ Milestone 2.2: Multi-editor query support with filtering
+
+**Phase 3+: Additional Features** - Planned
+- Windsurf integration (Phase 10)
+- Hook management CLI enhancements (Phase 3)
+- Cryptographic commit signing (Phase 4)
+- Autonomous review & self-correction (Phase 5)
 
 See [ops/ROADMAP.md](ops/ROADMAP.md) for the complete roadmap.
 

@@ -21,6 +21,16 @@ pub enum AgentType {
     Unknown,
 }
 
+impl std::fmt::Display for AgentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AgentType::ClaudeCode => write!(f, "Claude Code"),
+            AgentType::Cursor => write!(f, "Cursor"),
+            AgentType::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
 /// Confidence level of the attribution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttributionConfidence {
