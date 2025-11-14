@@ -191,62 +191,6 @@ jj log -r 'description(glob:"*[aiki]*")'
 - ✅ Output is human-readable and parseable
 - ✅ Works with both editors installed simultaneously
 
-## Milestone 2.3: Hook Management CLI
-
-**Goal**: Add commands to manage editor hooks.
-
-### Commands
-
-```bash
-aiki hooks status               # Show which editors have hooks installed
-aiki hooks install <editor>     # Manually install hooks for specific editor
-aiki hooks remove <editor>      # Remove hooks for specific editor
-aiki hooks list                 # List all available editor integrations
-aiki hooks doctor               # Diagnose hook issues
-```
-
-### Hook Status Output
-
-```bash
-$ aiki hooks status
-
-Hook Status:
-  Claude Code:
-    Status: ✓ Active
-    Last Activity: 5 minutes ago
-    Changes Tracked: 42 (last 7 days)
-    Config: .claude/settings.json
-
-  Cursor:
-    Status: ✓ Active  
-    Last Activity: 1 hour ago
-    Changes Tracked: 18 (last 7 days)
-    Config: .cursor/aiki-hooks.json
-```
-
-### Hook Doctor Output
-
-```bash
-$ aiki hooks doctor
-
-Diagnosing hook configuration...
-
-✓ Claude Code hooks: Healthy
-✓ Cursor hooks: Healthy
-✓ JJ repository: Initialized
-✓ Provenance format: Valid
-
-No issues detected.
-```
-
-### Success Criteria
-
-- ✅ `aiki hooks status` shows real-time hook state
-- ✅ Manual hook installation works for both editors
-- ✅ Hook removal cleanly uninstalls configuration
-- ✅ Doctor command identifies common issues
-- ✅ User-friendly error messages with fix suggestions
-
 ## Testing Strategy
 
 ### Unit Tests
@@ -320,5 +264,6 @@ Framework is extensible to any editor that provides:
 ## Next Steps
 
 After Phase 2 completion:
-- **Phase 3**: Cryptographic commit signing for tamper-proof attribution
-- **Phase 4**: Autonomous review & self-correction loop
+- **Phase 3**: Hook Management CLI (unified management for editor and Git hooks)
+- **Phase 4**: Cryptographic commit signing for tamper-proof attribution
+- **Phase 5**: Autonomous review & self-correction loop

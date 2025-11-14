@@ -2,7 +2,7 @@
 
 ## Overview
 
-Aiki follows an **eleven-phase development strategy**, where each phase validates assumptions before proceeding to the next. The roadmap builds from foundational infrastructure (CLI, JJ, provenance) through multi-editor support, cryptographic verification, and solving individual developer pain (autonomous review) to full multi-agent team orchestration and enterprise compliance.
+Aiki follows a **twelve-phase development strategy**, where each phase validates assumptions before proceeding to the next. The roadmap builds from foundational infrastructure (CLI, JJ, provenance) through multi-editor support, hook management, cryptographic verification, and solving individual developer pain (autonomous review) to full multi-agent team orchestration and enterprise compliance.
 
 **Foundation:** All phases build on complete provenance tracking via Jujutsu (JJ), capturing edit-level history, agent attribution, and iteration tracking that Git cannot provide.
 
@@ -320,7 +320,147 @@ aiki authors --changes='trunk..@' --format=git
 
 ---
 
-## Phase 3: Cryptographic Commit Signing
+## Phase 3: Hook Management CLI
+
+### Problem
+Users need visibility and control over all Aiki hooks - both AI editor hooks (Claude Code, Cursor) and Git hooks (prepare-commit-msg). When hooks aren't working, users need diagnostic tools to identify and fix issues quickly.
+
+**Without hook management:**
+- Can't see which hooks are installed or active
+- Manual hook troubleshooting is time-consuming
+- No way to selectively enable/disable hooks
+- Difficult to diagnose why hooks aren't triggering
+- Can't verify hooks are working correctly
+
+### Solution
+Provide comprehensive hook management commands with unified interface for editor hooks and Git hooks. Include intelligent diagnostics that detect and repair common issues automatically.
+
+**Key Innovation:** Single CLI interface manages all hook types (editor + Git) with automatic health checks and repair capabilities.
+
+### What We Build
+- **Hook status visibility** - Show all installed hooks and their state
+- **Manual hook management** - Install/remove specific hooks
+- **Hook diagnostics** - Detect configuration issues, permission problems, outdated templates
+- **Automatic repair** - Fix common issues with `--fix` flag
+- **Activity tracking** - Show when hooks last executed
+- **Multi-hook support** - Manage editor and Git hooks through unified interface
+
+### Commands Delivered
+```bash
+aiki hooks status               # Show status of all hooks
+aiki hooks status --editor      # Show only editor hooks
+aiki hooks status --git         # Show only Git hooks
+aiki hooks install <target>     # Install specific hook (claude-code, cursor, git)
+aiki hooks install --all        # Install all detected hooks
+aiki hooks remove <target>      # Remove specific hook
+aiki hooks remove --all         # Remove all hooks
+aiki hooks list                 # List available integrations
+aiki hooks doctor               # Diagnose hook issues
+aiki hooks doctor --fix         # Automatically repair issues
+```
+
+### Example Output
+```bash
+$ aiki hooks status
+
+Editor Hooks:
+  Claude Code:
+    Status: ✓ Active
+    Location: .claude/settings.json
+    Last Activity: 5 minutes ago
+    Changes Tracked: 42 (last 7 days)
+
+  Cursor:
+    Status: ✓ Active
+    Location: .cursor/aiki-hooks.json
+    Last Activity: 1 hour ago
+    Changes Tracked: 18 (last 7 days)
+
+Git Hooks:
+  prepare-commit-msg:
+    Status: ✓ Active
+    Location: .git/hooks/prepare-commit-msg
+    Last Execution: 10 minutes ago
+    Template: cli/templates/prepare-commit-msg.sh
+
+Summary: All hooks healthy ✓
+
+$ aiki hooks doctor
+
+Diagnosing hook configuration...
+
+Editor Hooks:
+  ✓ Claude Code hooks: Healthy
+  ✗ Cursor hooks: Broken
+    Issue: .cursor/aiki-hooks.json syntax error
+    Fix: Run 'aiki hooks doctor --fix' to repair
+
+Git Hooks:
+  ✓ prepare-commit-msg: Healthy
+  ⚠ Hook executable permission missing
+    Fix: Run 'aiki hooks doctor --fix' to repair
+
+Found 2 issues. Run 'aiki hooks doctor --fix' to repair.
+```
+
+### Hook Types Managed
+
+**Editor Hooks:**
+- Claude Code: PostToolUse hooks in `.claude/settings.json`
+- Cursor: Hook config in `.cursor/aiki-hooks.json`
+- Windsurf: (Future - Phase 10)
+
+**Git Hooks:**
+- `prepare-commit-msg`: Injects AI co-authors into commit messages
+- Uses templates from `cli/templates/`
+
+### Diagnostics Performed
+
+**Editor Hooks:**
+- Configuration file exists and has valid format
+- Hook command is correct
+- Hook is actually triggering (check recent activity)
+
+**Git Hooks:**
+- Hook file exists in `.git/hooks/`
+- Hook has executable permissions
+- Hook template is up-to-date
+- Hook references correct `aiki` commands
+
+**Common Fixes:**
+- Regenerate corrupted config files
+- Set executable permissions on Git hooks
+- Update outdated hook templates
+- Repair invalid JSON/format
+
+### Value Delivered
+- **Hook visibility** - Users see exactly which hooks are active
+- **Easy troubleshooting** - Doctor command identifies issues automatically
+- **Quick repair** - `--fix` flag resolves common problems
+- **Selective control** - Install/remove specific hooks as needed
+- **Unified interface** - Single command set for all hook types
+
+### Technical Components
+| Component | Complexity | Priority |
+|-----------|------------|----------|
+| Hook status detection | Low | High |
+| Hook installation/removal | Low | High |
+| Diagnostics engine | Medium | High |
+| Automatic repair logic | Medium | High |
+| Activity tracking | Low | Medium |
+
+### Success Criteria
+- ✅ `aiki hooks status` shows accurate state of all hooks
+- ✅ Manual hook installation works for all hook types
+- ✅ Hook removal cleanly uninstalls without breaking repo
+- ✅ Doctor detects 90%+ of common issues
+- ✅ Doctor --fix successfully repairs detected issues
+- ✅ User-friendly error messages with actionable fixes
+- ✅ Works with both editor and Git hooks
+
+---
+
+## Phase 4: Cryptographic Commit Signing
 
 ### Problem
 AI-generated code lacks cryptographic verification. Current provenance tracking (Phase 1) stores attribution in JJ change descriptions as plain text `[aiki]` metadata, but:
@@ -492,7 +632,7 @@ Report includes:
 
 ---
 
-## Phase 4: Autonomous Review & Self-Correction Loop
+## Phase 5: Autonomous Review & Self-Correction Loop
 
 ### Problem
 Developers waste significant time per feature fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
@@ -582,7 +722,7 @@ Provenance recorded:
 
 ---
 
-## Phase 5: Multi-Agent Provenance (Fallback Detection)
+## Phase 6: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -662,7 +802,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 6: Local Multi-Agent Coordination
+## Phase 7: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -694,7 +834,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 7: PR Review for Non-Aiki Agents
+## Phase 8: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -717,7 +857,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 8: Shared JJ Brain & Team Coordination
+## Phase 9: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -747,7 +887,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 9: Windsurf Support
+## Phase 10: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -814,7 +954,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 10: Enterprise Compliance
+## Phase 11: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -846,7 +986,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 11: Native Agent Integration
+## Phase 12: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:
@@ -888,28 +1028,31 @@ Phase 1 (Claude Code Provenance) ✅ ← Foundation complete, SQLite-free
     ↓
 Phase 2 (Cursor Support) 🔜 ← Extends Phase 1 architecture
     ↓
-Phase 3 (Cryptographic Signing) ← Tamper-proof attribution
+Phase 3 (Hook Management CLI) ← Unified hook management + diagnostics
     ↓
-Phase 4 (Autonomous Review) ← Tests enabled by Phase 1
+Phase 4 (Cryptographic Signing) ← Tamper-proof attribution
     ↓
-Phase 5 (Multi-Agent: Fallback Detection)
+Phase 5 (Autonomous Review) ← Tests enabled by Phase 1
     ↓
-Phase 6 (Local Multi-Agent Coordination) ← Uses Phase 1+2+5 provenance
+Phase 6 (Multi-Agent: Fallback Detection)
     ↓
-Phase 7 (PR Review)
+Phase 7 (Local Multi-Agent Coordination) ← Uses Phase 1+2+6 provenance
     ↓
-Phase 8 (Shared JJ Brain) ← Team provenance via JJ commit descriptions
+Phase 8 (PR Review)
     ↓
-Phase 9 (Windsurf Support) ← Additional editor before enterprise
+Phase 9 (Shared JJ Brain) ← Team provenance via JJ commit descriptions
     ↓
-Phase 10 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 3 signing
+Phase 10 (Windsurf Support) ← Additional editor before enterprise
     ↓
-Phase 11 (Agent SDK) ← Trust scoring via JJ revsets
+Phase 11 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+    ↓
+Phase 12 (Agent SDK) ← Trust scoring via JJ revsets
 ```
 
 **Key Insights:** 
 - Phase 1 (Provenance) provides the SQLite-free foundation (~120 bytes per change in JJ commit descriptions)
-- Phase 2 (Cursor) and Phase 9 (Windsurf) extend to additional editors using same architecture
-- Phase 3 (Cryptographic Signing) adds tamper-proof verification layer for enterprise compliance
+- Phase 2 (Cursor) and Phase 10 (Windsurf) extend to additional editors using same architecture
+- Phase 3 (Hook Management) provides unified interface for all hook types with diagnostics
+- Phase 4 (Cryptographic Signing) adds tamper-proof verification layer for enterprise compliance
 - All subsequent phases query provenance via JJ revsets (no database needed)
 - JJ's immutable commit graph + cryptographic signatures provide audit-ready trails for compliance
