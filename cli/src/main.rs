@@ -1,10 +1,14 @@
 mod authors;
 mod blame;
 mod config;
+mod event_bus;
+mod events;
+mod handlers;
 mod jj;
 mod provenance;
 mod record_change;
 mod repo;
+mod vendors;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -71,6 +75,26 @@ enum Commands {
 enum HooksCommands {
     /// Install global hooks for AI editors
     Install,
+    /// Show status of all installed hooks
+    Status,
+    /// Diagnose hook configuration issues
+    Doctor {
+        /// Automatically fix detected issues
+        #[arg(long)]
+        fix: bool,
+    },
+    /// List available vendor integrations
+    List,
+    /// Handle vendor event (called by all hooks)
+    #[command(hide = true)]
+    Handle {
+        /// Agent type (e.g., claude-code, cursor)
+        #[arg(long)]
+        agent: String,
+        /// Vendor event name (e.g., SessionStart, PostToolUse, beforeSubmitPrompt, afterFileEdit)
+        #[arg(long)]
+        event: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -80,16 +104,27 @@ fn main() -> Result<()> {
         Commands::Init { quiet } => init_command(quiet),
         Commands::Hooks { command } => match command {
             HooksCommands::Install => hooks_install_command(),
+            HooksCommands::Status => hooks_status_command(),
+            HooksCommands::Doctor { fix } => hooks_doctor_command(fix),
+            HooksCommands::List => hooks_list_command(),
+            HooksCommands::Handle { agent, event } => {
+                let agent_type = parse_agent_type(&agent)?;
+                handle_event(agent_type, &event)
+            }
         },
         Commands::RecordChange {
             claude_code,
             cursor,
             sync,
         } => {
+            eprintln!("Warning: 'aiki record-change' is deprecated.");
+            eprintln!("  Use 'aiki hooks <vendor> post-change' instead.");
+            eprintln!();
+
             if claude_code {
-                record_change::record_change(provenance::AgentType::ClaudeCode, sync)
+                record_change::record_change_legacy(provenance::AgentType::ClaudeCode, sync)
             } else if cursor {
-                record_change::record_change(provenance::AgentType::Cursor, sync)
+                record_change::record_change_legacy(provenance::AgentType::Cursor, sync)
             } else {
                 eprintln!("Error: Agent type flag required (e.g., --claude-code, --cursor)");
                 std::process::exit(1);
@@ -466,6 +501,72 @@ fn restart_claude_code() -> Result<()> {
             .spawn()
             .context("Failed to reopen Claude Code")?;
     }
+
+    Ok(())
+}
+
+/// Parse agent type from string
+fn parse_agent_type(agent: &str) -> Result<provenance::AgentType> {
+    match agent {
+        "claude-code" => Ok(provenance::AgentType::ClaudeCode),
+        "cursor" => Ok(provenance::AgentType::Cursor),
+        _ => anyhow::bail!(
+            "Unknown agent type: '{}'. Supported values: 'claude-code', 'cursor'",
+            agent
+        ),
+    }
+}
+
+/// Handle vendor event (called by hooks)
+fn handle_event(agent: provenance::AgentType, event: &str) -> Result<()> {
+    use provenance::AgentType;
+
+    match agent {
+        AgentType::ClaudeCode => vendors::claude_code::handle(event),
+        AgentType::Cursor => vendors::cursor::handle(event),
+        _ => anyhow::bail!("Unsupported agent type: {:?}", agent),
+    }
+}
+
+/// Show status of all installed hooks
+fn hooks_status_command() -> Result<()> {
+    println!("Hook Status:\n");
+
+    // TODO: Implement full status checking
+    println!("Claude Code:");
+    println!("  Status: Not yet implemented");
+    println!();
+
+    println!("Cursor:");
+    println!("  Status: Not yet implemented");
+    println!();
+
+    println!("Git Hooks:");
+    println!("  Status: Not yet implemented");
+
+    Ok(())
+}
+
+/// Diagnose hook configuration issues
+fn hooks_doctor_command(fix: bool) -> Result<()> {
+    if fix {
+        println!("Diagnosing and fixing hook issues...\n");
+    } else {
+        println!("Diagnosing hook issues...\n");
+    }
+
+    // TODO: Implement hook diagnostics
+    println!("Hook diagnostics not yet implemented");
+
+    Ok(())
+}
+
+/// List available vendor integrations
+fn hooks_list_command() -> Result<()> {
+    println!("Available Vendor Integrations:\n");
+    println!("  • Claude Code");
+    println!("  • Cursor");
+    println!("\nUse 'aiki hooks install' to install hooks for all vendors.");
 
     Ok(())
 }
