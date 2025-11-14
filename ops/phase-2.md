@@ -12,7 +12,7 @@ Expand AI provenance tracking beyond Claude Code to support Cursor. Use git comm
 
 ## Goals
 
-1. **Intelligent Editor Detection** - Analyze git history to identify if Cursor is being used
+1. **Intelligent Editor Detection** - Analyze repo and git history to identify if Cursor is being used
 2. **Cursor Integration** - Add hook support for Cursor's AI features  
 3. **Automatic Hook Installation** - `aiki init` automatically detects and configures Cursor
 4. **Multi-Editor Support** - Track provenance from Claude Code and Cursor simultaneously
@@ -49,9 +49,9 @@ Expand AI provenance tracking beyond Claude Code to support Cursor. Use git comm
 - `EditorConfidence` - Confidence level tracker
 - `EditorDetectionResult` - Results struct
 
-## Milestone 2.1: Intelligent Editor Detection
+## Milestone 2.1: Cursor Detection and Hook Installation
 
-**Goal**: Implement git history analysis to detect Cursor usage.
+**Goal**: Detect Cursor usage and automatically install hooks, just like we do for Claude Code.
 
 ### Tasks
 
@@ -59,48 +59,29 @@ Expand AI provenance tracking beyond Claude Code to support Cursor. Use git comm
 2. Implement filesystem checks for editor config files
 3. Implement git log parsing for pattern detection
 4. Add confidence scoring algorithm
-5. Integrate into `aiki init` workflow
-6. Add unit tests for detection logic
+5. Add Cursor to `AgentType` enum
+6. Design and implement Cursor hook configuration
+7. Integrate detection + installation into `aiki init` workflow
+8. Test Cursor provenance recording
+9. Add unit tests for detection and hook installation
+10. Document Cursor setup in README
 
 ### Integration into `aiki init`
 
 When user runs `aiki init`:
 
-1. **Detect Editors**: Run detection on repository
-2. **Report Findings**: Show which editors were detected
+1. **Detect Editors**: Run detection on repository (filesystem + git history)
+2. **Install Hooks**: Automatically configure hooks for all detected editors
+3. **Report**: Show what was detected and installed
    ```
-   Detected AI editors:
-     • Claude Code (Confirmed)
-     • Cursor (Likely)
+   Detected and configured AI editors:
+     • Claude Code (Confirmed) - hooks installed
+     • Cursor (Likely) - hooks installed
    ```
-3. **Install Hooks**: Automatically configure hooks for detected editors
-4. **Confirm**: User sees what was installed
-
-### Success Criteria
-
-- ✅ Detects Claude Code from `.claude/` directory
-- ✅ Detects Cursor from `.cursor/` directory or `.cursorrules`
-- ✅ Detects editors from git commit patterns
-- ✅ Returns confidence levels for each editor
-- ✅ `aiki init` uses detection results automatically
-- ✅ Detection completes in < 1 second
-
-## Milestone 2.2: Cursor Hook Integration
-
-**Goal**: Add Cursor-specific hook support for provenance tracking.
-
-### Tasks
-
-1. Research Cursor's hook/extension API
-2. Design Cursor hook configuration format
-3. Implement hook handler for Cursor events
-4. Add Cursor to `AgentType` enum
-5. Test Cursor provenance recording
-6. Document Cursor setup in README
 
 ### Cursor Hook Configuration
 
-Cursor hooks will follow similar pattern to Claude Code:
+Cursor hooks follow the same pattern as Claude Code - installed by default when detected.
 
 **Configuration File**: `.cursor/aiki-hooks.json`
 
@@ -149,14 +130,20 @@ If Cursor doesn't provide native hooks, fall back to Git hook-based detection:
 
 ### Success Criteria
 
+- ✅ Detects Claude Code from `.claude/` directory
+- ✅ Detects Cursor from `.cursor/` directory or `.cursorrules`
+- ✅ Detects editors from git commit patterns
+- ✅ Returns confidence levels for each editor
+- ✅ `aiki init` automatically installs hooks for detected editors
 - ✅ Cursor hook configuration installed by `aiki init`
 - ✅ Cursor edits trigger `aiki record-change --cursor`
 - ✅ Provenance metadata embedded in JJ commit descriptions
 - ✅ `aiki authors` shows Cursor contributors
 - ✅ `aiki blame` attributes lines to Cursor
 - ✅ Git commits include `Co-authored-by: Cursor <cursor@cursor.sh>`
+- ✅ Detection + installation completes in < 1 second
 
-## Milestone 2.3: Multi-Editor Query Support
+## Milestone 2.2: Multi-Editor Query Support
 
 **Goal**: Enhance CLI commands to support querying multiple editors.
 
@@ -204,7 +191,7 @@ jj log -r 'description(glob:"*[aiki]*")'
 - ✅ Output is human-readable and parseable
 - ✅ Works with both editors installed simultaneously
 
-## Milestone 2.4: Hook Management CLI
+## Milestone 2.3: Hook Management CLI
 
 **Goal**: Add commands to manage editor hooks.
 
