@@ -317,6 +317,7 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 fn format_agent_email(agent: &AgentType) -> String {
     match agent {
         AgentType::ClaudeCode => "claude-code@anthropic.ai".to_string(),
+        AgentType::Cursor => "cursor@cursor.sh".to_string(),
         AgentType::Unknown => "unknown@aiki.dev".to_string(),
     }
 }
@@ -325,6 +326,7 @@ fn format_agent_email(agent: &AgentType) -> String {
 fn format_agent_name(agent: &AgentType) -> String {
     match agent {
         AgentType::ClaudeCode => "Claude Code".to_string(),
+        AgentType::Cursor => "Cursor".to_string(),
         AgentType::Unknown => "Unknown AI Agent".to_string(),
     }
 }
@@ -381,11 +383,13 @@ index abc123..def456 100644
             format_agent_email(&AgentType::ClaudeCode),
             "claude-code@anthropic.ai"
         );
+        assert_eq!(format_agent_email(&AgentType::Cursor), "cursor@cursor.sh");
     }
 
     #[test]
     fn test_format_agent_name() {
         assert_eq!(format_agent_name(&AgentType::ClaudeCode), "Claude Code");
+        assert_eq!(format_agent_name(&AgentType::Cursor), "Cursor");
     }
 
     #[test]

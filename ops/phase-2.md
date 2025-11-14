@@ -8,8 +8,7 @@ Expand AI provenance tracking beyond Claude Code to support Cursor. Start with s
 
 **Note**: Windsurf support is planned for Phase 10, positioned before enterprise features.
 
-## Background
-
+**External Resources**:
 - https://cursor.com/docs/agent/hooks
 
 ## Goals
@@ -84,14 +83,6 @@ method=hook
 [/aiki]
 ```
 
-### Alternative: Git Hook-Based Tracking
-
-If Cursor doesn't provide native hooks, fall back to Git hook-based detection:
-
-- Use `prepare-commit-msg` hook to analyze diffs
-- Infer Cursor usage from commit patterns
-- Lower confidence (Medium vs High)
-- Still stores metadata in JJ commit descriptions
 
 ### Success Criteria
 

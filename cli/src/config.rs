@@ -305,6 +305,78 @@ pub fn install_claude_code_hooks(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install Cursor hooks for provenance tracking
+///
+/// Unlike Claude Code hooks (per-repo), Cursor hooks are global (user-level).
+/// Cursor hook events accept arrays of commands, so we can safely append without
+/// overwriting existing hooks.
+pub fn install_cursor_hooks(_repo_root: &Path) -> Result<()> {
+    // Get user home directory
+    let home_dir = dirs::home_dir().context("Failed to get home directory")?;
+    let cursor_dir = home_dir.join(".cursor");
+    let hooks_file = cursor_dir.join("hooks.json");
+
+    // Create .cursor directory if it doesn't exist
+    fs::create_dir_all(&cursor_dir).context("Failed to create .cursor directory")?;
+
+    // Read existing hooks.json or create new
+    let mut hooks: serde_json::Value = if hooks_file.exists() {
+        let content =
+            fs::read_to_string(&hooks_file).context("Failed to read ~/.cursor/hooks.json")?;
+        serde_json::from_str(&content).context("Failed to parse ~/.cursor/hooks.json")?
+    } else {
+        // Create new hooks config
+        serde_json::json!({
+            "version": 1,
+            "hooks": {}
+        })
+    };
+
+    // Ensure hooks object exists
+    if hooks.get("hooks").is_none() {
+        hooks["hooks"] = serde_json::json!({});
+    }
+
+    // Get or create afterFileEdit array
+    let after_file_edit = hooks["hooks"]["afterFileEdit"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    // Check if aiki hook already exists
+    let aiki_command = "aiki record-change --cursor";
+    let already_installed = after_file_edit.iter().any(|hook| {
+        hook.get("command")
+            .and_then(|c| c.as_str())
+            .map(|c| c.contains("aiki record-change --cursor"))
+            .unwrap_or(false)
+    });
+
+    if already_installed {
+        println!("✓ Cursor hooks already configured");
+        return Ok(());
+    }
+
+    // Append aiki hook to array (preserves existing hooks!)
+    let mut new_hooks = after_file_edit;
+    new_hooks.push(serde_json::json!({
+        "command": aiki_command
+    }));
+
+    hooks["hooks"]["afterFileEdit"] = serde_json::Value::Array(new_hooks);
+
+    // Write back
+    let hooks_json =
+        serde_json::to_string_pretty(&hooks).context("Failed to serialize hooks.json")?;
+    fs::write(&hooks_file, hooks_json).context("Failed to write ~/.cursor/hooks.json")?;
+
+    println!("✓ Configured Cursor hooks (~/.cursor/hooks.json)");
+    println!("  → Added to afterFileEdit hook array (existing hooks preserved)");
+    println!("  → Cursor must be restarted to activate hooks");
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

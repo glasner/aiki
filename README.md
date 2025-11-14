@@ -7,7 +7,7 @@ Aiki automatically tracks which AI agents contributed to your codebase, providin
 - **Automatic Provenance Tracking**: Records AI agent changes in Jujutsu (jj) change descriptions
 - **Line-Level Attribution**: See which AI agent wrote each line of code with `aiki blame`
 - **Git Co-Author Attribution**: Automatically adds `Co-authored-by:` lines to Git commits for AI contributors
-- **Claude Code Integration**: Seamless integration via PostToolUse hooks
+- **Multi-Editor Support**: Seamless integration with Claude Code and Cursor via hooks
 
 ## Quick Start
 
@@ -40,8 +40,9 @@ This will:
 - Initialize Jujutsu if not already present
 - Create `.aiki/` directory structure
 - Install Git hooks for automatic co-author attribution
-- Configure Claude Code integration
-- Offer to automatically restart Claude Code if it's running
+- Configure Claude Code hooks (per-repository in `.claude/settings.json`)
+- Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
+- Offer to automatically restart editors if they're running
 
 ## Usage
 
@@ -128,6 +129,30 @@ The `prepare-commit-msg` Git hook:
 4. Appends them to the commit message
 
 The hook chains to any previously configured hooks, so it won't interfere with existing Git workflows.
+
+## Editor Support
+
+Aiki currently supports:
+
+### Claude Code
+- **Hook type**: PostToolUse hooks
+- **Configuration**: Per-repository in `.claude/settings.json`
+- **Installation**: Automatic during `aiki init`
+- **Scope**: Each repository has its own configuration
+
+### Cursor
+- **Hook type**: `afterFileEdit` hooks
+- **Configuration**: Global user-level in `~/.cursor/hooks.json`
+- **Installation**: Automatic during `aiki init`
+- **Scope**: Configured once globally, works for all projects
+
+### Hook Preservation
+
+Aiki preserves existing hooks:
+- **Claude Code**: Preserves existing marketplace configs and plugin settings
+- **Cursor**: Appends to hook arrays, so existing `afterFileEdit` hooks continue to work
+
+Since Cursor hooks are global, you only need to restart Cursor once after your first `aiki init` - subsequent projects will automatically have Cursor support.
 
 ## Architecture
 

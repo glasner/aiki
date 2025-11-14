@@ -33,6 +33,9 @@ enum Commands {
         /// Record change from Claude Code
         #[arg(long)]
         claude_code: bool,
+        /// Record change from Cursor
+        #[arg(long)]
+        cursor: bool,
         /// Run synchronously (for testing - waits for background thread)
         #[arg(long)]
         sync: bool,
@@ -59,11 +62,17 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => init_command(),
-        Commands::RecordChange { claude_code, sync } => {
+        Commands::RecordChange {
+            claude_code,
+            cursor,
+            sync,
+        } => {
             if claude_code {
                 record_change::record_change(provenance::AgentType::ClaudeCode, sync)
+            } else if cursor {
+                record_change::record_change(provenance::AgentType::Cursor, sync)
             } else {
-                eprintln!("Error: Agent type flag required (e.g., --claude-code)");
+                eprintln!("Error: Agent type flag required (e.g., --claude-code, --cursor)");
                 std::process::exit(1);
             }
         }
@@ -142,17 +151,31 @@ fn init_command() -> Result<()> {
     // Install Claude Code hooks
     config::install_claude_code_hooks(&repo_root)?;
 
+    // Install Cursor hooks
+    config::install_cursor_hooks(&repo_root)?;
+
     println!("\n✓ Aiki initialized successfully!");
     println!("\nNext steps:");
     println!("  • Your AI changes will now be automatically tracked");
     println!("  • Git commits will automatically include AI co-authors");
 
-    // Check if Claude Code is running and offer to restart
-    if is_claude_code_running() {
+    // Check if editors are running and offer to restart
+    let claude_running = is_claude_code_running();
+    let cursor_running = is_cursor_running();
+
+    if claude_running || cursor_running {
+        let editors_text = match (claude_running, cursor_running) {
+            (true, true) => "Claude Code and Cursor are",
+            (true, false) => "Claude Code is",
+            (false, true) => "Cursor is",
+            (false, false) => unreachable!(),
+        };
+
         println!(
-            "\n⚠️  Claude Code is currently running and needs to restart to activate the hooks."
+            "\n⚠️  {} currently running and need to restart to activate hooks.",
+            editors_text
         );
-        print!("   Would you like to restart Claude Code now? (y/N): ");
+        print!("   Would you like to restart them now? (y/N): ");
         io::stdout().flush().ok();
 
         let stdin = io::stdin();
@@ -161,16 +184,27 @@ fn init_command() -> Result<()> {
 
         if response.trim().eq_ignore_ascii_case("y") || response.trim().eq_ignore_ascii_case("yes")
         {
-            println!("\n   Restarting Claude Code...");
-            restart_claude_code()?;
-            println!("   ✓ Claude Code restarted successfully");
+            if claude_running {
+                println!("\n   Restarting Claude Code...");
+                restart_claude_code()?;
+                println!("   ✓ Claude Code restarted successfully");
+            }
+            if cursor_running {
+                println!("\n   Note: Cursor must be restarted manually:");
+                println!("   • macOS: Cmd+Q then reopen");
+                println!("   • Linux/Windows: Close and reopen the application");
+            }
         } else {
-            println!("\n   Please restart Claude Code manually when ready:");
-            println!("   • macOS: Cmd+Q then reopen");
-            println!("   • Linux/Windows: Close and reopen the application");
+            println!("\n   Please restart editors manually when ready:");
+            if claude_running {
+                println!("   • Claude Code: Cmd+Q (macOS) or close and reopen");
+            }
+            if cursor_running {
+                println!("   • Cursor: Cmd+Q (macOS) or close and reopen");
+            }
         }
     } else {
-        println!("\n   If using Claude Code, restart it when you start it to activate the hooks");
+        println!("\n   Restart your AI editor when you open it to activate the hooks");
     }
 
     Ok(())
@@ -290,6 +324,17 @@ fn is_claude_code_running() -> bool {
     sys.processes().values().any(|process| {
         let name = process.name().to_string_lossy().to_lowercase();
         name.contains("claude") && (name.contains("code") || name == "claude")
+    })
+}
+
+/// Check if Cursor is currently running
+fn is_cursor_running() -> bool {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    sys.processes().values().any(|process| {
+        let name = process.name().to_string_lossy().to_lowercase();
+        name.contains("cursor")
     })
 }
 

@@ -17,6 +17,7 @@ pub struct AgentInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentType {
     ClaudeCode,
+    Cursor,
     Unknown,
 }
 
@@ -97,6 +98,7 @@ impl ProvenanceRecord {
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
             AgentType::ClaudeCode => "claude-code",
+            AgentType::Cursor => "cursor",
             AgentType::Unknown => "unknown",
         };
 
@@ -154,6 +156,7 @@ impl ProvenanceRecord {
         // Extract and parse required fields
         let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
             Some("claude-code") => AgentType::ClaudeCode,
+            Some("cursor") => AgentType::Cursor,
             Some("unknown") => AgentType::Unknown,
             _ => return Err(anyhow::anyhow!("Missing or invalid 'agent' field")),
         };
@@ -585,5 +588,65 @@ mod tests {
 
         let result = ProvenanceRecord::from_description(description);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cursor_agent_type_serialization() {
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::Cursor,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "cursor-session-123".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+        assert!(description.contains("agent=cursor"));
+        assert!(description.contains("session=cursor-session-123"));
+    }
+
+    #[test]
+    fn test_cursor_agent_type_deserialization() {
+        let description = "[aiki]\n\
+            agent=cursor\n\
+            session=cursor-test-session\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            [/aiki]";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+        let record = result.unwrap();
+        assert!(matches!(record.agent.agent_type, AgentType::Cursor));
+        assert_eq!(record.session_id, "cursor-test-session");
+    }
+
+    #[test]
+    fn test_cursor_agent_type_round_trip() {
+        let original = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::Cursor,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: "cursor-roundtrip".to_string(),
+            tool_name: "Write".to_string(),
+        };
+
+        let description = original.to_description();
+        let parsed = ProvenanceRecord::from_description(&description)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(parsed.agent.agent_type, AgentType::Cursor));
+        assert_eq!(parsed.session_id, original.session_id);
+        assert_eq!(parsed.tool_name, original.tool_name);
     }
 }
