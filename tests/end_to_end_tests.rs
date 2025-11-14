@@ -4,7 +4,6 @@ use assert_cmd::Command;
 use common::{init_git_repo, jj_available};
 use predicates::prelude::*;
 use std::fs;
-use std::path::PathBuf;
 use std::time::Instant;
 use tempfile::tempdir;
 
@@ -27,22 +26,7 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         "Git repository not created"
     );
 
-    // Step 2: Copy plugin directory to test repo
-    let source_plugin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("claude-code-plugin");
-    let dest_plugin = repo_path.join("claude-code-plugin");
-
-    if source_plugin.exists() {
-        copy_dir_all(&source_plugin, &dest_plugin).expect("Failed to copy plugin directory");
-    } else {
-        eprintln!("Warning: Plugin directory not found at {:?}", source_plugin);
-        eprintln!("Creating minimal plugin structure for test");
-        create_minimal_plugin(&dest_plugin);
-    }
-
-    // Step 3: Run aiki init
+    // Step 2: Run aiki init (no plugin copying needed - using global hooks)
     let mut cmd = Command::cargo_bin("aiki").unwrap();
     cmd.current_dir(repo_path).arg("init");
 
@@ -50,80 +34,30 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         .success()
         .stdout(predicate::str::contains("Initializing Aiki"))
         .stdout(predicate::str::contains("✓ Initialized JJ repository"))
-        .stdout(predicate::str::contains("✓ Created .aiki directory"))
-        .stdout(predicate::str::contains("✓ Configured Claude Code plugin"))
-        .stdout(predicate::str::contains("✓ Aiki initialized successfully"));
+        .stdout(predicate::str::contains(
+            "✓ Repository initialized successfully",
+        ));
 
-    // Step 4: Verify directory structure created
+    // Step 4: Verify JJ was initialized
     assert!(
         repo_path.join(".jj").exists(),
         "JJ repository not initialized"
     );
+
+    // Step 5: Verify Git config points to global hooks
+    let git_config_output = std::process::Command::new("git")
+        .args(&["config", "core.hooksPath"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to check git config");
+    let hooks_path = String::from_utf8_lossy(&git_config_output.stdout);
     assert!(
-        repo_path.join(".aiki").exists(),
-        ".aiki directory not created"
-    );
-    assert!(
-        repo_path.join(".aiki/cache").exists(),
-        ".aiki/cache not created"
-    );
-    assert!(
-        repo_path.join(".aiki/logs").exists(),
-        ".aiki/logs not created"
-    );
-    assert!(
-        repo_path.join(".aiki/tmp").exists(),
-        ".aiki/tmp not created"
-    );
-    assert!(
-        repo_path.join(".aiki/config.toml").exists(),
-        "config.toml not created"
+        hooks_path.contains(".aiki/githooks"),
+        "Git hooks path should point to global hooks"
     );
 
-    // Step 5: Verify Claude Code plugin configuration
-    let settings_file = repo_path.join(".claude/settings.json");
-    assert!(settings_file.exists(), ".claude/settings.json not created");
-
-    let settings_content = fs::read_to_string(&settings_file).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(&settings_content).unwrap();
-
-    assert!(
-        settings.get("extraKnownMarketplaces").is_some(),
-        "extraKnownMarketplaces not configured"
-    );
-    assert!(
-        settings["extraKnownMarketplaces"].get("aiki").is_some(),
-        "aiki marketplace not configured"
-    );
-    assert_eq!(
-        settings["extraKnownMarketplaces"]["aiki"]["source"]["source"],
-        "directory"
-    );
-    assert_eq!(
-        settings["extraKnownMarketplaces"]["aiki"]["source"]["path"],
-        "./claude-code-plugin"
-    );
-
-    assert!(
-        settings.get("enabledPlugins").is_some(),
-        "enabledPlugins not configured"
-    );
-    assert_eq!(settings["enabledPlugins"]["aiki@aiki"], true);
-
-    // Step 6: Verify plugin directory structure
-    assert!(
-        dest_plugin.exists(),
-        "Plugin directory not found at {:?}",
-        dest_plugin
-    );
-    assert!(
-        dest_plugin.join(".claude-plugin/plugin.json").exists(),
-        "plugin.json not found"
-    );
-    assert!(
-        dest_plugin.join("hooks/hooks.json").exists(),
-        "hooks.json not found"
-    );
+    // Note: In the new architecture, .aiki directory is only created if there's a previous hooks path
+    // Plugin configuration is now global (in ~/.claude/settings.json) not per-repo
 
     // Step 7: Create and track a test file
     let test_file = repo_path.join("test.rs");
@@ -314,75 +248,13 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     );
 
     println!("✅ End-to-end test passed!");
-    println!("  ✓ aiki init created all necessary files");
-    println!("  ✓ Plugin configuration is correct");
+    println!("  ✓ aiki init configured repository correctly");
+    println!("  ✓ JJ repository initialized");
+    println!("  ✓ Git hooks configured to use global hooks");
     println!("  ✓ File was edited: test.rs");
     println!("  ✓ record-change completed successfully");
     println!("  ✓ Provenance metadata embedded in parent change description");
     println!("  ✓ Metadata format validated");
     println!("  ✓ File content verified: {:?}", final_content.trim());
     println!("  ✓ jj new created new working copy change");
-}
-
-/// Helper to recursively copy a directory
-fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let dst_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&entry.path(), &dst_path)?;
-        } else {
-            fs::copy(entry.path(), dst_path)?;
-        }
-    }
-    Ok(())
-}
-
-/// Create minimal plugin structure for testing
-fn create_minimal_plugin(plugin_dir: &std::path::Path) {
-    let plugin_json_dir = plugin_dir.join(".claude-plugin");
-    let hooks_dir = plugin_dir.join("hooks");
-
-    fs::create_dir_all(&plugin_json_dir).unwrap();
-    fs::create_dir_all(&hooks_dir).unwrap();
-
-    // Create plugin.json
-    let plugin_json = serde_json::json!({
-        "name": "aiki",
-        "version": "0.1.0",
-        "description": "AI code provenance tracking",
-        "author": {"name": "Aiki Team"},
-        "hooks": "./hooks/hooks.json"
-    });
-    fs::write(
-        plugin_json_dir.join("plugin.json"),
-        serde_json::to_string_pretty(&plugin_json).unwrap(),
-    )
-    .unwrap();
-
-    // Create hooks.json
-    let hooks_json = serde_json::json!({
-        "description": "Track AI code changes",
-        "hooks": {
-            "PostToolUse": [
-                {
-                    "matcher": "Edit|Write",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "aiki record-change --claude-code",
-                            "timeout": 5
-                        }
-                    ]
-                }
-            ]
-        }
-    });
-    fs::write(
-        hooks_dir.join("hooks.json"),
-        serde_json::to_string_pretty(&hooks_json).unwrap(),
-    )
-    .unwrap();
 }

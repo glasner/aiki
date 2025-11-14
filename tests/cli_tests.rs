@@ -147,12 +147,13 @@ fn test_init_already_initialized() {
 
     cmd2.assert()
         .success()
-        .stdout(predicate::str::contains("Aiki is already initialized"));
+        .stdout(predicate::str::contains("already initialized"));
 }
 
 #[test]
 fn test_init_creates_aiki_directory_structure() {
-    // Test that init creates the proper .aiki directory structure
+    // Test that init configures the repository correctly
+    // Note: In the new architecture, .aiki directory is only created if there's a previous hooks path
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Initialize a proper Git repository
@@ -162,22 +163,21 @@ fn test_init_creates_aiki_directory_structure() {
     cmd.current_dir(temp_dir.path());
     cmd.arg("init");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("✓ Created .aiki directory"));
+    cmd.assert().success().stdout(predicate::str::contains(
+        "✓ Repository initialized successfully",
+    ));
 
-    // Verify directory structure
-    assert!(temp_dir.path().join(".aiki").exists());
-    assert!(temp_dir.path().join(".aiki/cache").exists());
-    assert!(temp_dir.path().join(".aiki/logs").exists());
-    assert!(temp_dir.path().join(".aiki/tmp").exists());
-    assert!(temp_dir.path().join(".aiki/config.toml").exists());
-    assert!(temp_dir.path().join(".aiki/cache/index.json").exists());
+    // Verify JJ was initialized
+    assert!(temp_dir.path().join(".jj").exists());
 
-    // Verify .gitignore was updated
-    assert!(temp_dir.path().join(".gitignore").exists());
-    let gitignore = std::fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
-    assert!(gitignore.contains(".aiki/"));
+    // Verify Git config points to global hooks
+    let output = Command::new("git")
+        .args(&["config", "core.hooksPath"])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    let hooks_path = String::from_utf8_lossy(&output.stdout);
+    assert!(hooks_path.contains(".aiki/githooks"));
 }
 
 #[test]
@@ -206,8 +206,16 @@ fn test_init_with_existing_jj() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("✓ Found existing JJ repository"))
-        .stdout(predicate::str::contains("✓ Aiki initialized successfully"));
+        .stdout(predicate::str::contains(
+            "✓ Repository initialized successfully",
+        ));
 
-    // Verify .aiki directory was created
-    assert!(temp_dir.path().join(".aiki").exists());
+    // Verify Git config points to global hooks
+    let output = Command::new("git")
+        .args(&["config", "core.hooksPath"])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    let hooks_path = String::from_utf8_lossy(&output.stdout);
+    assert!(hooks_path.contains(".aiki/githooks"));
 }

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -77,6 +78,10 @@ impl Default for AikiConfig {
 }
 
 /// Configure git to use aiki's hooks directory
+///
+/// DEPRECATED: Use global hooks in ~/.aiki/githooks instead
+/// This function is kept for compatibility with existing installations
+#[deprecated(note = "Use global hooks via `aiki hooks install` instead")]
 pub fn configure_git_hooks_path(repo_root: &Path) -> Result<()> {
     // Set core.hooksPath to .aiki/githooks
     let output = Command::new("git")
@@ -96,8 +101,10 @@ pub fn configure_git_hooks_path(repo_root: &Path) -> Result<()> {
 
 /// Install Git hooks for automatic co-author attribution
 ///
+/// DEPRECATED: Use global hooks in ~/.aiki/githooks instead
 /// This reads the hook template, replaces __PREVIOUS_HOOK_PATH__ with the saved
 /// previous hooks path, and writes it to .aiki/githooks/prepare-commit-msg.
+#[deprecated(note = "Use global hooks via `aiki hooks install` instead")]
 pub fn install_git_hooks(repo_root: &Path) -> Result<()> {
     let aiki_dir = repo_root.join(".aiki");
     let githooks_dir = aiki_dir.join("githooks");
@@ -171,6 +178,10 @@ pub fn save_previous_hooks_path(repo_root: &Path) -> Result<()> {
 }
 
 /// Initialize the .aiki directory structure and configuration
+///
+/// DEPRECATED: The new architecture uses minimal per-repo state
+/// Only .aiki/.previous_hooks_path is created when needed
+#[deprecated(note = "Use minimal .aiki directory - only create when needed")]
 pub fn initialize_aiki_directory(repo_root: &Path) -> Result<()> {
     let aiki_dir = repo_root.join(".aiki");
 
@@ -258,6 +269,10 @@ fn update_gitignore_for_runtime(repo_root: &Path) -> Result<()> {
 }
 
 /// Install Claude Code plugin configuration for provenance tracking
+///
+/// DEPRECATED: Use global hooks in ~/.claude/settings.json instead
+/// This per-repo plugin approach is replaced by global hooks
+#[deprecated(note = "Use global hooks via `aiki hooks install` instead")]
 pub fn install_claude_code_hooks(repo_root: &Path) -> Result<()> {
     let settings_dir = repo_root.join(".claude");
     let settings_file = settings_dir.join("settings.json");
@@ -307,9 +322,13 @@ pub fn install_claude_code_hooks(repo_root: &Path) -> Result<()> {
 
 /// Install Cursor hooks for provenance tracking
 ///
+/// DEPRECATED: Use install_cursor_hooks_global() instead
+/// This function is kept for compatibility but uses old hook configuration
+///
 /// Unlike Claude Code hooks (per-repo), Cursor hooks are global (user-level).
 /// Cursor hook events accept arrays of commands, so we can safely append without
 /// overwriting existing hooks.
+#[deprecated(note = "Use install_cursor_hooks_global() instead")]
 pub fn install_cursor_hooks(_repo_root: &Path) -> Result<()> {
     // Get user home directory
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
@@ -375,6 +394,267 @@ pub fn install_cursor_hooks(_repo_root: &Path) -> Result<()> {
     println!("  → Cursor must be restarted to activate hooks");
 
     Ok(())
+}
+
+/// Get the absolute path to the aiki binary
+pub fn get_aiki_binary_path() -> Result<String> {
+    let output = Command::new("which")
+        .arg("aiki")
+        .output()
+        .context("Failed to run 'which aiki'")?;
+
+    if output.status.success() {
+        let path = String::from_utf8(output.stdout)
+            .context("Invalid UTF-8 in aiki path")?
+            .trim()
+            .to_string();
+        return Ok(path);
+    }
+
+    // Fallback: try to get the current executable path
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(path_str) = current_exe.to_str() {
+            eprintln!(
+                "Note: Using current executable path (aiki not in PATH): {}",
+                path_str
+            );
+            return Ok(path_str.to_string());
+        }
+    }
+
+    anyhow::bail!(
+        "Could not find 'aiki' binary in PATH.\n\
+         Please install aiki or ensure it's in your PATH:\n\
+         • cargo install --path .\n\
+         • Or add the target directory to PATH"
+    );
+}
+
+/// Install global Git hooks in ~/.aiki/githooks/
+pub fn install_global_git_hooks() -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let githooks_dir = home_dir.join(".aiki/githooks");
+
+    // Create directory if it doesn't exist
+    fs::create_dir_all(&githooks_dir).context("Failed to create ~/.aiki/githooks directory")?;
+
+    // Read hook template (embedded in binary)
+    let template = include_str!("../templates/prepare-commit-msg.sh");
+
+    // For global hook, we read the previous path at runtime from .aiki/.previous_hooks_path
+    // The template already handles this - we replace the placeholder with a shell command
+    let hook_content = template.replace(
+        "PREVIOUS_HOOK=\"__PREVIOUS_HOOK_PATH__\"",
+        "PREVIOUS_HOOK=\"$(cat .aiki/.previous_hooks_path 2>/dev/null || echo '')\"",
+    );
+
+    let hook_file = githooks_dir.join("prepare-commit-msg");
+    fs::write(&hook_file, hook_content).context("Failed to write prepare-commit-msg hook")?;
+
+    // Make hook executable (Unix/macOS/Linux)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_file)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_file, perms)?;
+    }
+
+    println!("✓ Installed Git hooks at {}", githooks_dir.display());
+    Ok(())
+}
+
+/// Install global Claude Code hooks in ~/.claude/settings.json
+pub fn install_claude_code_hooks_global() -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let settings_path = home_dir.join(".claude/settings.json");
+    let aiki_path = get_aiki_binary_path()?;
+
+    // Create ~/.claude if it doesn't exist
+    if let Some(parent) = settings_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create ~/.claude directory")?;
+    }
+
+    // Load existing settings or create new
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content =
+            fs::read_to_string(&settings_path).context("Failed to read ~/.claude/settings.json")?;
+        serde_json::from_str(&content).context("Failed to parse ~/.claude/settings.json")?
+    } else {
+        json!({})
+    };
+
+    // Ensure hooks object exists
+    if settings.get("hooks").is_none() {
+        settings["hooks"] = json!({});
+    }
+
+    // SessionStart hook for auto-initialization
+    settings["hooks"]["SessionStart"] = json!([{
+        "matcher": "startup",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} init --quiet", aiki_path),
+            "timeout": 10
+        }]
+    }]);
+
+    // PostToolUse hook for change tracking
+    settings["hooks"]["PostToolUse"] = json!([{
+        "matcher": "Edit|Write",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} record-change --claude-code", aiki_path),
+            "timeout": 5
+        }]
+    }]);
+
+    // Write updated settings
+    let content =
+        serde_json::to_string_pretty(&settings).context("Failed to serialize settings.json")?;
+    fs::write(&settings_path, content).context("Failed to write ~/.claude/settings.json")?;
+
+    println!(
+        "✓ Installed Claude Code hooks at {}",
+        settings_path.display()
+    );
+    println!("  - SessionStart: Auto-initialize repositories");
+    println!("  - PostToolUse: Track AI-assisted changes");
+
+    Ok(())
+}
+
+/// Install global Cursor hooks in ~/.cursor/hooks.json
+pub fn install_cursor_hooks_global() -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let hooks_path = home_dir.join(".cursor/hooks.json");
+    let aiki_path = get_aiki_binary_path()?;
+
+    // Create ~/.cursor if it doesn't exist
+    if let Some(parent) = hooks_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create ~/.cursor directory")?;
+    }
+
+    // Read existing hooks or create new
+    let mut hooks: serde_json::Value = if hooks_path.exists() {
+        let content =
+            fs::read_to_string(&hooks_path).context("Failed to read ~/.cursor/hooks.json")?;
+        serde_json::from_str(&content).context("Failed to parse ~/.cursor/hooks.json")?
+    } else {
+        json!({
+            "version": 1,
+            "hooks": {}
+        })
+    };
+
+    // Ensure hooks object exists
+    if hooks.get("hooks").is_none() {
+        hooks["hooks"] = json!({});
+    }
+
+    // beforeSubmitPrompt hook for auto-initialization
+    let before_submit = hooks["hooks"]["beforeSubmitPrompt"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    let aiki_init_hook = json!({
+        "command": format!("{} init --quiet", aiki_path)
+    });
+
+    // Check if already installed
+    let init_already_installed = before_submit.iter().any(|hook| {
+        hook.get("command")
+            .and_then(|c| c.as_str())
+            .map(|c| c.contains("aiki init"))
+            .unwrap_or(false)
+    });
+
+    if !init_already_installed {
+        let mut new_hooks = before_submit;
+        new_hooks.push(aiki_init_hook);
+        hooks["hooks"]["beforeSubmitPrompt"] = json!(new_hooks);
+    }
+
+    // afterFileEdit hook for change tracking
+    let after_file_edit = hooks["hooks"]["afterFileEdit"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    let aiki_record_hook = json!({
+        "command": format!("{} record-change --cursor", aiki_path)
+    });
+
+    // Check if already installed
+    let record_already_installed = after_file_edit.iter().any(|hook| {
+        hook.get("command")
+            .and_then(|c| c.as_str())
+            .map(|c| c.contains("aiki record-change"))
+            .unwrap_or(false)
+    });
+
+    if !record_already_installed {
+        let mut new_hooks = after_file_edit;
+        new_hooks.push(aiki_record_hook);
+        hooks["hooks"]["afterFileEdit"] = json!(new_hooks);
+    }
+
+    // Write updated hooks
+    let content = serde_json::to_string_pretty(&hooks).context("Failed to serialize hooks.json")?;
+    fs::write(&hooks_path, content).context("Failed to write ~/.cursor/hooks.json")?;
+
+    println!("✓ Installed Cursor hooks at {}", hooks_path.display());
+    println!("  - beforeSubmitPrompt: Auto-initialize repositories");
+    println!("  - afterFileEdit: Track AI-assisted changes");
+
+    Ok(())
+}
+
+/// Check if Claude Code is installed
+pub fn is_claude_code_installed() -> Result<bool> {
+    // Check if claude-code exists in PATH or common installation locations
+    if Command::new("which")
+        .arg("claude")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+
+    // Check macOS application
+    #[cfg(target_os = "macos")]
+    {
+        if std::path::Path::new("/Applications/Claude Code.app").exists() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Check if Cursor is installed
+pub fn is_cursor_installed() -> Result<bool> {
+    // Check if cursor exists in PATH
+    if Command::new("which")
+        .arg("cursor")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+
+    // Check macOS application
+    #[cfg(target_os = "macos")]
+    {
+        if std::path::Path::new("/Applications/Cursor.app").exists() {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]

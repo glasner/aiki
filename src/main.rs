@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use repo::RepoDetector;
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::fs;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use sysinfo::{ProcessesToUpdate, System};
 
@@ -26,7 +27,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize Aiki in the current repository
-    Init,
+    Init {
+        /// Only print error and warning messages (suppress normal output)
+        #[arg(short, long)]
+        quiet: bool,
+    },
+    /// Manage Aiki hooks
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommands,
+    },
     /// Record an AI-generated change (called by AI editor hooks)
     #[command(name = "record-change")]
     RecordChange {
@@ -57,11 +67,20 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum HooksCommands {
+    /// Install global hooks for AI editors
+    Install,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init => init_command(),
+        Commands::Init { quiet } => init_command(quiet),
+        Commands::Hooks { command } => match command {
+            HooksCommands::Install => hooks_install_command(),
+        },
         Commands::RecordChange {
             claude_code,
             cursor,
@@ -81,83 +100,25 @@ fn main() -> Result<()> {
     }
 }
 
-fn init_command() -> Result<()> {
-    // Get current directory
-    let current_dir = env::current_dir().context("Failed to get current directory")?;
-
-    // Detect repository
-    let detector = RepoDetector::new(&current_dir);
-
-    // Find the Git repository root
-    let repo_root = detector.find_repo_root()?;
-
-    println!("Initializing Aiki in: {}", repo_root.display());
-
-    // Check if .aiki directory already exists
-    let aiki_dir = repo_root.join(".aiki");
-    if aiki_dir.exists() {
-        println!("\nAiki is already initialized in this repository.");
-        return Ok(());
+fn hooks_install_command() -> Result<()> {
+    if !cfg!(target_os = "macos") && !cfg!(target_os = "linux") && !cfg!(target_os = "windows") {
+        eprintln!("Warning: Unsupported platform for automatic hook installation");
     }
 
-    // Check if JJ is already initialized
-    if RepoDetector::has_jj(&repo_root) {
-        println!("✓ Found existing JJ repository");
-    } else {
-        println!("Initializing JJ repository...");
-        // Create JJ workspace manager for the repository root
-        let workspace = jj::JJWorkspace::new(&repo_root);
+    println!("Installing Aiki global hooks...\n");
 
-        // Check if Git repository already exists
-        // If .git exists, use init_on_existing_git (external mode with colocated .git)
-        // If .git doesn't exist, use init_colocated (creates both .jj and .git)
-        // Both approaches create a colocated workspace where JJ and Git share the working copy
-        if repo_root.join(".git").exists() {
-            // Resolve .git path (handles both directories and worktree/submodule files)
-            let git_dir = RepoDetector::resolve_git_dir(&repo_root)
-                .context("Failed to resolve Git directory path")?;
+    // Install global Git hooks
+    config::install_global_git_hooks()?;
 
-            workspace
-                .init_with_git_dir(&git_dir)
-                .context("Failed to initialize JJ repository")?;
+    // Install all editor hooks
+    config::install_claude_code_hooks_global()?;
+    config::install_cursor_hooks_global()?;
 
-            // Import existing Git commits into JJ
-            println!("Importing Git history...");
-            workspace
-                .git_import()
-                .context("Failed to import Git history")?;
-            println!("✓ Imported Git history into JJ");
-        } else {
-            workspace
-                .init_colocated()
-                .context("Failed to initialize JJ repository")?;
-        }
-
-        println!("✓ Initialized JJ repository (colocated with Git)");
-    }
-
-    // Create .aiki directory structure and config
-    config::initialize_aiki_directory(&repo_root)?;
-
-    // Save previous git hooks path before installing aiki hooks
-    config::save_previous_hooks_path(&repo_root)?;
-
-    // Install Git hooks for co-author attribution
-    config::install_git_hooks(&repo_root)?;
-
-    // Configure git to use aiki's hooks directory
-    config::configure_git_hooks_path(&repo_root)?;
-
-    // Install Claude Code hooks
-    config::install_claude_code_hooks(&repo_root)?;
-
-    // Install Cursor hooks
-    config::install_cursor_hooks(&repo_root)?;
-
-    println!("\n✓ Aiki initialized successfully!");
-    println!("\nNext steps:");
-    println!("  • Your AI changes will now be automatically tracked");
-    println!("  • Git commits will automatically include AI co-authors");
+    println!("\n✓ Global hooks installed successfully!");
+    println!("\nRepositories will be automatically initialized when you:");
+    println!("  • Claude Code: Open a project");
+    println!("  • Cursor: Submit your first prompt");
+    println!("\nYour AI changes will now be tracked automatically.");
 
     // Check if editors are running and offer to restart
     let claude_running = is_claude_code_running();
@@ -176,9 +137,9 @@ fn init_command() -> Result<()> {
             editors_text
         );
         print!("   Would you like to restart them now? (y/N): ");
-        io::stdout().flush().ok();
+        std::io::stdout().flush().ok();
 
-        let stdin = io::stdin();
+        let stdin = std::io::stdin();
         let mut response = String::new();
         stdin.lock().read_line(&mut response).ok();
 
@@ -204,7 +165,126 @@ fn init_command() -> Result<()> {
             }
         }
     } else {
-        println!("\n   Restart your AI editor when you open it to activate the hooks");
+        println!("\n💡 Restart your editor when you open it to activate the hooks.");
+    }
+
+    Ok(())
+}
+
+fn init_command(quiet: bool) -> Result<()> {
+    // Get current directory
+    let current_dir = env::current_dir().context("Failed to get current directory")?;
+
+    // Detect repository
+    let detector = RepoDetector::new(&current_dir);
+
+    // Find the Git repository root
+    let repo_root = detector.find_repo_root()?;
+
+    // Check if already initialized by looking at git config
+    let git_hooks_path = std::process::Command::new("git")
+        .args(["config", "core.hooksPath"])
+        .current_dir(&repo_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    // Check if pointing to global hooks
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let global_hooks = home_dir.join(".aiki/githooks");
+
+    if let Some(ref hooks_path) = git_hooks_path {
+        if hooks_path.contains(".aiki/githooks") {
+            if quiet {
+                // Silent success for auto mode
+                return Ok(());
+            }
+            println!("Repository already initialized at {}", repo_root.display());
+            return Ok(());
+        }
+    }
+
+    if !quiet {
+        println!("Initializing Aiki in: {}", repo_root.display());
+    }
+
+    // Check if JJ is already initialized
+    if RepoDetector::has_jj(&repo_root) {
+        if !quiet {
+            println!("✓ Found existing JJ repository");
+        }
+    } else {
+        if !quiet {
+            println!("Initializing JJ repository...");
+        }
+        // Create JJ workspace manager for the repository root
+        let workspace = jj::JJWorkspace::new(&repo_root);
+
+        // Check if Git repository already exists
+        // If .git exists, use init_on_existing_git (external mode with colocated .git)
+        // If .git doesn't exist, use init_colocated (creates both .jj and .git)
+        // Both approaches create a colocated workspace where JJ and Git share the working copy
+        if repo_root.join(".git").exists() {
+            // Resolve .git path (handles both directories and worktree/submodule files)
+            let git_dir = RepoDetector::resolve_git_dir(&repo_root)
+                .context("Failed to resolve Git directory path")?;
+
+            workspace
+                .init_with_git_dir(&git_dir)
+                .context("Failed to initialize JJ repository")?;
+
+            // Import existing Git commits into JJ
+            if !quiet {
+                println!("Importing Git history...");
+            }
+            workspace
+                .git_import()
+                .context("Failed to import Git history")?;
+            if !quiet {
+                println!("✓ Imported Git history into JJ");
+            }
+        } else {
+            workspace
+                .init_colocated()
+                .context("Failed to initialize JJ repository")?;
+        }
+
+        if !quiet {
+            println!("✓ Initialized JJ repository (colocated with Git)");
+        }
+    }
+
+    // Create minimal .aiki directory (only if we need to save previous hooks path)
+    let aiki_dir = repo_root.join(".aiki");
+
+    // Save previous git hooks path before configuring global hooks
+    // Only create .aiki directory if there was a previous hooks path
+    if git_hooks_path.is_some() && git_hooks_path.as_ref().unwrap() != "" {
+        fs::create_dir_all(&aiki_dir).context("Failed to create .aiki directory")?;
+        config::save_previous_hooks_path(&repo_root)?;
+    }
+
+    // Configure git to use global hooks directory
+    let global_hooks_str = global_hooks.to_str().context("Invalid global hooks path")?;
+    std::process::Command::new("git")
+        .args(["config", "core.hooksPath", global_hooks_str])
+        .current_dir(&repo_root)
+        .output()
+        .context("Failed to set git config core.hooksPath")?;
+
+    if !quiet {
+        println!("✓ Configured Git hooks (→ {})", global_hooks.display());
+        println!("\n✓ Repository initialized successfully!");
+        println!("\nYour AI changes will now be tracked automatically.");
+        println!("Git commits will include AI co-authors.");
     }
 
     Ok(())
