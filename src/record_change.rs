@@ -12,32 +12,72 @@ use crate::provenance::{
 #[derive(Deserialize, Debug)]
 struct HookInput {
     session_id: String,
-    #[allow(dead_code)]
-    transcript_path: Option<String>,
-    cwd: String,
-    #[allow(dead_code)]
-    hook_event_name: String,
     tool_name: String,
-    tool_input: ToolInput,
-    #[allow(dead_code)]
-    tool_output: Option<String>,
 }
 
-/// Tool input data from Claude Code
-#[derive(Deserialize, Debug)]
-struct ToolInput {
-    file_path: String,
-}
-
-/// Handle the record-change command (called by AI editor hooks)
+/// Record a change with provenance metadata
 ///
-/// This command runs synchronously and executes:
-/// 1. Parse JSON input from stdin
-/// 2. Build provenance metadata
-/// 3. Run `jj describe -m` to add metadata to current change
-/// 4. Run `jj new` to create a new change for the next edit
-pub fn record_change(agent_type: AgentType, _sync: bool) -> Result<()> {
-    eprintln!("=== AIKI HOOK CALLED ===");
+/// This is the core provenance recording function, called from event handlers.
+/// It executes:
+/// 1. Build provenance metadata from parameters
+/// 2. Run `jj describe -m` to add metadata to current change
+/// 3. Run `jj new` to create a new change for the next edit
+///
+/// # Arguments
+/// * `agent_type` - The AI agent that made the change
+/// * `session_id` - Session identifier for grouping related changes
+/// * `tool_name` - Name of the tool that made the change (e.g., "Edit", "Write")
+pub fn record_change(agent_type: AgentType, session_id: &str, tool_name: &str) -> Result<()> {
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("=== RECORDING CHANGE ===");
+        eprintln!("Agent type: {:?}", agent_type);
+        eprintln!("Session ID: {}", session_id);
+        eprintln!("Tool: {}", tool_name);
+    }
+
+    // Get current working directory
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+
+    // Build provenance record (only metadata, jj knows the rest)
+    let provenance = ProvenanceRecord {
+        agent: AgentInfo {
+            agent_type,
+            version: None,
+            detected_at: chrono::Utc::now(),
+            confidence: AttributionConfidence::High,
+            detection_method: DetectionMethod::Hook,
+        },
+        session_id: session_id.to_string(),
+        tool_name: tool_name.to_string(),
+    };
+
+    // Convert provenance to description format
+    let description = provenance.to_description();
+
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("Description:\n{}", description);
+    }
+
+    // Run jj describe to add metadata to current change
+    run_jj_describe(&cwd, &description)?;
+
+    // Run jj new to create a new change for the next edit
+    run_jj_new(&cwd)?;
+
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("=== CHANGE RECORDED SUCCESSFULLY ===");
+    }
+
+    Ok(())
+}
+
+/// Legacy function for backward compatibility with old record-change command
+///
+/// This reads JSON from stdin and calls the new record_change function.
+/// Used only by the deprecated `aiki record-change` command.
+#[allow(dead_code)]
+pub fn record_change_legacy(agent_type: AgentType, _sync: bool) -> Result<()> {
+    eprintln!("=== AIKI HOOK CALLED (LEGACY) ===");
     eprintln!("Agent type: {:?}", agent_type);
 
     // Read JSON from stdin
@@ -47,48 +87,17 @@ pub fn record_change(agent_type: AgentType, _sync: bool) -> Result<()> {
         .read_to_string(&mut buffer)
         .context("Failed to read JSON from stdin")?;
 
-    eprintln!("Hook input JSON length: {} bytes", buffer.len());
-
     // Parse hook data
     let hook_data: HookInput =
         serde_json::from_str(&buffer).context("Failed to parse hook JSON")?;
 
     eprintln!("Hook data parsed successfully");
     eprintln!("  Session ID: {}", hook_data.session_id);
-    eprintln!("  CWD: {}", hook_data.cwd);
     eprintln!("  Tool: {}", hook_data.tool_name);
-    eprintln!("  File: {}", hook_data.tool_input.file_path);
 
-    // Build provenance record (only metadata, jj knows the rest)
-    eprintln!("Building provenance record...");
-    let provenance = ProvenanceRecord {
-        agent: AgentInfo {
-            agent_type,
-            version: None,
-            detected_at: chrono::Utc::now(),
-            confidence: AttributionConfidence::High,
-            detection_method: DetectionMethod::Hook,
-        },
-        session_id: hook_data.session_id.clone(),
-        tool_name: hook_data.tool_name.clone(),
-    };
+    // Call new record_change function
+    record_change(agent_type, &hook_data.session_id, &hook_data.tool_name)?;
 
-    eprintln!("Provenance record built");
-    eprintln!("  Agent: {:?}", provenance.agent.agent_type);
-    eprintln!("  Session: {}", provenance.session_id);
-    eprintln!("  Tool: {}", provenance.tool_name);
-
-    // Convert provenance to description format
-    let description = provenance.to_description();
-    eprintln!("Setting description:\n{}", description);
-
-    // Run jj describe to add metadata to current change
-    run_jj_describe(Path::new(&hook_data.cwd), &description)?;
-
-    // Run jj new to create a new change for the next edit
-    run_jj_new(Path::new(&hook_data.cwd))?;
-
-    eprintln!("=== AIKI HOOK COMPLETED SUCCESSFULLY ===");
     Ok(())
 }
 
@@ -260,14 +269,7 @@ mod tests {
     fn test_hook_input_parsing_valid() {
         let json = r#"{
             "session_id": "test-123",
-            "transcript_path": "/path/to/transcript",
-            "cwd": "/tmp/repo",
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Edit",
-            "tool_input": {
-                "file_path": "/tmp/repo/file.txt"
-            },
-            "tool_output": "Success"
+            "tool_name": "Edit"
         }"#;
 
         let result: Result<HookInput, _> = serde_json::from_str(json);
@@ -275,21 +277,14 @@ mod tests {
 
         let hook_input = result.unwrap();
         assert_eq!(hook_input.session_id, "test-123");
-        assert_eq!(hook_input.cwd, "/tmp/repo");
         assert_eq!(hook_input.tool_name, "Edit");
-        assert_eq!(hook_input.tool_input.file_path, "/tmp/repo/file.txt");
     }
 
     #[test]
     fn test_hook_input_parsing_missing_required_field() {
         // Missing session_id
         let json = r#"{
-            "cwd": "/tmp/repo",
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Edit",
-            "tool_input": {
-                "file_path": "/tmp/repo/file.txt"
-            }
+            "tool_name": "Edit"
         }"#;
 
         let result: Result<HookInput, _> = serde_json::from_str(json);
@@ -298,15 +293,12 @@ mod tests {
 
     #[test]
     fn test_hook_input_parsing_optional_fields() {
-        // transcript_path and tool_output are optional
+        // Extra fields should be ignored by serde
         let json = r#"{
             "session_id": "test-456",
-            "cwd": "/tmp/repo",
-            "hook_event_name": "PostToolUse",
             "tool_name": "Write",
-            "tool_input": {
-                "file_path": "/tmp/repo/new_file.txt"
-            }
+            "extra_field": "ignored",
+            "another_extra": 123
         }"#;
 
         let result: Result<HookInput, _> = serde_json::from_str(json);
@@ -314,7 +306,6 @@ mod tests {
 
         let hook_input = result.unwrap();
         assert_eq!(hook_input.session_id, "test-456");
-        assert!(hook_input.transcript_path.is_none());
-        assert!(hook_input.tool_output.is_none());
+        assert_eq!(hook_input.tool_name, "Write");
     }
 }
