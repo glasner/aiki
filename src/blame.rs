@@ -211,12 +211,25 @@ impl BlameCommand {
     }
 
     /// Format blame output in git-blame style
-    pub fn format_blame(&self, attributions: &[LineAttribution]) -> String {
+    /// Optionally filter by agent type
+    pub fn format_blame(
+        &self,
+        attributions: &[LineAttribution],
+        agent_filter: Option<AgentType>,
+    ) -> String {
         let mut output = String::new();
 
         for attr in attributions {
+            // Apply agent filter if specified
+            if let Some(ref filter) = agent_filter {
+                if attr.agent_type != *filter {
+                    continue;
+                }
+            }
+
             // Format: commit_id (agent session confidence) line_num| line_text
-            let agent_str = format!("{:?}", attr.agent_type);
+            // Use Display trait for human-friendly agent names
+            let agent_str = format!("{}", attr.agent_type);
             let session_str = attr
                 .session_id
                 .as_ref()

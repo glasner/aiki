@@ -265,12 +265,12 @@ fn test_blame_shows_recorded_change() {
 
     // CRITICAL: Verify Claude Code attribution appears in the blame output
     // Format is: <commit_id> (<agent_type> <session_id> <confidence>) <line_num>| <line_text>
-    // The modified line (line 2) should show ClaudeCode attribution
+    // The modified line (line 2) should show Claude Code attribution
 
-    // Look for ClaudeCode agent type in the output
+    // Look for Claude Code agent type in the output (using Display format with space)
     assert!(
-        blame_output.contains("ClaudeCode"),
-        "Blame should show 'ClaudeCode' agent type. Output:\n{}",
+        blame_output.contains("Claude Code"),
+        "Blame should show 'Claude Code' agent type. Output:\n{}",
         blame_output
     );
 
@@ -289,7 +289,7 @@ fn test_blame_shows_recorded_change() {
     );
 
     println!("✅ Verified Claude Code attribution in blame output:");
-    println!("   ✓ Agent type: ClaudeCode");
+    println!("   ✓ Agent type: Claude Code");
     println!("   ✓ Session ID: test-session-123");
     println!("   ✓ Confidence: High");
 }

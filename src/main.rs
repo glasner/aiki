@@ -36,6 +36,12 @@ enum Commands {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Diagnose and fix configuration issues
+    Doctor {
+        /// Automatically fix detected issues
+        #[arg(long)]
+        fix: bool,
+    },
     /// Manage Aiki hooks
     Hooks {
         #[command(subcommand)]
@@ -58,6 +64,9 @@ enum Commands {
     Blame {
         /// File to show blame for
         file: std::path::PathBuf,
+        /// Filter by agent type (e.g., claude-code, cursor)
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Show authors who contributed to changes
     Authors {
@@ -75,16 +84,6 @@ enum Commands {
 enum HooksCommands {
     /// Install global hooks for AI editors
     Install,
-    /// Show status of all installed hooks
-    Status,
-    /// Diagnose hook configuration issues
-    Doctor {
-        /// Automatically fix detected issues
-        #[arg(long)]
-        fix: bool,
-    },
-    /// List available vendor integrations
-    List,
     /// Handle vendor event (called by all hooks)
     #[command(hide = true)]
     Handle {
@@ -102,11 +101,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { quiet } => init_command(quiet),
+        Commands::Doctor { fix } => doctor_command(fix),
         Commands::Hooks { command } => match command {
             HooksCommands::Install => hooks_install_command(),
-            HooksCommands::Status => hooks_status_command(),
-            HooksCommands::Doctor { fix } => hooks_doctor_command(fix),
-            HooksCommands::List => hooks_list_command(),
             HooksCommands::Handle { agent, event } => {
                 let agent_type = parse_agent_type(&agent)?;
                 handle_event(agent_type, &event)
@@ -130,7 +127,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Blame { file } => blame_command(file),
+        Commands::Blame { file, agent } => blame_command(file, agent),
         Commands::Authors { changes, format } => authors_command(changes, format),
     }
 }
@@ -342,7 +339,7 @@ fn find_jj_workspace(start_dir: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-fn blame_command(file: std::path::PathBuf) -> Result<()> {
+fn blame_command(file: std::path::PathBuf, agent: Option<String>) -> Result<()> {
     // Get current directory
     let current_dir = env::current_dir().context("Failed to get current directory")?;
 
@@ -366,6 +363,12 @@ fn blame_command(file: std::path::PathBuf) -> Result<()> {
         .strip_prefix(&jj_root)
         .context("File is not in repository")?;
 
+    // Parse agent filter if provided
+    let agent_filter = match agent {
+        Some(agent_str) => Some(parse_agent_type(&agent_str)?),
+        None => None,
+    };
+
     // Create blame command
     let blame_cmd = blame::BlameCommand::new(jj_root);
 
@@ -375,7 +378,7 @@ fn blame_command(file: std::path::PathBuf) -> Result<()> {
         .context("Failed to generate blame information")?;
 
     // Format and print output
-    let output = blame_cmd.format_blame(&attributions);
+    let output = blame_cmd.format_blame(&attributions, agent_filter);
     print!("{}", output);
 
     Ok(())
@@ -528,45 +531,124 @@ fn handle_event(agent: provenance::AgentType, event: &str) -> Result<()> {
     }
 }
 
-/// Show status of all installed hooks
-fn hooks_status_command() -> Result<()> {
-    println!("Hook Status:\n");
+/// Diagnose and fix repository and hook configuration issues
+fn doctor_command(fix: bool) -> Result<()> {
+    let mut issues_found = 0;
+    let fixes_applied = 0;
 
-    // TODO: Implement full status checking
-    println!("Claude Code:");
-    println!("  Status: Not yet implemented");
-    println!();
-
-    println!("Cursor:");
-    println!("  Status: Not yet implemented");
-    println!();
-
-    println!("Git Hooks:");
-    println!("  Status: Not yet implemented");
-
-    Ok(())
-}
-
-/// Diagnose hook configuration issues
-fn hooks_doctor_command(fix: bool) -> Result<()> {
     if fix {
-        println!("Diagnosing and fixing hook issues...\n");
+        println!("Diagnosing and fixing issues...\n");
     } else {
-        println!("Diagnosing hook issues...\n");
+        println!("Checking Aiki health...\n");
     }
 
-    // TODO: Implement hook diagnostics
-    println!("Hook diagnostics not yet implemented");
+    // Check repository setup
+    println!("Repository:");
 
-    Ok(())
-}
+    let current_dir = env::current_dir().context("Failed to get current directory")?;
 
-/// List available vendor integrations
-fn hooks_list_command() -> Result<()> {
-    println!("Available Vendor Integrations:\n");
-    println!("  • Claude Code");
-    println!("  • Cursor");
-    println!("\nUse 'aiki hooks install' to install hooks for all vendors.");
+    // Check JJ
+    if RepoDetector::has_jj(&current_dir) {
+        println!("  ✓ JJ workspace initialized");
+    } else {
+        println!("  ✗ JJ workspace not found");
+        println!("    → Run: aiki init");
+        issues_found += 1;
+    }
+
+    // Check Git
+    if current_dir.join(".git").exists() {
+        println!("  ✓ Git repository detected");
+    } else {
+        println!("  ⚠ No Git repository (optional)");
+    }
+
+    // Check Aiki directory
+    let aiki_dir = current_dir.join(".aiki");
+    if aiki_dir.exists() {
+        println!("  ✓ Aiki directory exists");
+    } else {
+        println!("  ✗ Aiki directory missing");
+        println!("    → Run: aiki init");
+        issues_found += 1;
+    }
+
+    println!();
+
+    // Check global hooks
+    println!("Global Hooks:");
+
+    let home_dir = dirs::home_dir().context("Failed to get home directory")?;
+
+    // Check Git hooks
+    let git_hooks_dir = home_dir.join(".aiki/githooks");
+    if git_hooks_dir.exists() {
+        println!("  ✓ Git hooks installed (~/.aiki/githooks/)");
+    } else {
+        println!("  ✗ Git hooks missing");
+        println!("    → Run: aiki hooks install");
+        issues_found += 1;
+    }
+
+    // Check Claude Code hooks
+    let claude_settings = home_dir.join(".claude/settings.json");
+    if claude_settings.exists() {
+        println!("  ✓ Claude Code hooks configured");
+    } else {
+        println!("  ⚠ Claude Code hooks not configured");
+        println!("    → Run: aiki hooks install");
+    }
+
+    // Check Cursor hooks
+    let cursor_hooks = home_dir.join(".cursor/hooks.json");
+    if cursor_hooks.exists() {
+        println!("  ✓ Cursor hooks configured");
+    } else {
+        println!("  ⚠ Cursor hooks not configured");
+        println!("    → Run: aiki hooks install");
+    }
+
+    println!();
+
+    // Check local configuration (only if in a repo)
+    if current_dir.join(".git").exists() {
+        println!("Local Configuration:");
+
+        // Check git core.hooksPath
+        let output = std::process::Command::new("git")
+            .args(["config", "core.hooksPath"])
+            .current_dir(&current_dir)
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let hooks_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if hooks_path.contains(".aiki/githooks") {
+                    println!("  ✓ Git core.hooksPath configured");
+                } else {
+                    println!("  ⚠ Git core.hooksPath points elsewhere: {}", hooks_path);
+                }
+            } else {
+                println!("  ✗ Git core.hooksPath not set");
+                println!("    → Run: aiki init");
+                issues_found += 1;
+            }
+        }
+
+        println!();
+    }
+
+    // Summary
+    if issues_found == 0 {
+        println!("✓ All checks passed! Aiki is healthy.");
+    } else {
+        println!("Found {} issue(s).", issues_found);
+        if !fix {
+            println!("\nRun 'aiki doctor --fix' to automatically fix issues.");
+        } else if fixes_applied > 0 {
+            println!("\nFixed {} issue(s).", fixes_applied);
+        }
+    }
 
     Ok(())
 }
