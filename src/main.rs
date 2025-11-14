@@ -1,3 +1,4 @@
+mod authors;
 mod blame;
 mod config;
 mod jj;
@@ -9,7 +10,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use repo::RepoDetector;
 use std::env;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use sysinfo::{ProcessesToUpdate, System};
 
 #[derive(Parser)]
 #[command(name = "aiki")]
@@ -39,6 +42,16 @@ enum Commands {
         /// File to show blame for
         file: std::path::PathBuf,
     },
+    /// Show authors who contributed to changes
+    Authors {
+        /// Scope changes: "staged" for Git staging area, default is working copy (@)
+        #[arg(long)]
+        changes: Option<String>,
+
+        /// Output format: plain (default), git, json
+        #[arg(long, default_value = "plain")]
+        format: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -55,6 +68,7 @@ fn main() -> Result<()> {
             }
         }
         Commands::Blame { file } => blame_command(file),
+        Commands::Authors { changes, format } => authors_command(changes, format),
     }
 }
 
@@ -116,14 +130,48 @@ fn init_command() -> Result<()> {
     // Create .aiki directory structure and config
     config::initialize_aiki_directory(&repo_root)?;
 
+    // Save previous git hooks path before installing aiki hooks
+    config::save_previous_hooks_path(&repo_root)?;
+
+    // Install Git hooks for co-author attribution
+    config::install_git_hooks(&repo_root)?;
+
+    // Configure git to use aiki's hooks directory
+    config::configure_git_hooks_path(&repo_root)?;
+
     // Install Claude Code hooks
     config::install_claude_code_hooks(&repo_root)?;
 
     println!("\n✓ Aiki initialized successfully!");
     println!("\nNext steps:");
-    println!("  • Restart Claude Code to load the new hooks");
     println!("  • Your AI changes will now be automatically tracked");
-    println!("  • Run 'aiki status' to see tracked activity");
+    println!("  • Git commits will automatically include AI co-authors");
+
+    // Check if Claude Code is running and offer to restart
+    if is_claude_code_running() {
+        println!(
+            "\n⚠️  Claude Code is currently running and needs to restart to activate the hooks."
+        );
+        print!("   Would you like to restart Claude Code now? (y/N): ");
+        io::stdout().flush().ok();
+
+        let stdin = io::stdin();
+        let mut response = String::new();
+        stdin.lock().read_line(&mut response).ok();
+
+        if response.trim().eq_ignore_ascii_case("y") || response.trim().eq_ignore_ascii_case("yes")
+        {
+            println!("\n   Restarting Claude Code...");
+            restart_claude_code()?;
+            println!("   ✓ Claude Code restarted successfully");
+        } else {
+            println!("\n   Please restart Claude Code manually when ready:");
+            println!("   • macOS: Cmd+Q then reopen");
+            println!("   • Linux/Windows: Close and reopen the application");
+        }
+    } else {
+        println!("\n   If using Claude Code, restart it when you start it to activate the hooks");
+    }
 
     Ok(())
 }
@@ -180,6 +228,119 @@ fn blame_command(file: std::path::PathBuf) -> Result<()> {
     // Format and print output
     let output = blame_cmd.format_blame(&attributions);
     print!("{}", output);
+
+    Ok(())
+}
+
+fn authors_command(changes: Option<String>, format: String) -> Result<()> {
+    // Get current directory
+    let current_dir = env::current_dir().context("Failed to get current directory")?;
+
+    // Find JJ workspace root (look for .jj directory)
+    let jj_root = find_jj_workspace(&current_dir)
+        .context("Not in a JJ workspace. Run this command from within a JJ repository.")?;
+
+    // Parse scope
+    let scope = match changes.as_deref() {
+        Some("staged") => authors::AuthorScope::GitStaged,
+        Some(other) => {
+            anyhow::bail!("Unknown scope: '{}'. Supported values: 'staged'", other);
+        }
+        None => authors::AuthorScope::WorkingCopy,
+    };
+
+    // Parse format
+    let output_format = match format.as_str() {
+        "plain" => authors::OutputFormat::Plain,
+        "git" => authors::OutputFormat::Git,
+        "json" => authors::OutputFormat::Json,
+        other => {
+            anyhow::bail!(
+                "Unknown format: '{}'. Supported values: 'plain', 'git', 'json'",
+                other
+            );
+        }
+    };
+
+    // Create authors command
+    let authors_cmd = authors::AuthorsCommand::new(jj_root);
+
+    // Get authors
+    let output = authors_cmd
+        .get_authors(scope, output_format)
+        .context("Failed to get authors")?;
+
+    // Print to stdout
+    if !output.is_empty() {
+        print!("{}", output);
+    }
+
+    Ok(())
+}
+
+/// Check if Claude Code is currently running
+fn is_claude_code_running() -> bool {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    // Claude Code process names vary by platform:
+    // - macOS: "Claude Code" or "claude-code"
+    // - Linux: "claude-code" or "claude"
+    // - Windows: "Claude Code.exe" or "claude-code.exe"
+    sys.processes().values().any(|process| {
+        let name = process.name().to_string_lossy().to_lowercase();
+        name.contains("claude") && (name.contains("code") || name == "claude")
+    })
+}
+
+/// Restart Claude Code application
+fn restart_claude_code() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, use osascript to quit and reopen Claude Code
+        std::process::Command::new("osascript")
+            .args(["-e", "tell application \"Claude Code\" to quit"])
+            .output()
+            .context("Failed to quit Claude Code")?;
+
+        // Wait a moment for the app to fully quit
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        std::process::Command::new("open")
+            .args(["-a", "Claude Code"])
+            .spawn()
+            .context("Failed to reopen Claude Code")?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, kill the process and restart it
+        std::process::Command::new("pkill")
+            .arg("claude-code")
+            .output()
+            .context("Failed to quit Claude Code")?;
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        std::process::Command::new("claude-code")
+            .spawn()
+            .context("Failed to reopen Claude Code")?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, use taskkill and restart
+        std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "claude-code.exe"])
+            .output()
+            .context("Failed to quit Claude Code")?;
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        std::process::Command::new("claude-code")
+            .spawn()
+            .context("Failed to reopen Claude Code")?;
+    }
 
     Ok(())
 }

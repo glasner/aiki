@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 /// Aiki configuration structure
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,6 +76,100 @@ impl Default for AikiConfig {
     }
 }
 
+/// Configure git to use aiki's hooks directory
+pub fn configure_git_hooks_path(repo_root: &Path) -> Result<()> {
+    // Set core.hooksPath to .aiki/githooks
+    let output = Command::new("git")
+        .args(["config", "core.hooksPath", ".aiki/githooks"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git config core.hooksPath")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to configure git hooks path: {}", stderr);
+    }
+
+    println!("✓ Configured git to use .aiki/githooks");
+    Ok(())
+}
+
+/// Install Git hooks for automatic co-author attribution
+///
+/// This reads the hook template, replaces __PREVIOUS_HOOK_PATH__ with the saved
+/// previous hooks path, and writes it to .aiki/githooks/prepare-commit-msg.
+pub fn install_git_hooks(repo_root: &Path) -> Result<()> {
+    let aiki_dir = repo_root.join(".aiki");
+    let githooks_dir = aiki_dir.join("githooks");
+    let hook_file = githooks_dir.join("prepare-commit-msg");
+
+    // Read previous hooks path
+    let previous_path_file = aiki_dir.join(".previous_hooks_path");
+    let previous_hooks_path =
+        fs::read_to_string(&previous_path_file).context("Failed to read .previous_hooks_path")?;
+
+    // Read hook template (embedded in binary)
+    let template = include_str!("../templates/prepare-commit-msg.sh");
+
+    // Replace placeholder with actual previous hooks path
+    let hook_content = template.replace("__PREVIOUS_HOOK_PATH__", &previous_hooks_path);
+
+    // Write hook file
+    fs::write(&hook_file, hook_content).context("Failed to write prepare-commit-msg hook")?;
+
+    // Make hook executable (Unix/macOS/Linux)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&hook_file)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_file, perms)?;
+    }
+
+    println!("✓ Installed prepare-commit-msg hook");
+    Ok(())
+}
+
+/// Save the current git core.hooksPath configuration before installing aiki hooks
+///
+/// This preserves the previous hooks path so that aiki hooks can chain to it.
+/// The path is saved to `.aiki/.previous_hooks_path`.
+///
+/// Three states are handled:
+/// 1. Not set (git config returns empty) - saves ".git/hooks" (Git's default)
+/// 2. Empty string - saves "EMPTY"
+/// 3. Valid path - saves the actual path
+pub fn save_previous_hooks_path(repo_root: &Path) -> Result<()> {
+    let aiki_dir = repo_root.join(".aiki");
+    let previous_path_file = aiki_dir.join(".previous_hooks_path");
+
+    // Get current core.hooksPath value
+    let output = Command::new("git")
+        .args(["config", "core.hooksPath"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git config core.hooksPath")?;
+
+    let hooks_path = if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            "EMPTY".to_string()
+        } else {
+            path
+        }
+    } else {
+        // Config key doesn't exist - use Git's default hooks path
+        // This allows chaining to existing hooks in .git/hooks
+        ".git/hooks".to_string()
+    };
+
+    // Save to .aiki/.previous_hooks_path
+    fs::write(&previous_path_file, &hooks_path).context("Failed to write .previous_hooks_path")?;
+
+    println!("✓ Saved previous hooks path: {}", hooks_path);
+    Ok(())
+}
+
 /// Initialize the .aiki directory structure and configuration
 pub fn initialize_aiki_directory(repo_root: &Path) -> Result<()> {
     let aiki_dir = repo_root.join(".aiki");
@@ -88,7 +183,7 @@ pub fn initialize_aiki_directory(repo_root: &Path) -> Result<()> {
     println!("Creating .aiki directory structure...");
 
     // Create directory structure
-    for dir in ["cache", "logs", "tmp"] {
+    for dir in ["cache", "logs", "tmp", "githooks"] {
         fs::create_dir_all(aiki_dir.join(dir))
             .with_context(|| format!("Failed to create .aiki/{} directory", dir))?;
     }
@@ -113,19 +208,21 @@ pub fn initialize_aiki_directory(repo_root: &Path) -> Result<()> {
     fs::write(&config_path, config_toml).context("Failed to write configuration file")?;
 
     println!("✓ Created .aiki directory");
-    println!("  ├── cache/  (review cache)");
-    println!("  ├── logs/   (watcher logs)");
-    println!("  ├── tmp/    (temporary files)");
+    println!("  ├── cache/     (review cache)");
+    println!("  ├── logs/      (watcher logs)");
+    println!("  ├── tmp/       (temporary files)");
+    println!("  ├── githooks/  (git hooks - version controlled)");
     println!("  └── config.toml");
 
-    // Update .gitignore
-    update_gitignore(repo_root)?;
+    // Update .gitignore to ignore only runtime directories
+    update_gitignore_for_runtime(repo_root)?;
 
     Ok(())
 }
 
-/// Update .gitignore to exclude .aiki directory
-fn update_gitignore(repo_root: &Path) -> Result<()> {
+/// Update .gitignore to exclude only runtime .aiki subdirectories (logs, cache, tmp)
+/// The .aiki/githooks and .aiki/config.toml should be version controlled
+fn update_gitignore_for_runtime(repo_root: &Path) -> Result<()> {
     let gitignore_path = repo_root.join(".gitignore");
 
     // Read existing .gitignore or create empty string
@@ -135,22 +232,27 @@ fn update_gitignore(repo_root: &Path) -> Result<()> {
         String::new()
     };
 
-    // Check if .aiki is already in .gitignore
-    if gitignore_content
+    // Check if aiki runtime directories are already in .gitignore
+    let has_aiki_entries = gitignore_content
         .lines()
-        .any(|line| line.trim() == ".aiki/")
-    {
+        .any(|line| line.contains(".aiki/logs/") || line.contains(".aiki/cache/"));
+
+    if has_aiki_entries {
         return Ok(());
     }
 
-    // Add .aiki to .gitignore
+    // Add runtime directories to .gitignore (but not .aiki/ itself)
     if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
         gitignore_content.push('\n');
     }
-    gitignore_content.push_str("\n# Aiki\n.aiki/\n");
+    gitignore_content.push_str("\n# Aiki runtime (hooks and config are version controlled)\n");
+    gitignore_content.push_str(".aiki/logs/\n");
+    gitignore_content.push_str(".aiki/cache/\n");
+    gitignore_content.push_str(".aiki/tmp/\n");
 
     fs::write(&gitignore_path, gitignore_content).context("Failed to update .gitignore")?;
-    println!("✓ Added .aiki/ to .gitignore");
+    println!("✓ Added .aiki runtime directories to .gitignore");
+    println!("  Note: .aiki/githooks/ and .aiki/config.toml can be version controlled");
 
     Ok(())
 }
@@ -238,13 +340,18 @@ mod tests {
         assert!(temp_dir.path().join(".aiki/cache").exists());
         assert!(temp_dir.path().join(".aiki/logs").exists());
         assert!(temp_dir.path().join(".aiki/tmp").exists());
+        assert!(temp_dir.path().join(".aiki/githooks").exists());
         assert!(temp_dir.path().join(".aiki/config.toml").exists());
         assert!(temp_dir.path().join(".aiki/cache/index.json").exists());
 
-        // Check .gitignore was created
+        // Check .gitignore was created with runtime directories only
         assert!(temp_dir.path().join(".gitignore").exists());
         let gitignore = fs::read_to_string(temp_dir.path().join(".gitignore")).unwrap();
-        assert!(gitignore.contains(".aiki/"));
+        assert!(gitignore.contains(".aiki/logs/"));
+        assert!(gitignore.contains(".aiki/cache/"));
+        assert!(gitignore.contains(".aiki/tmp/"));
+        // Should NOT ignore the entire .aiki/ directory
+        assert!(!gitignore.lines().any(|line| line.trim() == ".aiki/"));
     }
 
     #[test]
@@ -340,5 +447,62 @@ mod tests {
         let content = fs::read_to_string(&aiki_gitignore).unwrap();
         assert!(content.contains("*.db-wal"));
         assert!(content.contains("*.db-shm"));
+    }
+
+    #[test]
+    fn save_previous_hooks_path_handles_not_set() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        // Create .aiki directory
+        initialize_aiki_directory(temp_dir.path()).unwrap();
+
+        // Save hooks path (should default to .git/hooks when not set)
+        let result = save_previous_hooks_path(temp_dir.path());
+        assert!(result.is_ok());
+
+        // Verify file contents
+        let previous_path_file = temp_dir.path().join(".aiki/.previous_hooks_path");
+        assert!(previous_path_file.exists());
+        let content = fs::read_to_string(&previous_path_file).unwrap();
+        assert_eq!(content, ".git/hooks");
+    }
+
+    #[test]
+    fn save_previous_hooks_path_handles_custom_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        // Set custom hooks path
+        Command::new("git")
+            .args(["config", "core.hooksPath", ".custom-hooks"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+
+        // Create .aiki directory
+        initialize_aiki_directory(temp_dir.path()).unwrap();
+
+        // Save hooks path
+        let result = save_previous_hooks_path(temp_dir.path());
+        assert!(result.is_ok());
+
+        // Verify file contents
+        let previous_path_file = temp_dir.path().join(".aiki/.previous_hooks_path");
+        assert!(previous_path_file.exists());
+        let content = fs::read_to_string(&previous_path_file).unwrap();
+        assert_eq!(content, ".custom-hooks");
     }
 }
