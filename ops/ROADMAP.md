@@ -973,6 +973,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 - **Compliance reporting** - SOX, PCI-DSS, ISO 27001 reports
 - **Immutable audit trails** - Complete provenance via JJ commit descriptions
 - **Multi-level approval workflows** - 2+ approvers for high-risk changes
+- **Centralized hook management** - Deploy and manage AI editor hooks across all developer machines from central dashboard (similar to Cursor's enterprise cloud distribution and Claude Code's team management)
 
 ### Value Delivered
 - Enterprise governance for AI development
@@ -981,6 +982,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 - Complete audit trails with full provenance (immutable JJ commit history with `[aiki]` metadata)
 - Risk-based review workflows
 - Regulatory confidence (SOX, PCI-DSS, ISO 27001)
+- Simplified deployment and maintenance of AI editor hooks across entire organization
 
 **Architecture Note:** JJ's immutable commit graph provides tamper-proof audit trails. All provenance data in `[aiki]` blocks is part of commit history, making it impossible to retroactively alter attributions.
 
