@@ -103,6 +103,59 @@ let description = commit.description();  // Get change description
 
 ---
 
+## JJ --help
+
+These are the built in commands for jj. We should also try to take advantage of native functionality before building our own.
+
+Commands:
+  abandon           Abandon a revision
+  absorb            Move changes from a revision into the stack of mutable revisions
+  bisect            Find a bad revision by bisection
+  bookmark          Manage bookmarks [default alias: b]
+  commit            Update the description and create a new change on top [default alias: ci]
+  config            Manage config options
+  describe          Update the change description or other metadata [default alias: desc]
+  diff              Compare file contents between two revisions
+  diffedit          Touch up the content changes in a revision with a diff editor
+  duplicate         Create new changes with the same content as existing ones
+  edit              Sets the specified revision as the working-copy revision
+  evolog            Show how a change has evolved over time [aliases: evolution-log]
+  file              File operations
+  fix               Update files with formatting fixes or other changes
+  gerrit            Interact with Gerrit Code Review
+  git               Commands for working with Git remotes and the underlying Git repo
+  help              Print this message or the help of the given subcommand(s)
+  interdiff         Compare the changes of two commits
+  log               Show revision history
+  metaedit          Modify the metadata of a revision without changing its content
+  new               Create a new, empty change and (by default) edit it in the working copy
+  next              Move the working-copy commit to the child revision
+  operation         Commands for working with the operation log [aliases: op]
+  parallelize       Parallelize revisions by making them siblings
+  prev              Change the working copy revision relative to the parent revision
+  rebase            Move revisions to different parent(s)
+  redo              Redo the most recently undone operation
+  resolve           Resolve conflicted files with an external merge tool
+  restore           Restore paths from another revision
+  revert            Apply the reverse of the given revision(s)
+  root              Show the current workspace root directory (shortcut for `jj workspace root`)
+  show              Show commit description and changes in a revision
+  sign              Cryptographically sign a revision
+  simplify-parents  Simplify parent edges for the specified revision(s)
+  sparse            Manage which paths from the working-copy commit are present in the working copy
+  split             Split a revision in two
+  squash            Move changes from a revision into another revision
+  status            Show high-level repo status [default alias: st]
+  tag               Manage tags
+  undo              Undo the last operation
+  unsign            Drop a cryptographic signature
+  util              Infrequently used commands such as for generating shell completions
+  version           Display version information
+  workspace         Commands for working with workspaces
+  
+---
+
+
 ## Code Review Checklist
 
 When reviewing or writing code, check for these common mistakes:

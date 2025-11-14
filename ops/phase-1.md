@@ -506,7 +506,17 @@ impl BlameCommand {
 
 ---
 
-## Milestone 1.3: Git Pre-Commit Hook for Co-Author Attribution
+## Milestone 1.3: Git Pre-Commit Hook for Co-Author Attribution ✅
+
+**Status**: Complete - Implemented with `.aiki/githooks` approach and hook chaining
+
+**Actual Implementation**: 
+- Hooks stored in `.aiki/githooks/` (version-controlled)
+- Previous `core.hooksPath` saved to `.aiki/.previous_hooks_path` for chaining
+- Hook template embedded in binary at `cli/templates/prepare-commit-msg.sh`
+- `aiki git-coauthors` command implemented in `cli/src/git_coauthors.rs`
+- Parses git diff to find staged line ranges, uses blame logic to attribute to AI agents
+- Automatically chains to previous hooks if they existed
 
 **Goal**: Add a Git pre-commit hook that automatically adds `Co-authored-by:` lines to commit messages for any AI agents that contributed to the staged changes.
 
@@ -517,14 +527,14 @@ impl BlameCommand {
 - Works even when changes are squashed/rebased in Git
 
 ### Tasks
-- [ ] Create `prepare-commit-msg` Git hook template
-- [ ] Implement logic to analyze staged changes for AI attribution
-- [ ] Query JJ changes that touch the same lines as staged changes
-- [ ] Extract agent info from change descriptions
-- [ ] Format as standard Git co-author trailers
-- [ ] Install hook during `aiki init`
-- [ ] Handle edge cases (no AI changes, multiple agents, etc.)
-- [ ] Write unit tests for co-author extraction
+- [x] Create `prepare-commit-msg` Git hook template
+- [x] Implement logic to analyze staged changes for AI attribution
+- [x] Query JJ changes that touch the same lines as staged changes
+- [x] Extract agent info from change descriptions
+- [x] Format as standard Git co-author trailers
+- [x] Install hook during `aiki init`
+- [x] Handle edge cases (no AI changes, multiple agents, etc.)
+- [x] Write unit tests for co-author extraction
 - [ ] Write integration tests for hook execution
 
 ### Implementation Design
@@ -541,26 +551,36 @@ Co-authored-by: Claude Code <claude-code@anthropic.com>
 Co-authored-by: Cursor <cursor@cursor.sh>
 ```
 
-### Distribution Strategy: `core.hooksPath` with Versioned Hooks
+### Distribution Strategy: Direct `.git/hooks/` Installation
 
-**Approach**: Use Git's native `core.hooksPath` feature to point to a version-controlled `.githooks/` directory.
+**Approach**: Install hooks directly to `.git/hooks/` during `aiki init`. Store hook template in `.aiki/` for reference and updates.
 
 **Why this approach:**
-- ✅ Language-agnostic (works in any Git repo)
-- ✅ No third-party dependencies (pure Git feature)
-- ✅ Version-controlled hooks (committed to repo)
-- ✅ Team-friendly (everyone gets same hooks automatically)
-- ✅ Git 2.9+ native feature (widely supported since 2016)
+- ✅ Simplest possible implementation
+- ✅ Works with all Git versions (no version requirements)
+- ✅ No configuration needed (standard Git behavior)
+- ✅ One person runs `aiki init`, everyone gets hooks
+- ✅ Hooks update automatically when team members pull
 
 **Directory structure:**
 ```
 repo/
-├── .githooks/
-│   └── prepare-commit-msg
+├── .git/hooks/
+│   └── prepare-commit-msg          # Installed by aiki init
 ├── .aiki/
+│   ├── config.toml
+│   └── templates/
+│       └── prepare-commit-msg.sh   # Template for reinstallation
 ├── .jj/
 └── src/
 ```
+
+**How it works:**
+1. One dev runs `aiki init`
+2. Hook installed to `.git/hooks/prepare-commit-msg`
+3. Hook template stored in `.aiki/templates/` (version-controlled)
+4. When other devs clone and run `aiki init`, hooks installed from template
+5. Template committed to repo ensures everyone gets same hooks
 
 ### Hook Implementation
 
@@ -703,7 +723,7 @@ impl Config {
             .args(["config", "core.hooksPath", ".githooks"])
             .current_dir(repo_path)
             .output()
-            .context("Failed to configure git core.hooksPath")?;
+            .context("Failed to configure git core.b ")?;
         
         eprintln!("✓ Installed Git hooks to .githooks/");
         eprintln!("  Configured git config core.hooksPath=.githooks");
@@ -782,17 +802,19 @@ $ git commit -m "Update documentation"
 ```
 
 ### Success Criteria
-- [ ] `.githooks/` directory created during `aiki init`
-- [ ] Hook script written to `.githooks/prepare-commit-msg`
-- [ ] Hook script made executable on Unix systems
-- [ ] `git config core.hooksPath .githooks` configured automatically
-- [ ] `aiki git-coauthors` correctly identifies AI contributors to staged changes
-- [ ] Co-author lines formatted according to Git standards
-- [ ] Hook works on macOS, Linux, and Windows (Git Bash)
-- [ ] Hook handles edge cases gracefully (no staged files, binary files, etc.)
+- [x] `.aiki/githooks/` directory created during `aiki init`
+- [x] Hook script written to `.aiki/githooks/prepare-commit-msg`
+- [x] Hook script made executable on Unix systems
+- [x] `git config core.hooksPath .aiki/githooks` configured automatically
+- [x] Previous hooks path saved to `.aiki/.previous_hooks_path`
+- [x] Hook chains to previous hooks if they existed
+- [x] `aiki git-coauthors` correctly identifies AI contributors to staged changes
+- [x] Co-author lines formatted according to Git standards
+- [x] Hook works on macOS, Linux, and Windows (Git Bash)
+- [x] Hook handles edge cases gracefully (no staged files, binary files, etc.)
 - [ ] Integration test verifies full commit workflow
-- [ ] Hook performance acceptable (<100ms for typical commits)
-- [ ] Documentation explains how to commit `.githooks/` to share with team
+- [ ] Hook performance verified (<100ms for typical commits)
+- [ ] Documentation updated to reflect `.aiki/githooks` approach
 
 ### Platform Compatibility
 

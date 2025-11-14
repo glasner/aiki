@@ -13,8 +13,10 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Aiki runtime
-.aiki/
+# Aiki runtime (only ignore logs and cache, not hooks/config)
+.aiki/logs/
+.aiki/cache/
+.aiki/tmp/
 
 # Test artifacts
 *.db

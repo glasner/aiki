@@ -1,0 +1,18 @@
+[aiki]
+version = "0.1.0"
+initialized_at = "2025-11-13T15:25:08.549691+00:00"
+
+[review]
+debounce_ms = 300
+cache_size_mb = 100
+ai_review_enabled = false
+
+[workers]
+static_analysis = true
+type_checking = true
+parallelism = 4
+
+[git]
+block_on_critical = true
+block_on_warnings = false
+auto_escalate_after = 3

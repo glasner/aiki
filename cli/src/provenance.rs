@@ -14,7 +14,7 @@ pub struct AgentInfo {
 }
 
 /// Type of AI agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentType {
     ClaudeCode,
     Unknown,

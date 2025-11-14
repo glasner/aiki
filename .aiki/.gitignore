@@ -1,0 +1,3 @@
+# SQLite Write-Ahead Logging files
+*.db-wal
+*.db-shm
