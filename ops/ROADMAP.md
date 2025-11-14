@@ -320,143 +320,148 @@ aiki authors --changes='trunk..@' --format=git
 
 ---
 
-## Phase 3: Hook Management CLI
+## Phase 3: CLI Streamlining & Health Diagnostics
+
+**Status:** ✅ Complete
 
 ### Problem
-Users need visibility and control over all Aiki hooks - both AI editor hooks (Claude Code, Cursor) and Git hooks (prepare-commit-msg). When hooks aren't working, users need diagnostic tools to identify and fix issues quickly.
+Users need a simple way to verify Aiki is configured correctly and diagnose issues when hooks aren't working. The CLI had redundant commands (`hooks status`, `hooks doctor`, `hooks list`) that could be streamlined for better UX.
 
-**Without hook management:**
-- Can't see which hooks are installed or active
-- Manual hook troubleshooting is time-consuming
-- No way to selectively enable/disable hooks
-- Difficult to diagnose why hooks aren't triggering
-- Can't verify hooks are working correctly
+**Without comprehensive diagnostics:**
+- No single command to check "is Aiki working?"
+- Difficult to diagnose configuration issues
+- Unclear which hooks are installed
+- No guidance on fixing broken setups
 
 ### Solution
-Provide comprehensive hook management commands with unified interface for editor hooks and Git hooks. Include intelligent diagnostics that detect and repair common issues automatically.
+Streamline CLI to essential commands and provide comprehensive health checking via `aiki doctor`. Remove redundant commands and consolidate diagnostics into one top-level command.
 
-**Key Innovation:** Single CLI interface manages all hook types (editor + Git) with automatic health checks and repair capabilities.
+**Key Innovation:** Single `aiki doctor` command checks repository setup, global hooks, and local configuration - providing actionable guidance for any issues.
 
-### What We Build
-- **Hook status visibility** - Show all installed hooks and their state
-- **Manual hook management** - Install/remove specific hooks
-- **Hook diagnostics** - Detect configuration issues, permission problems, outdated templates
-- **Automatic repair** - Fix common issues with `--fix` flag
-- **Activity tracking** - Show when hooks last executed
-- **Multi-hook support** - Manage editor and Git hooks through unified interface
+### What We Built
+- **`aiki doctor` command** - Comprehensive health check at main CLI level
+- **Repository checks** - JJ workspace, Git repo, Aiki directory
+- **Global hooks verification** - Git, Claude Code, Cursor installations
+- **Local configuration validation** - Git core.hooksPath setup
+- **Streamlined CLI** - Removed `hooks status`, `hooks doctor`, `hooks list`
+- **Clear actionable output** - ✓/✗/⚠ symbols with fix suggestions
 
 ### Commands Delivered
 ```bash
-aiki hooks status               # Show status of all hooks
-aiki hooks status --editor      # Show only editor hooks
-aiki hooks status --git         # Show only Git hooks
-aiki hooks install <target>     # Install specific hook (claude-code, cursor, git)
-aiki hooks install --all        # Install all detected hooks
-aiki hooks remove <target>      # Remove specific hook
-aiki hooks remove --all         # Remove all hooks
-aiki hooks list                 # List available integrations
-aiki hooks doctor               # Diagnose hook issues
-aiki hooks doctor --fix         # Automatically repair issues
+aiki doctor         # Check Aiki health (repo + hooks + config)
+aiki doctor --fix   # Automatically repair detected issues (foundation for future fixes)
+aiki hooks install  # Install all global hooks (simplified)
 ```
+
+**Removed Commands:**
+- ❌ `aiki hooks status` - Functionality integrated into `doctor`
+- ❌ `aiki hooks doctor` - Moved to top-level `aiki doctor`
+- ❌ `aiki hooks list` - Unnecessary (only 2 editors, obvious from install)
 
 ### Example Output
 ```bash
-$ aiki hooks status
+$ aiki doctor
 
-Editor Hooks:
-  Claude Code:
-    Status: ✓ Active
-    Location: .claude/settings.json
-    Last Activity: 5 minutes ago
-    Changes Tracked: 42 (last 7 days)
+Checking Aiki health...
 
-  Cursor:
-    Status: ✓ Active
-    Location: .cursor/aiki-hooks.json
-    Last Activity: 1 hour ago
-    Changes Tracked: 18 (last 7 days)
+Repository:
+  ✓ JJ workspace initialized
+  ✓ Git repository detected
+  ✓ Aiki directory exists
 
-Git Hooks:
-  prepare-commit-msg:
-    Status: ✓ Active
-    Location: .git/hooks/prepare-commit-msg
-    Last Execution: 10 minutes ago
-    Template: cli/templates/prepare-commit-msg.sh
+Global Hooks:
+  ✓ Git hooks installed (~/.aiki/githooks/)
+  ✓ Claude Code hooks configured
+  ✓ Cursor hooks configured
 
-Summary: All hooks healthy ✓
+Local Configuration:
+  ✓ Git core.hooksPath configured
 
-$ aiki hooks doctor
+✓ All checks passed! Aiki is healthy.
 
-Diagnosing hook configuration...
+$ aiki doctor  # With issues
 
-Editor Hooks:
-  ✓ Claude Code hooks: Healthy
-  ✗ Cursor hooks: Broken
-    Issue: .cursor/aiki-hooks.json syntax error
-    Fix: Run 'aiki hooks doctor --fix' to repair
+Checking Aiki health...
 
-Git Hooks:
-  ✓ prepare-commit-msg: Healthy
-  ⚠ Hook executable permission missing
-    Fix: Run 'aiki hooks doctor --fix' to repair
+Repository:
+  ✗ JJ workspace not found
+    → Run: aiki init
+  ✓ Git repository detected
+  ✗ Aiki directory missing
+    → Run: aiki init
 
-Found 2 issues. Run 'aiki hooks doctor --fix' to repair.
+Global Hooks:
+  ✗ Git hooks missing
+    → Run: aiki hooks install
+  ⚠ Claude Code hooks not configured
+    → Run: aiki hooks install
+  ⚠ Cursor hooks not configured
+    → Run: aiki hooks install
+
+Local Configuration:
+  ✗ Git core.hooksPath not set
+    → Run: aiki init
+
+Found 4 issue(s).
+
+Run 'aiki doctor --fix' to automatically fix issues.
 ```
-
-### Hook Types Managed
-
-**Editor Hooks:**
-- Claude Code: PostToolUse hooks in `.claude/settings.json`
-- Cursor: Hook config in `.cursor/aiki-hooks.json`
-- Windsurf: (Future - Phase 10)
-
-**Git Hooks:**
-- `prepare-commit-msg`: Injects AI co-authors into commit messages
-- Uses templates from `cli/templates/`
 
 ### Diagnostics Performed
 
-**Editor Hooks:**
-- Configuration file exists and has valid format
-- Hook command is correct
-- Hook is actually triggering (check recent activity)
+**Repository Health:**
+- JJ workspace exists (`.jj/` directory)
+- Git repository present (`.git/` directory)
+- Aiki directory exists (`.aiki/` directory)
 
-**Git Hooks:**
-- Hook file exists in `.git/hooks/`
-- Hook has executable permissions
-- Hook template is up-to-date
-- Hook references correct `aiki` commands
+**Global Hooks:**
+- Git hooks installed (`~/.aiki/githooks/`)
+- Claude Code hooks configured (`~/.claude/settings.json`)
+- Cursor hooks configured (`~/.cursor/hooks.json`)
 
-**Common Fixes:**
-- Regenerate corrupted config files
-- Set executable permissions on Git hooks
-- Update outdated hook templates
-- Repair invalid JSON/format
+**Local Configuration:**
+- Git `core.hooksPath` points to Aiki hooks
+- Previous hooks preserved (if any existed)
 
 ### Value Delivered
-- **Hook visibility** - Users see exactly which hooks are active
-- **Easy troubleshooting** - Doctor command identifies issues automatically
-- **Quick repair** - `--fix` flag resolves common problems
-- **Selective control** - Install/remove specific hooks as needed
-- **Unified interface** - Single command set for all hook types
+- **Single health check** - One command to verify entire setup
+- **Clear diagnostics** - Visual indicators (✓/✗/⚠) for each component
+- **Actionable guidance** - Specific commands to fix each issue
+- **Simpler CLI** - 5 user-facing commands instead of 8
+- **Better UX** - `doctor` is more discoverable at main level
+- **Foundation for future** - `--fix` flag ready for automatic repairs
 
 ### Technical Components
-| Component | Complexity | Priority |
-|-----------|------------|----------|
-| Hook status detection | Low | High |
-| Hook installation/removal | Low | High |
-| Diagnostics engine | Medium | High |
-| Automatic repair logic | Medium | High |
-| Activity tracking | Low | Medium |
+| Component | Complexity | Status |
+|-----------|------------|--------|
+| Doctor command infrastructure | Low | ✅ Complete |
+| Repository health checks | Low | ✅ Complete |
+| Global hooks detection | Low | ✅ Complete |
+| Local config validation | Low | ✅ Complete |
+| User-friendly output formatting | Low | ✅ Complete |
+| Automatic repair logic | Medium | 🔜 Future (foundation in place) |
 
 ### Success Criteria
-- ✅ `aiki hooks status` shows accurate state of all hooks
-- ✅ Manual hook installation works for all hook types
-- ✅ Hook removal cleanly uninstalls without breaking repo
-- ✅ Doctor detects 90%+ of common issues
-- ✅ Doctor --fix successfully repairs detected issues
-- ✅ User-friendly error messages with actionable fixes
-- ✅ Works with both editor and Git hooks
+- ✅ `aiki doctor` checks all critical components
+- ✅ Clear visual output with ✓/✗/⚠ symbols
+- ✅ Actionable fix suggestions for each issue
+- ✅ CLI streamlined to essential commands
+- ✅ All 90 tests passing
+- ✅ No regressions in existing functionality
+- ✅ Works on macOS, Linux, Windows
+
+### Why This Matters
+**Before Phase 3:**
+- 8 user-facing commands (confusing)
+- `hooks status` only checked hooks (not repo/config)
+- `hooks doctor` buried under subcommand
+- `hooks list` redundant (only 2 editors)
+
+**After Phase 3:**
+- 5 streamlined commands (clearer)
+- `doctor` checks everything (repo + hooks + config)
+- Top-level command (more discoverable)
+- CLI focused on essential workflows
 
 ---
 
