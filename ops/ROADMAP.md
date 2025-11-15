@@ -637,97 +637,386 @@ Report includes:
 
 ---
 
-## Phase 5: Autonomous Review & Self-Correction Loop
+## Phase 5: Internal Flow Engine
 
 ### Problem
-Developers waste significant time per feature fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
+Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 6 (Autonomous Review).
 
-**With provenance (Phase 1), we can now:**
-- Test that agents correctly respond to review feedback
-- Validate multi-iteration correction loops
-- Measure review quality improvements
-- Attribute fixes to specific agents
+**With provenance (Phase 1-4), we can now:**
+- Trigger workflows on specific agent events (PostChange, PreCommit, Start, Stop)
+- Access rich event metadata (agent type, file paths, change IDs)
+- Build automation that reacts to AI coding events
 
 ### Solution
-Autonomous review feedback loop where AI validates and corrects its own work before reaching Git:
-1. AI generates code (Cursor, Copilot, etc.)
-2. AI attempts commit (normal `git commit` workflow)
-3. Aiki intercepts (pre-commit hook)
-4. Autonomous review runs (static analysis + AI review)
-5. Results fed back to AI agent (**tracked via provenance**)
-6. AI reads review results and fixes issues (**attributed via provenance**)
-7. AI attempts commit again (repeats until passing or escalates)
-8. Human sees only final, reviewed code
+Build a minimal flow engine focused on **internal flows** only:
+1. **System flows** - Refactor existing Rust code into mandatory flows (provenance, session tracking)
+2. **Default flows** - Ship built-in flows users can customize (autonomous review)
+3. **Single flow file** - Users edit `.aiki/flow.yaml` for customization
+
+**Scope:** Built-in flows only. No user-defined flows, no external flows, no registries.
 
 ### What We Build
-- **Git commit interception** - Pre-commit hook integration
-- **Autonomous review engine** - Static analysis + AI review
-- **Agent feedback loop** - Structured feedback to agents
-- **Self-correction iteration** - Auto-retry until passing
-- **Review provenance** - Track review iterations via Phase 1
-- **Web UI enhancements** - View review history and iterations
+
+**Flow Types:**
+- **System flows** - Mandatory, built into binary, power Aiki core (provenance, JJ integration)
+- **Default flows** - Optional, built into binary, user can customize (autonomous review)
+
+**Flow Engine:**
+- Event system (PostChange, PreCommit, Start, Stop)
+- YAML parser and executor
+- Sequential and parallel execution
+- Conditionals (`if/then/else`)
+- Step references and aliases
+
+**User Experience:**
+```yaml
+# .aiki/flow.yaml (single file, edited by user)
+name: My Workflow
+version: 1
+
+PreCommit:
+  - flow: aiki/autonomous-review   # Include built-in default flow
+  - shell: pytest --fast             # Add custom inline steps
+    on_failure: block
+```
+
+### Refactoring Existing Functionality
+
+| Current Rust Code | Becomes System Flow |
+|-------------------|---------------------|
+| Provenance embedding (hooks.rs) | `aiki/system/provenance` |
+| Session tracking | `aiki/system/session-tracking` |
+| JJ integration | `aiki/system/jj-integration` |
+
+**Example refactor:**
+```yaml
+# aiki/system/provenance (built into Aiki binary)
+PostChange:
+  - jj:
+      - describe
+      - --no-edit
+      - -m
+      - |
+        [aiki]
+        agent=$agent
+        session=$session_id
+        tool=$event.tool_name
+        [/aiki]
+    on_failure: block
+```
 
 ### Value Delivered
-- **Time savings** - Significant reduction in manual iteration cycles
-- **Quality improvement** - Catch bugs pre-commit (type errors, security issues, complexity)
-- **Agent attribution** - Know which AI made which edit (via Phase 1)
-- **Clean Git history** - No failed CI commits or fix iterations
-- **Testable feedback loops** - Validate agent responses via provenance
+- **Cleaner architecture** - Aiki's behavior in declarative flows, not scattered Rust
+- **Dog-fooding** - Aiki uses its own flow system internally
+- **Enables Phase 6** - Autonomous review can be built as a default flow
+- **Easier testing** - Test flows, not Rust code
+- **User customization** - Inline steps in `.aiki/flow.yaml`
 
 ### Technical Components
 | Component | Complexity |
 |-----------|------------|
-| Git hook integration | Medium |
-| Autonomous review engine | High |
-| Agent feedback protocol | Medium |
-| Iteration control logic | Medium |
-| Review provenance (Phase 1 integration) | Low |
-| Web UI updates | Low |
+| Event system architecture | Medium |
+| YAML parser and validator | Low |
+| Flow execution engine | Medium |
+| Conditional execution | Medium |
+| Parallel execution (DAG) | Medium |
+| System flow refactoring | Medium |
 
-### Example Flow (with Provenance)
-```bash
-# Agent makes changes
-git add auth.py
-git commit -m "Add caching"
+### Success Criteria
+- ✅ System flows power Aiki core (provenance, session tracking)
+- ✅ Default flows ship with Aiki (autonomous review)
+- ✅ Users can add inline steps to `.aiki/flow.yaml`
+- ✅ Flows execute on events (PostChange, PreCommit, Start, Stop)
+- ✅ Phase 6 can build on this foundation
 
-# Aiki intercepts
-Aiki: Reviewing changes...
-  Agent detected: Cursor v0.42.0 (via provenance)
-  Files changed: auth.py (lines 45-60)
-
-Aiki Review:
-  ❌ Type error: Missing return type on verify_token()
-  ❌ Security: API key hardcoded in auth.py:45
-  ⚠ Complexity: authenticate() cyclomatic 18 (limit: 10)
-
-# Feedback sent to Cursor (tracked in provenance)
-Cursor: Reading Aiki review...
-  Fixing type error...
-  Removing hardcoded API key...
-  Refactoring authenticate()...
-
-# Cursor attempts commit again
-git commit -m "Add caching (reviewed)"
-
-# Aiki reviews again (iteration 2, tracked via provenance)
-Aiki: Reviewing changes...
-  Agent: Cursor v0.42.0
-  Iteration: 2
-  
-Aiki Review:
-  ✓ All checks passed
-
-# Commit succeeds
-Provenance recorded:
-  - Initial commit attempt by Cursor (failed review)
-  - Review feedback generated
-  - Fixes made by Cursor (iteration 2)
-  - Final commit approved
-```
+### Why This Enables Future Phases
+- **Phase 6**: Autonomous review built as default flow
+- **Phase 7**: Users write their own flows in `.aiki/flows/`
+- **Phase 8**: External flow ecosystem with bundled binaries
+- **Rapid iteration**: Change workflows without Aiki releases
 
 ---
 
-## Phase 6: Multi-Agent Provenance (Fallback Detection)
+## Phase 6: Autonomous Review Flow
+
+### Problem
+Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
+
+**With flows (Phase 5), we can now:**
+- Build autonomous review as a declarative flow (not hardcoded in Rust)
+- Let users customize review logic via YAML
+- Compose review checks from multiple flows
+- Block commits that fail quality gates
+
+### Solution
+Ship a built-in `aiki/autonomous-review` flow that users can include in their `.aiki/flow.yaml`. The flow runs on PreCommit events and blocks commits that fail static analysis, security scans, or other checks.
+
+**User workflow:**
+1. User adds `aiki/autonomous-review` to their flow.yaml
+2. AI agent edits code and attempts commit
+3. PreCommit event triggers
+4. Review flow runs (static analysis, security scans, etc.)
+5. If checks fail, commit is blocked with feedback
+6. AI agent sees failure, makes corrections, tries again
+7. Repeat until checks pass
+8. Clean commit lands in Git
+
+### What We Build
+**This is just a flow** - No Rust changes needed beyond Phase 5:
+
+```yaml
+# Built-in flow: aiki/autonomous-review
+# Location: Built into Aiki or shipped as default flow
+name: Autonomous Review
+version: 1.0.0
+description: Automated code review with static analysis and security checks
+
+requires:
+  semgrep: ">=1.0"
+  ruff: ">=0.1"
+  mypy: ">=1.0"
+
+PreCommit:
+  # Run all checks in parallel for speed
+  - parallel:
+      - shell: semgrep --config=auto --json .
+        alias: security
+      - shell: ruff check --output-format=json .
+        alias: lint
+      - shell: mypy --json-report .
+        alias: types
+  
+  # Aggregate results and block if any failed
+  - if: $security.failed OR $lint.failed OR $types.failed
+    then:
+      - log: "❌ Review failed:"
+      - if: $security.failed
+        then:
+          - log: "  Security issues found"
+      - if: $lint.failed
+        then:
+          - log: "  Linting errors found"
+      - if: $types.failed
+        then:
+          - log: "  Type errors found"
+      - shell: exit 1
+        on_failure: block
+    else:
+      - log: "✅ All checks passed"
+```
+
+**User customization:**
+```yaml
+# .aiki/flow.yaml
+name: My Workflow
+version: 1
+
+includes:
+  - aiki/autonomous-review    # Use built-in review
+  - company/security-policy   # Add company-specific checks
+
+PreCommit:
+  # Runs after included flows
+  - shell: pytest --fast       # Add custom test suite
+    on_failure: block
+```
+
+### Value Delivered
+- **Zero Rust code** - Entire review system is a YAML flow
+- **Infinitely customizable** - Users modify flow.yaml, not Rust
+- **Composable** - Mix built-in review with custom checks
+- **Fast iteration** - Change review logic without rebuilding Aiki
+- **Quality gates** - Block bad commits before they reach Git
+- **Clean history** - No failed CI commits
+
+### Technical Components
+| Component | Complexity |
+|-----------|------------|
+| Built-in `aiki/autonomous-review` flow | Medium |
+| Bundle semgrep/ruff/mypy binaries | Medium |
+| Flow composition examples | Low |
+| Documentation | Low |
+
+**Note:** Everything else is already in Phase 5 (flows, PreCommit events, blocking, conditionals, parallel execution).
+
+### Example: Team Customization
+```yaml
+# Company overrides built-in review with stricter checks
+name: Company Code Review
+version: 1.0.0
+
+requires:
+  semgrep: ">=1.0"
+  sonarqube-cli: ">=4.0"
+
+PreCommit:
+  - parallel:
+      - shell: semgrep --config=company-rules .
+      - shell: sonar-scanner
+      - shell: custom-compliance-check
+  
+  - if: $previous_step.failed
+    then:
+      - http:
+          url: $SLACK_WEBHOOK
+          body:
+            text: "🚨 Compliance failure blocked commit"
+      - shell: exit 1
+        on_failure: block
+```
+
+### Success Criteria
+- ✅ `aiki/autonomous-review` flow ships with Aiki (or as default flow)
+- ✅ Flow bundles semgrep, ruff, mypy binaries for all platforms
+- ✅ PreCommit blocking works (commit rejected if checks fail)
+- ✅ Users can customize by editing `.aiki/flow.yaml`
+- ✅ Teams can build custom review flows using same pattern
+- ✅ Documentation shows composition examples
+
+### Why This Matters
+This demonstrates the power of Phase 5: **complex features become configuration, not code**. Autonomous review is ~200 lines of YAML instead of thousands of lines of Rust. Users can fork, customize, and share their own review flows without touching Aiki internals.
+
+---
+
+## Phase 7: User-Defined Flows
+
+### Problem
+Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
+
+### Solution
+Enable users to create their own flows in `.aiki/flows/` directory and compose them together.
+
+### What We Build
+- **Flow directories** - `.aiki/flows/my/` for user flows
+- **Flow composition** - `includes:` to reference other flows
+- **Step references** - Reference flow results in conditionals
+- **Flow-level variables** - Define reusable variables in flows
+
+### Example
+```yaml
+# .aiki/flows/my/review.yaml
+name: My Custom Review
+version: 1.0.0
+
+PreCommit:
+  - shell: semgrep --config=custom-rules .
+  - shell: mypy --strict .
+  - if: $previous_step.failed
+    then:
+      - shell: exit 1
+        on_failure: block
+
+# .aiki/flow.yaml
+name: My Workflow
+version: 1
+
+includes:
+  - aiki/autonomous-review    # Built-in
+  - my/review                 # User-defined
+
+PreCommit:
+  - shell: echo "All reviews done"
+```
+
+### Value Delivered
+- **Reusable flows** - DRY across projects
+- **Organization patterns** - Teams share flows via Git
+- **Flow composition** - Build complex workflows from simple pieces
+
+### Technical Components
+| Component | Complexity |
+|-----------|------------|
+| Flow directory loading | Low |
+| Flow composition (includes) | Medium |
+| Step reference resolution | Low |
+| Flow-level variables | Low |
+
+### Success Criteria
+- ✅ Users can create flows in `.aiki/flows/my/`
+- ✅ `includes:` composes multiple flows
+- ✅ Flows can reference each other's results
+- ✅ No external flows yet (local only)
+
+---
+
+## Phase 8: External Flow Ecosystem
+
+### Problem
+Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
+
+### Solution
+Enable flow ecosystem with bundled binaries, lazy loading, and distribution.
+
+### What We Build
+- **Bundled binaries** - `bin/<platform>/` in flow directories
+- **Lazy loading** - Auto-download flows on first use
+- **Symlink management** - `~/.aiki/bin/` for all flow binaries
+- **External dependencies** - `requires:` for tools like Docker
+- **Flow distribution** - Tarballs for sharing flows
+- **Flow caching** - `~/.aiki/cache/flows/` for downloaded flows
+
+### Example
+```yaml
+# .aiki/flow.yaml
+name: My Workflow
+version: 1
+
+includes:
+  - aiki/autonomous-review
+  - vendor/security-scan     # Auto-downloads on first use
+  - company/compliance       # From company Git repo
+
+PreCommit:
+  - flow: vendor/security-scan
+```
+
+**Flow structure:**
+```
+vendor/security-scan/
+├── flow.yaml
+├── bin/
+│   ├── darwin-arm64/
+│   │   └── semgrep
+│   ├── darwin-x86_64/
+│   │   └── semgrep
+│   └── linux-x86_64/
+│       └── semgrep
+```
+
+### Commands Delivered
+```bash
+aiki flows list      # Show all flows (built-in, installed, cached)
+aiki flows install   # Install all flows from .aiki/flow.yaml
+aiki flows cleanup   # Remove unused cached flows
+aiki doctor          # Validate flows and dependencies
+```
+
+### Value Delivered
+- **Vendor ecosystem** - Third parties ship complete flows
+- **Zero-config installation** - Flows work out of the box
+- **Cross-platform** - Automatic platform detection
+- **Flow marketplace** - (Future) Central registry
+
+### Technical Components
+| Component | Complexity |
+|-----------|------------|
+| Binary bundling | Medium |
+| Platform detection | Low |
+| Symlink management | Low |
+| Lazy loading | Medium |
+| Flow caching | Low |
+| CLI commands | Low |
+
+### Success Criteria
+- ✅ Flows can bundle platform-specific binaries
+- ✅ `~/.aiki/bin` symlinks to all flow binaries
+- ✅ Flows auto-download on first use
+- ✅ `aiki flows install` installs all referenced flows
+- ✅ `aiki doctor` validates flow health
+
+---
+
+## Phase 9: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -807,7 +1096,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 7: Local Multi-Agent Coordination
+## Phase 10: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -839,7 +1128,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 8: PR Review for Non-Aiki Agents
+## Phase 11: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -862,7 +1151,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 9: Shared JJ Brain & Team Coordination
+## Phase 12: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -892,7 +1181,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 10: Windsurf Support
+## Phase 13: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -959,7 +1248,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 11: Enterprise Compliance
+## Phase 14: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -993,7 +1282,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 12: Native Agent Integration
+## Phase 15: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:

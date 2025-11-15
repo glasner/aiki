@@ -1,0 +1,48 @@
+# Flow: my/backup
+# Personal backup of AI-edited files
+#
+# This is a user-level flow in ~/.aiki/flows/my/
+# Backs up files to ~/aiki-backups/ after each AI session
+#
+# Usage:
+#   - flow: my/backup
+
+name: "Backup AI Edits"
+description: "Backup files edited by AI to personal backup directory"
+version: 1
+
+PostChange:
+  # Backup individual file after each edit
+  - shell: |
+      BACKUP_DIR="$HOME/aiki-backups/$(date +%Y-%m-%d)"
+      mkdir -p "$BACKUP_DIR"
+
+      FILE="$event.file_path"
+      BACKUP_PATH="$BACKUP_DIR/$(basename $FILE).$(date +%H%M%S)"
+
+      cp "$FILE" "$BACKUP_PATH"
+      echo "✅ Backed up to: $BACKUP_PATH"
+    working_dir: "$cwd"
+    timeout: 5s
+    continue_on_error: true
+
+Stop:
+  # Create archive based on session length
+  - if: "$session.duration_minutes > 30"
+    then:
+      - shell: |
+          BACKUP_DIR="$HOME/aiki-backups/$(date +%Y-%m-%d)"
+          ARCHIVE="$HOME/aiki-backups/session-$session_id-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+          if [ -d "$BACKUP_DIR" ]; then
+            tar -czf "$ARCHIVE" -C "$BACKUP_DIR" .
+            echo "✅ Session backup created: $ARCHIVE"
+
+            # Cleanup individual backups
+            rm -rf "$BACKUP_DIR"
+          fi
+        timeout: 30s
+      - log: "Long session backup complete"
+    else:
+      - log: "Short session - no backup created"
+    continue_on_error: true

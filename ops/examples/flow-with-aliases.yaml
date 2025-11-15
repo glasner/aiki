@@ -1,0 +1,56 @@
+# Example: Using Aliases for Shorter References
+#
+# This shows how to use optional 'alias:' for shorter variable names
+# when you don't want to use the full flow identifier.
+
+name: "AI Code Review with Aliases"
+description: "Demonstrates optional alias usage"
+version: 1
+
+PreCommit:
+  # Default: reference using full identifier
+  - flow: aiki/quick-lint
+
+  # Optional: use alias for shorter references
+  - parallel:
+      - flow: aiki/security-scan
+        alias: security # Creates $security.* instead of $aiki_security_scan.*
+      - flow: aiki/complexity-check
+        alias: complexity # Creates $complexity.* instead of $aiki_complexity_check.*
+
+  # Reference using aliases (shorter)
+  - if: "$security.failed OR $complexity.failed"
+    then:
+      - flow: company/slack-alert
+        alias: alert
+      - shell: "exit 1"
+        blocking: true
+    else:
+      - log: "Static analysis passed"
+
+  - shell: "pytest"
+    alias: tests # Can alias any step, not just flows
+
+  # Mix aliases and full identifiers
+  - if: $tests.failed
+    then:
+      - flow: company/slack-notify # No alias needed
+    else:
+      - log: "All checks passed"
+
+# Example showing when aliases are useful vs not needed
+PostChange:
+  # Short flow name - full identifier is fine
+  - flow: my/backup
+
+  # Reference is clear
+  - when: "$my_backup.exit_code == 0"
+    log: "Backup complete"
+
+  # Long flow name - alias makes sense
+  - flow: company/legacy-integration-webhook-notification
+    alias: webhook
+
+  # Reference is much cleaner
+  - when: "$webhook.exit_code == 0"
+    log: "Webhook called"

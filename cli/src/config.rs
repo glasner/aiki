@@ -259,6 +259,85 @@ pub fn install_cursor_hooks_global() -> Result<()> {
     Ok(())
 }
 
+/// Read JJ repository config from .jj/repo/config.toml
+pub fn read_jj_repo_config(repo_path: &Path) -> Result<toml::Value> {
+    let config_path = repo_path.join(".jj").join("repo").join("config.toml");
+
+    if !config_path.exists() {
+        // Return empty config if file doesn't exist
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+
+    let config_content =
+        fs::read_to_string(&config_path).context("Failed to read .jj/repo/config.toml")?;
+
+    toml::from_str(&config_content).context("Failed to parse .jj/repo/config.toml")
+}
+
+/// Write JJ repository config to .jj/repo/config.toml
+pub fn write_jj_repo_config(repo_path: &Path, config: &toml::Value) -> Result<()> {
+    let config_path = repo_path.join(".jj").join("repo").join("config.toml");
+
+    // Ensure .jj/repo directory exists
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create .jj/repo directory")?;
+    }
+
+    let config_content =
+        toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
+
+    fs::write(&config_path, config_content).context("Failed to write .jj/repo/config.toml")
+}
+
+/// Update JJ signing configuration in .jj/repo/config.toml
+pub fn update_jj_signing_config(
+    repo_path: &Path,
+    backend: &str,
+    key: Option<&str>,
+    behavior: &str,
+) -> Result<()> {
+    let mut config = read_jj_repo_config(repo_path)?;
+
+    // Ensure config is a table
+    let config_table = config
+        .as_table_mut()
+        .context("Config root is not a table")?;
+
+    // Create [signing] section
+    let mut signing_table = toml::map::Map::new();
+    signing_table.insert(
+        "behavior".to_string(),
+        toml::Value::String(behavior.to_string()),
+    );
+    signing_table.insert(
+        "backend".to_string(),
+        toml::Value::String(backend.to_string()),
+    );
+
+    // For SSH backend, add key and allowed-signers configuration
+    if backend == "ssh" {
+        if let Some(key_path) = key {
+            signing_table.insert("key".to_string(), toml::Value::String(key_path.to_string()));
+        }
+
+        // Add [signing.backends.ssh] configuration
+        let mut ssh_config = toml::map::Map::new();
+        ssh_config.insert(
+            "allowed-signers".to_string(),
+            toml::Value::String(".jj/allowed-signers".to_string()),
+        );
+
+        let mut backends = toml::map::Map::new();
+        backends.insert("ssh".to_string(), toml::Value::Table(ssh_config));
+        signing_table.insert("backends".to_string(), toml::Value::Table(backends));
+    }
+
+    // Insert signing section into config
+    config_table.insert("signing".to_string(), toml::Value::Table(signing_table));
+
+    write_jj_repo_config(repo_path, &config)
+}
+
 /// Check if Claude Code is installed
 #[cfg(test)]
 mod tests {

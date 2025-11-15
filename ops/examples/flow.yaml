@@ -1,0 +1,77 @@
+# Example: Multi-Event Flow with Conditionals
+#
+# This demonstrates the complete flow model:
+# - Multiple event types (PostChange, PreCommit, Start, Stop)
+# - Terraform-style flow addressing (aiki/quick-lint, company/slack-notify)
+# - Sequential execution by default
+# - Explicit parallelism with parallel:
+# - Step references using full identifier (aiki_security_scan)
+# - Optional aliases for shorter references
+# - Inline conditionals (when:)
+# - Block conditionals (if/then/else)
+
+name: AI Code Review Pipeline
+description: Complete review workflow across AI editing lifecycle
+version: 1
+
+# PostChange: Fast feedback after every AI edit
+PostChange:
+  - flow: aiki/quick-lint
+
+  # Reference using full identifier (flow/name → flow_name)
+  - when: $aiki_quick_lint.failed
+    flow: my/desktop-alert
+
+  # Inline conditional: only backup Python files
+  - when: $event.file_path ends_with '.py'
+    shell: cp $event.file_path ~/backups/
+
+# PreCommit: Comprehensive review before commit
+PreCommit:
+  - flow: aiki/quick-lint
+
+  # Parallel execution
+  - parallel:
+      - flow: aiki/security-scan
+      - flow: aiki/complexity-check
+
+  # Reference using full identifier (converts aiki/security-scan → aiki_security_scan)
+  - if: $aiki_security_scan.failed OR $aiki_complexity_check.failed
+    then:
+      - flow: company/slack-alert
+      - http:
+          url: $SECURITY_WEBHOOK
+          method: POST
+          body:
+            severity: high
+            change_id: $event.change_id
+      - shell: exit 1
+        blocking: true
+    else:
+      - log: Static analysis passed
+
+  - shell: pytest
+    blocking: true
+    timeout: 60s
+
+  # Reference previous step
+  - when: $previous_step.exit_code == 0
+    flow: company/slack-notify
+
+# Start: Session initialization
+Start:
+  - shell: aiki init --quiet
+
+  # Inline conditional: welcome message on first session
+  - when: $event.first_session == 'true'
+    log: Welcome to Aiki!
+
+# Stop: Session cleanup
+Stop:
+  # Block conditional: backup based on session length
+  - if: $session.duration_minutes > 30
+    then:
+      - flow: my/backup
+      - log: Long session - backup created
+    else:
+      - log: Short session - no backup needed

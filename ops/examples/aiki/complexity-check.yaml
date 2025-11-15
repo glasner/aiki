@@ -1,0 +1,57 @@
+# Flow: aiki/complexity-check
+# Code complexity analysis to detect overly complex functions
+#
+# Usage:
+#   - flow: aiki/complexity-check
+
+name: "Complexity Check"
+description: "Analyze code complexity and detect complex functions"
+version: 1
+
+PreCommit:
+  # Check Python complexity with radon
+  - shell: |
+      PYTHON_FILES=$(jj diff -r $change_id --summary | awk '{print $2}' | grep '\.py$' || true)
+
+      if [ -z "$PYTHON_FILES" ]; then
+        echo "No Python files to analyze"
+        exit 0
+      fi
+
+      echo "Analyzing Python complexity..."
+      radon cc $PYTHON_FILES -j > /tmp/aiki-radon-$change_id.json 2>/dev/null || true
+
+      COMPLEX=$(jq '[.. | .complexity? | select(. > 10)] | length' \
+        /tmp/aiki-radon-$change_id.json 2>/dev/null || echo "0")
+
+      if [ "$COMPLEX" -gt 0 ]; then
+        echo "⚠️  Found $COMPLEX overly complex function(s) (complexity > 10)"
+        jq -r 'to_entries[] | .value[] | select(.complexity > 10) |
+          "  • \(.name) (complexity: \(.complexity))"' \
+          /tmp/aiki-radon-$change_id.json 2>/dev/null || true
+      else
+        echo "✅ Complexity check passed"
+      fi
+    working_dir: "$cwd"
+    timeout: 15s
+    continue_on_error: true
+
+  # Check for long functions (AI anti-pattern)
+  - shell: |
+      FILES=$(jj diff -r $change_id --summary | awk '{print $2}')
+
+      LONG_FUNCTIONS=$(awk '/^def |^func |^function / {start=NR}
+        /^}/ && start {if (NR-start > 50) print FILENAME":"start}' \
+        $FILES 2>/dev/null | wc -l)
+
+      if [ "$LONG_FUNCTIONS" -gt 0 ]; then
+        echo "⚠️  Found $LONG_FUNCTIONS function(s) longer than 50 lines"
+        echo "    (AI-generated code often creates overly long functions)"
+      fi
+    working_dir: "$cwd"
+    timeout: 10s
+    continue_on_error: true
+
+  # Cleanup
+  - shell: "rm -f /tmp/aiki-radon-$change_id.json"
+    continue_on_error: true

@@ -1,0 +1,78 @@
+# Flow: company/slack-notify
+# Send Slack notifications about AI code activity
+#
+# Setup:
+#   export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK"
+#
+# Usage:
+#   - flow: company/slack-notify
+
+name: "Slack Notification"
+description: "Notify team about AI code changes"
+version: 1
+
+variables:
+  webhook: $SLACK_WEBHOOK_URL
+  channel: "#ai-activity"
+
+PostChange:
+  - http:
+      url: $webhook
+      method: POST
+      headers:
+        Content-Type: "application/json"
+      body:
+        text: "🤖 $agent edited `$event.file_path`"
+        channel: $channel
+    timeout: 5s
+    continue_on_error: true
+
+PreCommit:
+  - shell: |
+      # Get file count
+      FILE_COUNT=$(jj diff -r $change_id --summary | wc -l)
+
+      # Get quick lint results from change description
+      LINT_ISSUES=$(jj log -r $change_id --no-graph -T 'description' | \
+        grep -A 1 '\[quick-lint\]' | grep '^issues=' | cut -d= -f2 || echo "0")
+
+      echo "$FILE_COUNT" > /tmp/aiki-file-count.txt
+      echo "$LINT_ISSUES" > /tmp/aiki-lint-issues.txt
+    alias: collect_stats
+    timeout: 3s
+
+  # Send different message based on whether there were issues
+  - if: "$collect_stats.output contains 'LINT_ISSUES=0'"
+    then:
+      - http:
+          url: $webhook
+          method: POST
+          body:
+            text: |
+              ✅ Code Review Complete - No Issues
+
+              *Agent:* $agent
+              *Change:* `$change_id`
+              *Files:* $(cat /tmp/aiki-file-count.txt)
+            channel: $channel
+    else:
+      - http:
+          url: $webhook
+          method: POST
+          body:
+            text: |
+              ⚠️  Code Review Complete - Issues Found
+
+              *Agent:* $agent
+              *Change:* `$change_id`
+              *Files:* $(cat /tmp/aiki-file-count.txt)
+              *Lint Issues:* $(cat /tmp/aiki-lint-issues.txt)
+            channel: $channel
+    timeout: 5s
+    continue_on_error: true
+
+  # Cleanup
+  - shell: |
+      rm -f /tmp/aiki-file-count.txt
+      rm -f /tmp/aiki-lint-issues.txt
+    continue_on_error: true

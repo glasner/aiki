@@ -1,0 +1,63 @@
+# Flow: aiki/security-scan
+# Comprehensive security scanning with Semgrep
+#
+# Usage:
+#   - flow: aiki/security-scan
+
+name: "Security Scan"
+description: "Semgrep-based security analysis"
+version: 1
+
+PreCommit:
+  # Get list of changed files
+  - shell: |
+      jj diff -r $change_id --summary | \
+        awk '{print $2}' | \
+        grep -E '\.(py|js|ts|go|java|rb|rs)$' \
+        > /tmp/aiki-semgrep-files-$change_id.txt || true
+    timeout: 5s
+
+  # Run Semgrep security scan
+  - shell: |
+      if [ ! -s /tmp/aiki-semgrep-files-$change_id.txt ]; then
+        echo "No code files to scan"
+        exit 0
+      fi
+
+      semgrep scan \
+        --config=auto \
+        --config=p/security-audit \
+        --severity=ERROR \
+        --severity=WARNING \
+        --json \
+        --output=/tmp/aiki-semgrep-$change_id.json \
+        $(cat /tmp/aiki-semgrep-files-$change_id.txt) \
+        || true
+
+      ERRORS=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' \
+        /tmp/aiki-semgrep-$change_id.json)
+
+      echo "$ERRORS" > /tmp/aiki-semgrep-errors.txt
+    alias: scan
+    working_dir: "$cwd"
+    timeout: 30s
+
+  # Display results and fail if errors found
+  - if: "$scan.output contains 'ERRORS'"
+    then:
+      - shell: |
+          echo "❌ Security errors found:"
+          jq -r '.results[] | select(.extra.severity == "ERROR") |
+            "  • \(.path):\(.start.line) - \(.extra.message)"' \
+            /tmp/aiki-semgrep-$change_id.json
+        continue_on_error: true
+      - shell: "exit 1"
+    else:
+      - log: "✅ Security scan passed"
+
+  # Cleanup
+  - shell: |
+      rm -f /tmp/aiki-semgrep-files-$change_id.txt
+      rm -f /tmp/aiki-semgrep-$change_id.json
+      rm -f /tmp/aiki-semgrep-errors.txt
+    continue_on_error: true

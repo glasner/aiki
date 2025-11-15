@@ -1,0 +1,41 @@
+# Flow: my/desktop-alert
+# Personal desktop notifications for AI edits
+#
+# This is a user-level flow in ~/.aiki/flows/my/
+#
+# Usage:
+#   - flow: my/desktop-alert
+
+name: "Desktop Alert"
+description: "Show desktop notification on AI edits (macOS/Linux)"
+version: 1
+
+PostChange:
+  # macOS notification
+  - when: "$event.platform == 'macos'"
+    shell: |
+      osascript -e 'display notification "$agent edited $event.file_path" with title "Aiki"'
+    timeout: 1s
+    continue_on_error: true
+
+  # Linux notification (if available)
+  - when: "$event.platform == 'linux'"
+    shell: |
+      command -v notify-send >/dev/null && \
+        notify-send "Aiki" "$agent edited $event.file_path" || true
+    timeout: 1s
+    continue_on_error: true
+
+PreCommit:
+  # Different notification based on review outcome
+  - if: "$previous_step.exit_code == 0"
+    then:
+      - when: "$event.platform == 'macos'"
+        shell: |
+          osascript -e 'display notification "✅ Code review passed" with title "Aiki"'
+    else:
+      - when: "$event.platform == 'macos'"
+        shell: |
+          osascript -e 'display notification "❌ Code review failed" with title "Aiki"'
+    timeout: 1s
+    continue_on_error: true

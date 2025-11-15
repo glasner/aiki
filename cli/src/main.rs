@@ -8,7 +8,10 @@ mod jj;
 mod provenance;
 mod record_change;
 mod repo;
+mod sign_setup_wizard;
+mod signing;
 mod vendors;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -67,6 +70,9 @@ enum Commands {
         /// Filter by agent type (e.g., claude-code, cursor)
         #[arg(long)]
         agent: Option<String>,
+        /// Verify cryptographic signatures on changes
+        #[arg(long)]
+        verify: bool,
     },
     /// Show authors who contributed to changes
     Authors {
@@ -77,6 +83,12 @@ enum Commands {
         /// Output format: plain (default), git, json
         #[arg(long, default_value = "plain")]
         format: String,
+    },
+    /// Verify cryptographic signature on a change
+    Verify {
+        /// Change ID or revision (defaults to @)
+        #[arg(default_value = "@")]
+        revision: String,
     },
 }
 
@@ -127,8 +139,13 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Commands::Blame { file, agent } => blame_command(file, agent),
+        Commands::Blame {
+            file,
+            agent,
+            verify,
+        } => blame_command(file, agent, verify),
         Commands::Authors { changes, format } => authors_command(changes, format),
+        Commands::Verify { revision } => verify_command(revision),
     }
 }
 
@@ -201,6 +218,89 @@ fn hooks_install_command() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn verify_command(revision: String) -> Result<()> {
+    let current_dir = env::current_dir().context("Failed to get current directory")?;
+
+    // Verify we're in a JJ repository
+    if !current_dir.join(".jj").exists() {
+        anyhow::bail!("Not in a JJ repository. Run 'jj init' or 'aiki init' first.");
+    }
+
+    // Perform verification
+    let result =
+        verify::verify_change(&current_dir, &revision).context("Failed to verify change")?;
+
+    // Display results
+    verify::format_verification_result(&result);
+
+    // Exit with error code if verification failed
+    if !result.is_verified() && result.signature_status != verify::SignatureStatus::Unsigned {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Prompt for a numbered choice
+fn prompt_choice(prompt: &str, min: usize, max: usize) -> Result<usize> {
+    loop {
+        print!("{} [{}]: ", prompt, min);
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Ok(min);
+        }
+
+        match input.parse::<usize>() {
+            Ok(n) if n >= min && n <= max => return Ok(n),
+            _ => println!("Please enter a number between {} and {}", min, max),
+        }
+    }
+}
+
+/// Prompt for a string value
+fn prompt_string(prompt: &str, default: Option<&str>) -> Result<String> {
+    if let Some(def) = default {
+        print!("{} [{}]: ", prompt, def);
+    } else {
+        print!("{}: ", prompt);
+    }
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim().to_string();
+
+    if input.is_empty() {
+        if let Some(def) = default {
+            return Ok(def.to_string());
+        }
+    }
+
+    Ok(input)
+}
+
+/// Prompt for yes/no
+fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool> {
+    let default_str = if default { "Y/n" } else { "y/N" };
+    print!("{} [{}]: ", prompt, default_str);
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim().to_lowercase();
+
+    if input.is_empty() {
+        return Ok(default);
+    }
+
+    Ok(input == "y" || input == "yes")
 }
 
 fn init_command(quiet: bool) -> Result<()> {
@@ -314,6 +414,108 @@ fn init_command(quiet: bool) -> Result<()> {
 
     if !quiet {
         println!("✓ Configured Git hooks (→ {})", global_hooks.display());
+    }
+
+    // Configure commit signing
+    match signing::detect_signing_config()? {
+        Some(signing_config) => {
+            config::update_jj_signing_config(
+                &repo_root,
+                &signing_config.backend.to_string(),
+                Some(&signing_config.key),
+                "own",
+            )?;
+
+            // For SSH backend, create allowed-signers file
+            if matches!(signing_config.backend, signing::SigningBackend::Ssh) {
+                let email = signing::get_user_email(&repo_root)?;
+                signing::create_ssh_allowed_signers(&repo_root, &email, &signing_config.key)?;
+            }
+
+            if !quiet {
+                println!(
+                    "✓ Configured JJ commit signing ({:?})",
+                    signing_config.backend
+                );
+                println!("  Using key: {}", signing_config.key);
+            }
+        }
+        None => {
+            if !quiet {
+                println!("⚠ No signing keys detected");
+                println!();
+                println!("Commit signing provides cryptographic proof of AI authorship.");
+                println!();
+
+                // Check if we're in an interactive terminal
+                let is_interactive = atty::is(atty::Stream::Stdin);
+
+                if !is_interactive {
+                    println!("Run 'aiki doctor --fix' to set up signing interactively.");
+                    println!();
+                    println!("Continuing without signing...");
+                    println!();
+                } else {
+                    println!("What would you like to do?");
+                    println!("  1. Generate new signing key (recommended)");
+                    println!("  2. I have a key, let me specify it manually");
+                    println!("  3. Skip signing for now");
+                    println!();
+
+                    let choice = prompt_choice("Choice", 1, 3)?;
+
+                    match choice {
+                        1 => {
+                            // Launch wizard in generate mode
+                            let wizard = sign_setup_wizard::SignSetupWizard::new(repo_root.clone());
+                            wizard.run(None)?;
+                        }
+                        2 => {
+                            // Manual key configuration
+                            println!();
+                            println!("Manual Key Configuration");
+                            println!("========================");
+                            println!();
+
+                            println!("Which backend?");
+                            println!("  1. GPG");
+                            println!("  2. SSH");
+                            println!();
+
+                            let backend_choice = prompt_choice("Choice", 1, 2)?;
+                            let backend = if backend_choice == 1 {
+                                signing::SigningBackend::Gpg
+                            } else {
+                                signing::SigningBackend::Ssh
+                            };
+
+                            let key = prompt_string(
+                                if backend == signing::SigningBackend::Gpg {
+                                    "GPG Key ID (e.g., 4ED556E9729E000F)"
+                                } else {
+                                    "SSH public key path (e.g., ~/.ssh/id_ed25519.pub)"
+                                },
+                                None,
+                            )?;
+
+                            let wizard = sign_setup_wizard::SignSetupWizard::new(repo_root.clone());
+                            wizard
+                                .run(Some(sign_setup_wizard::SetupMode::Manual { backend, key }))?;
+                        }
+                        3 => {
+                            println!();
+                            println!("Skipping signing setup.");
+                            println!("You can set up signing later by running: aiki sign setup");
+                            println!();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    if !quiet {
         println!("\n✓ Repository initialized successfully!");
         println!("\nYour AI changes will now be tracked automatically.");
         println!("Git commits will include AI co-authors.");
@@ -339,7 +541,7 @@ fn find_jj_workspace(start_dir: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-fn blame_command(file: std::path::PathBuf, agent: Option<String>) -> Result<()> {
+fn blame_command(file: std::path::PathBuf, agent: Option<String>, verify: bool) -> Result<()> {
     // Get current directory
     let current_dir = env::current_dir().context("Failed to get current directory")?;
 
@@ -378,7 +580,7 @@ fn blame_command(file: std::path::PathBuf, agent: Option<String>) -> Result<()> 
         .context("Failed to generate blame information")?;
 
     // Format and print output
-    let output = blame_cmd.format_blame(&attributions, agent_filter);
+    let output = blame_cmd.format_blame(&attributions, agent_filter, verify);
     print!("{}", output);
 
     Ok(())
@@ -631,6 +833,57 @@ fn doctor_command(fix: bool) -> Result<()> {
             } else {
                 println!("  ✗ Git core.hooksPath not set");
                 println!("    → Run: aiki init");
+                issues_found += 1;
+            }
+        }
+
+        println!();
+    }
+
+    // Check commit signing (only if in a repo)
+    if current_dir.join(".jj").exists() {
+        println!("Commit Signing:");
+
+        match signing::read_signing_config(&current_dir) {
+            Ok(Some(config)) => {
+                println!("  ✓ JJ signing enabled ({:?})", config.backend);
+
+                match signing::verify_key_accessible(&config) {
+                    Ok(true) => {
+                        println!("  ✓ Signing key accessible: {}", config.key);
+                    }
+                    Ok(false) => {
+                        println!("  ✗ Signing key not found: {}", config.key);
+                        println!("    → Run: aiki sign setup");
+                        issues_found += 1;
+                    }
+                    Err(e) => {
+                        println!("  ✗ Error verifying key: {}", e);
+                        issues_found += 1;
+                    }
+                }
+            }
+            Ok(None) => {
+                println!("  ⚠ JJ signing not configured");
+
+                if fix {
+                    println!();
+                    println!("Would you like to set up signing now?");
+                    let setup = prompt_yes_no("Set up signing", true)?;
+
+                    if setup {
+                        let wizard = sign_setup_wizard::SignSetupWizard::new(current_dir.clone());
+                        wizard.run(None)?;
+                    } else {
+                        println!("Skipping signing setup.");
+                    }
+                } else {
+                    println!("    → Run: aiki doctor --fix (to set up signing)");
+                }
+                // Not counted as error, just a warning
+            }
+            Err(e) => {
+                println!("  ✗ Error reading JJ config: {}", e);
                 issues_found += 1;
             }
         }

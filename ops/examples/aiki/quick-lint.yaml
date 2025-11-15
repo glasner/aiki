@@ -1,0 +1,47 @@
+# Flow: aiki/quick-lint
+# Fast linting for immediate feedback after AI edits
+#
+# This is a reusable flow that can be referenced from other flows:
+#   - flow: aiki/quick-lint
+
+name: "Quick Lint"
+description: "Lightweight linting for fast feedback"
+version: 1
+
+PostChange:
+  # Detect file type
+  - shell: |
+      FILE="$event.file_path"
+      case "$FILE" in
+        *.py)   echo "python" > /tmp/aiki-lint-type.txt ;;
+        *.js)   echo "javascript" > /tmp/aiki-lint-type.txt ;;
+        *.ts)   echo "typescript" > /tmp/aiki-lint-type.txt ;;
+        *.rs)   echo "rust" > /tmp/aiki-lint-type.txt ;;
+        *.go)   echo "go" > /tmp/aiki-lint-type.txt ;;
+        *)      echo "none" > /tmp/aiki-lint-type.txt ;;
+      esac
+    timeout: 1s
+
+  # Python: Ruff
+  - when: "$event.file_path ends_with '.py'"
+    shell: "ruff check $event.file_path --output-format=json"
+    timeout: 2s
+    continue_on_error: true
+
+  # JavaScript/TypeScript: ESLint
+  - when: "$event.file_path ends_with '.js' OR $event.file_path ends_with '.ts'"
+    shell: "npx eslint $event.file_path --format=json"
+    timeout: 3s
+    continue_on_error: true
+
+  # Rust: Clippy
+  - when: "$event.file_path ends_with '.rs'"
+    shell: "cargo clippy --message-format=json"
+    timeout: 5s
+    continue_on_error: true
+
+  # Go: golangci-lint
+  - when: "$event.file_path ends_with '.go'"
+    shell: "golangci-lint run --fast $event.file_path"
+    timeout: 3s
+    continue_on_error: true
