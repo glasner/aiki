@@ -3,6 +3,7 @@ mod blame;
 mod config;
 mod event_bus;
 mod events;
+mod flows;
 mod handlers;
 mod jj;
 mod provenance;
