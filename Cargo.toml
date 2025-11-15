@@ -10,6 +10,7 @@ jj-lib = "0.35.0"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 chrono = "0.4"
 dirs = "5.0"
 hex = "0.4"
@@ -21,3 +22,8 @@ atty = "0.2"
 assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3.0"
+criterion = "0.5"
+
+[[bench]]
+name = "flow_performance"
+harness = false
