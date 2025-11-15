@@ -15,6 +15,7 @@ dirs = "5.0"
 hex = "0.4"
 pollster = "0.4"
 sysinfo = "0.32"
+atty = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"

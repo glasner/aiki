@@ -301,3 +301,120 @@ fn get_aiki_binary_path() -> PathBuf {
     path.push("aiki");
     path
 }
+
+/// Test that blame --verify shows signature indicators
+#[test]
+fn test_blame_verify_shows_signature_status() {
+    // Create a temporary directory
+    let temp_dir = TempDir::new().unwrap();
+    let repo_path = temp_dir.path();
+
+    // Initialize git repository
+    Command::new("git")
+        .args(["init"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to initialize git repo");
+
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    // Initialize JJ (colocated)
+    Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to initialize JJ repo");
+
+    Command::new("jj")
+        .args(["config", "set", "--repo", "user.name", "Test User"])
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    Command::new("jj")
+        .args(["config", "set", "--repo", "user.email", "test@example.com"])
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    // Create a test file with provenance
+    let test_file = repo_path.join("test.txt");
+    fs::write(&test_file, "line 1\nline 2\nline 3\n").unwrap();
+
+    let description = r#"Test change
+
+[aiki]
+agent=claude-code
+session=test-session-123
+tool=Edit
+confidence=High
+method=Hook
+[/aiki]"#;
+
+    Command::new("jj")
+        .args(["describe", "-m", description])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to describe change");
+
+    // Run blame without --verify (should not show signature indicators)
+    let aiki_bin = get_aiki_binary_path();
+    let output = Command::new(&aiki_bin)
+        .args(["blame", "test.txt"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run aiki blame");
+
+    let blame_output = String::from_utf8_lossy(&output.stdout);
+    println!("Blame output (without --verify):\n{}", blame_output);
+
+    // Should NOT contain signature indicators
+    assert!(
+        !blame_output.contains("✓ "),
+        "Blame without --verify should not show ✓"
+    );
+    assert!(
+        !blame_output.contains("✗ "),
+        "Blame without --verify should not show ✗"
+    );
+    assert!(
+        !blame_output.contains("⚠ "),
+        "Blame without --verify should not show ⚠"
+    );
+
+    // Run blame with --verify (should show signature indicators)
+    let output = Command::new(&aiki_bin)
+        .args(["blame", "test.txt", "--verify"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run aiki blame --verify");
+
+    let blame_verify_output = String::from_utf8_lossy(&output.stdout);
+    println!("Blame output (with --verify):\n{}", blame_verify_output);
+
+    // Should contain signature indicators (unsigned changes show ⚠)
+    assert!(
+        blame_verify_output.contains("⚠ "),
+        "Blame with --verify should show ⚠ for unsigned changes"
+    );
+
+    // Should still show the content
+    assert!(
+        blame_verify_output.contains("line 1"),
+        "Should show file content"
+    );
+    assert!(
+        blame_verify_output.contains("Claude Code"),
+        "Should show agent"
+    );
+}
