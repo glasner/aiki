@@ -77,22 +77,126 @@ fn bench_event_dispatch(c: &mut Criterion) {
     });
 }
 
-/// Benchmark: Flow parsing (will implement after parser is done)
+/// Benchmark: Flow parsing
 fn bench_flow_parsing(c: &mut Criterion) {
+    let flow_yaml = r#"
+name: "Test Flow"
+version: "1"
+
+PostChange:
+  - let: description = self.build_description
+    on_failure: fail
+  - jj: describe -m "$description"
+  - jj: new
+  - log: "Recorded change"
+"#;
+
     c.bench_function("flow_parsing", |b| {
         b.iter(|| {
-            // Placeholder - will implement after parser is done
-            black_box(1 + 1);
+            use aiki::flows::FlowParser;
+            let flow = FlowParser::parse_str(black_box(flow_yaml)).unwrap();
+            black_box(flow);
         });
     });
 }
 
-/// Benchmark: Variable interpolation (will implement after variable resolver is done)
+/// Benchmark: Variable interpolation
 fn bench_variable_interpolation(c: &mut Criterion) {
+    use aiki::flows::VariableResolver;
+    use std::collections::HashMap;
+
+    let mut resolver = VariableResolver::new();
+    let mut event_vars = HashMap::new();
+    event_vars.insert("file_path".to_string(), "/path/to/file.rs".to_string());
+    event_vars.insert("agent".to_string(), "ClaudeCode".to_string());
+    event_vars.insert("session_id".to_string(), "test-session-123".to_string());
+
+    for (key, value) in &event_vars {
+        resolver.add_var(format!("event.{}", key), value.clone());
+    }
+
+    resolver.add_var("cwd", "/home/user/project".to_string());
+
     c.bench_function("variable_interpolation", |b| {
         b.iter(|| {
-            // Placeholder - will implement after variable resolver is done
-            black_box(1 + 1);
+            let input = "File $event.file_path modified by $event.agent in $cwd (session: $event.session_id)";
+            let result = resolver.resolve(black_box(input));
+            black_box(result);
+        });
+    });
+}
+
+/// Benchmark: Let action execution (variable aliasing only)
+fn bench_let_action_execution(c: &mut Criterion) {
+    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, LetAction};
+    use std::path::PathBuf;
+
+    let actions = vec![
+        Action::Let(LetAction {
+            let_: "file = $event.file_path".to_string(),
+            on_failure: FailureMode::Continue,
+        }),
+        Action::Let(LetAction {
+            let_: "copy = $file".to_string(),
+            on_failure: FailureMode::Continue,
+        }),
+    ];
+
+    c.bench_function("let_action_execution", |b| {
+        b.iter(|| {
+            let mut context =
+                ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+            let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
+            black_box(results);
+        });
+    });
+}
+
+/// Benchmark: Full provenance flow with let syntax (including JJ commands)
+fn bench_provenance_flow_with_let(c: &mut Criterion) {
+    let temp_dir = init_jj_workspace();
+
+    // Create a test file to track
+    std::fs::write(temp_dir.path().join("test.rs"), "fn main() {}").unwrap();
+
+    // Add it to JJ
+    Command::new("jj")
+        .arg("file")
+        .arg("track")
+        .arg("test.rs")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to track file");
+
+    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, JjAction, LetAction};
+    use std::path::PathBuf;
+
+    let actions = vec![
+        // Let action to call build_description function
+        Action::Let(LetAction {
+            let_: "description = aiki/provenance.build_description".to_string(),
+            on_failure: FailureMode::Fail,
+        }),
+        // JJ action to update change description
+        Action::Jj(JjAction {
+            jj: "describe -m \"$description\"".to_string(),
+            timeout: None,
+            on_failure: FailureMode::Fail,
+            alias: None,
+        }),
+    ];
+
+    c.bench_function("provenance_flow_with_let", |b| {
+        b.iter(|| {
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
+                .with_event_var("agent", "claude-code")
+                .with_event_var("session_id", "test-session-123")
+                .with_event_var("tool_name", "Edit")
+                .with_event_var("file_path", "test.rs");
+
+            let results = FlowExecutor::execute_actions(black_box(&actions), &mut context);
+            black_box(results);
         });
     });
 }
@@ -102,6 +206,8 @@ criterion_group!(
     bench_current_provenance_recording,
     bench_event_dispatch,
     bench_flow_parsing,
-    bench_variable_interpolation
+    bench_variable_interpolation,
+    bench_let_action_execution,
+    bench_provenance_flow_with_let
 );
 criterion_main!(benches);

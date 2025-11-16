@@ -3,8 +3,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::types::{
-    Action, ActionResult, AikiAction, ExecutionContext, FailureMode, JjAction, LogAction,
-    ShellAction,
+    Action, ActionResult, AikiAction, ExecutionContext, FailureMode, JjAction, LetAction,
+    LogAction, ShellAction,
 };
 use super::variables::VariableResolver;
 
@@ -12,6 +12,37 @@ use super::variables::VariableResolver;
 pub struct FlowExecutor;
 
 impl FlowExecutor {
+    /// Create a variable resolver with consistent variable availability
+    ///
+    /// Makes variables available both with and without `event.` prefix:
+    /// - $event.file_path (for event variables)
+    /// - $file_path (for event variables, let-bound variables)
+    /// - $description (for let-bound variables)
+    /// Create a variable resolver with proper variable scoping
+    ///
+    /// Variable scopes:
+    /// - Event variables (from actual events): $event.file_path, $event.agent
+    /// - Let variables (user-defined): $description, $my_var (no event. prefix)
+    /// - System variables: $cwd
+    /// - Environment variables: $HOME, $PATH
+    fn create_resolver(context: &ExecutionContext) -> VariableResolver {
+        let mut resolver = VariableResolver::new();
+
+        // Add event variables (only accessible via $event.key)
+        for (key, value) in &context.event_vars {
+            resolver.add_var(format!("event.{}", key), value.clone());
+        }
+
+        // Add let variables (accessible via $key without event. prefix)
+        for (key, value) in &context.let_vars {
+            resolver.add_var(key.clone(), value.clone());
+        }
+
+        resolver.add_var("cwd", context.cwd.to_string_lossy().to_string());
+        resolver.add_env_vars(&context.env_vars);
+
+        resolver
+    }
     /// Execute a list of actions sequentially
     pub fn execute_actions(
         actions: &[Action],
@@ -22,17 +53,8 @@ impl FlowExecutor {
         for action in actions {
             let result = Self::execute_action(action, context)?;
 
-            // Store step results for reference by subsequent actions
-            match action {
-                Action::Aiki(aiki_action) => {
-                    let step_name = &aiki_action.aiki;
-                    Self::store_step_result(context, step_name, &result);
-                }
-                Action::Shell(_) | Action::Jj(_) | Action::Log(_) => {
-                    // For now, only aiki actions are referenceable
-                    // Phase 5.2 will add support for all action types
-                }
-            }
+            // Store action results for reference by subsequent actions
+            Self::store_action_result(action, &result, context);
 
             // Check failure mode
             let should_stop = match action {
@@ -41,6 +63,9 @@ impl FlowExecutor {
                 }
                 Action::Jj(jj_action) => {
                     !result.success && jj_action.on_failure == FailureMode::Fail
+                }
+                Action::Let(let_action) => {
+                    !result.success && let_action.on_failure == FailureMode::Fail
                 }
                 Action::Aiki(aiki_action) => {
                     !result.success && aiki_action.on_failure == FailureMode::Fail
@@ -64,51 +89,115 @@ impl FlowExecutor {
             Action::Shell(shell_action) => Self::execute_shell(shell_action, context),
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
+            Action::Let(let_action) => Self::execute_let(let_action, context),
             Action::Aiki(aiki_action) => Self::execute_aiki(aiki_action, context),
         }
     }
 
-    /// Store step result as variables for subsequent actions
+    /// Store action result as variables for subsequent actions
     ///
-    /// Creates variables like:
-    /// - $step_name.output
-    /// - $step_name.exit_code
-    /// - $step_name.failed
-    fn store_step_result(context: &mut ExecutionContext, step_name: &str, result: &ActionResult) {
-        // Store output
-        if !result.stdout.is_empty() {
-            context
-                .event_vars
-                .insert(format!("{}.output", step_name), result.stdout.clone());
+    /// For Let actions: stores the variable and its structured metadata
+    /// For Aiki actions: stores step results for backward compatibility
+    /// For Shell/Jj/Log with alias: stores the variable
+    fn store_action_result(action: &Action, result: &ActionResult, context: &mut ExecutionContext) {
+        match action {
+            Action::Let(let_action) => {
+                // Parse the variable name from "variable = expression"
+                if let Some(variable_name) = let_action.let_.split('=').next() {
+                    let variable_name = variable_name.trim();
+
+                    // Store the variable value in let_vars (not event_vars)
+                    context
+                        .let_vars
+                        .insert(variable_name.to_string(), result.stdout.clone());
+
+                    // Store structured metadata
+                    context
+                        .variable_metadata
+                        .insert(variable_name.to_string(), result.clone());
+
+                    // Also store dotted properties in let_vars for backward compatibility
+                    if !result.stdout.is_empty() {
+                        context
+                            .let_vars
+                            .insert(format!("{}.output", variable_name), result.stdout.clone());
+                    }
+                    if let Some(exit_code) = result.exit_code {
+                        context.let_vars.insert(
+                            format!("{}.exit_code", variable_name),
+                            exit_code.to_string(),
+                        );
+                    }
+                    context.let_vars.insert(
+                        format!("{}.failed", variable_name),
+                        (!result.success).to_string(),
+                    );
+                }
+            }
+            Action::Shell(shell_action) => {
+                if let Some(alias) = &shell_action.alias {
+                    // Store the variable value in let_vars
+                    context
+                        .let_vars
+                        .insert(alias.clone(), result.stdout.clone());
+
+                    // Store structured metadata
+                    context
+                        .variable_metadata
+                        .insert(alias.clone(), result.clone());
+                }
+            }
+            Action::Jj(jj_action) => {
+                if let Some(alias) = &jj_action.alias {
+                    // Store the variable value in let_vars
+                    context
+                        .let_vars
+                        .insert(alias.clone(), result.stdout.clone());
+
+                    // Store structured metadata
+                    context
+                        .variable_metadata
+                        .insert(alias.clone(), result.clone());
+                }
+            }
+            Action::Log(log_action) => {
+                if let Some(alias) = &log_action.alias {
+                    // Store the variable value in let_vars
+                    context
+                        .let_vars
+                        .insert(alias.clone(), result.stdout.clone());
+
+                    // Store structured metadata
+                    context
+                        .variable_metadata
+                        .insert(alias.clone(), result.clone());
+                }
+            }
+            Action::Aiki(aiki_action) => {
+                // Backward compatibility: store step results with dotted notation
+                let step_name = &aiki_action.aiki;
+                if !result.stdout.is_empty() {
+                    context
+                        .event_vars
+                        .insert(format!("{}.output", step_name), result.stdout.clone());
+                }
+                if let Some(exit_code) = result.exit_code {
+                    context
+                        .event_vars
+                        .insert(format!("{}.exit_code", step_name), exit_code.to_string());
+                }
+                context.event_vars.insert(
+                    format!("{}.failed", step_name),
+                    (!result.success).to_string(),
+                );
+            }
         }
-
-        // Store exit code
-        if let Some(exit_code) = result.exit_code {
-            context
-                .event_vars
-                .insert(format!("{}.exit_code", step_name), exit_code.to_string());
-        }
-
-        // Store failed status
-        context.event_vars.insert(
-            format!("{}.failed", step_name),
-            (!result.success).to_string(),
-        );
-
-        // Store result status
-        context.event_vars.insert(
-            format!("{}.result", step_name),
-            if result.success { "success" } else { "failed" }.to_string(),
-        );
     }
 
     /// Execute a shell command
     fn execute_shell(action: &ShellAction, context: &ExecutionContext) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = VariableResolver::new();
-        resolver.add_event_vars(&context.event_vars);
-        resolver.add_var("cwd", context.cwd.to_string_lossy().to_string());
-        resolver.add_env_vars(&context.env_vars);
+        // Create variable resolver with consistent variable availability
+        let resolver = Self::create_resolver(context);
 
         // Resolve variables in command
         let command = resolver.resolve(&action.shell);
@@ -142,11 +231,8 @@ impl FlowExecutor {
 
     /// Execute a JJ command
     fn execute_jj(action: &JjAction, context: &ExecutionContext) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = VariableResolver::new();
-        resolver.add_event_vars(&context.event_vars);
-        resolver.add_var("cwd", context.cwd.to_string_lossy().to_string());
-        resolver.add_env_vars(&context.env_vars);
+        // Create variable resolver with consistent variable availability
+        let resolver = Self::create_resolver(context);
 
         // Resolve variables in command
         let jj_args = resolver.resolve(&action.jj);
@@ -155,14 +241,14 @@ impl FlowExecutor {
             eprintln!("[flows] Executing jj: {}", jj_args);
         }
 
-        // Parse arguments
-        let args: Vec<&str> = jj_args.split_whitespace().collect();
+        // Parse arguments using proper shell word splitting (handles quoted args)
+        let args = shell_words::split(&jj_args)
+            .with_context(|| format!("Failed to parse jj arguments: {}", jj_args))?;
 
-        // Execute JJ command
+        // Execute JJ command (using direct argv, no shell invocation)
         let output = if let Some(timeout_str) = &action.timeout {
             let timeout = parse_timeout(timeout_str)?;
-            let full_command = format!("jj {}", jj_args);
-            execute_with_timeout(&full_command, &context.cwd, timeout)?
+            execute_with_timeout_argv("jj", &args, &context.cwd, timeout)?
         } else {
             Command::new("jj")
                 .args(&args)
@@ -181,11 +267,8 @@ impl FlowExecutor {
 
     /// Execute a log action
     fn execute_log(action: &LogAction, context: &ExecutionContext) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = VariableResolver::new();
-        resolver.add_event_vars(&context.event_vars);
-        resolver.add_var("cwd", context.cwd.to_string_lossy().to_string());
-        resolver.add_env_vars(&context.env_vars);
+        // Create variable resolver with consistent variable availability
+        let resolver = Self::create_resolver(context);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.log);
@@ -194,6 +277,220 @@ impl FlowExecutor {
         eprintln!("[aiki] {}", message);
 
         Ok(ActionResult::success())
+    }
+
+    /// Execute a let binding action
+    ///
+    /// Supports two modes:
+    /// 1. Function call: `let description = aiki/provenance.build_description`
+    /// 2. Variable aliasing: `let desc = $description`
+    fn execute_let(action: &LetAction, context: &ExecutionContext) -> Result<ActionResult> {
+        // Parse the let binding: "variable = expression"
+        let parts: Vec<&str> = action.let_.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid let syntax: '{}'. Expected 'variable = expression'",
+                action.let_
+            );
+        }
+
+        let variable_name = parts[0].trim();
+        let expression = parts[1].trim();
+
+        // Validate variable name
+        if !Self::is_valid_variable_name(variable_name) {
+            anyhow::bail!(
+                "Invalid variable name: '{}'. Variable names must start with a letter or underscore, \
+                 and contain only letters, numbers, and underscores.",
+                variable_name
+            );
+        }
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[flows] Let binding: {} = {}", variable_name, expression);
+        }
+
+        // Check if this is variable aliasing (starts with $) or a function call
+        if expression.starts_with('$') {
+            // Mode 2: Variable aliasing
+            Self::execute_let_alias(variable_name, expression, context)
+        } else {
+            // Mode 1: Function call
+            Self::execute_let_function(variable_name, expression, context)
+        }
+    }
+
+    /// Validate variable name (must start with letter/underscore, contain only alphanumeric/underscore)
+    fn is_valid_variable_name(name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+
+        let mut chars = name.chars();
+        let first = chars.next().unwrap();
+
+        // First character must be letter or underscore
+        if !first.is_alphabetic() && first != '_' {
+            return false;
+        }
+
+        // Remaining characters must be alphanumeric or underscore
+        chars.all(|c| c.is_alphanumeric() || c == '_')
+    }
+
+    /// Execute a let binding for variable aliasing: `let desc = $description`
+    fn execute_let_alias(
+        variable_name: &str,
+        expression: &str,
+        context: &ExecutionContext,
+    ) -> Result<ActionResult> {
+        // Create variable resolver with consistent variable availability
+        let resolver = Self::create_resolver(context);
+
+        // Resolve the variable reference
+        let value = resolver.resolve(expression);
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[flows] Variable alias: {} = {}", variable_name, value);
+        }
+
+        // Return the value as stdout
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: value,
+            stderr: String::new(),
+        })
+    }
+
+    /// Execute a let binding for function call: `let description = aiki/provenance.build_description`
+    /// Supports `self.function` syntax to reference functions in the current flow
+    fn execute_let_function(
+        variable_name: &str,
+        function_path: &str,
+        context: &ExecutionContext,
+    ) -> Result<ActionResult> {
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[flows] Function call: {} = {}",
+                variable_name, function_path
+            );
+        }
+
+        // Handle self.function syntax
+        let resolved_path = if function_path.starts_with("self.") {
+            // Extract function name from self.function
+            let function_name = function_path.strip_prefix("self.").unwrap();
+
+            // Get current flow name from context
+            let flow_name = context.flow_name.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot use 'self.{}' - no flow context available",
+                    function_name
+                )
+            })?;
+
+            // Convert flow name (e.g., "aiki/provenance") to module.function
+            // Extract module from flow name: aiki/provenance -> provenance
+            let module = flow_name.split('/').last().unwrap_or(flow_name);
+            format!("aiki/{}.{}", module, function_name)
+        } else {
+            function_path.to_string()
+        };
+
+        // Parse function path: namespace/module.function
+        // For now, we only support aiki/* namespace
+        if !resolved_path.starts_with("aiki/") {
+            anyhow::bail!(
+                "Unsupported function namespace in '{}'. Only 'aiki/*' functions are supported.",
+                resolved_path
+            );
+        }
+
+        // Extract module.function part
+        let module_function = resolved_path.strip_prefix("aiki/").unwrap();
+
+        // Split into module and function
+        let parts: Vec<&str> = module_function.splitn(2, '.').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid function path: '{}'. Expected format: 'aiki/module.function' or 'self.function'",
+                function_path
+            );
+        }
+
+        let module = parts[0];
+        let function = parts[1];
+
+        // Route to appropriate function
+        match (module, function) {
+            ("provenance", "build_description") => Self::fn_build_provenance_description(context),
+            _ => anyhow::bail!(
+                "Unknown function: {}/{}. Available functions: aiki/provenance.build_description",
+                module,
+                function
+            ),
+        }
+    }
+
+    /// Built-in function: aiki/provenance.build_description
+    ///
+    /// Builds a provenance description from event context.
+    /// Requires: $event.agent, $event.session_id, $event.tool_name
+    fn fn_build_provenance_description(context: &ExecutionContext) -> Result<ActionResult> {
+        use crate::provenance::{
+            AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
+        };
+
+        // Extract required event variables
+        let agent_str = context
+            .event_vars
+            .get("agent")
+            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.agent"))?;
+
+        let session_id = context
+            .event_vars
+            .get("session_id")
+            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.session_id"))?;
+
+        let tool_name = context
+            .event_vars
+            .get("tool_name")
+            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.tool_name"))?;
+
+        // Parse agent type
+        let agent_type = match agent_str.as_str() {
+            "ClaudeCode" => AgentType::ClaudeCode,
+            "Cursor" => AgentType::Cursor,
+            _ => AgentType::Unknown,
+        };
+
+        // Build provenance record
+        let provenance = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type,
+                version: None,
+                detected_at: chrono::Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: session_id.clone(),
+            tool_name: tool_name.clone(),
+        };
+
+        // Generate description
+        let description = provenance.to_description();
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[flows] Generated provenance description");
+        }
+
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: description,
+            stderr: String::new(),
+        })
     }
 
     /// Execute a built-in Aiki function
@@ -300,7 +597,36 @@ fn parse_timeout(timeout_str: &str) -> Result<Duration> {
     }
 }
 
-/// Execute command with timeout
+/// Execute command with timeout using direct argv (no shell invocation)
+fn execute_with_timeout_argv(
+    program: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let cwd = cwd.to_path_buf();
+    let program = program.to_string();
+    let args = args.to_vec();
+
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let output = Command::new(&program)
+            .args(&args)
+            .current_dir(&cwd)
+            .output();
+        let _ = tx.send(output);
+    });
+
+    rx.recv_timeout(timeout)
+        .context("Command timed out")?
+        .context("Failed to execute command")
+}
+
+/// Execute command with timeout (legacy shell-based version)
 fn execute_with_timeout(
     command: &str,
     cwd: &std::path::Path,
@@ -362,6 +688,7 @@ mod tests {
     fn test_execute_log_action() {
         let action = LogAction {
             log: "Test message".to_string(),
+            alias: None,
         };
 
         let context = ExecutionContext::new(PathBuf::from("/tmp"));
@@ -374,6 +701,7 @@ mod tests {
     fn test_execute_log_with_variables() {
         let action = LogAction {
             log: "File: $event.file_path".to_string(),
+            alias: None,
         };
 
         let context =
@@ -389,6 +717,7 @@ mod tests {
             shell: "echo 'test'".to_string(),
             timeout: None,
             on_failure: FailureMode::Continue,
+            alias: None,
         };
 
         let context = ExecutionContext::new(PathBuf::from("/tmp"));
@@ -404,6 +733,7 @@ mod tests {
             shell: "echo $event.file_path".to_string(),
             timeout: None,
             on_failure: FailureMode::Continue,
+            alias: None,
         };
 
         let context =
@@ -419,14 +749,17 @@ mod tests {
         let actions = vec![
             Action::Log(LogAction {
                 log: "Step 1".to_string(),
+                alias: None,
             }),
             Action::Shell(ShellAction {
                 shell: "echo 'Step 2'".to_string(),
                 timeout: None,
                 on_failure: FailureMode::Continue,
+                alias: None,
             }),
             Action::Log(LogAction {
                 log: "Step 3".to_string(),
+                alias: None,
             }),
         ];
 
@@ -444,9 +777,11 @@ mod tests {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
                 on_failure: FailureMode::Continue, // But we continue
+                alias: None,
             }),
             Action::Log(LogAction {
                 log: "This should still run".to_string(),
+                alias: None,
             }),
         ];
 
@@ -465,9 +800,11 @@ mod tests {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
                 on_failure: FailureMode::Fail, // Stop on failure
+                alias: None,
             }),
             Action::Log(LogAction {
                 log: "This should NOT run".to_string(),
+                alias: None,
             }),
         ];
 
@@ -475,5 +812,416 @@ mod tests {
 
         let result = FlowExecutor::execute_actions(&actions, &mut context);
         assert!(result.is_err()); // Should fail
+    }
+
+    #[test]
+    fn test_is_valid_variable_name() {
+        // Valid names
+        assert!(FlowExecutor::is_valid_variable_name("description"));
+        assert!(FlowExecutor::is_valid_variable_name("desc"));
+        assert!(FlowExecutor::is_valid_variable_name("_private"));
+        assert!(FlowExecutor::is_valid_variable_name("var123"));
+        assert!(FlowExecutor::is_valid_variable_name("my_var"));
+        assert!(FlowExecutor::is_valid_variable_name("CamelCase"));
+
+        // Invalid names
+        assert!(!FlowExecutor::is_valid_variable_name(""));
+        assert!(!FlowExecutor::is_valid_variable_name("123var")); // starts with number
+        assert!(!FlowExecutor::is_valid_variable_name("my-var")); // contains hyphen
+        assert!(!FlowExecutor::is_valid_variable_name("my.var")); // contains dot
+        assert!(!FlowExecutor::is_valid_variable_name("my var")); // contains space
+        assert!(!FlowExecutor::is_valid_variable_name("$var")); // starts with $
+    }
+
+    #[test]
+    fn test_execute_let_variable_aliasing() {
+        let action = LetAction {
+            let_: "desc = $event.file_path".to_string(),
+            on_failure: FailureMode::Continue,
+        };
+
+        let context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        assert!(result.success);
+        assert_eq!(result.stdout, "test.rs");
+    }
+
+    #[test]
+    fn test_execute_let_invalid_syntax() {
+        let action = LetAction {
+            let_: "invalid_syntax".to_string(), // Missing '='
+            on_failure: FailureMode::Continue,
+        };
+
+        let context = ExecutionContext::new(PathBuf::from("/tmp"));
+
+        let result = FlowExecutor::execute_let(&action, &context);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid let syntax"));
+    }
+
+    #[test]
+    fn test_execute_let_invalid_variable_names() {
+        let invalid_names = vec![
+            "123var = value", // starts with number
+            "my-var = value", // contains hyphen
+            "my.var = value", // contains dot
+            "my var = value", // contains space
+            "$var = value",   // starts with $
+            " = value",       // empty name
+        ];
+
+        for let_str in invalid_names {
+            let action = LetAction {
+                let_: let_str.to_string(),
+                on_failure: FailureMode::Continue,
+            };
+
+            let context = ExecutionContext::new(PathBuf::from("/tmp"));
+
+            let result = FlowExecutor::execute_let(&action, &context);
+            assert!(result.is_err(), "Should reject: {}", let_str);
+            assert!(
+                result.unwrap_err().to_string().contains("Invalid variable"),
+                "Should mention invalid variable for: {}",
+                let_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_execute_let_whitespace_trimming() {
+        let action = LetAction {
+            let_: "  description  =  $event.file_path  ".to_string(),
+            on_failure: FailureMode::Continue,
+        };
+
+        let context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        assert!(result.success);
+        assert_eq!(result.stdout, "test.rs");
+    }
+
+    #[test]
+    fn test_let_variable_storage() {
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "desc = $event.file_path".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Log(LogAction {
+                log: "Variable: $desc".to_string(),
+                alias: None,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+
+        // Check that the variable was stored in let_vars
+        assert_eq!(context.let_vars.get("desc"), Some(&"test.rs".to_string()));
+    }
+
+    #[test]
+    fn test_shell_alias_stores_structured_metadata() {
+        let actions = vec![Action::Shell(ShellAction {
+            shell: "echo 'test output'".to_string(),
+            timeout: None,
+            on_failure: FailureMode::Continue,
+            alias: Some("result".to_string()),
+        })];
+
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+
+        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+
+        // Check that the variable was stored in let_vars
+        assert!(context.let_vars.get("result").is_some());
+        assert!(context
+            .let_vars
+            .get("result")
+            .unwrap()
+            .contains("test output"));
+
+        // Check that structured metadata was stored
+        assert!(context.variable_metadata.get("result").is_some());
+        assert!(context.variable_metadata.get("result").unwrap().success);
+    }
+
+    #[test]
+    fn test_let_creates_structured_metadata() {
+        let actions = vec![Action::Let(LetAction {
+            let_: "desc = $event.file_path".to_string(),
+            on_failure: FailureMode::Continue,
+        })];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Check that structured metadata was stored
+        assert!(context.variable_metadata.get("desc").is_some());
+        let metadata = context.variable_metadata.get("desc").unwrap();
+        assert!(metadata.success);
+        assert_eq!(metadata.stdout, "test.rs");
+
+        // Check dotted properties for backward compatibility (stored in let_vars)
+        assert_eq!(
+            context.let_vars.get("desc.output"),
+            Some(&"test.rs".to_string())
+        );
+        assert_eq!(
+            context.let_vars.get("desc.failed"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_actions_without_alias_dont_store_variables() {
+        let actions = vec![Action::Shell(ShellAction {
+            shell: "echo 'test'".to_string(),
+            timeout: None,
+            on_failure: FailureMode::Continue,
+            alias: None, // No alias
+        })];
+
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+
+        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Check that no extra variables were stored (except for any built-ins)
+        // The variable_metadata should be empty since no alias was provided
+        assert!(context.variable_metadata.is_empty());
+    }
+
+    #[test]
+    fn test_let_with_missing_context_vars() {
+        // Function expects event.agent but it's not set
+        let action = LetAction {
+            let_: "description = aiki/provenance.build_description".to_string(),
+            on_failure: FailureMode::Fail,
+        };
+
+        let context = ExecutionContext::new(PathBuf::from("/tmp"));
+        // Deliberately don't set required context vars
+
+        let result = FlowExecutor::execute_let(&action, &context);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Should get clear error message about missing variable
+        assert!(err_msg.contains("event.agent"));
+    }
+
+    #[test]
+    fn test_let_creates_copy_not_reference() {
+        // Verify aliasing behavior creates copies
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "original = $event.value".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Let(LetAction {
+                let_: "copy = $original".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("value", "initial");
+
+        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Both should have the same value in let_vars
+        assert_eq!(
+            context.let_vars.get("original"),
+            Some(&"initial".to_string())
+        );
+        assert_eq!(context.let_vars.get("copy"), Some(&"initial".to_string()));
+
+        // Modify original
+        context
+            .let_vars
+            .insert("original".to_string(), "modified".to_string());
+
+        // Copy should still have original value (it's a copy, not a reference)
+        assert_eq!(context.let_vars.get("copy"), Some(&"initial".to_string()));
+        assert_eq!(
+            context.let_vars.get("original"),
+            Some(&"modified".to_string())
+        );
+    }
+
+    #[test]
+    fn test_let_variable_shadowing() {
+        // Verify that reassigning variables works correctly
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "x = $event.first".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Let(LetAction {
+                let_: "x = $event.second".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+        ];
+
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"))
+            .with_event_var("first", "foo")
+            .with_event_var("second", "bar");
+
+        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Second assignment should overwrite first (in let_vars)
+        assert_eq!(context.let_vars.get("x"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_let_aliasing_copies_all_structured_metadata() {
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "file = $event.file_path".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Let(LetAction {
+                let_: "copy = $file".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Both should have the value in let_vars
+        assert_eq!(context.let_vars.get("file"), Some(&"test.rs".to_string()));
+        assert_eq!(context.let_vars.get("copy"), Some(&"test.rs".to_string()));
+
+        // Both should have structured metadata
+        assert!(context.variable_metadata.contains_key("file"));
+        assert!(context.variable_metadata.contains_key("copy"));
+    }
+
+    #[test]
+    fn test_let_self_reference() {
+        let action = LetAction {
+            let_: "description = self.build_description".to_string(),
+            on_failure: FailureMode::Fail,
+        };
+
+        let context = ExecutionContext::new(PathBuf::from("/tmp"))
+            .with_flow_name("aiki/provenance")
+            .with_event_var("agent", "ClaudeCode")
+            .with_event_var("session_id", "test-session")
+            .with_event_var("tool_name", "Edit");
+
+        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        assert!(result.success);
+        assert!(result.stdout.contains("[aiki]"));
+    }
+
+    #[test]
+    fn test_let_self_reference_without_flow_context() {
+        let action = LetAction {
+            let_: "description = self.build_description".to_string(),
+            on_failure: FailureMode::Fail,
+        };
+
+        // No flow_name set
+        let context = ExecutionContext::new(PathBuf::from("/tmp"));
+
+        let result = FlowExecutor::execute_let(&action, &context);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no flow context available"));
+    }
+
+    #[test]
+    fn test_let_variables_work_in_shell_actions() {
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "my_var = $event.file_path".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Shell(ShellAction {
+                shell: "echo $my_var".to_string(),
+                timeout: None,
+                on_failure: FailureMode::Continue,
+                alias: None,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+
+        // Shell should have received the resolved variable
+        assert!(results[1].stdout.contains("test.rs"));
+    }
+
+    #[test]
+    fn test_let_variables_work_in_jj_actions() {
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "msg = $event.message".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Jj(JjAction {
+                jj: "log -r $msg".to_string(),
+                timeout: None,
+                on_failure: FailureMode::Continue,
+                alias: None,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("message", "@");
+
+        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // First action (let) should succeed
+        assert!(results[0].success);
+    }
+
+    #[test]
+    fn test_let_variables_work_in_log_actions() {
+        let actions = vec![
+            Action::Let(LetAction {
+                let_: "file = $event.file_path".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            Action::Log(LogAction {
+                log: "Processing $file".to_string(),
+                alias: None,
+            }),
+        ];
+
+        let mut context =
+            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+
+        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
     }
 }

@@ -46,7 +46,9 @@ pub enum Action {
     Jj(JjAction),
     /// Log message
     Log(LogAction),
-    /// Call a built-in Aiki function
+    /// Let binding (function call or variable aliasing)
+    Let(LetAction),
+    /// Call a built-in Aiki function (deprecated, use Let)
     Aiki(AikiAction),
 }
 
@@ -60,6 +62,10 @@ pub struct ShellAction {
 
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
+
+    /// Optional variable name to store the result
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 /// JJ command action
@@ -72,12 +78,32 @@ pub struct JjAction {
 
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
+
+    /// Optional variable name to store the result
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 /// Log message action
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogAction {
     pub log: String,
+
+    /// Optional variable name to store the result
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+/// Let binding action (function call or variable aliasing)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LetAction {
+    /// The let binding in format "variable = expression"
+    #[serde(rename = "let")]
+    pub let_: String,
+
+    /// What to do when the action fails
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
 }
 
 /// Aiki built-in function call action
@@ -144,8 +170,17 @@ pub struct ExecutionContext {
     /// Event-specific variables ($event.*)
     pub event_vars: HashMap<String, String>,
 
+    /// Let-bound variables (user-defined, accessed without $event prefix)
+    pub let_vars: HashMap<String, String>,
+
     /// Environment variables to pass to shell commands
     pub env_vars: HashMap<String, String>,
+
+    /// Structured metadata for variables (stores ActionResult for each variable)
+    pub variable_metadata: HashMap<String, ActionResult>,
+
+    /// Current flow name (e.g., "aiki/provenance") for self references
+    pub flow_name: Option<String>,
 }
 
 impl ExecutionContext {
@@ -153,12 +188,20 @@ impl ExecutionContext {
         Self {
             cwd,
             event_vars: HashMap::new(),
+            let_vars: HashMap::new(),
             env_vars: std::env::vars().collect(),
+            variable_metadata: HashMap::new(),
+            flow_name: None,
         }
     }
 
     pub fn with_event_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.event_vars.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_flow_name(mut self, flow_name: impl Into<String>) -> Self {
+        self.flow_name = Some(flow_name.into());
         self
     }
 }

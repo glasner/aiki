@@ -1,0 +1,12 @@
+name: "Aiki Init"
+description: "System flow that ensures the repository is properly initialized and ready for AI-assisted development"
+version: "1"
+
+# Start: Initialize and verify repository setup when a session begins
+Start:
+  # Initialize Aiki (idempotent - safe to run multiple times)
+  - shell: aiki init --quiet
+    on_failure: fail
+
+  # Log that the repository is ready
+  - log: "Repository ready for AI-assisted development"
