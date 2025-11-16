@@ -948,14 +948,66 @@ Vendors want to distribute complete, working flows with bundled binaries. Users 
 Enable flow ecosystem with bundled binaries, lazy loading, and distribution.
 
 ### What We Build
-- **Bundled binaries** - `bin/<platform>/` in flow directories
+- **WASM-based custom functions** - Flow authors write Rust, compile to WASM, distribute pre-compiled
+- **Native compilation (optional)** - Power users can compile flows to native for 1.5-3x speed boost
+- **Bundled binaries** - `bin/<platform>/` for native tools (e.g., semgrep)
 - **Lazy loading** - Auto-download flows on first use
 - **Symlink management** - `~/.aiki/bin/` for all flow binaries
 - **External dependencies** - `requires:` for tools like Docker
 - **Flow distribution** - Tarballs for sharing flows
 - **Flow caching** - `~/.aiki/cache/flows/` for downloaded flows
 
-### Example
+### Example: WASM-based Custom Functions
+
+**Flow author writes custom Rust function:**
+```rust
+// vendor/complexity-analyzer/src/lib.rs
+use aiki_flow_sdk::prelude::*;
+
+#[aiki_function]
+pub fn analyze_file(ctx: &Context, file_path: &str) -> Result<String> {
+    let content = ctx.read_file(file_path)?;
+    let complexity = calculate_complexity(&content);
+    Ok(complexity.to_string())
+}
+```
+
+**Compile to WASM:**
+```bash
+$ cargo build --target wasm32-wasi --release
+# Produces: target/wasm32-wasi/release/complexity_analyzer.wasm
+```
+
+**Flow structure:**
+```
+vendor/complexity-analyzer/
+├── flow.yaml
+├── src/
+│   └── lib.rs              # Source (optional in distribution)
+└── bin/
+    └── wasm/
+        └── complexity_analyzer.wasm  # Pre-compiled WASM (~500KB-2MB)
+```
+
+**Flow YAML uses the WASM function:**
+```yaml
+# vendor/complexity-analyzer/flow.yaml
+name: Complexity Analyzer
+version: 1.0.0
+
+PreCommit:
+  - wasm: analyze_file
+    args:
+      file_path: "$event.file_path"
+  
+  - if: $analyze_file_output > 10
+    then:
+      - log: "Warning: High complexity detected: $analyze_file_output"
+      - shell: exit 1
+        on_failure: block
+```
+
+**User includes the flow:**
 ```yaml
 # .aiki/flow.yaml
 name: My Workflow
@@ -963,56 +1015,158 @@ version: 1
 
 includes:
   - aiki/autonomous-review
-  - vendor/security-scan     # Auto-downloads on first use
-  - company/compliance       # From company Git repo
+  - vendor/complexity-analyzer     # Auto-downloads WASM on first use
 
 PreCommit:
-  - flow: vendor/security-scan
+  - flow: vendor/complexity-analyzer
 ```
 
-**Flow structure:**
+### Example: Native Tools + WASM Functions
+
+**Flow bundles both native binaries and WASM:**
 ```
 vendor/security-scan/
 ├── flow.yaml
 ├── bin/
 │   ├── darwin-arm64/
-│   │   └── semgrep
+│   │   └── semgrep          # Native binary for macOS ARM
 │   ├── darwin-x86_64/
-│   │   └── semgrep
-│   └── linux-x86_64/
-│       └── semgrep
+│   │   └── semgrep          # Native binary for macOS Intel
+│   ├── linux-x86_64/
+│   │   └── semgrep          # Native binary for Linux
+│   └── wasm/
+│       └── custom_rules.wasm  # Custom Rust logic as WASM
+```
+
+**Flow YAML mixes native binaries and WASM functions:**
+```yaml
+PostChange:
+  - shell: semgrep --config=auto $event.file_path  # Uses native binary
+  - wasm: validate_custom_rules                     # Uses WASM function
+    args:
+      file_path: "$event.file_path"
 ```
 
 ### Commands Delivered
 ```bash
-aiki flows list      # Show all flows (built-in, installed, cached)
-aiki flows install   # Install all flows from .aiki/flow.yaml
-aiki flows cleanup   # Remove unused cached flows
-aiki doctor          # Validate flows and dependencies
+aiki flows list          # Show all flows (built-in, installed, cached)
+aiki flows install       # Install all flows from .aiki/flow.yaml
+aiki flows compile       # (Optional) Compile WASM flows to native for speed
+aiki flows cleanup       # Remove unused cached flows
+aiki doctor              # Validate flows and dependencies
+```
+
+**Example: Optional native compilation for power users:**
+```bash
+# Default: Use WASM (fast install, cross-platform)
+$ aiki flows install
+✓ vendor/complexity-analyzer v1.0.0 (WASM, ~500KB)
+  First run: ~50ms, warm runs: ~20ms
+
+# Power user: Compile to native for better performance
+$ aiki flows compile vendor/complexity-analyzer --release
+Compiling vendor/complexity-analyzer to native...
+✓ Compiled in 8 seconds
+✓ Performance: 50ms → 15ms (3x faster)
 ```
 
 ### Value Delivered
-- **Vendor ecosystem** - Third parties ship complete flows
-- **Zero-config installation** - Flows work out of the box
-- **Cross-platform** - Automatic platform detection
-- **Flow marketplace** - (Future) Central registry
+- **Custom logic in flows** - Flow authors write Rust functions, not just shell scripts
+- **Fast installation** - WASM binaries download in <1 second (vs 5-30 seconds compiling Rust)
+- **Small disk footprint** - WASM flows use ~1-2 MB (vs 50-200 MB for Rust with deps)
+- **Sandboxed execution** - WASM runtime isolates flow code for security
+- **Cross-platform** - Single WASM binary works on all platforms
+- **Optional native speed** - Power users can compile for 1.5-3x performance boost
+- **Vendor ecosystem** - Third parties ship complete flows with custom logic
+- **Flow marketplace** - (Future) Central registry for discovering flows
 
 ### Technical Components
-| Component | Complexity |
-|-----------|------------|
-| Binary bundling | Medium |
-| Platform detection | Low |
-| Symlink management | Low |
-| Lazy loading | Medium |
-| Flow caching | Low |
-| CLI commands | Low |
+| Component | Complexity | Notes |
+|-----------|------------|-------|
+| WASM runtime integration | Medium | Embed `wasmtime` or `wasmer` |
+| WASM function calling | Medium | FFI, memory management, WASI support |
+| Optional native compilation | Medium | Dynamic library loading via `libloading` |
+| Performance optimization | Low | Cache compiled WASM modules |
+| Binary bundling (native tools) | Medium | Platform-specific binaries in `bin/<platform>/` |
+| Platform detection | Low | Auto-detect architecture |
+| Symlink management | Low | Create symlinks in `~/.aiki/bin/` |
+| Lazy loading | Medium | Auto-download flows on first use |
+| Flow caching | Low | Store in `~/.aiki/cache/flows/` |
+| CLI commands | Low | `list`, `install`, `compile`, `cleanup` |
 
 ### Success Criteria
-- ✅ Flows can bundle platform-specific binaries
+- ✅ Flow authors can write custom Rust functions and compile to WASM
+- ✅ WASM flows install in <1 second (pre-compiled binaries)
+- ✅ WASM flows run with 10-50% overhead vs native (acceptable for most use cases)
+- ✅ Power users can compile WASM flows to native for 1.5-3x speedup
+- ✅ Flows can bundle both WASM functions and native binaries (e.g., semgrep)
 - ✅ `~/.aiki/bin` symlinks to all flow binaries
 - ✅ Flows auto-download on first use
 - ✅ `aiki flows install` installs all referenced flows
-- ✅ `aiki doctor` validates flow health
+- ✅ `aiki flows compile` compiles WASM to native (optional)
+- ✅ `aiki doctor` validates flow health and dependencies
+- ✅ WASM runtime sandboxes flow code for security
+
+Side-by-Side Comparison
+
+| Phase | Rust Dynamic Lib | WASM | Winner |
+|-------|-----------------|------|--------|
+| **Install (first time)** | 5-30 sec | 200-850ms | **WASM (20-60x faster)** |
+| **Disk usage** | 50-200 MB | 1-2 MB | **WASM (100x smaller)** |
+| **First run (cold)** | 20-140ms | 50-300ms | **Rust (2-3x faster)** |
+| **Subsequent runs (warm)** | 10-100ms | 15-155ms | **Rust (1.5x faster)** |
+| **Update flow** | 5-30 sec | 200-850ms | **WASM (20-60x faster)** |
+| **Memory overhead** | ~5-20 MB (loaded lib) | ~10-30 MB (WASM runtime) | **Rust (2x better)** |
+
+---
+
+## Real-World Scenarios
+
+### Scenario 1: Developer with 10 external flows
+
+**Rust:**
+- Install all flows: **50-300 seconds** (compile each)
+- Disk usage: **500 MB - 2 GB** (dependencies, compiled libs)
+- Runtime performance: **Excellent** (native speed)
+
+**WASM:**
+- Install all flows: **2-8 seconds** ✅
+- Disk usage: **10-20 MB** ✅
+- Runtime performance: **Good** (10-50% slower)
+
+**Winner: WASM** - Much better UX for installation
+
+---
+
+### Scenario 2: High-frequency flow (runs on every PostChange)
+
+**Rust:**
+- First run: 20-140ms
+- Next 1000 runs: **10-100ms each** = 10-100 seconds total
+- **Total: 10-100 seconds for 1000 runs**
+
+**WASM:**
+- First run: 50-300ms
+- Next 1000 runs: **15-155ms each** = 15-155 seconds total
+- **Total: 15-155 seconds for 1000 runs**
+
+**Winner: Rust** - 1.5x faster over many runs
+
+---
+
+### Scenario 3: CI/CD environment (fresh install each run)
+
+**Rust:**
+- Install flows: 50-300 seconds
+- Run flows: 10-100ms
+- **Total: 50-300 seconds**
+
+**WASM:**
+- Install flows: 2-8 seconds
+- Run flows: 15-155ms
+- **Total: 2-8 seconds** ✅
+
+**Winner: WASM** - 20-60x faster total time
 
 ---
 
