@@ -4,7 +4,7 @@ mod parser;
 mod types;
 mod variables;
 
-pub use bundled::load_system_flows;
+pub use bundled::load_core_flow;
 pub use executor::FlowExecutor;
 pub use parser::FlowParser;
 pub use types::{

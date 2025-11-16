@@ -11,11 +11,8 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
         eprintln!("[aiki] Session started by {:?}", event.agent);
     }
 
-    // Load system flows
-    let system_flows = crate::flows::load_system_flows()?;
-    let init_flow = system_flows
-        .get("aiki/init")
-        .ok_or_else(|| anyhow!("Init flow not found"))?;
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
 
     // Build execution context
     let mut context = ExecutionContext::new(event.cwd.clone());
@@ -31,9 +28,9 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
             .insert("session_id".to_string(), session_id.to_string());
     }
 
-    // Execute Start actions from the init flow
+    // Execute Start actions from the core flow
     // This ensures the repository is properly initialized
-    FlowExecutor::execute_actions(&init_flow.start, &mut context)?;
+    FlowExecutor::execute_actions(&core_flow.start, &mut context)?;
 
     Ok(())
 }
@@ -60,11 +57,8 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
         );
     }
 
-    // Load system flows
-    let system_flows = crate::flows::load_system_flows()?;
-    let provenance_flow = system_flows
-        .get("aiki/provenance")
-        .ok_or_else(|| anyhow!("Provenance flow not found"))?;
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
 
     // Build execution context with event variables
     let mut context = ExecutionContext::new(event.cwd.clone());
@@ -87,9 +81,9 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
             .insert("file_path".to_string(), file_path.clone());
     }
 
-    // Execute PostChange actions from the flow
-    // The flow will call the native build_provenance_description function
-    FlowExecutor::execute_actions(&provenance_flow.post_change, &mut context)?;
+    // Execute PostChange actions from the core flow
+    // The flow will call the native build_description function
+    FlowExecutor::execute_actions(&core_flow.post_change, &mut context)?;
 
     Ok(())
 }

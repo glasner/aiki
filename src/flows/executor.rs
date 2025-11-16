@@ -424,16 +424,17 @@ impl FlowExecutor {
 
         // Route to appropriate function
         match (module, function) {
-            ("provenance", "build_description") => Self::fn_build_provenance_description(context),
+            ("core", "build_description") => Self::fn_build_provenance_description(context),
+            ("provenance", "build_description") => Self::fn_build_provenance_description(context), // Legacy
             _ => anyhow::bail!(
-                "Unknown function: {}/{}. Available functions: aiki/provenance.build_description",
+                "Unknown function: {}/{}. Available functions: aiki/core.build_description, aiki/provenance.build_description (legacy)",
                 module,
                 function
             ),
         }
     }
 
-    /// Built-in function: aiki/provenance.build_description
+    /// Built-in function: aiki/core.build_description (also aiki/provenance.build_description for legacy)
     ///
     /// Builds a provenance description from event context.
     /// Requires: $event.agent, $event.session_id, $event.tool_name
@@ -1125,7 +1126,7 @@ mod tests {
         };
 
         let context = ExecutionContext::new(PathBuf::from("/tmp"))
-            .with_flow_name("aiki/provenance")
+            .with_flow_name("aiki/core")
             .with_event_var("agent", "ClaudeCode")
             .with_event_var("session_id", "test-session")
             .with_event_var("tool_name", "Edit");
