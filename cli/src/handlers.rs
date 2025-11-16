@@ -7,19 +7,33 @@ use anyhow::{anyhow, Result};
 /// Currently runs `aiki init --quiet` to ensure repository is initialized.
 /// Future: Session logging, environment validation, user-defined startup hooks.
 pub fn handle_start(event: AikiEvent) -> Result<()> {
-    // Currently: aiki init --quiet
-    // This ensures the repository is initialized when a session starts
-
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Session started by {:?}", event.agent);
     }
 
-    // Call init logic (this should be refactored to use internal API, not shell command)
-    // For now, we'll just ensure the .aiki directory exists
-    let aiki_dir = event.cwd.join(".aiki");
-    if !aiki_dir.exists() {
-        std::fs::create_dir_all(&aiki_dir)?;
+    // Load system flows
+    let system_flows = crate::flows::load_system_flows()?;
+    let init_flow = system_flows
+        .get("aiki/init")
+        .ok_or_else(|| anyhow!("Init flow not found"))?;
+
+    // Build execution context
+    let mut context = ExecutionContext::new(event.cwd.clone());
+
+    // Add event variables
+    context
+        .event_vars
+        .insert("agent".to_string(), format!("{:?}", event.agent));
+
+    if let Some(session_id) = &event.session_id {
+        context
+            .event_vars
+            .insert("session_id".to_string(), session_id.to_string());
     }
+
+    // Execute Start actions from the init flow
+    // This ensures the repository is properly initialized
+    FlowExecutor::execute_actions(&init_flow.start, &mut context)?;
 
     Ok(())
 }

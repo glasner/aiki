@@ -17,8 +17,11 @@ struct ClaudeCodePayload {
     transcript_path: String,
     cwd: String,
     hook_event_name: String,
+    #[serde(default)]
     tool_name: String,
-    tool_input: ToolInput,
+    #[serde(default)]
+    tool_input: Option<ToolInput>,
+    #[serde(default)]
     tool_output: String,
 }
 
@@ -69,15 +72,21 @@ pub fn handle(event_name: &str) -> Result<()> {
     };
 
     // Create standardized event with embedded agent type
-    let event = AikiEvent::new(
+    let mut event = AikiEvent::new(
         aiki_event_type,
         AgentType::ClaudeCode, // ← Agent embedded here
         PathBuf::from(&payload.cwd),
     )
     .with_session_id(payload.session_id)
-    .with_metadata("tool_name", payload.tool_name)
-    .with_metadata("file_path", payload.tool_input.file_path)
     .with_metadata("vendor_event", event_name); // Track original vendor event name
+
+    // Add tool-related metadata if present (not present for Start events)
+    if !payload.tool_name.is_empty() {
+        event = event.with_metadata("tool_name", payload.tool_name);
+    }
+    if let Some(tool_input) = payload.tool_input {
+        event = event.with_metadata("file_path", tool_input.file_path);
+    }
 
     // Dispatch to event bus
     event_bus::dispatch(event)?;

@@ -503,7 +503,47 @@ PreCommit:
 - log: Flow completed successfully
 ```
 
-### 7. Sleep/Wait
+### 7. Let Binding (Function Calls & Variable Aliasing)
+
+**Mode 1: Function Call**
+```yaml
+# Full namespaced path
+- let: description = aiki/provenance.build_description
+  on_failure: fail
+
+# Self reference (recommended for portability)
+- let: description = self.build_description
+  on_failure: fail
+
+- jj: describe -m "$description"
+```
+
+**Mode 2: Variable Aliasing**
+```yaml
+- let: file = $event.file_path
+- let: agent = $event.agent
+
+- log: "File $file modified by $agent"
+```
+
+**Supported Functions:**
+- `aiki/provenance.build_description` - Builds provenance metadata from event context
+
+**Self References:**
+Use `self.function` to reference functions within the current flow for better portability:
+```yaml
+# In aiki/provenance flow
+- let: description = self.build_description  # Resolves to aiki/provenance.build_description
+```
+
+**Benefits:**
+- Explicit variable naming (no implicit `.output` suffix)
+- Cleaner syntax than the deprecated `aiki:` action with `args:`
+- Supports both function calls and variable aliasing
+- Self references make flows more portable and easier to rename
+- Variables can be referenced directly: `$description` instead of `$build_provenance_description.output`
+
+### 8. Sleep/Wait
 
 ```yaml
 - sleep: 2s
@@ -590,7 +630,7 @@ Add optional `alias:` for shorter variable names:
 ```yaml
 PreCommit:
   - flow: aiki/security-scan
-    alias: security    # Creates $security.* instead of $aiki_security_scan.*
+    alias: security    # Creates $security instead of $aiki_security_scan
   
   - flow: aiki/complexity-check
     alias: complexity
@@ -599,6 +639,7 @@ PreCommit:
   - if: "$security.failed OR $complexity.failed"
     then:
       - flow: company/slack-alert
+      - log: "Security output: $security"  # Direct access
 ```
 
 **When to use aliases:**
@@ -615,18 +656,34 @@ PreCommit:
 
 For any step (using full identifier or alias):
 ```yaml
+$identifier               # Direct access to output (same as $identifier.output)
+$identifier.output        # Explicit output access
 $identifier.result        # "success" | "failed"
 $identifier.exit_code     # 0 | 1 | 2...
-$identifier.output        # stdout
 $identifier.duration_ms   # execution time in milliseconds
 $identifier.failed        # boolean: true if exit_code != 0
 ```
 
+**Hybrid access pattern:** All actions support both direct and structured access:
+```yaml
+- shell: echo "hello"
+  alias: greeting
+
+# Simple access (most common)
+- log: "$greeting"              # Direct access to output
+
+# Structured access (when needed)
+- if: $greeting.failed
+  then:
+    - log: "Command failed with code: $greeting.exit_code"
+```
+
 For the immediately previous step:
 ```yaml
+$previous_step            # Direct access to output
+$previous_step.output     # Explicit output access
 $previous_step.result
 $previous_step.exit_code
-$previous_step.output
 $previous_step.failed
 ```
 

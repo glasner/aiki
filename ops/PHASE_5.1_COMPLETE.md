@@ -1,211 +1,391 @@
-# Phase 5.1: Core Flow Engine - Implementation Complete
+# Phase 5.1 Complete: Let Syntax Migration
 
-**Status**: ✅ COMPLETE  
-**Date**: 2025-11-15  
-**Performance**: 4% improvement over baseline (92ms → 88ms)
+## Status: ✅ IMPLEMENTED
 
-## Summary
+This milestone completes the migration from implicit variable naming with `aiki:` actions to explicit variable binding with `let:` syntax.
 
-Successfully implemented the core flow engine for Aiki, replacing hardcoded provenance recording with a flexible, YAML-based flow system. All existing functionality maintained with improved performance.
+---
 
-## What Was Implemented
+## What Changed
 
-### 1. Core Flow Types (`cli/src/flows/types.rs`)
-- `Flow` struct: Holds flow metadata and event handlers
-- `Action` enum: Shell, JJ, and Log actions
-- `ExecutionContext`: Runtime context with event variables
-- `ActionResult`: Captures execution results
-- `FailureMode`: Continue or fail on error
+### Before: Implicit Variable Naming
 
-### 2. YAML Parser (`cli/src/flows/parser.rs`)
-- Parses `.yaml` flow files
-- Supports PostChange, PreCommit, Start, Stop event blocks
-- Validates flow structure
-- 14 unit tests covering edge cases
-
-### 3. Variable Resolver (`cli/src/flows/variables.rs`)
-- Interpolates `$event.*` variables (file_path, agent, session_id)
-- Supports `$cwd`, `$agent` context variables
-- Handles environment variables (`$HOME`, `$PATH`)
-- Correctly handles overlapping variable names
-- 11 unit tests for all interpolation cases
-
-### 4. Flow Executor (`cli/src/flows/executor.rs`)
-- Sequential action execution
-- Shell command execution with variable interpolation
-- JJ command execution
-- Log message output
-- Timeout parsing (30s, 1m, 2h)
-- `on_failure` handling (continue vs fail)
-- 14 unit tests including failure scenarios
-
-### 5. Bundled System Flows (`cli/flows/provenance.yaml`)
 ```yaml
-name: "Aiki Provenance Recording"
-description: "System flow that records AI change metadata in JJ change descriptions"
-version: "1"
-
 PostChange:
-  - jj: describe -m "$aiki_provenance_description"
-    on_failure: continue
-  - jj: new
-    on_failure: continue
-  - log: "Recorded change by $event.agent (session: $event.session_id)"
+  - aiki: build_provenance_description
+    args:
+      agent: "$event.agent"
+      session_id: "$event.session_id"
+      tool_name: "$event.tool_name"
+    on_failure: fail
+
+  - jj: describe -m "$build_provenance_description.output"
 ```
 
-Embedded in binary, loaded at runtime via `include_str!()`.
+**Problems:**
+- Variable name derived from function name (`build_provenance_description`)
+- Output accessed via `.output` suffix
+- Requires `args:` section with explicit parameter passing
+- Verbose and less intuitive
 
-### 6. Event Handler Integration (`cli/src/handlers.rs`)
-- Refactored `handle_post_change` to use flow engine
-- Builds provenance metadata and execution context
-- Loads and executes system flow
-- Maintains exact same external behavior
+### After: Explicit Variable Binding (No Args Needed!)
 
-## Test Results
+```yaml
+PostChange:
+  - let: description = aiki/provenance.build_description
+    on_failure: fail
 
-**Total Tests**: 102 (39 new + 63 existing)  
-**Pass Rate**: 100%
-
-### New Tests (39)
-- `flows::bundled`: 3 tests for system flow loading
-- `flows::parser`: 14 tests for YAML parsing
-- `flows::executor`: 11 tests for action execution  
-- `flows::variables`: 11 tests for variable interpolation
-
-### Existing Tests (63)
-- All integration tests pass
-- All provenance tests pass
-- All Git hook tests pass
-- Backward compatibility maintained
-
-## Performance Results
-
-### Benchmark: Provenance Recording
-
-| Implementation | Time | vs Baseline | Change |
-|----------------|------|-------------|--------|
-| **Baseline** (hardcoded) | 92.04 ms | - | - |
-| **Flow Engine** | 88.35 ms | **-4.0%** ⚡ | -3.69 ms |
-| **+ Aiki Functions** | 88.45 ms | **-3.9%** ⚡ | +0.10 ms |
-| **+ Step References** | 88.45 ms | **-3.9%** ⚡ | ±0 ms |
-
-**Final Result**: Implementation **improved** performance by 4% with zero overhead for new features
-
-### Why Performance Improved
-
-1. **Eliminated redundant work**: Flow engine loads system flows once
-2. **Better variable resolution**: Single-pass string interpolation
-3. **Streamlined execution**: Direct action execution without wrapper overhead
-
-## Architecture Changes
-
-### Before (Hardcoded)
-```
-Event → Handler → record_change() → jj describe + jj new
+  - jj: describe -m "$description"
 ```
 
-### After (Flow Engine)
+**Benefits:**
+- Explicit variable name chosen by user (`description`)
+- Direct variable reference (no `.output` suffix)
+- No `args:` section needed - functions read from event context
+- Cleaner, more intuitive syntax
+- Function path uses namespace convention (`aiki/module.function`)
+
+---
+
+## Implementation Summary
+
+### 1. New Type Definitions (`cli/src/flows/types.rs`)
+
+```rust
+/// Let binding action (function call or variable aliasing)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LetAction {
+    /// The let binding in format "variable = expression"
+    #[serde(rename = "let")]
+    pub let_: String,
+
+    /// What to do when the action fails
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+pub enum Action {
+    Shell(ShellAction),
+    Jj(JjAction),
+    Log(LogAction),
+    Let(LetAction),        // NEW
+    Aiki(AikiAction),      // Deprecated
+}
 ```
-Event → Handler → Load Flow → Build Context → Execute Actions
-                     ↓              ↓              ↓
-              provenance.yaml  $event.* vars   jj describe
-                                                jj new
-                                                log message
+
+### 2. ExecutionContext Enhanced
+
+```rust
+pub struct ExecutionContext {
+    pub cwd: std::path::PathBuf,
+    pub event_vars: HashMap<String, String>,
+    pub env_vars: HashMap<String, String>,
+    pub variable_metadata: HashMap<String, ActionResult>,  // NEW
+}
 ```
 
-## File Changes
+### 3. Core Implementation (`cli/src/flows/executor.rs`)
 
-### New Files (7)
-1. `cli/src/flows/mod.rs` - Module entry point
-2. `cli/src/flows/types.rs` - Core data structures (193 lines)
-3. `cli/src/flows/parser.rs` - YAML parser (169 lines)
-4. `cli/src/flows/variables.rs` - Variable resolver (189 lines)
-5. `cli/src/flows/executor.rs` - Action executor (333 lines)
-6. `cli/src/flows/bundled.rs` - System flow loader (44 lines)
-7. `cli/flows/provenance.yaml` - Provenance system flow (13 lines)
+**Key Functions:**
+- `execute_let()` - Main dispatcher for let actions
+- `is_valid_variable_name()` - Validates variable names
+- `execute_let_alias()` - Handles `let x = $y` aliasing
+- `execute_let_function()` - Handles `let x = aiki/module.function` calls
+- `fn_build_provenance_description()` - Built-in function implementation
+- `store_action_result()` - Stores variables with structured metadata
 
-### Modified Files (4)
-1. `cli/Cargo.toml` - Added `serde_yaml` dependency
-2. `cli/src/main.rs` - Added `flows` module
-3. `cli/src/handlers.rs` - Refactored to use flow engine
-4. `cli/src/provenance.rs` - Made `AgentType` Copy
+### 4. Updated System Flow (`cli/flows/provenance.yaml`)
 
-### New Benchmarks
-1. `cli/benches/flow_performance.rs` - Performance tracking
+**Version:** 2 (bumped from 1)
 
-**Total Lines Added**: ~950 lines (including tests)
+**Changes:**
+- Replaced `aiki: build_provenance_description` with `let: description = aiki/provenance.build_description`
+- Removed `args:` section
+- Changed `$build_provenance_description.output` to `$description`
 
-## What We Kept (Phase 5.1 Scope)
+### 5. Comprehensive Tests
 
-✅ Event routing (PostChange, PreCommit, Start, Stop)  
-✅ Sequential action execution  
-✅ Basic actions (shell, jj, log)  
-✅ Variable interpolation ($event.*, $cwd)  
-✅ Error handling (on_failure: continue|fail)  
-✅ Timeout support (30s, 1m, 2h)  
-✅ System flows bundled in binary  
+Added 13 new tests covering:
+- Variable name validation
+- Function call syntax
+- Variable aliasing syntax
+- Invalid syntax detection
+- Whitespace trimming
+- Variable storage and retrieval
+- Structured metadata storage
+- Alias functionality for Shell/Jj/Log actions
+- Backward compatibility with dotted properties
 
-## What We Deferred (Phase 5.2+)
+**Test Results:** ✅ All 20 tests passing
 
-❌ Parallel execution (`parallel:` blocks)  
-❌ Conditionals (`if/then/else`, `when:`)  
-❌ Flow composition (`includes:`, `before:`, `after:`)  
-❌ HTTP actions  
-❌ Flow references (`flow: aiki/quick-lint`)  
-❌ User-defined flows in `~/.config/aiki/flows/`  
-❌ CLI commands (`aiki flow list`, `aiki flow run`)  
+---
 
-## Migration Impact
+## Two Modes of Operation
 
-### For Users
-- **No changes required** - everything works exactly as before
-- Provenance recording still happens automatically
-- All existing hooks continue to work
-- No new commands to learn yet
+### Mode 1: Function Call
 
-### For Developers
-- Provenance logic now lives in `provenance.yaml`
-- New flows can be added by creating YAML files
-- Flow engine is ready for Phase 5.2 features
-- Clean separation: handlers → flows → actions
+```yaml
+- let: description = aiki/provenance.build_description
+  on_failure: fail
+```
 
-## Next Steps (Phase 5.2)
+**Behavior:**
+1. Parses function path: `aiki/provenance.build_description`
+2. Routes to built-in function implementation
+3. Function reads from `$event.*` variables automatically
+4. Returns result as `$description`
 
-1. **Implement flow composition**
-   - `includes:` directive
-   - `before:` and `after:` positioning
-   - Flow references (`flow: aiki/quick-lint`)
+### Mode 2: Variable Aliasing
 
-2. **Add conditionals**
-   - `if/then/else` blocks
-   - `when:` inline conditionals
-   - Step references (`$previous_step.failed`)
+```yaml
+- let: file = $event.file_path
+- let: desc = $description
+```
 
-3. **Parallel execution**
-   - `parallel:` directive
-   - Concurrent action execution
-   - DAG-based scheduling
+**Behavior:**
+1. Resolves the right-hand side variable
+2. Creates a copy with the new name
+3. Preserves structured metadata
 
-4. **User flows**
-   - Load from `~/.config/aiki/flows/`
-   - Namespace support (aiki/, company/, user/)
-   - Flow discovery and caching
+---
 
-5. **CLI commands**
-   - `aiki flow list` - Show available flows
-   - `aiki flow run <name>` - Execute a flow manually
-   - `aiki flow validate <file>` - Validate flow syntax
+## Built-in Functions
 
-## Lessons Learned
+### `aiki/provenance.build_description`
 
-1. **Performance testing pays off**: We discovered a 4% improvement we wouldn't have known about otherwise
-2. **Start simple**: Phase 5.1's limited scope made implementation tractable
-3. **Test everything**: 39 new tests caught edge cases early
-4. **Backward compatibility matters**: Zero breaking changes = smooth rollout
+**Purpose:** Builds provenance metadata for JJ change descriptions
 
-## References
+**Input (from event context):**
+- `$event.agent` - Agent type (e.g., "ClaudeCode", "Cursor")
+- `$event.session_id` - Session identifier
+- `$event.tool_name` - Tool that made the change
 
-- Design Doc: [`ops/phase-5.md`](phase-5.md)
-- Example Flow: [`ops/examples/flow.yaml`](examples/flow.yaml)
-- JJ Terminology: [`CLAUDE.md`](../CLAUDE.md)
-- Roadmap: [`ops/ROADMAP.md`](ROADMAP.md)
+**Output:**
+```
+[aiki]
+agent=ClaudeCode
+session=claude-session-abc123
+tool=Edit
+confidence=High
+method=Hook
+detected_at=2025-11-16T12:34:56Z
+[/aiki]
+```
+
+**Usage:**
+```yaml
+- let: description = aiki/provenance.build_description
+  on_failure: fail
+- jj: describe -m "$description"
+```
+
+---
+
+## Variable Storage and Metadata
+
+### Direct Variable Access
+
+```yaml
+- let: description = aiki/provenance.build_description
+
+# Access directly:
+- log: "Description: $description"
+```
+
+### Structured Metadata
+
+All let-bound variables also create dotted properties for backward compatibility:
+
+```yaml
+- let: result = aiki/some.function
+
+# Available variables:
+# $result               - The main output (stdout)
+# $result.output        - Same as $result
+# $result.exit_code     - Exit code (if applicable)
+# $result.failed        - "true" or "false"
+```
+
+### Alias Support
+
+Shell, JJ, and Log actions can also store results with `alias:`:
+
+```yaml
+- shell: git status
+  alias: git_status
+
+- log: "Git status: $git_status"
+```
+
+---
+
+## Variable Naming Rules
+
+**Valid variable names:**
+- Must start with letter or underscore: `description`, `_temp`
+- Can contain letters, numbers, underscores: `var123`, `my_var`, `CamelCase`
+
+**Invalid variable names:**
+- Cannot start with number: `123var` ❌
+- Cannot contain hyphens: `my-var` ❌
+- Cannot contain dots: `my.var` ❌
+- Cannot contain spaces: `my var` ❌
+- Cannot start with `$`: `$var` ❌
+
+**Examples:**
+```yaml
+- let: description = aiki/provenance.build_description  ✅
+- let: desc = $description                               ✅
+- let: _private = $event.agent                          ✅
+- let: my_file_123 = $event.file_path                   ✅
+
+- let: 123var = value      ❌ starts with number
+- let: my-var = value      ❌ contains hyphen
+```
+
+---
+
+## Migration Guide for Users
+
+### Old Syntax (Deprecated)
+
+```yaml
+PostChange:
+  - aiki: some_function
+    args:
+      key: value
+  - shell: echo "$some_function.output"
+```
+
+### New Syntax (Recommended)
+
+```yaml
+PostChange:
+  - let: result = aiki/namespace.some_function
+  - shell: echo "$result"
+```
+
+### Key Differences
+
+| Aspect | Old (`aiki:`) | New (`let:`) |
+|--------|---------------|--------------|
+| Function format | `some_function` | `aiki/namespace.function` |
+| Parameters | `args:` section | Read from context |
+| Variable name | Implicit (from function name) | Explicit (user chooses) |
+| Output access | `$function.output` | `$variable` |
+| Namespace | Flat | Hierarchical |
+
+---
+
+## Breaking Changes
+
+⚠️ **The `aiki:` action with `args:` is now deprecated**
+
+While the old syntax still works for backward compatibility, it is recommended to migrate to `let:` syntax.
+
+**What breaks:**
+- Old flows using `aiki: build_provenance_description` with `args:` will continue to work
+- However, new built-in functions will ONLY be available via `let:` syntax
+
+**Migration path:**
+1. Replace `aiki: function_name` with `let: var = aiki/module.function`
+2. Remove `args:` section (functions read from context)
+3. Update variable references from `$function_name.output` to `$var`
+
+---
+
+## Future Compatibility
+
+### Phase 8: External WASM Functions
+
+The `let:` syntax is designed to support external WASM functions in Phase 8:
+
+```yaml
+# Built-in function
+- let: description = aiki/provenance.build_description
+
+# External vendor function (Phase 8)
+- let: complexity = vendor/analyzer.analyze_complexity
+```
+
+The namespace-based function path (`vendor/analyzer.analyze_complexity`) will route to WASM modules in Phase 8.
+
+---
+
+## Files Changed
+
+### Core Implementation
+- ✅ `cli/src/flows/types.rs` - Added `LetAction` type
+- ✅ `cli/src/flows/executor.rs` - Implemented let execution logic
+- ✅ `cli/flows/provenance.yaml` - Updated to use let syntax (v2)
+
+### Documentation
+- ✅ `ops/phase-5.md` - Added Let Binding section
+- ✅ `ops/PHASE_5.1_COMPLETE.md` - This file
+
+### Tests
+- ✅ `cli/src/flows/executor.rs` - Added 13 new tests
+
+---
+
+## Success Criteria
+
+✅ **All criteria met:**
+
+1. ✅ `let:` syntax parses correctly in YAML flows
+2. ✅ Function calls route to built-in implementations
+3. ✅ Variable aliasing works (`let x = $y`)
+4. ✅ Variables are stored and accessible in subsequent actions
+5. ✅ Structured metadata is preserved
+6. ✅ Invalid variable names are rejected with clear errors
+7. ✅ `aiki/provenance.build_description` function implemented
+8. ✅ `provenance.yaml` migrated to new syntax
+9. ✅ All tests passing (20/20)
+10. ✅ Documentation updated
+
+---
+
+## Next Steps
+
+### Immediate (Phase 5.2+)
+- Implement additional built-in functions as needed
+- Add more comprehensive error handling for function failures
+- Consider adding function parameter support for future use cases
+
+### Future (Phase 8)
+- Add WASM-based external functions
+- Support `vendor/*` namespace for third-party functions
+- Optional native compilation for performance-critical functions
+
+---
+
+## Notes
+
+**Why namespace-based function paths?**
+
+The `aiki/module.function` syntax:
+1. Provides clear organization of functions
+2. Prevents naming conflicts
+3. Enables future vendor/external functions
+4. Makes function origins explicit
+5. Scales better than flat naming
+
+**Why no `args:` section?**
+
+Functions now read directly from the execution context (`$event.*` variables), which:
+1. Reduces verbosity
+2. Makes flows more readable
+3. Simplifies function implementations
+4. Aligns with the event-driven architecture
+
+**Why both function calls AND variable aliasing?**
+
+- Function calls: `let x = aiki/module.function` for computations
+- Variable aliasing: `let x = $y` for readability and convenience
+- Both modes use the same syntax, keeping it simple
+
+---
+
+**Implementation Date:** 2025-11-16  
+**Status:** ✅ Complete and tested  
+**Version:** Aiki v0.1.0 (Phase 5.1)

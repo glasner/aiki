@@ -1,19 +1,15 @@
 name: "Aiki Provenance Recording"
 description: "System flow that records AI change metadata in JJ change descriptions"
-version: "1"
+version: "2"
 
 # PostChange: Record provenance metadata after every AI edit
 PostChange:
-  # Build the provenance description using built-in Aiki function
-  - aiki: build_provenance_description
-    args:
-      agent: "$event.agent"
-      session_id: "$event.session_id"
-      tool_name: "$event.tool_name"
+  # Build the provenance description using self reference
+  - let: description = self.build_description
     on_failure: fail
 
   # Set the change description with provenance metadata
-  - jj: describe -m "$build_provenance_description.output"
+  - jj: describe -m "$description"
 
   # Create a new change for the next edit
   - jj: new

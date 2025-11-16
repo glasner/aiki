@@ -965,8 +965,12 @@ Enable flow ecosystem with bundled binaries, lazy loading, and distribution.
 use aiki_flow_sdk::prelude::*;
 
 #[aiki_function]
-pub fn analyze_file(ctx: &Context, file_path: &str) -> Result<String> {
-    let content = ctx.read_file(file_path)?;
+pub fn analyze_complexity(context: &Context) -> Result<String> {
+    // Read file path from event context
+    let file_path = context.event_vars.get("file_path")
+        .ok_or_else(|| anyhow::anyhow!("Missing event.file_path"))?;
+    
+    let content = context.read_file(file_path)?;
     let complexity = calculate_complexity(&content);
     Ok(complexity.to_string())
 }
@@ -989,22 +993,23 @@ vendor/complexity-analyzer/
         └── complexity_analyzer.wasm  # Pre-compiled WASM (~500KB-2MB)
 ```
 
-**Flow YAML uses the WASM function:**
+**Flow YAML uses the WASM function with `let:` syntax:**
 ```yaml
 # vendor/complexity-analyzer/flow.yaml
 name: Complexity Analyzer
 version: 1.0.0
 
 PreCommit:
-  - wasm: analyze_file
-    args:
-      file_path: "$event.file_path"
+  # Call WASM function - receives full $event context automatically
+  - let: complexity = vendor/analyzer.analyze_complexity
   
-  - if: $analyze_file_output > 10
+  - if: $complexity > 10
     then:
-      - log: "Warning: High complexity detected: $analyze_file_output"
+      - log: "Warning: High complexity detected: $complexity"
       - shell: exit 1
         on_failure: block
+    else:
+      - log: "✅ Complexity acceptable: $complexity"
 ```
 
 **User includes the flow:**
@@ -1019,6 +1024,21 @@ includes:
 
 PreCommit:
   - flow: vendor/complexity-analyzer
+```
+
+**Or call WASM function directly in user flow:**
+```yaml
+# .aiki/flow.yaml
+PreCommit:
+  # Direct function call - same syntax as built-in functions
+  - let: complexity = vendor/analyzer.analyze_complexity
+  - let: security = vendor/scanner.scan_security
+  
+  - if: $complexity > 10 OR $security.failed
+    then:
+      - log: "❌ Quality checks failed"
+      - shell: exit 1
+        on_failure: block
 ```
 
 ### Example: Native Tools + WASM Functions
@@ -1042,10 +1062,51 @@ vendor/security-scan/
 ```yaml
 PostChange:
   - shell: semgrep --config=auto $event.file_path  # Uses native binary
-  - wasm: validate_custom_rules                     # Uses WASM function
-    args:
-      file_path: "$event.file_path"
+  - let: result = vendor/scanner.validate_custom_rules  # Uses WASM function
+  
+  - if: $result.failed
+    then:
+      - log: "❌ Custom rule validation failed"
 ```
+
+### The `let:` Syntax for External Functions
+
+External WASM functions use the same `let:` syntax as built-in Aiki functions (from Phase 5.1):
+
+```yaml
+# Built-in Aiki function
+- let: description = aiki/provenance.build_description
+
+# External WASM function - same syntax!
+- let: complexity = vendor/analyzer.analyze_complexity
+```
+
+**Key design principles:**
+- **No `args:` block needed** - Functions receive full `$event` context automatically
+- **Namespace determines implementation** - `aiki/` = built-in Rust, `vendor/` or `my/` = WASM
+- **Transparent routing** - Aiki handles WASM vs native vs built-in automatically
+- **Same variable storage** - All functions store results as `$var_name`, `$var_name.exit_code`, etc.
+
+**How WASM functions receive context:**
+```rust
+// WASM function signature
+pub fn analyze_complexity(context: &Context) -> Result<String> {
+    // Read from event context
+    let file_path = context.event_vars.get("file_path")?;
+    let agent = context.event_vars.get("agent")?;
+    
+    // All $event.* variables available
+    // Plus any variables set by previous steps
+}
+```
+
+**Benefits:**
+- Users learn one syntax for all functions
+- Built-in and external functions are interchangeable
+- Easy migration path (add namespace prefix to call external version)
+- Consistent error handling and variable storage
+
+See [`ops/milestone-5.1.md`](milestone-5.1.md) for complete `let:` syntax specification.
 
 ### Commands Delivered
 ```bash
