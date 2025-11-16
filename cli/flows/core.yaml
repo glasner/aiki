@@ -1,6 +1,15 @@
-name: "Aiki Provenance Recording"
-description: "System flow that records AI change metadata in JJ change descriptions"
-version: "2"
+name: "Aiki Core"
+description: "Core flow that handles initialization and provenance tracking"
+version: "1"
+
+# Start: Initialize and verify repository setup when a session begins
+Start:
+  # Initialize Aiki (idempotent - safe to run multiple times)
+  - shell: aiki init --quiet
+    on_failure: fail
+
+  # Log that the repository is ready
+  - log: "Repository ready for AI-assisted development"
 
 # PostChange: Record provenance metadata after every AI edit
 PostChange:
