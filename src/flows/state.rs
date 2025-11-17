@@ -73,7 +73,7 @@ impl AikiState {
     /// Helper to get the agent type
     #[must_use]
     pub fn agent_type(&self) -> crate::provenance::AgentType {
-        self.event.agent
+        self.event.agent_type
     }
 
     /// Get a variable value by name

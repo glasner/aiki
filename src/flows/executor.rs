@@ -20,7 +20,7 @@ impl FlowExecutor {
     /// Create a variable resolver with proper variable scoping
     ///
     /// Variable scopes:
-    /// - Event variables (from actual events): $event.file_path, $event.agent
+    /// - Event variables (from actual events): $event.file_path, $event.agent_type
     /// - Let variables (user-defined): $description, $my_var (no event. prefix)
     /// - System variables: $cwd
     /// - Environment variables: $HOME, $PATH
@@ -32,13 +32,13 @@ impl FlowExecutor {
             resolver.add_var(format!("event.{}", key), value.clone());
         }
 
-        // Add agent type as event.agent
-        let agent_str = match context.event.agent {
+        // Add agent type as event.agent_type
+        let agent_str = match context.event.agent_type {
             crate::provenance::AgentType::ClaudeCode => "claude-code",
             crate::provenance::AgentType::Cursor => "cursor",
             crate::provenance::AgentType::Unknown => "unknown",
         };
-        resolver.add_var("event.agent".to_string(), agent_str.to_string());
+        resolver.add_var("event.agent_type".to_string(), agent_str.to_string());
 
         // Add session_id if present
         if let Some(ref session_id) = context.event.session_id {

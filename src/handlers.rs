@@ -8,7 +8,7 @@ use crate::flows::{AikiState, FlowExecutor};
 /// Future: Session logging, environment validation, user-defined startup hooks.
 pub fn handle_start(event: AikiEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Session started by {:?}", event.agent);
+        eprintln!("[aiki] Session started by {:?}", event.agent_type);
     }
 
     // Load core flow
@@ -44,7 +44,7 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Recording change by {:?}, session: {}, tool: {}",
-            event.agent,
+            event.agent_type,
             event.session_id.as_ref().unwrap(),
             event.metadata.get("tool_name").unwrap()
         );
@@ -93,7 +93,7 @@ pub fn handle_stop(event: AikiEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Session stop requested by {:?} (not yet implemented)",
-            event.agent
+            event.agent_type
         );
     }
 
