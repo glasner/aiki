@@ -68,15 +68,14 @@ fn test_blame_shows_recorded_change() {
     // Record the change as if ClaudeCode made it
     let hook_input = r#"{
         "session_id": "test-session-123",
-        "transcript_path": null,
+        "transcript_path": "/tmp/transcript.txt",
         "cwd": "",
-        "hook_event_name": "tool_succeeded",
+        "hook_event_name": "PostToolUse",
         "tool_name": "Write",
         "tool_input": {
             "file_path": ""
         },
-        "tool_output": null,
-        "confidence": "high"
+        "tool_output": ""
     }"#;
 
     let hook_input = hook_input
@@ -90,9 +89,12 @@ fn test_blame_shows_recorded_change() {
         );
 
     let output = Command::new(&aiki_bin)
-        .arg("record-change")
-        .arg("--claude-code")
-        .arg("--sync") // Run synchronously for testing
+        .arg("hooks")
+        .arg("handle")
+        .arg("--agent")
+        .arg("claude-code")
+        .arg("--event")
+        .arg("PostToolUse")
         .current_dir(repo_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -107,26 +109,25 @@ fn test_blame_shows_recorded_change() {
                 .write_all(hook_input.as_bytes())?;
             child.wait_with_output()
         })
-        .expect("Failed to run aiki record-change");
+        .expect("Failed to run aiki hooks handle");
 
     println!(
-        "record-change stdout: {}",
+        "hooks handle stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     println!(
-        "record-change stderr: {}",
+        "hooks handle stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    println!("record-change status: {}", output.status);
+    println!("hooks handle status: {}", output.status);
 
-    assert!(output.status.success(), "record-change should succeed");
+    assert!(output.status.success(), "hooks handle should succeed");
 
-    // No need to wait - --sync mode blocks until the description is set
-    // record_change now handles snapshotting via jj-lib
-
-    // Use jj-lib to check the change description (no jj binary needed)
-    // After record_change with snapshotting, the working copy is now a NEW change,
-    // and the metadata is on the PARENT change (the one we modified)
+    // The new hooks system uses the flow engine which:
+    // 1. Calls aiki/core.build_description to generate provenance
+    // 2. Runs jj describe to set the metadata
+    // 3. Runs jj new to create a fresh working copy
+    // So the metadata is on the PARENT change (the one we modified)
     let settings = {
         use jj_lib::config::StackedConfig;
         use jj_lib::settings::UserSettings;

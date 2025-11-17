@@ -9,7 +9,6 @@ mod flows;
 mod handlers;
 mod jj;
 mod provenance;
-mod record_change;
 mod repo;
 mod sign_setup_wizard;
 mod signing;
@@ -46,19 +45,6 @@ enum Commands {
     Hooks {
         #[command(subcommand)]
         command: HooksCommands,
-    },
-    /// Record an AI-generated change (called by AI editor hooks)
-    #[command(name = "record-change")]
-    RecordChange {
-        /// Record change from Claude Code
-        #[arg(long)]
-        claude_code: bool,
-        /// Record change from Cursor
-        #[arg(long)]
-        cursor: bool,
-        /// Run synchronously (for testing - waits for background thread)
-        #[arg(long)]
-        sync: bool,
     },
     /// Show line-by-line AI attribution for a file
     Blame {
@@ -122,11 +108,6 @@ fn run() -> Result<()> {
             HooksCommands::Install => commands::hooks::run_install(),
             HooksCommands::Handle { agent, event } => commands::hooks::run_handle(agent, event),
         },
-        Commands::RecordChange {
-            claude_code,
-            cursor,
-            sync,
-        } => commands::record_change::run(claude_code, cursor, sync),
         Commands::Blame {
             file,
             agent,

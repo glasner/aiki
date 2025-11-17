@@ -83,9 +83,8 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     )
     .unwrap();
 
-    // Step 9: Call aiki record-change (simulates Claude Code PostToolUse hook)
-    // NOTE: The hook runs off the critical path via background threading for performance.
-    // Working copy snapshotting is a known limitation that will be addressed in Milestone 1.2.
+    // Step 9: Call aiki hooks handle (simulates Claude Code PostToolUse hook)
+    // The new hook system uses the event bus and flow engine for provenance recording.
     let hook_input = serde_json::json!({
         "session_id": "test-session-e2e",
         "transcript_path": "/path/to/transcript.json",
@@ -97,34 +96,38 @@ fn test_complete_workflow_init_to_provenance_tracking() {
             "old_string": "println!(\"Hello\")",
             "new_string": "println!(\"Hello, World!\")"
         },
-        "tool_output": "Successfully edited file"
+        "tool_output": ""
     });
 
     // Measure hook performance
     let start = Instant::now();
-    let mut record_cmd = Command::cargo_bin("aiki").unwrap();
-    let output = record_cmd
-        .arg("record-change")
-        .arg("--claude-code")
+    let mut hooks_cmd = Command::cargo_bin("aiki").unwrap();
+    let output = hooks_cmd
+        .arg("hooks")
+        .arg("handle")
+        .arg("--agent")
+        .arg("claude-code")
+        .arg("--event")
+        .arg("PostToolUse")
         .write_stdin(serde_json::to_string(&hook_input).unwrap())
         .current_dir(repo_path)
         .output()
-        .expect("Failed to run record-change");
+        .expect("Failed to run hooks handle");
 
     let elapsed = start.elapsed();
 
-    // Debug: Print record-change output
+    // Debug: Print hooks handle output
     println!(
-        "record-change stdout: {}",
+        "hooks handle stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     println!(
-        "record-change stderr: {}",
+        "hooks handle stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    println!("record-change status: {}", output.status);
+    println!("hooks handle status: {}", output.status);
 
-    assert!(output.status.success(), "record-change should succeed");
+    assert!(output.status.success(), "hooks handle should succeed");
 
     println!(
         "⏱️  Hook execution time: {:.2}ms",
@@ -252,7 +255,7 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     println!("  ✓ JJ repository initialized");
     println!("  ✓ Git hooks configured to use global hooks");
     println!("  ✓ File was edited: test.rs");
-    println!("  ✓ record-change completed successfully");
+    println!("  ✓ hooks handle completed successfully");
     println!("  ✓ Provenance metadata embedded in parent change description");
     println!("  ✓ Metadata format validated");
     println!("  ✓ File content verified: {:?}", final_content.trim());
