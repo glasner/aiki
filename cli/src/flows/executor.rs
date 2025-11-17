@@ -371,8 +371,17 @@ impl FlowExecutor {
 
         // Route to appropriate function
         match (module, function) {
-            ("core", "build_description") => crate::flows::core::build_description(context),
-            ("provenance", "build_description") => crate::flows::core::build_description(context), // Legacy alias
+            ("core", "build_description") | ("provenance", "build_description") => {
+                // build_description requires PostChange event
+                match &context.event {
+                    crate::events::AikiEvent::PostChange(event) => {
+                        crate::flows::core::build_description(event)
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "build_description can only be called for PostChange events"
+                    ))),
+                }
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),

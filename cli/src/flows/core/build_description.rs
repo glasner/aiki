@@ -8,7 +8,8 @@
 //! to be present.
 
 use crate::error::Result;
-use crate::flows::state::{ActionResult, AikiState};
+use crate::events::AikiPostChangeEvent;
+use crate::flows::state::ActionResult;
 use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, ProvenanceRecord};
 
 /// Build a provenance description from event context
@@ -34,14 +35,8 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 ///     on_failure: fail
 ///   - jj: describe -m "$description"
 /// ```
-pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
-    // Extract PostChange event (type system guarantees this is only called for PostChange)
-    let event = match &aiki.event {
-        crate::events::AikiEvent::PostChange(e) => e,
-        _ => panic!("build_description should only be called for PostChange events"),
-    };
-
-    // Build provenance record
+pub fn build_description(event: &AikiPostChangeEvent) -> Result<ActionResult> {
+    // Build provenance record from PostChange event
     let provenance = ProvenanceRecord {
         agent: AgentInfo {
             agent_type: event.agent_type,
@@ -72,22 +67,21 @@ pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiEvent, AikiPostChangeEvent};
+    use crate::events::AikiPostChangeEvent;
     use crate::provenance::AgentType;
 
     #[test]
     fn test_build_description_with_claude_code() {
-        let event = AikiEvent::PostChange(AikiPostChangeEvent {
+        let event = AikiPostChangeEvent {
             agent_type: AgentType::ClaudeCode,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
             file_path: "/tmp/file.rs".to_string(),
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-        });
-        let context = AikiState::new(event);
+        };
 
-        let result = build_description(&context).unwrap();
+        let result = build_description(&event).unwrap();
 
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -98,24 +92,5 @@ mod tests {
         assert!(result.stdout.contains("confidence=High"));
         assert!(result.stdout.contains("method=Hook"));
         assert!(result.stdout.contains("[/aiki]"));
-    }
-
-    #[test]
-    #[should_panic(expected = "build_description should only be called for PostChange events")]
-    fn test_build_description_missing_session_id() {
-        // This test verifies that build_description panics when called with wrong event type
-        // Type system now guarantees PostChange events have session_id, so we test with Start
-        use crate::events::AikiStartEvent;
-
-        let event = AikiEvent::Start(AikiStartEvent {
-            agent_type: AgentType::ClaudeCode,
-            session_id: None,
-            cwd: std::path::PathBuf::from("/tmp"),
-            timestamp: chrono::Utc::now(),
-        });
-        let context = AikiState::new(event);
-
-        // This should panic because Start event was passed instead of PostChange
-        let _ = build_description(&context);
     }
 }
