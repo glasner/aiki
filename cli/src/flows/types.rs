@@ -142,6 +142,7 @@ pub struct ActionResult {
 }
 
 impl ActionResult {
+    #[must_use]
     pub fn success() -> Self {
         Self {
             success: true,
@@ -151,6 +152,7 @@ impl ActionResult {
         }
     }
 
+    #[must_use]
     pub fn failure(exit_code: i32, stderr: String) -> Self {
         Self {
             success: false,
@@ -184,25 +186,16 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
-    pub fn new(cwd: std::path::PathBuf) -> Self {
+    #[must_use]
+    pub fn new(cwd: impl AsRef<std::path::Path>) -> Self {
         Self {
-            cwd,
+            cwd: cwd.as_ref().to_path_buf(),
             event_vars: HashMap::new(),
             let_vars: HashMap::new(),
             env_vars: std::env::vars().collect(),
             variable_metadata: HashMap::new(),
             flow_name: None,
         }
-    }
-
-    pub fn with_event_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.event_vars.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn with_flow_name(mut self, flow_name: impl Into<String>) -> Self {
-        self.flow_name = Some(flow_name.into());
-        self
     }
 }
 
@@ -227,8 +220,9 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event_var() {
-        let ctx = ExecutionContext::new(std::path::PathBuf::from("/test"))
-            .with_event_var("file_path", "/test/file.rs");
+        let mut ctx = ExecutionContext::new(std::path::PathBuf::from("/test"));
+        ctx.event_vars
+            .insert("file_path".to_string(), "/test/file.rs".to_string());
 
         assert_eq!(
             ctx.event_vars.get("file_path"),

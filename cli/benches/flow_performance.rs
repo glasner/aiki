@@ -144,8 +144,10 @@ fn bench_let_action_execution(c: &mut Criterion) {
 
     c.bench_function("let_action_execution", |b| {
         b.iter(|| {
-            let mut context =
-                ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);
@@ -189,11 +191,19 @@ fn bench_provenance_flow_with_let(c: &mut Criterion) {
 
     c.bench_function("provenance_flow_with_let", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
-                .with_event_var("agent", "claude-code")
-                .with_event_var("session_id", "test-session-123")
-                .with_event_var("tool_name", "Edit")
-                .with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            context
+                .event_vars
+                .insert("agent".to_string(), "claude-code".to_string());
+            context
+                .event_vars
+                .insert("session_id".to_string(), "test-session-123".to_string());
+            context
+                .event_vars
+                .insert("tool_name".to_string(), "Edit".to_string());
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context);
             black_box(results);

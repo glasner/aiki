@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::process::Command;
 use std::time::Duration;
 
@@ -7,6 +7,7 @@ use super::types::{
     LogAction, ShellAction,
 };
 use super::variables::VariableResolver;
+use crate::error::{AikiError, Result};
 
 /// Executes flow actions
 pub struct FlowExecutor;
@@ -76,7 +77,7 @@ impl FlowExecutor {
             results.push(result);
 
             if should_stop {
-                anyhow::bail!("Action failed with on_failure: fail");
+                return Err(AikiError::ActionFailed);
             }
         }
 
@@ -197,7 +198,7 @@ impl FlowExecutor {
     /// Execute a shell command
     fn execute_shell(action: &ShellAction, context: &ExecutionContext) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(context);
 
         // Resolve variables in command
         let command = resolver.resolve(&action.shell);
@@ -232,7 +233,7 @@ impl FlowExecutor {
     /// Execute a JJ command
     fn execute_jj(action: &JjAction, context: &ExecutionContext) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(context);
 
         // Resolve variables in command
         let jj_args = resolver.resolve(&action.jj);
@@ -268,7 +269,7 @@ impl FlowExecutor {
     /// Execute a log action
     fn execute_log(action: &LogAction, context: &ExecutionContext) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(context);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.log);
@@ -288,10 +289,7 @@ impl FlowExecutor {
         // Parse the let binding: "variable = expression"
         let parts: Vec<&str> = action.let_.splitn(2, '=').collect();
         if parts.len() != 2 {
-            anyhow::bail!(
-                "Invalid let syntax: '{}'. Expected 'variable = expression'",
-                action.let_
-            );
+            return Err(AikiError::InvalidLetSyntax(action.let_.to_string()));
         }
 
         let variable_name = parts[0].trim();
@@ -299,11 +297,7 @@ impl FlowExecutor {
 
         // Validate variable name
         if !Self::is_valid_variable_name(variable_name) {
-            anyhow::bail!(
-                "Invalid variable name: '{}'. Variable names must start with a letter or underscore, \
-                 and contain only letters, numbers, and underscores.",
-                variable_name
-            );
+            return Err(AikiError::InvalidVariableName(variable_name.to_string()));
         }
 
         if std::env::var("AIKI_DEBUG").is_ok() {
@@ -345,7 +339,7 @@ impl FlowExecutor {
         context: &ExecutionContext,
     ) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(context);
 
         // Resolve the variable reference
         let value = resolver.resolve(expression);
@@ -401,10 +395,9 @@ impl FlowExecutor {
         // Parse function path: namespace/module.function
         // For now, we only support aiki/* namespace
         if !resolved_path.starts_with("aiki/") {
-            anyhow::bail!(
-                "Unsupported function namespace in '{}'. Only 'aiki/*' functions are supported.",
-                resolved_path
-            );
+            return Err(AikiError::UnsupportedFunctionNamespace(
+                resolved_path.to_string(),
+            ));
         }
 
         // Extract module.function part
@@ -413,10 +406,7 @@ impl FlowExecutor {
         // Split into module and function
         let parts: Vec<&str> = module_function.splitn(2, '.').collect();
         if parts.len() != 2 {
-            anyhow::bail!(
-                "Invalid function path: '{}'. Expected format: 'aiki/module.function' or 'self.function'",
-                function_path
-            );
+            return Err(AikiError::MissingFunction(function_path.to_string()));
         }
 
         let module = parts[0];
@@ -426,11 +416,10 @@ impl FlowExecutor {
         match (module, function) {
             ("core", "build_description") => Self::fn_build_provenance_description(context),
             ("provenance", "build_description") => Self::fn_build_provenance_description(context), // Legacy
-            _ => anyhow::bail!(
-                "Unknown function: {}/{}. Available functions: aiki/core.build_description, aiki/provenance.build_description (legacy)",
-                module,
-                function
-            ),
+            _ => Err(AikiError::FunctionNotFoundInNamespace(
+                function.to_string(),
+                module.to_string(),
+            )),
         }
     }
 
@@ -517,14 +506,14 @@ impl FlowExecutor {
             "build_provenance_description" => {
                 Self::aiki_build_provenance_description(&resolved_args, context)
             }
-            _ => anyhow::bail!("Unknown aiki function: {}", action.aiki),
+            _ => Err(AikiError::UnknownAikiFunction(action.aiki.clone())),
         }
     }
 
     /// Aiki function: Build provenance description
     fn aiki_build_provenance_description(
         args: &std::collections::HashMap<String, String>,
-        context: &ExecutionContext,
+        _context: &ExecutionContext,
     ) -> Result<ActionResult> {
         use crate::provenance::{
             AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
@@ -591,10 +580,7 @@ fn parse_timeout(timeout_str: &str) -> Result<Duration> {
         let hours: u64 = hours_str.parse().context("Invalid timeout value")?;
         Ok(Duration::from_secs(hours * 3600))
     } else {
-        anyhow::bail!(
-            "Invalid timeout format: {}. Use 's', 'm', or 'h' suffix",
-            timeout_str
-        );
+        Err(AikiError::InvalidTimeoutFormat(timeout_str.to_string()))
     }
 }
 
@@ -622,9 +608,10 @@ fn execute_with_timeout_argv(
         let _ = tx.send(output);
     });
 
-    rx.recv_timeout(timeout)
+    Ok(rx
+        .recv_timeout(timeout)
         .context("Command timed out")?
-        .context("Failed to execute command")
+        .context("Failed to execute command")?)
 }
 
 /// Execute command with timeout (legacy shell-based version)
@@ -650,9 +637,10 @@ fn execute_with_timeout(
         let _ = tx.send(output);
     });
 
-    rx.recv_timeout(timeout)
+    Ok(rx
+        .recv_timeout(timeout)
         .context("Command timed out")?
-        .context("Failed to execute command")
+        .context("Failed to execute command")?)
 }
 
 #[cfg(test)]
@@ -705,8 +693,10 @@ mod tests {
             alias: None,
         };
 
-        let context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let result = FlowExecutor::execute_log(&action, &context).unwrap();
         assert!(result.success);
@@ -737,8 +727,10 @@ mod tests {
             alias: None,
         };
 
-        let context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let result = FlowExecutor::execute_shell(&action, &context).unwrap();
         assert!(result.success);
@@ -841,8 +833,10 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
@@ -902,8 +896,10 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
@@ -923,8 +919,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -969,8 +967,10 @@ mod tests {
             on_failure: FailureMode::Continue,
         })];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -1042,8 +1042,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("value", "initial");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("value".to_string(), "initial".to_string());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -1081,9 +1083,13 @@ mod tests {
             }),
         ];
 
-        let mut context = ExecutionContext::new(PathBuf::from("/tmp"))
-            .with_event_var("first", "foo")
-            .with_event_var("second", "bar");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("first".to_string(), "foo".to_string());
+        context
+            .event_vars
+            .insert("second".to_string(), "bar".to_string());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -1104,8 +1110,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -1125,11 +1133,17 @@ mod tests {
             on_failure: FailureMode::Fail,
         };
 
-        let context = ExecutionContext::new(PathBuf::from("/tmp"))
-            .with_flow_name("aiki/core")
-            .with_event_var("agent", "ClaudeCode")
-            .with_event_var("session_id", "test-session")
-            .with_event_var("tool_name", "Edit");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context.flow_name = Some("aiki/core".to_string());
+        context
+            .event_vars
+            .insert("agent".to_string(), "ClaudeCode".to_string());
+        context
+            .event_vars
+            .insert("session_id".to_string(), "test-session".to_string());
+        context
+            .event_vars
+            .insert("tool_name".to_string(), "Edit".to_string());
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
@@ -1169,8 +1183,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -1195,8 +1211,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("message", "@");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("message".to_string(), "@".to_string());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -1218,8 +1236,10 @@ mod tests {
             }),
         ];
 
-        let mut context =
-            ExecutionContext::new(PathBuf::from("/tmp")).with_event_var("file_path", "test.rs");
+        let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
+        context
+            .event_vars
+            .insert("file_path".to_string(), "test.rs".to_string());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);

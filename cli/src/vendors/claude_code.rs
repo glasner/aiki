@@ -11,7 +11,6 @@ use crate::provenance::AgentType;
 /// This matches the JSON that Claude Code sends to PostToolUse hooks.
 /// See: https://docs.claude.com/claude-code/hooks
 #[derive(Deserialize, Debug)]
-#[allow(dead_code)]
 struct ClaudeCodePayload {
     session_id: String,
     transcript_path: String,
@@ -26,7 +25,6 @@ struct ClaudeCodePayload {
 }
 
 #[derive(Deserialize, Debug)]
-#[allow(dead_code)]
 struct ToolInput {
     file_path: String,
     #[serde(default)]

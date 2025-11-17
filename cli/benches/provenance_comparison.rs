@@ -50,11 +50,19 @@ fn bench_old_aiki_action(c: &mut Criterion) {
 
     c.bench_function("old_aiki_action", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
-                .with_event_var("agent", "claude-code")
-                .with_event_var("session_id", "test-session")
-                .with_event_var("tool_name", "Edit")
-                .with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            context
+                .event_vars
+                .insert("agent".to_string(), "claude-code".to_string());
+            context
+                .event_vars
+                .insert("session_id".to_string(), "test-session".to_string());
+            context
+                .event_vars
+                .insert("tool_name".to_string(), "Edit".to_string());
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);
@@ -75,11 +83,19 @@ fn bench_new_let_action(c: &mut Criterion) {
 
     c.bench_function("new_let_action", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
-                .with_event_var("agent", "claude-code")
-                .with_event_var("session_id", "test-session")
-                .with_event_var("tool_name", "Edit")
-                .with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            context
+                .event_vars
+                .insert("agent".to_string(), "claude-code".to_string());
+            context
+                .event_vars
+                .insert("session_id".to_string(), "test-session".to_string());
+            context
+                .event_vars
+                .insert("tool_name".to_string(), "Edit".to_string());
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);
@@ -116,11 +132,19 @@ fn bench_old_full_workflow(c: &mut Criterion) {
 
     c.bench_function("old_full_workflow", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
-                .with_event_var("agent", "claude-code")
-                .with_event_var("session_id", "test-session")
-                .with_event_var("tool_name", "Edit")
-                .with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            context
+                .event_vars
+                .insert("agent".to_string(), "claude-code".to_string());
+            context
+                .event_vars
+                .insert("session_id".to_string(), "test-session".to_string());
+            context
+                .event_vars
+                .insert("tool_name".to_string(), "Edit".to_string());
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);
@@ -149,11 +173,19 @@ fn bench_new_full_workflow(c: &mut Criterion) {
 
     c.bench_function("new_full_workflow", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()))
-                .with_event_var("agent", "claude-code")
-                .with_event_var("session_id", "test-session")
-                .with_event_var("tool_name", "Edit")
-                .with_event_var("file_path", "test.rs");
+            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            context
+                .event_vars
+                .insert("agent".to_string(), "claude-code".to_string());
+            context
+                .event_vars
+                .insert("session_id".to_string(), "test-session".to_string());
+            context
+                .event_vars
+                .insert("tool_name".to_string(), "Edit".to_string());
+            context
+                .event_vars
+                .insert("file_path".to_string(), "test.rs".to_string());
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);

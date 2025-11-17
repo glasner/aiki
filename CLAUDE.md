@@ -4,6 +4,553 @@ This document provides important context and guidelines for AI assistants (espec
 
 ---
 
+## Table of Contents
+1. [JJ vs Git Terminology](#critical-jj-vs-git-terminology)
+2. [Error Handling with Structured Types](#error-handling-with-structured-types)
+3. [Rust Idioms and Best Practices](#rust-idioms-and-best-practices)
+4. [Module Organization](#module-organization)
+5. [Architecture](#architecture-change-centric-not-commit-centric)
+6. [Metadata Storage](#metadata-storage-pattern)
+7. [Testing](#testing)
+
+---
+
+## Error Handling with Structured Types
+
+### Core Principle
+
+Aiki uses **structured error types** via `thiserror`, not generic string-based errors.
+
+**DO:**
+```rust
+use crate::error::{AikiError, Result};
+
+fn parse_agent_type(agent: &str) -> Result<AgentType> {
+    match agent {
+        "claude-code" => Ok(AgentType::ClaudeCode),
+        "cursor" => Ok(AgentType::Cursor),
+        _ => Err(AikiError::UnknownAgentType(agent.to_string())),
+    }
+}
+```
+
+**DON'T:**
+```rust
+// ❌ WRONG: String-based errors
+anyhow::bail!("Unknown agent type: '{}'. Supported values: ...", agent);
+```
+
+### When to Use Which Error Type
+
+| Situation | Use | Example |
+|-----------|-----|---------|
+| **New Aiki-specific error** | `AikiError` variant | Repository not found, invalid agent type |
+| **JJ-lib interop** | `anyhow::Result` | Working with jj-lib APIs that return `BackendError` |
+| **Generic I/O error** | Let `?` convert | File I/O via `#[from] std::io::Error` |
+| **Third-party library error** | `AikiError::Other` | Wrap with `.into()` or use `?` |
+
+### Adding New Error Types
+
+**Step 1:** Define the error variant in `cli/src/error.rs`:
+
+```rust
+#[derive(Error, Debug)]
+pub enum AikiError {
+    // ... existing variants ...
+    
+    #[error("Your descriptive error message here: {0}")]
+    YourNewError(String),
+    
+    #[error("Error with multiple fields: {field1}, {field2}")]
+    ComplexError {
+        field1: String,
+        field2: PathBuf,
+    },
+}
+```
+
+**Step 2:** Use it in your code:
+
+```rust
+// Simple variant
+return Err(AikiError::YourNewError(value.to_string()));
+
+// Complex variant
+return Err(AikiError::ComplexError {
+    field1: name.to_string(),
+    field2: path.clone(),
+});
+```
+
+### Error Message Guidelines
+
+1. **Be specific and actionable**
+   ```rust
+   ✅ #[error("Not in a JJ repository. Run 'jj init' or 'aiki init' first")]
+   ❌ #[error("Repository error")]
+   ```
+
+2. **Include context in the variant**
+   ```rust
+   ✅ #[error("File not found: {0}")]
+      FileNotFound(PathBuf),
+   ❌ #[error("File not found")]
+      FileNotFound,
+   ```
+
+3. **Suggest solutions when possible**
+   ```rust
+   ✅ #[error("Invalid timeout format: {0}. Use 's', 'm', or 'h' suffix")]
+   ❌ #[error("Invalid timeout: {0}")]
+   ```
+
+4. **List valid options for enums**
+   ```rust
+   ✅ #[error("Unknown agent type: '{0}'. Supported values: 'claude-code', 'cursor'")]
+   ❌ #[error("Unknown agent type: '{0}'")]
+   ```
+
+### Error Conversion Patterns
+
+#### Pattern 1: Return AikiError directly
+
+```rust
+use crate::error::{AikiError, Result};
+
+fn validate_input(input: &str) -> Result<()> {
+    if input.is_empty() {
+        return Err(AikiError::InvalidInput("Input cannot be empty".to_string()));
+    }
+    Ok(())
+}
+```
+
+#### Pattern 2: Convert to anyhow for jj-lib interop
+
+```rust
+// In modules that heavily use jj-lib
+type Result<T> = anyhow::Result<T>;
+
+fn work_with_jj(repo: &Repo) -> Result<()> {
+    let commit = repo.store().get_commit(&commit_id)?;  // jj-lib error
+    
+    if some_condition {
+        return Err(AikiError::YourError("details".to_string()).into());
+    }
+    
+    Ok(())
+}
+```
+
+#### Pattern 3: Propagate errors across boundaries
+
+```rust
+use crate::error::Result;
+
+fn outer() -> Result<()> {
+    // vendor functions return anyhow::Result
+    Ok(vendor::some_function()?)  // Converts via AikiError::Other
+}
+```
+
+### Testing Error Types
+
+```rust
+#[test]
+fn test_error_message() {
+    let err = AikiError::UnknownAgentType("vscode".to_string());
+    assert_eq!(
+        err.to_string(),
+        "Unknown agent type: 'vscode'. Supported values: 'claude-code', 'cursor'"
+    );
+}
+
+#[test]
+fn test_error_type() {
+    let result = parse_agent_type("invalid");
+    assert!(matches!(result, Err(AikiError::UnknownAgentType(_))));
+}
+```
+
+### Common Error Variants
+
+See `cli/src/error.rs` for the full list. Common ones:
+
+- **Repository**: `NotInJjRepo`, `JjInitFailed`
+- **Files**: `FileNotFound(PathBuf)`, `FileNotFoundNoParents`
+- **Agents**: `UnknownAgentType(String)`, `UnsupportedAgentType(String)`
+- **Flows**: `InvalidLetSyntax(String)`, `InvalidVariableName(String)`, `ActionFailed`
+- **Commands**: `JjCommandFailed(String)`, `GitDiffFailed(String)`
+- **Signing**: `SshKeyNotFound(PathBuf)`, `GpgKeyIdExtractionFailed`
+
+### Main Function Error Handling
+
+Always use this pattern for `main()`:
+
+```rust
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("Error: {}", err);  // Uses Display trait
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    // Actual application logic
+    Ok(())
+}
+```
+
+**Why**: Rust's default `main() -> Result<()>` uses Debug formatting, which prints `Error: NotInJjRepo` instead of the user-friendly message. The wrapper ensures Display is used.
+
+---
+
+## Rust Idioms and Best Practices
+
+### Core Principle
+
+Aiki follows idiomatic Rust patterns for better API ergonomics, type safety, and performance.
+
+### Using `#[must_use]` on Constructors and Builder Methods
+
+**DO:** Add `#[must_use]` to constructors and methods that create new values
+```rust
+impl ActionResult {
+    #[must_use]
+    pub fn success() -> Self {
+        Self {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+    
+    #[must_use]
+    pub fn failure(exit_code: i32, stderr: String) -> Self {
+        Self {
+            success: false,
+            exit_code: Some(exit_code),
+            stdout: String::new(),
+            stderr,
+        }
+    }
+}
+
+impl AikiEvent {
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+}
+```
+
+**Why**: The `#[must_use]` attribute generates compiler warnings when the return value is ignored, preventing bugs like:
+```rust
+// Without #[must_use], this silently does nothing
+ActionResult::success();  // Oops, forgot to assign!
+
+// With #[must_use], the compiler warns:
+// warning: unused `ActionResult` that must be used
+```
+
+**When to use `#[must_use]`:**
+- Constructor functions (`new()`, `default()`)
+- Result-returning functions (`success()`, `failure()`)
+- Builder pattern methods (`with_session_id()`, `with_metadata()`)
+- Pure functions that don't modify state
+
+### Using `impl AsRef<Path>` for Path Parameters
+
+**DO:** Use `impl AsRef<Path>` for functions that need to store or use paths
+```rust
+impl BlameCommand {
+    #[must_use]
+    pub fn new(repo_path: impl AsRef<Path>) -> Self {
+        Self {
+            repo_path: repo_path.as_ref().to_path_buf(),
+        }
+    }
+}
+
+impl ExecutionContext {
+    #[must_use]
+    pub fn new(cwd: impl AsRef<Path>) -> Self {
+        Self {
+            cwd: cwd.as_ref().to_path_buf(),
+            // ...
+        }
+    }
+}
+```
+
+**Why**: This allows callers to pass many different types without conversion:
+```rust
+// All of these work:
+let ctx1 = ExecutionContext::new("/tmp");              // &str
+let ctx2 = ExecutionContext::new(String::from("/tmp")); // String
+let ctx3 = ExecutionContext::new(&s);                  // &String
+let ctx4 = ExecutionContext::new(PathBuf::from("/tmp")); // PathBuf
+let ctx5 = ExecutionContext::new(&pb);                 // &PathBuf
+let ctx6 = ExecutionContext::new(pb.as_path());        // &Path
+```
+
+**When to use `impl AsRef<Path>`:**
+- Constructor functions that take paths
+- Functions that need to convert the path to `PathBuf` for storage
+- Functions that only need to read the path
+
+**DON'T use it:**
+- For functions that take `&Path` (already optimal for borrowed paths)
+- For functions that need to take ownership of a specific `PathBuf`
+
+### `.to_string()` Usage Patterns
+
+**When `.to_string()` is necessary:**
+```rust
+// ✅ GOOD: Creating owned String for HashMap keys
+let mut map = HashMap::new();
+map.insert(key.to_string(), value);
+
+// ✅ GOOD: Converting from &str to String when ownership is needed
+pub struct Config {
+    name: String,  // Owned data
+}
+
+impl Config {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),  // Necessary conversion
+        }
+    }
+}
+
+// ✅ GOOD: String formatting requires owned String
+format!("Error: {}", err.to_string())
+```
+
+**When to avoid `.to_string()`:**
+```rust
+// ❌ BAD: Unnecessary when impl Into<String> works
+pub fn set_name(name: String) { ... }
+// call site: set_name("test".to_string());  // Wasteful
+
+// ✅ GOOD: Use Into
+pub fn set_name(name: impl Into<String>) { ... }
+// call site: set_name("test");  // No conversion needed
+```
+
+**Summary:** Most `.to_string()` calls in the codebase are necessary for HashMap keys, owned String fields, or format! macros. Avoid only when a more generic trait (`Into<String>`, `AsRef<str>`) would work.
+
+### Pattern Summary
+
+| Pattern | When to Use | Example |
+|---------|-------------|---------|
+| `#[must_use]` | Constructors, builders, pure functions | `ActionResult::success()` |
+| `impl AsRef<Path>` | Path parameters that need flexibility | `ExecutionContext::new(cwd: impl AsRef<Path>)` |
+| `impl Into<String>` | String parameters that accept &str or String | `fn set_name(name: impl Into<String>)` |
+| `.to_string()` | Creating owned Strings for storage | `map.insert(key.to_string(), value)` |
+
+---
+
+## Module Organization
+
+### Core Principle
+
+Aiki uses a **command-based module structure** where each CLI command has its own module in `cli/src/commands/`.
+
+### Structure
+
+```
+cli/src/
+├── main.rs (138 lines) - CLI parsing and dispatch only
+└── commands/
+    ├── mod.rs - Module exports
+    ├── init.rs - Repository initialization
+    ├── doctor.rs - Health checks and diagnostics
+    ├── hooks.rs - Hook installation and management
+    ├── blame.rs - File attribution
+    ├── authors.rs - Author extraction
+    ├── verify.rs - Signature verification
+    └── record_change.rs - Legacy change recording
+```
+
+### Adding a New Command
+
+**DO:** Create a new module in `commands/`
+```rust
+// cli/src/commands/my_command.rs
+use crate::error::Result;
+
+pub fn run(arg1: String, arg2: bool) -> Result<()> {
+    // Command implementation
+    Ok(())
+}
+
+// Helper functions specific to this command
+fn helper_function() -> Result<()> {
+    // ...
+}
+```
+
+**Then add to commands/mod.rs:**
+```rust
+pub mod my_command;
+```
+
+**Then dispatch in main.rs:**
+```rust
+Commands::MyCommand { arg1, arg2 } => commands::my_command::run(arg1, arg2),
+```
+
+### Module Responsibilities
+
+Each command module should:
+1. **Export a `run()` function** - Single entry point
+2. **Contain command-specific logic** - Don't spread across files
+3. **Include helper functions** - Keep them private to the module
+4. **Import what it needs** - Be self-contained
+5. **Return `Result<()>`** - Use structured errors
+
+### Example: Simple Command
+
+```rust
+// cli/src/commands/hello.rs
+use crate::error::Result;
+
+pub fn run(name: String) -> Result<()> {
+    println!("Hello, {}!", name);
+    Ok(())
+}
+```
+
+### Example: Complex Command with Helpers
+
+```rust
+// cli/src/commands/init.rs
+use crate::config;
+use crate::error::Result;
+use crate::jj;
+use std::io::{self, Write};
+
+pub fn run(quiet: bool) -> Result<()> {
+    if !quiet {
+        println!("Initializing...");
+    }
+    
+    let choice = prompt_choice("Select option", 1, 3)?;
+    handle_choice(choice)?;
+    
+    Ok(())
+}
+
+// Helper functions - private to this module
+fn prompt_choice(prompt: &str, min: usize, max: usize) -> Result<usize> {
+    loop {
+        print!("{} [{}]: ", prompt, min);
+        io::stdout().flush()?;
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        
+        match input.trim().parse::<usize>() {
+            Ok(n) if n >= min && n <= max => return Ok(n),
+            _ => println!("Please enter a number between {} and {}", min, max),
+        }
+    }
+}
+
+fn handle_choice(choice: usize) -> Result<()> {
+    match choice {
+        1 => { /* ... */ }
+        2 => { /* ... */ }
+        3 => { /* ... */ }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+```
+
+### Benefits of This Structure
+
+1. **Clear ownership** - Each command owns its code
+2. **Easy navigation** - Find command by module name
+3. **Scalable** - New commands don't bloat main.rs
+4. **Testable** - Each module can be unit tested
+5. **Maintainable** - Changes are localized
+
+### When to Extract a Helper Module
+
+If multiple commands need the same helper function, consider creating a shared module:
+
+```
+cli/src/
+├── commands/
+│   ├── blame.rs
+│   └── authors.rs
+└── utils/
+    └── jj_workspace.rs  # Shared JJ workspace utilities
+```
+
+But only do this when:
+- ✅ The function is used by 3+ commands
+- ✅ The logic is truly generic
+- ✅ It has a clear, single responsibility
+
+**Don't prematurely extract** - Keep it in the command module until you have multiple users.
+
+### Anti-Patterns to Avoid
+
+❌ **DON'T put command logic in main.rs**
+```rust
+// BAD - logic in main.rs
+fn run() -> Result<()> {
+    match cli.command {
+        Commands::Init { quiet } => {
+            let current_dir = env::current_dir()?;
+            // 50 lines of init logic here...
+        }
+    }
+}
+```
+
+✅ **DO dispatch to command modules**
+```rust
+// GOOD - dispatch only
+fn run() -> Result<()> {
+    match cli.command {
+        Commands::Init { quiet } => commands::init::run(quiet),
+    }
+}
+```
+
+❌ **DON'T create generic "utils" modules prematurely**
+```rust
+// BAD - unclear responsibility
+cli/src/utils.rs  // What goes here? Everything?
+```
+
+✅ **DO keep helpers with their commands until needed elsewhere**
+```rust
+// GOOD - clear ownership
+cli/src/commands/init.rs  // Contains prompt_choice()
+cli/src/commands/doctor.rs  // Contains prompt_yes_no()
+```
+
+### Summary
+
+| Aspect | Guideline |
+|--------|-----------|
+| **File location** | `cli/src/commands/{command}.rs` |
+| **Entry point** | `pub fn run(...) -> Result<()>` |
+| **Helper functions** | Keep private in command module |
+| **Module exports** | Add to `commands/mod.rs` |
+| **Dispatch** | Simple match in `main.rs` |
+| **Size limit** | ~300 lines (split if larger) |
+
+---
+
 ## Critical: JJ vs Git Terminology
 
 ### The Fundamental Distinction
