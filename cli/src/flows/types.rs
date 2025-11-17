@@ -125,13 +125,13 @@ pub struct EditCommitMessageOp {
     #[serde(default)]
     pub append_body: Option<String>,
 
-    /// Prepend to message (before subject line)
+    /// Prepend to subject line (before first line)
     #[serde(default)]
-    pub prepend: Option<String>,
+    pub prepend_subject: Option<String>,
 
-    /// Append to end of file (after everything)
+    /// Append footer (after everything)
     #[serde(default)]
-    pub append: Option<String>,
+    pub append_footer: Option<String>,
 }
 
 /// What to do when an action fails
