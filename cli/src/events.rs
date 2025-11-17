@@ -84,3 +84,22 @@ impl AikiEvent {
         }
     }
 }
+
+// Implement Into<AikiEvent> for each event type to enable ergonomic construction
+impl From<AikiStartEvent> for AikiEvent {
+    fn from(event: AikiStartEvent) -> Self {
+        AikiEvent::Start(event)
+    }
+}
+
+impl From<AikiPostChangeEvent> for AikiEvent {
+    fn from(event: AikiPostChangeEvent) -> Self {
+        AikiEvent::PostChange(event)
+    }
+}
+
+impl From<AikiPreCommitEvent> for AikiEvent {
+    fn from(event: AikiPreCommitEvent) -> Self {
+        AikiEvent::PreCommit(event)
+    }
+}
