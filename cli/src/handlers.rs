@@ -1,6 +1,6 @@
 use crate::error::{AikiError, Result};
 use crate::events::AikiEvent;
-use crate::flows::{ExecutionContext, FlowExecutor};
+use crate::flows::{AikiState, FlowExecutor};
 
 /// Handle session start event
 ///
@@ -15,26 +15,10 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
     let core_flow = crate::flows::load_core_flow()?;
 
     // Build execution context
-    let mut context = ExecutionContext::new(event.cwd.clone());
+    let mut context = AikiState::new(event);
 
     // Set flow name for self.* function resolution
     context.flow_name = Some("aiki/core".to_string());
-
-    // Add event variables
-    let agent_name = match event.agent {
-        crate::provenance::AgentType::ClaudeCode => "claude-code",
-        crate::provenance::AgentType::Cursor => "cursor",
-        crate::provenance::AgentType::Unknown => "unknown",
-    };
-    context
-        .event_vars
-        .insert("agent".to_string(), agent_name.to_string());
-
-    if let Some(session_id) = &event.session_id {
-        context
-            .event_vars
-            .insert("session_id".to_string(), session_id.to_string());
-    }
 
     // Execute Start actions from the core flow
     // This ensures the repository is properly initialized
@@ -49,19 +33,20 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
 /// the change in the JJ change description using the flow engine.
 pub fn handle_post_change(event: AikiEvent) -> Result<()> {
     // Validate required metadata - fail early with clear errors
-    let session_id = event
-        .session_id
-        .ok_or_else(|| AikiError::MissingEventVariable("session_id".to_string()))?;
+    if event.session_id.is_none() {
+        return Err(AikiError::MissingEventVariable("session_id".to_string()));
+    }
 
-    let tool_name = event
-        .metadata
-        .get("tool_name")
-        .ok_or_else(|| AikiError::MissingEventVariable("tool_name".to_string()))?;
+    if event.metadata.get("tool_name").is_none() {
+        return Err(AikiError::MissingEventVariable("tool_name".to_string()));
+    }
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Recording change by {:?}, session: {}, tool: {}",
-            event.agent, session_id, tool_name
+            event.agent,
+            event.session_id.as_ref().unwrap(),
+            event.metadata.get("tool_name").unwrap()
         );
     }
 
@@ -69,34 +54,10 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
     let core_flow = crate::flows::load_core_flow()?;
 
     // Build execution context with event variables
-    let mut context = ExecutionContext::new(event.cwd.clone());
+    let mut context = AikiState::new(event);
 
     // Set flow name for self.* function resolution
     context.flow_name = Some("aiki/core".to_string());
-
-    // Add event variables - the native function will use these
-    // Use the serialized agent name (e.g., "claude-code") instead of Debug format
-    let agent_name = match event.agent {
-        crate::provenance::AgentType::ClaudeCode => "claude-code",
-        crate::provenance::AgentType::Cursor => "cursor",
-        crate::provenance::AgentType::Unknown => "unknown",
-    };
-    context
-        .event_vars
-        .insert("agent".to_string(), agent_name.to_string());
-    context
-        .event_vars
-        .insert("session_id".to_string(), session_id.to_string());
-    context
-        .event_vars
-        .insert("tool_name".to_string(), tool_name.to_string());
-
-    // Add file_path if available
-    if let Some(file_path) = event.metadata.get("file_path") {
-        context
-            .event_vars
-            .insert("file_path".to_string(), file_path.clone());
-    }
 
     // Execute PostChange actions from the core flow
     // The flow will call the native build_description function

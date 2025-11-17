@@ -1,3 +1,5 @@
+use aiki::events::{AikiEvent, AikiEventType};
+use aiki::provenance::AgentType;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::process::Command;
 use tempfile::TempDir;
@@ -128,8 +130,7 @@ fn bench_variable_interpolation(c: &mut Criterion) {
 
 /// Benchmark: Let action execution (variable aliasing only)
 fn bench_let_action_execution(c: &mut Criterion) {
-    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, LetAction};
-    use std::path::PathBuf;
+    use aiki::flows::{Action, AikiState, FailureMode, FlowExecutor, LetAction};
 
     let actions = vec![
         Action::Let(LetAction {
@@ -144,10 +145,9 @@ fn bench_let_action_execution(c: &mut Criterion) {
 
     c.bench_function("let_action_execution", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from("/tmp"));
-            context
-                .event_vars
-                .insert("file_path".to_string(), "test.rs".to_string());
+            let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
+                .with_metadata("file_path", "test.rs");
+            let mut context = AikiState::new(event);
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context).unwrap();
             black_box(results);
@@ -171,8 +171,7 @@ fn bench_provenance_flow_with_let(c: &mut Criterion) {
         .output()
         .expect("Failed to track file");
 
-    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, JjAction, LetAction};
-    use std::path::PathBuf;
+    use aiki::flows::{Action, AikiState, FailureMode, FlowExecutor, JjAction, LetAction};
 
     let actions = vec![
         // Let action to call build_description function
@@ -191,19 +190,17 @@ fn bench_provenance_flow_with_let(c: &mut Criterion) {
 
     c.bench_function("provenance_flow_with_let", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
-            context
-                .event_vars
-                .insert("agent".to_string(), "claude-code".to_string());
-            context
-                .event_vars
-                .insert("session_id".to_string(), "test-session-123".to_string());
-            context
-                .event_vars
-                .insert("tool_name".to_string(), "Edit".to_string());
-            context
-                .event_vars
-                .insert("file_path".to_string(), "test.rs".to_string());
+            let event = AikiEvent::new(
+                AikiEventType::PostChange,
+                AgentType::ClaudeCode,
+                temp_dir.path(),
+            )
+            .with_session_id("test-session-123")
+            .with_metadata("agent", "claude-code")
+            .with_metadata("session_id", "test-session-123")
+            .with_metadata("tool_name", "Edit")
+            .with_metadata("file_path", "test.rs");
+            let mut context = AikiState::new(event);
 
             let results = FlowExecutor::execute_actions(black_box(&actions), &mut context);
             black_box(results);

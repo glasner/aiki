@@ -1,0 +1,204 @@
+warning: unused import: `AgentType`
+  --> src/flows/core/build_description.rs:13:16
+   |
+13 |     AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
+   |                ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `aiki` (lib) generated 1 warning (run `cargo fix --lib -p aiki` to apply 1 suggestion)
+warning: unused import: `ActionResult`
+  --> src/flows/mod.rs:10:17
+   |
+10 | pub use types::{ActionResult, ExecutionContext};
+   |                 ^^^^^^^^^^^^
+
+warning: unused import: `variables::VariableResolver`
+  --> src/flows/mod.rs:11:9
+   |
+11 | pub use variables::VariableResolver;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple variants are never constructed
+   --> src/error.rs:12:5
+    |
+  6 | pub enum AikiError {
+    |          --------- variants in this enum
+...
+ 12 |     JjInitFailed,
+    |     ^^^^^^^^^^^^
+...
+ 68 |     JjCommandFailed(String),
+    |     ^^^^^^^^^^^^^^^
+...
+ 71 |     JjStatusFailed(String),
+    |     ^^^^^^^^^^^^^^
+...
+ 74 |     GitDiffFailed(String),
+    |     ^^^^^^^^^^^^^
+...
+ 78 |     GpgSmNotSupported,
+    |     ^^^^^^^^^^^^^^^^^
+...
+ 81 |     SshKeyNotFound(PathBuf),
+    |     ^^^^^^^^^^^^^^
+...
+ 84 |     NoUserEmailConfigured,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+...
+ 87 |     GitUserNotConfigured,
+    |     ^^^^^^^^^^^^^^^^^^^^
+...
+ 90 |     GpgKeyIdExtractionFailed,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 93 |     GpgKeyGenerationFailed(String),
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 96 |     SshKeyLocationFailed(String),
+    |     ^^^^^^^^^^^^^^^^^^^^
+...
+100 |     ConfigReadFailed(String),
+    |     ^^^^^^^^^^^^^^^^
+...
+103 |     ConfigWriteFailed(String),
+    |     ^^^^^^^^^^^^^^^^^
+    |
+    = note: `AikiError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `stderr` is never read
+   --> src/flows/types.rs:141:9
+    |
+137 | pub struct ActionResult {
+    |            ------------ field in this struct
+...
+141 |     pub stderr: String,
+    |         ^^^^^^
+    |
+    = note: `ActionResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `failure` is never used
+   --> src/flows/types.rs:156:12
+    |
+144 | impl ActionResult {
+    | ----------------- associated function in this implementation
+...
+156 |     pub fn failure(exit_code: i32, stderr: String) -> Self {
+    |            ^^^^^^^
+
+warning: fields `transcript_path` and `tool_output` are never read
+  --> src/vendors/claude_code.rs:16:5
+   |
+14 | struct ClaudeCodePayload {
+   |        ----------------- fields in this struct
+15 |     session_id: String,
+16 |     transcript_path: String,
+   |     ^^^^^^^^^^^^^^^
+...
+24 |     tool_output: String,
+   |     ^^^^^^^^^^^
+   |
+   = note: `ClaudeCodePayload` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `old_string` and `new_string` are never read
+  --> src/vendors/claude_code.rs:31:5
+   |
+28 | struct ToolInput {
+   |        --------- fields in this struct
+...
+31 |     old_string: String,
+   |     ^^^^^^^^^^
+32 |     #[serde(default)]
+33 |     new_string: String,
+   |     ^^^^^^^^^^
+   |
+   = note: `ToolInput` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `aiki` (bin "aiki") generated 8 warnings (1 duplicate) (run `cargo fix --bin "aiki"` to apply 2 suggestions)
+   Compiling aiki v0.1.0 (/Users/glasner/code/aiki/cli)
+warning: unused variable: `flow_yaml`
+  --> benches/flow_performance.rs:82:9
+   |
+82 |     let flow_yaml = r#"
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_flow_yaml`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused `Result` that must be used
+   --> benches/flow_performance.rs:210:13
+    |
+210 |             black_box(results);
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+210 |             let _ = black_box(results);
+    |             +++++++
+
+warning: `aiki` (bench "flow_performance") generated 2 warnings
+    Finished `bench` profile [optimized] target(s) in 1.07s
+     Running benches/flow_performance.rs (target/release/deps/flow_performance-ddc30cc1b8880836)
+Gnuplot not found, using plotters backend
+Benchmarking current_provenance_recording
+Benchmarking current_provenance_recording: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 9.7s, or reduce sample count to 50.
+Benchmarking current_provenance_recording: Collecting 100 samples in estimated 9.6945 s (100 iterations)
+Benchmarking current_provenance_recording: Analyzing
+current_provenance_recording
+                        time:   [91.564 ms 92.429 ms 93.301 ms]
+                        change: [+2.3514% +3.6535% +4.9234%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking event_dispatch_overhead
+Benchmarking event_dispatch_overhead: Warming up for 3.0000 s
+Benchmarking event_dispatch_overhead: Collecting 100 samples in estimated 5.0000 s (18B iterations)
+Benchmarking event_dispatch_overhead: Analyzing
+event_dispatch_overhead time:   [278.65 ps 279.35 ps 280.03 ps]
+                        change: [+0.8901% +1.1678% +1.4737%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking flow_parsing
+Benchmarking flow_parsing: Warming up for 3.0000 s
+Benchmarking flow_parsing: Collecting 100 samples in estimated 5.0000 s (21B iterations)
+Benchmarking flow_parsing: Analyzing
+flow_parsing            time:   [228.12 ps 228.20 ps 228.27 ps]
+                        change: [-5.1705% -4.2311% -3.3074%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high severe
+
+Benchmarking variable_interpolation
+Benchmarking variable_interpolation: Warming up for 3.0000 s
+Benchmarking variable_interpolation: Collecting 100 samples in estimated 5.0022 s (7.5M iterations)
+Benchmarking variable_interpolation: Analyzing
+variable_interpolation  time:   [659.63 ns 660.76 ns 661.90 ns]
+                        change: [+0.8902% +1.2453% +1.5993%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+Benchmarking let_action_execution
+Benchmarking let_action_execution: Warming up for 3.0000 s
+Benchmarking let_action_execution: Collecting 100 samples in estimated 5.0854 s (227k iterations)
+Benchmarking let_action_execution: Analyzing
+let_action_execution    time:   [22.325 µs 22.346 µs 22.368 µs]
+                        change: [-1.0091% -0.8959% -0.7783%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) low mild
+  1 (1.00%) high mild
+
+Benchmarking provenance_flow_with_let
+Benchmarking provenance_flow_with_let: Warming up for 3.0000 s
+Benchmarking provenance_flow_with_let: Collecting 100 samples in estimated 5.0563 s (600 iterations)
+Benchmarking provenance_flow_with_let: Analyzing
+provenance_flow_with_let
+                        time:   [8.3166 ms 8.3308 ms 8.3449 ms]
+                        change: [-0.5297% -0.2045% +0.1029%] (p = 0.20 > 0.05)
+                        No change in performance detected.
+

@@ -25,7 +25,7 @@ impl VariableResolver {
         self.cache_valid = false; // Invalidate cache
     }
 
-    /// Add event variables (from ExecutionContext)
+    /// Add event variables (from AikiState)
     pub fn add_event_vars(&mut self, event_vars: &HashMap<String, String>) {
         for (key, value) in event_vars {
             self.variables
