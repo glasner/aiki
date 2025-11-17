@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
-use super::types::{Action, AikiAction, FailureMode, JjAction, LetAction, LogAction, ShellAction};
+use super::types::{Action, FailureMode, JjAction, LetAction, LogAction, ShellAction};
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
 
@@ -90,9 +90,6 @@ impl FlowExecutor {
                 Action::Let(let_action) => {
                     !result.success && let_action.on_failure == FailureMode::Stop
                 }
-                Action::Aiki(aiki_action) => {
-                    !result.success && aiki_action.on_failure == FailureMode::Stop
-                }
                 Action::Log(_) => false, // Log actions never fail
             };
 
@@ -113,7 +110,6 @@ impl FlowExecutor {
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
             Action::Let(let_action) => Self::execute_let(let_action, context),
-            Action::Aiki(aiki_action) => Self::execute_aiki(aiki_action, context),
         }
     }
 
@@ -121,7 +117,6 @@ impl FlowExecutor {
     ///
     /// For Let actions: stores the variable and its structured metadata
     /// For Shell/Jj/Log with alias: stores the variable with its result
-    /// For Aiki actions: stores the step result
     fn store_action_result(action: &Action, result: &ActionResult, context: &mut AikiState) {
         match action {
             Action::Let(let_action) => {
@@ -145,10 +140,6 @@ impl FlowExecutor {
                 if let Some(alias) = &log_action.alias {
                     context.store_action_result(alias.clone(), result.clone());
                 }
-            }
-            Action::Aiki(aiki_action) => {
-                let step_name = &aiki_action.aiki;
-                context.store_action_result(step_name.clone(), result.clone());
             }
         }
     }
@@ -387,85 +378,6 @@ impl FlowExecutor {
                 module.to_string(),
             )),
         }
-    }
-
-    /// Execute a built-in Aiki function
-    fn execute_aiki(action: &AikiAction, context: &AikiState) -> Result<ActionResult> {
-        // Create variable resolver using the standard method
-        let mut resolver = Self::create_resolver(context);
-
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Executing aiki: {}", action.aiki);
-        }
-
-        // Resolve variables in arguments
-        let mut resolved_args = std::collections::HashMap::new();
-        for (key, value) in &action.args {
-            resolved_args.insert(key.clone(), resolver.resolve(value));
-        }
-
-        // Route to appropriate aiki function
-        match action.aiki.as_str() {
-            "build_provenance_description" => {
-                Self::aiki_build_provenance_description(&resolved_args, context)
-            }
-            _ => Err(AikiError::UnknownAikiFunction(action.aiki.clone())),
-        }
-    }
-
-    /// Aiki function: Build provenance description
-    fn aiki_build_provenance_description(
-        args: &std::collections::HashMap<String, String>,
-        _context: &AikiState,
-    ) -> Result<ActionResult> {
-        use crate::provenance::{
-            AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
-        };
-
-        // Extract required arguments
-        let agent_str = args
-            .get("agent")
-            .ok_or_else(|| anyhow::anyhow!("Missing 'agent' argument"))?;
-
-        let session_id = args
-            .get("session_id")
-            .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' argument"))?;
-
-        let tool_name = args
-            .get("tool_name")
-            .ok_or_else(|| anyhow::anyhow!("Missing 'tool_name' argument"))?;
-
-        // Parse agent type
-        let agent_type = match agent_str.as_str() {
-            "ClaudeCode" => AgentType::ClaudeCode,
-            "Cursor" => AgentType::Cursor,
-            _ => AgentType::Unknown,
-        };
-
-        // Build provenance record
-        let provenance = ProvenanceRecord {
-            agent: AgentInfo {
-                agent_type,
-                version: None,
-                detected_at: chrono::Utc::now(),
-                confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
-            },
-            session_id: session_id.clone(),
-            tool_name: tool_name.clone(),
-        };
-
-        // Generate description
-        let description = provenance.to_description();
-
-        // Store result in context as a variable for use by subsequent actions
-        // We'll return it as stdout so it can be captured
-        Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: description,
-            stderr: String::new(),
-        })
     }
 }
 

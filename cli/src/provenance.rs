@@ -68,6 +68,25 @@ pub struct ProvenanceRecord {
 }
 
 impl ProvenanceRecord {
+    /// Create a ProvenanceRecord from a PostChange event
+    ///
+    /// This constructor extracts all necessary fields from the event and creates
+    /// a provenance record with default values for confidence (High) and detection
+    /// method (Hook).
+    pub fn from_post_change_event(event: &crate::events::AikiPostChangeEvent) -> Self {
+        Self {
+            agent: AgentInfo {
+                agent_type: event.agent_type,
+                version: None,
+                detected_at: event.timestamp,
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            session_id: event.session_id.clone(),
+            tool_name: event.tool_name.clone(),
+        }
+    }
+
     /// Serialize provenance metadata to change description format
     ///
     /// Note: In jj, every working copy state is a "change" with a stable change_id.
