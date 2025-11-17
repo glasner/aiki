@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Aiki Git Hook: prepare-commit-msg
 #
-# This hook automatically adds Co-authored-by: lines to commit messages
-# for AI agents that contributed to the staged changes.
+# This hook executes the PrepareCommitMessage flow section to modify the commit message.
+# Typically used for adding Co-authored-by: lines, but can add any content.
 
 COMMIT_MSG_FILE=$1
 COMMIT_SOURCE=$2
@@ -36,24 +36,11 @@ if [ "$PREVIOUS_HOOK" != "NOT_SET" ] && [ "$PREVIOUS_HOOK" != "EMPTY" ] && [ -n 
     fi
 fi
 
-# Dispatch PreCommit event through the event bus
-# This will execute the aiki/core flow's PreCommit section
-# which generates co-author lines from staged changes
-COAUTHORS=$(aiki event pre-commit 2>/dev/null)
-
-# If we got co-authors, append them to the commit message
-if [ -n "$COAUTHORS" ]; then
-    # Add blank line if commit message doesn't end with one
-    if [ -s "$COMMIT_MSG_FILE" ]; then
-        # Check if last line is empty
-        if [ -n "$(tail -c 1 "$COMMIT_MSG_FILE")" ]; then
-            echo "" >> "$COMMIT_MSG_FILE"
-        fi
-    fi
-
-    # Append co-authors
-    echo "$COAUTHORS" >> "$COMMIT_MSG_FILE"
-fi
+# Dispatch PrepareCommitMessage event through the event bus
+# The flow has full responsibility for modifying the commit message file
+# via $event.commit_msg_file
+export AIKI_COMMIT_MSG_FILE="$COMMIT_MSG_FILE"
+aiki event prepare-commit-msg 2>/dev/null
 
 # Always exit 0 - we never want to block commits
 exit 0

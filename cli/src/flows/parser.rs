@@ -27,7 +27,7 @@ version: "1"
         assert_eq!(flow.name, "Test Flow");
         assert_eq!(flow.version, "1");
         assert!(flow.post_change.is_empty());
-        assert!(flow.pre_commit.is_empty());
+        assert!(flow.prepare_commit_message.is_empty());
     }
 
     #[test]
@@ -120,7 +120,7 @@ name: Multi Event Flow
 version: "1"
 PostChange:
   - shell: ruff check $event.file_path
-PreCommit:
+PrepareCommitMessage:
   - shell: pytest
 Start:
   - log: "Session started"
@@ -130,7 +130,7 @@ Stop:
 
         let flow = FlowParser::parse_str(yaml).unwrap();
         assert_eq!(flow.post_change.len(), 1);
-        assert_eq!(flow.pre_commit.len(), 1);
+        assert_eq!(flow.prepare_commit_message.len(), 1);
         assert_eq!(flow.start.len(), 1);
         assert_eq!(flow.stop.len(), 1);
     }

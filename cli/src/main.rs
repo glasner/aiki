@@ -83,8 +83,9 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum EventCommands {
-    /// Trigger PreCommit event
-    PreCommit,
+    /// Trigger PrepareCommitMessage event (for Git's prepare-commit-msg hook)
+    #[command(name = "prepare-commit-msg")]
+    PrepareCommitMessage,
 }
 
 #[derive(Subcommand)]
@@ -128,7 +129,7 @@ fn run() -> Result<()> {
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Verify { revision } => commands::verify::run(revision),
         Commands::Event { command } => match command {
-            EventCommands::PreCommit => commands::event::run_pre_commit(),
+            EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
     }
 }
