@@ -8,7 +8,7 @@
 //! to be present.
 
 use crate::error::Result;
-use crate::flows::types::{ActionResult, AikiState};
+use crate::flows::state::{ActionResult, AikiState};
 use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, ProvenanceRecord};
 
 /// Build a provenance description from event context
