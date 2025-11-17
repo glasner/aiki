@@ -14,15 +14,15 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution context
-    let mut context = AikiState::new(event);
+    // Build execution state from event
+    let mut state = AikiState::new(event);
 
     // Set flow name for self.* function resolution
-    context.flow_name = Some("aiki/core".to_string());
+    state.flow_name = Some("aiki/core".to_string());
 
     // Execute Start actions from the core flow
     // This ensures the repository is properly initialized
-    FlowExecutor::execute_actions(&core_flow.start, &mut context)?;
+    FlowExecutor::execute_actions(&core_flow.start, &mut state)?;
 
     Ok(())
 }
@@ -53,15 +53,15 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution context with event variables
-    let mut context = AikiState::new(event);
+    // Build execution state from event
+    let mut state = AikiState::new(event);
 
     // Set flow name for self.* function resolution
-    context.flow_name = Some("aiki/core".to_string());
+    state.flow_name = Some("aiki/core".to_string());
 
     // Execute PostChange actions from the core flow
     // The flow will call the native build_description function
-    FlowExecutor::execute_actions(&core_flow.post_change, &mut context)?;
+    FlowExecutor::execute_actions(&core_flow.post_change, &mut state)?;
 
     Ok(())
 }
