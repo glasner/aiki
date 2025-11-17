@@ -34,15 +34,15 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 ///     on_failure: fail
 ///   - jj: describe -m "$description"
 /// ```
-pub fn build_description(context: &AikiState) -> Result<ActionResult> {
+pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
     // Event variables are validated at the handler level before flow execution
-    let agent_type = context.agent_type();
-    let session_id = context
+    let agent_type = aiki.agent_type();
+    let session_id = aiki
         .event
         .session_id
         .as_ref()
         .expect("session_id should be set by handler");
-    let tool_name = context
+    let tool_name = aiki
         .event
         .metadata
         .get("tool_name")
