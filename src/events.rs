@@ -23,12 +23,14 @@ pub struct AikiPostChangeEvent {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Pre-commit event (before Git commit)
+/// Prepare commit message event (Git's prepare-commit-msg hook)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPreCommitEvent {
+pub struct AikiPrepareCommitMessageEvent {
     pub agent_type: AgentType,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    /// Path to the commit message file (COMMIT_EDITMSG)
+    pub commit_msg_file: Option<PathBuf>,
 }
 
 /// Core event types in the Aiki system
@@ -39,8 +41,8 @@ pub enum AikiEvent {
     Start(AikiStartEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
     PostChange(AikiPostChangeEvent),
-    /// Before Git commit (prepare-commit-msg hook)
-    PreCommit(AikiPreCommitEvent),
+    /// Prepare commit message (Git's prepare-commit-msg hook)
+    PrepareCommitMessage(AikiPrepareCommitMessageEvent),
 }
 
 impl AikiEvent {
@@ -50,7 +52,7 @@ impl AikiEvent {
         match self {
             Self::Start(e) => &e.cwd,
             Self::PostChange(e) => &e.cwd,
-            Self::PreCommit(e) => &e.cwd,
+            Self::PrepareCommitMessage(e) => &e.cwd,
         }
     }
 
@@ -60,7 +62,7 @@ impl AikiEvent {
         match self {
             Self::Start(e) => e.agent_type,
             Self::PostChange(e) => e.agent_type,
-            Self::PreCommit(e) => e.agent_type,
+            Self::PrepareCommitMessage(e) => e.agent_type,
         }
     }
 
@@ -70,7 +72,7 @@ impl AikiEvent {
         match self {
             Self::Start(e) => e.timestamp,
             Self::PostChange(e) => e.timestamp,
-            Self::PreCommit(e) => e.timestamp,
+            Self::PrepareCommitMessage(e) => e.timestamp,
         }
     }
 
@@ -80,7 +82,7 @@ impl AikiEvent {
         match self {
             Self::Start(e) => e.session_id.as_deref(),
             Self::PostChange(e) => Some(&e.session_id),
-            Self::PreCommit(_) => None,
+            Self::PrepareCommitMessage(_) => None,
         }
     }
 }
@@ -98,8 +100,8 @@ impl From<AikiPostChangeEvent> for AikiEvent {
     }
 }
 
-impl From<AikiPreCommitEvent> for AikiEvent {
-    fn from(event: AikiPreCommitEvent) -> Self {
-        AikiEvent::PreCommit(event)
+impl From<AikiPrepareCommitMessageEvent> for AikiEvent {
+    fn from(event: AikiPrepareCommitMessageEvent) -> Self {
+        AikiEvent::PrepareCommitMessage(event)
     }
 }

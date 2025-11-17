@@ -39,8 +39,14 @@ impl FlowExecutor {
                     resolver.add_var("event.session_id".to_string(), session_id.clone());
                 }
             }
-            crate::events::AikiEvent::PreCommit(_) => {
-                // No event-specific variables for PreCommit
+            crate::events::AikiEvent::PrepareCommitMessage(e) => {
+                // Add commit message file path if available
+                if let Some(ref path) = e.commit_msg_file {
+                    resolver.add_var(
+                        "event.commit_msg_file".to_string(),
+                        path.display().to_string(),
+                    );
+                }
             }
         }
 
@@ -374,13 +380,13 @@ impl FlowExecutor {
                 }
             }
             ("core", "generate_coauthors") => {
-                // generate_coauthors requires PreCommit event
+                // generate_coauthors requires PrepareCommitMessage event
                 match &context.event {
-                    crate::events::AikiEvent::PreCommit(event) => {
+                    crate::events::AikiEvent::PrepareCommitMessage(event) => {
                         crate::flows::core::generate_coauthors(event)
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "generate_coauthors can only be called for PreCommit events"
+                        "generate_coauthors can only be called for PrepareCommitMessage events"
                     ))),
                 }
             }

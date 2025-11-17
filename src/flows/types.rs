@@ -18,9 +18,9 @@ pub struct Flow {
     #[serde(rename = "PostChange", default)]
     pub post_change: Vec<Action>,
 
-    /// PreCommit event handler
-    #[serde(rename = "PreCommit", default)]
-    pub pre_commit: Vec<Action>,
+    /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
+    #[serde(rename = "PrepareCommitMessage", default)]
+    pub prepare_commit_message: Vec<Action>,
 
     /// Start event handler
     #[serde(rename = "Start", default)]

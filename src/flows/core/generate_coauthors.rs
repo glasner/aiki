@@ -1,14 +1,14 @@
 use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::error::Result;
-use crate::events::AikiPreCommitEvent;
+use crate::events::AikiPrepareCommitMessageEvent;
 use crate::flows::state::ActionResult;
 use anyhow::Context;
 
 /// Generate co-authors for Git commit from staged changes
 ///
-/// This function is called during PreCommit events to generate Git trailer
+/// This function is called during PrepareCommitMessage events to generate Git trailer
 /// lines (Co-authored-by:) for AI agents that contributed to the staged changes.
-pub fn generate_coauthors(event: &AikiPreCommitEvent) -> Result<ActionResult> {
+pub fn generate_coauthors(event: &AikiPrepareCommitMessageEvent) -> Result<ActionResult> {
     // Create authors command using the event's working directory
     let authors_cmd = AuthorsCommand::new(&event.cwd);
 

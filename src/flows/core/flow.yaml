@@ -20,11 +20,20 @@ PostChange:
   # Create a new change for the next edit
   - jj: new
 
-# PreCommit: Generate co-author metadata before Git commits
-PreCommit:
+# PrepareCommitMessage: Modify commit message via Git's prepare-commit-msg hook
+PrepareCommitMessage:
   # Generate co-author lines from staged changes
   - let: coauthors = self.generate_coauthors
     on_failure: stop
 
-  # Output co-authors to stdout (captured by Git hook)
-  - shell: echo "$coauthors"
+  # Append co-authors to the commit message file
+  # The flow has full control over the commit message via $event.commit_msg_file
+  - shell: |
+      if [ -n "$coauthors" ] && [ -n "$event.commit_msg_file" ]; then
+        # Add blank line if message doesn't end with one
+        if [ -s "$event.commit_msg_file" ] && [ -n "$(tail -c 1 "$event.commit_msg_file")" ]; then
+          echo "" >> "$event.commit_msg_file"
+        fi
+        # Append co-authors
+        echo "$coauthors" >> "$event.commit_msg_file"
+      fi

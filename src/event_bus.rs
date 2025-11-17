@@ -13,7 +13,7 @@ pub fn dispatch(event: AikiEvent) -> Result<()> {
         let event_type_name = match &event {
             AikiEvent::Start(_) => "Start",
             AikiEvent::PostChange(_) => "PostChange",
-            AikiEvent::PreCommit(_) => "PreCommit",
+            AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
         };
         eprintln!(
             "[aiki] Dispatching event: {} from agent: {:?}",
@@ -26,7 +26,7 @@ pub fn dispatch(event: AikiEvent) -> Result<()> {
     let result = match event {
         AikiEvent::Start(e) => handlers::handle_start(e),
         AikiEvent::PostChange(e) => handlers::handle_post_change(e),
-        AikiEvent::PreCommit(e) => handlers::handle_pre_commit(e),
+        AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
     };
 
     // Never propagate errors to editor hooks - just log and continue

@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::events::{AikiPostChangeEvent, AikiPreCommitEvent, AikiStartEvent};
+use crate::events::{AikiPostChangeEvent, AikiPrepareCommitMessageEvent, AikiStartEvent};
 use crate::flows::{AikiState, FlowExecutor};
 
 /// Handle session start event
@@ -57,13 +57,14 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<()> {
     Ok(())
 }
 
-/// Handle pre-commit event (before Git commit)
+/// Handle prepare-commit-msg event (Git's prepare-commit-msg hook)
 ///
-/// Generates AI co-author attributions for the commit message.
-/// Called from Git's prepare-commit-msg hook via `aiki event pre-commit`.
-pub fn handle_pre_commit(event: AikiPreCommitEvent) -> Result<()> {
+/// Executes the PrepareCommitMessage flow section to modify the commit message.
+/// Typically used for adding co-author attributions, but can add any content.
+/// Called from Git's prepare-commit-msg hook via `aiki event prepare-commit-msg`.
+pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Generating co-authors for commit");
+        eprintln!("[aiki] Preparing commit message");
     }
 
     // Load core flow
@@ -75,9 +76,9 @@ pub fn handle_pre_commit(event: AikiPreCommitEvent) -> Result<()> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PreCommit actions from the core flow
+    // Execute PrepareCommitMessage actions from the core flow
     // The flow will call the native generate_coauthors function
-    FlowExecutor::execute_actions(&core_flow.pre_commit, &mut state)?;
+    FlowExecutor::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
     Ok(())
 }
