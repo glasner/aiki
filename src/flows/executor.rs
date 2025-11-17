@@ -2,10 +2,8 @@ use anyhow::Context;
 use std::process::Command;
 use std::time::Duration;
 
-use super::types::{
-    Action, ActionResult, AikiAction, AikiState, FailureMode, JjAction, LetAction,
-    LogAction, ShellAction,
-};
+use super::state::{ActionResult, AikiState};
+use super::types::{Action, AikiAction, FailureMode, JjAction, LetAction, LogAction, ShellAction};
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
 
@@ -48,7 +46,7 @@ impl FlowExecutor {
         }
 
         // Add let variables (accessible via $key without event. prefix)
-        for (key, value) in &context.let_vars {
+        for (key, value) in context.iter_variables() {
             resolver.add_var(key.clone(), value.clone());
         }
 
@@ -115,99 +113,35 @@ impl FlowExecutor {
     /// Store action result as variables for subsequent actions
     ///
     /// For Let actions: stores the variable and its structured metadata
-    /// For Aiki actions: stores step results for backward compatibility
-    /// For Shell/Jj/Log with alias: stores the variable
+    /// For Shell/Jj/Log with alias: stores the variable with its result
+    /// For Aiki actions: stores the step result
     fn store_action_result(action: &Action, result: &ActionResult, context: &mut AikiState) {
         match action {
             Action::Let(let_action) => {
                 // Parse the variable name from "variable = expression"
                 if let Some(variable_name) = let_action.let_.split('=').next() {
                     let variable_name = variable_name.trim();
-
-                    // Store the variable value in let_vars (not event_vars)
-                    context
-                        .let_vars
-                        .insert(variable_name.to_string(), result.stdout.clone());
-
-                    // Store structured metadata
-                    context
-                        .variable_metadata
-                        .insert(variable_name.to_string(), result.clone());
-
-                    // Also store dotted properties in let_vars for backward compatibility
-                    if !result.stdout.is_empty() {
-                        context
-                            .let_vars
-                            .insert(format!("{}.output", variable_name), result.stdout.clone());
-                    }
-                    if let Some(exit_code) = result.exit_code {
-                        context.let_vars.insert(
-                            format!("{}.exit_code", variable_name),
-                            exit_code.to_string(),
-                        );
-                    }
-                    context.let_vars.insert(
-                        format!("{}.failed", variable_name),
-                        (!result.success).to_string(),
-                    );
+                    context.store_action_result(variable_name.to_string(), result.clone());
                 }
             }
             Action::Shell(shell_action) => {
                 if let Some(alias) = &shell_action.alias {
-                    // Store the variable value in let_vars
-                    context
-                        .let_vars
-                        .insert(alias.clone(), result.stdout.clone());
-
-                    // Store structured metadata
-                    context
-                        .variable_metadata
-                        .insert(alias.clone(), result.clone());
+                    context.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Jj(jj_action) => {
                 if let Some(alias) = &jj_action.alias {
-                    // Store the variable value in let_vars
-                    context
-                        .let_vars
-                        .insert(alias.clone(), result.stdout.clone());
-
-                    // Store structured metadata
-                    context
-                        .variable_metadata
-                        .insert(alias.clone(), result.clone());
+                    context.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Log(log_action) => {
                 if let Some(alias) = &log_action.alias {
-                    // Store the variable value in let_vars
-                    context
-                        .let_vars
-                        .insert(alias.clone(), result.stdout.clone());
-
-                    // Store structured metadata
-                    context
-                        .variable_metadata
-                        .insert(alias.clone(), result.clone());
+                    context.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Aiki(aiki_action) => {
-                // Backward compatibility: store step results with dotted notation in let_vars
                 let step_name = &aiki_action.aiki;
-                if !result.stdout.is_empty() {
-                    context
-                        .let_vars
-                        .insert(format!("{}.output", step_name), result.stdout.clone());
-                }
-                if let Some(exit_code) = result.exit_code {
-                    context
-                        .let_vars
-                        .insert(format!("{}.exit_code", step_name), exit_code.to_string());
-                }
-                context.let_vars.insert(
-                    format!("{}.failed", step_name),
-                    (!result.success).to_string(),
-                );
+                context.store_action_result(step_name.clone(), result.clone());
             }
         }
     }
@@ -884,8 +818,8 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| r.success));
 
-        // Check that the variable was stored in let_vars
-        assert_eq!(context.let_vars.get("desc"), Some(&"test.rs".to_string()));
+        // Check that the variable was stored
+        assert_eq!(context.get_variable("desc"), Some(&"test.rs".to_string()));
     }
 
     #[test]
@@ -904,17 +838,16 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].success);
 
-        // Check that the variable was stored in let_vars
-        assert!(context.let_vars.get("result").is_some());
+        // Check that the variable was stored
+        assert!(context.get_variable("result").is_some());
         assert!(context
-            .let_vars
-            .get("result")
+            .get_variable("result")
             .unwrap()
             .contains("test output"));
 
         // Check that structured metadata was stored
-        assert!(context.variable_metadata.get("result").is_some());
-        assert!(context.variable_metadata.get("result").unwrap().success);
+        assert!(context.get_metadata("result").is_some());
+        assert!(context.get_metadata("result").unwrap().success);
     }
 
     #[test]
@@ -931,20 +864,10 @@ mod tests {
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Check that structured metadata was stored
-        assert!(context.variable_metadata.get("desc").is_some());
-        let metadata = context.variable_metadata.get("desc").unwrap();
+        assert!(context.get_metadata("desc").is_some());
+        let metadata = context.get_metadata("desc").unwrap();
         assert!(metadata.success);
         assert_eq!(metadata.stdout, "test.rs");
-
-        // Check dotted properties for backward compatibility (stored in let_vars)
-        assert_eq!(
-            context.let_vars.get("desc.output"),
-            Some(&"test.rs".to_string())
-        );
-        assert_eq!(
-            context.let_vars.get("desc.failed"),
-            Some(&"false".to_string())
-        );
     }
 
     #[test]
@@ -962,8 +885,11 @@ mod tests {
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Check that no extra variables were stored (except for any built-ins)
-        // The variable_metadata should be empty since no alias was provided
-        assert!(context.variable_metadata.is_empty());
+        // The metadata should be empty since no alias was provided
+        #[cfg(test)]
+        {
+            assert!(context.get_metadata("result").is_none());
+        }
     }
 
     #[test]
@@ -1006,22 +932,20 @@ mod tests {
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
-        // Both should have the same value in let_vars
+        // Both should have the same value
         assert_eq!(
-            context.let_vars.get("original"),
+            context.get_variable("original"),
             Some(&"initial".to_string())
         );
-        assert_eq!(context.let_vars.get("copy"), Some(&"initial".to_string()));
+        assert_eq!(context.get_variable("copy"), Some(&"initial".to_string()));
 
         // Modify original
-        context
-            .let_vars
-            .insert("original".to_string(), "modified".to_string());
+        context.set_variable("original".to_string(), "modified".to_string());
 
         // Copy should still have original value (it's a copy, not a reference)
-        assert_eq!(context.let_vars.get("copy"), Some(&"initial".to_string()));
+        assert_eq!(context.get_variable("copy"), Some(&"initial".to_string()));
         assert_eq!(
-            context.let_vars.get("original"),
+            context.get_variable("original"),
             Some(&"modified".to_string())
         );
     }
@@ -1047,8 +971,8 @@ mod tests {
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
-        // Second assignment should overwrite first (in let_vars)
-        assert_eq!(context.let_vars.get("x"), Some(&"bar".to_string()));
+        // Second assignment should overwrite first
+        assert_eq!(context.get_variable("x"), Some(&"bar".to_string()));
     }
 
     #[test]
@@ -1070,13 +994,13 @@ mod tests {
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
-        // Both should have the value in let_vars
-        assert_eq!(context.let_vars.get("file"), Some(&"test.rs".to_string()));
-        assert_eq!(context.let_vars.get("copy"), Some(&"test.rs".to_string()));
+        // Both should have the value
+        assert_eq!(context.get_variable("file"), Some(&"test.rs".to_string()));
+        assert_eq!(context.get_variable("copy"), Some(&"test.rs".to_string()));
 
         // Both should have structured metadata
-        assert!(context.variable_metadata.contains_key("file"));
-        assert!(context.variable_metadata.contains_key("copy"));
+        assert!(context.get_metadata("file").is_some());
+        assert!(context.get_metadata("copy").is_some());
     }
 
     #[test]
