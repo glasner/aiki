@@ -26,14 +26,7 @@ PrepareCommitMessage:
   - let: coauthors = self.generate_coauthors
     on_failure: stop
 
-  # Append co-authors to the commit message file
-  # The flow has full control over the commit message via $event.commit_msg_file
-  - shell: |
-      if [ -n "$coauthors" ] && [ -n "$event.commit_msg_file" ]; then
-        # Add blank line if message doesn't end with one
-        if [ -s "$event.commit_msg_file" ] && [ -n "$(tail -c 1 "$event.commit_msg_file")" ]; then
-          echo "" >> "$event.commit_msg_file"
-        fi
-        # Append co-authors
-        echo "$coauthors" >> "$event.commit_msg_file"
-      fi
+  # Append co-authors as Git trailers
+  - edit_commit_message:
+      append_trailer: $coauthors
+    on_failure: stop
