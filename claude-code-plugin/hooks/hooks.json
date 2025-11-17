@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/glasner/code/aiki/cli/target/release/aiki record-change --claude-code",
+            "command": "/Users/glasner/code/aiki/cli/target/release/aiki hooks handle --agent claude-code --event PostToolUse",
             "timeout": 5
           }
         ]

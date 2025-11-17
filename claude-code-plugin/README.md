@@ -15,10 +15,10 @@ The Aiki plugin automatically tracks every code change made by Claude Code, prov
 ## How it works
 
 1. **Automatic tracking**: When Claude Code edits or writes a file, the PostToolUse hook triggers
-2. **Provenance recording**: `aiki record-change --claude-code` captures the change details
-3. **JJ snapshot**: The working copy state is automatically captured via JJ
-4. **Database storage**: Attribution data stored in `.aiki/provenance/attribution.db`
-5. **Operation linking**: JJ operations are linked to provenance records for timeline queries
+2. **Event handling**: `aiki hooks handle` processes the event through the flow engine
+3. **Provenance recording**: Metadata is embedded in JJ change descriptions
+4. **JJ snapshot**: The working copy state is automatically captured and a new change is created
+5. **Flow execution**: The core flow runs custom provenance functions
 
 ## Requirements
 
@@ -140,13 +140,13 @@ Claude Code (Edit/Write)
     ↓
 PostToolUse Hook (automatic)
     ↓
-aiki record-change --claude-code
+aiki hooks handle --agent claude-code --event PostToolUse
     ↓
-JJ snapshot (working copy)
+Event Bus → Flow Engine
     ↓
-Database write (.aiki/provenance/attribution.db)
+Core Flow: build_description() → jj describe → jj new
     ↓
-JJ operation link (description: "aiki:{id}")
+Provenance in change description ([aiki]...[/aiki])
 ```
 
 ## Support
