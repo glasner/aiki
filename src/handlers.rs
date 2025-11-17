@@ -1,6 +1,6 @@
+use crate::error::{AikiError, Result};
 use crate::events::AikiEvent;
 use crate::flows::{ExecutionContext, FlowExecutor};
-use anyhow::{anyhow, Result};
 
 /// Handle session start event
 ///
@@ -21,9 +21,14 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
     context.flow_name = Some("aiki/core".to_string());
 
     // Add event variables
+    let agent_name = match event.agent {
+        crate::provenance::AgentType::ClaudeCode => "claude-code",
+        crate::provenance::AgentType::Cursor => "cursor",
+        crate::provenance::AgentType::Unknown => "unknown",
+    };
     context
         .event_vars
-        .insert("agent".to_string(), format!("{:?}", event.agent));
+        .insert("agent".to_string(), agent_name.to_string());
 
     if let Some(session_id) = &event.session_id {
         context
@@ -43,15 +48,15 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
 pub fn handle_post_change(event: AikiEvent) -> Result<()> {
-    // Extract required metadata
+    // Validate required metadata - fail early with clear errors
     let session_id = event
         .session_id
-        .ok_or_else(|| anyhow!("post-change event requires session_id"))?;
+        .ok_or_else(|| AikiError::MissingEventVariable("session_id".to_string()))?;
 
     let tool_name = event
         .metadata
         .get("tool_name")
-        .ok_or_else(|| anyhow!("post-change event requires tool_name in metadata"))?;
+        .ok_or_else(|| AikiError::MissingEventVariable("tool_name".to_string()))?;
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
@@ -70,9 +75,15 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
     context.flow_name = Some("aiki/core".to_string());
 
     // Add event variables - the native function will use these
+    // Use the serialized agent name (e.g., "claude-code") instead of Debug format
+    let agent_name = match event.agent {
+        crate::provenance::AgentType::ClaudeCode => "claude-code",
+        crate::provenance::AgentType::Cursor => "cursor",
+        crate::provenance::AgentType::Unknown => "unknown",
+    };
     context
         .event_vars
-        .insert("agent".to_string(), format!("{:?}", event.agent));
+        .insert("agent".to_string(), agent_name.to_string());
     context
         .event_vars
         .insert("session_id".to_string(), session_id.to_string());

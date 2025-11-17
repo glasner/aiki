@@ -1,6 +1,6 @@
+use crate::error::Result;
 use crate::events::{AikiEvent, AikiEventType};
 use crate::handlers;
-use anyhow::Result;
 
 /// Dispatch an event to the appropriate handler
 ///

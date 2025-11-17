@@ -50,6 +50,9 @@ pub enum AikiError {
     #[error("Unsupported function namespace in '{0}'. Only 'aiki/*' functions are supported")]
     UnsupportedFunctionNamespace(String),
 
+    #[error("Missing event variable: {0}")]
+    MissingEventVariable(String),
+
     #[error("Invalid timeout format: {0}. Use 's', 'm', or 'h' suffix")]
     InvalidTimeoutFormat(String),
 
