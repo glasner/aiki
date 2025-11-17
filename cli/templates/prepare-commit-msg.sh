@@ -36,8 +36,10 @@ if [ "$PREVIOUS_HOOK" != "NOT_SET" ] && [ "$PREVIOUS_HOOK" != "EMPTY" ] && [ -n 
     fi
 fi
 
-# Get co-author lines from aiki
-COAUTHORS=$(aiki authors --format=git --changes=staged 2>/dev/null)
+# Dispatch PreCommit event through the event bus
+# This will execute the aiki/core flow's PreCommit section
+# which generates co-author lines from staged changes
+COAUTHORS=$(aiki event pre-commit 2>/dev/null)
 
 # If we got co-authors, append them to the commit message
 if [ -n "$COAUTHORS" ]; then

@@ -73,6 +73,18 @@ enum Commands {
         #[arg(default_value = "@")]
         revision: String,
     },
+    /// Dispatch Aiki events (internal use)
+    #[command(hide = true)]
+    Event {
+        #[command(subcommand)]
+        command: EventCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum EventCommands {
+    /// Trigger PreCommit event
+    PreCommit,
 }
 
 #[derive(Subcommand)]
@@ -115,5 +127,8 @@ fn run() -> Result<()> {
         } => commands::blame::run(file, agent, verify),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Verify { revision } => commands::verify::run(revision),
+        Commands::Event { command } => match command {
+            EventCommands::PreCommit => commands::event::run_pre_commit(),
+        },
     }
 }

@@ -373,6 +373,17 @@ impl FlowExecutor {
                     ))),
                 }
             }
+            ("core", "generate_coauthors") => {
+                // generate_coauthors requires PreCommit event
+                match &context.event {
+                    crate::events::AikiEvent::PreCommit(event) => {
+                        crate::flows::core::generate_coauthors(event)
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "generate_coauthors can only be called for PreCommit events"
+                    ))),
+                }
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
