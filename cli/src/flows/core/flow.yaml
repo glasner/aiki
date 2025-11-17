@@ -27,6 +27,6 @@ PrepareCommitMessage:
     on_failure: stop
 
   # Append co-authors as Git trailers
-  - edit_commit_message:
+  - commit_message:
       append_trailer: $coauthors
     on_failure: stop

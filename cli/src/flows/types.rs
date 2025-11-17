@@ -47,8 +47,8 @@ pub enum Action {
     Log(LogAction),
     /// Let binding (function call or variable aliasing)
     Let(LetAction),
-    /// Edit commit message (for PrepareCommitMessage events)
-    EditCommitMessage(EditCommitMessageAction),
+    /// Commit message (for PrepareCommitMessage events)
+    CommitMessage(CommitMessageAction),
 }
 
 /// Shell command action
@@ -105,18 +105,18 @@ pub struct LetAction {
     pub on_failure: FailureMode,
 }
 
-/// Edit commit message action (for PrepareCommitMessage events)
+/// Commit message action (for PrepareCommitMessage events)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EditCommitMessageAction {
-    pub edit_commit_message: EditCommitMessageOp,
+pub struct CommitMessageAction {
+    pub commit_message: CommitMessageOp,
 
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
 }
 
-/// Operations for editing commit messages
+/// Operations for commit messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EditCommitMessageOp {
+pub struct CommitMessageOp {
     /// Append Git trailers (after existing trailers)
     #[serde(default)]
     pub append_trailer: Option<String>,
