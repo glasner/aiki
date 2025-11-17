@@ -3,7 +3,10 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
-use super::types::{Action, FailureMode, JjAction, LetAction, LogAction, ShellAction};
+use super::types::{
+    Action, EditCommitMessageAction, EditCommitMessageOp, FailureMode, JjAction, LetAction,
+    LogAction, ShellAction,
+};
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
 
@@ -96,6 +99,9 @@ impl FlowExecutor {
                 Action::Let(let_action) => {
                     !result.success && let_action.on_failure == FailureMode::Stop
                 }
+                Action::EditCommitMessage(edit_action) => {
+                    !result.success && edit_action.on_failure == FailureMode::Stop
+                }
                 Action::Log(_) => false, // Log actions never fail
             };
 
@@ -116,6 +122,9 @@ impl FlowExecutor {
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
             Action::Let(let_action) => Self::execute_let(let_action, context),
+            Action::EditCommitMessage(edit_action) => {
+                Self::execute_edit_commit_message(edit_action, context)
+            }
         }
     }
 
@@ -146,6 +155,9 @@ impl FlowExecutor {
                 if let Some(alias) = &log_action.alias {
                     context.store_action_result(alias.clone(), result.clone());
                 }
+            }
+            Action::EditCommitMessage(_) => {
+                // edit_commit_message actions don't produce storable results
             }
         }
     }
@@ -232,6 +244,197 @@ impl FlowExecutor {
         eprintln!("[aiki] {}", message);
 
         Ok(ActionResult::success())
+    }
+
+    /// Execute an edit_commit_message action
+    ///
+    /// This action modifies the commit message file in place.
+    /// Only works for PrepareCommitMessage events that have a commit_msg_file.
+    fn execute_edit_commit_message(
+        action: &EditCommitMessageAction,
+        context: &AikiState,
+    ) -> Result<ActionResult> {
+        use crate::events::AikiEvent;
+        use std::fs;
+
+        // Get commit message file from event
+        let commit_msg_file = match &context.event {
+            AikiEvent::PrepareCommitMessage(e) => e
+                .commit_msg_file
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("No commit message file in event"))?,
+            _ => {
+                return Err(AikiError::Other(anyhow::anyhow!(
+                    "edit_commit_message can only be used in PrepareCommitMessage events"
+                )))
+            }
+        };
+
+        // Read current message
+        let content = fs::read_to_string(commit_msg_file)?;
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+        let op = &action.edit_commit_message;
+
+        // Apply operations
+        let new_content = Self::apply_commit_message_edits(&content, op, &mut resolver)?;
+
+        // Write atomically
+        fs::write(commit_msg_file, new_content)?;
+
+        Ok(ActionResult::success())
+    }
+
+    /// Apply commit message edit operations
+    fn apply_commit_message_edits(
+        content: &str,
+        op: &EditCommitMessageOp,
+        resolver: &mut VariableResolver,
+    ) -> Result<String> {
+        let mut result = content.to_string();
+
+        // Prepend (before subject line)
+        if let Some(ref prepend) = op.prepend {
+            let text = resolver.resolve(prepend);
+            if !text.is_empty() {
+                result = format!("{}{}", text, result);
+            }
+        }
+
+        // Append to body (before trailers)
+        if let Some(ref body) = op.append_body {
+            let text = resolver.resolve(body);
+            if !text.is_empty() {
+                result = Self::append_to_body(&result, &text);
+            }
+        }
+
+        // Append trailer (after existing trailers)
+        if let Some(ref trailer) = op.append_trailer {
+            let text = resolver.resolve(trailer);
+            if !text.is_empty() {
+                result = Self::append_trailer(&result, &text);
+            }
+        }
+
+        // Append to end (after everything)
+        if let Some(ref append) = op.append {
+            let text = resolver.resolve(append);
+            if !text.is_empty() {
+                // Ensure blank line before appending
+                if !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                if !result.ends_with("\n\n") {
+                    result.push('\n');
+                }
+                result.push_str(&text);
+                if !text.ends_with('\n') {
+                    result.push('\n');
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Append text to message body (before trailers)
+    fn append_to_body(content: &str, text: &str) -> String {
+        // Find where trailers start (lines like "Key: value")
+        let lines: Vec<&str> = content.lines().collect();
+        let mut trailer_start = lines.len();
+
+        // Scan backwards to find first trailer
+        for (i, line) in lines.iter().enumerate().rev() {
+            if line.is_empty() {
+                continue;
+            }
+            if Self::is_trailer_line(line) {
+                trailer_start = i;
+            } else {
+                break;
+            }
+        }
+
+        if trailer_start == lines.len() {
+            // No trailers, append to end
+            let mut result = content.to_string();
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push('\n');
+            result.push_str(text);
+            if !text.ends_with('\n') {
+                result.push('\n');
+            }
+            result
+        } else {
+            // Insert before trailers
+            let mut result = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i == trailer_start {
+                    // Add blank line if needed
+                    if i > 0 && !lines[i - 1].is_empty() {
+                        result.push('\n');
+                    }
+                    result.push_str(text);
+                    if !text.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    result.push('\n');
+                }
+                result.push_str(line);
+                result.push('\n');
+            }
+            result
+        }
+    }
+
+    /// Append Git trailer (after existing trailers)
+    fn append_trailer(content: &str, text: &str) -> String {
+        let mut result = content.to_string();
+
+        // Ensure there's a newline at the end
+        if !result.ends_with('\n') {
+            result.push('\n');
+        }
+
+        // Check if last non-empty line is a trailer
+        let lines: Vec<&str> = content.lines().collect();
+        let last_line = lines.iter().rev().find(|l| !l.is_empty());
+
+        if let Some(last) = last_line {
+            if !Self::is_trailer_line(last) {
+                // Last line is not a trailer, add blank line
+                result.push('\n');
+            }
+        } else {
+            // Empty file, add blank line
+            result.push('\n');
+        }
+
+        result.push_str(text);
+        if !text.ends_with('\n') {
+            result.push('\n');
+        }
+
+        result
+    }
+
+    /// Check if a line looks like a Git trailer
+    fn is_trailer_line(line: &str) -> bool {
+        // Git trailers are lines like "Key: value" or "Key #value"
+        // They typically have a capital letter at start and contain : or #
+        if let Some(colon_pos) = line.find(':') {
+            let key = &line[..colon_pos];
+            // Key should start with capital letter, contain only word chars and hyphens
+            !key.is_empty()
+                && key.chars().next().map_or(false, |c| c.is_uppercase())
+                && key.chars().all(|c| c.is_alphanumeric() || c == '-')
+        } else {
+            false
+        }
     }
 
     /// Execute a let binding action
