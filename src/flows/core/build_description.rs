@@ -10,7 +10,7 @@
 use crate::error::Result;
 use crate::events::AikiPostChangeEvent;
 use crate::flows::state::ActionResult;
-use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, ProvenanceRecord};
+use crate::provenance::ProvenanceRecord;
 
 /// Build a provenance description from event context
 ///
@@ -37,17 +37,7 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 /// ```
 pub fn build_description(event: &AikiPostChangeEvent) -> Result<ActionResult> {
     // Build provenance record from PostChange event
-    let provenance = ProvenanceRecord {
-        agent: AgentInfo {
-            agent_type: event.agent_type,
-            version: None,
-            detected_at: event.timestamp,
-            confidence: AttributionConfidence::High,
-            detection_method: DetectionMethod::Hook,
-        },
-        session_id: event.session_id.clone(),
-        tool_name: event.tool_name.clone(),
-    };
+    let provenance = ProvenanceRecord::from_post_change_event(event);
 
     // Generate description in [aiki]...[/aiki] format
     let description = provenance.to_description();

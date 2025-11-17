@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// A complete flow definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,8 +47,6 @@ pub enum Action {
     Log(LogAction),
     /// Let binding (function call or variable aliasing)
     Let(LetAction),
-    /// Call a built-in Aiki function (deprecated, use Let)
-    Aiki(AikiAction),
 }
 
 /// Shell command action
@@ -102,18 +99,6 @@ pub struct LetAction {
     pub let_: String,
 
     /// What to do when the action fails
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
-}
-
-/// Aiki built-in function call action
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiAction {
-    pub aiki: String,
-
-    #[serde(default)]
-    pub args: HashMap<String, String>,
-
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
 }

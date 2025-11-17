@@ -38,9 +38,6 @@ pub enum AikiError {
     #[error("Action failed with on_failure: stop")]
     ActionFailed,
 
-    #[error("Unknown aiki function: {0}")]
-    UnknownAikiFunction(String),
-
     #[error("Missing function: {0}")]
     MissingFunction(String),
 
