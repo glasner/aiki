@@ -1,6 +1,11 @@
 //! Built-in function: aiki/core.build_description
 //!
 //! Builds a provenance description from event context.
+//!
+//! # Validation
+//! Required event variables (agent, session_id, tool_name) are validated
+//! at the handler level before flow execution. This function expects them
+//! to be present.
 
 use crate::error::Result;
 use crate::flows::types::{ActionResult, ExecutionContext};
@@ -19,6 +24,8 @@ use crate::provenance::{
 /// - `$event.session_id` - Session identifier for grouping related changes
 /// - `$event.tool_name` - Name of the tool that made the change (e.g., "Edit", "Write")
 ///
+/// These variables are validated at the handler level before flow execution.
+///
 /// # Returns
 /// An ActionResult with the formatted provenance description in stdout.
 ///
@@ -30,26 +37,15 @@ use crate::provenance::{
 ///   - jj: describe -m "$description"
 /// ```
 pub fn build_description(context: &ExecutionContext) -> Result<ActionResult> {
-    // Extract required event variables
-    let agent_str = context
-        .event_vars
-        .get("agent")
-        .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.agent"))?;
+    // Event variables are validated at the handler level before flow execution
+    let agent_str = &context.event_vars["agent"];
+    let session_id = &context.event_vars["session_id"];
+    let tool_name = &context.event_vars["tool_name"];
 
-    let session_id = context
-        .event_vars
-        .get("session_id")
-        .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.session_id"))?;
-
-    let tool_name = context
-        .event_vars
-        .get("tool_name")
-        .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.tool_name"))?;
-
-    // Parse agent type
+    // Parse agent type from serialized string (e.g., "claude-code")
     let agent_type = match agent_str.as_str() {
-        "ClaudeCode" => AgentType::ClaudeCode,
-        "Cursor" => AgentType::Cursor,
+        "claude-code" => AgentType::ClaudeCode,
+        "cursor" => AgentType::Cursor,
         _ => AgentType::Unknown,
     };
 
@@ -90,7 +86,7 @@ mod tests {
         let mut context = ExecutionContext::new("/tmp");
         context
             .event_vars
-            .insert("agent".to_string(), "ClaudeCode".to_string());
+            .insert("agent".to_string(), "claude-code".to_string());
         context
             .event_vars
             .insert("session_id".to_string(), "test-session-123".to_string());
@@ -112,7 +108,11 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "no entry found for key")]
     fn test_build_description_missing_agent() {
+        // This test verifies that missing event variables cause a panic
+        // since they should always be validated at the handler level.
+        // A panic here indicates a programming error, not a user error.
         let mut context = ExecutionContext::new("/tmp");
         context
             .event_vars
@@ -121,11 +121,7 @@ mod tests {
             .event_vars
             .insert("tool_name".to_string(), "Edit".to_string());
 
-        let result = build_description(&context);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Missing event variable: $event.agent"));
+        // This should panic because agent is missing
+        let _ = build_description(&context);
     }
 }
