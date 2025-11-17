@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
-    Action, EditCommitMessageAction, EditCommitMessageOp, FailureMode, JjAction, LetAction,
-    LogAction, ShellAction,
+    Action, CommitMessageAction, CommitMessageOp, FailureMode, JjAction, LetAction, LogAction,
+    ShellAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -99,8 +99,8 @@ impl FlowExecutor {
                 Action::Let(let_action) => {
                     !result.success && let_action.on_failure == FailureMode::Stop
                 }
-                Action::EditCommitMessage(edit_action) => {
-                    !result.success && edit_action.on_failure == FailureMode::Stop
+                Action::CommitMessage(commit_msg_action) => {
+                    !result.success && commit_msg_action.on_failure == FailureMode::Stop
                 }
                 Action::Log(_) => false, // Log actions never fail
             };
@@ -122,8 +122,8 @@ impl FlowExecutor {
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
             Action::Let(let_action) => Self::execute_let(let_action, context),
-            Action::EditCommitMessage(edit_action) => {
-                Self::execute_edit_commit_message(edit_action, context)
+            Action::CommitMessage(commit_msg_action) => {
+                Self::execute_commit_message(commit_msg_action, context)
             }
         }
     }
@@ -156,8 +156,8 @@ impl FlowExecutor {
                     context.store_action_result(alias.clone(), result.clone());
                 }
             }
-            Action::EditCommitMessage(_) => {
-                // edit_commit_message actions don't produce storable results
+            Action::CommitMessage(_) => {
+                // commit_message actions don't produce storable results
             }
         }
     }
@@ -246,12 +246,12 @@ impl FlowExecutor {
         Ok(ActionResult::success())
     }
 
-    /// Execute an edit_commit_message action
+    /// Execute a commit_message action
     ///
     /// This action modifies the commit message file in place.
     /// Only works for PrepareCommitMessage events that have a commit_msg_file.
-    fn execute_edit_commit_message(
-        action: &EditCommitMessageAction,
+    fn execute_commit_message(
+        action: &CommitMessageAction,
         context: &AikiState,
     ) -> Result<ActionResult> {
         use crate::events::AikiEvent;
@@ -265,7 +265,7 @@ impl FlowExecutor {
                 .ok_or_else(|| anyhow::anyhow!("No commit message file in event"))?,
             _ => {
                 return Err(AikiError::Other(anyhow::anyhow!(
-                    "edit_commit_message can only be used in PrepareCommitMessage events"
+                    "commit_message can only be used in PrepareCommitMessage events"
                 )))
             }
         };
@@ -275,7 +275,7 @@ impl FlowExecutor {
 
         // Create variable resolver
         let mut resolver = Self::create_resolver(context);
-        let op = &action.edit_commit_message;
+        let op = &action.commit_message;
 
         // Apply operations
         let new_content = Self::apply_commit_message_edits(&content, op, &mut resolver)?;
@@ -289,7 +289,7 @@ impl FlowExecutor {
     /// Apply commit message edit operations
     fn apply_commit_message_edits(
         content: &str,
-        op: &EditCommitMessageOp,
+        op: &CommitMessageOp,
         resolver: &mut VariableResolver,
     ) -> Result<String> {
         let mut result = content.to_string();
