@@ -414,73 +414,13 @@ impl FlowExecutor {
 
         // Route to appropriate function
         match (module, function) {
-            ("core", "build_description") => Self::fn_build_provenance_description(context),
-            ("provenance", "build_description") => Self::fn_build_provenance_description(context), // Legacy
+            ("core", "build_description") => crate::flows::core::build_description(context),
+            ("provenance", "build_description") => crate::flows::core::build_description(context), // Legacy alias
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
             )),
         }
-    }
-
-    /// Built-in function: aiki/core.build_description (also aiki/provenance.build_description for legacy)
-    ///
-    /// Builds a provenance description from event context.
-    /// Requires: $event.agent, $event.session_id, $event.tool_name
-    fn fn_build_provenance_description(context: &ExecutionContext) -> Result<ActionResult> {
-        use crate::provenance::{
-            AgentInfo, AgentType, AttributionConfidence, DetectionMethod, ProvenanceRecord,
-        };
-
-        // Extract required event variables
-        let agent_str = context
-            .event_vars
-            .get("agent")
-            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.agent"))?;
-
-        let session_id = context
-            .event_vars
-            .get("session_id")
-            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.session_id"))?;
-
-        let tool_name = context
-            .event_vars
-            .get("tool_name")
-            .ok_or_else(|| anyhow::anyhow!("Missing event variable: $event.tool_name"))?;
-
-        // Parse agent type
-        let agent_type = match agent_str.as_str() {
-            "ClaudeCode" => AgentType::ClaudeCode,
-            "Cursor" => AgentType::Cursor,
-            _ => AgentType::Unknown,
-        };
-
-        // Build provenance record
-        let provenance = ProvenanceRecord {
-            agent: AgentInfo {
-                agent_type,
-                version: None,
-                detected_at: chrono::Utc::now(),
-                confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
-            },
-            session_id: session_id.clone(),
-            tool_name: tool_name.clone(),
-        };
-
-        // Generate description
-        let description = provenance.to_description();
-
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Generated provenance description");
-        }
-
-        Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: description,
-            stderr: String::new(),
-        })
     }
 
     /// Execute a built-in Aiki function
