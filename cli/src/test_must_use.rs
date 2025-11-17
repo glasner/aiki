@@ -1,72 +1,76 @@
-// Test to verify #[must_use] warnings work
+// Test to verify event construction works properly
 #![cfg(test)]
 
-use crate::events::{AikiEvent, AikiEventType};
+use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
 use crate::provenance::AgentType;
 use std::path::PathBuf;
 
 #[test]
 fn test_must_use_warning_compilation() {
-    // These should be fine - results are used
-    let _event = AikiEvent::new(
-        AikiEventType::Start,
-        AgentType::ClaudeCode,
-        PathBuf::from("/tmp"),
-    );
-    let _event_with_session = _event.with_session_id("session-123");
-    let _event_with_metadata = _event_with_session.with_metadata("key", "value");
+    // Test that event construction works
+    let _event = AikiEvent::Start(AikiStartEvent {
+        agent_type: AgentType::ClaudeCode,
+        session_id: Some("session-123".to_string()),
+        cwd: PathBuf::from("/tmp"),
+        timestamp: chrono::Utc::now(),
+    });
 }
 
 #[test]
 fn test_impl_asref_path_ergonomics() {
-    // Test that AikiEvent::new() accepts impl AsRef<Path> with different types
+    // Test that events can be constructed with various path types
 
-    // Accept &str
-    let _event1 = AikiEvent::new(AikiEventType::Start, AgentType::ClaudeCode, "/tmp");
+    // Using &str
+    let _event1 = AikiEvent::Start(AikiStartEvent {
+        agent_type: AgentType::ClaudeCode,
+        session_id: None,
+        cwd: PathBuf::from("/tmp"),
+        timestamp: chrono::Utc::now(),
+    });
 
-    // Accept String
-    let _event2 = AikiEvent::new(
-        AikiEventType::PostChange,
-        AgentType::ClaudeCode,
-        String::from("/tmp"),
-    );
+    // Using String
+    let _event2 = AikiEvent::PostChange(AikiPostChangeEvent {
+        agent_type: AgentType::ClaudeCode,
+        session_id: "session-123".to_string(),
+        tool_name: "Edit".to_string(),
+        file_path: "/tmp/file.rs".to_string(),
+        cwd: PathBuf::from(String::from("/tmp")),
+        timestamp: chrono::Utc::now(),
+    });
 
-    // Accept &String
+    // Using &String
     let s = String::from("/tmp");
-    let _event3 = AikiEvent::new(AikiEventType::PreCommit, AgentType::ClaudeCode, &s);
+    let _event3 = AikiEvent::Start(AikiStartEvent {
+        agent_type: AgentType::Cursor,
+        session_id: None,
+        cwd: PathBuf::from(&s),
+        timestamp: chrono::Utc::now(),
+    });
 
-    // Accept PathBuf
-    let _event4 = AikiEvent::new(
-        AikiEventType::Start,
-        AgentType::ClaudeCode,
-        PathBuf::from("/tmp"),
-    );
+    // Using PathBuf
+    let _event4 = AikiEvent::Start(AikiStartEvent {
+        agent_type: AgentType::ClaudeCode,
+        session_id: None,
+        cwd: PathBuf::from("/tmp"),
+        timestamp: chrono::Utc::now(),
+    });
 
-    // Accept &PathBuf
+    // Using &PathBuf
     let pb = PathBuf::from("/tmp");
-    let _event5 = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, &pb);
+    let _event5 = AikiEvent::PostChange(AikiPostChangeEvent {
+        agent_type: AgentType::ClaudeCode,
+        session_id: "session-123".to_string(),
+        tool_name: "Write".to_string(),
+        file_path: "/tmp/file.rs".to_string(),
+        cwd: pb.clone(),
+        timestamp: chrono::Utc::now(),
+    });
 
-    // Accept &Path
-    let _event6 = AikiEvent::new(
-        AikiEventType::PreCommit,
-        AgentType::ClaudeCode,
-        pb.as_path(),
-    );
-}
-
-// This function intentionally ignores return values to verify #[must_use] works
-// It should generate warnings when compiled
-#[cfg(any())] // Disabled by default since it would fail CI
-#[allow(dead_code)]
-fn verify_must_use_triggers_warnings() {
-    // These SHOULD trigger unused_must_use warnings
-    AikiEvent::new(AikiEventType::Start, AgentType::ClaudeCode, "/tmp"); // unused must_use warning expected
-    AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-        .with_session_id("session-123"); // unused must_use warning expected
-    AikiEvent::new(
-        AikiEventType::PreCommit,
-        AgentType::ClaudeCode,
-        PathBuf::from("/tmp"),
-    )
-    .with_metadata("key", "value"); // unused must_use warning expected
+    // Using &Path
+    let _event6 = AikiEvent::Start(AikiStartEvent {
+        agent_type: AgentType::Cursor,
+        session_id: None,
+        cwd: pb.as_path().to_path_buf(),
+        timestamp: chrono::Utc::now(),
+    });
 }

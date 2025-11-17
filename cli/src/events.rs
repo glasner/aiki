@@ -1,64 +1,86 @@
 use crate::provenance::AgentType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Core event types in the Aiki system
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AikiEventType {
-    /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
-    Start,
-    /// After file modification (maps to PostToolUse, afterFileEdit)
-    PostChange,
-    /// Before Git commit (prepare-commit-msg hook)
-    PreCommit,
-    /// Session cleanup (not yet implemented)
-    Stop,
+/// Session start event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiStartEvent {
+    pub agent_type: AgentType,
+    pub session_id: Option<String>,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
 }
 
-/// Standardized event structure passed through the event bus
+/// Post-change event (after file modification)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiEvent {
-    /// Type of event
-    pub event_type: AikiEventType,
-    /// Agent that triggered this event (embedded by vendor handler)
+pub struct AikiPostChangeEvent {
     pub agent_type: AgentType,
-    /// Optional session ID for grouping related events
-    pub session_id: Option<String>,
-    /// Working directory where event occurred
+    pub session_id: String, // Required for PostChange events
+    pub tool_name: String,  // Tool that made the change (e.g., "Edit", "Write")
+    pub file_path: String,  // File that was modified
     pub cwd: PathBuf,
-    /// When the event occurred
     pub timestamp: DateTime<Utc>,
-    /// Additional event-specific metadata
-    pub metadata: HashMap<String, String>,
+}
+
+/// Pre-commit event (before Git commit)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiPreCommitEvent {
+    pub agent_type: AgentType,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Core event types in the Aiki system
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AikiEvent {
+    /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
+    Start(AikiStartEvent),
+    /// After file modification (maps to PostToolUse, afterFileEdit)
+    PostChange(AikiPostChangeEvent),
+    /// Before Git commit (prepare-commit-msg hook)
+    PreCommit(AikiPreCommitEvent),
 }
 
 impl AikiEvent {
-    /// Create a new event
+    /// Get the working directory for this event
     #[must_use]
-    pub fn new(event_type: AikiEventType, agent_type: AgentType, cwd: impl AsRef<Path>) -> Self {
-        Self {
-            event_type,
-            agent_type,
-            session_id: None,
-            cwd: cwd.as_ref().to_path_buf(),
-            timestamp: Utc::now(),
-            metadata: HashMap::new(),
+    pub fn cwd(&self) -> &Path {
+        match self {
+            Self::Start(e) => &e.cwd,
+            Self::PostChange(e) => &e.cwd,
+            Self::PreCommit(e) => &e.cwd,
         }
     }
 
-    /// Add session ID to event
+    /// Get the agent type for this event
     #[must_use]
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
-        self
+    pub fn agent_type(&self) -> AgentType {
+        match self {
+            Self::Start(e) => e.agent_type,
+            Self::PostChange(e) => e.agent_type,
+            Self::PreCommit(e) => e.agent_type,
+        }
     }
 
-    /// Add metadata to event
+    /// Get the timestamp for this event
     #[must_use]
-    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.metadata.insert(key.into(), value.into());
-        self
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        match self {
+            Self::Start(e) => e.timestamp,
+            Self::PostChange(e) => e.timestamp,
+            Self::PreCommit(e) => e.timestamp,
+        }
+    }
+
+    /// Get the session ID if present
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::Start(e) => e.session_id.as_deref(),
+            Self::PostChange(e) => Some(&e.session_id),
+            Self::PreCommit(_) => None,
+        }
     }
 }

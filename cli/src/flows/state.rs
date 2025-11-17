@@ -67,13 +67,13 @@ impl AikiState {
     /// Helper to get the current working directory
     #[must_use]
     pub fn cwd(&self) -> &std::path::Path {
-        &self.event.cwd
+        self.event.cwd()
     }
 
     /// Helper to get the agent type
     #[must_use]
     pub fn agent_type(&self) -> crate::provenance::AgentType {
-        self.event.agent_type
+        self.event.agent_type()
     }
 
     /// Get a variable value by name
@@ -131,17 +131,26 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiEvent, AikiEventType};
+        use crate::events::{AikiEvent, AikiPostChangeEvent};
         use crate::provenance::AgentType;
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/test")
-            .with_metadata("file_path", "/test/file.rs");
+        let event = AikiEvent::PostChange(AikiPostChangeEvent {
+            agent_type: AgentType::ClaudeCode,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            file_path: "/test/file.rs".to_string(),
+            cwd: std::path::PathBuf::from("/test"),
+            timestamp: chrono::Utc::now(),
+        });
         let ctx = AikiState::new(event);
 
-        assert_eq!(
-            ctx.event.metadata.get("file_path"),
-            Some(&"/test/file.rs".to_string())
-        );
+        // Verify we can access event fields through the enum
+        match &ctx.event {
+            AikiEvent::PostChange(e) => {
+                assert_eq!(e.file_path, "/test/file.rs");
+            }
+            _ => panic!("Expected PostChange event"),
+        }
         assert_eq!(ctx.cwd(), std::path::Path::new("/test"));
     }
 }

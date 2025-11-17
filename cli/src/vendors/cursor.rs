@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiEventType};
+use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
 use crate::provenance::AgentType;
 
 /// Cursor hook payload structure
@@ -46,10 +46,22 @@ pub fn handle(event_name: &str) -> Result<()> {
         );
     }
 
-    // Translate vendor event name to Aiki event type
-    let aiki_event_type = match event_name {
-        "beforeSubmitPrompt" => AikiEventType::Start,
-        "afterFileEdit" => AikiEventType::PostChange,
+    // Create standardized event with embedded agent type
+    let event = match event_name {
+        "beforeSubmitPrompt" => AikiEvent::Start(AikiStartEvent {
+            agent_type: AgentType::Cursor,
+            session_id: Some(payload.session_id),
+            cwd: PathBuf::from(&payload.working_directory),
+            timestamp: chrono::Utc::now(),
+        }),
+        "afterFileEdit" => AikiEvent::PostChange(AikiPostChangeEvent {
+            agent_type: AgentType::Cursor,
+            session_id: payload.session_id,
+            tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
+            file_path: payload.edited_file,
+            cwd: PathBuf::from(&payload.working_directory),
+            timestamp: chrono::Utc::now(),
+        }),
         // Future events can be added here without hook reinstallation
         _ => {
             if std::env::var("AIKI_DEBUG").is_ok() {
@@ -58,17 +70,6 @@ pub fn handle(event_name: &str) -> Result<()> {
             return Ok(());
         }
     };
-
-    // Create standardized event with embedded agent type
-    let event = AikiEvent::new(
-        aiki_event_type,
-        AgentType::Cursor, // ← Agent embedded here
-        PathBuf::from(&payload.working_directory),
-    )
-    .with_session_id(payload.session_id)
-    .with_metadata("tool_name", "edit") // Cursor doesn't distinguish Edit/Write
-    .with_metadata("file_path", payload.edited_file)
-    .with_metadata("vendor_event", event_name); // Track original vendor event name
 
     // Dispatch to event bus
     event_bus::dispatch(event)?;
