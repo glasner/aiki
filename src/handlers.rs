@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::events::{AikiEvent, AikiPostChangeEvent, AikiPreCommitEvent, AikiStartEvent};
+use crate::events::{AikiPostChangeEvent, AikiPreCommitEvent, AikiStartEvent};
 use crate::flows::{AikiState, FlowExecutor};
 
 /// Handle session start event
@@ -14,8 +14,8 @@ pub fn handle_start(event: AikiStartEvent) -> Result<()> {
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event (wrap in enum)
-    let mut state = AikiState::new(AikiEvent::Start(event));
+    // Build execution state from event
+    let mut state = AikiState::new(event);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
@@ -44,8 +44,8 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<()> {
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event (wrap in enum)
-    let mut state = AikiState::new(AikiEvent::PostChange(event));
+    // Build execution state from event
+    let mut state = AikiState::new(event);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

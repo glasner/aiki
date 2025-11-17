@@ -55,9 +55,9 @@ pub struct AikiState {
 
 impl AikiState {
     #[must_use]
-    pub fn new(event: crate::events::AikiEvent) -> Self {
+    pub fn new(event: impl Into<crate::events::AikiEvent>) -> Self {
         Self {
-            event,
+            event: event.into(),
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
             flow_name: None,
