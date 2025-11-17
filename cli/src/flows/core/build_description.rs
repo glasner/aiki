@@ -35,25 +35,23 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 ///   - jj: describe -m "$description"
 /// ```
 pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
-    // Extract fields from PostChange event (type system guarantees they exist)
-    let (agent_type, session_id, tool_name, timestamp) = match &aiki.event {
-        crate::events::AikiEvent::PostChange(e) => {
-            (e.agent_type, &e.session_id, &e.tool_name, e.timestamp)
-        }
+    // Extract PostChange event (type system guarantees this is only called for PostChange)
+    let event = match &aiki.event {
+        crate::events::AikiEvent::PostChange(e) => e,
         _ => panic!("build_description should only be called for PostChange events"),
     };
 
     // Build provenance record
     let provenance = ProvenanceRecord {
         agent: AgentInfo {
-            agent_type,
+            agent_type: event.agent_type,
             version: None,
-            detected_at: timestamp,
+            detected_at: event.timestamp,
             confidence: AttributionConfidence::High,
             detection_method: DetectionMethod::Hook,
         },
-        session_id: session_id.clone(),
-        tool_name: tool_name.clone(),
+        session_id: event.session_id.clone(),
+        tool_name: event.tool_name.clone(),
     };
 
     // Generate description in [aiki]...[/aiki] format
