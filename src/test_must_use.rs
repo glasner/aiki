@@ -1,40 +1,57 @@
 // Test to verify #[must_use] warnings work
 #![cfg(test)]
 
-use crate::flows::types::{ActionResult, ExecutionContext};
+use crate::events::{AikiEvent, AikiEventType};
+use crate::provenance::AgentType;
 use std::path::PathBuf;
 
 #[test]
 fn test_must_use_warning_compilation() {
     // These should be fine - results are used
-    let _result = ActionResult::success();
-    let _failure = ActionResult::failure(1, "error".to_string());
-    let _ctx = ExecutionContext::new(PathBuf::from("/tmp"));
+    let _event = AikiEvent::new(
+        AikiEventType::Start,
+        AgentType::ClaudeCode,
+        PathBuf::from("/tmp"),
+    );
+    let _event_with_session = _event.with_session_id("session-123");
+    let _event_with_metadata = _event_with_session.with_metadata("key", "value");
 }
 
 #[test]
 fn test_impl_asref_path_ergonomics() {
-    // Test that impl AsRef<Path> accepts different types
+    // Test that AikiEvent::new() accepts impl AsRef<Path> with different types
 
     // Accept &str
-    let _ctx1 = ExecutionContext::new("/tmp");
+    let _event1 = AikiEvent::new(AikiEventType::Start, AgentType::ClaudeCode, "/tmp");
 
     // Accept String
-    let _ctx2 = ExecutionContext::new(String::from("/tmp"));
+    let _event2 = AikiEvent::new(
+        AikiEventType::PostChange,
+        AgentType::ClaudeCode,
+        String::from("/tmp"),
+    );
 
     // Accept &String
     let s = String::from("/tmp");
-    let _ctx3 = ExecutionContext::new(&s);
+    let _event3 = AikiEvent::new(AikiEventType::PreCommit, AgentType::ClaudeCode, &s);
 
     // Accept PathBuf
-    let _ctx4 = ExecutionContext::new(PathBuf::from("/tmp"));
+    let _event4 = AikiEvent::new(
+        AikiEventType::Start,
+        AgentType::ClaudeCode,
+        PathBuf::from("/tmp"),
+    );
 
     // Accept &PathBuf
     let pb = PathBuf::from("/tmp");
-    let _ctx5 = ExecutionContext::new(&pb);
+    let _event5 = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, &pb);
 
     // Accept &Path
-    let _ctx6 = ExecutionContext::new(pb.as_path());
+    let _event6 = AikiEvent::new(
+        AikiEventType::PreCommit,
+        AgentType::ClaudeCode,
+        pb.as_path(),
+    );
 }
 
 // This function intentionally ignores return values to verify #[must_use] works
@@ -43,7 +60,13 @@ fn test_impl_asref_path_ergonomics() {
 #[allow(dead_code)]
 fn verify_must_use_triggers_warnings() {
     // These SHOULD trigger unused_must_use warnings
-    ActionResult::success(); // unused must_use warning expected
-    ActionResult::failure(1, "error".to_string()); // unused must_use warning expected
-    ExecutionContext::new(PathBuf::from("/tmp")); // unused must_use warning expected
+    AikiEvent::new(AikiEventType::Start, AgentType::ClaudeCode, "/tmp"); // unused must_use warning expected
+    AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
+        .with_session_id("session-123"); // unused must_use warning expected
+    AikiEvent::new(
+        AikiEventType::PreCommit,
+        AgentType::ClaudeCode,
+        PathBuf::from("/tmp"),
+    )
+    .with_metadata("key", "value"); // unused must_use warning expected
 }

@@ -163,20 +163,20 @@ impl ActionResult {
     }
 }
 
-/// Execution context for a flow
+/// Aiki execution state for flow processing
+///
+/// This holds the mutable state that accumulates during flow execution:
+/// - The original triggering event (immutable)
+/// - Let-bound variables computed during execution
+/// - Metadata about action results
+/// - Current flow context
 #[derive(Debug, Clone)]
-pub struct ExecutionContext {
-    /// Current working directory
-    pub cwd: std::path::PathBuf,
-
-    /// Event-specific variables ($event.*)
-    pub event_vars: HashMap<String, String>,
+pub struct AikiState {
+    /// The original event that triggered this execution
+    pub event: crate::events::AikiEvent,
 
     /// Let-bound variables (user-defined, accessed without $event prefix)
     pub let_vars: HashMap<String, String>,
-
-    /// Environment variables to pass to shell commands
-    pub env_vars: HashMap<String, String>,
 
     /// Structured metadata for variables (stores ActionResult for each variable)
     pub variable_metadata: HashMap<String, ActionResult>,
@@ -185,17 +185,27 @@ pub struct ExecutionContext {
     pub flow_name: Option<String>,
 }
 
-impl ExecutionContext {
+impl AikiState {
     #[must_use]
-    pub fn new(cwd: impl AsRef<std::path::Path>) -> Self {
+    pub fn new(event: crate::events::AikiEvent) -> Self {
         Self {
-            cwd: cwd.as_ref().to_path_buf(),
-            event_vars: HashMap::new(),
+            event,
             let_vars: HashMap::new(),
-            env_vars: std::env::vars().collect(),
             variable_metadata: HashMap::new(),
             flow_name: None,
         }
+    }
+
+    /// Helper to get the current working directory
+    #[must_use]
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.event.cwd
+    }
+
+    /// Helper to get the agent type
+    #[must_use]
+    pub fn agent_type(&self) -> crate::provenance::AgentType {
+        self.event.agent
     }
 }
 
@@ -219,15 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_context_with_event_var() {
-        let mut ctx = ExecutionContext::new(std::path::PathBuf::from("/test"));
-        ctx.event_vars
-            .insert("file_path".to_string(), "/test/file.rs".to_string());
+    fn test_execution_context_with_event() {
+        use crate::events::{AikiEvent, AikiEventType};
+        use crate::provenance::AgentType;
+
+        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/test")
+            .with_metadata("file_path", "/test/file.rs");
+        let ctx = AikiState::new(event);
 
         assert_eq!(
-            ctx.event_vars.get("file_path"),
+            ctx.event.metadata.get("file_path"),
             Some(&"/test/file.rs".to_string())
         );
+        assert_eq!(ctx.cwd(), std::path::Path::new("/test"));
     }
 
     #[test]

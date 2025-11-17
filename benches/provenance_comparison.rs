@@ -31,7 +31,7 @@ fn setup_workspace() -> TempDir {
 
 /// Benchmark: OLD approach using AikiAction
 fn bench_old_aiki_action(c: &mut Criterion) {
-    use aiki::flows::{Action, AikiAction, ExecutionContext, FailureMode, FlowExecutor};
+    use aiki::flows::{Action, AikiAction, AikiState, FailureMode, FlowExecutor};
     use std::collections::HashMap;
 
     let temp_dir = setup_workspace();
@@ -50,7 +50,7 @@ fn bench_old_aiki_action(c: &mut Criterion) {
 
     c.bench_function("old_aiki_action", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            let mut context = AikiState::new(PathBuf::from(temp_dir.path()));
             context
                 .event_vars
                 .insert("agent".to_string(), "claude-code".to_string());
@@ -72,7 +72,7 @@ fn bench_old_aiki_action(c: &mut Criterion) {
 
 /// Benchmark: NEW approach using LetAction
 fn bench_new_let_action(c: &mut Criterion) {
-    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, LetAction};
+    use aiki::flows::{Action, AikiState, FailureMode, FlowExecutor, LetAction};
 
     let temp_dir = setup_workspace();
 
@@ -83,7 +83,7 @@ fn bench_new_let_action(c: &mut Criterion) {
 
     c.bench_function("new_let_action", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            let mut context = AikiState::new(PathBuf::from(temp_dir.path()));
             context
                 .event_vars
                 .insert("agent".to_string(), "claude-code".to_string());
@@ -105,7 +105,7 @@ fn bench_new_let_action(c: &mut Criterion) {
 
 /// Benchmark: OLD full provenance workflow (with JJ commands)
 fn bench_old_full_workflow(c: &mut Criterion) {
-    use aiki::flows::{Action, AikiAction, ExecutionContext, FailureMode, FlowExecutor, JjAction};
+    use aiki::flows::{Action, AikiAction, AikiState, FailureMode, FlowExecutor, JjAction};
     use std::collections::HashMap;
 
     let temp_dir = setup_workspace();
@@ -132,7 +132,7 @@ fn bench_old_full_workflow(c: &mut Criterion) {
 
     c.bench_function("old_full_workflow", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            let mut context = AikiState::new(PathBuf::from(temp_dir.path()));
             context
                 .event_vars
                 .insert("agent".to_string(), "claude-code".to_string());
@@ -154,7 +154,7 @@ fn bench_old_full_workflow(c: &mut Criterion) {
 
 /// Benchmark: NEW full provenance workflow (with JJ commands)
 fn bench_new_full_workflow(c: &mut Criterion) {
-    use aiki::flows::{Action, ExecutionContext, FailureMode, FlowExecutor, JjAction, LetAction};
+    use aiki::flows::{Action, AikiState, FailureMode, FlowExecutor, JjAction, LetAction};
 
     let temp_dir = setup_workspace();
 
@@ -173,7 +173,7 @@ fn bench_new_full_workflow(c: &mut Criterion) {
 
     c.bench_function("new_full_workflow", |b| {
         b.iter(|| {
-            let mut context = ExecutionContext::new(PathBuf::from(temp_dir.path()));
+            let mut context = AikiState::new(PathBuf::from(temp_dir.path()));
             context
                 .event_vars
                 .insert("agent".to_string(), "claude-code".to_string());
