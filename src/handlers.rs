@@ -17,6 +17,9 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
     // Build execution context
     let mut context = ExecutionContext::new(event.cwd.clone());
 
+    // Set flow name for self.* function resolution
+    context.flow_name = Some("aiki/core".to_string());
+
     // Add event variables
     context
         .event_vars
@@ -62,6 +65,9 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
 
     // Build execution context with event variables
     let mut context = ExecutionContext::new(event.cwd.clone());
+
+    // Set flow name for self.* function resolution
+    context.flow_name = Some("aiki/core".to_string());
 
     // Add event variables - the native function will use these
     context
