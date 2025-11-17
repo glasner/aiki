@@ -1,4 +1,5 @@
 mod bundled;
+pub mod core;
 mod executor;
 mod parser;
 pub mod types;
