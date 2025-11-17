@@ -82,16 +82,16 @@ impl FlowExecutor {
             // Check failure mode
             let should_stop = match action {
                 Action::Shell(shell_action) => {
-                    !result.success && shell_action.on_failure == FailureMode::Fail
+                    !result.success && shell_action.on_failure == FailureMode::Stop
                 }
                 Action::Jj(jj_action) => {
-                    !result.success && jj_action.on_failure == FailureMode::Fail
+                    !result.success && jj_action.on_failure == FailureMode::Stop
                 }
                 Action::Let(let_action) => {
-                    !result.success && let_action.on_failure == FailureMode::Fail
+                    !result.success && let_action.on_failure == FailureMode::Stop
                 }
                 Action::Aiki(aiki_action) => {
-                    !result.success && aiki_action.on_failure == FailureMode::Fail
+                    !result.success && aiki_action.on_failure == FailureMode::Stop
                 }
                 Action::Log(_) => false, // Log actions never fail
             };
@@ -709,12 +709,12 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_actions_fail_mode_fail() {
+    fn test_execute_actions_fail_mode_stop() {
         let actions = vec![
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
-                on_failure: FailureMode::Fail, // Stop on failure
+                on_failure: FailureMode::Stop, // Stop on failure
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -922,7 +922,7 @@ mod tests {
         // The type system now guarantees that PostChange events have all required fields.
         let action = LetAction {
             let_: "description = aiki/core.build_description".to_string(),
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         };
 
         let event = create_test_event();
@@ -1030,7 +1030,7 @@ mod tests {
     fn test_let_self_reference() {
         let action = LetAction {
             let_: "description = self.build_description".to_string(),
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         };
 
         let event = create_test_event();
@@ -1046,7 +1046,7 @@ mod tests {
     fn test_let_self_reference_without_flow_context() {
         let action = LetAction {
             let_: "description = self.build_description".to_string(),
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         };
 
         // No flow_name set

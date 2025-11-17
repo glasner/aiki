@@ -45,7 +45,7 @@ fn bench_old_aiki_action(c: &mut Criterion) {
     let actions = vec![Action::Aiki(AikiAction {
         aiki: "build_provenance_description".to_string(),
         args,
-        on_failure: FailureMode::Fail,
+        on_failure: FailureMode::Stop,
     })];
 
     c.bench_function("old_aiki_action", |b| {
@@ -78,7 +78,7 @@ fn bench_new_let_action(c: &mut Criterion) {
 
     let actions = vec![Action::Let(LetAction {
         let_: "description = aiki/provenance.build_description".to_string(),
-        on_failure: FailureMode::Fail,
+        on_failure: FailureMode::Stop,
     })];
 
     c.bench_function("new_let_action", |b| {
@@ -120,12 +120,12 @@ fn bench_old_full_workflow(c: &mut Criterion) {
         Action::Aiki(AikiAction {
             aiki: "build_provenance_description".to_string(),
             args,
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         }),
         Action::Jj(JjAction {
             jj: "describe -m \"$description\"".to_string(),
             timeout: None,
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
             alias: None,
         }),
     ];
@@ -161,12 +161,12 @@ fn bench_new_full_workflow(c: &mut Criterion) {
     let actions = vec![
         Action::Let(LetAction {
             let_: "description = aiki/provenance.build_description".to_string(),
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         }),
         Action::Jj(JjAction {
             jj: "describe -m \"$description\"".to_string(),
             timeout: None,
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
             alias: None,
         }),
     ];

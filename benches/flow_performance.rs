@@ -87,7 +87,7 @@ version: "1"
 
 PostChange:
   - let: description = self.build_description
-    on_failure: fail
+    on_failure: stop
   - jj: describe -m "$description"
   - jj: new
   - log: "Recorded change"
@@ -177,13 +177,13 @@ fn bench_provenance_flow_with_let(c: &mut Criterion) {
         // Let action to call build_description function
         Action::Let(LetAction {
             let_: "description = aiki/provenance.build_description".to_string(),
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
         }),
         // JJ action to update change description
         Action::Jj(JjAction {
             jj: "describe -m \"$description\"".to_string(),
             timeout: None,
-            on_failure: FailureMode::Fail,
+            on_failure: FailureMode::Stop,
             alias: None,
         }),
     ];

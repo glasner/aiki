@@ -32,7 +32,7 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 /// ```yaml
 /// PostChange:
 ///   - let: description = self.build_description
-///     on_failure: fail
+///     on_failure: stop
 ///   - jj: describe -m "$description"
 /// ```
 pub fn build_description(event: &AikiPostChangeEvent) -> Result<ActionResult> {
