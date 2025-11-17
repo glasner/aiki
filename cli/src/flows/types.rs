@@ -125,7 +125,7 @@ pub enum FailureMode {
     /// Continue to next action (default)
     Continue,
     /// Stop flow execution and return error
-    Fail,
+    Stop,
 }
 
 fn default_on_failure() -> FailureMode {

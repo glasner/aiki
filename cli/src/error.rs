@@ -35,7 +35,7 @@ pub enum AikiError {
     #[error("Invalid variable name: '{0}'. Variable names must start with a letter or underscore, and contain only letters, numbers, and underscores")]
     InvalidVariableName(String),
 
-    #[error("Action failed with on_failure: fail")]
+    #[error("Action failed with on_failure: stop")]
     ActionFailed,
 
     #[error("Unknown aiki function: {0}")]

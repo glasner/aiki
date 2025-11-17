@@ -517,7 +517,7 @@ for action in actions {
     results.push(result);
 
     if should_stop {
-        anyhow::bail!("Action failed with on_failure: fail");
+        anyhow::bail!("Action failed with on_failure: stop");
     }
 }
 ```
@@ -538,7 +538,7 @@ PostChange:
       agent: "$event.agent"
       session_id: "$event.session_id"
       tool_name: "$event.tool_name"
-    on_failure: fail
+    on_failure: stop
 
   - jj: describe -m "$build_provenance_description.output"
   - jj: new
@@ -554,7 +554,7 @@ version: "1"
 PostChange:
   # Build provenance metadata (function reads $event.agent, $event.session_id, $event.tool_name from context)
   - let: description = aiki/provenance.build_description
-    on_failure: fail
+    on_failure: stop
 
   # Set change description
   - jj: describe -m "$description"

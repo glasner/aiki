@@ -54,7 +54,7 @@ PostChange:
       agent: "$event.agent"
       session_id: "$event.session_id"
       tool_name: "$event.tool_name"
-    on_failure: fail
+    on_failure: stop
 
   - jj: describe -m "$build_provenance_description_output"
 ```

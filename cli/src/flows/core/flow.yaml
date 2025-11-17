@@ -6,13 +6,13 @@ version: "1"
 Start:
   # Initialize Aiki (idempotent - safe to run multiple times)
   - shell: aiki init --quiet
-    on_failure: fail
+    on_failure: stop
 
 # PostChange: Record provenance metadata after every AI edit
 PostChange:
   # Build the provenance description using self reference
   - let: description = self.build_description
-    on_failure: fail
+    on_failure: stop
 
   # Set the change description with provenance metadata
   - jj: describe -m "$description"

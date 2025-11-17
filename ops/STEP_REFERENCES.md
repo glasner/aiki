@@ -46,7 +46,7 @@ PostChange:
       agent: "$event.agent"
       session_id: "$event.session_id"
       tool_name: "$event.tool_name"
-    on_failure: fail
+    on_failure: stop
 
   # Step 2: Use the output
   - jj: describe -m "$build_provenance_description.output"
@@ -165,7 +165,7 @@ PostChange:
       agent: "$event.agent"
       session_id: "$event.session_id"
       tool_name: "$event.tool_name"
-    on_failure: fail
+    on_failure: stop
 
   # Step 2: Use the output from step 1
   - jj: describe -m "$build_provenance_description.output"

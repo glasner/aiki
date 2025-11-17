@@ -178,7 +178,7 @@ return Err(AikiError::FileNotFoundNoParents.into());
 ### 4. Flow Execution Errors
 - `InvalidLetSyntax(String)` - Malformed let binding
 - `InvalidVariableName(String)` - Invalid variable identifier
-- `ActionFailed` - Action failed with `on_failure: fail`
+- `ActionFailed` - Action failed with `on_failure: stop`
 - `UnknownAikiFunction(String)` - Unknown function call
 - `FunctionNotFoundInNamespace(String, String)` - Function not in module
 - `UnsupportedFunctionNamespace(String)` - Unsupported namespace

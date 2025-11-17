@@ -62,7 +62,7 @@ mod tests {
                     let_action.let_, "description = self.build_description",
                     "Flow should use 'self.build_description' for portability"
                 );
-                assert_eq!(let_action.on_failure, FailureMode::Fail);
+                assert_eq!(let_action.on_failure, FailureMode::Stop);
             }
             _ => panic!("Expected Let action as first step"),
         }

@@ -19,12 +19,14 @@ PostChange:
   - flow: aiki/quick-lint
 
   # Reference using full identifier (flow/name → flow_name)
-  - when: $aiki_quick_lint.failed
-    flow: my/desktop-alert
+  - if: $aiki_quick_lint.failed
+    then:
+      flow: my/desktop-alert
 
   # Inline conditional: only backup Python files
-  - when: $event.file_path ends_with '.py'
-    shell: cp $event.file_path ~/backups/
+  - if: $event.file_path ends_with '.py'
+    then:
+      shell: cp $event.file_path ~/backups/
 
 # PreCommit: Comprehensive review before commit
 PreCommit:
@@ -55,16 +57,18 @@ PreCommit:
     timeout: 60s
 
   # Reference previous step
-  - when: $previous_step.exit_code == 0
-    flow: company/slack-notify
+  - if: $previous_step.exit_code == 0
+    then:
+      flow: company/slack-notify
 
 # Start: Session initialization
 Start:
   - shell: aiki init --quiet
 
   # Inline conditional: welcome message on first session
-  - when: $event.first_session == 'true'
-    log: Welcome to Aiki!
+  - if: $event.first_session == 'true'
+    then:
+      log: Welcome to Aiki!
 
 # Stop: Session cleanup
 Stop:

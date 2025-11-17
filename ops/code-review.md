@@ -642,7 +642,7 @@ for action in actions {
     // ...
     results.push(result);
     if should_stop {
-        anyhow::bail!("Action failed with on_failure: fail");
+        anyhow::bail!("Action failed with on_failure: stop");
     }
 }
 Ok(results)
@@ -653,9 +653,9 @@ actions.iter()
         let result = Self::execute_action(action, context)?;
         Self::store_action_result(action, &result, context);
         
-        let should_stop = !result.success && action.on_failure() == FailureMode::Fail;
+        let should_stop = !result.success && action.on_failure() == FailureMode::Stop;
         if should_stop {
-            return Err(anyhow::anyhow!("Action failed with on_failure: fail"));
+            return Err(anyhow::anyhow!("Action failed with on_failure: stop"));
         }
         
         results.push(result);

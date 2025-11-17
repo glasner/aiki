@@ -509,11 +509,11 @@ PreCommit:
 ```yaml
 # Full namespaced path
 - let: description = aiki/provenance.build_description
-  on_failure: fail
+  on_failure: stop
 
 # Self reference (recommended for portability)
 - let: description = self.build_description
-  on_failure: fail
+  on_failure: stop
 
 - jj: describe -m "$description"
 ```

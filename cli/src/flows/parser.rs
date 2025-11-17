@@ -92,7 +92,7 @@ name: Failure Handling Flow
 version: "1"
 PostChange:
   - shell: ruff check .
-    on_failure: fail
+    on_failure: stop
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
