@@ -240,7 +240,7 @@ impl FlowExecutor {
     /// Execute a let binding action
     ///
     /// Supports two modes:
-    /// 1. Function call: `let description = aiki/provenance.build_description`
+    /// 1. Function call: `let description = aiki/core.build_description`
     /// 2. Variable aliasing: `let desc = $description`
     fn execute_let(action: &LetAction, context: &AikiState) -> Result<ActionResult> {
         // Parse the let binding: "variable = expression"
@@ -314,7 +314,7 @@ impl FlowExecutor {
         })
     }
 
-    /// Execute a let binding for function call: `let description = aiki/provenance.build_description`
+    /// Execute a let binding for function call: `let description = aiki/core.build_description`
     /// Supports `self.function` syntax to reference functions in the current flow
     fn execute_let_function(
         variable_name: &str,
@@ -341,8 +341,8 @@ impl FlowExecutor {
                 )
             })?;
 
-            // Convert flow name (e.g., "aiki/provenance") to module.function
-            // Extract module from flow name: aiki/provenance -> provenance
+            // Convert flow name (e.g., "aiki/core") to module.function
+            // Extract module from flow name: aiki/core -> core
             let module = flow_name.split('/').last().unwrap_or(flow_name);
             format!("aiki/{}.{}", module, function_name)
         } else {
@@ -371,7 +371,7 @@ impl FlowExecutor {
 
         // Route to appropriate function
         match (module, function) {
-            ("core", "build_description") | ("provenance", "build_description") => {
+            ("core", "build_description") => {
                 // build_description requires PostChange event
                 match &context.event {
                     crate::events::AikiEvent::PostChange(event) => {

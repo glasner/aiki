@@ -49,7 +49,7 @@ pub struct AikiState {
     /// Structured metadata for variables (stores ActionResult for each variable)
     variable_metadata: HashMap<String, ActionResult>,
 
-    /// Current flow name (e.g., "aiki/provenance") for self references
+    /// Current flow name (e.g., "aiki/core") for self references
     pub flow_name: Option<String>,
 }
 
