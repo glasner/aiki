@@ -36,8 +36,10 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 /// ```
 pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
     // Extract fields from PostChange event (type system guarantees they exist)
-    let (agent_type, session_id, tool_name) = match &aiki.event {
-        crate::events::AikiEvent::PostChange(e) => (e.agent_type, &e.session_id, &e.tool_name),
+    let (agent_type, session_id, tool_name, timestamp) = match &aiki.event {
+        crate::events::AikiEvent::PostChange(e) => {
+            (e.agent_type, &e.session_id, &e.tool_name, e.timestamp)
+        }
         _ => panic!("build_description should only be called for PostChange events"),
     };
 
@@ -46,7 +48,7 @@ pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
         agent: AgentInfo {
             agent_type,
             version: None,
-            detected_at: chrono::Utc::now(),
+            detected_at: timestamp,
             confidence: AttributionConfidence::High,
             detection_method: DetectionMethod::Hook,
         },
