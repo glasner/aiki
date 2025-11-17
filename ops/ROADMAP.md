@@ -731,8 +731,9 @@ PostChange:
 
 ### Why This Enables Future Phases
 - **Phase 6**: Autonomous review built as default flow
-- **Phase 7**: Users write their own flows in `.aiki/flows/`
-- **Phase 8**: External flow ecosystem with bundled binaries
+- **Phase 7**: Complete event system for all Git and agent hooks
+- **Phase 8**: Users write their own flows in `.aiki/flows/`
+- **Phase 9**: External flow ecosystem with bundled binaries
 - **Rapid iteration**: Change workflows without Aiki releases
 
 ---
@@ -878,7 +879,335 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 7: User-Defined Flows
+## Phase 7: Comprehensive Event System (All Git & Agent Hooks)
+
+### Problem
+Phase 5 introduced the flow system with 3 core events (Start, PostChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
+
+**Current limitations:**
+- Only 3 events supported (Start, PostChange, PrepareCommitMessage)
+- Can't hook into pre-commit, post-commit, pre-push, etc.
+- Can't react to agent lifecycle events (SessionStart, SessionEnd, Stop)
+- Can't integrate with Git's full workflow (rebase, merge, checkout)
+- Teams can't build complete CI/CD-like workflows locally
+
+### Solution
+Expand the event system to support all Git client-side hooks and all Claude Code agent hooks. Map them to flow events with consistent naming and context.
+
+### What We Build
+
+**Git Hook Events:**
+```yaml
+# Complete Git client-side hook coverage
+PreCommit:          # pre-commit - before commit message editor
+PrepareCommitMessage: # prepare-commit-msg - modify message before editor
+CommitMessage:      # commit-msg - validate/modify message after editor  
+PostCommit:         # post-commit - after commit completes
+PreRebase:          # pre-rebase - before rebase starts
+PostCheckout:       # post-checkout - after checkout completes
+PostMerge:          # post-merge - after merge completes
+PrePush:            # pre-push - before pushing to remote
+PostRewrite:        # post-rewrite - after commit-rewriting command
+PreMergeCommit:     # pre-merge-commit - before merge commit created
+PreAutoGC:          # pre-auto-gc - before garbage collection
+ReferenceTransaction: # reference-transaction - when refs are updated
+```
+
+**Agent Lifecycle Events:**
+```yaml
+# Claude Code / AI agent hooks
+SessionStart:       # Agent session begins
+SessionEnd:         # Agent session ends
+UserPromptSubmit:   # Before user prompt is sent to agent
+PreToolUse:         # Before agent executes a tool
+PostToolUse:        # After agent executes a tool (current PostChange)
+Notification:       # Agent sends notification
+Stop:               # Agent is stopped/interrupted
+SubagentStart:      # Subagent/task begins
+SubagentStop:       # Subagent/task completes
+PreCompact:         # Before context compaction
+```
+
+**Event Context Variables:**
+
+Each event provides relevant context as `$event.*` variables:
+
+```yaml
+# PrepareCommitMessage event
+$event.commit_msg_file    # Path to COMMIT_EDITMSG
+$event.commit_source      # "message", "template", "merge", "squash", "commit"
+$event.commit_sha         # SHA-1 of commit being amended (if applicable)
+
+# PostCommit event  
+$event.commit_sha         # SHA of newly created commit
+$event.commit_message     # Full commit message
+
+# PrePush event
+$event.remote             # Remote name (e.g., "origin")
+$event.remote_url         # Remote URL
+$event.local_ref          # Local ref being pushed
+$event.remote_ref         # Remote ref being updated
+
+# PostCheckout event
+$event.prev_head          # Previous HEAD ref
+$event.new_head           # New HEAD ref
+$event.checkout_type      # "branch" or "file"
+
+# UserPromptSubmit event
+$event.prompt             # User's prompt text
+$event.context_files      # Files in context
+
+# PreToolUse/PostToolUse events
+$event.tool_name          # Tool being executed
+$event.tool_args          # Tool arguments (JSON)
+$event.file_path          # File being modified (if applicable)
+```
+
+### Example: Complete Pre-Push Workflow
+
+```yaml
+# .aiki/flow.yaml
+name: Complete Development Workflow
+version: 1
+
+# Before commit message editor opens
+PreCommit:
+  - shell: cargo fmt --check
+  - shell: cargo clippy
+  - let: tests = shell("cargo test")
+    on_failure: stop
+
+# Modify commit message before editor
+PrepareCommitMessage:
+  - let: coauthors = self.generate_coauthors
+  - commit_message:
+      append_trailer: $coauthors
+
+# Validate commit message after editor closes  
+CommitMessage:
+  - shell: |
+      if ! grep -q "^[A-Z]" "$event.commit_msg_file"; then
+        echo "Error: Commit message must start with capital letter"
+        exit 1
+      fi
+    on_failure: stop
+
+# After commit succeeds
+PostCommit:
+  - log: "✅ Commit $event.commit_sha created"
+  - shell: echo "$event.commit_message" >> .aiki/commit-log.txt
+
+# Before pushing to remote
+PrePush:
+  - log: "Pushing to $event.remote ($event.remote_url)"
+  - shell: cargo test --release    # Full test suite before push
+  - shell: cargo build --release   # Ensure release builds
+    on_failure: stop
+
+# After merge completes
+PostMerge:
+  - shell: cargo update            # Update dependencies after merge
+  - log: "Merge complete, dependencies updated"
+```
+
+### Example: Agent Lifecycle Integration
+
+```yaml
+# .aiki/flow.yaml
+name: AI Development Workflow
+version: 1
+
+# When agent session starts
+SessionStart:
+  - log: "🤖 AI session starting"
+  - shell: git fetch origin        # Sync with remote
+  - shell: cargo check             # Verify project builds
+
+# Before user prompt is submitted
+UserPromptSubmit:
+  - log: "User prompt: $event.prompt"
+  - shell: echo "$event.prompt" >> .aiki/prompt-history.txt
+
+# Before agent uses a tool
+PreToolUse:
+  - log: "Tool: $event.tool_name on $event.file_path"
+  - shell: cp "$event.file_path" ".aiki/backups/$(basename $event.file_path).bak"
+
+# After agent modifies files (existing PostChange)
+PostToolUse:
+  - let: description = self.build_description
+  - jj: describe -m "$description"
+
+# When agent session ends
+SessionEnd:
+  - log: "🤖 AI session ending"
+  - shell: cargo fmt               # Final format
+  - jj: commit -m "End of AI session"
+```
+
+### Example: Complex Git Workflow
+
+```yaml
+# Handle rebases
+PreRebase:
+  - log: "Starting rebase, backing up current state"
+  - jj: bookmark create backup-$(date +%s)
+
+PostRewrite:
+  - log: "Commits rewritten, updating metadata"
+  - shell: ./scripts/update-change-ids.sh
+
+# Handle checkouts
+PostCheckout:
+  - log: "Switched from $event.prev_head to $event.new_head"
+  - if: $event.checkout_type == "branch"
+    then:
+      - shell: cargo check    # Verify build after branch switch
+```
+
+### Commands Delivered
+
+```bash
+# No new commands - hooks automatically installed
+$ aiki init    # Installs all Git hooks
+
+# Events dispatched automatically by Git
+$ git commit              # Triggers: PreCommit → PrepareCommitMessage → CommitMessage → PostCommit
+$ git push                # Triggers: PrePush
+$ git checkout main       # Triggers: PostCheckout
+$ git merge feature       # Triggers: PreMergeCommit → PostMerge
+$ git rebase main         # Triggers: PreRebase → PostRewrite
+
+# Events dispatched by agent hooks
+# (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd)
+# Automatically triggered by agent lifecycle
+```
+
+### Value Delivered
+- **Complete hook coverage** - Access to full Git and agent lifecycle
+- **Sophisticated workflows** - Build CI/CD-like pipelines locally
+- **Consistent interface** - All hooks use same flow YAML syntax
+- **Event context** - Rich `$event.*` variables for each hook
+- **Backward compatible** - Existing flows continue to work
+- **No configuration needed** - `aiki init` installs all hooks
+
+### Technical Components
+
+| Component | Complexity |
+|-----------|------------|
+| Git hook templates (20+ hooks) | Medium |
+| Event type definitions | Medium |
+| Event context extraction | Medium |
+| Hook → Event mapping | Low |
+| Agent hook integration | Medium |
+| Documentation for all events | High |
+| Event context variable resolution | Low (reuses Phase 5) |
+
+### Implementation Notes
+
+**Git Hook Installation:**
+```bash
+# .git/hooks/pre-commit
+#!/bin/sh
+export AIKI_HOOK_NAME="pre-commit"
+aiki event pre-commit
+
+# .git/hooks/pre-push  
+#!/bin/sh
+export AIKI_HOOK_NAME="pre-push"
+export AIKI_REMOTE="$1"
+export AIKI_REMOTE_URL="$2"
+# Read stdin for ref info
+while read local_ref local_sha remote_ref remote_sha; do
+    export AIKI_LOCAL_REF="$local_ref"
+    export AIKI_REMOTE_REF="$remote_ref"
+done
+aiki event pre-push
+```
+
+**Event Dispatching:**
+```rust
+// cli/src/events.rs
+pub enum AikiEvent {
+    // Existing
+    Start(AikiStartEvent),
+    PostChange(AikiPostChangeEvent),
+    PrepareCommitMessage(AikiPrepareCommitMessageEvent),
+    
+    // New Git events
+    PreCommit(AikiPreCommitEvent),
+    CommitMessage(AikiCommitMessageEvent),
+    PostCommit(AikiPostCommitEvent),
+    PrePush(AikiPrePushEvent),
+    PostCheckout(AikiPostCheckoutEvent),
+    PostMerge(AikiPostMergeEvent),
+    // ... 12 more Git events
+    
+    // New agent events  
+    SessionStart(AikiSessionStartEvent),
+    SessionEnd(AikiSessionEndEvent),
+    UserPromptSubmit(AikiUserPromptSubmitEvent),
+    PreToolUse(AikiPreToolUseEvent),
+    // ... 6 more agent events
+}
+```
+
+**Flow YAML Schema:**
+```yaml
+# cli/src/flows/types.rs
+pub struct Flow {
+    // Existing
+    pub start: Vec<Action>,
+    pub post_change: Vec<Action>,
+    pub prepare_commit_message: Vec<Action>,
+    
+    // New Git hooks
+    pub pre_commit: Vec<Action>,
+    pub commit_message: Vec<Action>,
+    pub post_commit: Vec<Action>,
+    pub pre_push: Vec<Action>,
+    pub post_checkout: Vec<Action>,
+    pub post_merge: Vec<Action>,
+    pub pre_rebase: Vec<Action>,
+    pub post_rewrite: Vec<Action>,
+    pub pre_merge_commit: Vec<Action>,
+    pub pre_auto_gc: Vec<Action>,
+    pub reference_transaction: Vec<Action>,
+    
+    // New agent hooks
+    pub session_start: Vec<Action>,
+    pub session_end: Vec<Action>,
+    pub user_prompt_submit: Vec<Action>,
+    pub pre_tool_use: Vec<Action>,
+    pub post_tool_use: Vec<Action>,
+    pub notification: Vec<Action>,
+    pub stop: Vec<Action>,
+    pub subagent_start: Vec<Action>,
+    pub subagent_stop: Vec<Action>,
+    pub pre_compact: Vec<Action>,
+}
+```
+
+### Success Criteria
+- ✅ All Git client-side hooks supported (20+ hooks)
+- ✅ All Claude Code agent hooks supported (10+ hooks)
+- ✅ Each event provides rich `$event.*` context variables
+- ✅ `aiki init` installs all Git hooks automatically
+- ✅ Existing flows (Start, PostChange, PrepareCommitMessage) continue working
+- ✅ Documentation covers all events with examples
+- ✅ Users can build complete local CI/CD workflows
+- ✅ Agent lifecycle fully integrated with flows
+
+### Why This Enables Future Phases
+- **Phase 8**: User-defined flows can hook into any lifecycle event
+- **Phase 9**: External flows can leverage full event system
+- **Autonomous workflows**: Complete control over entire development lifecycle
+- **Team workflows**: Standardize Git workflows across organization
+- **Quality gates**: Enforce checks at every stage (commit, push, merge, etc.)
+
+---
+
+## Phase 8: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -939,7 +1268,7 @@ PreCommit:
 
 ---
 
-## Phase 8: External Flow Ecosystem
+## Phase 9: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -1231,7 +1560,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 9: Multi-Agent Provenance (Fallback Detection)
+## Phase 10: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -1311,7 +1640,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 10: Local Multi-Agent Coordination
+## Phase 11: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -1343,7 +1672,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 11: PR Review for Non-Aiki Agents
+## Phase 12: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -1366,7 +1695,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 12: Shared JJ Brain & Team Coordination
+## Phase 13: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -1396,7 +1725,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 13: Windsurf Support
+## Phase 14: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -1463,7 +1792,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 14: Enterprise Compliance
+## Phase 15: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -1497,7 +1826,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 15: Native Agent Integration
+## Phase 16: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:
@@ -1526,7 +1855,7 @@ Agent SDK for real-time feedback, intent capture, and active participation in co
 - Trust scoring informs agent behavior (analyze past changes via JJ revsets)
 
 ### Important Note
-**Phases 1-10 deliver full value WITHOUT vendor cooperation.** Phase 11 is an optional enhancement, not a requirement for success.
+**Phases 1-11 deliver full value WITHOUT vendor cooperation.** Phase 12 is an optional enhancement, not a requirement for success.
 
 ---
 
@@ -1543,21 +1872,29 @@ Phase 3 (Hook Management CLI) ← Unified hook management + diagnostics
     ↓
 Phase 4 (Cryptographic Signing) ← Tamper-proof attribution
     ↓
-Phase 5 (Autonomous Review) ← Tests enabled by Phase 1
+Phase 5 (Internal Flow Engine) ← Event-driven workflow system
     ↓
-Phase 6 (Multi-Agent: Fallback Detection)
+Phase 6 (Autonomous Review Flow) ← Built on Phase 5 flows
     ↓
-Phase 7 (Local Multi-Agent Coordination) ← Uses Phase 1+2+6 provenance
+Phase 7 (Complete Event System) ← All Git & agent hooks supported
     ↓
-Phase 8 (PR Review)
+Phase 8 (User-Defined Flows) ← Users write reusable flows
     ↓
-Phase 9 (Shared JJ Brain) ← Team provenance via JJ commit descriptions
+Phase 9 (External Flow Ecosystem) ← WASM functions + bundled binaries
     ↓
-Phase 10 (Windsurf Support) ← Additional editor before enterprise
+Phase 10 (Multi-Agent: Fallback Detection)
     ↓
-Phase 11 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+Phase 11 (Local Multi-Agent Coordination) ← Uses Phase 1+2+10 provenance
     ↓
-Phase 12 (Agent SDK) ← Trust scoring via JJ revsets
+Phase 12 (PR Review)
+    ↓
+Phase 13 (Shared JJ Brain) ← Team provenance via JJ commit descriptions
+    ↓
+Phase 14 (Windsurf Support) ← Additional editor before enterprise
+    ↓
+Phase 15 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+    ↓
+Phase 16 (Agent SDK) ← Trust scoring via JJ revsets
 ```
 
 **Key Insights:** 
