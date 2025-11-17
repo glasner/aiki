@@ -23,7 +23,7 @@ pub struct AikiEvent {
     /// Type of event
     pub event_type: AikiEventType,
     /// Agent that triggered this event (embedded by vendor handler)
-    pub agent: AgentType,
+    pub agent_type: AgentType,
     /// Optional session ID for grouping related events
     pub session_id: Option<String>,
     /// Working directory where event occurred
@@ -37,10 +37,10 @@ pub struct AikiEvent {
 impl AikiEvent {
     /// Create a new event
     #[must_use]
-    pub fn new(event_type: AikiEventType, agent: AgentType, cwd: impl AsRef<Path>) -> Self {
+    pub fn new(event_type: AikiEventType, agent_type: AgentType, cwd: impl AsRef<Path>) -> Self {
         Self {
             event_type,
-            agent,
+            agent_type,
             session_id: None,
             cwd: cwd.as_ref().to_path_buf(),
             timestamp: Utc::now(),

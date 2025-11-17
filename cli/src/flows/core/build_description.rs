@@ -18,7 +18,7 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 /// it into the [aiki]...[/aiki] description block format.
 ///
 /// # Required Event Variables
-/// - `$event.agent` - Agent type (e.g., "ClaudeCode", "Cursor")
+/// - `$event.agent_type` - Agent type (e.g., "ClaudeCode", "Cursor")
 /// - `$event.session_id` - Session identifier for grouping related changes
 /// - `$event.tool_name` - Name of the tool that made the change (e.g., "Edit", "Write")
 ///

@@ -12,7 +12,7 @@ pub fn dispatch(event: AikiEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Dispatching event: {:?} from agent: {:?}",
-            event.event_type, event.agent
+            event.event_type, event.agent_type
         );
     }
 
