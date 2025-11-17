@@ -19,3 +19,12 @@ PostChange:
 
   # Create a new change for the next edit
   - jj: new
+
+# PreCommit: Generate co-author metadata before Git commits
+PreCommit:
+  # Generate co-author lines from staged changes
+  - let: coauthors = self.generate_coauthors
+    on_failure: stop
+
+  # Output co-authors to stdout (captured by Git hook)
+  - shell: echo "$coauthors"

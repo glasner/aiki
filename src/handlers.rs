@@ -60,18 +60,24 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<()> {
 /// Handle pre-commit event (before Git commit)
 ///
 /// Generates AI co-author attributions for the commit message.
-/// Called from Git's prepare-commit-msg hook.
-pub fn handle_pre_commit(_event: AikiPreCommitEvent) -> Result<()> {
+/// Called from Git's prepare-commit-msg hook via `aiki event pre-commit`.
+pub fn handle_pre_commit(event: AikiPreCommitEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Generating co-authors for commit");
     }
 
-    // Currently: aiki authors --format=git --changes=staged
-    // This generates Co-authored-by: lines for AI agents
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
 
-    // TODO: This should call the authors generation logic directly
-    // For now, this is a placeholder that will be called from the git hook
-    // which already has the logic to append co-authors
+    // Build execution state from event
+    let mut state = AikiState::new(event);
+
+    // Set flow name for self.* function resolution
+    state.flow_name = Some("aiki/core".to_string());
+
+    // Execute PreCommit actions from the core flow
+    // The flow will call the native generate_coauthors function
+    FlowExecutor::execute_actions(&core_flow.pre_commit, &mut state)?;
 
     Ok(())
 }

@@ -6,6 +6,7 @@
 pub mod authors;
 pub mod blame;
 pub mod doctor;
+pub mod event;
 pub mod hooks;
 pub mod init;
 pub mod verify;
