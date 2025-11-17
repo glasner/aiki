@@ -1,12 +1,12 @@
-use crate::error::{AikiError, Result};
-use crate::events::AikiEvent;
+use crate::error::Result;
+use crate::events::{AikiEvent, AikiPostChangeEvent, AikiPreCommitEvent, AikiStartEvent};
 use crate::flows::{AikiState, FlowExecutor};
 
 /// Handle session start event
 ///
 /// Currently runs `aiki init --quiet` to ensure repository is initialized.
 /// Future: Session logging, environment validation, user-defined startup hooks.
-pub fn handle_start(event: AikiEvent) -> Result<()> {
+pub fn handle_start(event: AikiStartEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Session started by {:?}", event.agent_type);
     }
@@ -14,8 +14,8 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from event (wrap in enum)
+    let mut state = AikiState::new(AikiEvent::Start(event));
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
@@ -31,30 +31,21 @@ pub fn handle_start(event: AikiEvent) -> Result<()> {
 ///
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
-pub fn handle_post_change(event: AikiEvent) -> Result<()> {
-    // Validate required metadata - fail early with clear errors
-    if event.session_id.is_none() {
-        return Err(AikiError::MissingEventVariable("session_id".to_string()));
-    }
-
-    if event.metadata.get("tool_name").is_none() {
-        return Err(AikiError::MissingEventVariable("tool_name".to_string()));
-    }
+pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<()> {
+    // No validation needed - all required fields are guaranteed by type system
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Recording change by {:?}, session: {}, tool: {}",
-            event.agent_type,
-            event.session_id.as_ref().unwrap(),
-            event.metadata.get("tool_name").unwrap()
+            event.agent_type, event.session_id, event.tool_name
         );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from event (wrap in enum)
+    let mut state = AikiState::new(AikiEvent::PostChange(event));
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
@@ -70,7 +61,7 @@ pub fn handle_post_change(event: AikiEvent) -> Result<()> {
 ///
 /// Generates AI co-author attributions for the commit message.
 /// Called from Git's prepare-commit-msg hook.
-pub fn handle_pre_commit(_event: AikiEvent) -> Result<()> {
+pub fn handle_pre_commit(_event: AikiPreCommitEvent) -> Result<()> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Generating co-authors for commit");
     }
@@ -82,22 +73,5 @@ pub fn handle_pre_commit(_event: AikiEvent) -> Result<()> {
     // For now, this is a placeholder that will be called from the git hook
     // which already has the logic to append co-authors
 
-    Ok(())
-}
-
-/// Handle session stop event
-///
-/// Not yet implemented - no reliable trigger mechanism from editors.
-/// Future: Session cleanup, summary generation, analytics upload.
-pub fn handle_stop(event: AikiEvent) -> Result<()> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] Session stop requested by {:?} (not yet implemented)",
-            event.agent_type
-        );
-    }
-
-    // Not yet implemented - no reliable way to detect session end
-    eprintln!("Warning: stop event not yet implemented");
     Ok(())
 }

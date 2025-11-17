@@ -27,23 +27,30 @@ impl FlowExecutor {
     fn create_resolver(context: &AikiState) -> VariableResolver {
         let mut resolver = VariableResolver::new();
 
-        // Add event metadata variables (only accessible via $event.key)
-        for (key, value) in &context.event.metadata {
-            resolver.add_var(format!("event.{}", key), value.clone());
+        // Add event-specific variables based on event type
+        match &context.event {
+            crate::events::AikiEvent::PostChange(e) => {
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_path".to_string(), e.file_path.clone());
+                resolver.add_var("event.session_id".to_string(), e.session_id.clone());
+            }
+            crate::events::AikiEvent::Start(e) => {
+                if let Some(ref session_id) = e.session_id {
+                    resolver.add_var("event.session_id".to_string(), session_id.clone());
+                }
+            }
+            crate::events::AikiEvent::PreCommit(_) => {
+                // No event-specific variables for PreCommit
+            }
         }
 
         // Add agent type as event.agent_type
-        let agent_str = match context.event.agent_type {
+        let agent_str = match context.event.agent_type() {
             crate::provenance::AgentType::ClaudeCode => "claude-code",
             crate::provenance::AgentType::Cursor => "cursor",
             crate::provenance::AgentType::Unknown => "unknown",
         };
         resolver.add_var("event.agent_type".to_string(), agent_str.to_string());
-
-        // Add session_id if present
-        if let Some(ref session_id) = context.event.session_id {
-            resolver.add_var("event.session_id".to_string(), session_id.clone());
-        }
 
         // Add let variables (accessible via $key without event. prefix)
         for (key, value) in context.iter_variables() {
@@ -533,8 +540,32 @@ fn execute_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiEvent, AikiEventType};
+    use crate::events::{AikiEvent, AikiPostChangeEvent};
     use crate::provenance::AgentType;
+
+    // Helper to create a simple test event
+    fn create_test_event() -> AikiEvent {
+        AikiEvent::PostChange(AikiPostChangeEvent {
+            agent_type: AgentType::ClaudeCode,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            file_path: "/tmp/file.rs".to_string(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    // Helper to create a test event with custom file_path
+    fn create_test_event_with_file(file_path: &str) -> AikiEvent {
+        AikiEvent::PostChange(AikiPostChangeEvent {
+            agent_type: AgentType::ClaudeCode,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            file_path: file_path.to_string(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        })
+    }
 
     #[test]
     fn test_parse_timeout_seconds() {
@@ -568,8 +599,7 @@ mod tests {
             alias: None,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event());
 
         let result = FlowExecutor::execute_log(&action, &context).unwrap();
         assert!(result.success);
@@ -582,9 +612,7 @@ mod tests {
             alias: None,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = FlowExecutor::execute_log(&action, &context).unwrap();
         assert!(result.success);
@@ -599,8 +627,7 @@ mod tests {
             alias: None,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event());
 
         let result = FlowExecutor::execute_shell(&action, &context).unwrap();
         assert!(result.success);
@@ -616,9 +643,7 @@ mod tests {
             alias: None,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = FlowExecutor::execute_shell(&action, &context).unwrap();
         assert!(result.success);
@@ -644,8 +669,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 3);
@@ -667,8 +691,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event());
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -691,7 +714,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+        let event = create_test_event();
         let mut context = AikiState::new(event);
 
         let result = FlowExecutor::execute_actions(&actions, &mut context);
@@ -724,9 +747,7 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
@@ -740,7 +761,7 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+        let event = create_test_event();
         let context = AikiState::new(event);
 
         let result = FlowExecutor::execute_let(&action, &context);
@@ -768,7 +789,7 @@ mod tests {
                 on_failure: FailureMode::Continue,
             };
 
-            let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+            let event = create_test_event();
             let context = AikiState::new(event);
 
             let result = FlowExecutor::execute_let(&action, &context);
@@ -788,9 +809,7 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let context = AikiState::new(event);
+        let context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
@@ -810,9 +829,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -831,7 +848,7 @@ mod tests {
             alias: Some("result".to_string()),
         })];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+        let event = create_test_event();
         let mut context = AikiState::new(event);
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
@@ -857,9 +874,7 @@ mod tests {
             on_failure: FailureMode::Continue,
         })];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -879,7 +894,7 @@ mod tests {
             alias: None, // No alias
         })];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+        let event = create_test_event();
         let mut context = AikiState::new(event);
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
@@ -893,23 +908,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "should be set by handler")]
-    fn test_let_with_missing_context_vars() {
-        // This test verifies that calling build_description without required
-        // event variables causes a panic. Event variables should be validated
-        // at the handler level before flow execution, so their absence here
-        // indicates a programming error.
+    fn test_let_with_context_vars() {
+        // This test verifies that build_description works with typed events.
+        // The type system now guarantees that PostChange events have all required fields.
         let action = LetAction {
-            let_: "description = aiki/provenance.build_description".to_string(),
+            let_: "description = aiki/core.build_description".to_string(),
             on_failure: FailureMode::Fail,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
-        let context = AikiState::new(event);
-        // Deliberately don't set required context vars (session_id and tool_name)
+        let event = create_test_event();
+        let mut context = AikiState::new(event);
+        context.flow_name = Some("aiki/core".to_string());
 
-        // This should panic because event variables are missing
-        let _ = FlowExecutor::execute_let(&action, &context);
+        // This should succeed because PostChangeEvent has session_id and tool_name
+        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        assert!(result.success);
+        assert!(result.stdout.contains("[aiki]"));
     }
 
     #[test]
@@ -917,7 +931,7 @@ mod tests {
         // Verify aliasing behavior creates copies
         let actions = vec![
             Action::Let(LetAction {
-                let_: "original = $event.value".to_string(),
+                let_: "original = $event.file_path".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Let(LetAction {
@@ -926,24 +940,28 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("value", "initial");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Both should have the same value
         assert_eq!(
             context.get_variable("original"),
-            Some(&"initial".to_string())
+            Some(&"/tmp/file.rs".to_string())
         );
-        assert_eq!(context.get_variable("copy"), Some(&"initial".to_string()));
+        assert_eq!(
+            context.get_variable("copy"),
+            Some(&"/tmp/file.rs".to_string())
+        );
 
         // Modify original
         context.set_variable("original".to_string(), "modified".to_string());
 
         // Copy should still have original value (it's a copy, not a reference)
-        assert_eq!(context.get_variable("copy"), Some(&"initial".to_string()));
+        assert_eq!(
+            context.get_variable("copy"),
+            Some(&"/tmp/file.rs".to_string())
+        );
         assert_eq!(
             context.get_variable("original"),
             Some(&"modified".to_string())
@@ -955,24 +973,22 @@ mod tests {
         // Verify that reassigning variables works correctly
         let actions = vec![
             Action::Let(LetAction {
-                let_: "x = $event.first".to_string(),
+                let_: "x = $event.tool_name".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Let(LetAction {
-                let_: "x = $event.second".to_string(),
+                let_: "x = $event.session_id".to_string(),
                 on_failure: FailureMode::Continue,
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("first", "foo")
-            .with_metadata("second", "bar");
-        let mut context = AikiState::new(event);
+        // PostChange event has tool_name and session_id fields
+        let mut context = AikiState::new(create_test_event());
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Second assignment should overwrite first
-        assert_eq!(context.get_variable("x"), Some(&"bar".to_string()));
+        assert_eq!(context.get_variable("x"), Some(&"test-session".to_string()));
     }
 
     #[test]
@@ -988,9 +1004,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
         FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
@@ -1010,9 +1024,7 @@ mod tests {
             on_failure: FailureMode::Fail,
         };
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_session_id("test-session")
-            .with_metadata("tool_name", "Edit");
+        let event = create_test_event();
         let mut context = AikiState::new(event);
         context.flow_name = Some("aiki/core".to_string());
 
@@ -1029,7 +1041,7 @@ mod tests {
         };
 
         // No flow_name set
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp");
+        let event = create_test_event();
         let context = AikiState::new(event);
 
         let result = FlowExecutor::execute_let(&action, &context);
@@ -1055,9 +1067,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);
@@ -1082,8 +1092,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("message", "@");
+        let event = create_test_event();
         let mut context = AikiState::new(event);
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
@@ -1106,9 +1115,7 @@ mod tests {
             }),
         ];
 
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("file_path", "test.rs");
-        let mut context = AikiState::new(event);
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
         let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert_eq!(results.len(), 2);

@@ -35,18 +35,11 @@ use crate::provenance::{AgentInfo, AttributionConfidence, DetectionMethod, Prove
 ///   - jj: describe -m "$description"
 /// ```
 pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
-    // Event variables are validated at the handler level before flow execution
-    let agent_type = aiki.agent_type();
-    let session_id = aiki
-        .event
-        .session_id
-        .as_ref()
-        .expect("session_id should be set by handler");
-    let tool_name = aiki
-        .event
-        .metadata
-        .get("tool_name")
-        .expect("tool_name should be set by handler");
+    // Extract fields from PostChange event (type system guarantees they exist)
+    let (agent_type, session_id, tool_name) = match &aiki.event {
+        crate::events::AikiEvent::PostChange(e) => (e.agent_type, &e.session_id, &e.tool_name),
+        _ => panic!("build_description should only be called for PostChange events"),
+    };
 
     // Build provenance record
     let provenance = ProvenanceRecord {
@@ -79,14 +72,19 @@ pub fn build_description(aiki: &AikiState) -> Result<ActionResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiEvent, AikiEventType};
+    use crate::events::{AikiEvent, AikiPostChangeEvent};
     use crate::provenance::AgentType;
 
     #[test]
     fn test_build_description_with_claude_code() {
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_session_id("test-session-123")
-            .with_metadata("tool_name", "Edit");
+        let event = AikiEvent::PostChange(AikiPostChangeEvent {
+            agent_type: AgentType::ClaudeCode,
+            session_id: "test-session-123".to_string(),
+            tool_name: "Edit".to_string(),
+            file_path: "/tmp/file.rs".to_string(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        });
         let context = AikiState::new(event);
 
         let result = build_description(&context).unwrap();
@@ -103,17 +101,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "session_id should be set by handler")]
+    #[should_panic(expected = "build_description should only be called for PostChange events")]
     fn test_build_description_missing_session_id() {
-        // This test verifies that missing event variables cause a panic
-        // since they should always be validated at the handler level.
-        // A panic here indicates a programming error, not a user error.
-        let event = AikiEvent::new(AikiEventType::PostChange, AgentType::ClaudeCode, "/tmp")
-            .with_metadata("tool_name", "Edit");
-        // Note: session_id is intentionally missing
+        // This test verifies that build_description panics when called with wrong event type
+        // Type system now guarantees PostChange events have session_id, so we test with Start
+        use crate::events::AikiStartEvent;
+
+        let event = AikiEvent::Start(AikiStartEvent {
+            agent_type: AgentType::ClaudeCode,
+            session_id: None,
+            cwd: std::path::PathBuf::from("/tmp"),
+            timestamp: chrono::Utc::now(),
+        });
         let context = AikiState::new(event);
 
-        // This should panic because session_id is missing
+        // This should panic because Start event was passed instead of PostChange
         let _ = build_description(&context);
     }
 }
