@@ -294,9 +294,9 @@ impl FlowExecutor {
     ) -> Result<String> {
         let mut result = content.to_string();
 
-        // Prepend (before subject line)
-        if let Some(ref prepend) = op.prepend {
-            let text = resolver.resolve(prepend);
+        // Prepend to subject line (before first line)
+        if let Some(ref prepend_subject) = op.prepend_subject {
+            let text = resolver.resolve(prepend_subject);
             if !text.is_empty() {
                 result = format!("{}{}", text, result);
             }
@@ -318,9 +318,9 @@ impl FlowExecutor {
             }
         }
 
-        // Append to end (after everything)
-        if let Some(ref append) = op.append {
-            let text = resolver.resolve(append);
+        // Append footer (after everything)
+        if let Some(ref append_footer) = op.append_footer {
+            let text = resolver.resolve(append_footer);
             if !text.is_empty() {
                 // Ensure blank line before appending
                 if !result.ends_with('\n') {
