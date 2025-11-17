@@ -7,7 +7,7 @@ use super::types::Flow;
 ///
 /// The core flow is embedded in the binary and handles both Start and PostChange events.
 pub fn load_core_flow() -> Result<Flow> {
-    let core_yaml = include_str!("../../flows/core.yaml");
+    let core_yaml = include_str!("core/core.yaml");
     FlowParser::parse_str(core_yaml)
 }
 
