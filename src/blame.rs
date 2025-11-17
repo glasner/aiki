@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Context;
 use jj_lib::annotate::FileAnnotator;
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{Repo, StoreFactories};
@@ -7,6 +7,11 @@ use jj_lib::revset::RevsetExpression;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::error::AikiError;
+
+// For blame.rs, keep using anyhow::Result since it interacts heavily with jj-lib
+type Result<T> = anyhow::Result<T>;
 
 use crate::jj::JJWorkspace;
 use crate::provenance::{AgentType, AttributionConfidence, ProvenanceRecord};
@@ -41,14 +46,16 @@ pub struct BlameContext {
 
 impl BlameContext {
     /// Create a new blame context by loading workspace and repo once
-    pub fn new(repo_path: PathBuf) -> Result<Self> {
+    #[must_use]
+    pub fn new(repo_path: impl AsRef<Path>) -> Result<Self> {
+        let repo_path = repo_path.as_ref();
         let settings = JJWorkspace::create_user_settings()?;
         let store_factories = StoreFactories::default();
         let working_copy_factories = default_working_copy_factories();
 
         let workspace = Workspace::load(
             &settings,
-            &repo_path,
+            repo_path,
             &store_factories,
             &working_copy_factories,
         )
@@ -99,7 +106,7 @@ impl BlameContext {
             // Try parent
             let parent_ids = wc_commit.parent_ids();
             if parent_ids.is_empty() {
-                anyhow::bail!("File not found in working copy and no parents available");
+                return Err(AikiError::FileNotFoundNoParents.into());
             }
 
             let parent_commit = self.repo.store().get_commit(&parent_ids[0])?;
@@ -107,7 +114,7 @@ impl BlameContext {
             let parent_file_value = parent_tree.path_value(repo_path)?;
 
             if !parent_file_value.is_present() {
-                anyhow::bail!("File not found in working copy or its parent");
+                return Err(AikiError::FileNotFoundInParent.into());
             }
             parent_commit
         };
@@ -124,7 +131,8 @@ impl BlameContext {
         let file_annotation = file_annotator.to_annotation();
 
         // Cache for commit descriptions to avoid repeated lookups
-        let mut commit_cache: HashMap<Vec<u8>, (String, Option<ProvenanceRecord>)> = HashMap::new();
+        // Use String (hex) as key to avoid Vec allocation on every lookup
+        let mut commit_cache: HashMap<String, (String, Option<ProvenanceRecord>)> = HashMap::new();
 
         let mut attributions = Vec::new();
         let mut line_num = 1;
@@ -146,9 +154,11 @@ impl BlameContext {
                 }
             }
 
+            // Get commit ID as hex string for cache key
+            let commit_id_hex = commit_id.hex();
+
             // Check cache first
-            let (change_id_hex, provenance) = if let Some(cached) =
-                commit_cache.get(commit_id.as_bytes())
+            let (change_id_hex, provenance) = if let Some(cached) = commit_cache.get(&commit_id_hex)
             {
                 cached.clone()
             } else {
@@ -158,9 +168,9 @@ impl BlameContext {
                 let description = commit.description();
                 let provenance = ProvenanceRecord::from_description(description).unwrap_or(None);
 
-                // Cache it
+                // Cache it (clone commit_id_hex for cache key)
                 commit_cache.insert(
-                    commit_id.as_bytes().to_vec(),
+                    commit_id_hex.clone(),
                     (change_id_hex.clone(), provenance.clone()),
                 );
 
@@ -172,7 +182,7 @@ impl BlameContext {
                     line_number: line_num,
                     line_text: line_text.to_string(),
                     change_id: change_id_hex,
-                    commit_id: commit_id.hex(),
+                    commit_id: commit_id_hex.clone(), // Reuse cached hex string
                     agent_type: prov.agent.agent_type,
                     confidence: Some(prov.agent.confidence),
                     session_id: Some(prov.session_id),
@@ -182,7 +192,7 @@ impl BlameContext {
                     line_number: line_num,
                     line_text: line_text.to_string(),
                     change_id: change_id_hex,
-                    commit_id: commit_id.hex(),
+                    commit_id: commit_id_hex, // Move (last use)
                     agent_type: AgentType::Unknown,
                     confidence: None,
                     session_id: None,
@@ -199,8 +209,11 @@ impl BlameContext {
 }
 
 impl BlameCommand {
-    pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+    #[must_use]
+    pub fn new(repo_path: impl AsRef<Path>) -> Self {
+        Self {
+            repo_path: repo_path.as_ref().to_path_buf(),
+        }
     }
 
     /// Get line-by-line attribution for a file

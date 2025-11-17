@@ -1,65 +1,9 @@
 use jj_lib::repo::{Repo, StoreFactories};
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-/// Wait for background thread to update change description (using jj-lib, not jj binary)
-#[allow(dead_code)]
-fn wait_for_description_update_jjlib(
-    repo_path: &Path,
-    expected_content: &str,
-    timeout: Duration,
-) -> bool {
-    let start = Instant::now();
-
-    while start.elapsed() < timeout {
-        // Try to load the workspace and check the description
-        let settings = {
-            use jj_lib::config::StackedConfig;
-            use jj_lib::settings::UserSettings;
-            let config = StackedConfig::with_defaults();
-            match UserSettings::from_config(config) {
-                Ok(s) => s,
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-            }
-        };
-
-        {
-            let store_factories = StoreFactories::default();
-            let working_copy_factories = default_working_copy_factories();
-
-            if let Ok(workspace) = Workspace::load(
-                &settings,
-                repo_path,
-                &store_factories,
-                &working_copy_factories,
-            ) {
-                if let Ok(repo) = workspace.repo_loader().load_at_head() {
-                    let workspace_id = workspace.workspace_name();
-                    if let Some(wc_commit_id) = repo.view().get_wc_commit_id(workspace_id) {
-                        if let Ok(commit) = repo.store().get_commit(wc_commit_id) {
-                            let description = commit.description();
-                            if description.contains(expected_content) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Poll every 100ms
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    false
-}
 
 /// Test that records a change and then runs blame to verify attribution
 #[test]

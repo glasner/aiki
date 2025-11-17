@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config;
@@ -19,8 +19,11 @@ pub enum SetupMode {
 }
 
 impl SignSetupWizard {
-    pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+    #[must_use]
+    pub fn new(repo_path: impl AsRef<Path>) -> Self {
+        Self {
+            repo_path: repo_path.as_ref().to_path_buf(),
+        }
     }
 
     /// Main entry point for the wizard

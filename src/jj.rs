@@ -26,17 +26,6 @@ impl JJWorkspace {
             .context("Failed to create user settings for JJ operations")
     }
 
-    /// Initialize JJ on top of an existing Git repository
-    /// This creates a .jj directory and configures it to use the existing .git directory
-    ///
-    /// DEPRECATED: Use init_with_git_dir() instead to properly handle worktrees and submodules
-    #[deprecated(since = "0.1.0", note = "use `init_with_git_dir` instead")]
-    #[allow(dead_code)]
-    pub fn init_on_existing_git(&self) -> Result<()> {
-        let git_repo_path = self.workspace_root.join(".git");
-        self.init_with_git_dir(&git_repo_path)
-    }
-
     /// Initialize JJ with a specific Git directory path
     ///
     /// This handles both normal Git repositories (where .git is a directory)

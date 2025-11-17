@@ -8,9 +8,6 @@ Start:
   - shell: aiki init --quiet
     on_failure: fail
 
-  # Log that the repository is ready
-  - log: "Repository ready for AI-assisted development"
-
 # PostChange: Record provenance metadata after every AI edit
 PostChange:
   # Build the provenance description using self reference
@@ -22,6 +19,3 @@ PostChange:
 
   # Create a new change for the next edit
   - jj: new
-
-  # Log success (optional, for debugging)
-  - log: "Recorded change by $event.agent (session: $event.session_id)"

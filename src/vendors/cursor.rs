@@ -11,7 +11,6 @@ use crate::provenance::AgentType;
 /// This matches the JSON that Cursor sends to its hooks.
 /// Note: Cursor uses camelCase, different from Claude Code's snake_case.
 #[derive(Deserialize, Debug)]
-#[allow(dead_code)]
 struct CursorPayload {
     #[serde(rename = "sessionId")]
     session_id: String,

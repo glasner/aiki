@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use super::types::Flow;
 
@@ -10,15 +9,6 @@ impl FlowParser {
     /// Parse a flow from a YAML string
     pub fn parse_str(yaml: &str) -> Result<Flow> {
         serde_yaml::from_str(yaml).context("Failed to parse flow YAML")
-    }
-
-    /// Parse a flow from a file
-    pub fn parse_file(path: &Path) -> Result<Flow> {
-        let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read flow file: {}", path.display()))?;
-
-        Self::parse_str(&contents)
-            .with_context(|| format!("Failed to parse flow file: {}", path.display()))
     }
 }
 
