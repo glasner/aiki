@@ -41,6 +41,8 @@ struct ToolInput {
 /// 2. Translates vendor event name to Aiki event type
 /// 3. Creates a standardized AikiEvent with agent type embedded
 /// 4. Dispatches to the event bus
+/// 5. Translates the HookResponse to Claude Code JSON format
+/// 6. Outputs JSON to stdout and exits with appropriate code
 ///
 /// # Arguments
 /// * `event_name` - Vendor event name from CLI flag (e.g., "SessionStart", "PostToolUse")
@@ -58,7 +60,7 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Create standardized event with embedded agent type
     let event = match event_name {
-        "SessionStart" => AikiEvent::Start(AikiStartEvent {
+        "SessionStart" => AikiEvent::SessionStart(AikiStartEvent {
             agent_type: AgentType::ClaudeCode,
             session_id: Some(payload.session_id),
             cwd: PathBuf::from(&payload.cwd),
@@ -88,8 +90,18 @@ pub fn handle(event_name: &str) -> Result<()> {
         }
     };
 
-    // Dispatch to event bus
-    event_bus::dispatch(event)?;
+    // Dispatch to event bus and get generic response
+    let response = event_bus::dispatch(event)?;
 
-    Ok(())
+    // Translate to Claude Code JSON format
+    let (json_output, exit_code) =
+        super::translate_response(response, super::EditorType::ClaudeCode, event_name);
+
+    // Output JSON if present
+    if let Some(json) = json_output {
+        println!("{}", json);
+    }
+
+    // Exit with appropriate code
+    std::process::exit(exit_code);
 }

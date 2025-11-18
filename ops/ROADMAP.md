@@ -738,6 +738,101 @@ PostChange:
 
 ---
 
+## Phase 5.X: Event System Hardening with Automatic Response Translation
+
+### Problem
+Current event system has several gaps:
+- Inconsistent naming for agent events (before/after vs pre/post)
+- Handlers return generic `Result<()>` with no rich feedback capability
+- Both Claude Code and Cursor support JSON responses but in different formats
+- Flows/handlers shouldn't need to know about editor-specific response formats
+- Need automatic translation layer between generic responses and editor-specific JSON
+
+### Solution
+Standardize agent event naming, add generic response system, implement automatic translation layer between generic responses and editor-specific JSON formats.
+
+**Key Design Principle:** Handlers and flows return generic, editor-agnostic responses. The event dispatcher automatically translates them to editor-specific JSON formats.
+
+### What We Build
+
+**1. Event Naming Standardization**
+- Rename `Start` → `SessionStart` (agent event only)
+- Keep `PostChange` as-is (already uses Post prefix)
+- Keep `PrepareCommitMessage` unchanged (Git hook name)
+- Update flow field: `start` → `session_start`
+
+**2. Generic Response System** (`HookResponse` in `handlers.rs`)
+- `success()` - Simple success response
+- `success_with_message()` - Success with user-visible message
+- `success_with_metadata()` - Success with key-value metadata
+- `failure()` - Failure with user and optional agent messages
+- Builder methods: `with_metadata()`, `with_agent_message()`
+
+**3. Automatic Translation Layer** (in `commands/event.rs`)
+- Detect editor type (Claude Code, Cursor, Unknown)
+- Translate generic `HookResponse` to editor-specific JSON
+- Output JSON to stdout, exit with appropriate code
+
+### Architecture Flow
+```
+Handler → HookResponse (generic) 
+  ↓
+Translation Layer (detect editor type)
+  ↓
+Editor-Specific JSON + Exit Code
+```
+
+### Response Translation Examples
+
+| Generic Response | Claude Code JSON | Cursor JSON |
+|-----------------|------------------|-------------|
+| `success()` | *(no JSON, exit 0)* | *(no JSON, exit 0)* |
+| `success_with_message("✅ Done")` | `{"userMessage": "✅ Done"}` | `{"user_message": "✅ Done"}` |
+| `failure("Error", Some("Context"))` | `{"userMessage": "Error", "agentMessage": "Context"}` | `{"user_message": "Error", "agent_message": "Context"}` |
+| `success().with_metadata([("k","v")])` | `{"metadata": [["k","v"]]}` | `{"metadata": {"k":"v"}}` |
+
+### Value Delivered
+- **Separation of concerns** - Handlers focus on logic, not output format
+- **Easy to add editors** - Just add new translation function
+- **Testing** - Test handlers with generic responses, test translations separately
+- **Maintainability** - Change editor format without touching handlers
+- **Future-proof** - Add new response fields without breaking handlers
+
+### Technical Components
+| Component | Complexity | Status |
+|-----------|------------|--------|
+| HookResponse struct in handlers.rs | Low | ✅ Complete |
+| Event naming standardization | Low | ✅ Complete |
+| Translation layer (detect + translate) | Medium | ✅ Complete |
+| Handler response updates | Low | ✅ Complete |
+| Event bus return type change | Low | ✅ Complete |
+| Flow type updates | Low | ✅ Complete |
+
+### Success Criteria
+- ✅ Agent events use Pre/Post naming (`SessionStart`, `PostChange`)
+- ✅ Git hooks keep official names (`PrepareCommitMessage` unchanged)
+- ✅ `HookResponse` defined in `handlers.rs`
+- ✅ Handlers return generic `HookResponse` (no editor knowledge)
+- ✅ Automatic translation to Claude Code JSON format
+- ✅ Automatic translation to Cursor JSON format
+- ✅ User messages shown in editor UI
+- ✅ Agent messages provide context to AI
+- ✅ Metadata properly formatted per editor
+- ✅ Backward compatible (exit code fallback when no messages)
+- ✅ All tests passing
+
+### Files Modified
+1. `cli/src/handlers.rs` - Added `HookResponse` struct, updated handlers
+2. `cli/src/events.rs` - Renamed `Start` → `SessionStart`
+3. `cli/src/commands/event.rs` - Added translation layer
+4. `cli/src/event_bus.rs` - Changed return type to `Result<HookResponse>`
+5. `cli/src/flows/types.rs` - Renamed `start` → `session_start`
+6. `cli/src/flows/core/flow.yaml` - Updated `Start:` → `SessionStart:`
+
+**Status:** ✅ Complete
+
+---
+
 ## Phase 6: Autonomous Review Flow
 
 ### Problem

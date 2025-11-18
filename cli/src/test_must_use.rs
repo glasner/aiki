@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[test]
 fn test_must_use_warning_compilation() {
     // Test that event construction works
-    let _event = AikiEvent::Start(AikiStartEvent {
+    let _event = AikiEvent::SessionStart(AikiStartEvent {
         agent_type: AgentType::ClaudeCode,
         session_id: Some("session-123".to_string()),
         cwd: PathBuf::from("/tmp"),
@@ -21,7 +21,7 @@ fn test_impl_asref_path_ergonomics() {
     // Test that events can be constructed with various path types
 
     // Using &str
-    let _event1 = AikiEvent::Start(AikiStartEvent {
+    let _event1 = AikiEvent::SessionStart(AikiStartEvent {
         agent_type: AgentType::ClaudeCode,
         session_id: None,
         cwd: PathBuf::from("/tmp"),
@@ -40,7 +40,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using &String
     let s = String::from("/tmp");
-    let _event3 = AikiEvent::Start(AikiStartEvent {
+    let _event3 = AikiEvent::SessionStart(AikiStartEvent {
         agent_type: AgentType::Cursor,
         session_id: None,
         cwd: PathBuf::from(&s),
@@ -48,7 +48,7 @@ fn test_impl_asref_path_ergonomics() {
     });
 
     // Using PathBuf
-    let _event4 = AikiEvent::Start(AikiStartEvent {
+    let _event4 = AikiEvent::SessionStart(AikiStartEvent {
         agent_type: AgentType::ClaudeCode,
         session_id: None,
         cwd: PathBuf::from("/tmp"),
@@ -67,7 +67,7 @@ fn test_impl_asref_path_ergonomics() {
     });
 
     // Using &Path
-    let _event6 = AikiEvent::Start(AikiStartEvent {
+    let _event6 = AikiEvent::SessionStart(AikiStartEvent {
         agent_type: AgentType::Cursor,
         session_id: None,
         cwd: pb.as_path().to_path_buf(),

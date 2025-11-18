@@ -22,9 +22,9 @@ pub struct Flow {
     #[serde(rename = "PrepareCommitMessage", default)]
     pub prepare_commit_message: Vec<Action>,
 
-    /// Start event handler
-    #[serde(rename = "Start", default)]
-    pub start: Vec<Action>,
+    /// SessionStart event handler
+    #[serde(rename = "SessionStart", default)]
+    pub session_start: Vec<Action>,
 
     /// Stop event handler
     #[serde(rename = "Stop", default)]
@@ -140,8 +140,10 @@ pub struct CommitMessageOp {
 pub enum FailureMode {
     /// Continue to next action (default)
     Continue,
-    /// Stop flow execution and return error
+    /// Stop flow execution (silent, no error to editor)
     Stop,
+    /// Stop flow and block editor operation (exit 2)
+    Block,
 }
 
 fn default_on_failure() -> FailureMode {

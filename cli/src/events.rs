@@ -38,7 +38,7 @@ pub struct AikiPrepareCommitMessageEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AikiEvent {
     /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
-    Start(AikiStartEvent),
+    SessionStart(AikiStartEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
     PostChange(AikiPostChangeEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
@@ -50,7 +50,7 @@ impl AikiEvent {
     #[must_use]
     pub fn cwd(&self) -> &Path {
         match self {
-            Self::Start(e) => &e.cwd,
+            Self::SessionStart(e) => &e.cwd,
             Self::PostChange(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
         }
@@ -60,7 +60,7 @@ impl AikiEvent {
     #[must_use]
     pub fn agent_type(&self) -> AgentType {
         match self {
-            Self::Start(e) => e.agent_type,
+            Self::SessionStart(e) => e.agent_type,
             Self::PostChange(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
         }
@@ -70,7 +70,7 @@ impl AikiEvent {
     #[must_use]
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
-            Self::Start(e) => e.timestamp,
+            Self::SessionStart(e) => e.timestamp,
             Self::PostChange(e) => e.timestamp,
             Self::PrepareCommitMessage(e) => e.timestamp,
         }
@@ -80,7 +80,7 @@ impl AikiEvent {
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Start(e) => e.session_id.as_deref(),
+            Self::SessionStart(e) => e.session_id.as_deref(),
             Self::PostChange(e) => Some(&e.session_id),
             Self::PrepareCommitMessage(_) => None,
         }
@@ -90,7 +90,7 @@ impl AikiEvent {
 // Implement Into<AikiEvent> for each event type to enable ergonomic construction
 impl From<AikiStartEvent> for AikiEvent {
     fn from(event: AikiStartEvent) -> Self {
-        AikiEvent::Start(event)
+        AikiEvent::SessionStart(event)
     }
 }
 
