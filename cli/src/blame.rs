@@ -261,12 +261,15 @@ impl BlameCommand {
 
             // Get signature indicator if verify is enabled
             let sig_indicator = if verify {
-                match signature_cache.get(&attr.change_id) {
-                    Some(verify::SignatureStatus::Good) => "✓ ",
-                    Some(verify::SignatureStatus::Bad) => "✗ ",
-                    Some(verify::SignatureStatus::Unknown) => "? ",
-                    Some(verify::SignatureStatus::Unsigned) | None => "⚠ ",
-                }
+                signature_cache
+                    .get(&attr.change_id)
+                    .map(|status| match status {
+                        verify::SignatureStatus::Good => "✓ ",
+                        verify::SignatureStatus::Bad => "✗ ",
+                        verify::SignatureStatus::Unknown => "? ",
+                        verify::SignatureStatus::Unsigned => "⚠ ",
+                    })
+                    .unwrap_or("⚠ ")
             } else {
                 ""
             };

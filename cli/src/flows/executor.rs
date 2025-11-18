@@ -90,8 +90,7 @@ impl FlowExecutor {
     }
     /// Execute a list of actions sequentially
     pub fn execute_actions(actions: &[Action], context: &mut AikiState) -> Result<FlowResult> {
-        let mut had_continue_failure = false;
-        let mut continue_failure_msg = String::new();
+        let mut continue_failure_errors = Vec::new();
 
         for action in actions {
             let result = Self::execute_action(action, context)?;
@@ -120,11 +119,7 @@ impl FlowExecutor {
                             "Action failed".to_string()
                         };
                         eprintln!("[aiki] Action failed but continuing: {}", error_msg);
-                        had_continue_failure = true;
-                        if !continue_failure_msg.is_empty() {
-                            continue_failure_msg.push_str("; ");
-                        }
-                        continue_failure_msg.push_str(&error_msg);
+                        continue_failure_errors.push(error_msg);
                     }
                     FailureMode::Stop => {
                         // Stop flow silently
@@ -149,10 +144,12 @@ impl FlowExecutor {
         }
 
         // All actions completed
-        if had_continue_failure {
-            Ok(FlowResult::FailedContinue(continue_failure_msg))
-        } else {
+        if continue_failure_errors.is_empty() {
             Ok(FlowResult::Success)
+        } else {
+            Ok(FlowResult::FailedContinue(
+                continue_failure_errors.join("; "),
+            ))
         }
     }
 
