@@ -100,7 +100,7 @@ impl AuthorsCommand {
 
                 let author = Author {
                     name: format_agent_name(&attr.agent_type),
-                    email: format_agent_email(&attr.agent_type),
+                    email: attr.agent_type.email().to_string(),
                     agent_type: attr.agent_type.clone(),
                 };
 
@@ -177,7 +177,7 @@ impl AuthorsCommand {
 
                 let author = Author {
                     name: format_agent_name(&attr.agent_type),
-                    email: format_agent_email(&attr.agent_type),
+                    email: attr.agent_type.email().to_string(),
                     agent_type: attr.agent_type.clone(),
                 };
 
@@ -316,15 +316,6 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     }
 }
 
-/// Format agent type as email address
-fn format_agent_email(agent: &AgentType) -> String {
-    match agent {
-        AgentType::ClaudeCode => "claude-code@anthropic.ai".to_string(),
-        AgentType::Cursor => "cursor@cursor.sh".to_string(),
-        AgentType::Unknown => "unknown@aiki.dev".to_string(),
-    }
-}
-
 /// Format agent type as display name
 fn format_agent_name(agent: &AgentType) -> String {
     match agent {
@@ -382,11 +373,8 @@ index abc123..def456 100644
 
     #[test]
     fn test_format_agent_email() {
-        assert_eq!(
-            format_agent_email(&AgentType::ClaudeCode),
-            "claude-code@anthropic.ai"
-        );
-        assert_eq!(format_agent_email(&AgentType::Cursor), "cursor@cursor.sh");
+        assert_eq!(AgentType::ClaudeCode.email(), "claude-code@anthropic.ai");
+        assert_eq!(AgentType::Cursor.email(), "cursor@cursor.sh");
     }
 
     #[test]
