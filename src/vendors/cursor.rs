@@ -1,9 +1,11 @@
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
+use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 
 /// Cursor hook payload structure
@@ -77,8 +79,7 @@ pub fn handle(event_name: &str) -> Result<()> {
     let response = event_bus::dispatch(event)?;
 
     // Translate to Cursor JSON format
-    let (json_output, exit_code) =
-        super::translate_response(response, super::EditorType::Cursor, event_name);
+    let (json_output, exit_code) = translate_response(response);
 
     // Output JSON if present
     if let Some(json) = json_output {
@@ -87,4 +88,65 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Exit with appropriate code
     std::process::exit(exit_code);
+}
+
+/// Translate HookResponse to Cursor JSON format
+///
+/// Cursor uses a simple format with user_message and agent_message fields.
+fn translate_response(response: HookResponse) -> (Option<String>, i32) {
+    let exit_code = response
+        .exit_code
+        .unwrap_or(if response.success { 0 } else { 1 });
+
+    match exit_code {
+        2 => {
+            // Blocking error (exit 2)
+            let mut json = Map::new();
+
+            if let Some(msg) = response.user_message {
+                json.insert("user_message".to_string(), json!(msg));
+            }
+
+            if let Some(agent_msg) = response.agent_message {
+                json.insert("agent_message".to_string(), json!(agent_msg));
+            }
+
+            (Some(serde_json::to_string(&json).unwrap()), 2)
+        }
+        0 => {
+            // Success or non-blocking
+            let mut json = Map::new();
+
+            if let Some(msg) = response.user_message {
+                json.insert("user_message".to_string(), json!(msg));
+            }
+
+            if let Some(agent_msg) = response.agent_message {
+                json.insert("agent_message".to_string(), json!(agent_msg));
+            }
+
+            // Metadata for all events
+            if !response.metadata.is_empty() {
+                let metadata: Map<String, Value> = response
+                    .metadata
+                    .into_iter()
+                    .map(|(k, v)| (k, json!(v)))
+                    .collect();
+                json.insert("metadata".to_string(), json!(metadata));
+            }
+
+            if json.is_empty() {
+                (None, 0)
+            } else {
+                (Some(serde_json::to_string(&json).unwrap()), 0)
+            }
+        }
+        _ => {
+            // Exit 1 or other: stderr fallback
+            if let Some(msg) = response.user_message {
+                eprintln!("{}", msg);
+            }
+            (None, exit_code)
+        }
+    }
 }
