@@ -31,6 +31,22 @@ impl std::fmt::Display for AgentType {
     }
 }
 
+impl AgentType {
+    /// Get the email address for this agent type
+    pub fn email(&self) -> &'static str {
+        match self {
+            AgentType::ClaudeCode => "claude-code@anthropic.ai",
+            AgentType::Cursor => "cursor@cursor.sh",
+            AgentType::Unknown => "unknown@aiki.dev",
+        }
+    }
+
+    /// Format as a git author string (name + email)
+    pub fn git_author(&self) -> String {
+        format!("{} <{}>", self, self.email())
+    }
+}
+
 /// Confidence level of the attribution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttributionConfidence {

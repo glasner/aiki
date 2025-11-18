@@ -611,25 +611,21 @@ impl FlowExecutor {
         match (module, function) {
             ("core", "build_description") => {
                 // build_description requires PostChange event
-                match &context.event {
-                    crate::events::AikiEvent::PostChange(event) => {
-                        crate::flows::core::build_description(event)
-                    }
-                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
                         "build_description can only be called for PostChange events"
-                    ))),
-                }
+                    )));
+                };
+                crate::flows::core::build_description(event)
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
-                match &context.event {
-                    crate::events::AikiEvent::PrepareCommitMessage(event) => {
-                        crate::flows::core::generate_coauthors(event)
-                    }
-                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                let crate::events::AikiEvent::PrepareCommitMessage(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
                         "generate_coauthors can only be called for PrepareCommitMessage events"
-                    ))),
-                }
+                    )));
+                };
+                crate::flows::core::generate_coauthors(event)
             }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
