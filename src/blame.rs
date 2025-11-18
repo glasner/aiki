@@ -217,11 +217,11 @@ impl BlameCommand {
     }
 
     /// Get line-by-line attribution for a file
-    pub fn blame_file(&self, file_path: &Path) -> Result<Vec<LineAttribution>> {
+    pub fn blame_file(&self, file_path: impl AsRef<Path>) -> Result<Vec<LineAttribution>> {
         // Create a context and use it to blame the file
         // For single-file operations, this is equivalent to the old implementation
         let context = BlameContext::new(self.repo_path.clone())?;
-        context.blame_file(file_path, None)
+        context.blame_file(file_path.as_ref(), None)
     }
 
     /// Format blame output in git-blame style
