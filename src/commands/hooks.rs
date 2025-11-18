@@ -27,8 +27,7 @@ pub fn run_install() -> Result<()> {
     println!("\nYour AI changes will now be tracked automatically.");
 
     // Check if editors are running and offer to restart
-    let claude_running = is_claude_code_running();
-    let cursor_running = is_cursor_running();
+    let (claude_running, cursor_running) = get_running_editors();
 
     if claude_running || cursor_running {
         let editors_text = match (claude_running, cursor_running) {
@@ -82,30 +81,26 @@ pub fn run_handle(agent: String, event: String) -> Result<()> {
     handle_event(agent_type, &event)
 }
 
-/// Check if Claude Code is currently running
-fn is_claude_code_running() -> bool {
+/// Check which editors are currently running (single process scan)
+/// Returns (claude_running, cursor_running)
+fn get_running_editors() -> (bool, bool) {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
+    // Scan all processes once and check for both editors
     // Claude Code process names vary by platform:
     // - macOS: "Claude Code" or "claude-code"
     // - Linux: "claude-code" or "claude"
     // - Windows: "Claude Code.exe" or "claude-code.exe"
-    sys.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_lowercase();
-        name.contains("claude") && (name.contains("code") || name == "claude")
-    })
-}
-
-/// Check if Cursor is currently running
-fn is_cursor_running() -> bool {
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-
-    sys.processes().values().any(|process| {
-        let name = process.name().to_string_lossy().to_lowercase();
-        name.contains("cursor")
-    })
+    sys.processes()
+        .values()
+        .fold((false, false), |(claude, cursor), process| {
+            let name = process.name().to_string_lossy().to_lowercase();
+            (
+                claude || (name.contains("claude") && (name.contains("code") || name == "claude")),
+                cursor || name.contains("cursor"),
+            )
+        })
 }
 
 /// Restart Claude Code application

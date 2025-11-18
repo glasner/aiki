@@ -232,7 +232,10 @@ impl BlameCommand {
         agent_filter: Option<AgentType>,
         verify: bool,
     ) -> String {
-        let mut output = String::new();
+        use std::fmt::Write;
+
+        // Pre-allocate output buffer (estimate ~100 bytes per line)
+        let mut output = String::with_capacity(attributions.len() * 100);
 
         // If verify is enabled, collect unique change IDs and verify them
         let mut signature_cache: HashMap<String, verify::SignatureStatus> = HashMap::new();
@@ -291,7 +294,9 @@ impl BlameCommand {
             // Truncate commit ID to 8 chars for readability
             let short_commit = &attr.commit_id[..8.min(attr.commit_id.len())];
 
-            output.push_str(&format!(
+            // Use write! to avoid intermediate allocations
+            write!(
+                output,
                 "{}{} ({:12} {:12} {:6}) {:4}| {}\n",
                 sig_indicator,
                 short_commit,
@@ -300,7 +305,8 @@ impl BlameCommand {
                 confidence_str,
                 attr.line_number,
                 attr.line_text
-            ));
+            )
+            .unwrap(); // Writing to String never fails
         }
 
         output
