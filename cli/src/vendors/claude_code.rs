@@ -1,9 +1,11 @@
 use anyhow::Result;
 use serde::Deserialize;
+use serde_json::{json, Map};
 use std::path::PathBuf;
 
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
+use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 
 /// Claude Code hook payload structure
@@ -94,8 +96,7 @@ pub fn handle(event_name: &str) -> Result<()> {
     let response = event_bus::dispatch(event)?;
 
     // Translate to Claude Code JSON format
-    let (json_output, exit_code) =
-        super::translate_response(response, super::EditorType::ClaudeCode, event_name);
+    let (json_output, exit_code) = translate_response(response, event_name);
 
     // Output JSON if present
     if let Some(json) = json_output {
@@ -104,4 +105,101 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Exit with appropriate code
     std::process::exit(exit_code);
+}
+
+/// Translate HookResponse to Claude Code JSON format
+///
+/// Claude Code expects different JSON structures depending on the event type
+/// and the response status (success, warning, blocking error).
+fn translate_response(response: HookResponse, event_type: &str) -> (Option<String>, i32) {
+    let exit_code = response
+        .exit_code
+        .unwrap_or(if response.success { 0 } else { 1 });
+
+    // PostToolUse uses different JSON structure than other hooks
+    let is_post_tool_use = event_type == "PostToolUse" || event_type == "PostChange";
+
+    match exit_code {
+        2 => {
+            // Blocking error
+            let mut json = Map::new();
+
+            if is_post_tool_use {
+                // PostToolUse: use decision: "block"
+                json.insert("decision".to_string(), json!("block"));
+
+                if let Some(msg) = response.user_message {
+                    json.insert("reason".to_string(), json!(msg));
+                }
+
+                if let Some(agent_msg) = response.agent_message {
+                    let mut hook_output = Map::new();
+                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
+                    hook_output.insert("additionalContext".to_string(), json!(agent_msg));
+                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
+                }
+            } else {
+                // Other hooks: use continue: false
+                json.insert("continue".to_string(), json!(false));
+
+                if let Some(msg) = response.user_message {
+                    json.insert("stopReason".to_string(), json!(msg));
+                }
+
+                if let Some(agent_msg) = response.agent_message {
+                    json.insert("systemMessage".to_string(), json!(agent_msg));
+                }
+            }
+
+            (Some(serde_json::to_string(&json).unwrap()), 0)
+        }
+        0 => {
+            // Success or non-blocking warnings
+            let mut json = Map::new();
+
+            // Only include systemMessage for warnings/errors (not pure success)
+            let has_warning = response.user_message.as_ref().map_or(false, |msg| {
+                msg.starts_with("⚠️") || msg.contains("warning") || msg.contains("failed")
+            });
+
+            if has_warning {
+                if let Some(msg) = response.user_message {
+                    json.insert("systemMessage".to_string(), json!(msg));
+                }
+            }
+
+            if is_post_tool_use {
+                // PostToolUse: use hookSpecificOutput for agent messages
+                if let Some(agent_msg) = response.agent_message {
+                    let mut hook_output = Map::new();
+                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
+                    hook_output.insert("additionalContext".to_string(), json!(agent_msg));
+                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
+                }
+            }
+
+            // Metadata for all events
+            if !response.metadata.is_empty() {
+                let metadata: Vec<Vec<String>> = response
+                    .metadata
+                    .into_iter()
+                    .map(|(k, v)| vec![k, v])
+                    .collect();
+                json.insert("metadata".to_string(), json!(metadata));
+            }
+
+            if json.is_empty() {
+                (None, 0)
+            } else {
+                (Some(serde_json::to_string(&json).unwrap()), 0)
+            }
+        }
+        _ => {
+            // Exit 1 or other: stderr fallback
+            if let Some(msg) = response.user_message {
+                eprintln!("{}", msg);
+            }
+            (None, exit_code)
+        }
+    }
 }
