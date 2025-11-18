@@ -26,7 +26,7 @@ mod tests {
         let core = load_core_flow().unwrap();
 
         // Should have Start handler
-        assert!(!core.start.is_empty());
+        assert!(!core.session_start.is_empty());
     }
 
     #[test]

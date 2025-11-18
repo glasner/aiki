@@ -122,7 +122,7 @@ PostChange:
   - shell: ruff check $event.file_path
 PrepareCommitMessage:
   - shell: pytest
-Start:
+SessionStart:
   - log: "Session started"
 Stop:
   - log: "Session ended"
@@ -131,7 +131,7 @@ Stop:
         let flow = FlowParser::parse_str(yaml).unwrap();
         assert_eq!(flow.post_change.len(), 1);
         assert_eq!(flow.prepare_commit_message.len(), 1);
-        assert_eq!(flow.start.len(), 1);
+        assert_eq!(flow.session_start.len(), 1);
         assert_eq!(flow.stop.len(), 1);
     }
 

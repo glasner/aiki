@@ -10,6 +10,19 @@ use super::types::{
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
 
+/// Result of flow execution
+#[derive(Debug, Clone)]
+pub enum FlowResult {
+    /// All actions succeeded
+    Success,
+    /// Action failed with on_failure: continue (logged, flow continued)
+    FailedContinue(String),
+    /// Action failed with on_failure: stop (silent failure, flow stopped)
+    FailedStop(String),
+    /// Action failed with on_failure: block (block editor operation)
+    FailedBlock(String),
+}
+
 /// Executes flow actions
 pub struct FlowExecutor;
 
@@ -37,7 +50,7 @@ impl FlowExecutor {
                 resolver.add_var("event.file_path".to_string(), e.file_path.clone());
                 resolver.add_var("event.session_id".to_string(), e.session_id.clone());
             }
-            crate::events::AikiEvent::Start(e) => {
+            crate::events::AikiEvent::SessionStart(e) => {
                 if let Some(ref session_id) = e.session_id {
                     resolver.add_var("event.session_id".to_string(), session_id.clone());
                 }
@@ -76,11 +89,9 @@ impl FlowExecutor {
         resolver
     }
     /// Execute a list of actions sequentially
-    pub fn execute_actions(
-        actions: &[Action],
-        context: &mut AikiState,
-    ) -> Result<Vec<ActionResult>> {
-        let mut results = Vec::new();
+    pub fn execute_actions(actions: &[Action], context: &mut AikiState) -> Result<FlowResult> {
+        let mut had_continue_failure = false;
+        let mut continue_failure_msg = String::new();
 
         for action in actions {
             let result = Self::execute_action(action, context)?;
@@ -88,31 +99,61 @@ impl FlowExecutor {
             // Store action results for reference by subsequent actions
             Self::store_action_result(action, &result, context);
 
-            // Check failure mode
-            let should_stop = match action {
-                Action::Shell(shell_action) => {
-                    !result.success && shell_action.on_failure == FailureMode::Stop
-                }
-                Action::Jj(jj_action) => {
-                    !result.success && jj_action.on_failure == FailureMode::Stop
-                }
-                Action::Let(let_action) => {
-                    !result.success && let_action.on_failure == FailureMode::Stop
-                }
-                Action::CommitMessage(commit_msg_action) => {
-                    !result.success && commit_msg_action.on_failure == FailureMode::Stop
-                }
-                Action::Log(_) => false, // Log actions never fail
-            };
+            // Handle failure based on failure mode
+            if !result.success {
+                let failure_mode = match action {
+                    Action::Shell(shell_action) => &shell_action.on_failure,
+                    Action::Jj(jj_action) => &jj_action.on_failure,
+                    Action::Let(let_action) => &let_action.on_failure,
+                    Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
+                    Action::Log(_) => {
+                        continue; // Log actions never fail
+                    }
+                };
 
-            results.push(result);
-
-            if should_stop {
-                return Err(AikiError::ActionFailed);
+                match failure_mode {
+                    FailureMode::Continue => {
+                        // Log error but continue
+                        let error_msg = if !result.stderr.is_empty() {
+                            result.stderr.clone()
+                        } else {
+                            "Action failed".to_string()
+                        };
+                        eprintln!("[aiki] Action failed but continuing: {}", error_msg);
+                        had_continue_failure = true;
+                        if !continue_failure_msg.is_empty() {
+                            continue_failure_msg.push_str("; ");
+                        }
+                        continue_failure_msg.push_str(&error_msg);
+                    }
+                    FailureMode::Stop => {
+                        // Stop flow silently
+                        let error_msg = if !result.stderr.is_empty() {
+                            result.stderr.clone()
+                        } else {
+                            "Action failed with on_failure: stop".to_string()
+                        };
+                        return Ok(FlowResult::FailedStop(error_msg));
+                    }
+                    FailureMode::Block => {
+                        // Stop flow and block editor
+                        let error_msg = if !result.stderr.is_empty() {
+                            result.stderr.clone()
+                        } else {
+                            "Action failed with on_failure: block".to_string()
+                        };
+                        return Ok(FlowResult::FailedBlock(error_msg));
+                    }
+                }
             }
         }
 
-        Ok(results)
+        // All actions completed
+        if had_continue_failure {
+            Ok(FlowResult::FailedContinue(continue_failure_msg))
+        } else {
+            Ok(FlowResult::Success)
+        }
     }
 
     /// Execute a single action
@@ -812,9 +853,8 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.success));
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert!(matches!(result, FlowResult::Success));
     }
 
     #[test]
@@ -834,10 +874,9 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(!results[0].success); // First action failed
-        assert!(results[1].success); // Second action succeeded
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        // Should return FailedContinue since first action failed but flow continued
+        assert!(matches!(result, FlowResult::FailedContinue(_)));
     }
 
     #[test]
@@ -858,8 +897,9 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context);
-        assert!(result.is_err()); // Should fail
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        // Should return FailedStop since action failed with on_failure: stop
+        assert!(matches!(result, FlowResult::FailedStop(_)));
     }
 
     #[test]
@@ -972,9 +1012,8 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.success));
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
         assert_eq!(context.get_variable("desc"), Some(&"test.rs".to_string()));
@@ -992,9 +1031,8 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].success);
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
         assert!(context.get_variable("result").is_some());
@@ -1210,12 +1248,12 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.success));
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert!(matches!(result, FlowResult::Success));
 
-        // Shell should have received the resolved variable
-        assert!(results[1].stdout.contains("test.rs"));
+        // Check that the variable was stored
+        assert!(context.get_variable("my_var").is_some());
+        assert_eq!(context.get_variable("my_var"), Some(&"test.rs".to_string()));
     }
 
     #[test]
@@ -1236,11 +1274,12 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 2);
-
-        // First action (let) should succeed
-        assert!(results[0].success);
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        // Should succeed (we don't validate jj commands in tests)
+        assert!(matches!(
+            result,
+            FlowResult::Success | FlowResult::FailedContinue(_)
+        ));
     }
 
     #[test]
@@ -1258,8 +1297,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let results = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.success));
+        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        assert!(matches!(result, FlowResult::Success));
     }
 }
