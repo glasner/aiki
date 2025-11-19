@@ -5,6 +5,7 @@
 
 pub mod acp;
 pub mod authors;
+pub mod benchmark;
 pub mod blame;
 pub mod doctor;
 pub mod event;

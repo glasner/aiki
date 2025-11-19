@@ -88,6 +88,12 @@ enum Commands {
         #[arg(last = true)]
         agent_args: Vec<String>,
     },
+    /// Run end-to-end performance benchmark
+    Benchmark {
+        /// Number of edits to simulate (default: 10)
+        #[arg(short, long, default_value = "10")]
+        edits: usize,
+    },
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
@@ -148,6 +154,7 @@ fn run() -> Result<()> {
             bin,
             agent_args,
         } => commands::acp::run(agent_type, bin, agent_args),
+        Commands::Benchmark { edits } => commands::benchmark::run(edits),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
