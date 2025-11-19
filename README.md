@@ -416,7 +416,7 @@ This helps identify performance variations and ensures consistent timing measure
 
 ### Provenance Tracking
 
-Aiki uses Claude Code's PostToolUse hooks to automatically record metadata when AI agents edit files. This metadata is stored in Jujutsu change descriptions using the `[aiki]...[/aiki]` format:
+Aiki uses hooks to automatically record metadata when AI agents edit files. This metadata is stored in Jujutsu change descriptions using the `[aiki]...[/aiki]` format:
 
 ```
 [aiki]
@@ -512,32 +512,6 @@ aiki/
 ```
 
 ## Development Status
-
-**Phase 1: Claude Code Provenance** - Complete ✅
-- ✅ Milestone 1.1: Hook-based tracking
-- ✅ Milestone 1.2: Line-level attribution with `aiki blame`
-- ✅ Milestone 1.3: Git co-author attribution
-
-**Phase 2: Cursor Support** - Complete ✅
-- ✅ Milestone 2.1: Cursor hook installation and provenance tracking
-- ✅ Milestone 2.2: Multi-editor query support with filtering
-
-**Phase 4: Cryptographic Commit Signing** - Complete ✅
-- ✅ Milestone 4.1: Automatic signing setup with key detection
-- ✅ Milestone 4.2: Interactive key setup wizard
-- ✅ Milestone 4.3: Signature verification commands
-- ⏸️ Milestone 4.4: Compliance audit reports (deferred)
-
-**Phase 6: ACP Support via Bidirectional Proxy** - Complete ✅
-- ✅ Milestone 6.1: ACP protocol implementation
-- ✅ Milestone 6.2: Bidirectional proxy server with WebSocket support
-- ✅ Milestone 6.3: Session/update notification handling
-- ✅ Milestone 6.4: Tool call tracking and file change monitoring
-
-**Additional Features** - Planned
-- Hook management CLI enhancements (Phase 3)
-- Autonomous review & self-correction (Phase 5)
-- Windsurf integration (Phase 10)
 
 See [ops/ROADMAP.md](ops/ROADMAP.md) and [ops/phase-4.md](ops/phase-4.md) for the complete roadmap.
 
