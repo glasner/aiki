@@ -285,6 +285,54 @@ Result: UNVERIFIED (no signature)
 
 **Note:** Verification uses JJ's native signature verification, which supports GPG, SSH, and GPG-SM backends.
 
+### Advanced Commands
+
+#### Install Global Hooks
+
+Install Aiki hooks globally for all editors and repositories:
+
+```bash
+aiki hooks install
+```
+
+This is an alternative to `aiki init` that:
+- Installs global Git hooks for all repositories
+- Configures Claude Code hooks globally
+- Configures Cursor hooks globally
+- Automatically detects and offers to restart running editors
+
+**When to use:**
+- Setting up Aiki for the first time across all projects
+- After reinstalling or updating Aiki
+- When hooks become misconfigured
+
+**Note:** After running `aiki hooks install`, individual repositories will be automatically initialized when you first use them with Claude Code or Cursor.
+
+#### ACP Proxy Server
+
+Run Aiki as an ACP (Agent Client Protocol) bidirectional proxy:
+
+```bash
+# Proxy between an IDE and Claude Code
+aiki acp claude-code
+
+# Proxy with a custom agent binary
+aiki acp claude-code --bin /path/to/custom-agent
+
+# Proxy with agent arguments
+aiki acp cursor -- --verbose --debug
+```
+
+The ACP proxy allows Aiki to:
+- Intercept communication between IDEs (Zed, Neovim) and AI agents
+- Track tool calls and file changes in real-time
+- Record provenance with both client (IDE) and agent information
+- Support future IDE integrations without custom hooks
+
+**Supported agents:** `claude-code`, `cursor`
+
+**Note:** This is an advanced feature primarily used for IDE integrations that support the Agent Client Protocol. Most users should use `aiki init` instead, which sets up hooks automatically.
+
 ### Benchmark Performance
 
 Test and compare the performance of different Aiki workflows:
@@ -436,16 +484,30 @@ For more details, see [CLAUDE.md](CLAUDE.md) for terminology guidelines and [ops
 aiki/
 ├── cli/                      # Main Rust CLI application
 │   ├── src/
-│   │   ├── blame.rs         # Line-level attribution logic
-│   │   ├── git_coauthors.rs # Git co-author extraction
-│   │   ├── config.rs        # Initialization and configuration
+│   │   ├── commands/        # CLI command implementations
+│   │   │   ├── init.rs      # Repository initialization
+│   │   │   ├── doctor.rs    # Health checks and diagnostics
+│   │   │   ├── blame.rs     # Line-level attribution
+│   │   │   ├── authors.rs   # AI author extraction
+│   │   │   ├── verify.rs    # Signature verification
+│   │   │   ├── benchmark.rs # Performance testing
+│   │   │   ├── hooks.rs     # Hook management
+│   │   │   └── acp.rs       # ACP proxy server (Phase 6)
+│   │   ├── flows/           # Flow execution system
+│   │   ├── blame.rs         # Blame logic module
+│   │   ├── authors.rs       # Authors logic module
+│   │   ├── verify.rs        # Verification logic module
 │   │   ├── provenance.rs    # Metadata parsing
-│   │   └── record_change.rs # Hook integration
+│   │   ├── error.rs         # Error types
+│   │   └── main.rs          # CLI entry point
 │   └── templates/
 │       └── prepare-commit-msg.sh  # Git hook template
-├── claude-code-plugin/       # Claude Code marketplace plugin
 └── ops/                      # Planning and architecture docs
-    ├── phase-1.md           # Current phase implementation
+    ├── done/                # Completed phases
+    │   ├── phase-1.md       # Claude Code provenance
+    │   ├── phase-2.md       # Cursor support
+    │   ├── phase-4.md       # Cryptographic signing
+    │   └── phase-6.md       # ACP support
     └── ROADMAP.md           # Long-term vision
 ```
 
@@ -460,11 +522,17 @@ aiki/
 - ✅ Milestone 2.1: Cursor hook installation and provenance tracking
 - ✅ Milestone 2.2: Multi-editor query support with filtering
 
-**Phase 4: Cryptographic Commit Signing** - In Progress 🚧
+**Phase 4: Cryptographic Commit Signing** - Complete ✅
 - ✅ Milestone 4.1: Automatic signing setup with key detection
-- 🚧 Milestone 4.2: Interactive key setup wizard (planned)
-- 🚧 Milestone 4.3: Signature verification commands (planned)
-- 🚧 Milestone 4.4: Compliance audit reports (planned)
+- ✅ Milestone 4.2: Interactive key setup wizard
+- ✅ Milestone 4.3: Signature verification commands
+- ⏸️ Milestone 4.4: Compliance audit reports (deferred)
+
+**Phase 6: ACP Support via Bidirectional Proxy** - Complete ✅
+- ✅ Milestone 6.1: ACP protocol implementation
+- ✅ Milestone 6.2: Bidirectional proxy server with WebSocket support
+- ✅ Milestone 6.3: Session/update notification handling
+- ✅ Milestone 6.4: Tool call tracking and file change monitoring
 
 **Additional Features** - Planned
 - Hook management CLI enhancements (Phase 3)
