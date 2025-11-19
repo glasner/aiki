@@ -429,6 +429,8 @@ mod tests {
                     detection_method: DetectionMethod::Hook,
                 },
                 client_name: None,
+                client_version: None,
+                agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
             };
