@@ -598,6 +598,8 @@ mod tests {
                 detection_method: DetectionMethod::Hook,
             },
             client_name: None,
+            client_version: None,
+            agent_version: None,
             session_id: "roundtrip-test".to_string(),
             tool_name: "Write".to_string(),
         };
