@@ -809,11 +809,14 @@ mod tests {
         AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
+            client_version: None,
+            agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
             file_path: file_path.to_string(),
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
+            detection_method: crate::provenance::DetectionMethod::Hook,
         })
     }
 
