@@ -833,7 +833,177 @@ Editor-Specific JSON + Exit Code
 
 ---
 
-## Phase 6: Autonomous Review Flow
+## Phase 6: ACP Support via Bidirectional Proxy
+
+### Problem
+ACP (Agent Client Protocol) is becoming the standard for IDE-agent communication. IDEs like Zed, Neovim, and (future) VSCode/JetBrains use ACP to communicate with AI coding agents. Without ACP support, Aiki can't:
+- Track provenance for agents running in ACP-compatible IDEs
+- Observe tool calls from agents in real-time
+- Inject context or modify prompts for autonomous review
+- Support the growing ecosystem of ACP-compatible editors
+
+**Current limitations:**
+- Only hook-based provenance (Claude Code standalone, Cursor)
+- Can't track agents running inside Zed, Neovim, or other ACP IDEs
+- Missing opportunity to intercept and enhance agent communication
+- No visibility into ACP-based agent workflows
+
+### Solution
+Build a bidirectional ACP proxy (`aiki acp`) that sits between ACP-compatible IDEs and AI agents. The proxy:
+- Auto-detects the client (IDE) from `InitializeRequest.clientInfo.name`
+- Validates agent type against `AgentType` enum
+- Observes agent → IDE messages for provenance tracking
+- Provides foundation for future prompt modification and context injection
+
+**Key Insight:** ACP's `InitializeRequest` provides client identification, so we can automatically detect which IDE is being used without manual configuration.
+
+### What We Build
+- **`aiki acp` command** - Transparent bidirectional proxy for ACP communication
+- **Client auto-detection** - Extract IDE name from `InitializeRequest.clientInfo`
+- **Agent type validation** - Ensure agent matches `AgentType` enum
+- **Message observation** - Capture tool calls for provenance tracking
+- **IDE configuration** - Auto-configure Zed/Neovim via `aiki hooks install`
+- **Executable derivation** - Default binary path from agent type (customizable via `--bin`)
+
+### Commands Delivered
+```bash
+aiki acp <agent-type> [--bin <path>] [-- <agent-args>...]
+
+# Examples (executable derived from agent-type):
+aiki acp claude-code
+aiki acp gemini
+aiki acp cursor
+
+# Examples (custom executable):
+aiki acp claude-code --bin /custom/path/to/claude-code
+aiki acp gemini --bin gemini-cli-beta
+
+# Examples (passing args to agent):
+aiki acp gemini -- --verbose --model gemini-2.0
+aiki acp cursor --bin /usr/local/bin/cursor -- --debug
+```
+
+### Example Output
+```bash
+$ aiki hooks install
+✓ Git hooks installed
+✓ Claude Code hooks configured
+✓ Cursor hooks configured
+✓ ACP proxy configured for supported IDEs
+
+IDE Configuration:
+  Updated ~/.config/zed/settings.json:
+    - claude: Uses 'aiki acp claude-code'
+    - gemini: Uses 'aiki acp gemini'
+    - cursor: Uses 'aiki acp cursor'
+
+Restart your IDE to activate.
+
+$ aiki doctor
+ACP Proxy:
+  ✓ 'aiki' command found in PATH
+  ✓ Zed: Claude configured to use 'aiki acp claude-code'
+  ✓ Zed: Gemini configured to use 'aiki acp gemini'
+  ✓ Zed: Cursor configured to use 'aiki acp cursor'
+```
+
+### Value Delivered
+- **Multi-IDE support** - Works with Zed, Neovim, and future ACP-compatible IDEs
+- **Auto-detection** - No manual IDE configuration needed
+- **Transparent proxy** - Zero latency overhead, invisible to agents
+- **Provenance foundation** - Enables tracking for ACP-based agents
+- **Future-proof** - Foundation for prompt modification and autonomous review in IDEs
+- **Simple configuration** - `aiki hooks install` sets up everything
+
+### Architecture
+```
+IDE (Zed/Neovim/etc) ←→ aiki acp ←→ Agent (claude-code/gemini/etc)
+                            ↓              ↓
+                       Modify prompts  Observe tool_call
+                       Inject context  Record provenance
+                       Auto-detect IDE from InitializeRequest
+```
+
+### Technical Components
+| Component | Complexity | Priority |
+|-----------|------------|----------|
+| ACP protocol types (JSON-RPC, InitializeRequest) | Low | High |
+| Bidirectional stdio proxy | Medium | High |
+| Client auto-detection | Low | High |
+| Agent type validation | Low | High |
+| Message observation (tool calls) | Medium | High |
+| IDE auto-configuration (Zed) | Medium | Medium |
+| Doctor validation | Low | Medium |
+| Provenance integration | Medium | Future |
+
+### Implementation Notes
+
+**ACP Client Detection:**
+```rust
+// Extract from InitializeRequest
+if let Ok(init_req) = serde_json::from_value::<InitializeRequest>(msg.params.clone()) {
+    if let Some(client_info) = init_req.client_info {
+        client_name = Some(client_info.name);  // "zed", "neovim", etc.
+    }
+}
+```
+
+**Agent Executable Derivation:**
+```rust
+fn derive_executable(agent_type: &str) -> String {
+    match agent_type {
+        "gemini" => "gemini-cli".to_string(),
+        other => other.to_string(),  // claude-code → claude-code
+    }
+}
+```
+
+**Zed Configuration:**
+```json
+{
+  "agent_servers": {
+    "claude": {
+      "env": {"CLAUDE_CODE_EXECUTABLE": "aiki"},
+      "args": ["acp", "claude-code"]
+    }
+  }
+}
+```
+
+### Success Criteria
+- ✅ `aiki acp <agent-type>` command exists and works
+- ✅ Validates `agent-type` against `AgentType` enum (errors on invalid types)
+- ✅ Bidirectional message forwarding (transparent, zero overhead)
+- ✅ Auto-detects client (IDE) from `InitializeRequest.clientInfo.name`
+- ✅ Detects tool_call notifications from agents
+- ✅ Records provenance with `client_name` (IDE) and `agent_type` (from enum)
+- ✅ `aiki hooks install` configures IDEs automatically
+- ✅ `aiki doctor` validates ACP setup
+- ✅ Works with all ACP-compatible IDEs
+- ✅ Works with all agents in `AgentType` enum
+
+### Why This Enables Future Phases
+- **Autonomous review in IDEs** - Can inject review feedback into prompts
+- **Context enhancement** - Pass previous session data to agents
+- **Policy enforcement** - Block or modify dangerous operations
+- **IDE-agnostic workflows** - Same flows work across Zed, Neovim, VSCode, etc.
+- **Broader ecosystem** - Support any ACP-compatible tool
+
+### Timeline
+- ACP protocol types: 1 day
+- `aiki acp` command + bidirectional proxy: 2-3 days
+- Provenance integration (client_name, agent_type): 1 day
+- IDE auto-configuration: 1 day
+- Doctor validation: 1 day
+- Testing: 2 days
+
+**Total: ~2 weeks**
+
+**Detailed Plan:** See `ops/phase-6.md`
+
+---
+
+## Phase 7: Autonomous Review Flow
 
 ### Problem
 Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
@@ -974,7 +1144,120 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 7: Comprehensive Event System (All Git & Agent Hooks)
+## Phase 8: Zed Extension (One-Click Setup & Status UI)
+
+### Problem
+While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
+- Users must run `aiki init` and `aiki hooks install` manually
+- No visual indication that Aiki is active and working
+- Review results only visible via CLI commands
+- Configuration requires editing JSON files
+- No discoverability for Aiki features within Zed
+
+**Current user flow (CLI-only):**
+```bash
+$ aiki init
+$ aiki hooks install
+# Edit ~/.config/zed/settings.json manually
+# Restart Zed
+# No visual feedback that it's working
+```
+
+### Solution
+Build a thin Zed extension that provides one-click setup and visual status UI. The extension sits ABOVE the ACP proxy (Phase 6) and delegates all logic to the `aiki` CLI tool.
+
+**Key Principle:** The extension is a UI/UX layer only. All real work happens in the `aiki` CLI.
+
+### Architecture
+```
+┌─────────────────────────────────────┐
+│  Zed Extension (UI Layer)           │
+│  - Command palette                  │
+│  - Status bar                       │
+│  - Settings UI                      │
+└───────────┬─────────────────────────┘
+            │ Delegates to CLI
+            ↓
+┌─────────────────────────────────────┐
+│  aiki CLI (All Logic)               │
+│  - aiki init                        │
+│  - aiki acp (proxy)                 │
+└─────────────────────────────────────┘
+```
+
+### What We Build
+- **One-click installation** - Run `aiki init` from command palette
+- **Status bar indicator** - Shows "Aiki ✓" or "Aiki ⚠"
+- **Command palette commands** - Access Aiki features without CLI
+- **Settings UI** - Configure Aiki from Zed's settings panel
+- **Health check UI** - Display `aiki doctor` results
+
+### User Experience
+
+**Installation:**
+```
+Cmd+Shift+P → "Install Aiki Extension"
+  ↓
+Extension runs: aiki init
+  ↓
+Status bar shows: "Aiki ✓"
+  ↓
+Done! AI changes now tracked.
+```
+
+**Status Indicators:**
+```
+Aiki ○  - Not initialized
+Aiki ◐  - Installed but not running  
+Aiki ✓  - Running, all checks passing
+Aiki ⚠  - Error or health check failed
+```
+
+### Value Delivered
+- **Zero-friction setup** - Install extension, click Initialize, done
+- **Visual feedback** - Always know if Aiki is working
+- **Discoverability** - Find features via command palette
+- **Professional UX** - Feels native to Zed
+- **Lower barrier** - Non-technical users can use Aiki
+
+### Technical Components
+| Component | Complexity | Priority |
+|-----------|------------|----------|
+| Zed extension scaffold | Low | High |
+| Command palette integration | Low | High |
+| Status bar indicator | Low | High |
+| CLI delegation | Low | High |
+| Settings UI | Medium | Medium |
+| Extension marketplace submission | Low | Medium |
+
+### Success Criteria
+- ✅ Extension installable from Zed marketplace
+- ✅ One-click "Initialize Repository" from command palette
+- ✅ Status bar shows Aiki status (○/◐/✓/⚠)
+- ✅ `aiki doctor` results displayed in panel
+- ✅ All logic delegated to `aiki` CLI (no duplication)
+- ✅ Works on macOS, Linux, Windows
+
+### Timeline
+- Extension scaffold + commands: 1-2 days
+- Status bar indicator: 1 day
+- CLI delegation: 1 day
+- Settings UI: 1-2 days
+- Testing + marketplace: 2 days
+
+**Total: ~1.5 weeks**
+
+**Detailed Plan:** See `ops/phase-8.md`
+
+### Why This Matters
+**Before:** Users must run 5 terminal commands  
+**After:** Click "Install Extension", click "Initialize"  
+
+**Impact:** 10x easier onboarding, professional UX, marketplace visibility
+
+---
+
+## Phase 9: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
 Phase 5 introduced the flow system with 3 core events (Start, PostChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
@@ -1302,7 +1585,7 @@ pub struct Flow {
 
 ---
 
-## Phase 8: User-Defined Flows
+## Phase 10: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -1363,7 +1646,7 @@ PreCommit:
 
 ---
 
-## Phase 9: External Flow Ecosystem
+## Phase 11: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -1655,7 +1938,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 10: Multi-Agent Provenance (Fallback Detection)
+## Phase 12: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -1735,7 +2018,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 11: Local Multi-Agent Coordination
+## Phase 13: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -1767,7 +2050,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 12: PR Review for Non-Aiki Agents
+## Phase 14: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -1790,7 +2073,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 13: Shared JJ Brain & Team Coordination
+## Phase 15: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -1820,7 +2103,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 14: Windsurf Support
+## Phase 16: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -1887,7 +2170,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 15: Enterprise Compliance
+## Phase 17: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -1921,7 +2204,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 16: Native Agent Integration
+## Phase 18: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:
