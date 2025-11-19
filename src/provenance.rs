@@ -132,6 +132,9 @@ impl ProvenanceRecord {
     /// ```text
     /// [aiki]
     /// agent=claude-code
+    /// agent_version=0.10.6
+    /// client=zed
+    /// client_version=0.213.3
     /// session=claude-session-abc123xyz
     /// tool=Edit
     /// confidence=High
