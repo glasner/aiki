@@ -1,3 +1,4 @@
+use crate::commands::zed_detection;
 use crate::error::Result;
 use crate::ide_config;
 use crate::repo::RepoDetector;
@@ -125,6 +126,49 @@ pub fn run(fix: bool) -> Result<()> {
             println!("  ✗ Error checking Zed configuration: {}", e);
             issues_found += 1;
         }
+    }
+
+    // Check ACP binary availability
+    println!("\n  ACP Agent Binaries:");
+
+    // Check common agents
+    let agents_to_check = vec![
+        ("claude-code", "Claude Code"),
+        ("codex", "Codex"),
+        ("gemini", "Gemini"),
+    ];
+
+    for (agent_type, display_name) in agents_to_check {
+        match zed_detection::resolve_agent_binary(agent_type) {
+            Ok(resolved) => match resolved {
+                zed_detection::ResolvedBinary::ZedNodeJs(path) => {
+                    println!("    ✓ {} (Zed Node.js)", display_name);
+                    if std::env::var("VERBOSE").is_ok() {
+                        println!("      {}", path.display());
+                    }
+                }
+                zed_detection::ResolvedBinary::ZedNative(path) => {
+                    println!("    ✓ {} (Zed native)", display_name);
+                    if std::env::var("VERBOSE").is_ok() {
+                        println!("      {}", path.display());
+                    }
+                }
+                zed_detection::ResolvedBinary::InPath(exe) => {
+                    println!("    ✓ {} (system PATH)", display_name);
+                    if std::env::var("VERBOSE").is_ok() {
+                        println!("      {}", exe);
+                    }
+                }
+            },
+            Err(_) => {
+                println!("    - {} not installed", display_name);
+            }
+        }
+    }
+
+    // Check Node.js for Node.js-based agents
+    if let Ok(_) = zed_detection::check_nodejs_installed() {
+        // Node.js check already prints version to stderr
     }
 
     println!();

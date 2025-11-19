@@ -18,7 +18,13 @@ pub fn configure_zed() -> Result<()> {
     let mut settings: Value = if zed_settings.exists() {
         let content =
             fs::read_to_string(&zed_settings).context("Failed to read Zed settings.json")?;
-        serde_json::from_str(&content).context("Failed to parse Zed settings.json")?
+        // Strip // comments (Zed uses JSONC format)
+        let stripped: String = content
+            .lines()
+            .filter(|line| !line.trim().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        serde_json::from_str(&stripped).context("Failed to parse Zed settings.json")?
     } else {
         json!({})
     };
@@ -67,8 +73,14 @@ pub fn is_zed_configured() -> Result<bool> {
     }
 
     let content = fs::read_to_string(&zed_settings).context("Failed to read Zed settings.json")?;
+    // Strip // comments (Zed uses JSONC format)
+    let stripped: String = content
+        .lines()
+        .filter(|line| !line.trim().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let settings: Value =
-        serde_json::from_str(&content).context("Failed to parse Zed settings.json")?;
+        serde_json::from_str(&stripped).context("Failed to parse Zed settings.json")?;
 
     // Check if agent_servers.claude.command == "aiki"
     if let Some(agent_servers) = settings.get("agent_servers") {
