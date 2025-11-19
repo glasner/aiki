@@ -251,7 +251,7 @@ fn handle_session_update(msg: &JsonRpcMessage, agent_type: &str, client_name: &O
 3. `cli/src/commands/mod.rs` - Export `acp` module
 4. `cli/src/provenance.rs` - Add `client_name` (IDE), keep `agent_type` for agent
 5. `cli/src/events.rs` - Add `client_name` to `AikiPostChangeEvent`
-6. `cli/src/commands/hooks.rs` - Update IDE settings (Zed settings.json, etc.)
+6. `cli/src/commands/init.rs` - Update IDE settings (Zed settings.json, etc.)
 7. `cli/src/commands/doctor.rs` - Validate ACP configuration for all IDEs
 8. `cli/src/authors.rs` - Display "agent-name (client-name)" format (e.g., "claude-code (zed)")
 9. `cli/src/blame.rs` - Show both agent and client in output
@@ -261,7 +261,7 @@ fn handle_session_update(msg: &JsonRpcMessage, agent_type: &str, client_name: &O
 ## Installation Flow
 
 ```bash
-$ aiki hooks install
+$ aiki init
 ✓ Git hooks installed
 ✓ Claude Code hooks configured
 ✓ Cursor hooks configured
@@ -294,7 +294,7 @@ ACP Proxy:
 - ✅ Observe Agent → IDE messages (tool_call notifications)
 - ✅ Intercept IDE → Agent messages (foundation for modification)
 - ✅ Record provenance with both `client_name` (IDE) and `agent_type` (from enum)
-- ✅ Auto-configure IDE settings via `aiki hooks install`
+- ✅ Auto-configure IDE settings via `aiki init`
 - ✅ Works with any ACP-compatible IDE (Zed, Neovim, etc.)
 - ✅ Works with any agent in `AgentType` enum
 
@@ -314,7 +314,7 @@ ACP Proxy:
 - ✅ Detects tool_call notifications from agents
 - ✅ Records provenance with `client_name` (IDE) and `agent_type` (from enum)
 - ✅ 100% attribution accuracy
-- ✅ `aiki hooks install` configures IDEs automatically
+- ✅ `aiki init` configures IDEs automatically
 - ✅ `aiki doctor` validates ACP setup
 - ✅ Non-blocking provenance recording
 - ✅ Works with all ACP-compatible IDEs

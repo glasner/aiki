@@ -956,3 +956,4 @@ If you're unsure whether to use "commit" or "change":
 - `ops/CHANGE_ID_IMPLEMENTATION.md` - Technical deep-dive on change_id vs commit_id
 - `ops/phase-1.md` - Architecture docs (now includes terminology guide)
 - `ops/ROADMAP.md` - Strategic vision showing the change-centric approach
+- **ACP Protocol Specification**: https://agentclientprotocol.com/protocol/schema - Official Agent Client Protocol schema for session/update notifications, tool calls, and file tracking

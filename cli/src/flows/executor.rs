@@ -70,6 +70,7 @@ impl FlowExecutor {
         let agent_str = match context.event.agent_type() {
             crate::provenance::AgentType::ClaudeCode => "claude-code",
             crate::provenance::AgentType::Cursor => "cursor",
+            crate::provenance::AgentType::Gemini => "gemini",
             crate::provenance::AgentType::Unknown => "unknown",
         };
         resolver.add_var("event.agent_type".to_string(), agent_str.to_string());
@@ -722,6 +723,7 @@ mod tests {
     fn create_test_event() -> AikiEvent {
         AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: AgentType::ClaudeCode,
+            client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
             file_path: "/tmp/file.rs".to_string(),
@@ -734,6 +736,7 @@ mod tests {
     fn create_test_event_with_file(file_path: &str) -> AikiEvent {
         AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: AgentType::ClaudeCode,
+            client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
             file_path: file_path.to_string(),

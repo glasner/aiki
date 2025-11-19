@@ -12,6 +12,7 @@ pub struct Author {
     pub name: String,
     pub email: String,
     pub agent_type: AgentType,
+    pub client_name: Option<String>,
 }
 
 /// Scope for author extraction
@@ -102,6 +103,7 @@ impl AuthorsCommand {
                     name: format_agent_name(&attr.agent_type),
                     email: attr.agent_type.email().to_string(),
                     agent_type: attr.agent_type.clone(),
+                    client_name: attr.client_name.clone(),
                 };
 
                 authors_map.insert(author.email.clone(), author);
@@ -179,6 +181,7 @@ impl AuthorsCommand {
                     name: format_agent_name(&attr.agent_type),
                     email: attr.agent_type.email().to_string(),
                     agent_type: attr.agent_type.clone(),
+                    client_name: attr.client_name.clone(),
                 };
 
                 authors_map.insert(author.email.clone(), author);
@@ -222,7 +225,13 @@ impl AuthorsCommand {
     fn format_plain(&self, authors: &[Author]) -> String {
         authors
             .iter()
-            .map(|author| format!("{} <{}>", author.name, author.email))
+            .map(|author| {
+                if let Some(client) = &author.client_name {
+                    format!("{} <{}> (via {})", author.name, author.email, client)
+                } else {
+                    format!("{} <{}>", author.name, author.email)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -231,7 +240,16 @@ impl AuthorsCommand {
     fn format_git(&self, authors: &[Author]) -> String {
         authors
             .iter()
-            .map(|author| format!("Co-authored-by: {} <{}>", author.name, author.email))
+            .map(|author| {
+                if let Some(client) = &author.client_name {
+                    format!(
+                        "Co-authored-by: {} <{}> (via {})",
+                        author.name, author.email, client
+                    )
+                } else {
+                    format!("Co-authored-by: {} <{}>", author.name, author.email)
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -241,12 +259,22 @@ impl AuthorsCommand {
         let json_objects: Vec<String> = authors
             .iter()
             .map(|author| {
-                format!(
-                    r#"{{"name":"{}","email":"{}","agent_type":"{}"}}"#,
-                    author.name,
-                    author.email,
-                    format!("{:?}", author.agent_type)
-                )
+                if let Some(client) = &author.client_name {
+                    format!(
+                        r#"{{"name":"{}","email":"{}","agent_type":"{}","client_name":"{}"}}"#,
+                        author.name,
+                        author.email,
+                        format!("{:?}", author.agent_type),
+                        client
+                    )
+                } else {
+                    format!(
+                        r#"{{"name":"{}","email":"{}","agent_type":"{}"}}"#,
+                        author.name,
+                        author.email,
+                        format!("{:?}", author.agent_type)
+                    )
+                }
             })
             .collect();
 
@@ -321,6 +349,7 @@ fn format_agent_name(agent: &AgentType) -> String {
     match agent {
         AgentType::ClaudeCode => "Claude Code".to_string(),
         AgentType::Cursor => "Cursor".to_string(),
+        AgentType::Gemini => "Gemini".to_string(),
         AgentType::Unknown => "Unknown AI Agent".to_string(),
     }
 }
@@ -389,11 +418,13 @@ index abc123..def456 100644
             name: "Claude Code".to_string(),
             email: "claude-code@anthropic.ai".to_string(),
             agent_type: AgentType::ClaudeCode,
+            client_name: None,
         };
         let author2 = Author {
             name: "Claude Code".to_string(),
             email: "claude-code@anthropic.ai".to_string(),
             agent_type: AgentType::ClaudeCode,
+            client_name: None,
         };
         assert_eq!(author1, author2);
     }

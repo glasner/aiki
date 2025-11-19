@@ -3,6 +3,7 @@
 // This module organizes the CLI command implementations into separate files
 // for better maintainability and organization.
 
+pub mod acp;
 pub mod authors;
 pub mod blame;
 pub mod doctor;

@@ -18,6 +18,7 @@ pub struct AgentInfo {
 pub enum AgentType {
     ClaudeCode,
     Cursor,
+    Gemini,
     Unknown,
 }
 
@@ -26,6 +27,7 @@ impl std::fmt::Display for AgentType {
         match self {
             AgentType::ClaudeCode => write!(f, "Claude Code"),
             AgentType::Cursor => write!(f, "Cursor"),
+            AgentType::Gemini => write!(f, "Gemini"),
             AgentType::Unknown => write!(f, "Unknown"),
         }
     }
@@ -37,6 +39,7 @@ impl AgentType {
         match self {
             AgentType::ClaudeCode => "claude-code@anthropic.ai",
             AgentType::Cursor => "cursor@cursor.sh",
+            AgentType::Gemini => "gemini@google.ai",
             AgentType::Unknown => "unknown@aiki.dev",
         }
     }
@@ -77,7 +80,10 @@ pub enum DetectionMethod {
 pub struct ProvenanceRecord {
     /// Information about the agent that made the change
     pub agent: AgentInfo,
-    /// Claude Code session ID
+    /// Client (IDE) name that connected to the agent (e.g., "zed", "neovim")
+    /// This is auto-detected from the ACP InitializeRequest
+    pub client_name: Option<String>,
+    /// Session ID from the agent
     pub session_id: String,
     /// Tool name used (e.g., "Edit" or "Write")
     pub tool_name: String,
@@ -98,6 +104,7 @@ impl ProvenanceRecord {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: event.session_id.clone(),
             tool_name: event.tool_name.clone(),
         }
@@ -132,6 +139,7 @@ impl ProvenanceRecord {
     ///         confidence: AttributionConfidence::High,
     ///         detection_method: DetectionMethod::Hook,
     ///     },
+    ///     client_name: Some("zed".to_string()),
     ///     session_id: "test-session".to_string(),
     ///     tool_name: "Edit".to_string(),
     /// };
@@ -144,6 +152,7 @@ impl ProvenanceRecord {
         let agent_type = match self.agent.agent_type {
             AgentType::ClaudeCode => "claude-code",
             AgentType::Cursor => "cursor",
+            AgentType::Gemini => "gemini",
             AgentType::Unknown => "unknown",
         };
 
@@ -202,6 +211,7 @@ impl ProvenanceRecord {
         let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
             Some("claude-code") => AgentType::ClaudeCode,
             Some("cursor") => AgentType::Cursor,
+            Some("gemini") => AgentType::Gemini,
             Some("unknown") => AgentType::Unknown,
             _ => return Err(anyhow::anyhow!("Missing or invalid 'agent' field")),
         };
@@ -230,6 +240,8 @@ impl ProvenanceRecord {
             _ => return Err(anyhow::anyhow!("Missing or invalid 'method' field")),
         };
 
+        let client_name = metadata.get("client").cloned();
+
         Ok(Some(ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
@@ -238,6 +250,7 @@ impl ProvenanceRecord {
                 confidence,
                 detection_method: method,
             },
+            client_name,
             session_id,
             tool_name,
         }))
@@ -258,6 +271,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -286,6 +300,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "session-with-dashes_underscores.dots".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -309,6 +324,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: long_session_id.clone(),
             tool_name: "Edit".to_string(),
         };
@@ -334,6 +350,7 @@ mod tests {
                     confidence: AttributionConfidence::High,
                     detection_method: DetectionMethod::Hook,
                 },
+                client_name: None,
                 session_id: "test-session".to_string(),
                 tool_name: tool_name.to_string(),
             };
@@ -360,6 +377,7 @@ mod tests {
                     confidence: AttributionConfidence::High,
                     detection_method: DetectionMethod::Hook,
                 },
+                client_name: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
             };
@@ -388,6 +406,7 @@ mod tests {
                     confidence,
                     detection_method: DetectionMethod::Hook,
                 },
+                client_name: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
             };
@@ -414,6 +433,7 @@ mod tests {
                     confidence: AttributionConfidence::High,
                     detection_method: method,
                 },
+                client_name: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
             };
@@ -434,6 +454,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -460,6 +481,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -488,6 +510,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -511,6 +534,7 @@ mod tests {
                 confidence: AttributionConfidence::Medium,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "roundtrip-test".to_string(),
             tool_name: "Write".to_string(),
         };
@@ -591,6 +615,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "round-trip".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -645,6 +670,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "cursor-session-123".to_string(),
             tool_name: "Edit".to_string(),
         };
@@ -681,6 +707,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "cursor-roundtrip".to_string(),
             tool_name: "Write".to_string(),
         };
