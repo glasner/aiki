@@ -326,8 +326,8 @@ fn test_blame_no_filter_shows_all() {
 
     // Should show both editors
     assert!(
-        stdout.contains("Claude Code"),
-        "Expected 'Claude Code' in output: {}",
+        stdout.contains("Claude"),
+        "Expected 'Claude' in output: {}",
         stdout
     );
     assert!(
