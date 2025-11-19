@@ -98,6 +98,36 @@ pub enum AikiError {
     #[error("Failed to write config file: {0}")]
     ConfigWriteFailed(String),
 
+    // ACP/Zed integration errors
+    #[error(
+        "ACP binary not found for agent '{agent_type}'.
+
+Zed installation not found or agent not installed.
+Please ensure:
+  1. Zed editor is installed (https://zed.dev)
+  2. You've created a {agent_type} thread in Zed (cmd-? → '+' → {agent_type})
+  3. Zed has completed its one-time package installation
+
+Alternatively, install the agent globally:
+  npm install -g {executable_name}"
+    )]
+    AcpBinaryNotFound {
+        agent_type: String,
+        executable_name: String,
+    },
+
+    #[error("Zed installation not found at {0}. Install Zed from https://zed.dev")]
+    ZedNotInstalled(PathBuf),
+
+    #[error("Agent '{0}' not installed by Zed. Create a thread with this agent in Zed first (cmd-? → '+' → agent)")]
+    ZedAgentNotInstalled(String),
+
+    #[error("Node.js not found. Zed-installed agents require Node.js. Install from: https://nodejs.org or 'brew install node'")]
+    NodeJsNotFound,
+
+    #[error("Unsupported platform: {0}")]
+    UnsupportedPlatform(String),
+
     // Generic wrapper for underlying errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

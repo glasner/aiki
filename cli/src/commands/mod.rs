@@ -12,3 +12,4 @@ pub mod event;
 pub mod hooks;
 pub mod init;
 pub mod verify;
+pub mod zed_detection;

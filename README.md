@@ -1,4 +1,7 @@
-# Aiki - AI Code Provenance Tracking
+changed
+11
+
+1# Aiki - AI Code Provenance Tracking
 
 Aiki automatically tracks which AI agents contributed to your codebase, providing transparent attribution for AI-generated code changes.
 
@@ -446,7 +449,23 @@ The hook chains to any previously configured hooks, so it won't interfere with e
 
 Aiki currently supports:
 
-### Claude Code
+### Zed (via Agent Client Protocol)
+- **Integration type**: ACP bidirectional proxy
+- **Configuration**: Agent servers in `~/.config/zed/settings.json` (macOS) or `~/.config/zed/settings.json` (Linux)
+- **Installation**: Automatic during `aiki init`
+- **Agent binaries**: Automatically uses Zed's installed agents (no separate installation needed)
+- **Supported agents**: Claude Code, Codex, Gemini
+- **Requirements**: 
+  - Zed editor installed
+  - Agent enabled in Zed (create a thread with the agent once to trigger installation)
+  - Node.js 18+ (for Node.js-based agents like Claude Code)
+- **Scope**: Configured once globally, works for all projects
+
+**How it works**: When you use an AI agent in Zed, Aiki acts as a transparent proxy, observing tool calls and automatically recording provenance metadata in your Jujutsu changes.
+
+**Setup verification**: Run `aiki doctor` to check if Zed and agent binaries are properly detected.
+
+### Claude Code (Standalone)
 - **Hook type**: SessionStart and PostToolUse hooks
 - **Configuration**: Global user-level in `~/.claude/settings.json`
 - **Installation**: Automatic during `aiki init`

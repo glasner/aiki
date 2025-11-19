@@ -1,9 +1,13 @@
 use crate::acp::protocol::{InitializeRequest, JsonRpcMessage, SessionNotification};
+use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostChangeEvent};
 use crate::provenance::AgentType;
-use agent_client_protocol::{SessionUpdate, ToolCallStatus, ToolKind};
+use agent_client_protocol::{
+    SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+};
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -27,8 +31,19 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Validate agent_type matches our enum
     let validated_agent_type = parse_agent_type(&agent_type)?;
 
-    // Determine executable: use --bin flag if provided, otherwise derive from agent_type
-    let executable = bin.unwrap_or_else(|| derive_executable(&agent_type));
+    // Resolve agent binary: use --bin flag if provided, otherwise detect from Zed or PATH
+    let (command, command_args) = if let Some(custom_bin) = bin {
+        // User provided custom binary path - use it directly
+        eprintln!("  Using custom binary: {}", custom_bin);
+        (custom_bin, agent_args.clone())
+    } else {
+        // Auto-detect using Zed detection with PATH fallback
+        let resolved = zed_detection::resolve_agent_binary(&agent_type)?;
+        let cmd = resolved.command();
+        let mut args = resolved.args();
+        args.extend(agent_args.clone());
+        (cmd, args)
+    };
 
     // Shared state for client name (detected from InitializeRequest)
     let client_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -36,9 +51,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Shared state for working directory (from session/new or initialize)
     let cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
 
+    // Shared state for tool call metadata (locations, kind)
+    let tool_call_contexts: Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     // Launch agent with piped stdin/stdout
-    let mut agent = Command::new(&executable)
-        .args(&agent_args)
+    let mut agent = Command::new(&command)
+        .args(&command_args)
         .env("AIKI_ENABLED", "true")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -46,8 +65,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         .spawn()
         .map_err(|e| {
             AikiError::Other(anyhow::anyhow!(
-                "Failed to spawn agent '{}': {}. Make sure the agent is installed and in your PATH.",
-                executable,
+                "Failed to spawn command '{}': {}",
+                command,
                 e
             ))
         })?;
@@ -59,72 +78,61 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let client_name_clone = Arc::clone(&client_name);
     let cwd_clone = Arc::clone(&cwd);
     let agent_type_clone = agent_type.clone();
-    thread::spawn(move || -> Result<()> {
+    let ide_to_agent_thread = thread::spawn(move || -> Result<()> {
         let stdin = io::stdin();
+        eprintln!("ACP Proxy: IDE → Agent thread started");
         for line in stdin.lock().lines() {
             let line = line?;
+            eprintln!("ACP Proxy: IDE → Agent: received {} bytes", line.len());
 
-            // Parse message from IDE
-            let msg: JsonRpcMessage = match serde_json::from_str(&line) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    eprintln!("Warning: Failed to parse JSON-RPC message from IDE: {}", e);
-                    // Forward raw line anyway
-                    writeln!(agent_stdin, "{}", line)?;
-                    agent_stdin.flush()?;
-                    continue;
-                }
-            };
-
-            // Capture metadata from IDE requests
-            if let Some(method) = &msg.method {
-                match method.as_str() {
-                    "initialize" => {
-                        if let Some(params) = &msg.params {
-                            if let Ok(init_req) =
-                                serde_json::from_value::<InitializeRequest>(params.clone())
-                            {
-                                if let Some(client_info) = init_req.client_info {
-                                    let mut client = client_name_clone.lock().unwrap();
-                                    *client = Some(client_info.name.clone());
-                                    eprintln!(
-                                        "ACP Proxy: Detected client '{}' connecting to agent '{}'",
-                                        client_info.name, agent_type_clone
-                                    );
+            // Try to parse message from IDE for metadata extraction
+            if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
+                // Capture metadata from IDE requests
+                if let Some(method) = &msg.method {
+                    match method.as_str() {
+                        "initialize" => {
+                            if let Some(params) = &msg.params {
+                                if let Ok(init_req) =
+                                    serde_json::from_value::<InitializeRequest>(params.clone())
+                                {
+                                    if let Some(client_info) = init_req.client_info {
+                                        let mut client = client_name_clone.lock().unwrap();
+                                        *client = Some(client_info.name.clone());
+                                        eprintln!(
+                                            "ACP Proxy: Detected client '{}' connecting to agent '{}'",
+                                            client_info.name, agent_type_clone
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                    "session/new" | "session/load" => {
-                        // Extract working directory from session requests
-                        if let Some(params) = &msg.params {
-                            if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
-                                let mut working_dir = cwd_clone.lock().unwrap();
-                                *working_dir = Some(PathBuf::from(cwd_str));
-                                if std::env::var("AIKI_DEBUG").is_ok() {
-                                    eprintln!("ACP Proxy: Set working directory to: {}", cwd_str);
+                        "session/new" | "session/load" => {
+                            // Extract working directory from session requests
+                            if let Some(params) = &msg.params {
+                                if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
+                                    let mut working_dir = cwd_clone.lock().unwrap();
+                                    *working_dir = Some(PathBuf::from(cwd_str));
+                                    if std::env::var("AIKI_DEBUG").is_ok() {
+                                        eprintln!(
+                                            "ACP Proxy: Set working directory to: {}",
+                                            cwd_str
+                                        );
+                                    }
                                 }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-
-                // Future: Modify messages before sending to agent
-                // match method.as_str() {
-                //     "session/send_message" => {
-                //         msg = modify_user_prompt(msg, &client_name_clone)?;
-                //     }
-                //     _ => {}
-                // }
             }
 
-            // Forward to agent
-            let json = serde_json::to_string(&msg).map_err(|e| {
-                AikiError::Other(anyhow::anyhow!("Failed to serialize JSON: {}", e))
-            })?;
-            writeln!(agent_stdin, "{}", json)?;
+            // Forward raw line to agent (no re-serialization)
+            eprintln!("ACP Proxy: Forwarding to agent: {} bytes", line.len());
+            writeln!(agent_stdin, "{}", line)?;
             agent_stdin.flush()?;
+        }
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("ACP Proxy: IDE stdin closed, stopping IDE → Agent thread");
         }
         Ok(())
     });
@@ -132,33 +140,92 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Thread 2: Agent → IDE (observe and record)
     let client_name_clone = Arc::clone(&client_name);
     let cwd_clone = Arc::clone(&cwd);
-    for line in BufReader::new(agent_stdout).lines() {
-        let line = line?;
 
-        // Parse message from agent
-        if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
-            if let Some(method) = &msg.method {
-                if method == "session/update" {
-                    // Record provenance via event bus (non-blocking)
-                    if let Err(e) = handle_session_update(
-                        &msg,
-                        &validated_agent_type,
-                        &client_name_clone,
-                        &cwd_clone,
-                    ) {
-                        eprintln!("Warning: Failed to record provenance: {}", e);
+    // Run main forwarding loop, capturing any errors
+    let tool_call_contexts_clone = Arc::clone(&tool_call_contexts);
+    let loop_result = (|| -> Result<()> {
+        eprintln!("ACP Proxy: Agent → IDE thread started");
+        for line in BufReader::new(agent_stdout).lines() {
+            let line = line?;
+            eprintln!("ACP Proxy: Agent → IDE: received {} bytes", line.len());
+
+            // Parse message from agent
+            if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
+                // Log every message method and id for debugging
+                eprintln!(
+                    "ACP Proxy: Message: method={:?} id={:?}",
+                    msg.method, msg.id
+                );
+
+                if let Some(method) = &msg.method {
+                    // Log all session/update messages with their update type
+                    if method == "session/update" {
+                        if let Some(params) = &msg.params {
+                            eprintln!(
+                                "ACP Proxy: session/update params: {}",
+                                serde_json::to_string_pretty(params)
+                                    .unwrap_or_else(|_| "error".to_string())
+                            );
+                        }
+
+                        // Record provenance via event bus (non-blocking)
+                        if let Err(e) = handle_session_update(
+                            &msg,
+                            &validated_agent_type,
+                            &client_name_clone,
+                            &cwd_clone,
+                            &tool_call_contexts_clone,
+                        ) {
+                            eprintln!("Warning: Failed to record provenance: {}", e);
+                        }
                     }
                 }
             }
-        }
 
-        // Forward to IDE
-        println!("{}", line);
-        io::stdout().flush()?;
+            // Forward to IDE
+            eprintln!("ACP Proxy: Forwarding to IDE: {} bytes", line.len());
+            println!("{}", line);
+            io::stdout().flush()?;
+        }
+        Ok(())
+    })();
+
+    // Log any errors from the main loop, but don't exit yet - we need cleanup
+    if let Err(ref e) = loop_result {
+        eprintln!("ACP Proxy: Error in Agent → IDE forwarding: {}", e);
     }
 
-    let status = agent.wait()?;
-    std::process::exit(status.code().unwrap_or(1));
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("ACP Proxy: Agent stdout closed, stopping Agent → IDE thread");
+    }
+
+    // ALWAYS wait for agent process to exit, even if there was an error
+    let status_result = agent.wait();
+    if let Err(ref e) = status_result {
+        eprintln!("ACP Proxy: Failed to wait for agent process: {}", e);
+    }
+
+    // ALWAYS join the IDE → Agent thread to ensure clean shutdown
+    match ide_to_agent_thread.join() {
+        Ok(Ok(())) => {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("ACP Proxy: IDE → Agent thread exited cleanly");
+            }
+        }
+        Ok(Err(e)) => {
+            eprintln!("Warning: IDE → Agent thread returned error: {}", e);
+        }
+        Err(e) => {
+            eprintln!("Warning: IDE → Agent thread panicked: {:?}", e);
+        }
+    }
+
+    // Now propagate the original error if there was one
+    loop_result?;
+
+    // Exit with agent's exit code, or 1 if we couldn't get it
+    let exit_code = status_result.ok().and_then(|s| s.code()).unwrap_or(1);
+    std::process::exit(exit_code);
 }
 
 /// Parse and validate agent type against our AgentType enum
@@ -172,15 +239,9 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
     }
 }
 
-/// Derive the executable name from the agent type
-///
-/// Most agent types use their name as the executable, but some have custom mappings.
-fn derive_executable(agent_type: &str) -> String {
-    match agent_type {
-        "gemini" => "gemini-cli".to_string(),
-        other => other.to_string(),
-    }
-}
+// Note: Executable derivation logic moved to zed_detection::derive_executable_name()
+// and zed_detection::resolve_agent_binary() which handles both Zed-installed
+// and PATH-based agents.
 
 /// Handle session/update notification from agent
 ///
@@ -191,6 +252,7 @@ fn handle_session_update(
     agent_type: &AgentType,
     client_name: &Arc<Mutex<Option<String>>>,
     cwd: &Arc<Mutex<Option<PathBuf>>>,
+    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
 ) -> Result<()> {
     // Parse session/update params
     let params = msg
@@ -206,39 +268,133 @@ fn handle_session_update(
             ))
         })?;
 
-    // Extract ToolCallUpdate from SessionUpdate enum
-    let tool_call = match &notification.update {
-        SessionUpdate::ToolCallUpdate(update) => update,
-        _ => {
-            // Not a tool_call update, ignore (could be message, thought, etc.)
-            return Ok(());
-        }
+    let session_id = notification.session_id.to_string();
+
+    match &notification.update {
+        SessionUpdate::ToolCall(tool_call) => process_tool_call(
+            &session_id,
+            tool_call,
+            agent_type,
+            client_name,
+            cwd,
+            tool_call_contexts,
+        ),
+        SessionUpdate::ToolCallUpdate(update) => process_tool_call_update(
+            &session_id,
+            update,
+            agent_type,
+            client_name,
+            cwd,
+            tool_call_contexts,
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn process_tool_call(
+    session_id: &str,
+    tool_call: &ToolCall,
+    agent_type: &AgentType,
+    client_name: &Arc<Mutex<Option<String>>>,
+    cwd: &Arc<Mutex<Option<PathBuf>>>,
+    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
+) -> Result<()> {
+    let context = ToolCallContext {
+        kind: tool_call.kind,
+        paths: paths_from_locations(&tool_call.locations),
     };
 
-    // Only record completed tool calls that modified files
-    if !matches!(tool_call.fields.status, Some(ToolCallStatus::Completed)) {
+    let status = tool_call.status;
+
+    {
+        let mut contexts = tool_call_contexts.lock().unwrap();
+        contexts.insert(tool_call.id.clone(), context.clone());
+        if matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed) {
+            contexts.remove(&tool_call.id);
+        }
+    }
+
+    if status == ToolCallStatus::Completed {
+        record_post_change_events(session_id, agent_type, client_name, cwd, context)?;
+    }
+
+    Ok(())
+}
+
+fn process_tool_call_update(
+    session_id: &str,
+    tool_call: &ToolCallUpdate,
+    agent_type: &AgentType,
+    client_name: &Arc<Mutex<Option<String>>>,
+    cwd: &Arc<Mutex<Option<PathBuf>>>,
+    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
+) -> Result<()> {
+    let mut contexts = tool_call_contexts.lock().unwrap();
+    let entry = contexts
+        .entry(tool_call.id.clone())
+        .or_insert_with(|| ToolCallContext {
+            kind: tool_call.fields.kind.unwrap_or(ToolKind::Other),
+            paths: Vec::new(),
+        });
+
+    if let Some(kind) = tool_call.fields.kind {
+        entry.kind = kind;
+    }
+
+    if let Some(locations) = &tool_call.fields.locations {
+        entry.paths = paths_from_locations(locations);
+    }
+
+    let status = tool_call.fields.status;
+    let should_record =
+        matches!(status, Some(ToolCallStatus::Completed)) && !entry.paths.is_empty();
+    let context = if should_record {
+        Some(entry.clone())
+    } else {
+        None
+    };
+
+    if matches!(
+        status,
+        Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+    ) {
+        contexts.remove(&tool_call.id);
+    }
+
+    drop(contexts);
+
+    if let Some(context) = context {
+        record_post_change_events(session_id, agent_type, client_name, cwd, context)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ToolCallContext {
+    kind: ToolKind,
+    paths: Vec<PathBuf>,
+}
+
+fn paths_from_locations(locations: &[ToolCallLocation]) -> Vec<PathBuf> {
+    locations.iter().map(|loc| loc.path.clone()).collect()
+}
+
+fn record_post_change_events(
+    session_id: &str,
+    agent_type: &AgentType,
+    client_name: &Arc<Mutex<Option<String>>>,
+    cwd: &Arc<Mutex<Option<PathBuf>>>,
+    context: ToolCallContext,
+) -> Result<()> {
+    if !matches!(
+        context.kind,
+        ToolKind::Edit | ToolKind::Delete | ToolKind::Move
+    ) {
         return Ok(());
     }
 
-    // Only record edit/delete/move operations (file modifications)
-    let kind = tool_call
-        .fields
-        .kind
-        .as_ref()
-        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Tool call missing kind")))?;
-
-    if !matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move) {
-        return Ok(());
-    }
-
-    // Extract affected file paths from locations
-    let locations = tool_call
-        .fields
-        .locations
-        .as_ref()
-        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Tool call missing locations")))?;
-
-    if locations.is_empty() {
+    if context.paths.is_empty() {
         return Ok(());
     }
 
@@ -253,16 +409,16 @@ fn handle_session_update(
     let client = client_name.lock().unwrap().clone();
 
     // Get tool name from kind
-    let tool_name = format!("{:?}", kind); // Convert ToolKind enum to string (Edit, Delete, Move)
+    let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
 
     // Create and dispatch an event for each affected file
-    for location in locations {
+    for path in context.paths {
         let event = AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: *agent_type,
             client_name: client.clone(),
-            session_id: notification.session_id.to_string(),
+            session_id: session_id.to_string(),
             tool_name: tool_name.clone(),
-            file_path: location.path.to_string_lossy().to_string(),
+            file_path: path.to_string_lossy().to_string(),
             cwd: working_dir.clone(),
             timestamp: chrono::Utc::now(),
         });
@@ -301,14 +457,5 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_derive_executable_default() {
-        assert_eq!(derive_executable("claude-code"), "claude-code");
-        assert_eq!(derive_executable("cursor"), "cursor");
-    }
-
-    #[test]
-    fn test_derive_executable_custom() {
-        assert_eq!(derive_executable("gemini"), "gemini-cli");
-    }
+    // Note: derive_executable tests moved to zed_detection module tests
 }
