@@ -213,6 +213,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             &msg,
                             &validated_agent_type,
                             &client_name_clone,
+                            &client_version_clone,
+                            &agent_version_clone,
                             &cwd_clone,
                             &tool_call_contexts_clone,
                         ) {
