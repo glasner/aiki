@@ -1,7 +1,7 @@
 changed
 11
 
-12# Aiki - AI Code Provenance Tracking
+3# Aiki - AI Code Provenance Tracking
 
 Aiki automatically tracks which AI agents contributed to your codebase, providing transparent attribution for AI-generated code changes.
 
