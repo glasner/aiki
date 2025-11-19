@@ -144,7 +144,7 @@ fn test_git_hook_deduplicates_same_editor() -> Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should only have ONE co-author line (deduplicated by email)
-    let coauthor_count = stdout.matches("Co-authored-by: Claude Code").count();
+    let coauthor_count = stdout.matches("Co-authored-by: Claude").count();
     assert_eq!(
         coauthor_count, 1,
         "Should deduplicate same editor to one co-author: {}",
