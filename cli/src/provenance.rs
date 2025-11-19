@@ -110,12 +110,14 @@ impl ProvenanceRecord {
         Self {
             agent: AgentInfo {
                 agent_type: event.agent_type,
-                version: None,
+                version: event.agent_version.clone(),
                 detected_at: event.timestamp,
                 confidence: AttributionConfidence::High,
                 detection_method: event.detection_method.clone(),
             },
             client_name: event.client_name.clone(),
+            client_version: event.client_version.clone(),
+            agent_version: event.agent_version.clone(),
             session_id: event.session_id.clone(),
             tool_name: event.tool_name.clone(),
         }
