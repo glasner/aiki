@@ -33,7 +33,25 @@ pub struct JsonRpcMessage {
 pub struct ClientInfo {
     /// Name of the client (e.g., "zed", "neovim")
     pub name: String,
+    /// Display title of the client (e.g., "Zed")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Version of the client
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// Agent information from the initialize response
+///
+/// This tells us which AI agent is responding (Claude Code, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInfo {
+    /// Name of the agent (e.g., "@zed-industries/claude-code-acp")
+    pub name: String,
+    /// Display title of the agent (e.g., "Claude Code")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Version of the agent
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
