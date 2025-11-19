@@ -243,6 +243,7 @@ impl ProvenanceRecord {
         };
 
         let method = match metadata.get("method").map(|s| s.as_str()) {
+            Some("ACP") => DetectionMethod::ACP,
             Some("Hook") => DetectionMethod::Hook,
             Some("Unknown") => DetectionMethod::Unknown,
             _ => return Err(anyhow::anyhow!("Missing or invalid 'method' field")),
