@@ -66,6 +66,7 @@ pub fn handle(event_name: &str) -> Result<()> {
             file_path: payload.edited_file,
             cwd: PathBuf::from(&payload.working_directory),
             timestamp: chrono::Utc::now(),
+            detection_method: crate::provenance::DetectionMethod::Hook,
         }),
         // Future events can be added here without hook reinstallation
         _ => {
