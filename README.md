@@ -285,6 +285,85 @@ Result: UNVERIFIED (no signature)
 
 **Note:** Verification uses JJ's native signature verification, which supports GPG, SSH, and GPG-SM backends.
 
+### Benchmark Performance
+
+Test and compare the performance of different Aiki workflows:
+
+```bash
+# Run the core workflow benchmark
+aiki benchmark aiki/core
+```
+
+This benchmarks the complete Aiki workflow:
+- Repository initialization with Git and Jujutsu
+- SessionStart event (fires during `aiki init`)
+- PostChange events (fires on each file edit)
+- Total execution time
+
+Example output:
+
+```
+Running benchmark: aiki/core
+
+Phase 1: Repository Setup
+  ✓ Git init: 35.1ms
+  ✓ JJ init: 48.2ms
+
+Phase 2: Aiki Setup
+  ✓ SessionStart: 104.5ms
+
+Phase 3: File Operations (10 iterations)
+  ✓ File edit 1
+    PostChange: 2.3ms
+  ✓ File edit 2
+    PostChange: 2.2ms
+  ...
+
+Event Timing:
+  SessionStart (1 occurrences):
+    Median: 104.5ms
+    Range: 104.5ms - 104.5ms
+  PostChange (10 occurrences):
+    Median: 2.3ms
+    Range: 2.2ms - 3.0ms
+
+Total benchmark time: 402ms
+
+Comparison to Previous Run:
+  Previous total: 367ms
+  Current total:  402ms
+  Change: +35ms (+9.5%) 🔴 (slower)
+
+  Event-level comparison:
+    SessionStart:
+      Previous: 99.7ms (median)
+      Current:  104.5ms (median)
+      Change:   +4.8ms (+4.8%) 🔴 (slower)
+    PostChange:
+      Previous: 2.3ms (median)
+      Current:  2.3ms (median)
+      Change:   +0.0ms (+0.0%) 🟢 (no change)
+```
+
+**Features:**
+
+- **Event-level timing**: Shows performance for each hook event (SessionStart, PostChange)
+- **Millisecond precision**: All timings displayed in milliseconds for accuracy
+- **Statistical metrics**: Shows median, min, max, and count for each event type
+- **Performance comparison**: Compares current run to previous with % change indicators
+- **Result persistence**: Stores results in `.aiki/benchmarks/{flow}/` with:
+  - `results.txt` - Human-readable benchmark report
+  - `metrics.json` - Machine-readable event timing data
+
+**Running multiple iterations:**
+
+```bash
+# Run 10 benchmark iterations for statistical reliability
+for i in {1..10}; do aiki benchmark aiki/core; done
+```
+
+This helps identify performance variations and ensures consistent timing measurements across runs.
+
 ## How It Works
 
 ### Provenance Tracking
