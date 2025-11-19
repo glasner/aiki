@@ -424,7 +424,15 @@ fn process_tool_call_update(
     drop(contexts);
 
     if let Some(context) = context {
-        record_post_change_events(session_id, agent_type, client_name, cwd, context)?;
+        record_post_change_events(
+            session_id,
+            agent_type,
+            client_name,
+            client_version,
+            agent_version,
+            cwd,
+            context,
+        )?;
     }
 
     Ok(())
