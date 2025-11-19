@@ -20,7 +20,10 @@ use std::thread;
 #[derive(Debug, Clone)]
 enum MetadataMessage {
     /// Client (IDE) information detected from initialize request
-    ClientInfo { name: String, version: Option<String> },
+    ClientInfo {
+        name: String,
+        version: Option<String>,
+    },
     /// Agent version detected from initialize response
     AgentVersion(String),
     /// Working directory from session/new or session/load
@@ -79,14 +82,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             ))
         })?;
 
-    let mut agent_stdin = agent
-        .stdin
-        .take()
-        .expect("Failed to acquire agent stdin - this should never happen as we set Stdio::piped()");
-    let agent_stdout = agent
-        .stdout
-        .take()
-        .expect("Failed to acquire agent stdout - this should never happen as we set Stdio::piped()");
+    let mut agent_stdin = agent.stdin.take().expect(
+        "Failed to acquire agent stdin - this should never happen as we set Stdio::piped()",
+    );
+    let agent_stdout = agent.stdout.take().expect(
+        "Failed to acquire agent stdout - this should never happen as we set Stdio::piped()",
+    );
 
     // Thread 1: IDE → Agent (intercept and modify)
     // This thread discovers metadata and sends it via channel
@@ -114,10 +115,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         let version = client_info.version.clone();
 
                                         // Send client info to Agent→IDE thread
-                                        let _ = metadata_tx_clone.send(MetadataMessage::ClientInfo {
-                                            name: name.clone(),
-                                            version: version.clone(),
-                                        });
+                                        let _ =
+                                            metadata_tx_clone.send(MetadataMessage::ClientInfo {
+                                                name: name.clone(),
+                                                version: version.clone(),
+                                            });
 
                                         if let Some(ref ver) = version {
                                             eprintln!(
@@ -141,7 +143,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let path = PathBuf::from(cwd_str);
 
                                     // Send working directory to Agent→IDE thread
-                                    let _ = metadata_tx_clone.send(MetadataMessage::WorkingDirectory(path));
+                                    let _ = metadata_tx_clone
+                                        .send(MetadataMessage::WorkingDirectory(path));
 
                                     if std::env::var("AIKI_DEBUG").is_ok() {
                                         eprintln!(
@@ -302,7 +305,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 /// Parse and validate agent type against our AgentType enum
 fn parse_agent_type(agent: &str) -> Result<AgentType> {
     match agent {
-        "claude-code" => Ok(AgentType::ClaudeCode),
+        "claude" | "claude-code" => Ok(AgentType::Claude), // Accept both for backwards compatibility
         "codex" => Ok(AgentType::Codex),
         "cursor" => Ok(AgentType::Cursor),
         "gemini" => Ok(AgentType::Gemini),
