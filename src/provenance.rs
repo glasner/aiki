@@ -166,7 +166,7 @@ impl ProvenanceRecord {
     /// ```
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
-            AgentType::Claude => "claude-code",
+            AgentType::Claude => "claude",
             AgentType::Codex => "codex",
             AgentType::Cursor => "cursor",
             AgentType::Gemini => "gemini",
