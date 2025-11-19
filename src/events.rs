@@ -16,9 +16,10 @@ pub struct AikiStartEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPostChangeEvent {
     pub agent_type: AgentType,
-    pub session_id: String, // Required for PostChange events
-    pub tool_name: String,  // Tool that made the change (e.g., "Edit", "Write")
-    pub file_path: String,  // File that was modified
+    pub client_name: Option<String>, // IDE name (e.g., "zed", "neovim") from ACP InitializeRequest
+    pub session_id: String,          // Required for PostChange events
+    pub tool_name: String,           // Tool that made the change (e.g., "Edit", "Write")
+    pub file_path: String,           // File that was modified
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
@@ -63,26 +64,6 @@ impl AikiEvent {
             Self::SessionStart(e) => e.agent_type,
             Self::PostChange(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
-        }
-    }
-
-    /// Get the timestamp for this event
-    #[must_use]
-    pub fn timestamp(&self) -> DateTime<Utc> {
-        match self {
-            Self::SessionStart(e) => e.timestamp,
-            Self::PostChange(e) => e.timestamp,
-            Self::PrepareCommitMessage(e) => e.timestamp,
-        }
-    }
-
-    /// Get the session ID if present
-    #[must_use]
-    pub fn session_id(&self) -> Option<&str> {
-        match self {
-            Self::SessionStart(e) => e.session_id.as_deref(),
-            Self::PostChange(e) => Some(&e.session_id),
-            Self::PrepareCommitMessage(_) => None,
         }
     }
 }

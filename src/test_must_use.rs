@@ -31,6 +31,7 @@ fn test_impl_asref_path_ergonomics() {
     // Using String
     let _event2 = AikiEvent::PostChange(AikiPostChangeEvent {
         agent_type: AgentType::ClaudeCode,
+        client_name: None,
         session_id: "session-123".to_string(),
         tool_name: "Edit".to_string(),
         file_path: "/tmp/file.rs".to_string(),
@@ -59,6 +60,7 @@ fn test_impl_asref_path_ergonomics() {
     let pb = PathBuf::from("/tmp");
     let _event5 = AikiEvent::PostChange(AikiPostChangeEvent {
         agent_type: AgentType::ClaudeCode,
+        client_name: None,
         session_id: "session-123".to_string(),
         tool_name: "Write".to_string(),
         file_path: "/tmp/file.rs".to_string(),

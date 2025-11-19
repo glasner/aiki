@@ -1,5 +1,6 @@
 use crate::config;
 use crate::error::Result;
+use crate::ide_config;
 use crate::jj;
 use crate::repo::RepoDetector;
 use crate::sign_setup_wizard;
@@ -217,6 +218,28 @@ pub fn run(quiet: bool) -> Result<()> {
                         _ => unreachable!(),
                     }
                 }
+            }
+        }
+    }
+
+    // Configure IDE settings (Zed)
+    if !quiet {
+        println!("\nConfiguring IDE settings...");
+    }
+
+    match ide_config::configure_zed() {
+        Ok(()) => {
+            if !quiet {
+                println!("✓ Configured Zed editor for ACP support");
+                if let Some(path) = ide_config::zed_settings_path() {
+                    println!("  Settings: {}", path.display());
+                }
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                println!("⚠ Failed to configure Zed: {}", e);
+                println!("  You can configure manually later");
             }
         }
     }

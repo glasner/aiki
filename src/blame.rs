@@ -30,6 +30,7 @@ pub struct LineAttribution {
     pub session_id: Option<String>,
     #[allow(dead_code)]
     pub tool_name: Option<String>,
+    pub client_name: Option<String>,
 }
 
 /// Command to show line-by-line blame/attribution for a file
@@ -187,6 +188,7 @@ impl BlameContext {
                     confidence: Some(prov.agent.confidence),
                     session_id: Some(prov.session_id),
                     tool_name: Some(prov.tool_name),
+                    client_name: prov.client_name,
                 },
                 None => LineAttribution {
                     line_number: line_num,
@@ -197,6 +199,7 @@ impl BlameContext {
                     confidence: None,
                     session_id: None,
                     tool_name: None,
+                    client_name: None,
                 },
             };
 
@@ -277,7 +280,7 @@ impl BlameCommand {
                 ""
             };
 
-            // Format: [sig] commit_id (agent session confidence) line_num| line_text
+            // Format: [sig] commit_id (agent session confidence [client]) line_num| line_text
             // Use Display trait for human-friendly agent names
             let agent_str = format!("{}", attr.agent_type);
             let session_str = attr
@@ -290,6 +293,11 @@ impl BlameCommand {
                 .as_ref()
                 .map(|c| format!("{:?}", c))
                 .unwrap_or_else(|| "-".to_string());
+            let client_str = attr
+                .client_name
+                .as_ref()
+                .map(|c| format!(" via {}", c))
+                .unwrap_or_else(String::new);
 
             // Truncate commit ID to 8 chars for readability
             let short_commit = &attr.commit_id[..8.min(attr.commit_id.len())];
@@ -297,12 +305,13 @@ impl BlameCommand {
             // Use write! to avoid intermediate allocations
             write!(
                 output,
-                "{}{} ({:12} {:12} {:6}) {:4}| {}\n",
+                "{}{} ({:12} {:12} {:6}{}) {:4}| {}\n",
                 sig_indicator,
                 short_commit,
                 agent_str,
                 session_str,
                 confidence_str,
+                client_str,
                 attr.line_number,
                 attr.line_text
             )
@@ -347,6 +356,7 @@ mod tests {
             confidence: Some(AttributionConfidence::High),
             session_id: Some("session-123".to_string()),
             tool_name: Some("Edit".to_string()),
+            client_name: Some("zed".to_string()),
         };
 
         assert_eq!(attr.line_number, 1);

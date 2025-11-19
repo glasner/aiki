@@ -1,3 +1,4 @@
+mod acp;
 mod authors;
 mod blame;
 mod commands;
@@ -7,6 +8,7 @@ mod event_bus;
 mod events;
 mod flows;
 mod handlers;
+mod ide_config;
 mod jj;
 mod provenance;
 mod repo;
@@ -73,6 +75,19 @@ enum Commands {
         #[arg(default_value = "@")]
         revision: String,
     },
+    /// ACP proxy for IDE-agent communication
+    Acp {
+        /// Agent type for provenance (e.g., "claude-code", "cursor", "gemini")
+        agent_type: String,
+
+        /// Optional custom binary path (defaults to derived from agent_type)
+        #[arg(short, long)]
+        bin: Option<String>,
+
+        /// Optional arguments to pass to the agent executable
+        #[arg(last = true)]
+        agent_args: Vec<String>,
+    },
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
@@ -128,6 +143,11 @@ fn run() -> Result<()> {
         } => commands::blame::run(file, agent, verify),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Verify { revision } => commands::verify::run(revision),
+        Commands::Acp {
+            agent_type,
+            bin,
+            agent_args,
+        } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },

@@ -22,7 +22,7 @@ pub enum AikiError {
     FileNotFoundInParent,
 
     // Agent/vendor errors
-    #[error("Unknown agent type: '{0}'. Supported values: 'claude-code', 'cursor'")]
+    #[error("Unknown agent type: '{0}'. Supported values: 'claude-code', 'cursor', 'gemini'")]
     UnknownAgentType(String),
 
     #[error("Unsupported agent type: {0:?}")]
@@ -125,7 +125,7 @@ mod tests {
         let err = AikiError::UnknownAgentType("vscode".to_string());
         assert_eq!(
             err.to_string(),
-            "Unknown agent type: 'vscode'. Supported values: 'claude-code', 'cursor'"
+            "Unknown agent type: 'vscode'. Supported values: 'claude-code', 'cursor', 'gemini'"
         );
     }
 

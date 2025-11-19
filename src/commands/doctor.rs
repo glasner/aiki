@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::ide_config;
 use crate::repo::RepoDetector;
 use crate::sign_setup_wizard;
 use crate::signing;
@@ -80,6 +81,48 @@ pub fn run(fix: bool) -> Result<()> {
     } else {
         println!("  ⚠ Cursor hooks not configured");
         println!("    → Run: aiki hooks install");
+    }
+
+    println!();
+
+    // Check ACP (Agent Client Protocol) configuration
+    println!("ACP Configuration:");
+
+    // Check Zed ACP configuration
+    match ide_config::is_zed_configured() {
+        Ok(true) => {
+            println!("  ✓ Zed editor configured for ACP");
+            if let Some(path) = ide_config::zed_settings_path() {
+                println!("    Settings: {}", path.display());
+            }
+        }
+        Ok(false) => {
+            if let Some(path) = ide_config::zed_settings_path() {
+                if path.parent().map(|p| p.exists()).unwrap_or(false) {
+                    println!("  ⚠ Zed editor not configured for ACP");
+                    if fix {
+                        println!("    Configuring Zed for ACP...");
+                        match ide_config::configure_zed() {
+                            Ok(()) => {
+                                println!("    ✓ Configured Zed editor");
+                            }
+                            Err(e) => {
+                                println!("    ✗ Failed to configure Zed: {}", e);
+                                issues_found += 1;
+                            }
+                        }
+                    } else {
+                        println!("    → Run: aiki doctor --fix (to configure Zed)");
+                    }
+                } else {
+                    println!("  - Zed editor not installed");
+                }
+            }
+        }
+        Err(e) => {
+            println!("  ✗ Error checking Zed configuration: {}", e);
+            issues_found += 1;
+        }
     }
 
     println!();

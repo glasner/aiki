@@ -252,6 +252,7 @@ mod tests {
                 confidence: AttributionConfidence::High,
                 detection_method: DetectionMethod::Hook,
             },
+            client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
         };

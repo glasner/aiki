@@ -25,15 +25,6 @@ impl VariableResolver {
         self.cache_valid = false; // Invalidate cache
     }
 
-    /// Add event variables (from AikiState)
-    pub fn add_event_vars(&mut self, event_vars: &HashMap<String, String>) {
-        for (key, value) in event_vars {
-            self.variables
-                .insert(format!("event.{}", key), value.clone());
-        }
-        self.cache_valid = false; // Invalidate cache
-    }
-
     /// Add environment variables
     pub fn add_env_vars(&mut self, env_vars: &HashMap<String, String>) {
         // Iterate and clone individual entries instead of cloning entire HashMap
@@ -125,19 +116,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_event_variable() {
-        let mut resolver = VariableResolver::new();
-        let mut event_vars = HashMap::new();
-        event_vars.insert("file_path".to_string(), "/path/to/file.rs".to_string());
-        resolver.add_event_vars(&event_vars);
-
-        assert_eq!(
-            resolver.resolve("Editing $event.file_path"),
-            "Editing /path/to/file.rs"
-        );
-    }
-
-    #[test]
     fn test_resolve_multiple_variables() {
         let mut resolver = VariableResolver::new();
         resolver.add_var("cwd", "/home/user");
@@ -193,26 +171,6 @@ mod tests {
         assert_eq!(
             resolver.resolve("Home: $HOME, Path: $PATH"),
             "Home: /home/user, Path: /usr/bin"
-        );
-    }
-
-    #[test]
-    fn test_resolve_mixed_variables() {
-        let mut resolver = VariableResolver::new();
-
-        let mut event_vars = HashMap::new();
-        event_vars.insert("file_path".to_string(), "test.rs".to_string());
-        resolver.add_event_vars(&event_vars);
-
-        resolver.add_var("cwd", "/project");
-
-        let mut env_vars = HashMap::new();
-        env_vars.insert("HOME".to_string(), "/home/user".to_string());
-        resolver.add_env_vars(&env_vars);
-
-        assert_eq!(
-            resolver.resolve("File $event.file_path in $cwd (home: $HOME)"),
-            "File test.rs in /project (home: /home/user)"
         );
     }
 
