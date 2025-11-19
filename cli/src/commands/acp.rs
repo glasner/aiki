@@ -157,6 +157,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Thread 2: Agent → IDE (observe and record)
     let client_name_clone = Arc::clone(&client_name);
+    let client_version_clone = Arc::clone(&client_version);
+    let agent_version_clone = Arc::clone(&agent_version);
     let cwd_clone = Arc::clone(&cwd);
 
     // Run main forwarding loop, capturing any errors
