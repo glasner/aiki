@@ -82,6 +82,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Thread 1: IDE → Agent (intercept and modify)
     let client_name_clone = Arc::clone(&client_name);
+    let client_version_clone = Arc::clone(&client_version);
     let cwd_clone = Arc::clone(&cwd);
     let agent_type_clone = agent_type.clone();
     let ide_to_agent_thread = thread::spawn(move || -> Result<()> {
