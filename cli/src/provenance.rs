@@ -186,10 +186,29 @@ impl ProvenanceRecord {
             DetectionMethod::Unknown => "Unknown",
         };
 
-        format!(
-            "[aiki]\nagent={}\nsession={}\ntool={}\nconfidence={}\nmethod={}\n[/aiki]",
-            agent_type, self.session_id, self.tool_name, confidence, method
-        )
+        let mut lines = vec!["[aiki]".to_string(), format!("agent={}", agent_type)];
+
+        if let Some(ref agent_ver) = self.agent_version {
+            lines.push(format!("agent_version={}", agent_ver));
+        }
+
+        if let Some(ref client) = self.client_name {
+            lines.push(format!("client={}", client));
+        }
+
+        if let Some(ref client_ver) = self.client_version {
+            lines.push(format!("client_version={}", client_ver));
+        }
+
+        lines.extend(vec![
+            format!("session={}", self.session_id),
+            format!("tool={}", self.tool_name),
+            format!("confidence={}", confidence),
+            format!("method={}", method),
+            "[/aiki]".to_string(),
+        ]);
+
+        lines.join("\n")
     }
 
     /// Parse provenance metadata from change description
