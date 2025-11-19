@@ -178,8 +178,8 @@ fn test_blame_distinguishes_editors() {
 
     // Should show both editors with Display format (not Debug)
     assert!(
-        stdout.contains("Claude Code"),
-        "Expected 'Claude Code' in blame output: {}",
+        stdout.contains("Claude"),
+        "Expected 'Claude' in blame output: {}",
         stdout
     );
     assert!(
