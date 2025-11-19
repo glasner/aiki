@@ -177,6 +177,26 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                     msg.method, msg.id
                 );
 
+                // Capture agent version from initialize response
+                if msg.id.is_some() && msg.result.is_some() {
+                    if let Some(result) = &msg.result {
+                        if let Ok(init_resp) =
+                            serde_json::from_value::<InitializeResponse>(result.clone())
+                        {
+                            if let Some(agent_info) = init_resp.agent_info {
+                                if let Some(version) = agent_info.version {
+                                    let mut agent_ver = agent_version_clone.lock().unwrap();
+                                    *agent_ver = Some(version.clone());
+                                    eprintln!(
+                                        "ACP Proxy: Detected agent '{}' version '{}'",
+                                        agent_info.name, version
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Some(method) = &msg.method {
                     // Log all session/update messages with their update type
                     if method == "session/update" {
