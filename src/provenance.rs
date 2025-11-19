@@ -170,6 +170,7 @@ impl ProvenanceRecord {
         };
 
         let method = match self.agent.detection_method {
+            DetectionMethod::ACP => "ACP",
             DetectionMethod::Hook => "Hook",
             DetectionMethod::Unknown => "Unknown",
         };
