@@ -415,7 +415,7 @@ mod tests {
     fn test_to_description_all_agent_types() {
         // Test serialization for all agent types
         let agent_types = vec![
-            (AgentType::Claude, "claude-code"),
+            (AgentType::Claude, "claude"),
             (AgentType::Unknown, "unknown"),
         ];
 
