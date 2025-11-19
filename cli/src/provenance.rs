@@ -17,6 +17,7 @@ pub struct AgentInfo {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentType {
     ClaudeCode,
+    Codex,
     Cursor,
     Gemini,
     Unknown,
@@ -26,6 +27,7 @@ impl std::fmt::Display for AgentType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             AgentType::ClaudeCode => write!(f, "Claude Code"),
+            AgentType::Codex => write!(f, "Codex"),
             AgentType::Cursor => write!(f, "Cursor"),
             AgentType::Gemini => write!(f, "Gemini"),
             AgentType::Unknown => write!(f, "Unknown"),
@@ -38,6 +40,7 @@ impl AgentType {
     pub fn email(&self) -> &'static str {
         match self {
             AgentType::ClaudeCode => "claude-code@anthropic.ai",
+            AgentType::Codex => "codex@openai.com",
             AgentType::Cursor => "cursor@cursor.sh",
             AgentType::Gemini => "gemini@google.ai",
             AgentType::Unknown => "unknown@aiki.dev",
@@ -151,6 +154,7 @@ impl ProvenanceRecord {
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
             AgentType::ClaudeCode => "claude-code",
+            AgentType::Codex => "codex",
             AgentType::Cursor => "cursor",
             AgentType::Gemini => "gemini",
             AgentType::Unknown => "unknown",
@@ -210,6 +214,7 @@ impl ProvenanceRecord {
         // Extract and parse required fields
         let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
             Some("claude-code") => AgentType::ClaudeCode,
+            Some("codex") => AgentType::Codex,
             Some("cursor") => AgentType::Cursor,
             Some("gemini") => AgentType::Gemini,
             Some("unknown") => AgentType::Unknown,
@@ -718,6 +723,68 @@ mod tests {
             .unwrap();
 
         assert!(matches!(parsed.agent.agent_type, AgentType::Cursor));
+        assert_eq!(parsed.session_id, original.session_id);
+        assert_eq!(parsed.tool_name, original.tool_name);
+    }
+
+    #[test]
+    fn test_codex_agent_type_serialization() {
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::Codex,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            session_id: "codex-session-123".to_string(),
+            tool_name: "Edit".to_string(),
+        };
+
+        let description = record.to_description();
+        assert!(description.contains("agent=codex"));
+        assert!(description.contains("session=codex-session-123"));
+    }
+
+    #[test]
+    fn test_codex_agent_type_deserialization() {
+        let description = "[aiki]\n\
+            agent=codex\n\
+            session=codex-test-session\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            [/aiki]";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+        let record = result.unwrap();
+        assert!(matches!(record.agent.agent_type, AgentType::Codex));
+        assert_eq!(record.session_id, "codex-test-session");
+    }
+
+    #[test]
+    fn test_codex_agent_type_round_trip() {
+        let original = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::Codex,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            session_id: "codex-roundtrip".to_string(),
+            tool_name: "Write".to_string(),
+        };
+
+        let description = original.to_description();
+        let parsed = ProvenanceRecord::from_description(&description)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(parsed.agent.agent_type, AgentType::Codex));
         assert_eq!(parsed.session_id, original.session_id);
         assert_eq!(parsed.tool_name, original.tool_name);
     }

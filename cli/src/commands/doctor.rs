@@ -99,16 +99,18 @@ pub fn run(fix: bool) -> Result<()> {
         Ok(false) => {
             if let Some(path) = ide_config::zed_settings_path() {
                 if path.parent().map(|p| p.exists()).unwrap_or(false) {
-                    println!("  ⚠ Zed editor not configured for ACP");
+                    println!("  ✗ Zed editor not configured for ACP");
+                    issues_found += 1; // Count unconfigured state as an issue
                     if fix {
                         println!("    Configuring Zed for ACP...");
                         match ide_config::configure_zed() {
                             Ok(()) => {
                                 println!("    ✓ Configured Zed editor");
+                                issues_found -= 1; // Clear the issue since we fixed it
                             }
                             Err(e) => {
                                 println!("    ✗ Failed to configure Zed: {}", e);
-                                issues_found += 1;
+                                // Issue already counted above
                             }
                         }
                     } else {

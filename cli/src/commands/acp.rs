@@ -165,6 +165,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 fn parse_agent_type(agent: &str) -> Result<AgentType> {
     match agent {
         "claude-code" => Ok(AgentType::ClaudeCode),
+        "codex" => Ok(AgentType::Codex),
         "cursor" => Ok(AgentType::Cursor),
         "gemini" => Ok(AgentType::Gemini),
         _ => Err(AikiError::UnknownAgentType(agent.to_string())),
@@ -285,6 +286,7 @@ mod tests {
             parse_agent_type("claude-code"),
             Ok(AgentType::ClaudeCode)
         ));
+        assert!(matches!(parse_agent_type("codex"), Ok(AgentType::Codex)));
         assert!(matches!(parse_agent_type("cursor"), Ok(AgentType::Cursor)));
         assert!(matches!(parse_agent_type("gemini"), Ok(AgentType::Gemini)));
     }
