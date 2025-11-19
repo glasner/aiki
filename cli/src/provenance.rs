@@ -246,7 +246,7 @@ impl ProvenanceRecord {
 
         // Extract and parse required fields
         let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
-            Some("claude-code") => AgentType::ClaudeCode,
+            Some("claude-code") => AgentType::Claude,
             Some("codex") => AgentType::Codex,
             Some("cursor") => AgentType::Cursor,
             Some("gemini") => AgentType::Gemini,
