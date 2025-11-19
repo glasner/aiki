@@ -384,6 +384,8 @@ fn process_tool_call_update(
     tool_call: &ToolCallUpdate,
     agent_type: &AgentType,
     client_name: &Arc<Mutex<Option<String>>>,
+    client_version: &Arc<Mutex<Option<String>>>,
+    agent_version: &Arc<Mutex<Option<String>>>,
     cwd: &Arc<Mutex<Option<PathBuf>>>,
     tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
 ) -> Result<()> {
