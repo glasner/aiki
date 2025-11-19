@@ -23,6 +23,20 @@ pub enum FlowResult {
     FailedBlock(String),
 }
 
+/// Timing information for flow execution
+#[derive(Debug, Clone)]
+pub struct FlowTiming {
+    /// Total duration of flow execution in seconds
+    pub duration_secs: f64,
+}
+
+impl FlowTiming {
+    #[must_use]
+    pub fn new(duration_secs: f64) -> Self {
+        Self { duration_secs }
+    }
+}
+
 /// Executes flow actions
 pub struct FlowExecutor;
 
@@ -91,7 +105,15 @@ impl FlowExecutor {
         resolver
     }
     /// Execute a list of actions sequentially
-    pub fn execute_actions(actions: &[Action], context: &mut AikiState) -> Result<FlowResult> {
+    ///
+    /// Returns both the flow result and timing information
+    pub fn execute_actions(
+        actions: &[Action],
+        context: &mut AikiState,
+    ) -> Result<(FlowResult, FlowTiming)> {
+        use std::time::Instant;
+
+        let start = Instant::now();
         let mut continue_failure_errors = Vec::new();
 
         for action in actions {
@@ -130,7 +152,8 @@ impl FlowExecutor {
                         } else {
                             "Action failed with on_failure: stop".to_string()
                         };
-                        return Ok(FlowResult::FailedStop(error_msg));
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((FlowResult::FailedStop(error_msg), FlowTiming::new(duration)));
                     }
                     FailureMode::Block => {
                         // Stop flow and block editor
@@ -139,18 +162,24 @@ impl FlowExecutor {
                         } else {
                             "Action failed with on_failure: block".to_string()
                         };
-                        return Ok(FlowResult::FailedBlock(error_msg));
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((
+                            FlowResult::FailedBlock(error_msg),
+                            FlowTiming::new(duration),
+                        ));
                     }
                 }
             }
         }
 
         // All actions completed
+        let duration = start.elapsed().as_secs_f64();
         if continue_failure_errors.is_empty() {
-            Ok(FlowResult::Success)
+            Ok((FlowResult::Success, FlowTiming::new(duration)))
         } else {
-            Ok(FlowResult::FailedContinue(
-                continue_failure_errors.join("; "),
+            Ok((
+                FlowResult::FailedContinue(continue_failure_errors.join("; ")),
+                FlowTiming::new(duration),
             ))
         }
     }
@@ -850,8 +879,9 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
+        assert!(timing.duration_secs >= 0.0);
     }
 
     #[test]
@@ -871,7 +901,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedContinue since first action failed but flow continued
         assert!(matches!(result, FlowResult::FailedContinue(_)));
     }
@@ -894,7 +924,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedStop since action failed with on_failure: stop
         assert!(matches!(result, FlowResult::FailedStop(_)));
     }
@@ -1009,7 +1039,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1028,7 +1058,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1052,7 +1082,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Check that structured metadata was stored
         assert!(context.get_metadata("desc").is_some());
@@ -1073,7 +1103,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Check that no extra variables were stored (except for any built-ins)
         // The metadata should be empty since no alias was provided
@@ -1118,7 +1148,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Both should have the same value
         assert_eq!(
@@ -1161,7 +1191,7 @@ mod tests {
         // PostChange event has tool_name and session_id fields
         let mut context = AikiState::new(create_test_event());
 
-        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Second assignment should overwrite first
         assert_eq!(context.get_variable("x"), Some(&"test-session".to_string()));
@@ -1182,7 +1212,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
 
         // Both should have the value
         assert_eq!(context.get_variable("file"), Some(&"test.rs".to_string()));
@@ -1245,7 +1275,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1271,7 +1301,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         // Should succeed (we don't validate jj commands in tests)
         assert!(matches!(
             result,
@@ -1294,7 +1324,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
     }
 }

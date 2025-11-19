@@ -115,7 +115,8 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute SessionStart actions from the core flow
-    let flow_result = FlowExecutor::execute_actions(&core_flow.session_start, &mut state)?;
+    let (flow_result, _timing) =
+        FlowExecutor::execute_actions(&core_flow.session_start, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success().with_metadata(vec![
@@ -167,7 +168,7 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<HookResponse> {
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PostChange actions from the core flow
-    let flow_result = FlowExecutor::execute_actions(&core_flow.post_change, &mut state)?;
+    let (flow_result, _timing) = FlowExecutor::execute_actions(&core_flow.post_change, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message(format!(
@@ -217,7 +218,8 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PrepareCommitMessage actions from the core flow
-    let flow_result = FlowExecutor::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
+    let (flow_result, _timing) =
+        FlowExecutor::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message("✅ Co-authors added")
