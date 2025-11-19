@@ -211,7 +211,7 @@ fn test_git_authors_json_format_multiple_editors() -> Result<()> {
     // Should be valid JSON with Cursor
     assert!(stdout.contains("Cursor"), "Should include Cursor");
     assert!(
-        stdout.contains("cursor@cursor.sh"),
+        stdout.contains("noreply@cursor.com"),
         "Should include Cursor email"
     );
 
