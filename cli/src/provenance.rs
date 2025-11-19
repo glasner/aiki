@@ -98,8 +98,8 @@ impl ProvenanceRecord {
     /// Create a ProvenanceRecord from a PostChange event
     ///
     /// This constructor extracts all necessary fields from the event and creates
-    /// a provenance record with default values for confidence (High) and detection
-    /// method (Hook).
+    /// a provenance record with default confidence (High) and the detection
+    /// method from the event.
     pub fn from_post_change_event(event: &crate::events::AikiPostChangeEvent) -> Self {
         Self {
             agent: AgentInfo {
@@ -107,9 +107,9 @@ impl ProvenanceRecord {
                 version: None,
                 detected_at: event.timestamp,
                 confidence: AttributionConfidence::High,
-                detection_method: DetectionMethod::Hook,
+                detection_method: event.detection_method.clone(),
             },
-            client_name: None,
+            client_name: event.client_name.clone(),
             session_id: event.session_id.clone(),
             tool_name: event.tool_name.clone(),
         }
