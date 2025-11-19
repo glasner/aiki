@@ -326,7 +326,7 @@ mod tests {
         // Check that all required fields are present
         assert!(description.contains("[aiki]"));
         assert!(description.contains("[/aiki]"));
-        assert!(description.contains("agent=claude-code"));
+        assert!(description.contains("agent=claude"));
         assert!(description.contains("session=test-session-123"));
         assert!(description.contains("tool=Edit"));
         assert!(description.contains("confidence=High"));
