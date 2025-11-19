@@ -409,7 +409,7 @@ index abc123..def456 100644
 
     #[test]
     fn test_format_agent_name() {
-        assert_eq!(format_agent_name(&AgentType::ClaudeCode), "Claude Code");
+        assert_eq!(format_agent_name(&AgentType::ClaudeCode), "Claude");
         assert_eq!(format_agent_name(&AgentType::Cursor), "Cursor");
     }
 
