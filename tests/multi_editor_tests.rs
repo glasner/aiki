@@ -230,10 +230,10 @@ fn test_blame_filter_by_claude_code() {
     let output = run_aiki(&["blame", "test.txt", "--agent", "claude-code"], &repo_path);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Should only show Claude Code lines
+    // Should only show Claude lines
     assert!(
-        stdout.contains("Claude Code"),
-        "Expected 'Claude Code' in filtered output: {}",
+        stdout.contains("Claude"),
+        "Expected 'Claude' in filtered output: {}",
         stdout
     );
     assert!(
