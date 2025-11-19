@@ -135,7 +135,7 @@ mod tests {
         use crate::provenance::AgentType;
 
         let event = AikiEvent::PostChange(AikiPostChangeEvent {
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),

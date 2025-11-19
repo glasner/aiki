@@ -149,7 +149,7 @@ impl ProvenanceRecord {
     ///
     /// let record = ProvenanceRecord {
     ///     agent: AgentInfo {
-    ///         agent_type: AgentType::ClaudeCode,
+    ///         agent_type: AgentType::Claude,
     ///         version: None,
     ///         detected_at: Utc::now(),
     ///         confidence: AttributionConfidence::High,
@@ -308,7 +308,7 @@ mod tests {
     fn test_to_description() {
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -337,7 +337,7 @@ mod tests {
         // Test that special characters in session ID don't break the format
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -361,7 +361,7 @@ mod tests {
         let long_session_id = "claude-session-".to_string() + &"a".repeat(200);
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -387,7 +387,7 @@ mod tests {
         for tool_name in tool_names {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::ClaudeCode,
+                    agent_type: AgentType::Claude,
                     version: None,
                     detected_at: Utc::now(),
                     confidence: AttributionConfidence::High,
@@ -407,7 +407,7 @@ mod tests {
     fn test_to_description_all_agent_types() {
         // Test serialization for all agent types
         let agent_types = vec![
-            (AgentType::ClaudeCode, "claude-code"),
+            (AgentType::Claude, "claude-code"),
             (AgentType::Unknown, "unknown"),
         ];
 
@@ -443,7 +443,7 @@ mod tests {
         for (confidence, expected_str) in confidence_levels {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::ClaudeCode,
+                    agent_type: AgentType::Claude,
                     version: None,
                     detected_at: Utc::now(),
                     confidence,
@@ -470,7 +470,7 @@ mod tests {
         for (method, expected_str) in methods {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::ClaudeCode,
+                    agent_type: AgentType::Claude,
                     version: None,
                     detected_at: Utc::now(),
                     confidence: AttributionConfidence::High,
@@ -491,7 +491,7 @@ mod tests {
         // Test that the format has correct structure
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -518,7 +518,7 @@ mod tests {
         // Verify that the markers themselves don't contain '='
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -547,7 +547,7 @@ mod tests {
         // Test edge case with empty session ID
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -571,7 +571,7 @@ mod tests {
         // Test that ProvenanceRecord can be serialized and deserialized
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: Some("1.0.0".to_string()),
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::Medium,
@@ -605,7 +605,7 @@ mod tests {
         assert!(result.is_some());
 
         let record = result.unwrap();
-        assert!(matches!(record.agent.agent_type, AgentType::ClaudeCode));
+        assert!(matches!(record.agent.agent_type, AgentType::Claude));
         assert_eq!(record.session_id, "test-session-456");
         assert_eq!(record.tool_name, "Write");
         assert!(matches!(
@@ -652,7 +652,7 @@ mod tests {
     fn test_from_description_round_trip() {
         let original = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -668,7 +668,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(matches!(parsed.agent.agent_type, AgentType::ClaudeCode));
+        assert!(matches!(parsed.agent.agent_type, AgentType::Claude));
         assert_eq!(parsed.session_id, original.session_id);
         assert_eq!(parsed.tool_name, original.tool_name);
         assert!(matches!(

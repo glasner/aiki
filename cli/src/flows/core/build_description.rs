@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_build_description_with_claude_code() {
         let event = AikiPostChangeEvent {
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),

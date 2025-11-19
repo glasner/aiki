@@ -63,7 +63,7 @@ pub fn handle(event_name: &str) -> Result<()> {
     // Create standardized event with embedded agent type
     let event = match event_name {
         "SessionStart" => AikiEvent::SessionStart(AikiStartEvent {
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             session_id: Some(payload.session_id),
             cwd: PathBuf::from(&payload.cwd),
             timestamp: chrono::Utc::now(),
@@ -75,7 +75,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("PostToolUse requires tool_input"))?;
 
             AikiEvent::PostChange(AikiPostChangeEvent {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 client_name: None, // Hook-based detection doesn't know client (IDE)
                 client_version: None,
                 agent_version: None,
