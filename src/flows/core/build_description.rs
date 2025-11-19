@@ -80,7 +80,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         assert!(result.stdout.contains("[aiki]"));
-        assert!(result.stdout.contains("agent=claude-code"));
+        assert!(result.stdout.contains("agent=claude"));
         assert!(result.stdout.contains("session=test-session-123"));
         assert!(result.stdout.contains("tool=Edit"));
         assert!(result.stdout.contains("confidence=High"));
