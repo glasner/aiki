@@ -13,10 +13,8 @@ use std::time::Instant;
 /// 3. Query operations (blame, authors)
 /// 4. Commit with co-authors
 ///
-/// Results are saved to benchmarks/default/YYYY-MM-DD_HH-MM-SS/
-pub fn run(num_edits: usize) -> Result<()> {
-    let flow_name = "default"; // Future: make this a parameter
-
+/// Results are saved to .aiki/benchmarks/{flow}/YYYY-MM-DD_HH-MM-SS/
+pub fn run(flow_name: String, num_edits: usize) -> Result<()> {
     println!("======================================");
     println!("  Aiki End-to-End Benchmark");
     println!("======================================");
