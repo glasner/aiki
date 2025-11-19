@@ -88,6 +88,12 @@ pub struct ProvenanceRecord {
     /// Client (IDE) name that connected to the agent (e.g., "zed", "neovim")
     /// This is auto-detected from the ACP InitializeRequest
     pub client_name: Option<String>,
+    /// Client (IDE) version (e.g., "0.213.3")
+    /// This is auto-detected from the ACP InitializeRequest
+    pub client_version: Option<String>,
+    /// Agent version (e.g., "0.10.6")
+    /// This is auto-detected from the ACP InitializeResponse
+    pub agent_version: Option<String>,
     /// Session ID from the agent
     pub session_id: String,
     /// Tool name used (e.g., "Edit" or "Write")
