@@ -403,8 +403,8 @@ index abc123..def456 100644
 
     #[test]
     fn test_format_agent_email() {
-        assert_eq!(AgentType::Claude.email(), "claude-code@anthropic.ai");
-        assert_eq!(AgentType::Cursor.email(), "cursor@cursor.sh");
+        assert_eq!(AgentType::Claude.email(), "noreply@anthropic.com");
+        assert_eq!(AgentType::Cursor.email(), "noreply@cursor.com");
     }
 
     #[test]
