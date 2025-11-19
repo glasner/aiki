@@ -372,6 +372,8 @@ mod tests {
                 detection_method: DetectionMethod::Hook,
             },
             client_name: None,
+            client_version: None,
+            agent_version: None,
             session_id: long_session_id.clone(),
             tool_name: "Edit".to_string(),
         };
