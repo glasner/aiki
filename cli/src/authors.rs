@@ -416,14 +416,14 @@ index abc123..def456 100644
     #[test]
     fn test_author_equality() {
         let author1 = Author {
-            name: "Claude Code".to_string(),
-            email: "claude-code@anthropic.ai".to_string(),
+            name: "Claude".to_string(),
+            email: "noreply@anthropic.com".to_string(),
             agent_type: AgentType::ClaudeCode,
             client_name: None,
         };
         let author2 = Author {
-            name: "Claude Code".to_string(),
-            email: "claude-code@anthropic.ai".to_string(),
+            name: "Claude".to_string(),
+            email: "noreply@anthropic.com".to_string(),
             agent_type: AgentType::ClaudeCode,
             client_name: None,
         };
