@@ -133,7 +133,7 @@ Overall: 100% attribution accuracy ✓
 - **100% attribution accuracy** - Claude Code hooks provide perfect information
 - **Dramatically simplified** - No complex process detection needed
 - **Fast implementation** - 2-3 weeks vs 4-6 weeks
-- **Testing foundation** - Enables comprehensive testing of Phase 2 (autonomous review)
+- **Testing foundation** - Enables comprehensive testing of Phase 7 (Autonomous Review Flow)
 - **Session tracking** - Understand how Claude Code works over time
 - **Confidence indicators** - All attributions marked as High confidence
 
@@ -640,7 +640,7 @@ Report includes:
 ## Phase 5: Internal Flow Engine
 
 ### Problem
-Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 6 (Autonomous Review).
+Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 7 (Autonomous Review Flow).
 
 **With provenance (Phase 1-4), we can now:**
 - Trigger workflows on specific agent events (PostChange, PreCommit, Start, Stop)
@@ -1148,7 +1148,7 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ### Problem
 While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
-- Users must run `aiki init` and `aiki hooks install` manually
+- Users must run `aiki init` manually
 - No visual indication that Aiki is active and working
 - Review results only visible via CLI commands
 - Configuration requires editing JSON files
@@ -1157,7 +1157,6 @@ While Phase 6 provides ACP proxy support, setup requires manual CLI steps and us
 **Current user flow (CLI-only):**
 ```bash
 $ aiki init
-$ aiki hooks install
 # Edit ~/.config/zed/settings.json manually
 # Restart Zed
 # No visual feedback that it's working
@@ -2246,39 +2245,45 @@ Phase 1 (Claude Code Provenance) ✅ ← Foundation complete, SQLite-free
     ↓
 Phase 2 (Cursor Support) 🔜 ← Extends Phase 1 architecture
     ↓
-Phase 3 (Hook Management CLI) ← Unified hook management + diagnostics
+Phase 3 (CLI Streamlining & Health Diagnostics) ✅ ← aiki doctor command
     ↓
 Phase 4 (Cryptographic Signing) ← Tamper-proof attribution
     ↓
 Phase 5 (Internal Flow Engine) ← Event-driven workflow system
     ↓
-Phase 6 (Autonomous Review Flow) ← Built on Phase 5 flows
+Phase 6 (ACP Support) ← Generic ACP proxy for IDE-agent communication
     ↓
-Phase 7 (Complete Event System) ← All Git & agent hooks supported
+Phase 7 (Autonomous Review Flow) ← Built on Phase 5 flows
     ↓
-Phase 8 (User-Defined Flows) ← Users write reusable flows
+Phase 8 (Zed Extension) ← One-click setup & status UI
     ↓
-Phase 9 (External Flow Ecosystem) ← WASM functions + bundled binaries
+Phase 9 (Comprehensive Event System) ← All Git & agent hooks supported
     ↓
-Phase 10 (Multi-Agent: Fallback Detection)
+Phase 10 (User-Defined Flows) ← Users write reusable flows
     ↓
-Phase 11 (Local Multi-Agent Coordination) ← Uses Phase 1+2+10 provenance
+Phase 11 (External Flow Ecosystem) ← WASM functions + bundled binaries
     ↓
-Phase 12 (PR Review)
+Phase 12 (Multi-Agent: Fallback Detection)
     ↓
-Phase 13 (Shared JJ Brain) ← Team provenance via JJ commit descriptions
+Phase 13 (Local Multi-Agent Coordination) ← Uses Phase 1+2+12 provenance
     ↓
-Phase 14 (Windsurf Support) ← Additional editor before enterprise
+Phase 14 (PR Review for Non-Aiki Agents)
     ↓
-Phase 15 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+Phase 15 (Shared JJ Brain & Team Coordination) ← Team provenance via JJ commit descriptions
     ↓
-Phase 16 (Agent SDK) ← Trust scoring via JJ revsets
+Phase 16 (Windsurf Support) ← Additional editor before enterprise
+    ↓
+Phase 17 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+    ↓
+Phase 18 (Native Agent Integration) ← Agent SDK with trust scoring
 ```
 
 **Key Insights:** 
 - Phase 1 (Provenance) provides the SQLite-free foundation (~120 bytes per change in JJ commit descriptions)
-- Phase 2 (Cursor) and Phase 10 (Windsurf) extend to additional editors using same architecture
-- Phase 3 (Hook Management) provides unified interface for all hook types with diagnostics
+- Phase 2 (Cursor) and Phase 16 (Windsurf) extend to additional editors using same architecture
+- Phase 3 (CLI Streamlining) provides `aiki doctor` for health diagnostics
 - Phase 4 (Cryptographic Signing) adds tamper-proof verification layer for enterprise compliance
+- Phase 6 (ACP Support) enables IDE-agnostic provenance tracking
+- Phase 8 (Zed Extension) provides polished UX for zero-friction onboarding
 - All subsequent phases query provenance via JJ revsets (no database needed)
 - JJ's immutable commit graph + cryptographic signatures provide audit-ready trails for compliance
