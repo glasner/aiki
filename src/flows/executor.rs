@@ -547,7 +547,10 @@ impl FlowExecutor {
         }
 
         let mut chars = name.chars();
-        let first = chars.next().unwrap();
+        let first = match chars.next() {
+            Some(c) => c,
+            None => return false, // Impossible due to is_empty() check, but be defensive
+        };
 
         // First character must be letter or underscore
         if !first.is_alphabetic() && first != '_' {
@@ -600,7 +603,9 @@ impl FlowExecutor {
         // Handle self.function syntax
         let resolved_path = if function_path.starts_with("self.") {
             // Extract function name from self.function
-            let function_name = function_path.strip_prefix("self.").unwrap();
+            let function_name = function_path
+                .strip_prefix("self.")
+                .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
 
             // Get current flow name from context
             let flow_name = context.flow_name.as_ref().ok_or_else(|| {
@@ -627,7 +632,9 @@ impl FlowExecutor {
         }
 
         // Extract module.function part
-        let module_function = resolved_path.strip_prefix("aiki/").unwrap();
+        let module_function = resolved_path
+            .strip_prefix("aiki/")
+            .expect("BUG: starts_with('aiki/') check passed but strip_prefix failed");
 
         // Split into module and function
         let parts: Vec<&str> = module_function.splitn(2, '.').collect();
@@ -691,6 +698,7 @@ fn execute_with_timeout_argv(
     cwd: &std::path::Path,
     timeout: Duration,
 ) -> Result<std::process::Output> {
+    use std::panic;
     use std::sync::mpsc;
     use std::thread;
 
@@ -701,11 +709,29 @@ fn execute_with_timeout_argv(
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        let output = Command::new(&program)
-            .args(&args)
-            .current_dir(&cwd)
-            .output();
-        let _ = tx.send(output);
+        // Catch panics in command execution to prevent poisoning
+        let result = panic::catch_unwind(|| {
+            Command::new(&program)
+                .args(&args)
+                .current_dir(&cwd)
+                .output()
+        });
+
+        // Send result or error - channel will be dropped if recv already timed out
+        let output_result = match result {
+            Ok(output_result) => output_result,
+            Err(panic_err) => {
+                eprintln!(
+                    "PANIC in command execution thread: {:?}",
+                    panic_err
+                );
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Command execution thread panicked",
+                ))
+            }
+        };
+        let _ = tx.send(output_result);
     });
 
     Ok(rx
@@ -720,6 +746,7 @@ fn execute_with_timeout(
     cwd: &std::path::Path,
     timeout: Duration,
 ) -> Result<std::process::Output> {
+    use std::panic;
     use std::sync::mpsc;
     use std::thread;
 
@@ -729,12 +756,30 @@ fn execute_with_timeout(
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&cwd)
-            .output();
-        let _ = tx.send(output);
+        // Catch panics in command execution to prevent poisoning
+        let result = panic::catch_unwind(|| {
+            Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .current_dir(&cwd)
+                .output()
+        });
+
+        // Send result or error - channel will be dropped if recv already timed out
+        let output_result = match result {
+            Ok(output_result) => output_result,
+            Err(panic_err) => {
+                eprintln!(
+                    "PANIC in shell command execution thread: {:?}",
+                    panic_err
+                );
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Shell command execution thread panicked",
+                ))
+            }
+        };
+        let _ = tx.send(output_result);
     });
 
     Ok(rx
