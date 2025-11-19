@@ -82,7 +82,7 @@ impl FlowExecutor {
 
         // Add agent type as event.agent_type
         let agent_str = match context.event.agent_type() {
-            crate::provenance::AgentType::ClaudeCode => "claude-code",
+            crate::provenance::AgentType::Claude => "claude",
             crate::provenance::AgentType::Codex => "codex",
             crate::provenance::AgentType::Cursor => "cursor",
             crate::provenance::AgentType::Gemini => "gemini",
@@ -721,10 +721,7 @@ fn execute_with_timeout_argv(
         let output_result = match result {
             Ok(output_result) => output_result,
             Err(panic_err) => {
-                eprintln!(
-                    "PANIC in command execution thread: {:?}",
-                    panic_err
-                );
+                eprintln!("PANIC in command execution thread: {:?}", panic_err);
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Command execution thread panicked",
@@ -769,10 +766,7 @@ fn execute_with_timeout(
         let output_result = match result {
             Ok(output_result) => output_result,
             Err(panic_err) => {
-                eprintln!(
-                    "PANIC in shell command execution thread: {:?}",
-                    panic_err
-                );
+                eprintln!("PANIC in shell command execution thread: {:?}", panic_err);
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Shell command execution thread panicked",
