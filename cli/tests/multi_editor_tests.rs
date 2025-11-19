@@ -136,7 +136,7 @@ fn test_authors_git_format_includes_both_editors() {
 
     // Should show Cursor co-author (the working copy change)
     assert!(
-        stdout.contains("Co-authored-by: Cursor <cursor@cursor.sh>"),
+        stdout.contains("Co-Authored-By: Cursor <noreply@cursor.com>"),
         "Expected Cursor co-author in output: {}",
         stdout
     );
