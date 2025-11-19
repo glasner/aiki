@@ -759,6 +759,7 @@ mod tests {
             file_path: "/tmp/file.rs".to_string(),
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
+            detection_method: crate::provenance::DetectionMethod::Hook,
         })
     }
 
