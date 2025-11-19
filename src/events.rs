@@ -22,6 +22,7 @@ pub struct AikiPostChangeEvent {
     pub file_path: String,           // File that was modified
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    pub detection_method: crate::provenance::DetectionMethod, // How the change was detected (ACP, Hook, etc.)
 }
 
 /// Prepare commit message event (Git's prepare-commit-msg hook)
