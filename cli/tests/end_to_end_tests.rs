@@ -223,8 +223,8 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         description
     );
     assert!(
-        description.contains("agent=claude-code"),
-        "Description should contain agent=claude-code"
+        description.contains("agent=claude"),
+        "Description should contain agent=claude"
     );
     assert!(
         description.contains("session=test-session-e2e"),
