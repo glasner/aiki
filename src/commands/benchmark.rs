@@ -13,13 +13,16 @@ use std::time::Instant;
 /// 3. Query operations (blame, authors)
 /// 4. Commit with co-authors
 ///
-/// Results are saved to benchmarks/YYYY-MM-DD_HH-MM-SS/
+/// Results are saved to benchmarks/default/YYYY-MM-DD_HH-MM-SS/
 pub fn run(num_edits: usize) -> Result<()> {
+    let flow_name = "default"; // Future: make this a parameter
+
     println!("======================================");
     println!("  Aiki End-to-End Benchmark");
     println!("======================================");
     println!();
     println!("Configuration:");
+    println!("  Flow: {}", flow_name);
     println!("  Number of edits: {}", num_edits);
     println!();
 
@@ -227,6 +230,11 @@ pub fn run(num_edits: usize) -> Result<()> {
 
     let total_time: f64 = phase_times.iter().map(|(_, t)| t).sum();
 
+    // Prepare results directory and load previous metrics
+    let benchmark_dir = PathBuf::from(".aiki/benchmarks").join(flow_name);
+    fs::create_dir_all(&benchmark_dir)?;
+    let previous_metrics = load_previous_benchmark(&benchmark_dir)?;
+
     println!("Phase Timing:");
     for (phase, time) in &phase_times {
         println!("  {}: {:.3}s", phase, time);
@@ -234,12 +242,20 @@ pub fn run(num_edits: usize) -> Result<()> {
     println!("  Hot path average: {:.3}s", avg_hook);
     println!();
     println!("Total: {:.3}s", total_time);
+
+    // Show comparison if previous benchmark exists
+    if let Some(prev) = &previous_metrics {
+        println!();
+        println!("======================================");
+        println!("Comparison to Previous Run");
+        println!("======================================");
+        println!();
+        print_comparison(prev, total_time, avg_hook);
+    }
+
     println!();
 
-    // Save results
-    let benchmark_dir = PathBuf::from("benchmarks");
-    fs::create_dir_all(&benchmark_dir)?;
-
+    // Save results to .aiki/benchmarks
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let results_dir = benchmark_dir.join(timestamp.to_string());
     fs::create_dir_all(&results_dir)?;
@@ -262,6 +278,14 @@ pub fn run(num_edits: usize) -> Result<()> {
     writeln!(results_file, "  Hot path max: {:.3}s", max_hook)?;
     writeln!(results_file)?;
     writeln!(results_file, "Total: {:.3}s", total_time)?;
+
+    // Add comparison if previous benchmark exists
+    if let Some(prev) = &previous_metrics {
+        writeln!(results_file)?;
+        writeln!(results_file, "Comparison to Previous Run:")?;
+        writeln!(results_file, "=====================================")?;
+        write_comparison(&mut results_file, prev, total_time, avg_hook)?;
+    }
 
     // Write metrics.json
     let metrics = serde_json::json!({
@@ -324,6 +348,117 @@ fn run_command(cwd: &PathBuf, program: &str, args: &[&str]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         )));
     }
+
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct PreviousMetrics {
+    total: f64,
+    phases: PreviousPhases,
+}
+
+#[derive(serde::Deserialize)]
+struct PreviousPhases {
+    hot_path: HotPathMetrics,
+}
+
+#[derive(serde::Deserialize)]
+struct HotPathMetrics {
+    average: f64,
+}
+
+fn load_previous_benchmark(benchmark_dir: &PathBuf) -> Result<Option<PreviousMetrics>> {
+    let latest_link = benchmark_dir.join("latest");
+
+    if !latest_link.exists() {
+        return Ok(None);
+    }
+
+    let metrics_file = latest_link.join("metrics.json");
+    if !metrics_file.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&metrics_file)?;
+    let metrics: PreviousMetrics = serde_json::from_str(&content).map_err(|e| {
+        crate::error::AikiError::Other(anyhow::anyhow!("Failed to parse previous metrics: {}", e))
+    })?;
+
+    Ok(Some(metrics))
+}
+
+fn print_comparison(prev: &PreviousMetrics, current_total: f64, current_avg_hook: f64) {
+    let total_diff = current_total - prev.total;
+    let total_pct = (total_diff / prev.total) * 100.0;
+    let total_symbol = if total_diff > 0.0 { "+" } else { "" };
+    let total_indicator = if total_diff > 0.0 {
+        "🔴"
+    } else if total_diff < 0.0 {
+        "🟢"
+    } else {
+        "⚪"
+    };
+
+    let hook_diff = current_avg_hook - prev.phases.hot_path.average;
+    let hook_pct = (hook_diff / prev.phases.hot_path.average) * 100.0;
+    let hook_symbol = if hook_diff > 0.0 { "+" } else { "" };
+    let hook_indicator = if hook_diff > 0.0 {
+        "🔴"
+    } else if hook_diff < 0.0 {
+        "🟢"
+    } else {
+        "⚪"
+    };
+
+    println!("  Total time:");
+    println!("    Previous: {:.3}s", prev.total);
+    println!("    Current:  {:.3}s", current_total);
+    println!(
+        "    Change:   {}{:.3}s ({}{:.1}%) {}",
+        total_symbol, total_diff, total_symbol, total_pct, total_indicator
+    );
+    println!();
+    println!("  Hook execution (avg):");
+    println!("    Previous: {:.3}s", prev.phases.hot_path.average);
+    println!("    Current:  {:.3}s", current_avg_hook);
+    println!(
+        "    Change:   {}{:.3}s ({}{:.1}%) {}",
+        hook_symbol, hook_diff, hook_symbol, hook_pct, hook_indicator
+    );
+}
+
+fn write_comparison(
+    file: &mut fs::File,
+    prev: &PreviousMetrics,
+    current_total: f64,
+    current_avg_hook: f64,
+) -> Result<()> {
+    let total_diff = current_total - prev.total;
+    let total_pct = (total_diff / prev.total) * 100.0;
+    let total_symbol = if total_diff > 0.0 { "+" } else { "" };
+
+    let hook_diff = current_avg_hook - prev.phases.hot_path.average;
+    let hook_pct = (hook_diff / prev.phases.hot_path.average) * 100.0;
+    let hook_symbol = if hook_diff > 0.0 { "+" } else { "" };
+
+    writeln!(file, "  Total time:")?;
+    writeln!(file, "    Previous: {:.3}s", prev.total)?;
+    writeln!(file, "    Current:  {:.3}s", current_total)?;
+    writeln!(
+        file,
+        "    Change:   {}{:.3}s ({}{:.1}%)",
+        total_symbol, total_diff, total_symbol, total_pct
+    )?;
+    writeln!(file)?;
+    writeln!(file, "  Hook execution (avg):")?;
+    writeln!(file, "    Previous: {:.3}s", prev.phases.hot_path.average)?;
+    writeln!(file, "    Current:  {:.3}s", current_avg_hook)?;
+    writeln!(
+        file,
+        "    Change:   {}{:.3}s ({}{:.1}%)",
+        hook_symbol, hook_diff, hook_symbol, hook_pct
+    )?;
 
     Ok(())
 }
