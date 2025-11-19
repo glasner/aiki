@@ -475,8 +475,12 @@ fn record_post_change_events(
         .clone()
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?;
 
-    // Get client name
+    // Get client info
     let client = client_name.lock().unwrap().clone();
+    let client_ver = client_version.lock().unwrap().clone();
+
+    // Get agent version
+    let agent_ver = agent_version.lock().unwrap().clone();
 
     // Get tool name from kind
     let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
@@ -486,6 +490,8 @@ fn record_post_change_events(
         let event = AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: *agent_type,
             client_name: client.clone(),
+            client_version: client_ver.clone(),
+            agent_version: agent_ver.clone(),
             session_id: session_id.to_string(),
             tool_name: tool_name.clone(),
             file_path: path.to_string_lossy().to_string(),
