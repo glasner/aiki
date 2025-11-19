@@ -236,18 +236,18 @@ impl AuthorsCommand {
             .join("\n")
     }
 
-    /// Format authors in Git trailer format (Co-authored-by:)
+    /// Format authors in Git trailer format (Co-Authored-By:)
     fn format_git(&self, authors: &[Author]) -> String {
         authors
             .iter()
             .map(|author| {
                 if let Some(client) = &author.client_name {
                     format!(
-                        "Co-authored-by: {} <{}> (via {})",
+                        "Co-Authored-By: {} <{}> (via {})",
                         author.name, author.email, client
                     )
                 } else {
-                    format!("Co-authored-by: {} <{}>", author.name, author.email)
+                    format!("Co-Authored-By: {} <{}>", author.name, author.email)
                 }
             })
             .collect::<Vec<_>>()
