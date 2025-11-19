@@ -69,6 +69,8 @@ pub enum AttributionConfidence {
 /// Method used to detect the AI agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DetectionMethod {
+    /// ACP (Agent Client Protocol) bidirectional proxy
+    ACP,
     /// Claude Code PostToolUse hook
     Hook,
     /// Fallback (Phase 3)
