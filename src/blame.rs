@@ -352,7 +352,7 @@ mod tests {
             line_text: "fn main() {".to_string(),
             change_id: "abc123".to_string(),
             commit_id: "def456".to_string(),
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             confidence: Some(AttributionConfidence::High),
             session_id: Some("session-123".to_string()),
             tool_name: Some("Edit".to_string()),

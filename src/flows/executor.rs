@@ -791,7 +791,7 @@ mod tests {
     // Helper to create a simple test event
     fn create_test_event() -> AikiEvent {
         AikiEvent::PostChange(AikiPostChangeEvent {
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
@@ -805,7 +805,7 @@ mod tests {
     // Helper to create a test event with custom file_path
     fn create_test_event_with_file(file_path: &str) -> AikiEvent {
         AikiEvent::PostChange(AikiPostChangeEvent {
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),

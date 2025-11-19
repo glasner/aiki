@@ -9,7 +9,7 @@ use std::path::PathBuf;
 fn test_must_use_warning_compilation() {
     // Test that event construction works
     let _event = AikiEvent::SessionStart(AikiStartEvent {
-        agent_type: AgentType::ClaudeCode,
+        agent_type: AgentType::Claude,
         session_id: Some("session-123".to_string()),
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -22,7 +22,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using &str
     let _event1 = AikiEvent::SessionStart(AikiStartEvent {
-        agent_type: AgentType::ClaudeCode,
+        agent_type: AgentType::Claude,
         session_id: None,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -30,7 +30,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using String
     let _event2 = AikiEvent::PostChange(AikiPostChangeEvent {
-        agent_type: AgentType::ClaudeCode,
+        agent_type: AgentType::Claude,
         client_name: None,
         session_id: "session-123".to_string(),
         tool_name: "Edit".to_string(),
@@ -50,7 +50,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using PathBuf
     let _event4 = AikiEvent::SessionStart(AikiStartEvent {
-        agent_type: AgentType::ClaudeCode,
+        agent_type: AgentType::Claude,
         session_id: None,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -59,7 +59,7 @@ fn test_impl_asref_path_ergonomics() {
     // Using &PathBuf
     let pb = PathBuf::from("/tmp");
     let _event5 = AikiEvent::PostChange(AikiPostChangeEvent {
-        agent_type: AgentType::ClaudeCode,
+        agent_type: AgentType::Claude,
         client_name: None,
         session_id: "session-123".to_string(),
         tool_name: "Write".to_string(),

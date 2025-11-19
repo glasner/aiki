@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// Detect which editor is calling the Git hook
 #[derive(Debug, Clone, Copy)]
 enum EditorContext {
-    ClaudeCode,
+    Claude,
     Cursor,
     Unknown,
 }
@@ -18,7 +18,7 @@ enum EditorContext {
 fn detect_editor_context() -> EditorContext {
     // Detect from environment variables
     if env::var("CLAUDE_SESSION_ID").is_ok() {
-        EditorContext::ClaudeCode
+        EditorContext::Claude
     } else if env::var("CURSOR_SESSION_ID").is_ok() {
         EditorContext::Cursor
     } else {
@@ -38,7 +38,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
     let commit_msg_file = env::var("AIKI_COMMIT_MSG_FILE").ok().map(PathBuf::from);
 
     let event = AikiPrepareCommitMessageEvent {
-        agent_type: AgentType::ClaudeCode, // Default agent for git hooks
+        agent_type: AgentType::Claude, // Default agent for git hooks
         cwd,
         timestamp: Utc::now(),
         commit_msg_file,
@@ -70,7 +70,7 @@ fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Opt
         .unwrap_or(if response.success { 0 } else { 1 });
 
     match editor {
-        EditorContext::ClaudeCode => {
+        EditorContext::Claude => {
             // Delegate to Claude Code's translator
             // Note: We can't call the private function, so we inline the logic
             translate_for_claude_code(response, exit_code)

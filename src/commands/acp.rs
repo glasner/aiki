@@ -44,6 +44,16 @@ enum MetadataMessage {
 /// * `bin` - Optional custom binary path (defaults to derived from agent_type)
 /// * `agent_args` - Optional arguments to pass to the agent executable
 pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()> {
+    // Install panic hook to diagnose crashes
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("=== PANIC IN ACP PROXY ===");
+        eprintln!("Panic occurred: {}", panic_info);
+        if let Some(location) = panic_info.location() {
+            eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        }
+        eprintln!("=== END PANIC INFO ===");
+    }));
+
     // Validate agent_type matches our enum
     let validated_agent_type = parse_agent_type(&agent_type)?;
 
@@ -277,6 +287,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let status_result = agent.wait();
     if let Err(ref e) = status_result {
         eprintln!("ACP Proxy: Failed to wait for agent process: {}", e);
+    } else if let Ok(ref status) = status_result {
+        let exit_code = status.code().unwrap_or(-1);
+        eprintln!("ACP Proxy: Agent process exited with code: {}", exit_code);
+        if exit_code == 101 {
+            eprintln!("ACP Proxy: EXIT CODE 101 - This is a Rust panic in the AGENT, not the proxy!");
+        }
     }
 
     // ALWAYS join the IDE → Agent thread to ensure clean shutdown

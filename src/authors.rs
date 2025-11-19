@@ -347,7 +347,7 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 /// Format agent type as display name
 fn format_agent_name(agent: &AgentType) -> String {
     match agent {
-        AgentType::ClaudeCode => "Claude".to_string(),
+        AgentType::Claude => "Claude".to_string(),
         AgentType::Codex => "Codex".to_string(),
         AgentType::Cursor => "Cursor".to_string(),
         AgentType::Gemini => "Gemini".to_string(),
@@ -403,13 +403,13 @@ index abc123..def456 100644
 
     #[test]
     fn test_format_agent_email() {
-        assert_eq!(AgentType::ClaudeCode.email(), "claude-code@anthropic.ai");
+        assert_eq!(AgentType::Claude.email(), "claude-code@anthropic.ai");
         assert_eq!(AgentType::Cursor.email(), "cursor@cursor.sh");
     }
 
     #[test]
     fn test_format_agent_name() {
-        assert_eq!(format_agent_name(&AgentType::ClaudeCode), "Claude");
+        assert_eq!(format_agent_name(&AgentType::Claude), "Claude");
         assert_eq!(format_agent_name(&AgentType::Cursor), "Cursor");
     }
 
@@ -418,13 +418,13 @@ index abc123..def456 100644
         let author1 = Author {
             name: "Claude".to_string(),
             email: "noreply@anthropic.com".to_string(),
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
         };
         let author2 = Author {
             name: "Claude".to_string(),
             email: "noreply@anthropic.com".to_string(),
-            agent_type: AgentType::ClaudeCode,
+            agent_type: AgentType::Claude,
             client_name: None,
         };
         assert_eq!(author1, author2);

@@ -246,7 +246,7 @@ mod tests {
 
         let prov = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::ClaudeCode,
+                agent_type: AgentType::Claude,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
