@@ -330,9 +330,8 @@ The ACP proxy allows Aiki to:
 - Record provenance with both client (IDE) and agent information
 - Support future IDE integrations without custom hooks
 
-**Supported agents:** `claude-code`, `cursor`
+**Supported agents:** `claude-code`, `cursor`, `codex`
 
-**Note:** This is an advanced feature primarily used for IDE integrations that support the Agent Client Protocol. Most users should use `aiki init` instead, which sets up hooks automatically.
 
 ### Benchmark Performance
 
