@@ -38,6 +38,10 @@ pub fn configure_zed() -> Result<()> {
                 "command": "aiki",
                 "args": ["acp", "claude-code"]
             },
+            "codex": {
+                "command": "aiki",
+                "args": ["acp", "codex"]
+            },
             "gemini": {
                 "command": "aiki",
                 "args": ["acp", "gemini"]

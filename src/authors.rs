@@ -348,6 +348,7 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 fn format_agent_name(agent: &AgentType) -> String {
     match agent {
         AgentType::ClaudeCode => "Claude Code".to_string(),
+        AgentType::Codex => "Codex".to_string(),
         AgentType::Cursor => "Cursor".to_string(),
         AgentType::Gemini => "Gemini".to_string(),
         AgentType::Unknown => "Unknown AI Agent".to_string(),

@@ -69,6 +69,7 @@ impl FlowExecutor {
         // Add agent type as event.agent_type
         let agent_str = match context.event.agent_type() {
             crate::provenance::AgentType::ClaudeCode => "claude-code",
+            crate::provenance::AgentType::Codex => "codex",
             crate::provenance::AgentType::Cursor => "cursor",
             crate::provenance::AgentType::Gemini => "gemini",
             crate::provenance::AgentType::Unknown => "unknown",
