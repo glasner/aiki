@@ -90,6 +90,9 @@ enum Commands {
     },
     /// Run end-to-end performance benchmark
     Benchmark {
+        /// Flow to benchmark (e.g., "aiki/core")
+        flow: String,
+
         /// Number of edits to simulate (default: 10)
         #[arg(short, long, default_value = "10")]
         edits: usize,
@@ -154,7 +157,7 @@ fn run() -> Result<()> {
             bin,
             agent_args,
         } => commands::acp::run(agent_type, bin, agent_args),
-        Commands::Benchmark { edits } => commands::benchmark::run(edits),
+        Commands::Benchmark { flow, edits } => commands::benchmark::run(flow, edits),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
