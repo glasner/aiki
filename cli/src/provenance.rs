@@ -280,16 +280,20 @@ impl ProvenanceRecord {
         };
 
         let client_name = metadata.get("client").cloned();
+        let client_version = metadata.get("client_version").cloned();
+        let agent_version = metadata.get("agent_version").cloned();
 
         Ok(Some(ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
-                version: None,
+                version: agent_version.clone(),
                 detected_at: Utc::now(), // Timestamp comes from jj change, not stored here
                 confidence,
                 detection_method: method,
             },
             client_name,
+            client_version,
+            agent_version,
             session_id,
             tool_name,
         }))
