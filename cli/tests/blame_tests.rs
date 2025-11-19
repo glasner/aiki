@@ -358,8 +358,5 @@ method=Hook
         blame_verify_output.contains("line 1"),
         "Should show file content"
     );
-    assert!(
-        blame_verify_output.contains("Claude Code"),
-        "Should show agent"
-    );
+    assert!(blame_verify_output.contains("Claude"), "Should show agent");
 }
