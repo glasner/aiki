@@ -17,6 +17,8 @@ pub struct AikiStartEvent {
 pub struct AikiPostChangeEvent {
     pub agent_type: AgentType,
     pub client_name: Option<String>, // IDE name (e.g., "zed", "neovim") from ACP InitializeRequest
+    pub client_version: Option<String>, // IDE version (e.g., "0.213.3") from ACP InitializeRequest
+    pub agent_version: Option<String>, // Agent version (e.g., "0.10.6") from ACP InitializeResponse
     pub session_id: String,          // Required for PostChange events
     pub tool_name: String,           // Tool that made the change (e.g., "Edit", "Write")
     pub file_path: String,           // File that was modified
