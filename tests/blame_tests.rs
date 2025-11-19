@@ -208,14 +208,14 @@ fn test_blame_shows_recorded_change() {
     assert!(blame_output.contains("1|"), "Should have line 1 marker");
     assert!(blame_output.contains("2|"), "Should have line 2 marker");
 
-    // CRITICAL: Verify Claude Code attribution appears in the blame output
+    // CRITICAL: Verify Claude attribution appears in the blame output
     // Format is: <commit_id> (<agent_type> <session_id> <confidence>) <line_num>| <line_text>
-    // The modified line (line 2) should show Claude Code attribution
+    // The modified line (line 2) should show Claude attribution
 
-    // Look for Claude Code agent type in the output (using Display format with space)
+    // Look for Claude agent type in the output (using Display format with space)
     assert!(
-        blame_output.contains("Claude Code"),
-        "Blame should show 'Claude Code' agent type. Output:\n{}",
+        blame_output.contains("Claude"),
+        "Blame should show 'Claude' agent type. Output:\n{}",
         blame_output
     );
 
