@@ -77,6 +77,8 @@ pub fn handle(event_name: &str) -> Result<()> {
             AikiEvent::PostChange(AikiPostChangeEvent {
                 agent_type: AgentType::ClaudeCode,
                 client_name: None, // Hook-based detection doesn't know client (IDE)
+                client_version: None,
+                agent_version: None,
                 session_id: payload.session_id,
                 tool_name: payload.tool_name,
                 file_path: tool_input.file_path,

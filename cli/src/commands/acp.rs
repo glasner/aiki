@@ -13,8 +13,19 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
+
+/// Metadata messages sent from IDE→Agent thread to Agent→IDE thread
+#[derive(Debug, Clone)]
+enum MetadataMessage {
+    /// Client (IDE) information detected from initialize request
+    ClientInfo { name: String, version: Option<String> },
+    /// Agent version detected from initialize response
+    AgentVersion(String),
+    /// Working directory from session/new or session/load
+    WorkingDirectory(PathBuf),
+}
 
 /// Run the ACP bidirectional proxy
 ///
@@ -47,19 +58,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         (cmd, args)
     };
 
-    // Shared state for client info (detected from InitializeRequest)
-    let client_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let client_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-    // Shared state for agent info (detected from InitializeResponse)
-    let agent_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-
-    // Shared state for working directory (from session/new or initialize)
-    let cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
-
-    // Shared state for tool call metadata (locations, kind)
-    let tool_call_contexts: Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    // Create channel for metadata communication
+    // IDE→Agent thread will send discovered metadata
+    // Agent→IDE thread will receive and own the state
+    let (metadata_tx, metadata_rx) = mpsc::channel::<MetadataMessage>();
 
     // Launch agent with piped stdin/stdout
     let mut agent = Command::new(&command)
@@ -77,13 +79,18 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             ))
         })?;
 
-    let mut agent_stdin = agent.stdin.take().unwrap();
-    let agent_stdout = agent.stdout.take().unwrap();
+    let mut agent_stdin = agent
+        .stdin
+        .take()
+        .expect("Failed to acquire agent stdin - this should never happen as we set Stdio::piped()");
+    let agent_stdout = agent
+        .stdout
+        .take()
+        .expect("Failed to acquire agent stdout - this should never happen as we set Stdio::piped()");
 
     // Thread 1: IDE → Agent (intercept and modify)
-    let client_name_clone = Arc::clone(&client_name);
-    let client_version_clone = Arc::clone(&client_version);
-    let cwd_clone = Arc::clone(&cwd);
+    // This thread discovers metadata and sends it via channel
+    let metadata_tx_clone = metadata_tx.clone();
     let agent_type_clone = agent_type.clone();
     let ide_to_agent_thread = thread::spawn(move || -> Result<()> {
         let stdin = io::stdin();
@@ -103,21 +110,24 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     serde_json::from_value::<InitializeRequest>(params.clone())
                                 {
                                     if let Some(client_info) = init_req.client_info {
-                                        let mut client = client_name_clone.lock().unwrap();
-                                        *client = Some(client_info.name.clone());
+                                        let name = client_info.name.clone();
+                                        let version = client_info.version.clone();
 
-                                        if let Some(version) = client_info.version {
-                                            let mut client_ver =
-                                                client_version_clone.lock().unwrap();
-                                            *client_ver = Some(version.clone());
+                                        // Send client info to Agent→IDE thread
+                                        let _ = metadata_tx_clone.send(MetadataMessage::ClientInfo {
+                                            name: name.clone(),
+                                            version: version.clone(),
+                                        });
+
+                                        if let Some(ref ver) = version {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' version '{}' connecting to agent '{}'",
-                                                client_info.name, version, agent_type_clone
+                                                name, ver, agent_type_clone
                                             );
                                         } else {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' connecting to agent '{}'",
-                                                client_info.name, agent_type_clone
+                                                name, agent_type_clone
                                             );
                                         }
                                     }
@@ -128,8 +138,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             // Extract working directory from session requests
                             if let Some(params) = &msg.params {
                                 if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
-                                    let mut working_dir = cwd_clone.lock().unwrap();
-                                    *working_dir = Some(PathBuf::from(cwd_str));
+                                    let path = PathBuf::from(cwd_str);
+
+                                    // Send working directory to Agent→IDE thread
+                                    let _ = metadata_tx_clone.send(MetadataMessage::WorkingDirectory(path));
+
                                     if std::env::var("AIKI_DEBUG").is_ok() {
                                         eprintln!(
                                             "ACP Proxy: Set working directory to: {}",
@@ -156,18 +169,35 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     });
 
     // Thread 2: Agent → IDE (observe and record)
-    let client_name_clone = Arc::clone(&client_name);
-    let client_version_clone = Arc::clone(&client_version);
-    let agent_version_clone = Arc::clone(&agent_version);
-    let cwd_clone = Arc::clone(&cwd);
+    // This thread OWNS all metadata state and receives updates via channel
+    let mut client_name: Option<String> = None;
+    let mut client_version: Option<String> = None;
+    let mut agent_version: Option<String> = None;
+    let mut cwd: Option<PathBuf> = None;
+    let mut tool_call_contexts: HashMap<ToolCallId, ToolCallContext> = HashMap::new();
 
     // Run main forwarding loop, capturing any errors
-    let tool_call_contexts_clone = Arc::clone(&tool_call_contexts);
     let loop_result = (|| -> Result<()> {
         eprintln!("ACP Proxy: Agent → IDE thread started");
         for line in BufReader::new(agent_stdout).lines() {
             let line = line?;
             eprintln!("ACP Proxy: Agent → IDE: received {} bytes", line.len());
+
+            // Drain all pending metadata updates from IDE→Agent thread
+            while let Ok(msg) = metadata_rx.try_recv() {
+                match msg {
+                    MetadataMessage::ClientInfo { name, version } => {
+                        client_name = Some(name);
+                        client_version = version;
+                    }
+                    MetadataMessage::AgentVersion(version) => {
+                        agent_version = Some(version);
+                    }
+                    MetadataMessage::WorkingDirectory(path) => {
+                        cwd = Some(path);
+                    }
+                }
+            }
 
             // Parse message from agent
             if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
@@ -185,8 +215,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         {
                             if let Some(agent_info) = init_resp.agent_info {
                                 if let Some(version) = agent_info.version {
-                                    let mut agent_ver = agent_version_clone.lock().unwrap();
-                                    *agent_ver = Some(version.clone());
+                                    agent_version = Some(version.clone());
                                     eprintln!(
                                         "ACP Proxy: Detected agent '{}' version '{}'",
                                         agent_info.name, version
@@ -212,11 +241,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         if let Err(e) = handle_session_update(
                             &msg,
                             &validated_agent_type,
-                            &client_name_clone,
-                            &client_version_clone,
-                            &agent_version_clone,
-                            &cwd_clone,
-                            &tool_call_contexts_clone,
+                            &client_name,
+                            &client_version,
+                            &agent_version,
+                            &cwd,
+                            &mut tool_call_contexts,
                         ) {
                             eprintln!("Warning: Failed to record provenance: {}", e);
                         }
@@ -292,11 +321,11 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
 fn handle_session_update(
     msg: &JsonRpcMessage,
     agent_type: &AgentType,
-    client_name: &Arc<Mutex<Option<String>>>,
-    client_version: &Arc<Mutex<Option<String>>>,
-    agent_version: &Arc<Mutex<Option<String>>>,
-    cwd: &Arc<Mutex<Option<PathBuf>>>,
-    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_version: &Option<String>,
+    cwd: &Option<PathBuf>,
+    tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
     // Parse session/update params
     let params = msg
@@ -343,11 +372,11 @@ fn process_tool_call(
     session_id: &str,
     tool_call: &ToolCall,
     agent_type: &AgentType,
-    client_name: &Arc<Mutex<Option<String>>>,
-    client_version: &Arc<Mutex<Option<String>>>,
-    agent_version: &Arc<Mutex<Option<String>>>,
-    cwd: &Arc<Mutex<Option<PathBuf>>>,
-    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_version: &Option<String>,
+    cwd: &Option<PathBuf>,
+    tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
     let context = ToolCallContext {
         kind: tool_call.kind,
@@ -356,12 +385,10 @@ fn process_tool_call(
 
     let status = tool_call.status;
 
-    {
-        let mut contexts = tool_call_contexts.lock().unwrap();
-        contexts.insert(tool_call.id.clone(), context.clone());
-        if matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed) {
-            contexts.remove(&tool_call.id);
-        }
+    // Store context for potential updates
+    tool_call_contexts.insert(tool_call.id.clone(), context.clone());
+    if matches!(status, ToolCallStatus::Completed | ToolCallStatus::Failed) {
+        tool_call_contexts.remove(&tool_call.id);
     }
 
     if status == ToolCallStatus::Completed {
@@ -383,14 +410,13 @@ fn process_tool_call_update(
     session_id: &str,
     tool_call: &ToolCallUpdate,
     agent_type: &AgentType,
-    client_name: &Arc<Mutex<Option<String>>>,
-    client_version: &Arc<Mutex<Option<String>>>,
-    agent_version: &Arc<Mutex<Option<String>>>,
-    cwd: &Arc<Mutex<Option<PathBuf>>>,
-    tool_call_contexts: &Arc<Mutex<HashMap<ToolCallId, ToolCallContext>>>,
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_version: &Option<String>,
+    cwd: &Option<PathBuf>,
+    tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
-    let mut contexts = tool_call_contexts.lock().unwrap();
-    let entry = contexts
+    let entry = tool_call_contexts
         .entry(tool_call.id.clone())
         .or_insert_with(|| ToolCallContext {
             kind: tool_call.fields.kind.unwrap_or(ToolKind::Other),
@@ -418,10 +444,8 @@ fn process_tool_call_update(
         status,
         Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
     ) {
-        contexts.remove(&tool_call.id);
+        tool_call_contexts.remove(&tool_call.id);
     }
-
-    drop(contexts);
 
     if let Some(context) = context {
         record_post_change_events(
@@ -451,10 +475,10 @@ fn paths_from_locations(locations: &[ToolCallLocation]) -> Vec<PathBuf> {
 fn record_post_change_events(
     session_id: &str,
     agent_type: &AgentType,
-    client_name: &Arc<Mutex<Option<String>>>,
-    client_version: &Arc<Mutex<Option<String>>>,
-    agent_version: &Arc<Mutex<Option<String>>>,
-    cwd: &Arc<Mutex<Option<PathBuf>>>,
+    client_name: &Option<String>,
+    client_version: &Option<String>,
+    agent_version: &Option<String>,
+    cwd: &Option<PathBuf>,
     context: ToolCallContext,
 ) -> Result<()> {
     if !matches!(
@@ -468,19 +492,18 @@ fn record_post_change_events(
         return Ok(());
     }
 
-    // Get working directory
+    // Get working directory (required)
     let working_dir = cwd
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?;
+        .as_ref()
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
+        .clone();
 
-    // Get client info
-    let client = client_name.lock().unwrap().clone();
-    let client_ver = client_version.lock().unwrap().clone();
+    // Get client info (optional)
+    let client = client_name.clone();
+    let client_ver = client_version.clone();
 
-    // Get agent version
-    let agent_ver = agent_version.lock().unwrap().clone();
+    // Get agent version (optional)
+    let agent_ver = agent_version.clone();
 
     // Get tool name from kind
     let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)

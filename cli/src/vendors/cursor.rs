@@ -61,6 +61,8 @@ pub fn handle(event_name: &str) -> Result<()> {
         "afterFileEdit" => AikiEvent::PostChange(AikiPostChangeEvent {
             agent_type: AgentType::Cursor,
             client_name: None, // Hook-based detection doesn't know client (IDE)
+            client_version: None,
+            agent_version: None,
             session_id: payload.session_id,
             tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
             file_path: payload.edited_file,

@@ -93,7 +93,10 @@ fn find_latest_agent_version(agent_dir: &PathBuf) -> Result<PathBuf> {
     versions.sort();
 
     // Return the highest version
-    Ok(versions.last().unwrap().clone())
+    Ok(versions
+        .last()
+        .expect("BUG: versions vec is empty despite is_empty() check")
+        .clone())
 }
 
 /// Finds the path to an ACP binary installed by Zed
