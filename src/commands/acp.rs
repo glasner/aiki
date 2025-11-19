@@ -541,9 +541,10 @@ mod tests {
 
     #[test]
     fn test_parse_agent_type_valid() {
+        assert!(matches!(parse_agent_type("claude"), Ok(AgentType::Claude)));
         assert!(matches!(
             parse_agent_type("claude-code"),
-            Ok(AgentType::ClaudeCode)
+            Ok(AgentType::Claude)
         ));
         assert!(matches!(parse_agent_type("codex"), Ok(AgentType::Codex)));
         assert!(matches!(parse_agent_type("cursor"), Ok(AgentType::Cursor)));
