@@ -44,14 +44,38 @@ enum MetadataMessage {
 /// * `bin` - Optional custom binary path (defaults to derived from agent_type)
 /// * `agent_args` - Optional arguments to pass to the agent executable
 pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()> {
-    // Install panic hook to diagnose crashes
+    // Install panic hook to diagnose crashes - write to file since stderr might be buffered
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("=== PANIC IN ACP PROXY ===");
-        eprintln!("Panic occurred: {}", panic_info);
-        if let Some(location) = panic_info.location() {
-            eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        use std::io::Write;
+
+        // Try to write to a debug file
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/aiki-proxy-panic.log")
+        {
+            let _ = writeln!(file, "\n=== PANIC IN ACP PROXY at {} ===",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"));
+            let _ = writeln!(file, "{}", panic_info);
+            if let Some(location) = panic_info.location() {
+                let _ = writeln!(file, "Location: {}:{}:{}",
+                    location.file(), location.line(), location.column());
+            }
+            let _ = writeln!(file, "=== END PANIC ===\n");
+            let _ = file.flush();
         }
-        eprintln!("=== END PANIC INFO ===");
+
+        // Also write to stderr
+        let stderr = std::io::stderr();
+        let mut handle = stderr.lock();
+        let _ = writeln!(handle, "=== PANIC IN ACP PROXY ===");
+        let _ = writeln!(handle, "{}", panic_info);
+        if let Some(location) = panic_info.location() {
+            let _ = writeln!(handle, "Location: {}:{}:{}",
+                location.file(), location.line(), location.column());
+        }
+        let _ = writeln!(handle, "=== END PANIC ===");
+        let _ = handle.flush();
     }));
 
     // Validate agent_type matches our enum
