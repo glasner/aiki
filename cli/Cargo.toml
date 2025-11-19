@@ -31,24 +31,3 @@ agent-client-protocol = "0.7"
 assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3.0"
-criterion = "0.5"
-
-[[bench]]
-name = "flow_performance"
-harness = false
-
-[[bench]]
-name = "provenance_comparison"
-harness = false
-
-[[bench]]
-name = "variable_resolution"
-harness = false
-
-[[bench]]
-name = "hashmap_clone_comparison"
-harness = false
-
-[[bench]]
-name = "commit_cache_keys"
-harness = false

@@ -1,0 +1,21 @@
+{
+  "config": {
+    "num_edits": 10
+  },
+  "date": "2025-11-19T11:07:07.396374-05:00",
+  "phases": {
+    "authors_query": 0.106062291,
+    "blame_query": 0.003099625,
+    "final_commit": 0.048419833,
+    "hot_path": {
+      "average": 0.0024202165999999995,
+      "max": 0.002962708,
+      "min": 0.002248375,
+      "total": 0.024744625
+    },
+    "initial_commit": 0.051878583,
+    "initialization": 0.141624375
+  },
+  "timestamp": "2025-11-19_11-07-07",
+  "total": 0.375829332
+}

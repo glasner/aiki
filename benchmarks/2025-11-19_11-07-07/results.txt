@@ -1,0 +1,19 @@
+Aiki End-to-End Benchmark Results
+Date: 2025-11-19 11:07:07.396238 -05:00
+=====================================
+
+Configuration:
+  Number of edits: 10
+
+Phase Timing:
+  Initialization: 0.142s
+  Initial commit: 0.052s
+  Hot path (total): 0.025s
+  Blame query: 0.003s
+  Authors query: 0.106s
+  Final commit: 0.048s
+  Hot path average: 0.002s
+  Hot path min: 0.002s
+  Hot path max: 0.003s
+
+Total: 0.376s
