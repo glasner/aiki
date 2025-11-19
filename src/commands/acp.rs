@@ -47,8 +47,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         (cmd, args)
     };
 
-    // Shared state for client name (detected from InitializeRequest)
+    // Shared state for client info (detected from InitializeRequest)
     let client_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let client_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    // Shared state for agent info (detected from InitializeResponse)
+    let agent_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // Shared state for working directory (from session/new or initialize)
     let cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
