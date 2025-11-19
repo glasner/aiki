@@ -13,9 +13,10 @@ Aiki automatically tracks which AI agents contributed to your codebase, providin
 
 ### Prerequisites
 
-- Jujutsu (jj) - [Installation guide](https://martinvonz.github.io/jj/latest/install-and-setup/)
 - Git (for co-author attribution feature)
 - Rust toolchain (for building from source)
+
+**Note:** Jujutsu (jj) is bundled directly into Aiki via `jj-lib`, so you don't need to install it separately.
 
 ### Installation
 
