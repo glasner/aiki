@@ -284,8 +284,8 @@ fn test_blame_filter_by_cursor() {
         stdout
     );
     assert!(
-        !stdout.contains("Claude Code"),
-        "Should not contain 'Claude Code' when filtering by cursor: {}",
+        !stdout.contains("Claude"),
+        "Should not contain 'Claude' when filtering by cursor: {}",
         stdout
     );
 }
