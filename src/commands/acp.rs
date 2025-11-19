@@ -1,4 +1,6 @@
-use crate::acp::protocol::{InitializeRequest, JsonRpcMessage, SessionNotification};
+use crate::acp::protocol::{
+    InitializeRequest, InitializeResponse, JsonRpcMessage, SessionNotification,
+};
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
