@@ -421,6 +421,7 @@ fn record_post_change_events(
             file_path: path.to_string_lossy().to_string(),
             cwd: working_dir.clone(),
             timestamp: chrono::Utc::now(),
+            detection_method: crate::provenance::DetectionMethod::ACP,
         });
 
         // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
