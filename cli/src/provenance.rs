@@ -39,11 +39,11 @@ impl AgentType {
     /// Get the email address for this agent type
     pub fn email(&self) -> &'static str {
         match self {
-            AgentType::ClaudeCode => "claude-code@anthropic.ai",
-            AgentType::Codex => "codex@openai.com",
-            AgentType::Cursor => "cursor@cursor.sh",
-            AgentType::Gemini => "gemini@google.ai",
-            AgentType::Unknown => "unknown@aiki.dev",
+            AgentType::ClaudeCode => "noreply@anthropic.com",
+            AgentType::Codex => "noreply@openai.com",
+            AgentType::Cursor => "noreply@cursor.com",
+            AgentType::Gemini => "noreply@google.com",
+            AgentType::Unknown => "noreply@aiki.dev",
         }
     }
 
