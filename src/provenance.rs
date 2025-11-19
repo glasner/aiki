@@ -162,7 +162,7 @@ impl ProvenanceRecord {
     ///
     /// let description = record.to_description();
     /// assert!(description.contains("[aiki]"));
-    /// assert!(description.contains("agent=claude-code"));
+    /// assert!(description.contains("agent=claude"));
     /// ```
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
