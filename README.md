@@ -42,7 +42,7 @@ This will:
 - Create `.aiki/` directory structure
 - Configure commit signing (automatically detects GPG/SSH keys)
 - Install Git hooks for automatic co-author attribution
-- Configure Claude Code hooks (per-repository in `.claude/settings.json`)
+- Configure Claude Code hooks (global user hooks in `~/.claude/settings.json`)
 - Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
 - Offer to automatically restart editors if they're running
 
@@ -448,10 +448,10 @@ The hook chains to any previously configured hooks, so it won't interfere with e
 Aiki currently supports:
 
 ### Claude Code
-- **Hook type**: PostToolUse hooks
-- **Configuration**: Per-repository in `.claude/settings.json`
+- **Hook type**: SessionStart and PostToolUse hooks
+- **Configuration**: Global user-level in `~/.claude/settings.json`
 - **Installation**: Automatic during `aiki init`
-- **Scope**: Each repository has its own configuration
+- **Scope**: Configured once globally, works for all projects
 
 ### Cursor
 - **Hook type**: `afterFileEdit` hooks
@@ -465,7 +465,7 @@ Aiki preserves existing hooks:
 - **Claude Code**: Preserves existing marketplace configs and plugin settings
 - **Cursor**: Appends to hook arrays, so existing `afterFileEdit` hooks continue to work
 
-Since Cursor hooks are global, you only need to restart Cursor once after your first `aiki init` - subsequent projects will automatically have Cursor support.
+Since both editors use global hooks, you only need to restart your editors once after your first `aiki init` - subsequent projects will automatically have full Aiki support.
 
 ## Architecture
 
