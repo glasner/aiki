@@ -74,6 +74,27 @@ pub struct InitializeRequest {
     pub capabilities: Option<Value>,
 }
 
+/// Initialize response parameters
+///
+/// Sent by the AI agent in response to the initialization handshake.
+/// We extract the agentInfo to determine which agent is responding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResponse {
+    /// Information about the agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_info: Option<AgentInfo>,
+    /// Protocol version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+    /// Agent capabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_capabilities: Option<Value>,
+    /// Authentication methods
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_methods: Option<Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
