@@ -80,7 +80,7 @@ fn test_git_hook_includes_multiple_editors() -> Result<()> {
 
     // Should include Cursor as co-author (the current change)
     assert!(
-        stdout.contains("Co-authored-by: Cursor <cursor@cursor.sh>"),
+        stdout.contains("Co-authored-by: Cursor <noreply@cursor.com>"),
         "Should include Cursor co-author: {}",
         stdout
     );
