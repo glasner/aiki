@@ -32,11 +32,14 @@ fn test_impl_asref_path_ergonomics() {
     let _event2 = AikiEvent::PostChange(AikiPostChangeEvent {
         agent_type: AgentType::Claude,
         client_name: None,
+        client_version: None,
+        agent_version: None,
         session_id: "session-123".to_string(),
         tool_name: "Edit".to_string(),
         file_path: "/tmp/file.rs".to_string(),
         cwd: PathBuf::from(String::from("/tmp")),
         timestamp: chrono::Utc::now(),
+        detection_method: crate::provenance::DetectionMethod::Hook,
     });
 
     // Using &String
