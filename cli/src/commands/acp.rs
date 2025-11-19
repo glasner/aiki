@@ -132,7 +132,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: IDE → Agent thread started");
         for line in stdin.lock().lines() {
             let line = line?;
-            eprintln!("ACP Proxy: IDE → Agent: received {} bytes", line.len());
+            // Removed verbose logging to prevent stderr overflow panic
 
             // Try to parse message from IDE for metadata extraction
             if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
@@ -195,7 +195,6 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             }
 
             // Forward raw line to agent (no re-serialization)
-            eprintln!("ACP Proxy: Forwarding to agent: {} bytes", line.len());
             writeln!(agent_stdin, "{}", line)?;
             agent_stdin.flush()?;
         }
@@ -218,7 +217,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: Agent → IDE thread started");
         for line in BufReader::new(agent_stdout).lines() {
             let line = line?;
-            eprintln!("ACP Proxy: Agent → IDE: received {} bytes", line.len());
+            // Removed verbose logging to prevent stderr overflow panic
 
             // Drain all pending metadata updates from IDE→Agent thread
             while let Ok(msg) = metadata_rx.try_recv() {
@@ -238,11 +237,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
             // Parse message from agent
             if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
-                // Log every message method and id for debugging
-                eprintln!(
-                    "ACP Proxy: Message: method={:?} id={:?}",
-                    msg.method, msg.id
-                );
+                // Removed verbose logging to prevent stderr overflow panic
 
                 // Capture agent version from initialize response
                 if msg.id.is_some() && msg.result.is_some() {
@@ -264,15 +259,9 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                 }
 
                 if let Some(method) = &msg.method {
-                    // Log all session/update messages with their update type
+                    // Handle session/update messages
                     if method == "session/update" {
-                        if let Some(params) = &msg.params {
-                            eprintln!(
-                                "ACP Proxy: session/update params: {}",
-                                serde_json::to_string_pretty(params)
-                                    .unwrap_or_else(|_| "error".to_string())
-                            );
-                        }
+                        // Removed verbose logging to prevent stderr overflow panic
 
                         // Record provenance via event bus (non-blocking)
                         if let Err(e) = handle_session_update(
@@ -291,7 +280,6 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             }
 
             // Forward to IDE
-            eprintln!("ACP Proxy: Forwarding to IDE: {} bytes", line.len());
             println!("{}", line);
             io::stdout().flush()?;
         }
