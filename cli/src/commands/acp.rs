@@ -105,10 +105,21 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     if let Some(client_info) = init_req.client_info {
                                         let mut client = client_name_clone.lock().unwrap();
                                         *client = Some(client_info.name.clone());
-                                        eprintln!(
-                                            "ACP Proxy: Detected client '{}' connecting to agent '{}'",
-                                            client_info.name, agent_type_clone
-                                        );
+
+                                        if let Some(version) = client_info.version {
+                                            let mut client_ver =
+                                                client_version_clone.lock().unwrap();
+                                            *client_ver = Some(version.clone());
+                                            eprintln!(
+                                                "ACP Proxy: Detected client '{}' version '{}' connecting to agent '{}'",
+                                                client_info.name, version, agent_type_clone
+                                            );
+                                        } else {
+                                            eprintln!(
+                                                "ACP Proxy: Detected client '{}' connecting to agent '{}'",
+                                                client_info.name, agent_type_clone
+                                            );
+                                        }
                                     }
                                 }
                             }
