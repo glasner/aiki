@@ -452,6 +452,8 @@ fn record_post_change_events(
     session_id: &str,
     agent_type: &AgentType,
     client_name: &Arc<Mutex<Option<String>>>,
+    client_version: &Arc<Mutex<Option<String>>>,
+    agent_version: &Arc<Mutex<Option<String>>>,
     cwd: &Arc<Mutex<Option<PathBuf>>>,
     context: ToolCallContext,
 ) -> Result<()> {
