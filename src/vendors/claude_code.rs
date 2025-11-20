@@ -81,7 +81,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                 agent_version: None,
                 session_id: payload.session_id,
                 tool_name: payload.tool_name,
-                file_path: tool_input.file_path,
+                file_paths: vec![tool_input.file_path],
                 cwd: PathBuf::from(&payload.cwd),
                 timestamp: chrono::Utc::now(),
                 detection_method: crate::provenance::DetectionMethod::Hook,
