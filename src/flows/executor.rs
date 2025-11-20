@@ -50,7 +50,7 @@ impl FlowExecutor {
     /// Create a variable resolver with proper variable scoping
     ///
     /// Variable scopes:
-    /// - Event variables (from actual events): $event.file_path, $event.agent_type
+    /// - Event variables (from actual events): $event.file_paths, $event.agent_type
     /// - Let variables (user-defined): $description, $my_var (no event. prefix)
     /// - System variables: $cwd
     /// - Environment variables: $HOME, $PATH
