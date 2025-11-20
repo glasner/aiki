@@ -46,7 +46,7 @@ impl VariableResolver {
             .collect();
 
         // Sort by pattern length (longest first) to handle overlapping names correctly
-        // e.g., $event.file_path before $event.file
+        // e.g., $event.file_paths before $event.file
         self.cached_patterns
             .sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.len()));
 
