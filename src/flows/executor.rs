@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn test_execute_log_with_variables() {
         let action = LogAction {
-            log: "File: $event.file_path".to_string(),
+            log: "File: $event.file_paths".to_string(),
             alias: None,
         };
 
