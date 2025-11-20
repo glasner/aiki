@@ -36,7 +36,7 @@ version: "1"
 name: Lint Flow
 version: "1"
 PostChange:
-  - shell: ruff check $event.file_path
+  - shell: ruff check $event.file_paths
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
