@@ -1186,7 +1186,7 @@ mod tests {
         // Verify aliasing behavior creates copies
         let actions = vec![
             Action::Let(LetAction {
-                let_: "original = $event.file_path".to_string(),
+                let_: "original = $event.file_paths".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Let(LetAction {
