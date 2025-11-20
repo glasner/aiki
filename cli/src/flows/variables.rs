@@ -63,7 +63,7 @@ impl VariableResolver {
     /// Example:
     /// ```ignore
     /// let mut resolver = VariableResolver::new();
-    /// resolver.add_var("event.file_path", "/path/to/file.rs");
+    /// resolver.add_var("event.file_paths", "/path/to/file.rs");
     /// resolver.add_var("cwd", "/home/user/project");
     ///
     /// let result = resolver.resolve("File: $event.file_paths in $cwd");
