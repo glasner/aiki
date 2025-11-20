@@ -273,9 +273,9 @@ fn test_blame_verify_shows_signature_status() {
         .output()
         .unwrap();
 
-    // Initialize JJ (colocated)
+    // Initialize JJ (pure JJ storage)
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(repo_path)
         .output()
         .expect("Failed to initialize JJ repo");
