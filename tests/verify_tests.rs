@@ -29,9 +29,9 @@ fn init_jj_repo(path: &std::path::Path) {
     // Initialize git first
     init_git_repo(path);
 
-    // Initialize JJ in colocated mode
+    // Initialize JJ with pure storage
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(path)
         .output()
         .expect("Failed to initialize JJ repository");
