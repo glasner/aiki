@@ -40,6 +40,7 @@ fn test_impl_asref_path_ergonomics() {
         cwd: PathBuf::from(String::from("/tmp")),
         timestamp: chrono::Utc::now(),
         detection_method: crate::provenance::DetectionMethod::Hook,
+        edit_details: vec![],
     });
 
     // Using &String
@@ -72,6 +73,7 @@ fn test_impl_asref_path_ergonomics() {
         cwd: pb.clone(),
         timestamp: chrono::Utc::now(),
         detection_method: crate::provenance::DetectionMethod::Hook,
+        edit_details: vec![],
     });
 
     // Using &Path

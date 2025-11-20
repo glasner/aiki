@@ -79,6 +79,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
+            edit_details: vec![],
         };
 
         let result = build_metadata(&event).unwrap();
@@ -110,6 +111,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
+            edit_details: vec![],
         };
 
         let result = build_metadata(&event).unwrap();

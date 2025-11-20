@@ -79,10 +79,21 @@ pub fn handle(event_name: &str) -> Result<()> {
                 payload.edited_file
             };
 
-            // TODO: Store edits (old_string/new_string pairs) for user edit detection
-            // For now, we just track the file path
-            if std::env::var("AIKI_DEBUG").is_ok() && !payload.edits.is_empty() {
-                eprintln!("[aiki] Cursor provided {} edits", payload.edits.len());
+            // Extract edit details from Cursor's edits array for user edit detection
+            let edit_details: Vec<crate::events::EditDetail> = payload
+                .edits
+                .iter()
+                .map(|edit| {
+                    crate::events::EditDetail::new(
+                        file_path.clone(),
+                        edit.old_string.clone(),
+                        edit.new_string.clone(),
+                    )
+                })
+                .collect();
+
+            if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
+                eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
             }
 
             AikiEvent::PostChange(AikiPostChangeEvent {
@@ -96,6 +107,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                 cwd: PathBuf::from(&payload.working_directory),
                 timestamp: chrono::Utc::now(),
                 detection_method: crate::provenance::DetectionMethod::Hook,
+                edit_details,
             })
         }
         // Future events can be added here without hook reinstallation

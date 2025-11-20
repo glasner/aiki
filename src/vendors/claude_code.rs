@@ -74,6 +74,18 @@ pub fn handle(event_name: &str) -> Result<()> {
                 .tool_input
                 .ok_or_else(|| anyhow::anyhow!("PostToolUse requires tool_input"))?;
 
+            // Extract edit details from tool_input for user edit detection
+            let edit_details =
+                if !tool_input.old_string.is_empty() || !tool_input.new_string.is_empty() {
+                    vec![crate::events::EditDetail::new(
+                        tool_input.file_path.clone(),
+                        tool_input.old_string.clone(),
+                        tool_input.new_string.clone(),
+                    )]
+                } else {
+                    Vec::new()
+                };
+
             AikiEvent::PostChange(AikiPostChangeEvent {
                 agent_type: AgentType::Claude,
                 client_name: None, // Hook-based detection doesn't know client (IDE)
@@ -85,6 +97,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                 cwd: PathBuf::from(&payload.cwd),
                 timestamp: chrono::Utc::now(),
                 detection_method: crate::provenance::DetectionMethod::Hook,
+                edit_details,
             })
         }
         // Future events can be added here without hook reinstallation

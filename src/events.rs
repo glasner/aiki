@@ -3,6 +3,33 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Details about an individual edit operation
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditDetail {
+    /// File path that was edited
+    pub file_path: String,
+    /// The old string that was replaced (empty if this is an insertion)
+    pub old_string: String,
+    /// The new string that replaced it (empty if this is a deletion)
+    pub new_string: String,
+}
+
+impl EditDetail {
+    /// Create a new EditDetail
+    #[must_use]
+    pub fn new(
+        file_path: impl Into<String>,
+        old_string: impl Into<String>,
+        new_string: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_path: file_path.into(),
+            old_string: old_string.into(),
+            new_string: new_string.into(),
+        }
+    }
+}
+
 /// Session start event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiStartEvent {
@@ -25,6 +52,10 @@ pub struct AikiPostChangeEvent {
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub detection_method: crate::provenance::DetectionMethod, // How the change was detected (ACP, Hook, etc.)
+    /// Detailed edit operations (old_string -> new_string pairs) for user edit detection
+    /// Only populated when the agent/IDE provides this information (ACP Edit tool, hooks)
+    #[serde(default)]
+    pub edit_details: Vec<EditDetail>,
 }
 
 /// Prepare commit message event (Git's prepare-commit-msg hook)

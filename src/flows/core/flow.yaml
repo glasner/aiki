@@ -1,5 +1,5 @@
 name: "Aiki Core"
-description: "Core flow that handles initialization and provenance tracking"
+description: "Core flow that handles initialization and provenance tracking with user edit detection"
 version: "1"
 
 # SessionStart: Initialize and verify repository setup when a session begins
@@ -8,22 +8,38 @@ SessionStart:
   # This preserves any existing uncommitted work and prevents attributing
   # pre-existing changes to the new editor session
   - jj: new
-    on_failure: continue
 
   # Initialize Aiki (idempotent - safe to run multiple times)
   - shell: aiki init --quiet
     on_failure: stop
 
 # PostChange: Record provenance metadata after every AI edit
+# With user edit detection: separates AI changes from user modifications
 PostChange:
   # Build both message and author in a single call (more efficient)
   - let: metadata = self.build_metadata
     on_failure: stop
 
-  # Set both the change description and author with provenance metadata
-  # Using native field access: $metadata.author and $metadata.message
-  - jj: metaedit --message "$metadata.message" --author "$metadata.author"
+  # Classify edits to detect user modifications
+  # This compares AI's intended edits with actual file state
+  # Result: classification_type, extra_files, details
+  - let: detection = self.classify_edits
 
+  # Separate AI changes from user edits based on classification
+  - switch: $detection.classification_type
+    cases:
+      # ExactMatch:
+      # No user modifications - just set metadata on current change
+
+      AdditiveUserEdits:
+        # User added more changes - separate them
+        - let: separation = self.separate_edits
+
+      OverlappingUserEdits:
+        # User modified AI's changes - cannot separate cleanly
+        - log: "Cannot separate overlapping user edits"
+
+  - jj: metaedit --message "$metadata.message" --author "$metadata.author"
   # Create a new change for the next edit
   - jj: new
 

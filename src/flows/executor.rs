@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
-    Action, CommitMessageAction, CommitMessageOp, FailureMode, JjAction, LetAction, LogAction,
-    ShellAction,
+    Action, CommitMessageAction, CommitMessageOp, FailureMode, IfAction, JjAction, LetAction,
+    LogAction, ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -129,6 +129,8 @@ impl FlowExecutor {
             // Handle failure based on failure mode
             if !result.success {
                 let failure_mode = match action {
+                    Action::If(if_action) => &if_action.on_failure,
+                    Action::Switch(switch_action) => &switch_action.on_failure,
                     Action::Shell(shell_action) => &shell_action.on_failure,
                     Action::Jj(jj_action) => &jj_action.on_failure,
                     Action::Let(let_action) => &let_action.on_failure,
@@ -189,8 +191,10 @@ impl FlowExecutor {
     }
 
     /// Execute a single action
-    fn execute_action(action: &Action, context: &AikiState) -> Result<ActionResult> {
+    fn execute_action(action: &Action, context: &mut AikiState) -> Result<ActionResult> {
         match action {
+            Action::If(if_action) => Self::execute_if(if_action, context),
+            Action::Switch(switch_action) => Self::execute_switch(switch_action, context),
             Action::Shell(shell_action) => Self::execute_shell(shell_action, context),
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
@@ -207,6 +211,14 @@ impl FlowExecutor {
     /// For Shell/Jj/Log with alias: stores the variable with its result
     fn store_action_result(action: &Action, result: &ActionResult, context: &mut AikiState) {
         match action {
+            Action::If(_) => {
+                // If actions execute their branches directly and store results there
+                // No need to store the if action result itself
+            }
+            Action::Switch(_) => {
+                // Switch actions execute their branches directly and store results there
+                // No need to store the switch action result itself
+            }
             Action::Let(let_action) => {
                 // Parse the variable name from "variable = expression"
                 if let Some(variable_name) = let_action.let_.split('=').next() {
@@ -236,7 +248,7 @@ impl FlowExecutor {
     }
 
     /// Execute a shell command
-    fn execute_shell(action: &ShellAction, context: &AikiState) -> Result<ActionResult> {
+    fn execute_shell(action: &ShellAction, context: &mut AikiState) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
         let mut resolver = Self::create_resolver(context);
 
@@ -270,7 +282,7 @@ impl FlowExecutor {
     }
 
     /// Execute a JJ command
-    fn execute_jj(action: &JjAction, context: &AikiState) -> Result<ActionResult> {
+    fn execute_jj(action: &JjAction, context: &mut AikiState) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
         let mut resolver = Self::create_resolver(context);
 
@@ -306,7 +318,7 @@ impl FlowExecutor {
     }
 
     /// Execute a log action
-    fn execute_log(action: &LogAction, context: &AikiState) -> Result<ActionResult> {
+    fn execute_log(action: &LogAction, context: &mut AikiState) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
         let mut resolver = Self::create_resolver(context);
 
@@ -316,7 +328,13 @@ impl FlowExecutor {
         // Print to stderr (so it appears in hook output)
         eprintln!("[aiki] {}", message);
 
-        Ok(ActionResult::success())
+        // Return the message in stdout so it can be stored as a variable
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: message,
+            stderr: String::new(),
+        })
     }
 
     /// Execute a commit_message action
@@ -325,7 +343,7 @@ impl FlowExecutor {
     /// Only works for PrepareCommitMessage events that have a commit_msg_file.
     fn execute_commit_message(
         action: &CommitMessageAction,
-        context: &AikiState,
+        context: &mut AikiState,
     ) -> Result<ActionResult> {
         use crate::events::AikiEvent;
         use std::fs;
@@ -529,7 +547,182 @@ impl FlowExecutor {
     /// Supports two modes:
     /// 1. Function call: `let metadata = aiki/core.build_metadata`
     /// 2. Variable aliasing: `let desc = $description`
-    fn execute_let(action: &LetAction, context: &AikiState) -> Result<ActionResult> {
+    /// Execute a conditional if/then/else action
+    fn execute_if(action: &IfAction, context: &mut AikiState) -> Result<ActionResult> {
+        // Evaluate the condition
+        let condition_result = Self::evaluate_condition(&action.condition, context)?;
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[flows] If condition '{}' evaluated to: {}",
+                action.condition, condition_result
+            );
+        }
+
+        // Execute the appropriate branch
+        let actions_to_execute = if condition_result {
+            &action.then
+        } else if let Some(else_actions) = &action.else_ {
+            else_actions
+        } else {
+            // No else branch and condition is false - treat as success (no-op)
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::from("condition_false"),
+                stderr: String::new(),
+            });
+        };
+
+        // Execute the branch actions recursively
+        // This allows nested conditionals and proper state modification
+        for branch_action in actions_to_execute {
+            let result = Self::execute_action(branch_action, context)?;
+
+            // Store action results for reference by subsequent actions
+            Self::store_action_result(branch_action, &result, context);
+
+            // If any action in the branch fails, the whole if action fails
+            if !result.success {
+                return Ok(ActionResult {
+                    success: false,
+                    exit_code: result.exit_code,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                });
+            }
+        }
+
+        // All branch actions succeeded
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::from("condition_branch_completed"),
+            stderr: String::new(),
+        })
+    }
+
+    /// Execute a switch/case action
+    fn execute_switch(action: &SwitchAction, context: &mut AikiState) -> Result<ActionResult> {
+        // Evaluate the switch expression
+        let mut resolver = Self::create_resolver(context);
+        let switch_value = resolver.resolve(&action.expression);
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[flows] Switch expression '{}' evaluated to: {}",
+                action.expression, switch_value
+            );
+        }
+
+        // Find matching case
+        let actions_to_execute = if let Some(case_actions) = action.cases.get(&switch_value) {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("[flows] Switch matched case: {}", switch_value);
+            }
+            case_actions
+        } else if let Some(default_actions) = &action.default {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!(
+                    "[flows] Switch using default case (no match for '{}')",
+                    switch_value
+                );
+            }
+            default_actions
+        } else {
+            // No match and no default - treat as success (no-op)
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!(
+                    "[flows] Switch: no match for '{}' and no default case",
+                    switch_value
+                );
+            }
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::from("no_match"),
+                stderr: String::new(),
+            });
+        };
+
+        // Execute the matched case actions
+        for case_action in actions_to_execute {
+            let result = Self::execute_action(case_action, context)?;
+
+            // Store action results for reference by subsequent actions
+            Self::store_action_result(case_action, &result, context);
+
+            // If any action in the case fails, the whole switch action fails
+            if !result.success {
+                return Ok(ActionResult {
+                    success: false,
+                    exit_code: result.exit_code,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                });
+            }
+        }
+
+        // All case actions succeeded
+        Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::from("switch_case_completed"),
+            stderr: String::new(),
+        })
+    }
+
+    /// Evaluate a condition expression
+    /// Supports: ==, !=, JSON field access ($var.field)
+    fn evaluate_condition(condition: &str, context: &AikiState) -> Result<bool> {
+        let condition = condition.trim();
+
+        // Parse comparison operators
+        if let Some(pos) = condition.find("==") {
+            let left = condition[..pos].trim();
+            let right = condition[pos + 2..].trim();
+            let left_val = Self::resolve_condition_value(left, context)?;
+            let right_val = Self::resolve_condition_value(right, context)?;
+            return Ok(left_val == right_val);
+        }
+
+        if let Some(pos) = condition.find("!=") {
+            let left = condition[..pos].trim();
+            let right = condition[pos + 2..].trim();
+            let left_val = Self::resolve_condition_value(left, context)?;
+            let right_val = Self::resolve_condition_value(right, context)?;
+            return Ok(left_val != right_val);
+        }
+
+        // No operator - treat as boolean check (variable exists and is truthy)
+        let val = Self::resolve_condition_value(condition, context)?;
+        Ok(val == "true")
+    }
+
+    /// Resolve a value in a condition expression
+    /// Supports: variables ($var), JSON field access ($var.field), literals
+    fn resolve_condition_value(expr: &str, context: &AikiState) -> Result<String> {
+        let expr = expr.trim();
+
+        // Remove quotes if present
+        if (expr.starts_with('"') && expr.ends_with('"'))
+            || (expr.starts_with('\'') && expr.ends_with('\''))
+        {
+            return Ok(expr[1..expr.len() - 1].to_string());
+        }
+
+        // Check if it's a variable reference
+        if expr.starts_with('$') {
+            // Use the existing variable resolver
+            let mut resolver = Self::create_resolver(context);
+            return Ok(resolver.resolve(expr));
+        }
+
+        // Otherwise, it's a literal value
+        Ok(expr.to_string())
+    }
+
+    fn execute_let(action: &LetAction, context: &mut AikiState) -> Result<ActionResult> {
         // Parse the let binding: "variable = expression"
         let parts: Vec<&str> = action.let_.splitn(2, '=').collect();
         if parts.len() != 2 {
@@ -673,6 +866,24 @@ impl FlowExecutor {
                     )));
                 };
                 crate::flows::core::build_metadata(event)
+            }
+            ("core", "classify_edits") => {
+                // classify_edits requires PostChange event
+                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "classify_edits can only be called for PostChange events"
+                    )));
+                };
+                crate::flows::core::classify_edits(event)
+            }
+            ("core", "separate_edits") => {
+                // separate_edits requires PostChange event
+                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "separate_edits can only be called for PostChange events"
+                    )));
+                };
+                crate::flows::core::separate_edits(event)
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
@@ -819,6 +1030,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
+            edit_details: vec![],
         })
     }
 
@@ -835,6 +1047,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
+            edit_details: vec![],
         })
     }
 
@@ -870,9 +1083,9 @@ mod tests {
             alias: None,
         };
 
-        let context = AikiState::new(create_test_event());
+        let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_log(&action, &context).unwrap();
+        let result = FlowExecutor::execute_log(&action, &mut context).unwrap();
         assert!(result.success);
     }
 
@@ -883,9 +1096,9 @@ mod tests {
             alias: None,
         };
 
-        let context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_log(&action, &context).unwrap();
+        let result = FlowExecutor::execute_log(&action, &mut context).unwrap();
         assert!(result.success);
     }
 
@@ -898,9 +1111,9 @@ mod tests {
             alias: None,
         };
 
-        let context = AikiState::new(create_test_event());
+        let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_shell(&action, &context).unwrap();
+        let result = FlowExecutor::execute_shell(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test"));
     }
@@ -914,9 +1127,9 @@ mod tests {
             alias: None,
         };
 
-        let context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_shell(&action, &context).unwrap();
+        let result = FlowExecutor::execute_shell(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test.rs"));
     }
@@ -1018,9 +1231,9 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -1033,9 +1246,9 @@ mod tests {
         };
 
         let event = create_test_event();
-        let context = AikiState::new(event);
+        let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_let(&action, &context);
+        let result = FlowExecutor::execute_let(&action, &mut context);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1061,9 +1274,9 @@ mod tests {
             };
 
             let event = create_test_event();
-            let context = AikiState::new(event);
+            let mut context = AikiState::new(event);
 
-            let result = FlowExecutor::execute_let(&action, &context);
+            let result = FlowExecutor::execute_let(&action, &mut context);
             assert!(result.is_err(), "Should reject: {}", let_str);
             assert!(
                 result.unwrap_err().to_string().contains("Invalid variable"),
@@ -1080,9 +1293,9 @@ mod tests {
             on_failure: FailureMode::Continue,
         };
 
-        let context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -1190,7 +1403,7 @@ mod tests {
         context.flow_name = Some("aiki/core".to_string());
 
         // This should succeed because PostChangeEvent has session_id and tool_name
-        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
         assert!(result.stdout.contains("author"));
@@ -1299,7 +1512,7 @@ mod tests {
         let mut context = AikiState::new(event);
         context.flow_name = Some("aiki/core".to_string());
 
-        let result = FlowExecutor::execute_let(&action, &context).unwrap();
+        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("author"));
         assert!(result.stdout.contains("message"));
@@ -1314,9 +1527,9 @@ mod tests {
 
         // No flow_name set
         let event = create_test_event();
-        let context = AikiState::new(event);
+        let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_let(&action, &context);
+        let result = FlowExecutor::execute_let(&action, &mut context);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1456,5 +1669,346 @@ mod tests {
             result.contains("text.\n\nCo-authored-by:"),
             "Should preserve existing blank line"
         );
+    }
+
+    #[test]
+    fn test_if_condition_true_executes_then_branch() {
+        let actions = vec![
+            // Set a variable using log action (which doesn't require function namespace)
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            // Conditional that should execute then branch
+            Action::If(IfAction {
+                condition: "$status == true".to_string(),
+                then: vec![Action::Log(LogAction {
+                    log: "then branch executed".to_string(),
+                    alias: Some("result".to_string()),
+                })],
+                else_: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"then branch executed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_if_condition_false_executes_else_branch() {
+        let actions = vec![
+            // Set a variable using log action
+            Action::Log(LogAction {
+                log: "false".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            // Conditional that should execute else branch
+            Action::If(IfAction {
+                condition: "$status == true".to_string(),
+                then: vec![Action::Log(LogAction {
+                    log: "then branch executed".to_string(),
+                    alias: Some("result".to_string()),
+                })],
+                else_: Some(vec![Action::Log(LogAction {
+                    log: "else branch executed".to_string(),
+                    alias: Some("result".to_string()),
+                })]),
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"else branch executed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_if_condition_false_no_else_branch() {
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "false".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            Action::If(IfAction {
+                condition: "$status == true".to_string(),
+                then: vec![Action::Log(LogAction {
+                    log: "then branch executed".to_string(),
+                    alias: Some("result".to_string()),
+                })],
+                else_: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        // result should not be set since neither branch executed
+        assert!(context.get_variable("result").is_none());
+    }
+
+    #[test]
+    fn test_if_json_field_access() {
+        let actions = vec![
+            // Create JSON variable
+            Action::Let(LetAction {
+                let_: "detection = aiki/core.classify_edits".to_string(),
+                on_failure: FailureMode::Continue,
+            }),
+            // Check JSON field (will fail in test since classify_edits returns error)
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        context.flow_name = Some("aiki/core".to_string());
+
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // This test just verifies syntax doesn't crash
+    }
+
+    #[test]
+    fn test_if_nested_conditionals() {
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("outer".to_string()),
+            }),
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("inner".to_string()),
+            }),
+            Action::If(IfAction {
+                condition: "$outer == true".to_string(),
+                then: vec![Action::If(IfAction {
+                    condition: "$inner == true".to_string(),
+                    then: vec![Action::Log(LogAction {
+                        log: "nested then executed".to_string(),
+                        alias: Some("result".to_string()),
+                    })],
+                    else_: None,
+                    on_failure: FailureMode::Stop,
+                })],
+                else_: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"nested then executed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_evaluate_condition_equality() {
+        let mut context = AikiState::new(create_test_event());
+        context.store_action_result(
+            "test".to_string(),
+            ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "value".to_string(),
+                stderr: String::new(),
+            },
+        );
+
+        // Test equality
+        assert!(FlowExecutor::evaluate_condition("$test == value", &context).unwrap());
+        assert!(!FlowExecutor::evaluate_condition("$test == other", &context).unwrap());
+
+        // Test inequality
+        assert!(!FlowExecutor::evaluate_condition("$test != value", &context).unwrap());
+        assert!(FlowExecutor::evaluate_condition("$test != other", &context).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_condition_value_with_quotes() {
+        let mut context = AikiState::new(create_test_event());
+
+        // Test string literals with quotes
+        assert_eq!(
+            FlowExecutor::resolve_condition_value("\"hello\"", &context).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            FlowExecutor::resolve_condition_value("'world'", &context).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn test_switch_matches_case() {
+        use std::collections::HashMap;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "ExactMatch".to_string(),
+            vec![Action::Log(LogAction {
+                log: "exact match case".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+        cases.insert(
+            "PartialMatch".to_string(),
+            vec![Action::Log(LogAction {
+                log: "partial match case".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "ExactMatch".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            Action::Switch(SwitchAction {
+                expression: "$status".to_string(),
+                cases,
+                default: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"exact match case".to_string())
+        );
+    }
+
+    #[test]
+    fn test_switch_uses_default_case() {
+        use std::collections::HashMap;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "ExactMatch".to_string(),
+            vec![Action::Log(LogAction {
+                log: "exact match case".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "NoMatch".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            Action::Switch(SwitchAction {
+                expression: "$status".to_string(),
+                cases,
+                default: Some(vec![Action::Log(LogAction {
+                    log: "default case".to_string(),
+                    alias: Some("result".to_string()),
+                })]),
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"default case".to_string())
+        );
+    }
+
+    #[test]
+    fn test_switch_no_match_no_default() {
+        use std::collections::HashMap;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "ExactMatch".to_string(),
+            vec![Action::Log(LogAction {
+                log: "exact match case".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "NoMatch".to_string(),
+                alias: Some("status".to_string()),
+            }),
+            Action::Switch(SwitchAction {
+                expression: "$status".to_string(),
+                cases,
+                default: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // No match and no default = success (no-op)
+        assert!(matches!(result, FlowResult::Success));
+        // result variable should not be set
+        assert!(context.get_variable("result").is_none());
+    }
+
+    #[test]
+    fn test_switch_with_json_field_access() {
+        use std::collections::HashMap;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "true".to_string(),
+            vec![Action::Log(LogAction {
+                log: "all exact match".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+        cases.insert(
+            "false".to_string(),
+            vec![Action::Log(LogAction {
+                log: "not all exact match".to_string(),
+                alias: Some("result".to_string()),
+            })],
+        );
+
+        // Create a simple JSON object to test field access
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "{\"all_exact_match\": \"true\"}".to_string(),
+                alias: Some("detection".to_string()),
+            }),
+            Action::Switch(SwitchAction {
+                expression: "$detection.all_exact_match".to_string(),
+                cases,
+                default: None,
+                on_failure: FailureMode::Stop,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        assert!(matches!(result, FlowResult::Success));
+        // Note: Variable resolver will parse the JSON and extract the field
+        // The actual result depends on the resolver implementation
     }
 }

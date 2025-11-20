@@ -145,6 +145,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/test"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
+            edit_details: vec![],
         });
         let ctx = AikiState::new(event);
 

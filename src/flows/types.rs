@@ -39,6 +39,10 @@ fn default_version() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Action {
+    /// Conditional execution (if/then/else)
+    If(IfAction),
+    /// Switch/case statement
+    Switch(SwitchAction),
     /// Shell command
     Shell(ShellAction),
     /// JJ command
@@ -101,6 +105,47 @@ pub struct LetAction {
     pub let_: String,
 
     /// What to do when the action fails
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Conditional action (if/then/else)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IfAction {
+    /// Condition to evaluate (supports variable access with $, JSON field access with .)
+    /// Examples: "$detection.all_exact_match == true", "$metadata.tool == Edit"
+    #[serde(rename = "if")]
+    pub condition: String,
+
+    /// Actions to execute if condition is true
+    pub then: Vec<Action>,
+
+    /// Optional actions to execute if condition is false
+    #[serde(default)]
+    pub else_: Option<Vec<Action>>,
+
+    /// What to do when condition evaluation fails
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Switch/case action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwitchAction {
+    /// Expression to evaluate and match against cases
+    /// Examples: "$detection.classification", "$metadata.tool"
+    #[serde(rename = "switch")]
+    pub expression: String,
+
+    /// Map of case values to actions
+    /// The key is matched against the evaluated expression
+    pub cases: std::collections::HashMap<String, Vec<Action>>,
+
+    /// Optional default case if no cases match
+    #[serde(default)]
+    pub default: Option<Vec<Action>>,
+
+    /// What to do when switch evaluation fails
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
 }

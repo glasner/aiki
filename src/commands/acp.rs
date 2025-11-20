@@ -427,6 +427,7 @@ fn process_tool_call(
     let context = ToolCallContext {
         kind: tool_call.kind,
         paths: paths_from_locations(&tool_call.locations),
+        content: tool_call.content.clone(),
     };
 
     let status = tool_call.status;
@@ -467,6 +468,7 @@ fn process_tool_call_update(
         .or_insert_with(|| ToolCallContext {
             kind: tool_call.fields.kind.unwrap_or(ToolKind::Other),
             paths: Vec::new(),
+            content: Vec::new(),
         });
 
     if let Some(kind) = tool_call.fields.kind {
@@ -475,6 +477,10 @@ fn process_tool_call_update(
 
     if let Some(locations) = &tool_call.fields.locations {
         entry.paths = paths_from_locations(locations);
+    }
+
+    if let Some(content) = &tool_call.fields.content {
+        entry.content = content.clone();
     }
 
     let status = tool_call.fields.status;
@@ -512,6 +518,7 @@ fn process_tool_call_update(
 struct ToolCallContext {
     kind: ToolKind,
     paths: Vec<PathBuf>,
+    content: Vec<agent_client_protocol::ToolCallContent>,
 }
 
 fn paths_from_locations(locations: &[ToolCallLocation]) -> Vec<PathBuf> {
@@ -561,6 +568,9 @@ fn record_post_change_events(
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
+    // Extract edit details from tool call parameters (if available)
+    let edit_details = extract_edit_details(&context);
+
     // Create and dispatch a single event for all affected files
     let event = AikiEvent::PostChange(AikiPostChangeEvent {
         agent_type: *agent_type,
@@ -573,6 +583,7 @@ fn record_post_change_events(
         cwd: working_dir.clone(),
         timestamp: chrono::Utc::now(),
         detection_method: crate::provenance::DetectionMethod::ACP,
+        edit_details,
     });
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
@@ -581,6 +592,43 @@ fn record_post_change_events(
     }
 
     Ok(())
+}
+
+/// Extract edit details from ACP tool call context
+///
+/// Extracts old_text/new_text from ToolCallContent::Diff variants.
+/// The ACP protocol provides file diffs in the content field when tools
+/// modify files, allowing us to detect user edits.
+fn extract_edit_details(context: &ToolCallContext) -> Vec<crate::events::EditDetail> {
+    use agent_client_protocol::ToolCallContent;
+
+    let mut edit_details = Vec::new();
+
+    for content_item in &context.content {
+        if let ToolCallContent::Diff { diff } = content_item {
+            // Convert PathBuf to string for file_path
+            let file_path = diff.path.to_string_lossy().to_string();
+
+            // old_text is Option<String>, use empty string if None (new file)
+            let old_string = diff.old_text.clone().unwrap_or_default();
+
+            // new_text is the modified content
+            let new_string = diff.new_text.clone();
+
+            edit_details.push(crate::events::EditDetail::new(
+                file_path, old_string, new_string,
+            ));
+        }
+    }
+
+    if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
+        eprintln!(
+            "[acp] Extracted {} edit details from tool call content",
+            edit_details.len()
+        );
+    }
+
+    edit_details
 }
 
 #[cfg(test)]
