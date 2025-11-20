@@ -1311,7 +1311,7 @@ mod tests {
     fn test_let_variables_work_in_shell_actions() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "my_var = $event.file_path".to_string(),
+                let_: "my_var = $event.file_paths".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Shell(ShellAction {
