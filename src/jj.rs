@@ -43,7 +43,7 @@ impl JJWorkspace {
 mod tests {
     use super::*;
 
-    /// Verifies that pure JJ initialization creates .jj directory
+    /// Verifies that JJ initialization creates .jj directory with internal Git storage
     #[test]
     fn workspace_init_creates_jj_directory() {
         // Create a temporary directory for testing
@@ -65,10 +65,16 @@ mod tests {
             ".jj directory should exist"
         );
 
-        // Verify .git directory was NOT created (pure JJ, no Git backend)
+        // Verify .git directory was NOT created in working copy (non-colocated)
         assert!(
             !temp_dir.path().join(".git").exists(),
-            ".git directory should not exist for pure JJ workspace"
+            ".git directory should not exist in working copy for non-colocated workspace"
+        );
+
+        // Verify internal Git storage exists
+        assert!(
+            temp_dir.path().join(".jj/repo/store/git").exists(),
+            "Internal Git storage should exist at .jj/repo/store/git"
         );
     }
 
