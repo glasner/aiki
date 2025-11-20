@@ -21,7 +21,7 @@ pub struct AikiPostChangeEvent {
     pub agent_version: Option<String>, // Agent version (e.g., "0.10.6") from ACP InitializeResponse
     pub session_id: String,          // Required for PostChange events
     pub tool_name: String,           // Tool that made the change (e.g., "Edit", "Write")
-    pub file_path: String,           // File that was modified
+    pub file_paths: Vec<String>,     // Files that were modified (batch support)
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub detection_method: crate::provenance::DetectionMethod, // How the change was detected (ACP, Hook, etc.)
