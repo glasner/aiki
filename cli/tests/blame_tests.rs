@@ -312,6 +312,13 @@ method=Hook
         .output()
         .expect("Failed to describe change");
 
+    // Create a new change to snapshot the working copy
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to create new change");
+
     // Run blame without --verify (should not show signature indicators)
     let aiki_bin = get_aiki_binary_path();
     let output = Command::new(&aiki_bin)
