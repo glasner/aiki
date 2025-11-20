@@ -172,12 +172,12 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<HookResponse> {
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message(format!(
-            "✅ Provenance recorded for {}",
-            event.file_path
+            "✅ Provenance recorded for {} files",
+            event.file_paths.len()
         ))),
         FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(format!(
-            "⚠️ Provenance partially recorded for {}",
-            event.file_path
+            "⚠️ Provenance partially recorded for {} files",
+            event.file_paths.len()
         ))
         .with_agent_message(format!("Some actions failed: {}", msg))),
         FlowResult::FailedStop(_msg) => {
