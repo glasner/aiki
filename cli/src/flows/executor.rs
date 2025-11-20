@@ -1125,7 +1125,7 @@ mod tests {
     #[test]
     fn test_let_creates_structured_metadata() {
         let actions = vec![Action::Let(LetAction {
-            let_: "desc = $event.file_path".to_string(),
+            let_: "desc = $event.file_paths".to_string(),
             on_failure: FailureMode::Continue,
         })];
 
