@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-/// Resolves variables in strings (e.g., $event.file_path, $cwd, $HOME)
+/// Resolves variables in strings (e.g., $event.file_paths, $cwd, $HOME)
 pub struct VariableResolver {
     variables: HashMap<String, String>,
     // Cached sorted patterns: ("$key", "value")
