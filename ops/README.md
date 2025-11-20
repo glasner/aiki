@@ -1855,9 +1855,9 @@ Tools optimize for humans OR for CI/CD, but not for the new reality of multi-age
 
 ### Git Compatibility
 
-JJ uses Git as production-ready storage backend via gitoxide Rust library. Creates standard Git commits compatible with any Git remote. Users can maintain colocated repositories using both `jj` and `git` commands interchangeably.
+Aiki uses JJ and Git as independent systems. JJ tracks AI changes with stable change IDs and provenance metadata using an internal Git backend (non-colocated mode at `.jj/repo/store/git`). Git commits are created by users via standard `git commit` workflow. The `prepare-commit-msg` hook extracts co-author attribution from JJ changes.
 
-**For Aiki:** Coordinate agents through JJ's DAG internally, output standard Git commits to GitHub/GitLab externally. Zero workflow disruption for teams.
+**For Aiki:** JJ tracks all AI changes independently with rich provenance metadata. Users control when Git commits are created. Git history stays clean and user-managed. No automatic Git commits on JJ operations.
 
 ### Why Jujutsu for Multi-Agent Development?
 
