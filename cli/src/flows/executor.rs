@@ -1250,7 +1250,7 @@ mod tests {
     fn test_let_aliasing_copies_all_structured_metadata() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "file = $event.file_path".to_string(),
+                let_: "file = $event.file_paths".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Let(LetAction {
@@ -1362,7 +1362,7 @@ mod tests {
     fn test_let_variables_work_in_log_actions() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "file = $event.file_path".to_string(),
+                let_: "file = $event.file_paths".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Log(LogAction {
