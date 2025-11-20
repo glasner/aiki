@@ -555,7 +555,7 @@ cli/src/commands/doctor.rs  // Contains prompt_yes_no()
 
 ### The Fundamental Distinction
 
-Aiki is built on **Jujutsu (jj)**, not Git. While jj can colocate with Git repositories, its data model is fundamentally different:
+Aiki uses **both Jujutsu (jj) and Git** as independent systems. JJ tracks AI changes with a hidden internal Git backend, while users maintain their own separate Git repository for version control. Their data models are fundamentally different:
 
 | Concept | Git | Jujutsu (jj) |
 |---------|-----|--------------|
