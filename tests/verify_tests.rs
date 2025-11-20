@@ -26,10 +26,8 @@ fn init_git_repo(path: &std::path::Path) {
 
 /// Helper function to initialize a JJ repository
 fn init_jj_repo(path: &std::path::Path) {
-    // Initialize git first
-    init_git_repo(path);
-
-    // Initialize JJ with non-colocated storage
+    // Initialize JJ with non-colocated storage (creates internal Git repo)
+    // Don't initialize git first, as non-colocated mode fails with existing .git
     Command::new("jj")
         .args(["git", "init", "--no-colocate"])
         .current_dir(path)
