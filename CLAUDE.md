@@ -648,6 +648,28 @@ let description = commit.description();  // Get change description
 // Load the commit object (represents a change in jj) to get its change_id
 ```
 
+### JJ and Git Separation
+
+Aiki uses JJ and Git as separate, independent systems:
+
+- **JJ (.jj/)** - Tracks AI changes with [aiki] metadata blocks
+  - Uses internal Git backend at `.jj/repo/store/git` (non-colocated mode)
+  - Every AI edit creates a JJ change
+  - Change descriptions store provenance data
+  - Completely independent from user's `.git` directory
+
+- **Git (.git/)** - User's version control system
+  - Git commits created only when user runs `git commit`
+  - `prepare-commit-msg` hook extracts co-authors from JJ
+  - No automatic synchronization with JJ
+  - Users control when Git commits are created
+
+This separation ensures:
+1. Users control when Git commits are created
+2. AI changes are tracked independently in JJ
+3. Git history stays clean and user-managed
+4. No automatic Git commits on `jj describe` or `jj new`
+
 ---
 
 ## JJ --help
