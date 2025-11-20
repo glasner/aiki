@@ -56,7 +56,7 @@ impl VariableResolver {
     /// Resolve all variables in a string
     ///
     /// Supports:
-    /// - $event.* variables (e.g., $event.file_path)
+    /// - $event.* variables (e.g., $event.file_paths)
     /// - $cwd, $agent
     /// - $ENV_VAR environment variables
     ///
