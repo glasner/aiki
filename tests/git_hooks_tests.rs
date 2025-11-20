@@ -294,7 +294,7 @@ fn test_git_hook_only_shows_ai_contributors() -> Result<()> {
 /// Helper to initialize a git repository
 fn init_git_repo(dir: &Path) -> Result<()> {
     Command::new("git")
-        .args(["git", "init", "--no-colocate"])
+        .args(["init"])
         .current_dir(dir)
         .output()?;
 
