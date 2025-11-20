@@ -15,7 +15,7 @@ fn setup_test_repo() -> (TempDir, PathBuf) {
 
     // Initialize JJ repo
     let output = Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(&repo_path)
         .output()
         .expect("Failed to initialize JJ repo");
