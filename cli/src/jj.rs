@@ -26,64 +26,16 @@ impl JJWorkspace {
             .context("Failed to create user settings for JJ operations")
     }
 
-    /// Initialize JJ with a specific Git directory path
-    ///
-    /// This handles both normal Git repositories (where .git is a directory)
-    /// and Git worktrees/submodules (where .git is a file pointing to the real Git directory)
-    ///
-    /// # Arguments
-    /// * `git_dir` - Path to the resolved Git directory (obtained via RepoDetector::resolve_git_dir)
-    pub fn init_with_git_dir(&self, git_dir: &Path) -> Result<()> {
-        let settings = Self::create_user_settings()?;
-
-        // Initialize JJ using the existing Git repository
-        // When git_dir is in the same location as workspace_root/.git, this creates
-        // a colocated workspace where JJ and Git share the working copy
-        let (_workspace, _repo) =
-            Workspace::init_external_git(&settings, &self.workspace_root, git_dir)
-                .context("Failed to initialize JJ on existing Git repository")?;
-
-        Ok(())
-    }
-
-    /// Initialize a colocated JJ repository (Git-backed)
-    /// This creates both .jj and .git directories in the workspace root
-    pub fn init_colocated(&self) -> Result<()> {
-        let settings = Self::create_user_settings()?;
-
-        // Initialize the colocated workspace
-        let (_workspace, _repo) = Workspace::init_colocated_git(&settings, &self.workspace_root)
-            .context("Failed to initialize colocated JJ workspace")?;
-
-        Ok(())
-    }
-
-    /// Import Git refs and commits into JJ
-    /// This should be called after init_with_git_dir() to import existing Git history
-    pub fn git_import(&self) -> Result<()> {
+    /// Initialize a pure JJ repository (no Git backend)
+    /// This creates a .jj directory with independent storage, completely separate from Git
+    pub fn init(&self) -> Result<()> {
         let settings = Self::create_user_settings()?;
         let store_factories = StoreFactories::default();
-        let working_copy_factories = default_working_copy_factories();
 
-        // Load the workspace
-        let workspace = Workspace::load(
-            &settings,
-            &self.workspace_root,
-            &store_factories,
-            &working_copy_factories,
-        )
-        .context("Failed to load JJ workspace for git import")?;
-
-        let repo = workspace
-            .repo_loader()
-            .load_at_head()
-            .context("Failed to load repository")?;
-
-        // Import Git refs
-        let mut tx = repo.start_transaction();
-        let git_settings = settings.git_settings()?;
-        git::import_refs(tx.repo_mut(), &git_settings)?;
-        tx.commit("import git refs")?;
+        // Initialize pure JJ workspace with no Git backend
+        let (_workspace, _repo) =
+            Workspace::init(&settings, &self.workspace_root, &store_factories)
+                .context("Failed to initialize JJ workspace")?;
 
         Ok(())
     }
