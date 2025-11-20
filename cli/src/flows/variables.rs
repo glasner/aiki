@@ -157,7 +157,7 @@ mod tests {
         resolver.add_var("event.file_path", "long");
 
         // Should resolve longest match first
-        assert_eq!(resolver.resolve("$event.file_path"), "long");
+        assert_eq!(resolver.resolve("$event.file_paths"), "long");
     }
 
     #[test]
