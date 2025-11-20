@@ -11,7 +11,8 @@ use crate::provenance::AgentType;
 /// Cursor hook payload structure
 ///
 /// This matches the JSON that Cursor sends to its hooks.
-/// Note: Cursor uses camelCase, different from Claude Code's snake_case.
+/// Note: Cursor uses snake_case for afterFileEdit hook.
+/// See: https://cursor.com/docs/agent/hooks#afterfileedit
 #[derive(Deserialize, Debug)]
 struct CursorPayload {
     #[serde(rename = "sessionId")]
@@ -20,9 +21,21 @@ struct CursorPayload {
     working_directory: String,
     #[serde(rename = "eventName")]
     event_name: String,
+    // afterFileEdit fields
+    #[serde(default)]
+    file_path: String,
+    #[serde(default)]
+    edits: Vec<CursorEdit>,
+    // Legacy field (deprecated in favor of file_path)
     #[serde(rename = "editedFile", default)]
     edited_file: String,
-    // Additional fields may be present but we don't need them
+}
+
+/// Individual edit operation in Cursor's afterFileEdit hook
+#[derive(Deserialize, Debug)]
+struct CursorEdit {
+    old_string: String,
+    new_string: String,
 }
 
 /// Handle a Cursor event
@@ -58,18 +71,33 @@ pub fn handle(event_name: &str) -> Result<()> {
             cwd: PathBuf::from(&payload.working_directory),
             timestamp: chrono::Utc::now(),
         }),
-        "afterFileEdit" => AikiEvent::PostChange(AikiPostChangeEvent {
-            agent_type: AgentType::Cursor,
-            client_name: None, // Hook-based detection doesn't know client (IDE)
-            client_version: None,
-            agent_version: None,
-            session_id: payload.session_id,
-            tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-            file_paths: vec![payload.edited_file],
-            cwd: PathBuf::from(&payload.working_directory),
-            timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
-        }),
+        "afterFileEdit" => {
+            // Use new file_path field if available, fallback to legacy editedFile
+            let file_path = if !payload.file_path.is_empty() {
+                payload.file_path
+            } else {
+                payload.edited_file
+            };
+
+            // TODO: Store edits (old_string/new_string pairs) for user edit detection
+            // For now, we just track the file path
+            if std::env::var("AIKI_DEBUG").is_ok() && !payload.edits.is_empty() {
+                eprintln!("[aiki] Cursor provided {} edits", payload.edits.len());
+            }
+
+            AikiEvent::PostChange(AikiPostChangeEvent {
+                agent_type: AgentType::Cursor,
+                client_name: None, // Hook-based detection doesn't know client (IDE)
+                client_version: None,
+                agent_version: None,
+                session_id: payload.session_id,
+                tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
+                file_paths: vec![file_path],
+                cwd: PathBuf::from(&payload.working_directory),
+                timestamp: chrono::Utc::now(),
+                detection_method: crate::provenance::DetectionMethod::Hook,
+            })
+        }
         // Future events can be added here without hook reinstallation
         _ => {
             if std::env::var("AIKI_DEBUG").is_ok() {
