@@ -513,7 +513,7 @@ impl FlowExecutor {
     /// Execute a let binding action
     ///
     /// Supports two modes:
-    /// 1. Function call: `let description = aiki/core.build_description`
+    /// 1. Function call: `let metadata = aiki/core.build_metadata`
     /// 2. Variable aliasing: `let desc = $description`
     fn execute_let(action: &LetAction, context: &AikiState) -> Result<ActionResult> {
         // Parse the let binding: "variable = expression"
@@ -590,7 +590,7 @@ impl FlowExecutor {
         })
     }
 
-    /// Execute a let binding for function call: `let description = aiki/core.build_description`
+    /// Execute a let binding for function call: `let metadata = aiki/core.build_metadata`
     /// Supports `self.function` syntax to reference functions in the current flow
     fn execute_let_function(
         variable_name: &str,
@@ -651,14 +651,14 @@ impl FlowExecutor {
 
         // Route to appropriate function
         match (module, function) {
-            ("core", "build_description") => {
-                // build_description requires PostChange event
+            ("core", "build_metadata") => {
+                // build_metadata requires PostChange event
                 let crate::events::AikiEvent::PostChange(event) = &context.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_description can only be called for PostChange events"
+                        "build_metadata can only be called for PostChange events"
                     )));
                 };
-                crate::flows::core::build_description(event)
+                crate::flows::core::build_metadata(event)
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
@@ -1164,10 +1164,10 @@ mod tests {
 
     #[test]
     fn test_let_with_context_vars() {
-        // This test verifies that build_description works with typed events.
+        // This test verifies that build_metadata works with typed events.
         // The type system now guarantees that PostChange events have all required fields.
         let action = LetAction {
-            let_: "description = aiki/core.build_description".to_string(),
+            let_: "metadata = aiki/core.build_metadata".to_string(),
             on_failure: FailureMode::Stop,
         };
 
@@ -1178,7 +1178,9 @@ mod tests {
         // This should succeed because PostChangeEvent has session_id and tool_name
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
-        assert!(result.stdout.contains("[aiki]"));
+        // Result is JSON with author and message fields
+        assert!(result.stdout.contains("author"));
+        assert!(result.stdout.contains("message"));
     }
 
     #[test]
@@ -1275,7 +1277,7 @@ mod tests {
     #[test]
     fn test_let_self_reference() {
         let action = LetAction {
-            let_: "description = self.build_description".to_string(),
+            let_: "metadata = self.build_metadata".to_string(),
             on_failure: FailureMode::Stop,
         };
 
@@ -1285,13 +1287,14 @@ mod tests {
 
         let result = FlowExecutor::execute_let(&action, &context).unwrap();
         assert!(result.success);
-        assert!(result.stdout.contains("[aiki]"));
+        assert!(result.stdout.contains("author"));
+        assert!(result.stdout.contains("message"));
     }
 
     #[test]
     fn test_let_self_reference_without_flow_context() {
         let action = LetAction {
-            let_: "description = self.build_description".to_string(),
+            let_: "metadata = self.build_metadata".to_string(),
             on_failure: FailureMode::Stop,
         };
 

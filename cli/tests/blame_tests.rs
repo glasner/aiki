@@ -124,8 +124,8 @@ fn test_blame_shows_recorded_change() {
     assert!(output.status.success(), "hooks handle should succeed");
 
     // The new hooks system uses the flow engine which:
-    // 1. Calls aiki/core.build_description to generate provenance
-    // 2. Runs jj describe to set the metadata
+    // 1. Calls aiki/core.build_metadata to generate provenance (author + message)
+    // 2. Runs jj metaedit to set both message and author
     // 3. Runs jj new to create a fresh working copy
     // So the metadata is on the PARENT change (the one we modified)
     let settings = {

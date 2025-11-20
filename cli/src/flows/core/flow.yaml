@@ -10,12 +10,13 @@ SessionStart:
 
 # PostChange: Record provenance metadata after every AI edit
 PostChange:
-  # Build the provenance description using self reference
-  - let: description = self.build_description
+  # Build both message and author in a single call (more efficient)
+  - let: metadata = self.build_metadata
     on_failure: stop
 
-  # Set the change description with provenance metadata
-  - jj: describe -m "$description"
+  # Set both the change description and author with provenance metadata
+  # Using native field access: $metadata.author and $metadata.message
+  - jj: metaedit --message "$metadata.message" --author "$metadata.author"
 
   # Create a new change for the next edit
   - jj: new

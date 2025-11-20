@@ -54,13 +54,13 @@ mod tests {
         // Should have PostChange handler with let action
         assert!(!core.post_change.is_empty());
 
-        // First action should be a Let binding with self reference
+        // First action should be a Let binding with self reference to build_metadata
         match &core.post_change[0] {
             Action::Let(let_action) => {
                 // Verify uses self reference for portability
                 assert_eq!(
-                    let_action.let_, "description = self.build_description",
-                    "Flow should use 'self.build_description' for portability"
+                    let_action.let_, "metadata = self.build_metadata",
+                    "Flow should use 'self.build_metadata' for efficiency"
                 );
                 assert_eq!(let_action.on_failure, FailureMode::Stop);
             }
