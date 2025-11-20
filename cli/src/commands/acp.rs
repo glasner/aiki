@@ -54,12 +54,20 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             .append(true)
             .open("/tmp/aiki-proxy-panic.log")
         {
-            let _ = writeln!(file, "\n=== PANIC IN ACP PROXY at {} ===",
-                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"));
+            let _ = writeln!(
+                file,
+                "\n=== PANIC IN ACP PROXY at {} ===",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
+            );
             let _ = writeln!(file, "{}", panic_info);
             if let Some(location) = panic_info.location() {
-                let _ = writeln!(file, "Location: {}:{}:{}",
-                    location.file(), location.line(), location.column());
+                let _ = writeln!(
+                    file,
+                    "Location: {}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                );
             }
             let _ = writeln!(file, "=== END PANIC ===\n");
             let _ = file.flush();
@@ -71,8 +79,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         let _ = writeln!(handle, "=== PANIC IN ACP PROXY ===");
         let _ = writeln!(handle, "{}", panic_info);
         if let Some(location) = panic_info.location() {
-            let _ = writeln!(handle, "Location: {}:{}:{}",
-                location.file(), location.line(), location.column());
+            let _ = writeln!(
+                handle,
+                "Location: {}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            );
         }
         let _ = writeln!(handle, "=== END PANIC ===");
         let _ = handle.flush();
@@ -303,7 +316,9 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         let exit_code = status.code().unwrap_or(-1);
         eprintln!("ACP Proxy: Agent process exited with code: {}", exit_code);
         if exit_code == 101 {
-            eprintln!("ACP Proxy: EXIT CODE 101 - This is a Rust panic in the AGENT, not the proxy!");
+            eprintln!(
+                "ACP Proxy: EXIT CODE 101 - This is a Rust panic in the AGENT, not the proxy!"
+            );
         }
     }
 
@@ -539,25 +554,30 @@ fn record_post_change_events(
     // Get tool name from kind
     let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
 
-    // Create and dispatch an event for each affected file
-    for path in context.paths {
-        let event = AikiEvent::PostChange(AikiPostChangeEvent {
-            agent_type: *agent_type,
-            client_name: client.clone(),
-            client_version: client_ver.clone(),
-            agent_version: agent_ver.clone(),
-            session_id: session_id.to_string(),
-            tool_name: tool_name.clone(),
-            file_path: path.to_string_lossy().to_string(),
-            cwd: working_dir.clone(),
-            timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::ACP,
-        });
+    // Convert all paths to strings
+    let file_paths: Vec<String> = context
+        .paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
 
-        // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
-        if let Err(e) = event_bus::dispatch(event) {
-            eprintln!("Warning: Event bus dispatch failed: {}", e);
-        }
+    // Create and dispatch a single event for all affected files
+    let event = AikiEvent::PostChange(AikiPostChangeEvent {
+        agent_type: *agent_type,
+        client_name: client.clone(),
+        client_version: client_ver.clone(),
+        agent_version: agent_ver.clone(),
+        session_id: session_id.to_string(),
+        tool_name: tool_name.clone(),
+        file_paths,
+        cwd: working_dir.clone(),
+        timestamp: chrono::Utc::now(),
+        detection_method: crate::provenance::DetectionMethod::ACP,
+    });
+
+    // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
+    if let Err(e) = event_bus::dispatch(event) {
+        eprintln!("Warning: Event bus dispatch failed: {}", e);
     }
 
     Ok(())
