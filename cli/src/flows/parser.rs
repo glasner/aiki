@@ -119,7 +119,7 @@ PostChange:
 name: Multi Event Flow
 version: "1"
 PostChange:
-  - shell: ruff check $event.file_path
+  - shell: ruff check $event.file_paths
 PrepareCommitMessage:
   - shell: pytest
 SessionStart:
