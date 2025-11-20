@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn test_execute_let_variable_aliasing() {
         let action = LetAction {
-            let_: "desc = $event.file_path".to_string(),
+            let_: "desc = $event.file_paths".to_string(),
             on_failure: FailureMode::Continue,
         };
 
