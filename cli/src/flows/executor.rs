@@ -61,7 +61,11 @@ impl FlowExecutor {
         match &context.event {
             crate::events::AikiEvent::PostChange(e) => {
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
-                resolver.add_var("event.file_path".to_string(), e.file_path.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+                resolver.add_var(
+                    "event.file_count".to_string(),
+                    e.file_paths.len().to_string(),
+                );
                 resolver.add_var("event.session_id".to_string(), e.session_id.clone());
             }
             crate::events::AikiEvent::SessionStart(e) => {
