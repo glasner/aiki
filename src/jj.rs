@@ -24,13 +24,15 @@ impl JJWorkspace {
             .context("Failed to create user settings for JJ operations")
     }
 
-    /// Initialize a pure JJ repository (no Git backend)
-    /// This creates a .jj directory with independent storage, completely separate from Git
+    /// Initialize a JJ repository with internal Git storage (non-colocated)
+    /// This creates a .jj directory with a hidden Git backend in .jj/repo/store/git
+    /// The Git repo is completely independent from any .git in the working directory
     pub fn init(&self) -> Result<()> {
         let settings = Self::create_user_settings()?;
 
-        // Initialize pure JJ workspace with SimpleBackend (no Git backend)
-        let (_workspace, _repo) = Workspace::init_simple(&settings, &self.workspace_root)
+        // Initialize JJ workspace with internal Git backend (non-colocated)
+        // This is equivalent to `jj git init --no-colocate`
+        let (_workspace, _repo) = Workspace::init_internal_git(&settings, &self.workspace_root)
             .context("Failed to initialize JJ workspace")?;
 
         Ok(())
