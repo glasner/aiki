@@ -69,7 +69,7 @@ mod tests {
             agent_version: None,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
-            file_path: "/tmp/file.rs".to_string(),
+            file_paths: vec!["/tmp/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
