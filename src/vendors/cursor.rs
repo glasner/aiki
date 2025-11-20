@@ -65,7 +65,7 @@ pub fn handle(event_name: &str) -> Result<()> {
             agent_version: None,
             session_id: payload.session_id,
             tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-            file_path: payload.edited_file,
+            file_paths: vec![payload.edited_file],
             cwd: PathBuf::from(&payload.working_directory),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
