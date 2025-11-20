@@ -1077,7 +1077,7 @@ mod tests {
     fn test_let_variable_storage() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "desc = $event.file_path".to_string(),
+                let_: "desc = $event.file_paths".to_string(),
                 on_failure: FailureMode::Continue,
             }),
             Action::Log(LogAction {
