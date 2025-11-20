@@ -473,18 +473,32 @@ impl FlowExecutor {
             result.push('\n');
         }
 
-        // Check if last non-empty line is a trailer
+        // Check if we need to add a blank line before the trailer
+        // Git convention: trailers should be separated from the body by a blank line
         let lines: Vec<&str> = content.lines().collect();
-        let last_line = lines.iter().rev().find(|l| !l.is_empty());
 
-        if let Some(last) = last_line {
-            if !Self::is_trailer_line(last) {
-                // Last line is not a trailer, add blank line
+        if lines.is_empty() {
+            // Empty content, add blank line
+            result.push('\n');
+        } else {
+            // Check the last two lines to see if there's already a blank line
+            let last_non_empty = lines.iter().rev().find(|l| !l.is_empty());
+
+            if let Some(last) = last_non_empty {
+                // If last non-empty line is not a trailer, we need a blank line separator
+                if !Self::is_trailer_line(last) {
+                    // Check if there's already a blank line at the end
+                    let ends_with_blank =
+                        lines.last().map_or(false, |l| l.is_empty()) || result.ends_with("\n\n");
+
+                    if !ends_with_blank {
+                        result.push('\n');
+                    }
+                }
+            } else {
+                // All lines are empty, add blank line
                 result.push('\n');
             }
-        } else {
-            // Empty file, add blank line
-            result.push('\n');
         }
 
         result.push_str(text);
@@ -1378,5 +1392,69 @@ mod tests {
 
         let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
+    }
+
+    #[test]
+    fn test_append_trailer_adds_blank_line_before_first_trailer() {
+        let content = "Commit title\n\nCommit body text.";
+        let trailer = "Co-authored-by: Test <test@example.com>";
+
+        let result = FlowExecutor::append_trailer(content, trailer);
+
+        // Should have blank line before trailer
+        assert!(
+            result.contains("\n\nCo-authored-by:"),
+            "Should have blank line before trailer"
+        );
+        assert_eq!(
+            result,
+            "Commit title\n\nCommit body text.\n\nCo-authored-by: Test <test@example.com>\n"
+        );
+    }
+
+    #[test]
+    fn test_append_trailer_no_duplicate_blank_line() {
+        let content = "Commit title\n\nCommit body text.\n";
+        let trailer = "Co-authored-by: Test <test@example.com>";
+
+        let result = FlowExecutor::append_trailer(content, trailer);
+
+        // Should add blank line since content doesn't end with blank line
+        assert!(
+            result.contains("text.\n\nCo-authored-by:"),
+            "Should have blank line before trailer"
+        );
+    }
+
+    #[test]
+    fn test_append_trailer_to_existing_trailer() {
+        let content = "Commit title\n\nCommit body.\n\nSigned-off-by: Author <author@example.com>";
+        let trailer = "Co-authored-by: Test <test@example.com>";
+
+        let result = FlowExecutor::append_trailer(content, trailer);
+
+        // Should NOT add blank line before second trailer (trailers stay together)
+        assert!(
+            result.contains("Signed-off-by: Author <author@example.com>\nCo-authored-by:"),
+            "Should not have blank line between trailers"
+        );
+    }
+
+    #[test]
+    fn test_append_trailer_preserves_existing_blank_line() {
+        let content = "Commit title\n\nCommit body text.\n\n";
+        let trailer = "Co-authored-by: Test <test@example.com>";
+
+        let result = FlowExecutor::append_trailer(content, trailer);
+
+        // Should not add another blank line since one already exists
+        assert!(
+            !result.contains("\n\n\nCo-authored-by:"),
+            "Should not have double blank lines"
+        );
+        assert!(
+            result.contains("text.\n\nCo-authored-by:"),
+            "Should preserve existing blank line"
+        );
     }
 }
