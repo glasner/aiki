@@ -401,8 +401,14 @@ fn test_no_previous_hooks_path() -> Result<()> {
     // Run aiki init
     run_aiki_init(temp_dir.path())?;
 
-    // In the new architecture, .aiki directory is only created if there's a previous hooks path
-    // When there's no previous hooks path set, .aiki won't be created
+    // .aiki directory should be created during init
+    let aiki_dir = temp_dir.path().join(".aiki");
+    assert!(
+        aiki_dir.exists(),
+        ".aiki directory should be created during init"
+    );
+
+    // When there's no previous hooks path set, .previous_hooks_path should not exist
     let previous_path_file = temp_dir.path().join(".aiki/.previous_hooks_path");
     assert!(
         !previous_path_file.exists(),

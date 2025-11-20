@@ -77,15 +77,13 @@ pub fn run(quiet: bool) -> Result<()> {
         }
     }
 
-    // Create minimal .aiki directory (only if we need to save previous hooks path)
+    // Create .aiki directory to store repository-specific configuration
     let aiki_dir = repo_root.join(".aiki");
+    fs::create_dir_all(&aiki_dir).context("Failed to create .aiki directory")?;
 
     // Save previous git hooks path before configuring global hooks
-    // Only create .aiki directory if there was a previous hooks path
-    if git_hooks_path.is_some() && git_hooks_path.as_ref().unwrap() != "" {
-        fs::create_dir_all(&aiki_dir).context("Failed to create .aiki directory")?;
-        config::save_previous_hooks_path(&repo_root)?;
-    }
+    // This allows Git hooks to chain to pre-existing hooks
+    config::save_previous_hooks_path(&repo_root)?;
 
     // Configure git to use global hooks directory
     let global_hooks_str = global_hooks.to_str().context("Invalid global hooks path")?;
