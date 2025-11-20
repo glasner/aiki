@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn test_execute_shell_with_variables() {
         let action = ShellAction {
-            shell: "echo $event.file_path".to_string(),
+            shell: "echo $event.file_paths".to_string(),
             timeout: None,
             on_failure: FailureMode::Continue,
             alias: None,
