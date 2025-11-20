@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     fn test_execute_let_whitespace_trimming() {
         let action = LetAction {
-            let_: "  description  =  $event.file_path  ".to_string(),
+            let_: "  description  =  $event.file_paths  ".to_string(),
             on_failure: FailureMode::Continue,
         };
 
