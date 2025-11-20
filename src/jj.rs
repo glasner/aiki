@@ -44,14 +44,14 @@ impl JJWorkspace {
 mod tests {
     use super::*;
 
-    /// Verifies that colocated initialization creates both .jj and .git directories
+    /// Verifies that pure JJ initialization creates .jj directory
     #[test]
-    fn workspace_init_colocated_creates_both_directories() {
+    fn workspace_init_creates_jj_directory() {
         // Create a temporary directory for testing
         let temp_dir = tempfile::tempdir().unwrap();
 
         let workspace = JJWorkspace::new(temp_dir.path());
-        let result = workspace.init_colocated();
+        let result = workspace.init();
 
         // Should succeed
         assert!(
@@ -66,10 +66,10 @@ mod tests {
             ".jj directory should exist"
         );
 
-        // Verify .git directory was created (colocated)
+        // Verify .git directory was NOT created (pure JJ, no Git backend)
         assert!(
-            temp_dir.path().join(".git").exists(),
-            ".git directory should exist for colocated workspace"
+            !temp_dir.path().join(".git").exists(),
+            ".git directory should not exist for pure JJ workspace"
         );
     }
 
