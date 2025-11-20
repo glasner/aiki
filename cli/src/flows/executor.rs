@@ -44,7 +44,7 @@ impl FlowExecutor {
     /// Create a variable resolver with consistent variable availability
     ///
     /// Makes variables available both with and without `event.` prefix:
-    /// - $event.file_path (for event variables)
+    /// - $event.file_paths (for event variables)
     /// - $file_path (for event variables, let-bound variables)
     /// - $description (for let-bound variables)
     /// Create a variable resolver with proper variable scoping
