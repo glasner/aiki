@@ -154,7 +154,7 @@ mod tests {
     fn test_resolve_overlapping_variable_names() {
         let mut resolver = VariableResolver::new();
         resolver.add_var("event.file", "short");
-        resolver.add_var("event.file_path", "long");
+        resolver.add_var("event.file_paths", "long");
 
         // Should resolve longest match first
         assert_eq!(resolver.resolve("$event.file_paths"), "long");
