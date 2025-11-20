@@ -24,23 +24,25 @@ pub fn save_previous_hooks_path(repo_root: &Path) -> Result<()> {
         .output()
         .context("Failed to run git config core.hooksPath")?;
 
-    let hooks_path = if output.status.success() {
+    if output.status.success() {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if path.is_empty() {
-            "EMPTY".to_string()
+        if !path.is_empty() {
+            // A custom hooks path is configured - save it
+            fs::write(&previous_path_file, &path)
+                .context("Failed to write .previous_hooks_path")?;
+            println!("✓ Saved previous hooks path: {}", path);
         } else {
-            path
+            // Empty string - save "EMPTY" to distinguish from not-set
+            fs::write(&previous_path_file, "EMPTY")
+                .context("Failed to write .previous_hooks_path")?;
+            println!("✓ Saved previous hooks path: EMPTY");
         }
     } else {
-        // Config key doesn't exist - use Git's default hooks path
-        // This allows chaining to existing hooks in .git/hooks
-        ".git/hooks".to_string()
-    };
+        // Config key doesn't exist - no previous hooks path to save
+        // Don't create .previous_hooks_path file at all
+        println!("✓ No previous hooks path configured");
+    }
 
-    // Save to .aiki/.previous_hooks_path
-    fs::write(&previous_path_file, &hooks_path).context("Failed to write .previous_hooks_path")?;
-
-    println!("✓ Saved previous hooks path: {}", hooks_path);
     Ok(())
 }
 
@@ -354,18 +356,19 @@ mod tests {
             .output()
             .unwrap();
 
-        // Create .aiki directory (minimal - only if needed)
+        // Create .aiki directory
         fs::create_dir_all(temp_dir.path().join(".aiki")).unwrap();
 
-        // Save hooks path (should default to .git/hooks when not set)
+        // Save hooks path (should not create file when not set)
         let result = save_previous_hooks_path(temp_dir.path());
         assert!(result.is_ok());
 
-        // Verify file contents
+        // Verify file does NOT exist (no custom hooks path to preserve)
         let previous_path_file = temp_dir.path().join(".aiki/.previous_hooks_path");
-        assert!(previous_path_file.exists());
-        let content = fs::read_to_string(&previous_path_file).unwrap();
-        assert_eq!(content, ".git/hooks");
+        assert!(
+            !previous_path_file.exists(),
+            "File should not exist when there's no custom hooks path configured"
+        );
     }
 
     #[test]
