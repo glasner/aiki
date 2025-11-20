@@ -31,7 +31,7 @@ fn test_git_hook_includes_multiple_editors() -> Result<()> {
 
     // Initialize JJ repo for provenance tracking
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(temp_dir.path())
         .output()?;
 
@@ -96,7 +96,7 @@ fn test_git_hook_deduplicates_same_editor() -> Result<()> {
 
     // Initialize JJ repo
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(temp_dir.path())
         .output()?;
 
@@ -162,7 +162,7 @@ fn test_git_authors_json_format_multiple_editors() -> Result<()> {
 
     // Initialize JJ repo
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(temp_dir.path())
         .output()?;
 
@@ -229,7 +229,7 @@ fn test_git_hook_only_shows_ai_contributors() -> Result<()> {
 
     // Initialize JJ repo
     Command::new("jj")
-        .args(["git", "init", "--colocate"])
+        .args(["init"])
         .current_dir(temp_dir.path())
         .output()?;
 
