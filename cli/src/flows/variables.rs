@@ -66,7 +66,7 @@ impl VariableResolver {
     /// resolver.add_var("event.file_path", "/path/to/file.rs");
     /// resolver.add_var("cwd", "/home/user/project");
     ///
-    /// let result = resolver.resolve("File: $event.file_path in $cwd");
+    /// let result = resolver.resolve("File: $event.file_paths in $cwd");
     /// assert_eq!(result, "File: /path/to/file.rs in /home/user/project");
     /// ```
     pub fn resolve(&mut self, input: &str) -> String {
