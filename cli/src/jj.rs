@@ -29,12 +29,10 @@ impl JJWorkspace {
     /// This creates a .jj directory with independent storage, completely separate from Git
     pub fn init(&self) -> Result<()> {
         let settings = Self::create_user_settings()?;
-        let store_factories = StoreFactories::default();
 
-        // Initialize pure JJ workspace with no Git backend
-        let (_workspace, _repo) =
-            Workspace::init(&settings, &self.workspace_root, &store_factories)
-                .context("Failed to initialize JJ workspace")?;
+        // Initialize pure JJ workspace with SimpleBackend (no Git backend)
+        let (_workspace, _repo) = Workspace::init_simple(&settings, &self.workspace_root)
+            .context("Failed to initialize JJ workspace")?;
 
         Ok(())
     }
