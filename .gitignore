@@ -13,6 +13,9 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# JJ repository
+.jj/
+
 # Aiki runtime (only ignore logs and cache, not hooks/config)
 .aiki/logs/
 .aiki/cache/
