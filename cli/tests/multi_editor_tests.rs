@@ -13,9 +13,9 @@ fn setup_test_repo() -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().unwrap();
     let repo_path = temp_dir.path().to_path_buf();
 
-    // Initialize JJ repo
+    // Initialize JJ repo (non-colocated)
     let output = Command::new("jj")
-        .args(["init"])
+        .args(["git", "init", "--no-colocate"])
         .current_dir(&repo_path)
         .output()
         .expect("Failed to initialize JJ repo");
