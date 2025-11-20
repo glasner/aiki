@@ -141,7 +141,7 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
-            file_path: "/test/file.rs".to_string(),
+            file_paths: vec!["/test/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/test"),
             timestamp: chrono::Utc::now(),
             detection_method: crate::provenance::DetectionMethod::Hook,
@@ -151,7 +151,7 @@ mod tests {
         // Verify we can access event fields through the enum
         match &ctx.event {
             AikiEvent::PostChange(e) => {
-                assert_eq!(e.file_path, "/test/file.rs");
+                assert_eq!(e.file_paths, vec!["/test/file.rs".to_string()]);
             }
             _ => panic!("Expected PostChange event"),
         }
