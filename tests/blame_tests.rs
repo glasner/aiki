@@ -254,26 +254,7 @@ fn test_blame_verify_shows_signature_status() {
     let temp_dir = TempDir::new().unwrap();
     let repo_path = temp_dir.path();
 
-    // Initialize git repository
-    Command::new("git")
-        .args(["init"])
-        .current_dir(repo_path)
-        .output()
-        .expect("Failed to initialize git repo");
-
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(repo_path)
-        .output()
-        .unwrap();
-
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(repo_path)
-        .output()
-        .unwrap();
-
-    // Initialize JJ (non-colocated, internal Git storage)
+    // Initialize JJ (non-colocated, creates internal Git storage)
     Command::new("jj")
         .args(["git", "init", "--no-colocate"])
         .current_dir(repo_path)
