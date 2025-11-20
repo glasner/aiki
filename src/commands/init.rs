@@ -67,37 +67,13 @@ pub fn run(quiet: bool) -> Result<()> {
         // Create JJ workspace manager for the repository root
         let workspace = jj::JJWorkspace::new(&repo_root);
 
-        // Check if Git repository already exists
-        // If .git exists, use init_on_existing_git (external mode with colocated .git)
-        // If .git doesn't exist, use init_colocated (creates both .jj and .git)
-        // Both approaches create a colocated workspace where JJ and Git share the working copy
-        if repo_root.join(".git").exists() {
-            // Resolve .git path (handles both directories and worktree/submodule files)
-            let git_dir = RepoDetector::resolve_git_dir(&repo_root)
-                .context("Failed to resolve Git directory path")?;
-
-            workspace
-                .init_with_git_dir(&git_dir)
-                .context("Failed to initialize JJ repository")?;
-
-            // Import existing Git commits into JJ
-            if !quiet {
-                println!("Importing Git history...");
-            }
-            workspace
-                .git_import()
-                .context("Failed to import Git history")?;
-            if !quiet {
-                println!("✓ Imported Git history into JJ");
-            }
-        } else {
-            workspace
-                .init_colocated()
-                .context("Failed to initialize JJ repository")?;
-        }
+        // Initialize pure JJ storage (independent from Git)
+        workspace
+            .init()
+            .context("Failed to initialize JJ repository")?;
 
         if !quiet {
-            println!("✓ Initialized JJ repository (colocated with Git)");
+            println!("✓ Initialized JJ repository");
         }
     }
 
