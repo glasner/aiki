@@ -63,7 +63,7 @@ PostChange:
 name: Log Flow
 version: "1"
 PostChange:
-  - log: "File edited: $event.file_path"
+  - log: "File edited: $event.file_paths"
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
