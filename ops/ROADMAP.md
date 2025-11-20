@@ -3,7 +3,7 @@
 
 ## Overview
 
-Aiki follows a **twelve-phase development strategy**, where each phase validates assumptions before proceeding to the next. The roadmap builds from foundational infrastructure (CLI, JJ, provenance) through multi-editor support, hook management, cryptographic verification, and solving individual developer pain (autonomous review) to full multi-agent team orchestration and enterprise compliance.
+Aiki follows a **nineteen-phase development strategy**, where each phase validates assumptions before proceeding to the next. The roadmap builds from foundational infrastructure (CLI, JJ, provenance) through multi-editor support, hook management, cryptographic verification, user edit detection, solving individual developer pain (autonomous review), to full multi-agent team orchestration and enterprise compliance.
 
 **Foundation:** All phases build on complete provenance tracking via Jujutsu (JJ), capturing edit-level history, agent attribution, and iteration tracking that Git cannot provide.
 
@@ -1004,7 +1004,126 @@ fn derive_executable(agent_type: &str) -> String {
 
 ---
 
-## Phase 7: Autonomous Review Flow
+## Phase 7: User Edit Detection & Separation
+
+### Problem
+
+When an AI agent session starts or during AI operations, users may manually edit files. Currently, these user edits can be incorrectly attributed to the AI agent, leading to false attribution, provenance corruption, and trust issues.
+
+**Three problematic scenarios:**
+1. **Between SessionStart and first PostChange**: User edits between session init and first AI edit
+2. **Concurrent different files**: User and AI edit different files simultaneously  
+3. **Concurrent same file**: User and AI edit the same file (hardest case)
+
+### Solution
+
+Implement **tiered detection** based on available edit information from each integration:
+
+| Integration | Edit Details Available |
+|-------------|----------------------|
+| **ACP** | ✅ ToolCallContent with old/new text diffs |
+| **Claude Code** | ✅ old_string/new_string |
+| **Cursor** | ✅ edits[] array with old_string/new_string |
+
+**Detection strategy:**
+1. **Capture edit details** in AikiPostChangeEvent (all integrations provide this!)
+2. **Compare expected vs actual** diffs in PostChange flow
+3. **Separate cleanly** when user edited different files using `jj restore`
+4. **Warn** when user edited same file (requires manual `jj split --interactive`)
+
+### What We Build
+
+**Event structure enhancement:**
+```rust
+pub struct AikiPostChangeEvent {
+    // ... existing fields ...
+    pub edit_details: Option<Vec<EditDetail>>,
+}
+
+pub struct EditDetail {
+    pub file_path: String,
+    pub old_text: String,
+    pub new_text: String,
+    pub line_range: Option<(usize, usize)>,
+}
+```
+
+**Flow functions:**
+- `self.check_for_user_edits` - Compare expected AI edits with actual working copy
+- `self.separate_user_edits` - Use `jj restore` to split user files into separate change
+
+**Enhanced PostChange flow:**
+```yaml
+PostChange:
+  # Detect user edits
+  - let: user_edit_check = self.check_for_user_edits
+  
+  # Separate different-file edits automatically
+  - if: $user_edit_check.has_different_files == true
+    then:
+      - let: result = self.separate_user_edits
+  
+  # Warn about same-file edits
+  - if: $user_edit_check.has_same_file_edits == true
+    then:
+      - log: "⚠️  User edited same files as AI - run 'jj split --interactive'"
+  
+  # Record AI provenance
+  - let: metadata = self.build_metadata
+  - jj: metaedit --message "$metadata.message"
+  - jj: new
+```
+
+### Value Delivered
+
+1. **Accurate attribution**: User edits are never falsely attributed to AI
+2. **Automatic separation**: Different-file concurrent edits are split into distinct changes
+3. **Clear warnings**: Same-file conflicts are detected and user is guided to manual resolution
+4. **Trust in provenance**: `aiki blame` shows correct authorship
+5. **Works everywhere**: Full support across ACP, Claude Code, and Cursor
+
+### Technical Components
+
+**New modules:**
+- `cli/src/flows/core/check_user_edits.rs` - Detection logic
+- `cli/src/flows/core/separate_user_edits.rs` - Separation logic
+
+**Modified files:**
+- `cli/src/events.rs` - Add `edit_details` field and `EditDetail` struct
+- `cli/src/commands/acp.rs` - Extract edit details from ToolCallContent
+- `cli/src/vendors/claude_code.rs` - Extract from old_string/new_string
+- `cli/src/vendors/cursor.rs` - Extract from edits[] array
+- `cli/src/flows/core/flow.yaml` - Add detection and separation steps
+
+### Success Criteria
+
+1. ✅ Different-file user edits are automatically separated into distinct changes
+2. ✅ Same-file user edits are detected and warned about
+3. ✅ AI provenance is only recorded for AI-edited files
+4. ✅ Works across all three integrations (ACP, Claude Code, Cursor)
+5. ✅ All tests pass with no regressions
+
+### Limitations
+
+1. **Same-file concurrent edits**: Cannot auto-separate when user and AI edit same file simultaneously
+2. **Heuristic detection**: Uses line counts and content matching (may have false positives)
+3. **Performance**: Adds `jj diff` calls (minor overhead)
+
+### Timeline
+
+**Estimated: 9-13 hours**
+- Event structure: 1-2 hours
+- Detection logic: 2-3 hours  
+- Separation logic: 2-3 hours
+- Flow integration: 1 hour
+- Testing: 2-3 hours
+- Documentation: 1 hour
+
+**Detailed Plan:** See `ops/phase-7.md`
+
+---
+
+## Phase 8: Autonomous Review Flow
 
 ### Problem
 Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
@@ -1145,7 +1264,7 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 8: Zed Extension (One-Click Setup & Status UI)
+## Phase 9: Zed Extension (One-Click Setup & Status UI)
 
 ### Problem
 While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
@@ -1257,7 +1376,7 @@ Aiki ⚠  - Error or health check failed
 
 ---
 
-## Phase 9: Comprehensive Event System (All Git & Agent Hooks)
+## Phase 10: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
 Phase 5 introduced the flow system with 3 core events (Start, PostChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
@@ -1585,7 +1704,7 @@ pub struct Flow {
 
 ---
 
-## Phase 10: User-Defined Flows
+## Phase 11: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -1646,7 +1765,7 @@ PreCommit:
 
 ---
 
-## Phase 11: External Flow Ecosystem
+## Phase 12: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -1938,7 +2057,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 12: Multi-Agent Provenance (Fallback Detection)
+## Phase 13: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -2018,7 +2137,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 13: Local Multi-Agent Coordination
+## Phase 14: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -2050,7 +2169,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 14: PR Review for Non-Aiki Agents
+## Phase 15: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -2073,7 +2192,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 15: Shared JJ Brain & Team Coordination
+## Phase 16: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -2103,7 +2222,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 16: Windsurf Support
+## Phase 17: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -2170,7 +2289,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 17: Enterprise Compliance
+## Phase 18: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -2204,7 +2323,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 18: Native Agent Integration
+## Phase 19: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:
