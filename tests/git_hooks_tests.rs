@@ -42,7 +42,7 @@ fn test_git_hook_includes_multiple_editors() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -59,7 +59,7 @@ fn test_git_hook_includes_multiple_editors() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -107,7 +107,7 @@ fn test_git_hook_deduplicates_same_editor() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=claude-code\nsession=session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=claude\nauthor_type=agent\nsession=session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -124,7 +124,7 @@ fn test_git_hook_deduplicates_same_editor() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=claude-code\nsession=session-2\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=claude\nauthor_type=agent\nsession=session-2\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -173,7 +173,7 @@ fn test_git_authors_json_format_multiple_editors() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=claude-code\nsession=claude-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -189,7 +189,7 @@ fn test_git_authors_json_format_multiple_editors() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=cursor\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;
@@ -240,7 +240,7 @@ fn test_git_hook_only_shows_ai_contributors() -> Result<()> {
         .args([
             "describe",
             "-m",
-            "[aiki]\nagent=cursor\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+            "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
         ])
         .current_dir(temp_dir.path())
         .output()?;

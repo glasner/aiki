@@ -36,6 +36,17 @@ impl std::fmt::Display for AgentType {
 }
 
 impl AgentType {
+    /// Get the lowercase identifier for metadata serialization
+    pub fn to_metadata_string(&self) -> &'static str {
+        match self {
+            AgentType::Claude => "claude",
+            AgentType::Codex => "codex",
+            AgentType::Cursor => "cursor",
+            AgentType::Gemini => "gemini",
+            AgentType::Unknown => "unknown",
+        }
+    }
+
     /// Get the email address for this agent type
     pub fn email(&self) -> &'static str {
         match self {
@@ -134,7 +145,7 @@ impl ProvenanceRecord {
     /// Format:
     /// ```text
     /// [aiki]
-    /// agent=claude-code
+    /// author=claude-code
     /// agent_version=0.10.6
     /// client=zed
     /// client_version=0.213.3
@@ -168,7 +179,7 @@ impl ProvenanceRecord {
     ///
     /// let description = record.to_description();
     /// assert!(description.contains("[aiki]"));
-    /// assert!(description.contains("agent=claude"));
+    /// assert!(description.contains("author=claude"));
     /// ```
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
@@ -192,7 +203,11 @@ impl ProvenanceRecord {
             DetectionMethod::Unknown => "Unknown",
         };
 
-        let mut lines = vec!["[aiki]".to_string(), format!("agent={}", agent_type)];
+        let mut lines = vec![
+            "[aiki]".to_string(),
+            format!("author={}", agent_type),
+            "author_type=agent".to_string(),
+        ];
 
         if let Some(ref agent_ver) = self.agent_version {
             lines.push(format!("agent_version={}", agent_ver));
@@ -256,13 +271,13 @@ impl ProvenanceRecord {
         }
 
         // Extract and parse required fields
-        let agent_type = match metadata.get("agent").map(|s| s.as_str()) {
-            Some("claude") | Some("claude-code") => AgentType::Claude, // Accept both for backwards compatibility
+        let agent_type = match metadata.get("author").map(|s| s.as_str()) {
+            Some("claude") => AgentType::Claude,
             Some("codex") => AgentType::Codex,
             Some("cursor") => AgentType::Cursor,
             Some("gemini") => AgentType::Gemini,
             Some("unknown") => AgentType::Unknown,
-            _ => return Err(anyhow::anyhow!("Missing or invalid 'agent' field")),
+            _ => return Err(anyhow::anyhow!("Missing or invalid 'author' field")),
         };
 
         let session_id = metadata
@@ -340,7 +355,7 @@ mod tests {
         // Check that all required fields are present
         assert!(description.contains("[aiki]"));
         assert!(description.contains("[/aiki]"));
-        assert!(description.contains("agent=claude"));
+        assert!(description.contains("author=claude"));
         assert!(description.contains("session=test-session-123"));
         assert!(description.contains("tool=Edit"));
         assert!(description.contains("confidence=High"));
@@ -454,7 +469,7 @@ mod tests {
             };
 
             let description = record.to_description();
-            assert!(description.contains(&format!("agent={}", expected_str)));
+            assert!(description.contains(&format!("author={}", expected_str)));
         }
     }
 
@@ -547,7 +562,7 @@ mod tests {
 
         // Count newlines - should have one per field plus markers
         let line_count = description.lines().count();
-        assert_eq!(line_count, 7); // [aiki], agent, session, tool, confidence, method, [/aiki]
+        assert_eq!(line_count, 8); // [aiki], author, author_type, session, tool, confidence, method, [/aiki]
     }
 
     #[test]
@@ -640,7 +655,8 @@ mod tests {
     #[test]
     fn test_from_description_with_aiki_metadata() {
         let description = "[aiki]\n\
-            agent=claude-code\n\
+            author=claude\n\
+            author_type=agent\n\
             session=test-session-456\n\
             tool=Write\n\
             confidence=High\n\
@@ -679,7 +695,8 @@ mod tests {
         let description = "Add new feature\n\n\
             This is a longer description.\n\n\
             [aiki]\n\
-            agent=claude-code\n\
+            author=claude\n\
+            author_type=agent\n\
             session=abc123\n\
             tool=Edit\n\
             confidence=High\n\
@@ -729,7 +746,8 @@ mod tests {
     #[test]
     fn test_from_description_missing_field() {
         let description = "[aiki]\n\
-            agent=claude-code\n\
+            author=claude-code\n\
+            author_type=agent\n\
             tool=Edit\n\
             [/aiki]";
 
@@ -741,7 +759,8 @@ mod tests {
     #[test]
     fn test_from_description_invalid_agent() {
         let description = "[aiki]\n\
-            agent=invalid-agent\n\
+            author=invalid-agent\n\
+            author_type=agent\n\
             session=test\n\
             tool=Edit\n\
             confidence=High\n\
@@ -771,14 +790,15 @@ mod tests {
         };
 
         let description = record.to_description();
-        assert!(description.contains("agent=cursor"));
+        assert!(description.contains("author=cursor"));
         assert!(description.contains("session=cursor-session-123"));
     }
 
     #[test]
     fn test_cursor_agent_type_deserialization() {
         let description = "[aiki]\n\
-            agent=cursor\n\
+            author=cursor\n\
+            author_type=agent\n\
             session=cursor-test-session\n\
             tool=Edit\n\
             confidence=High\n\
@@ -839,14 +859,15 @@ mod tests {
         };
 
         let description = record.to_description();
-        assert!(description.contains("agent=codex"));
+        assert!(description.contains("author=codex"));
         assert!(description.contains("session=codex-session-123"));
     }
 
     #[test]
     fn test_codex_agent_type_deserialization() {
         let description = "[aiki]\n\
-            agent=codex\n\
+            author=codex\n\
+            author_type=agent\n\
             session=codex-test-session\n\
             tool=Edit\n\
             confidence=High\n\

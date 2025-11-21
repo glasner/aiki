@@ -154,7 +154,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
         assert_eq!(json["author"], "Claude <noreply@anthropic.com>");
         assert!(json["message"].as_str().unwrap().contains("[aiki]"));
-        assert!(json["message"].as_str().unwrap().contains("agent=claude"));
+        assert!(json["message"].as_str().unwrap().contains("author=claude"));
         assert!(json["message"]
             .as_str()
             .unwrap()
@@ -182,6 +182,6 @@ mod tests {
         assert!(result.success);
         let json: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
         assert_eq!(json["author"], "Cursor <noreply@cursor.com>");
-        assert!(json["message"].as_str().unwrap().contains("agent=cursor"));
+        assert!(json["message"].as_str().unwrap().contains("author=cursor"));
     }
 }

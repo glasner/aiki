@@ -252,7 +252,7 @@ fn test_real_claude_code_integration() {
 
     // Parse and verify provenance metadata
     println!("📊 Provenance metadata:");
-    if description.contains("agent=claude-code") {
+    if description.contains("author=claude\nauthor_type=agent") {
         println!("   Agent: claude-code");
     }
     if let Some(session_line) = description.lines().find(|l| l.contains("session=")) {
@@ -269,8 +269,8 @@ fn test_real_claude_code_integration() {
 
     // Verify expected metadata
     assert!(
-        description.contains("agent=claude-code"),
-        "Should have agent=claude-code"
+        description.contains("author=claude\nauthor_type=agent"),
+        "Should have author=claude\nauthor_type=agent"
     );
     assert!(
         description.contains("confidence=High"),
