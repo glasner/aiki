@@ -305,16 +305,55 @@ impl FlowExecutor {
         let args = shell_words::split(&jj_args)
             .with_context(|| format!("Failed to parse jj arguments: {}", jj_args))?;
 
+        // Parse with_author if provided
+        let (jj_user, jj_email) = if let Some(ref author) = action.with_author {
+            let resolved_author = if author.trim().starts_with("self.") {
+                // It's a function call - execute it now (maintains execution order)
+                let self_action = SelfAction {
+                    self_: author.trim().to_string(),
+                    on_failure: FailureMode::Stop,
+                };
+                let result = Self::execute_self(&self_action, context)?;
+                result.stdout.trim().to_string()
+            } else {
+                // It's a variable reference - resolve it
+                resolver.resolve(author)
+            };
+            parse_author(&resolved_author)?
+        } else {
+            (None, None)
+        };
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            if let (Some(ref user), Some(ref email)) = (&jj_user, &jj_email) {
+                eprintln!("[flows] Setting JJ_USER={}, JJ_EMAIL={}", user, email);
+            }
+        }
+
         // Execute JJ command (using direct argv, no shell invocation)
         let output = if let Some(timeout_str) = &action.timeout {
             let timeout = parse_timeout(timeout_str)?;
-            execute_with_timeout_argv("jj", &args, context.cwd(), timeout)?
+            execute_with_timeout_argv_with_env(
+                "jj",
+                &args,
+                context.cwd(),
+                timeout,
+                jj_user,
+                jj_email,
+            )?
         } else {
-            Command::new("jj")
-                .args(&args)
-                .current_dir(context.cwd())
-                .output()
-                .context("Failed to execute jj command")?
+            let mut cmd = Command::new("jj");
+            cmd.args(&args).current_dir(context.cwd());
+
+            // Set JJ_USER and JJ_EMAIL if provided
+            if let Some(user) = jj_user {
+                cmd.env("JJ_USER", user);
+            }
+            if let Some(email) = jj_email {
+                cmd.env("JJ_EMAIL", email);
+            }
+
+            cmd.output().context("Failed to execute jj command")?
         };
 
         Ok(ActionResult {
@@ -691,7 +730,7 @@ impl FlowExecutor {
 
     /// Evaluate a condition expression
     /// Supports: ==, !=, JSON field access ($var.field)
-    fn evaluate_condition(condition: &str, context: &AikiState) -> Result<bool> {
+    fn evaluate_condition(condition: &str, context: &mut AikiState) -> Result<bool> {
         let condition = condition.trim();
 
         // Parse comparison operators
@@ -720,7 +759,7 @@ impl FlowExecutor {
 
     /// Resolve a value in a condition expression
     /// Supports: variables ($var), JSON field access ($var.field), literals
-    fn resolve_condition_value(expr: &str, context: &AikiState) -> Result<String> {
+    fn resolve_condition_value(expr: &str, context: &mut AikiState) -> Result<String> {
         let expr = expr.trim();
 
         // Remove quotes if present
@@ -728,6 +767,68 @@ impl FlowExecutor {
             || (expr.starts_with('\'') && expr.ends_with('\''))
         {
             return Ok(expr[1..expr.len() - 1].to_string());
+        }
+
+        // Check if it's an inline function call (e.g., self.classify_edits or self.function.field)
+        if expr.starts_with("self.") {
+            // Split into function call and optional field path
+            let parts: Vec<&str> = expr.splitn(2, '.').collect();
+            if parts.len() == 2 {
+                let remaining = parts[1];
+
+                // Check if there's a field access after the function name
+                if let Some(field_start) = remaining.find('.') {
+                    let function_name = remaining[..field_start].trim();
+                    let field_path = remaining[field_start + 1..].trim();
+
+                    // Execute the self function
+                    let self_action = SelfAction {
+                        self_: format!("self.{}", function_name),
+                        on_failure: FailureMode::Stop,
+                    };
+
+                    let result = Self::execute_self(&self_action, context)?;
+
+                    // Parse the result as JSON and extract the field
+                    let json_value: serde_json::Value = serde_json::from_str(&result.stdout)
+                        .context("Failed to parse function result as JSON")?;
+
+                    // Navigate the field path
+                    let mut current = &json_value;
+                    for field in field_path.split('.') {
+                        current = current.get(field).ok_or_else(|| {
+                            AikiError::Other(anyhow::anyhow!(
+                                "Field '{}' not found in JSON result",
+                                field
+                            ))
+                        })?;
+                    }
+
+                    // Return the field value as a string
+                    return Ok(match current {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Null => "null".to_string(),
+                        _ => current.to_string(),
+                    });
+                } else {
+                    // No field access - just execute the function and return its stdout
+                    let self_action = SelfAction {
+                        self_: expr.to_string(),
+                        on_failure: FailureMode::Stop,
+                    };
+
+                    let result = Self::execute_self(&self_action, context)?;
+                    return Ok(result.stdout.trim().to_string());
+                }
+            }
+
+            // If we get here, it's a malformed self.function call
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "Invalid inline function call syntax: '{}'",
+                expr
+            )));
         }
 
         // Check if it's a variable reference
@@ -886,6 +987,24 @@ impl FlowExecutor {
                 };
                 crate::flows::core::build_metadata(event, Some(context))
             }
+            ("core", "build_user_metadata") => {
+                // build_user_metadata requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "build_user_metadata can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::build_user_metadata(event, Some(context))
+            }
+            ("core", "get_git_user") => {
+                // get_git_user works with any event type
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "get_git_user currently requires PostFileChange event"
+                    )));
+                };
+                crate::flows::core::get_git_user_function(event, Some(context))
+            }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
                 let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
@@ -1012,6 +1131,24 @@ impl FlowExecutor {
                 };
                 crate::flows::core::build_metadata(event, Some(context))
             }
+            ("core", "build_user_metadata") => {
+                // build_user_metadata requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "build_user_metadata can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::build_user_metadata(event, Some(context))
+            }
+            ("core", "get_git_user") => {
+                // get_git_user works with any event type
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "get_git_user currently requires PostFileChange event"
+                    )));
+                };
+                crate::flows::core::get_git_user_function(event, Some(context))
+            }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
                 let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
@@ -1092,12 +1229,46 @@ fn parse_timeout(timeout_str: &str) -> Result<Duration> {
     }
 }
 
+/// Parse author string in "Name <email>" format
+/// Returns (Some(name), Some(email)) or (None, None) on parse error
+fn parse_author(author: &str) -> Result<(Option<String>, Option<String>)> {
+    let author = author.trim();
+
+    // Parse "Name <email>" format
+    if let Some(email_start) = author.find('<') {
+        if let Some(email_end) = author.find('>') {
+            if email_start < email_end {
+                let name = author[..email_start].trim().to_string();
+                let email = author[email_start + 1..email_end].trim().to_string();
+                return Ok((Some(name), Some(email)));
+            }
+        }
+    }
+
+    Err(AikiError::Other(anyhow::anyhow!(
+        "Invalid author format '{}'. Expected 'Name <email>'",
+        author
+    )))
+}
+
 /// Execute command with timeout using direct argv (no shell invocation)
 fn execute_with_timeout_argv(
     program: &str,
     args: &[String],
     cwd: &std::path::Path,
     timeout: Duration,
+) -> Result<std::process::Output> {
+    execute_with_timeout_argv_with_env(program, args, cwd, timeout, None, None)
+}
+
+/// Execute command with timeout using direct argv and optional environment variables
+fn execute_with_timeout_argv_with_env(
+    program: &str,
+    args: &[String],
+    cwd: &std::path::Path,
+    timeout: Duration,
+    jj_user: Option<String>,
+    jj_email: Option<String>,
 ) -> Result<std::process::Output> {
     use std::panic;
     use std::sync::mpsc;
@@ -1112,10 +1283,18 @@ fn execute_with_timeout_argv(
     thread::spawn(move || {
         // Catch panics in command execution to prevent poisoning
         let result = panic::catch_unwind(|| {
-            Command::new(&program)
-                .args(&args)
-                .current_dir(&cwd)
-                .output()
+            let mut cmd = Command::new(&program);
+            cmd.args(&args).current_dir(&cwd);
+
+            // Set JJ_USER and JJ_EMAIL if provided
+            if let Some(user) = jj_user {
+                cmd.env("JJ_USER", user);
+            }
+            if let Some(email) = jj_email {
+                cmd.env("JJ_EMAIL", email);
+            }
+
+            cmd.output()
         });
 
         // Send result or error - channel will be dropped if recv already timed out
@@ -1746,6 +1925,7 @@ mod tests {
                 timeout: None,
                 on_failure: FailureMode::Continue,
                 alias: None,
+                with_author: None,
             }),
         ];
 
@@ -2002,12 +2182,12 @@ mod tests {
         );
 
         // Test equality
-        assert!(FlowExecutor::evaluate_condition("$test == value", &context).unwrap());
-        assert!(!FlowExecutor::evaluate_condition("$test == other", &context).unwrap());
+        assert!(FlowExecutor::evaluate_condition("$test == value", &mut context).unwrap());
+        assert!(!FlowExecutor::evaluate_condition("$test == other", &mut context).unwrap());
 
         // Test inequality
-        assert!(!FlowExecutor::evaluate_condition("$test != value", &context).unwrap());
-        assert!(FlowExecutor::evaluate_condition("$test != other", &context).unwrap());
+        assert!(!FlowExecutor::evaluate_condition("$test != value", &mut context).unwrap());
+        assert!(FlowExecutor::evaluate_condition("$test != other", &mut context).unwrap());
     }
 
     #[test]
@@ -2024,7 +2204,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowExecutor::evaluate_condition("$empty", &context).unwrap());
+        assert!(!FlowExecutor::evaluate_condition("$empty", &mut context).unwrap());
 
         // Non-empty string is truthy
         context.store_action_result(
@@ -2036,7 +2216,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowExecutor::evaluate_condition("$nonempty", &context).unwrap());
+        assert!(FlowExecutor::evaluate_condition("$nonempty", &mut context).unwrap());
 
         // "false" literal is falsy
         context.store_action_result(
@@ -2048,7 +2228,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowExecutor::evaluate_condition("$false_str", &context).unwrap());
+        assert!(!FlowExecutor::evaluate_condition("$false_str", &mut context).unwrap());
 
         // "true" literal is truthy
         context.store_action_result(
@@ -2060,7 +2240,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowExecutor::evaluate_condition("$true_str", &context).unwrap());
+        assert!(FlowExecutor::evaluate_condition("$true_str", &mut context).unwrap());
     }
 
     #[test]
@@ -2069,11 +2249,11 @@ mod tests {
 
         // Test string literals with quotes
         assert_eq!(
-            FlowExecutor::resolve_condition_value("\"hello\"", &context).unwrap(),
+            FlowExecutor::resolve_condition_value("\"hello\"", &mut context).unwrap(),
             "hello"
         );
         assert_eq!(
-            FlowExecutor::resolve_condition_value("'world'", &context).unwrap(),
+            FlowExecutor::resolve_condition_value("'world'", &mut context).unwrap(),
             "world"
         );
     }

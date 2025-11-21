@@ -91,6 +91,11 @@ pub struct JjAction {
     /// Optional variable name to store the result
     #[serde(default)]
     pub alias: Option<String>,
+
+    /// Optional author to set for this command via JJ_USER and JJ_EMAIL
+    /// Format: "Name <email>"
+    #[serde(default)]
+    pub with_author: Option<String>,
 }
 
 /// Log message action
