@@ -12,7 +12,8 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         let event_type_name = match &event {
             AikiEvent::SessionStart(_) => "SessionStart",
-            AikiEvent::PostChange(_) => "PostChange",
+            AikiEvent::PreFileChange(_) => "PreFileChange",
+            AikiEvent::PostFileChange(_) => "PostFileChange",
             AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
         };
         eprintln!(
@@ -25,7 +26,8 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
     // Route to appropriate handler
     let result = match event {
         AikiEvent::SessionStart(e) => handlers::handle_start(e),
-        AikiEvent::PostChange(e) => handlers::handle_post_change(e),
+        AikiEvent::PreFileChange(e) => handlers::handle_pre_file_change(e),
+        AikiEvent::PostFileChange(e) => handlers::handle_post_file_change(e),
         AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
     };
 

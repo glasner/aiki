@@ -4,7 +4,7 @@ use crate::acp::protocol::{
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostChangeEvent};
+use crate::events::{AikiEvent, AikiPostFileChangeEvent};
 use crate::provenance::AgentType;
 use agent_client_protocol::{
     SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -202,6 +202,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 }
                             }
                         }
+                        "authenticate" => {
+                            // Just observe and forward - let the agent handle authentication
+                            if std::env::var("AIKI_DEBUG").is_ok() {
+                                eprintln!("ACP Proxy: Forwarding authenticate request to agent");
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -272,6 +278,30 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                 }
 
                 if let Some(method) = &msg.method {
+                    // Handle session/request_permission - fire PreFileChange for file-modifying tools
+                    if method == "session/request_permission" {
+                        if is_file_modifying_permission_request(&msg) {
+                            // Extract session_id from params
+                            if let Some(params) = &msg.params {
+                                if let Some(session_id) =
+                                    params.get("sessionId").and_then(|v| v.as_str())
+                                {
+                                    // Fire PreFileChange event BEFORE forwarding permission request to IDE
+                                    if let Err(e) = fire_pre_file_change_event(
+                                        session_id,
+                                        &validated_agent_type,
+                                        &cwd,
+                                    ) {
+                                        eprintln!(
+                                            "Warning: Failed to fire PreFileChange event: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Handle session/update messages
                     if method == "session/update" {
                         // Removed verbose logging to prevent stderr overflow panic
@@ -355,10 +385,6 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
         _ => Err(AikiError::UnknownAgentType(agent.to_string())),
     }
 }
-
-// Note: Executable derivation logic moved to zed_detection::derive_executable_name()
-// and zed_detection::resolve_agent_binary() which handles both Zed-installed
-// and PATH-based agents.
 
 /// Handle session/update notification from agent
 ///
@@ -572,7 +598,7 @@ fn record_post_change_events(
     let edit_details = extract_edit_details(&context);
 
     // Create and dispatch a single event for all affected files
-    let event = AikiEvent::PostChange(AikiPostChangeEvent {
+    let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
         agent_type: *agent_type,
         client_name: client.clone(),
         client_version: client_ver.clone(),
@@ -629,6 +655,76 @@ fn extract_edit_details(context: &ToolCallContext) -> Vec<crate::events::EditDet
     }
 
     edit_details
+}
+
+/// Check if a permission request is for a file-modifying tool
+///
+/// Parses session/request_permission params to determine if the tool
+/// will modify files (Edit, Delete, Move). Returns true only for these
+/// file-modifying operations, not for read-only tools like Read, Bash, etc.
+fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
+    // Parse the params to extract tool kind
+    if let Some(params) = &msg.params {
+        // The params should contain toolCallId and potentially tool details
+        // We need to check the tool kind from the request
+        if let Some(tool_call_id) = params.get("toolCallId") {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!(
+                    "[acp] Found permission request for tool_call_id: {:?}",
+                    tool_call_id
+                );
+            }
+        }
+
+        // Try to extract the kind from the permission request
+        // The ACP spec shows options array, but we need to check the actual tool details
+        // For now, we'll return true if we see certain patterns in the request
+        // This may need refinement based on actual ACP permission request structure
+        if let Some(kind_val) = params.get("kind").or_else(|| params.get("toolKind")) {
+            if let Some(kind_str) = kind_val.as_str() {
+                return matches!(kind_str, "edit" | "delete" | "move");
+            }
+        }
+    }
+
+    false
+}
+
+/// Fire PreFileChange event before file-modifying tool executes
+///
+/// This is called when we intercept a session/request_permission for
+/// file-modifying tools (Edit, Delete, Move). It allows flows to stash
+/// user edits before the AI starts making changes.
+fn fire_pre_file_change_event(
+    session_id: &str,
+    agent_type: &AgentType,
+    cwd: &Option<PathBuf>,
+) -> Result<()> {
+    // Get working directory (required)
+    let working_dir = cwd
+        .as_ref()
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
+        .clone();
+
+    // Create and dispatch PreFileChange event
+    let event = AikiEvent::PreFileChange(crate::events::AikiPreFileChangeEvent {
+        agent_type: *agent_type,
+        session_id: session_id.to_string(),
+        cwd: working_dir,
+        timestamp: chrono::Utc::now(),
+    });
+
+    // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
+    if let Err(e) = event_bus::dispatch(event) {
+        eprintln!("Warning: PreFileChange event bus dispatch failed: {}", e);
+    } else if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[acp] Fired PreFileChange event for session: {}",
+            session_id
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

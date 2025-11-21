@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, CommitMessageAction, CommitMessageOp, FailureMode, IfAction, JjAction, LetAction,
-    LogAction, ShellAction, SwitchAction,
+    LogAction, SelfAction, ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -59,13 +59,16 @@ impl FlowExecutor {
 
         // Add event-specific variables based on event type
         match &context.event {
-            crate::events::AikiEvent::PostChange(e) => {
+            crate::events::AikiEvent::PostFileChange(e) => {
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
                 resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
                 resolver.add_var(
                     "event.file_count".to_string(),
                     e.file_paths.len().to_string(),
                 );
+                resolver.add_var("event.session_id".to_string(), e.session_id.clone());
+            }
+            crate::events::AikiEvent::PreFileChange(e) => {
                 resolver.add_var("event.session_id".to_string(), e.session_id.clone());
             }
             crate::events::AikiEvent::SessionStart(e) => {
@@ -134,6 +137,7 @@ impl FlowExecutor {
                     Action::Shell(shell_action) => &shell_action.on_failure,
                     Action::Jj(jj_action) => &jj_action.on_failure,
                     Action::Let(let_action) => &let_action.on_failure,
+                    Action::Self_(self_action) => &self_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
                     Action::Log(_) => {
                         continue; // Log actions never fail
@@ -199,6 +203,7 @@ impl FlowExecutor {
             Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
             Action::Log(log_action) => Self::execute_log(log_action, context),
             Action::Let(let_action) => Self::execute_let(let_action, context),
+            Action::Self_(self_action) => Self::execute_self(self_action, context),
             Action::CommitMessage(commit_msg_action) => {
                 Self::execute_commit_message(commit_msg_action, context)
             }
@@ -240,6 +245,9 @@ impl FlowExecutor {
                 if let Some(alias) = &log_action.alias {
                     context.store_action_result(alias.clone(), result.clone());
                 }
+            }
+            Action::Self_(_) => {
+                // Self actions don't store results (they're fire-and-forget)
             }
             Action::CommitMessage(_) => {
                 // commit_message actions don't produce storable results
@@ -561,10 +569,19 @@ impl FlowExecutor {
 
         // Execute the appropriate branch
         let actions_to_execute = if condition_result {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("[flows] Executing 'then' branch");
+            }
             &action.then
         } else if let Some(else_actions) = &action.else_ {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("[flows] Executing 'else' branch");
+            }
             else_actions
         } else {
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("[flows] No else branch, condition false - no-op");
+            }
             // No else branch and condition is false - treat as success (no-op)
             return Ok(ActionResult {
                 success: true,
@@ -696,7 +713,9 @@ impl FlowExecutor {
 
         // No operator - treat as boolean check (variable exists and is truthy)
         let val = Self::resolve_condition_value(condition, context)?;
-        Ok(val == "true")
+        // Truthy: non-empty string that's not "false"
+        // Falsy: empty string or literal "false"
+        Ok(!val.is_empty() && val != "false")
     }
 
     /// Resolve a value in a condition expression
@@ -859,31 +878,184 @@ impl FlowExecutor {
         // Route to appropriate function
         match (module, function) {
             ("core", "build_metadata") => {
-                // build_metadata requires PostChange event
-                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                // build_metadata requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_metadata can only be called for PostChange events"
+                        "build_metadata can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::build_metadata(event)
+                crate::flows::core::build_metadata(event, Some(context))
             }
             ("core", "classify_edits") => {
-                // classify_edits requires PostChange event
-                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                // classify_edits requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "classify_edits can only be called for PostChange events"
+                        "classify_edits can only be called for PostFileChange events"
                     )));
                 };
                 crate::flows::core::classify_edits(event)
             }
             ("core", "separate_edits") => {
-                // separate_edits requires PostChange event
-                let crate::events::AikiEvent::PostChange(event) = &context.event else {
+                // separate_edits requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "separate_edits can only be called for PostChange events"
+                        "separate_edits can only be called for PostFileChange events"
                     )));
                 };
                 crate::flows::core::separate_edits(event)
+            }
+            ("core", "prepare_separation") => {
+                // prepare_separation requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "prepare_separation can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::prepare_separation(event)
+            }
+            ("core", "write_ai_files") => {
+                // write_ai_files requires PostFileChange event and context
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "write_ai_files can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::write_ai_files(event, Some(context))
+            }
+            ("core", "restore_original_files") => {
+                // restore_original_files requires PostFileChange event and context
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "restore_original_files can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::restore_original_files(event, Some(context))
+            }
+            ("core", "generate_coauthors") => {
+                // generate_coauthors requires PrepareCommitMessage event
+                let crate::events::AikiEvent::PrepareCommitMessage(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "generate_coauthors can only be called for PrepareCommitMessage events"
+                    )));
+                };
+                crate::flows::core::generate_coauthors(event)
+            }
+            _ => Err(AikiError::FunctionNotFoundInNamespace(
+                function.to_string(),
+                module.to_string(),
+            )),
+        }
+    }
+
+    /// Execute a self function call: `self: write_ai_files`
+    /// This is like execute_let_function but doesn't store the result in a variable
+    fn execute_self(action: &SelfAction, context: &mut AikiState) -> Result<ActionResult> {
+        let function_path = &action.self_;
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[flows] Self function call: {}", function_path);
+        }
+
+        // Handle self.function syntax
+        let resolved_path = if function_path.starts_with("self.") {
+            // Extract function name from self.function
+            let function_name = function_path
+                .strip_prefix("self.")
+                .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
+
+            // Get current flow name from context
+            let flow_name = context.flow_name.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot use 'self.{}' - no flow context available",
+                    function_name
+                )
+            })?;
+
+            // Convert flow name (e.g., "aiki/core") to module.function
+            // Extract module from flow name: aiki/core -> core
+            let module = flow_name.split('/').last().unwrap_or(flow_name);
+            format!("aiki/{}.{}", module, function_name)
+        } else {
+            function_path.to_string()
+        };
+
+        // Parse function path: namespace/module.function
+        // For now, we only support aiki/* namespace
+        if !resolved_path.starts_with("aiki/") {
+            return Err(AikiError::UnsupportedFunctionNamespace(
+                resolved_path.to_string(),
+            ));
+        }
+
+        // Extract module.function part
+        let module_function = resolved_path
+            .strip_prefix("aiki/")
+            .expect("BUG: starts_with('aiki/') check passed but strip_prefix failed");
+
+        // Split into module and function
+        let parts: Vec<&str> = module_function.splitn(2, '.').collect();
+        if parts.len() != 2 {
+            return Err(AikiError::MissingFunction(function_path.to_string()));
+        }
+
+        let module = parts[0];
+        let function = parts[1];
+
+        // Route to appropriate function (same routing as execute_let_function)
+        match (module, function) {
+            ("core", "build_metadata") => {
+                // build_metadata requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "build_metadata can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::build_metadata(event, Some(context))
+            }
+            ("core", "classify_edits") => {
+                // classify_edits requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "classify_edits can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::classify_edits(event)
+            }
+            ("core", "separate_edits") => {
+                // separate_edits requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "separate_edits can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::separate_edits(event)
+            }
+            ("core", "prepare_separation") => {
+                // prepare_separation requires PostFileChange event
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "prepare_separation can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::prepare_separation(event)
+            }
+            ("core", "write_ai_files") => {
+                // write_ai_files requires PostFileChange event and context
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "write_ai_files can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::write_ai_files(event, Some(context))
+            }
+            ("core", "restore_original_files") => {
+                // restore_original_files requires PostFileChange event and context
+                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "restore_original_files can only be called for PostFileChange events"
+                    )));
+                };
+                crate::flows::core::restore_original_files(event, Some(context))
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
@@ -1014,12 +1186,12 @@ fn execute_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiEvent, AikiPostChangeEvent};
+    use crate::events::{AikiEvent, AikiPostFileChangeEvent};
     use crate::provenance::AgentType;
 
     // Helper to create a simple test event
     fn create_test_event() -> AikiEvent {
-        AikiEvent::PostChange(AikiPostChangeEvent {
+        AikiEvent::PostFileChange(AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,
@@ -1036,7 +1208,7 @@ mod tests {
 
     // Helper to create a test event with custom file_path
     fn create_test_event_with_file(file_path: &str) -> AikiEvent {
-        AikiEvent::PostChange(AikiPostChangeEvent {
+        AikiEvent::PostFileChange(AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,
@@ -1392,7 +1564,7 @@ mod tests {
     #[test]
     fn test_let_with_context_vars() {
         // This test verifies that build_metadata works with typed events.
-        // The type system now guarantees that PostChange events have all required fields.
+        // The type system now guarantees that PostFileChange events have all required fields.
         let action = LetAction {
             let_: "metadata = aiki/core.build_metadata".to_string(),
             on_failure: FailureMode::Stop,
@@ -1402,7 +1574,7 @@ mod tests {
         let mut context = AikiState::new(event);
         context.flow_name = Some("aiki/core".to_string());
 
-        // This should succeed because PostChangeEvent has session_id and tool_name
+        // This should succeed because PostFileChangeEvent has session_id and tool_name
         let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
@@ -1466,7 +1638,7 @@ mod tests {
             }),
         ];
 
-        // PostChange event has tool_name and session_id fields
+        // PostFileChange event has tool_name and session_id fields
         let mut context = AikiState::new(create_test_event());
 
         let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
@@ -1839,6 +2011,59 @@ mod tests {
     }
 
     #[test]
+    fn test_if_condition_truthy_values() {
+        let mut context = AikiState::new(create_test_event());
+
+        // Empty string is falsy
+        context.store_action_result(
+            "empty".to_string(),
+            ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "".to_string(),
+                stderr: String::new(),
+            },
+        );
+        assert!(!FlowExecutor::evaluate_condition("$empty", &context).unwrap());
+
+        // Non-empty string is truthy
+        context.store_action_result(
+            "nonempty".to_string(),
+            ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "some content".to_string(),
+                stderr: String::new(),
+            },
+        );
+        assert!(FlowExecutor::evaluate_condition("$nonempty", &context).unwrap());
+
+        // "false" literal is falsy
+        context.store_action_result(
+            "false_str".to_string(),
+            ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "false".to_string(),
+                stderr: String::new(),
+            },
+        );
+        assert!(!FlowExecutor::evaluate_condition("$false_str", &context).unwrap());
+
+        // "true" literal is truthy
+        context.store_action_result(
+            "true_str".to_string(),
+            ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "true".to_string(),
+                stderr: String::new(),
+            },
+        );
+        assert!(FlowExecutor::evaluate_condition("$true_str", &context).unwrap());
+    }
+
+    #[test]
     fn test_resolve_condition_value_with_quotes() {
         let mut context = AikiState::new(create_test_event());
 
@@ -2010,5 +2235,76 @@ mod tests {
         assert!(matches!(result, FlowResult::Success));
         // Note: Variable resolver will parse the JSON and extract the field
         // The actual result depends on the resolver implementation
+    }
+
+    #[test]
+    fn test_prefilechange_flow_with_jj_diff_output() {
+        // Simulate the PreFileChange flow: `jj diff -r @ --name-only` returns file names
+        let actions = vec![
+            // Simulate jj diff output with files using echo
+            Action::Shell(ShellAction {
+                shell: "echo 'src/main.rs\nsrc/lib.rs'".to_string(),
+                timeout: None,
+                on_failure: FailureMode::Continue,
+                alias: Some("changed_files".to_string()),
+            }),
+            // If there are changed files (non-empty), execute the then branch
+            Action::If(IfAction {
+                condition: "$changed_files".to_string(),
+                then: vec![Action::Log(LogAction {
+                    log: "User has changes to stash".to_string(),
+                    alias: Some("stash_result".to_string()),
+                })],
+                else_: Some(vec![Action::Log(LogAction {
+                    log: "No changes to stash".to_string(),
+                    alias: Some("stash_result".to_string()),
+                })]),
+                on_failure: FailureMode::Continue,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Should execute the then branch because changed_files is non-empty
+        assert_eq!(
+            context.get_variable("stash_result").unwrap(),
+            "User has changes to stash"
+        );
+    }
+
+    #[test]
+    fn test_prefilechange_flow_with_empty_jj_diff() {
+        // Simulate jj diff with no changes (empty output)
+        let actions = vec![
+            // Simulate empty jj diff output using true (which produces no output)
+            Action::Shell(ShellAction {
+                shell: "true".to_string(), // Exits 0 but produces no output
+                timeout: None,
+                on_failure: FailureMode::Continue,
+                alias: Some("changed_files".to_string()),
+            }),
+            Action::If(IfAction {
+                condition: "$changed_files".to_string(),
+                then: vec![Action::Log(LogAction {
+                    log: "Should not execute".to_string(),
+                    alias: Some("result".to_string()),
+                })],
+                else_: Some(vec![Action::Log(LogAction {
+                    log: "No changes detected".to_string(),
+                    alias: Some("result".to_string()),
+                })]),
+                on_failure: FailureMode::Continue,
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+
+        // Should execute the else branch because changed_files is empty
+        assert_eq!(
+            context.get_variable("result").unwrap(),
+            "No changes detected"
+        );
     }
 }

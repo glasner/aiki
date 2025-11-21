@@ -131,10 +131,10 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiEvent, AikiPostChangeEvent};
+        use crate::events::{AikiEvent, AikiPostFileChangeEvent};
         use crate::provenance::AgentType;
 
-        let event = AikiEvent::PostChange(AikiPostChangeEvent {
+        let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,
@@ -151,10 +151,10 @@ mod tests {
 
         // Verify we can access event fields through the enum
         match &ctx.event {
-            AikiEvent::PostChange(e) => {
+            AikiEvent::PostFileChange(e) => {
                 assert_eq!(e.file_paths, vec!["/test/file.rs".to_string()]);
             }
-            _ => panic!("Expected PostChange event"),
+            _ => panic!("Expected PostFileChange event"),
         }
         assert_eq!(ctx.cwd(), std::path::Path::new("/test"));
     }

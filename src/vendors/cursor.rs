@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
+use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
 use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 
@@ -21,6 +21,9 @@ struct CursorPayload {
     working_directory: String,
     #[serde(rename = "eventName")]
     event_name: String,
+    // beforeMCPExecution fields (TBD - exact structure not yet documented)
+    #[serde(rename = "toolName", default)]
+    tool_name: String,
     // afterFileEdit fields
     #[serde(default)]
     file_path: String,
@@ -71,6 +74,33 @@ pub fn handle(event_name: &str) -> Result<()> {
             cwd: PathBuf::from(&payload.working_directory),
             timestamp: chrono::Utc::now(),
         }),
+        "beforeMCPExecution" => {
+            // Fire PreFileChange only for file-modifying MCP tools
+            // Note: Exact payload structure TBD - this assumes toolName field exists
+            if is_file_modifying_tool(&payload.tool_name) {
+                AikiEvent::PreFileChange(AikiPreFileChangeEvent {
+                    agent_type: AgentType::Cursor,
+                    session_id: payload.session_id,
+                    cwd: PathBuf::from(&payload.working_directory),
+                    timestamp: chrono::Utc::now(),
+                })
+            } else {
+                // Non-file tools - no PreFileChange needed
+                if std::env::var("AIKI_DEBUG").is_ok() {
+                    eprintln!(
+                        "[aiki] beforeMCPExecution: Ignoring non-file tool: {}",
+                        payload.tool_name
+                    );
+                }
+                // Return success without dispatching event
+                let response = HookResponse::success();
+                let (json_output, exit_code) = translate_response(response);
+                if let Some(json) = json_output {
+                    println!("{}", json);
+                }
+                std::process::exit(exit_code);
+            }
+        }
         "afterFileEdit" => {
             // Use new file_path field if available, fallback to legacy editedFile
             let file_path = if !payload.file_path.is_empty() {
@@ -96,7 +126,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                 eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
             }
 
-            AikiEvent::PostChange(AikiPostChangeEvent {
+            AikiEvent::PostFileChange(AikiPostFileChangeEvent {
                 agent_type: AgentType::Cursor,
                 client_name: None, // Hook-based detection doesn't know client (IDE)
                 client_version: None,
@@ -193,4 +223,18 @@ fn translate_response(response: HookResponse) -> (Option<String>, i32) {
             (None, exit_code)
         }
     }
+}
+
+/// Check if a tool modifies files
+///
+/// Returns true for tools that create, modify, or delete files.
+/// PreFileChange events should only fire for these tools to stash user edits.
+///
+/// Note: Cursor's tool names may differ from Claude Code's. This will need
+/// to be updated once we know the actual tool names used by Cursor's MCP system.
+fn is_file_modifying_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "Edit" | "Write" | "NotebookEdit" | "edit" | "write" | "file_edit"
+    )
 }

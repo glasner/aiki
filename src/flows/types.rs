@@ -14,9 +14,13 @@ pub struct Flow {
     #[serde(default = "default_version")]
     pub version: String,
 
-    /// PostChange event handler
-    #[serde(rename = "PostChange", default)]
-    pub post_change: Vec<Action>,
+    /// PostFileChange event handler
+    #[serde(rename = "PostFileChange", default)]
+    pub post_file_change: Vec<Action>,
+
+    /// PreFileChange event handler (before file modification begins)
+    #[serde(rename = "PreFileChange", default)]
+    pub pre_file_change: Vec<Action>,
 
     /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "PrepareCommitMessage", default)]
@@ -51,6 +55,8 @@ pub enum Action {
     Log(LogAction),
     /// Let binding (function call or variable aliasing)
     Let(LetAction),
+    /// Self function call (call a function without storing result)
+    Self_(SelfAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
 }
@@ -109,6 +115,19 @@ pub struct LetAction {
     pub on_failure: FailureMode,
 }
 
+/// Self function call action (calls a function without storing result)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfAction {
+    /// The function to call in format "self.function_name"
+    /// Example: "self.write_ai_files"
+    #[serde(rename = "self")]
+    pub self_: String,
+
+    /// What to do when the action fails
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
 /// Conditional action (if/then/else)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IfAction {
@@ -121,7 +140,7 @@ pub struct IfAction {
     pub then: Vec<Action>,
 
     /// Optional actions to execute if condition is false
-    #[serde(default)]
+    #[serde(default, rename = "else")]
     pub else_: Option<Vec<Action>>,
 
     /// What to do when condition evaluation fails

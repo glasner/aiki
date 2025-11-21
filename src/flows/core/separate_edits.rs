@@ -1,17 +1,309 @@
-//! Built-in function: aiki/core.separate_edits
+//! Built-in functions for separating AI changes from user edits
 //!
-//! Separates AI changes from user edits using `jj split` when user modifications
-//! are detected.
+//! This module provides three functions for the edit separation workflow:
+//! 1. prepare_separation - Analyzes files and prepares content for separation
+//! 2. write_ai_files - Writes AI-only content to working copy
+//! 3. restore_original_files - Restores original content after jj split
 //!
-//! This function reconstructs the AI-only file content and uses `jj split` to
-//! create two changes: one for AI edits, one for user edits.
+//! The jj commands (split, metaedit) are run directly in the YAML flow between these steps.
 
 use crate::error::{AikiError, Result};
-use crate::events::AikiPostChangeEvent;
+use crate::events::AikiPostFileChangeEvent;
 use crate::flows::state::ActionResult;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+
+/// Prepare files for separation by reconstructing AI-only content
+///
+/// This function analyzes the files that need separation and reconstructs what
+/// the AI-only version should look like. It returns all the information needed
+/// for the separation workflow.
+///
+/// # Returns
+/// JSON with preparation data:
+/// ```json
+/// {
+///   "ai_message": "[aiki]\nagent=claude\n...",
+///   "ai_author": "Claude <noreply@anthropic.com>",
+///   "file_list": "file1.rs file2.rs",
+///   "files": {
+///     "file1.rs": {
+///       "ai_only_content": "...",
+///       "original_content": "..."
+///     }
+///   }
+/// }
+/// ```
+///
+/// # Example Flow Usage
+/// ```yaml
+/// PostFileChange:
+///   - let: detection = self.classify_edits
+///   - switch: $detection.classification_type
+///     cases:
+///       AdditiveUserEdits:
+///         - let: prep = self.prepare_separation
+///         - self: write_ai_files
+///         - jj: split --message "$prep.ai_message" $prep.file_list
+///         - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
+///         - self: restore_original_files
+/// ```
+pub fn prepare_separation(event: &AikiPostFileChangeEvent) -> Result<ActionResult> {
+    // If no edit details, return early
+    if event.edit_details.is_empty() {
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[flows/core] No edit details available, skipping preparation");
+        }
+        return Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: serde_json::json!({
+                "skipped": true,
+                "reason": "no_edit_details"
+            })
+            .to_string(),
+            stderr: String::new(),
+        });
+    }
+
+    // Generate metadata for AI change
+    let provenance = crate::provenance::ProvenanceRecord::from_post_file_change_event(event);
+    let ai_message = provenance.to_description();
+    let ai_author = event.agent_type.git_author();
+
+    // Files that will be separated (have edit details)
+    let files_with_edits: std::collections::HashSet<String> = event
+        .edit_details
+        .iter()
+        .map(|e| e.file_path.clone())
+        .collect();
+
+    // Extra files are those in file_paths but not in edit_details (AI-only, no separation)
+    let ai_only_files: Vec<String> = event
+        .file_paths
+        .iter()
+        .filter(|p| !files_with_edits.contains(*p))
+        .cloned()
+        .collect();
+
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[flows/core] Preparing separation for {} files with edits, {} AI-only files",
+            files_with_edits.len(),
+            ai_only_files.len()
+        );
+    }
+
+    // Reconstruct AI-only content for files with edits
+    let mut files_data = serde_json::Map::new();
+
+    for file_path in &files_with_edits {
+        let full_path = event.cwd.join(file_path);
+
+        // Read current content (AI + user changes)
+        let current_content = fs::read_to_string(&full_path).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!(
+                "Failed to read file '{}': {}",
+                full_path.display(),
+                e
+            ))
+        })?;
+
+        // Reconstruct AI-only content
+        let ai_only_content = reconstruct_ai_only_content(&current_content, file_path, event)?;
+
+        files_data.insert(
+            file_path.clone(),
+            serde_json::json!({
+                "ai_only_content": ai_only_content,
+                "original_content": current_content,
+            }),
+        );
+    }
+
+    // Build file list for jj split (space-separated, normalized paths)
+    let mut all_ai_files: Vec<String> = files_with_edits
+        .iter()
+        .map(|p| normalize_path_for_jj(p, &event.cwd))
+        .collect();
+    all_ai_files.extend(
+        ai_only_files
+            .iter()
+            .map(|p| normalize_path_for_jj(p, &event.cwd)),
+    );
+    let file_list = all_ai_files.join(" ");
+
+    let json = serde_json::json!({
+        "ai_message": ai_message,
+        "ai_author": ai_author,
+        "file_list": file_list,
+        "files": files_data,
+    });
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: json.to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Write AI-only content to files in preparation for jj split
+///
+/// This function reads the preparation data from context (the $prep variable
+/// set by prepare_separation) and writes the AI-only content to the working copy.
+///
+/// After this step, the flow should run `jj split` to separate the AI changes.
+///
+/// # Context Variables Required
+/// - `$prep.files` - File data from prepare_separation
+///
+/// # Example Flow Usage
+/// ```yaml
+/// - let: prep = self.prepare_separation
+/// - self: write_ai_files
+/// - jj: split --message "$prep.ai_message" $prep.file_list
+/// ```
+pub fn write_ai_files(
+    event: &AikiPostFileChangeEvent,
+    context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    let ctx = context.ok_or_else(|| {
+        AikiError::Other(anyhow::anyhow!(
+            "write_ai_files requires context with $prep variable"
+        ))
+    })?;
+
+    let prep = ctx.get_variable("prep").ok_or_else(|| {
+        AikiError::Other(anyhow::anyhow!(
+            "write_ai_files requires $prep variable from prepare_separation"
+        ))
+    })?;
+
+    // Parse the prep JSON
+    let prep_json: serde_json::Value = serde_json::from_str(prep)
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
+
+    let files = prep_json
+        .get("files")
+        .and_then(|f| f.as_object())
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
+
+    // Write AI-only content to each file
+    for (file_path, file_data) in files {
+        let ai_only_content = file_data
+            .get("ai_only_content")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| {
+                AikiError::Other(anyhow::anyhow!(
+                    "Missing 'ai_only_content' for file '{}'",
+                    file_path
+                ))
+            })?;
+
+        let full_path = event.cwd.join(file_path);
+        fs::write(&full_path, ai_only_content).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!(
+                "Failed to write AI-only content to '{}': {}",
+                full_path.display(),
+                e
+            ))
+        })?;
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[flows/core] Wrote AI-only content to '{}'",
+                full_path.display()
+            );
+        }
+    }
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: "AI-only content written".to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Restore original content after jj split
+///
+/// This function reads the preparation data from context and restores the
+/// original file content (AI + user changes) to the working copy. This should
+/// be called after `jj split` to ensure the user's changes end up in the
+/// remaining change.
+///
+/// # Context Variables Required
+/// - `$prep.files` - File data from prepare_separation
+///
+/// # Example Flow Usage
+/// ```yaml
+/// - jj: split --message "$prep.ai_message" $prep.file_list
+/// - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
+/// - self: restore_original_files
+/// ```
+pub fn restore_original_files(
+    event: &AikiPostFileChangeEvent,
+    context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    let ctx = context.ok_or_else(|| {
+        AikiError::Other(anyhow::anyhow!(
+            "restore_original_files requires context with $prep variable"
+        ))
+    })?;
+
+    let prep = ctx.get_variable("prep").ok_or_else(|| {
+        AikiError::Other(anyhow::anyhow!(
+            "restore_original_files requires $prep variable from prepare_separation"
+        ))
+    })?;
+
+    // Parse the prep JSON
+    let prep_json: serde_json::Value = serde_json::from_str(prep)
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
+
+    let files = prep_json
+        .get("files")
+        .and_then(|f| f.as_object())
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
+
+    // Restore original content to each file
+    for (file_path, file_data) in files {
+        let original_content = file_data
+            .get("original_content")
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| {
+                AikiError::Other(anyhow::anyhow!(
+                    "Missing 'original_content' for file '{}'",
+                    file_path
+                ))
+            })?;
+
+        let full_path = event.cwd.join(file_path);
+        fs::write(&full_path, original_content).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!(
+                "Failed to restore content to '{}': {}",
+                full_path.display(),
+                e
+            ))
+        })?;
+
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[flows/core] Restored original content to '{}'",
+                full_path.display()
+            );
+        }
+    }
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: "Original content restored".to_string(),
+        stderr: String::new(),
+    })
+}
 
 /// Separate AI changes from user edits using jj split
 ///
@@ -41,7 +333,7 @@ use std::process::Command;
 ///
 /// # Example Flow Usage
 /// ```yaml
-/// PostChange:
+/// PostFileChange:
 ///   - let: metadata = self.build_metadata
 ///   - let: detection = self.classify_edits
 ///   - let: sep = self.separate_edits
@@ -52,7 +344,7 @@ use std::process::Command;
 /// Note: This simplified version derives all needed data from the event and doesn't
 /// require function arguments. A future enhancement could add argument support to the
 /// flow executor.
-pub fn separate_edits(event: &AikiPostChangeEvent) -> Result<ActionResult> {
+pub fn separate_edits(event: &AikiPostFileChangeEvent) -> Result<ActionResult> {
     // If no edit details, return success (nothing to separate)
     // This allows graceful degradation for hook-based detection where
     // edit details might not be available
@@ -73,7 +365,7 @@ pub fn separate_edits(event: &AikiPostChangeEvent) -> Result<ActionResult> {
     }
 
     // Generate metadata for AI change
-    let provenance = crate::provenance::ProvenanceRecord::from_post_change_event(event);
+    let provenance = crate::provenance::ProvenanceRecord::from_post_file_change_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.agent_type.git_author();
 
@@ -233,7 +525,7 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
 fn reconstruct_ai_only_content(
     current_content: &str,
     file_path: &str,
-    event: &AikiPostChangeEvent,
+    event: &AikiPostFileChangeEvent,
 ) -> Result<String> {
     let mut ai_content = current_content.to_string();
 
@@ -374,7 +666,7 @@ mod tests {
         use crate::provenance::AgentType;
 
         let current_content = "Hello World\nExtra user line";
-        let event = AikiPostChangeEvent {
+        let event = AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,
@@ -400,7 +692,7 @@ mod tests {
         use crate::provenance::AgentType;
 
         let current_content = "Hello"; // User reverted AI's change
-        let event = AikiPostChangeEvent {
+        let event = AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,

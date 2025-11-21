@@ -1,7 +1,7 @@
 // Test to verify event construction works properly
 #![cfg(test)]
 
-use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
+use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiStartEvent};
 use crate::provenance::AgentType;
 use std::path::PathBuf;
 
@@ -29,7 +29,7 @@ fn test_impl_asref_path_ergonomics() {
     });
 
     // Using String
-    let _event2 = AikiEvent::PostChange(AikiPostChangeEvent {
+    let _event2 = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
         agent_type: AgentType::Claude,
         client_name: None,
         client_version: None,
@@ -62,7 +62,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using &PathBuf
     let pb = PathBuf::from("/tmp");
-    let _event5 = AikiEvent::PostChange(AikiPostChangeEvent {
+    let _event5 = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
         agent_type: AgentType::Claude,
         client_name: None,
         client_version: None,

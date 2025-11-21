@@ -26,7 +26,7 @@ version: "1"
         let flow = FlowParser::parse_str(yaml).unwrap();
         assert_eq!(flow.name, "Test Flow");
         assert_eq!(flow.version, "1");
-        assert!(flow.post_change.is_empty());
+        assert!(flow.post_file_change.is_empty());
         assert!(flow.prepare_commit_message.is_empty());
     }
 
@@ -35,13 +35,13 @@ version: "1"
         let yaml = r#"
 name: Lint Flow
 version: "1"
-PostChange:
+PostFileChange:
   - shell: ruff check $event.file_paths
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
         assert_eq!(flow.name, "Lint Flow");
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
     }
 
     #[test]
@@ -49,12 +49,12 @@ PostChange:
         let yaml = r#"
 name: JJ Flow
 version: "1"
-PostChange:
+PostFileChange:
   - jj: describe -m "AI generated change"
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
     }
 
     #[test]
@@ -62,12 +62,12 @@ PostChange:
         let yaml = r#"
 name: Log Flow
 version: "1"
-PostChange:
+PostFileChange:
   - log: "File edited: $event.file_paths"
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
     }
 
     #[test]
@@ -75,14 +75,14 @@ PostChange:
         let yaml = r#"
 name: Multi Action Flow
 version: "1"
-PostChange:
+PostFileChange:
   - shell: echo "Starting"
   - log: "Processing file"
   - jj: describe -m "Done"
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 3);
+        assert_eq!(flow.post_file_change.len(), 3);
     }
 
     #[test]
@@ -90,13 +90,13 @@ PostChange:
         let yaml = r#"
 name: Failure Handling Flow
 version: "1"
-PostChange:
+PostFileChange:
   - shell: ruff check .
     on_failure: stop
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
     }
 
     #[test]
@@ -104,13 +104,13 @@ PostChange:
         let yaml = r#"
 name: Timeout Flow
 version: "1"
-PostChange:
+PostFileChange:
   - shell: pytest
     timeout: 60s
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
     }
 
     #[test]
@@ -118,7 +118,7 @@ PostChange:
         let yaml = r#"
 name: Multi Event Flow
 version: "1"
-PostChange:
+PostFileChange:
   - shell: ruff check $event.file_paths
 PrepareCommitMessage:
   - shell: pytest
@@ -129,7 +129,7 @@ Stop:
 "#;
 
         let flow = FlowParser::parse_str(yaml).unwrap();
-        assert_eq!(flow.post_change.len(), 1);
+        assert_eq!(flow.post_file_change.len(), 1);
         assert_eq!(flow.prepare_commit_message.len(), 1);
         assert_eq!(flow.session_start.len(), 1);
         assert_eq!(flow.stop.len(), 1);
@@ -150,7 +150,7 @@ this is not valid yaml: [
     fn test_parse_missing_name() {
         let yaml = r#"
 version: "1"
-PostChange:
+PostFileChange:
   - shell: echo "test"
 "#;
 
