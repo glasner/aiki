@@ -39,14 +39,23 @@ pub struct AikiStartEvent {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Post-change event (after file modification)
+/// Pre-file-change event (before file modification begins)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPostChangeEvent {
+pub struct AikiPreFileChangeEvent {
+    pub agent_type: AgentType,
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Post-file-change event (after file modification)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiPostFileChangeEvent {
     pub agent_type: AgentType,
     pub client_name: Option<String>, // IDE name (e.g., "zed", "neovim") from ACP InitializeRequest
     pub client_version: Option<String>, // IDE version (e.g., "0.213.3") from ACP InitializeRequest
     pub agent_version: Option<String>, // Agent version (e.g., "0.10.6") from ACP InitializeResponse
-    pub session_id: String,          // Required for PostChange events
+    pub session_id: String,          // Required for PostFileChange events
     pub tool_name: String,           // Tool that made the change (e.g., "Edit", "Write")
     pub file_paths: Vec<String>,     // Files that were modified (batch support)
     pub cwd: PathBuf,
@@ -74,8 +83,10 @@ pub struct AikiPrepareCommitMessageEvent {
 pub enum AikiEvent {
     /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
     SessionStart(AikiStartEvent),
+    /// Before file modification begins (fired when agent requests permission for file-modifying tools)
+    PreFileChange(AikiPreFileChangeEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
-    PostChange(AikiPostChangeEvent),
+    PostFileChange(AikiPostFileChangeEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),
 }
@@ -86,7 +97,8 @@ impl AikiEvent {
     pub fn cwd(&self) -> &Path {
         match self {
             Self::SessionStart(e) => &e.cwd,
-            Self::PostChange(e) => &e.cwd,
+            Self::PreFileChange(e) => &e.cwd,
+            Self::PostFileChange(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
         }
     }
@@ -96,7 +108,8 @@ impl AikiEvent {
     pub fn agent_type(&self) -> AgentType {
         match self {
             Self::SessionStart(e) => e.agent_type,
-            Self::PostChange(e) => e.agent_type,
+            Self::PreFileChange(e) => e.agent_type,
+            Self::PostFileChange(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
         }
     }
@@ -109,9 +122,15 @@ impl From<AikiStartEvent> for AikiEvent {
     }
 }
 
-impl From<AikiPostChangeEvent> for AikiEvent {
-    fn from(event: AikiPostChangeEvent) -> Self {
-        AikiEvent::PostChange(event)
+impl From<AikiPreFileChangeEvent> for AikiEvent {
+    fn from(event: AikiPreFileChangeEvent) -> Self {
+        AikiEvent::PreFileChange(event)
+    }
+}
+
+impl From<AikiPostFileChangeEvent> for AikiEvent {
+    fn from(event: AikiPostFileChangeEvent) -> Self {
+        AikiEvent::PostFileChange(event)
     }
 }
 

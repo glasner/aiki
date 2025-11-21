@@ -644,7 +644,7 @@ Report includes:
 Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 7 (Autonomous Review Flow).
 
 **With provenance (Phase 1-4), we can now:**
-- Trigger workflows on specific agent events (PostChange, PreCommit, Start, Stop)
+- Trigger workflows on specific agent events (PostFileChange, PreCommit, Start, Stop)
 - Access rich event metadata (agent type, file paths, change IDs)
 - Build automation that reacts to AI coding events
 
@@ -663,7 +663,7 @@ Build a minimal flow engine focused on **internal flows** only:
 - **Default flows** - Optional, built into binary, user can customize (autonomous review)
 
 **Flow Engine:**
-- Event system (PostChange, PreCommit, Start, Stop)
+- Event system (PostFileChange, PreCommit, Start, Stop)
 - YAML parser and executor
 - Sequential and parallel execution
 - Conditionals (`if/then/else`)
@@ -692,7 +692,7 @@ PreCommit:
 **Example refactor:**
 ```yaml
 # aiki/system/provenance (built into Aiki binary)
-PostChange:
+PostFileChange:
   - jj:
       - describe
       - --no-edit
@@ -727,7 +727,7 @@ PostChange:
 - ✅ System flows power Aiki core (provenance, session tracking)
 - ✅ Default flows ship with Aiki (autonomous review)
 - ✅ Users can add inline steps to `.aiki/flow.yaml`
-- ✅ Flows execute on events (PostChange, PreCommit, Start, Stop)
+- ✅ Flows execute on events (PostFileChange, PreCommit, Start, Stop)
 - ✅ Phase 6 can build on this foundation
 
 ### Why This Enables Future Phases
@@ -758,7 +758,7 @@ Standardize agent event naming, add generic response system, implement automatic
 
 **1. Event Naming Standardization**
 - Rename `Start` → `SessionStart` (agent event only)
-- Keep `PostChange` as-is (already uses Post prefix)
+- Keep `PostFileChange` as-is (already uses Post prefix)
 - Keep `PrepareCommitMessage` unchanged (Git hook name)
 - Update flow field: `start` → `session_start`
 
@@ -810,7 +810,7 @@ Editor-Specific JSON + Exit Code
 | Flow type updates | Low | ✅ Complete |
 
 ### Success Criteria
-- ✅ Agent events use Pre/Post naming (`SessionStart`, `PostChange`)
+- ✅ Agent events use Pre/Post naming (`SessionStart`, `PreFileChange`, `PostFileChange`)
 - ✅ Git hooks keep official names (`PrepareCommitMessage` unchanged)
 - ✅ `HookResponse` defined in `handlers.rs`
 - ✅ Handlers return generic `HookResponse` (no editor knowledge)
@@ -1011,7 +1011,7 @@ fn derive_executable(agent_type: &str) -> String {
 When an AI agent session starts or during AI operations, users may manually edit files. Currently, these user edits can be incorrectly attributed to the AI agent, leading to false attribution, provenance corruption, and trust issues.
 
 **Three problematic scenarios:**
-1. **Between SessionStart and first PostChange**: User edits between session init and first AI edit
+1. **Between SessionStart and first PostFileChange**: User edits between session init and first AI edit
 2. **Concurrent different files**: User and AI edit different files simultaneously  
 3. **Concurrent same file**: User and AI edit the same file (hardest case)
 
@@ -1027,7 +1027,7 @@ Implement **tiered detection** based on available edit information from each int
 
 **Detection strategy:**
 1. **Capture edit details** in AikiPostChangeEvent (all integrations provide this!)
-2. **Compare expected vs actual** diffs in PostChange flow
+2. **Compare expected vs actual** diffs in PostFileChange flow
 3. **Separate cleanly** when user edited different files using `jj restore`
 4. **Warn** when user edited same file (requires manual `jj split --interactive`)
 
@@ -1052,9 +1052,9 @@ pub struct EditDetail {
 - `self.check_for_user_edits` - Compare expected AI edits with actual working copy
 - `self.separate_user_edits` - Use `jj restore` to split user files into separate change
 
-**Enhanced PostChange flow:**
+**Enhanced PostFileChange flow:**
 ```yaml
-PostChange:
+PostFileChange:
   # Detect user edits
   - let: user_edit_check = self.check_for_user_edits
   
@@ -1379,10 +1379,10 @@ Aiki ⚠  - Error or health check failed
 ## Phase 10: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
-Phase 5 introduced the flow system with 3 core events (Start, PostChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
+Phase 5 introduced the flow system with 4 core events (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
 
 **Current limitations:**
-- Only 3 events supported (Start, PostChange, PrepareCommitMessage)
+- Only 4 events supported (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage)
 - Can't hook into pre-commit, post-commit, pre-push, etc.
 - Can't react to agent lifecycle events (SessionStart, SessionEnd, Stop)
 - Can't integrate with Git's full workflow (rebase, merge, checkout)
@@ -1417,7 +1417,7 @@ SessionStart:       # Agent session begins
 SessionEnd:         # Agent session ends
 UserPromptSubmit:   # Before user prompt is sent to agent
 PreToolUse:         # Before agent executes a tool
-PostToolUse:        # After agent executes a tool (current PostChange)
+PostToolUse:        # After agent executes a tool (current PostFileChange)
 Notification:       # Agent sends notification
 Stop:               # Agent is stopped/interrupted
 SubagentStart:      # Subagent/task begins
@@ -1530,7 +1530,7 @@ PreToolUse:
   - log: "Tool: $event.tool_name on $event.file_path"
   - shell: cp "$event.file_path" ".aiki/backups/$(basename $event.file_path).bak"
 
-# After agent modifies files (existing PostChange)
+# After agent modifies files (existing PostFileChange)
 PostToolUse:
   - let: description = self.build_description
   - jj: describe -m "$description"
@@ -1628,7 +1628,7 @@ aiki event pre-push
 pub enum AikiEvent {
     // Existing
     Start(AikiStartEvent),
-    PostChange(AikiPostChangeEvent),
+    PostFileChange(AikiPostChangeEvent),
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),
     
     // New Git events
@@ -1690,7 +1690,7 @@ pub struct Flow {
 - ✅ All Claude Code agent hooks supported (10+ hooks)
 - ✅ Each event provides rich `$event.*` context variables
 - ✅ `aiki init` installs all Git hooks automatically
-- ✅ Existing flows (Start, PostChange, PrepareCommitMessage) continue working
+- ✅ Existing flows (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage) continue working
 - ✅ Documentation covers all events with examples
 - ✅ Users can build complete local CI/CD workflows
 - ✅ Agent lifecycle fully integrated with flows
@@ -1886,7 +1886,7 @@ vendor/security-scan/
 
 **Flow YAML mixes native binaries and WASM functions:**
 ```yaml
-PostChange:
+PostFileChange:
   - shell: semgrep --config=auto $event.file_path  # Uses native binary
   - let: result = vendor/scanner.validate_custom_rules  # Uses WASM function
   
@@ -2025,7 +2025,7 @@ Side-by-Side Comparison
 
 ---
 
-### Scenario 2: High-frequency flow (runs on every PostChange)
+### Scenario 2: High-frequency flow (runs on every PostFileChange)
 
 **Rust:**
 - First run: 20-140ms

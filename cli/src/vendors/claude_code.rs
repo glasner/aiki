@@ -4,7 +4,7 @@ use serde_json::{json, Map};
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostChangeEvent, AikiStartEvent};
+use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
 use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 
@@ -68,8 +68,34 @@ pub fn handle(event_name: &str) -> Result<()> {
             cwd: PathBuf::from(&payload.cwd),
             timestamp: chrono::Utc::now(),
         }),
+        "PreToolUse" => {
+            // Fire PreFileChange only for file-modifying tools
+            if is_file_modifying_tool(&payload.tool_name) {
+                AikiEvent::PreFileChange(AikiPreFileChangeEvent {
+                    agent_type: AgentType::Claude,
+                    session_id: payload.session_id,
+                    cwd: PathBuf::from(&payload.cwd),
+                    timestamp: chrono::Utc::now(),
+                })
+            } else {
+                // Non-file tools (Bash, Read, etc.) - no PreFileChange needed
+                if std::env::var("AIKI_DEBUG").is_ok() {
+                    eprintln!(
+                        "[aiki] PreToolUse: Ignoring non-file tool: {}",
+                        payload.tool_name
+                    );
+                }
+                // Return success without dispatching event
+                let response = HookResponse::success();
+                let (json_output, exit_code) = translate_response(response, event_name);
+                if let Some(json) = json_output {
+                    println!("{}", json);
+                }
+                std::process::exit(exit_code);
+            }
+        }
         "PostToolUse" => {
-            // Extract required fields for PostChange event
+            // Extract required fields for PostFileChange event
             let tool_input = payload
                 .tool_input
                 .ok_or_else(|| anyhow::anyhow!("PostToolUse requires tool_input"))?;
@@ -86,7 +112,7 @@ pub fn handle(event_name: &str) -> Result<()> {
                     Vec::new()
                 };
 
-            AikiEvent::PostChange(AikiPostChangeEvent {
+            AikiEvent::PostFileChange(AikiPostFileChangeEvent {
                 agent_type: AgentType::Claude,
                 client_name: None, // Hook-based detection doesn't know client (IDE)
                 client_version: None,
@@ -134,7 +160,7 @@ fn translate_response(response: HookResponse, event_type: &str) -> (Option<Strin
         .unwrap_or(if response.success { 0 } else { 1 });
 
     // PostToolUse uses different JSON structure than other hooks
-    let is_post_tool_use = event_type == "PostToolUse" || event_type == "PostChange";
+    let is_post_tool_use = event_type == "PostToolUse" || event_type == "PostFileChange";
 
     match exit_code {
         2 => {
@@ -219,4 +245,12 @@ fn translate_response(response: HookResponse, event_type: &str) -> (Option<Strin
             (None, exit_code)
         }
     }
+}
+
+/// Check if a tool modifies files
+///
+/// Returns true for tools that create, modify, or delete files.
+/// PreFileChange events should only fire for these tools to stash user edits.
+fn is_file_modifying_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Edit" | "Write" | "NotebookEdit")
 }

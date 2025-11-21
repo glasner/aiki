@@ -213,11 +213,14 @@ pub fn run(flow_name: String, num_edits: usize) -> Result<()> {
 
         // Track timing by event type
         event_timings
-            .entry("PostChange".to_string())
-            .or_insert_with(|| EventTiming::new("PostChange".to_string()))
+            .entry("PostFileChange".to_string())
+            .or_insert_with(|| EventTiming::new("PostFileChange".to_string()))
             .add_timing(elapsed.as_secs_f64());
 
-        println!("    PostChange: {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "    PostFileChange: {:.1}ms",
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     let total_hook_time = total_hook_start.elapsed();

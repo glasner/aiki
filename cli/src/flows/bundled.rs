@@ -5,7 +5,7 @@ use super::types::Flow;
 
 /// Load the core system flow
 ///
-/// The core flow is embedded in the binary and handles both Start and PostChange events.
+/// The core flow is embedded in the binary and handles both Start and PostFileChange events.
 pub fn load_core_flow() -> Result<Flow> {
     let core_yaml = include_str!("core/flow.yaml");
     FlowParser::parse_str(core_yaml)
@@ -30,11 +30,19 @@ mod tests {
     }
 
     #[test]
-    fn test_core_flow_has_post_change() {
+    fn test_core_flow_has_post_file_change() {
         let core = load_core_flow().unwrap();
 
-        // Should have PostChange handler
-        assert!(!core.post_change.is_empty());
+        // Should have PostFileChange handler
+        assert!(!core.post_file_change.is_empty());
+    }
+
+    #[test]
+    fn test_core_flow_has_pre_file_change() {
+        let core = load_core_flow().unwrap();
+
+        // Should have PreFileChange handler
+        assert!(!core.pre_file_change.is_empty());
     }
 
     #[test]
@@ -51,18 +59,19 @@ mod tests {
 
         let core = load_core_flow().unwrap();
 
-        // Should have PostChange handler with let action
-        assert!(!core.post_change.is_empty());
+        // Should have PostFileChange handler with let action
+        assert!(!core.post_file_change.is_empty());
 
-        // First action should be a Let binding with self reference to build_metadata
-        match &core.post_change[0] {
+        // First action should be a Let binding with self reference to classify_edits
+        match &core.post_file_change[0] {
             Action::Let(let_action) => {
                 // Verify uses self reference for portability
                 assert_eq!(
-                    let_action.let_, "metadata = self.build_metadata",
-                    "Flow should use 'self.build_metadata' for efficiency"
+                    let_action.let_, "detection = self.classify_edits",
+                    "Flow should use 'self.classify_edits' for user edit detection"
                 );
-                assert_eq!(let_action.on_failure, FailureMode::Stop);
+                // classify_edits should not stop on failure since we want to continue
+                assert_eq!(let_action.on_failure, FailureMode::Continue);
             }
             _ => panic!("Expected Let action as first step"),
         }

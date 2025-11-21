@@ -257,6 +257,7 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         // Valid signature + provenance = verified

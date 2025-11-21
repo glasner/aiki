@@ -11,4 +11,6 @@ pub mod separate_edits;
 pub use build_metadata::build_metadata;
 pub use classify_edits::classify_edits;
 pub use generate_coauthors::generate_coauthors;
-pub use separate_edits::separate_edits;
+pub use separate_edits::{
+    prepare_separation, restore_original_files, separate_edits, write_ai_files,
+};

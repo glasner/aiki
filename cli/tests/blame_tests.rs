@@ -62,6 +62,14 @@ fn test_blame_shows_recorded_change() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // Create a clean working copy (simulates start of AI session)
+    // This ensures PreChange won't detect any existing modifications
+    Command::new("jj")
+        .args(["new"])
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to create new change");
+
     // Modify the file
     fs::write(&test_file, "line 1\nline 2 modified\nline 3\nline 4\n").unwrap();
 

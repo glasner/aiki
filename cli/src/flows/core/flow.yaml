@@ -13,33 +13,44 @@ SessionStart:
   - shell: aiki init --quiet
     on_failure: stop
 
-# PostChange: Record provenance metadata after every AI edit
-# With user edit detection: separates AI changes from user modifications
-PostChange:
-  # Build both message and author in a single call (more efficient)
-  - let: metadata = self.build_metadata
-    on_failure: stop
+# PreFileChange: Stash any user changes before AI starts editing
+PreFileChange:
+  # Check if working copy has any changes
+  - jj: diff -r @ --name-only
+    alias: changed_files
 
+  # If there are changes (non-empty string), stash them before AI starts
+  - if: $changed_files
+    then:
+      - jj: describe --message "User changes (pre-AI edit)" --reset-author
+      - jj: new # Give AI a clean working copy
+
+# PostFileChange: Record provenance metadata after every AI edit
+# With user edit detection: separates AI changes from user modifications
+PostFileChange:
   # Classify edits to detect user modifications
   # This compares AI's intended edits with actual file state
   # Result: classification_type, extra_files, details
   - let: detection = self.classify_edits
 
-  # Separate AI changes from user edits based on classification
-  - switch: $detection.classification_type
-    cases:
-      # ExactMatch:
-      # No user modifications - just set metadata on current change
+  - if: $detection.classification_type == "AdditiveUserEdits"
+    then:
+      # User added more changes - separate them into two changes
+      - let: prep = self.prepare_separation
 
-      AdditiveUserEdits:
-        # User added more changes - separate them
-        - let: separation = self.separate_edits
+      - self: write_ai_files
+      - jj: split --message "$prep.ai_message" $prep.file_list
+      - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
 
-      OverlappingUserEdits:
-        # User modified AI's changes - cannot separate cleanly
-        - log: "Cannot separate overlapping user edits"
+      - self: restore_original_files
+      # Leave user change (@) without aiki metadata - it's a human change
+      - jj: metaedit --message "User changes (during AI edit)" --reset-author
+    else:
+      # For ExactMatch or OverlappingUserEdits, set AI metadata
+      - let: metadata = self.build_metadata
+        on_failure: stop
+      - jj: metaedit --message "$metadata.message" --author "$metadata.author"
 
-  - jj: metaedit --message "$metadata.message" --author "$metadata.author"
   # Create a new change for the next edit
   - jj: new
 

@@ -98,15 +98,17 @@ pub struct ProvenanceRecord {
     pub session_id: String,
     /// Tool name used (e.g., "Edit" or "Write")
     pub tool_name: String,
+    /// Optional human coauthor (for overlapping user edits)
+    pub coauthor: Option<String>,
 }
 
 impl ProvenanceRecord {
-    /// Create a ProvenanceRecord from a PostChange event
+    /// Create a ProvenanceRecord from a PostFileChange event
     ///
     /// This constructor extracts all necessary fields from the event and creates
     /// a provenance record with default confidence (High) and the detection
     /// method from the event.
-    pub fn from_post_change_event(event: &crate::events::AikiPostChangeEvent) -> Self {
+    pub fn from_post_file_change_event(event: &crate::events::AikiPostFileChangeEvent) -> Self {
         Self {
             agent: AgentInfo {
                 agent_type: event.agent_type,
@@ -120,6 +122,7 @@ impl ProvenanceRecord {
             agent_version: event.agent_version.clone(),
             session_id: event.session_id.clone(),
             tool_name: event.tool_name.clone(),
+            coauthor: None,
         }
     }
 
@@ -160,6 +163,7 @@ impl ProvenanceRecord {
     ///     agent_version: None,
     ///     session_id: "test-session".to_string(),
     ///     tool_name: "Edit".to_string(),
+    ///     coauthor: None,
     /// };
     ///
     /// let description = record.to_description();
@@ -207,8 +211,13 @@ impl ProvenanceRecord {
             format!("tool={}", self.tool_name),
             format!("confidence={}", confidence),
             format!("method={}", method),
-            "[/aiki]".to_string(),
         ]);
+
+        if let Some(ref coauthor) = self.coauthor {
+            lines.push(format!("coauthor={}", coauthor));
+        }
+
+        lines.push("[/aiki]".to_string());
 
         lines.join("\n")
     }
@@ -284,6 +293,7 @@ impl ProvenanceRecord {
         let client_name = metadata.get("client").cloned();
         let client_version = metadata.get("client_version").cloned();
         let agent_version = metadata.get("agent_version").cloned();
+        let coauthor = metadata.get("coauthor").cloned();
 
         Ok(Some(ProvenanceRecord {
             agent: AgentInfo {
@@ -298,6 +308,7 @@ impl ProvenanceRecord {
             agent_version,
             session_id,
             tool_name,
+            coauthor,
         }))
     }
 }
@@ -321,6 +332,7 @@ mod tests {
             agent_version: None,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -352,6 +364,7 @@ mod tests {
             agent_version: None,
             session_id: "session-with-dashes_underscores.dots".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -378,6 +391,7 @@ mod tests {
             agent_version: None,
             session_id: long_session_id.clone(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -406,6 +420,7 @@ mod tests {
                 agent_version: None,
                 session_id: "test-session".to_string(),
                 tool_name: tool_name.to_string(),
+                coauthor: None,
             };
 
             let description = record.to_description();
@@ -435,6 +450,7 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                coauthor: None,
             };
 
             let description = record.to_description();
@@ -466,6 +482,7 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                coauthor: None,
             };
 
             let description = record.to_description();
@@ -495,6 +512,7 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                coauthor: None,
             };
 
             let description = record.to_description();
@@ -518,6 +536,7 @@ mod tests {
             agent_version: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -547,6 +566,7 @@ mod tests {
             agent_version: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -578,6 +598,7 @@ mod tests {
             agent_version: None,
             session_id: "".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -604,6 +625,7 @@ mod tests {
             agent_version: None,
             session_id: "roundtrip-test".to_string(),
             tool_name: "Write".to_string(),
+            coauthor: None,
         };
 
         // Test JSON serialization
@@ -687,6 +709,7 @@ mod tests {
             agent_version: None,
             session_id: "round-trip".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = original.to_description();
@@ -744,6 +767,7 @@ mod tests {
             agent_version: None,
             session_id: "cursor-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -783,6 +807,7 @@ mod tests {
             agent_version: None,
             session_id: "cursor-roundtrip".to_string(),
             tool_name: "Write".to_string(),
+            coauthor: None,
         };
 
         let description = original.to_description();
@@ -810,6 +835,7 @@ mod tests {
             agent_version: None,
             session_id: "codex-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            coauthor: None,
         };
 
         let description = record.to_description();
@@ -849,6 +875,7 @@ mod tests {
             agent_version: None,
             session_id: "codex-roundtrip".to_string(),
             tool_name: "Write".to_string(),
+            coauthor: None,
         };
 
         let description = original.to_description();

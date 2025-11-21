@@ -349,7 +349,8 @@ aiki benchmark aiki/core
 This benchmarks the complete Aiki workflow:
 - Repository initialization with Git and Jujutsu
 - SessionStart event (fires during `aiki init`)
-- PostChange events (fires on each file edit)
+- PreFileChange event (fires before file modifications)
+- PostFileChange events (fires on each file edit)
 - Total execution time
 
 Example output:
@@ -366,16 +367,16 @@ Phase 2: Aiki Setup
 
 Phase 3: File Operations (10 iterations)
   ✓ File edit 1
-    PostChange: 2.3ms
+    PostFileChange: 2.3ms
   ✓ File edit 2
-    PostChange: 2.2ms
+    PostFileChange: 2.2ms
   ...
 
 Event Timing:
   SessionStart (1 occurrences):
     Median: 104.5ms
     Range: 104.5ms - 104.5ms
-  PostChange (10 occurrences):
+  PostFileChange (10 occurrences):
     Median: 2.3ms
     Range: 2.2ms - 3.0ms
 
@@ -391,7 +392,7 @@ Comparison to Previous Run:
       Previous: 99.7ms (median)
       Current:  104.5ms (median)
       Change:   +4.8ms (+4.8%) 🔴 (slower)
-    PostChange:
+    PostFileChange:
       Previous: 2.3ms (median)
       Current:  2.3ms (median)
       Change:   +0.0ms (+0.0%) 🟢 (no change)
@@ -399,7 +400,7 @@ Comparison to Previous Run:
 
 **Features:**
 
-- **Event-level timing**: Shows performance for each hook event (SessionStart, PostChange)
+- **Event-level timing**: Shows performance for each hook event (SessionStart, PreFileChange, PostFileChange)
 - **Millisecond precision**: All timings displayed in milliseconds for accuracy
 - **Statistical metrics**: Shows median, min, max, and count for each event type
 - **Performance comparison**: Compares current run to previous with % change indicators

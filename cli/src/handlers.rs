@@ -1,5 +1,7 @@
 use crate::error::Result;
-use crate::events::{AikiPostChangeEvent, AikiPrepareCommitMessageEvent, AikiStartEvent};
+use crate::events::{
+    AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrepareCommitMessageEvent, AikiStartEvent,
+};
 use crate::flows::{AikiState, FlowExecutor, FlowResult};
 
 /// Generic hook response (editor-agnostic)
@@ -144,11 +146,58 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     }
 }
 
-/// Handle post-change event (after file modification)
+/// Handle pre-file-change event (before file modification begins)
+///
+/// This event fires when the agent requests permission to modify files.
+/// It allows flows to stash user edits before the AI starts making changes,
+/// ensuring clean separation between human and AI work.
+pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookResponse> {
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[aiki] PreFileChange event from {:?}, session: {}",
+            event.agent_type, event.session_id
+        );
+    }
+
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
+
+    // Build execution state from event
+    let mut state = AikiState::new(event.clone());
+
+    // Set flow name for self.* function resolution
+    state.flow_name = Some("aiki/core".to_string());
+
+    // Execute PreFileChange actions from the core flow
+    let (flow_result, _timing) =
+        FlowExecutor::execute_actions(&core_flow.pre_file_change, &mut state)?;
+
+    match flow_result {
+        FlowResult::Success => Ok(HookResponse::success()),
+        FlowResult::FailedContinue(msg) => {
+            // Log warning but continue
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!("[aiki] PreFileChange flow warning: {}", msg);
+            }
+            Ok(HookResponse::success())
+        }
+        FlowResult::FailedStop(_msg) => {
+            // Flow stopped silently - no error
+            Ok(HookResponse::success())
+        }
+        FlowResult::FailedBlock(msg) => {
+            // PreFileChange should never block - just warn
+            eprintln!("Warning: PreFileChange flow failed (not blocking): {}", msg);
+            Ok(HookResponse::success())
+        }
+    }
+}
+
+/// Handle post-file-change event (after file modification)
 ///
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
-pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<HookResponse> {
+pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookResponse> {
     // No validation needed - all required fields are guaranteed by type system
 
     if std::env::var("AIKI_DEBUG").is_ok() {
@@ -167,8 +216,9 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<HookResponse> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PostChange actions from the core flow
-    let (flow_result, _timing) = FlowExecutor::execute_actions(&core_flow.post_change, &mut state)?;
+    // Execute PostFileChange actions from the core flow
+    let (flow_result, _timing) =
+        FlowExecutor::execute_actions(&core_flow.post_file_change, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message(format!(
@@ -185,7 +235,7 @@ pub fn handle_post_change(event: AikiPostChangeEvent) -> Result<HookResponse> {
             Ok(HookResponse::success())
         }
         FlowResult::FailedBlock(msg) => {
-            // PostChange should never block edits, even with on_failure: block
+            // PostFileChange should never block edits, even with on_failure: block
             // Show warning but allow the change to be saved
             Ok(HookResponse::failure(
                 format!("⚠️ Provenance recording blocked: {}", msg),

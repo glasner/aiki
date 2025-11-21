@@ -7,7 +7,7 @@
 //! same session (e.g., user fixes AI's mistake before saving).
 
 use crate::error::{AikiError, Result};
-use crate::events::AikiPostChangeEvent;
+use crate::events::AikiPostFileChangeEvent;
 use crate::flows::state::ActionResult;
 use std::collections::HashSet;
 use std::fs;
@@ -57,14 +57,14 @@ pub enum EditClassification {
 ///
 /// # Example Flow Usage
 /// ```yaml
-/// PostChange:
+/// PostFileChange:
 ///   - let: detection = self.classify_edits
 ///     on_failure: continue
 ///   - if: $detection.all_exact_match == true
 ///     then:
 ///       - jj: metaedit -m "$metadata.message"
 /// ```
-pub fn classify_edits(event: &AikiPostChangeEvent) -> Result<ActionResult> {
+pub fn classify_edits(event: &AikiPostFileChangeEvent) -> Result<ActionResult> {
     // If no edit details, we can't classify - treat as exact match (AI-only)
     if event.edit_details.is_empty() {
         if std::env::var("AIKI_DEBUG").is_ok() {
@@ -164,7 +164,7 @@ pub fn classify_edits(event: &AikiPostChangeEvent) -> Result<ActionResult> {
 }
 
 /// Classify edits for a single file
-fn classify_file(file_path: &str, event: &AikiPostChangeEvent) -> Result<EditClassification> {
+fn classify_file(file_path: &str, event: &AikiPostFileChangeEvent) -> Result<EditClassification> {
     // Read current file content
     let full_path = event.cwd.join(file_path);
     let current_content = read_file_safe(&full_path)?;
@@ -249,8 +249,8 @@ mod tests {
         cwd: &Path,
         file_paths: Vec<String>,
         edit_details: Vec<EditDetail>,
-    ) -> AikiPostChangeEvent {
-        AikiPostChangeEvent {
+    ) -> AikiPostFileChangeEvent {
+        AikiPostFileChangeEvent {
             agent_type: AgentType::Claude,
             client_name: None,
             client_version: None,
