@@ -67,7 +67,7 @@ fn test_authors_shows_both_editors() {
     create_file(&repo_path, "file1.txt", "line 1\nline 2\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Commit this change
@@ -85,7 +85,7 @@ fn test_authors_shows_both_editors() {
     );
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki authors - should show both editors since the file has lines from both
@@ -113,7 +113,7 @@ fn test_authors_git_format_includes_both_editors() {
     create_file(&repo_path, "file1.txt", "line 1\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Create new change
@@ -127,7 +127,7 @@ fn test_authors_git_format_includes_both_editors() {
     create_file(&repo_path, "file1.txt", "line 1\nline 2 by cursor\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki authors with git format
@@ -150,7 +150,7 @@ fn test_blame_distinguishes_editors() {
     create_file(&repo_path, "test.txt", "line 1 by claude\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Create a new change
@@ -169,7 +169,7 @@ fn test_blame_distinguishes_editors() {
     );
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki blame
@@ -204,7 +204,7 @@ fn test_blame_filter_by_claude_code() {
     create_file(&repo_path, "test.txt", "line 1 by claude\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Create a new change
@@ -223,7 +223,7 @@ fn test_blame_filter_by_claude_code() {
     );
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki blame with claude-code filter
@@ -251,7 +251,7 @@ fn test_blame_filter_by_cursor() {
     create_file(&repo_path, "test.txt", "line 1 by claude\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Create a new change
@@ -270,7 +270,7 @@ fn test_blame_filter_by_cursor() {
     );
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki blame with cursor filter
@@ -298,7 +298,7 @@ fn test_blame_no_filter_shows_all() {
     create_file(&repo_path, "test.txt", "line 1 by claude\n");
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=claude-code\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=claude\nauthor_type=agent\nsession=claude-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Create a new change
@@ -317,7 +317,7 @@ fn test_blame_no_filter_shows_all() {
     );
     set_change_description(
         &repo_path,
-        "[aiki]\nagent=cursor\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
+        "[aiki]\nauthor=cursor\nauthor_type=agent\nsession=cursor-session-1\ntool=Edit\nconfidence=High\nmethod=Hook\n[/aiki]",
     );
 
     // Run aiki blame without filter

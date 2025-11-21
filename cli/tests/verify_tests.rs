@@ -58,7 +58,8 @@ fn create_test_change_with_provenance(path: &std::path::Path) {
     let description = r#"Test change with provenance
 
 [aiki]
-agent=claude-code
+author=claude
+author_type=agent
 session=test-session-123
 tool=Edit
 confidence=High

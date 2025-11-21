@@ -288,7 +288,8 @@ fn test_blame_verify_shows_signature_status() {
     let description = r#"Test change
 
 [aiki]
-agent=claude-code
+author=claude
+author_type=agent
 session=test-session-123
 tool=Edit
 confidence=High
