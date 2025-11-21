@@ -55,25 +55,34 @@ mod tests {
 
     #[test]
     fn test_core_flow_uses_let_syntax() {
-        use super::super::types::{Action, FailureMode};
+        use super::super::types::Action;
 
         let core = load_core_flow().unwrap();
 
-        // Should have PostFileChange handler with let action
+        // Should have PostFileChange handler
         assert!(!core.post_file_change.is_empty());
 
-        // First action should be a Let binding with self reference to classify_edits
+        // First action should be an If with inline function call to classify_edits
         match &core.post_file_change[0] {
-            Action::Let(let_action) => {
-                // Verify uses self reference for portability
-                assert_eq!(
-                    let_action.let_, "detection = self.classify_edits",
-                    "Flow should use 'self.classify_edits' for user edit detection"
+            Action::If(if_action) => {
+                // Verify uses inline self.classify_edits for condition
+                assert!(
+                    if_action.condition.contains("self.classify_edits"),
+                    "Flow should use inline 'self.classify_edits' in condition"
                 );
-                // classify_edits should not stop on failure since we want to continue
-                assert_eq!(let_action.on_failure, FailureMode::Continue);
+                // First action in then block should be the prepare_separation let binding
+                assert!(!if_action.then.is_empty());
+                match &if_action.then[0] {
+                    Action::Let(let_action) => {
+                        assert_eq!(
+                            let_action.let_, "prep = self.prepare_separation",
+                            "Flow should prepare separation when user edits are detected"
+                        );
+                    }
+                    _ => panic!("Expected Let action as first step in then block"),
+                }
             }
-            _ => panic!("Expected Let action as first step"),
+            _ => panic!("Expected If action as first step"),
         }
     }
 }

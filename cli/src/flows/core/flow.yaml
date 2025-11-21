@@ -22,7 +22,8 @@ PreFileChange:
   # If there are changes (non-empty string), stash them before AI starts
   - if: $changed_files
     then:
-      - jj: describe --message "User changes (pre-AI edit)" --reset-author
+      - with_author: self.get_git_user
+        jj: describe --message "User changes (pre-AI edit)"
       - jj: new # Give AI a clean working copy
 
 # PostFileChange: Record provenance metadata after every AI edit
@@ -30,26 +31,28 @@ PreFileChange:
 PostFileChange:
   # Classify edits to detect user modifications
   # This compares AI's intended edits with actual file state
-  # Result: classification_type, extra_files, details
-  - let: detection = self.classify_edits
-
-  - if: $detection.classification_type == "AdditiveUserEdits"
+  # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
+  - if: self.classify_edits == "AdditiveUserEdits"
     then:
       # User added more changes - separate them into two changes
       - let: prep = self.prepare_separation
 
       - self: write_ai_files
-      - jj: split --message "$prep.ai_message" $prep.file_list
-      - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
+
+      - with_author: $prep.ai_author
+        jj: split --message "$prep.ai_message" $prep.file_list
 
       - self: restore_original_files
-      # Leave user change (@) without aiki metadata - it's a human change
-      - jj: metaedit --message "User changes (during AI edit)" --reset-author
+      # Add aiki metadata with git user as author and AI as coauthor
+      - let: user_metadata = self.build_user_metadata
+      - with_author: $user_metadata.author
+        jj: metaedit --message "$user_metadata.message"
     else:
       # For ExactMatch or OverlappingUserEdits, set AI metadata
       - let: metadata = self.build_metadata
         on_failure: stop
-      - jj: metaedit --message "$metadata.message" --author "$metadata.author"
+      - with_author: $metadata.author
+        jj: metaedit --message "$metadata.message"
 
   # Create a new change for the next edit
   - jj: new
