@@ -1123,7 +1123,170 @@ PostFileChange:
 
 ---
 
-## Phase 8: Autonomous Review Flow
+## Phase 8: The Aiki Way (aiki/default Flow)
+
+### Problem
+
+We've built powerful primitives (flows, events, provenance), but users need opinionated patterns for AI-assisted development. Six months of production use with Claude Code has revealed four critical patterns that prevent common pitfalls and maximize code quality.
+
+**Common problems developers face:**
+1. **Context loss** - AI re-discovers architecture every session (expensive, repetitive)
+2. **Error accumulation** - One mistake today becomes ten tomorrow
+3. **Guideline drift** - AI forgets project conventions between prompts
+4. **Manual validation** - Developers catch issues too late in the cycle
+
+### Solution
+
+Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven patterns from real-world AI-assisted development. This builds on the flow system (Phase 5) to deliver immediate value through curated automation.
+
+**The four key patterns:**
+1. **Auto Architecture Docs** - Cache exploration so AI doesn't re-discover patterns
+2. **Skills Auto-Activation** - Inject guidelines based on context
+3. **Multi-Stage Pipeline** - Zero errors left behind with automatic validation
+4. **Dev Docs System** - Structured task management across sessions
+
+### What We Build
+
+**Implementation in six milestones:**
+
+**Milestone 1: Core Extensions (2-3 weeks)**
+- PrePrompt event type
+- PostResponse event type  
+- Flow composition (`includes:` directive)
+- Session state persistence
+- doc_management action type
+
+**Milestone 2: Auto Architecture Documentation (1-2 weeks)**
+- Exploration detection (5+ files read in directory)
+- Auto-summarization of patterns
+- Shadow directory structure (`.aiki/arch/structure/`)
+- Staleness tracking and auto-regeneration
+- CLI commands (`aiki arch show/refresh/clear`)
+
+**Milestone 3: Skills Auto-Activation (2-3 weeks)**
+- Pattern matching engine (keywords, files, content)
+- Skill configuration format (`skill-rules.yaml`)
+- PrePrompt flow implementation
+- Example skills (backend, frontend, database)
+- CLI commands (`aiki skills list/show/create`)
+
+**Milestone 4: Multi-Stage Pipeline (1-2 weeks)**
+- Session state tracking (edited files, affected repos)
+- PostResponse hook for automatic builds
+- Error parsing (TypeScript, Rust, ESLint)
+- Pattern detection (missing error handling, etc.)
+- Gentle reminder system (non-blocking suggestions)
+
+**Milestone 5: Dev Docs System (1-2 weeks)**
+- Task directory structure (`.aiki/tasks/`)
+- Doc management operations (create/update/query)
+- Session resumption (auto-load active tasks)
+- Task tracking in change descriptions
+- CLI commands (`aiki tasks list/resume/complete`)
+
+**Milestone 6: Process Management (2 weeks)**
+- Process action type (start/stop/logs/status)
+- Process configuration format (`.aiki/processes.yaml`)
+- Log aggregation and correlation
+- Health monitoring
+- CLI commands (`aiki process start/stop/logs`)
+
+### Commands Delivered
+
+```bash
+# Architecture docs
+aiki arch show src/components       # Show cached architecture
+aiki arch refresh src/components    # Force regeneration
+aiki arch clear                     # Clear cache
+
+# Skills management
+aiki skills list                    # Show available skills
+aiki skills show backend-guidelines # Show skill details
+aiki skills create my-skill         # Create new skill
+
+# Task management
+aiki tasks create feature-name      # Create task docs
+aiki tasks resume feature-name      # Resume task
+aiki tasks show feature-name        # Show task status
+
+# Process management
+aiki process start backend          # Start service
+aiki process logs backend --errors  # Show error logs
+aiki process status                 # All services status
+
+# Flow installation
+aiki flows install aiki/default     # Install this flow
+aiki flows show aiki/default        # Show flow details
+```
+
+### Value Delivered
+
+**For developers:**
+- **10x faster context loading** - Read cached docs instead of exploring 20+ files
+- **Consistent quality** - Skills ensure guidelines are never forgotten
+- **Zero errors left behind** - Catch problems immediately while context is hot
+- **Seamless task resumption** - Pick up multi-session work without losing context
+- **Observable systems** - Debug multi-service apps with log correlation
+
+**For Aiki:**
+- **Proves the flow system** - Demonstrates Phase 5's power with real patterns
+- **Dogfood opportunity** - Build Aiki using aiki/default
+- **Opinionated defaults** - Users get value immediately without configuration
+- **Community patterns** - Foundation for sharing proven workflows
+
+### Technical Components
+
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| PrePrompt/PostResponse events | Medium | High | Week 1-2 |
+| Flow composition system | Medium | High | Week 2-3 |
+| Exploration detection | Medium | High | Week 4-5 |
+| Auto architecture docs | High | High | Week 5-6 |
+| Skills pattern matching | Medium | High | Week 7-8 |
+| Multi-stage pipeline | Medium | High | Week 9-10 |
+| Dev docs system | Low | Medium | Week 11-12 |
+| Process management | Medium | Medium | Week 13-14 |
+
+### Success Criteria
+
+- ✅ `aiki flows install aiki/default` works end-to-end
+- ✅ Architecture docs cache and auto-regenerate correctly
+- ✅ Skills activate based on context (90%+ accuracy)
+- ✅ Builds run automatically after AI responses
+- ✅ Task system enables multi-session workflows
+- ✅ Process logs are queryable and correlated with changes
+- ✅ All patterns dogfooded during Aiki development
+- ✅ Documentation shows before/after examples
+
+### Why This Matters
+
+**This is the "aha moment" for Aiki users.** Phase 5 gave us the flow engine. Phase 8 shows what you can build with it. Users see immediate, tangible value from battle-tested patterns.
+
+### Timeline
+
+**Estimated: 10-14 weeks**
+- Milestone 1: 2-3 weeks
+- Milestone 2: 1-2 weeks
+- Milestone 3: 2-3 weeks
+- Milestone 4: 1-2 weeks
+- Milestone 5: 1-2 weeks
+- Milestone 6: 2 weeks
+
+**Before Phase 8:**
+- Users have flow primitives but no guidance
+- Everyone reinvents the same patterns
+- Power users succeed, others struggle
+
+**After Phase 8:**
+- One command: `aiki flows install aiki/default`
+- Proven patterns out of the box
+- Learn by example, customize later
+
+**Detailed Plan:** See `ops/the-aiki-way.md`
+
+---
+
+## Phase 9: Autonomous Review Flow
 
 ### Problem
 Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
@@ -1264,7 +1427,7 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 9: Zed Extension (One-Click Setup & Status UI)
+## Phase 10: Zed Extension (One-Click Setup & Status UI)
 
 ### Problem
 While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
@@ -1366,7 +1529,7 @@ Aiki ⚠  - Error or health check failed
 
 **Total: ~1.5 weeks**
 
-**Detailed Plan:** See `ops/phase-8.md`
+**Detailed Plan:** See `ops/phase-9.md`
 
 ### Why This Matters
 **Before:** Users must run 5 terminal commands  
@@ -1376,7 +1539,7 @@ Aiki ⚠  - Error or health check failed
 
 ---
 
-## Phase 10: Comprehensive Event System (All Git & Agent Hooks)
+## Phase 11: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
 Phase 5 introduced the flow system with 4 core events (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
@@ -1704,7 +1867,7 @@ pub struct Flow {
 
 ---
 
-## Phase 11: User-Defined Flows
+## Phase 12: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -1765,7 +1928,7 @@ PreCommit:
 
 ---
 
-## Phase 12: External Flow Ecosystem
+## Phase 13: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -2057,7 +2220,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 13: Multi-Agent Provenance (Fallback Detection)
+## Phase 14: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -2137,7 +2300,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 14: Local Multi-Agent Coordination
+## Phase 15: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -2169,7 +2332,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 15: PR Review for Non-Aiki Agents
+## Phase 16: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -2192,7 +2355,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 16: Shared JJ Brain & Team Coordination
+## Phase 17: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -2222,7 +2385,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 17: Windsurf Support
+## Phase 18: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -2289,7 +2452,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 18: Enterprise Compliance
+## Phase 19: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -2323,7 +2486,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 19: Native Agent Integration
+## Phase 20: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:

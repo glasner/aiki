@@ -19,9 +19,9 @@ aiki flows install aiki/default
 
 ## Implementation Roadmap
 
-The `aiki/default` flow implements four key patterns through six implementation phases:
+The `aiki/default` flow implements four key patterns through six implementation milestones:
 
-### Phase 1: Core Extensions (2-3 weeks)
+### Milestone 1: Core Extensions (2-3 weeks)
 **Goal:** Add event types and capabilities needed for all patterns.
 
 **What gets built:**
@@ -35,7 +35,7 @@ The `aiki/default` flow implements four key patterns through six implementation 
 
 ---
 
-### Phase 2: Auto Architecture Documentation (1-2 weeks)
+### Milestone 2: Auto Architecture Documentation (1-2 weeks)
 **Goal:** Cache architecture exploration so agents don't re-discover the same patterns repeatedly.
 
 **The Problem:**
@@ -118,7 +118,7 @@ PrePrompt:
 
 ---
 
-### Phase 3: Skills Auto-Activation (2-3 weeks)
+### Milestone 3: Skills Auto-Activation (2-3 weeks)
 **Goal:** Implement automatic guideline injection.
 
 **What gets built:**
@@ -132,7 +132,7 @@ PrePrompt:
 
 ---
 
-### Phase 4: Multi-Stage Pipeline (1-2 weeks)
+### Milestone 4: Multi-Stage Pipeline (1-2 weeks)
 **Goal:** Zero errors left behind.
 
 **The Problem:**
@@ -250,7 +250,7 @@ You: "Great! Now let's add the frontend"
 
 ---
 
-### Phase 5: Dev Docs System (1-2 weeks)
+### Milestone 5: Dev Docs System (1-2 weeks)
 **Goal:** Structured task management.
 
 **What gets built:**
@@ -264,7 +264,7 @@ You: "Great! Now let's add the frontend"
 
 ---
 
-### Phase 6: Process Management (2 weeks)
+### Milestone 6: Process Management (2 weeks)
 **Goal:** Background service integration.
 
 **What gets built:**
@@ -286,27 +286,27 @@ You: "Great! Now let's add the frontend"
 
 Use aiki/default to build aiki/default:
 
-**After Phase 2 (Auto Architecture):**
+**After Milestone 2 (Auto Architecture):**
 - Cache Aiki's own architecture (flow system, event bus, handlers)
 - Agents instantly understand Aiki's structure
 - Test with: "How does the flow executor work?"
 
-**After Phase 3 (Skills):**
+**After Milestone 3 (Skills):**
 - Create `rust-guidelines` skill for Aiki development
 - Create `jj-integration` skill for change-centric patterns
 - Create `aiki-architecture` skill for flow system patterns
 
-**After Phase 4 (Dev Docs):**
-- Use task system for Phase 5 and Phase 6 implementation
+**After Milestone 4 (Dev Docs):**
+- Use task system for Milestone 5 and Milestone 6 implementation
 - Track progress in tasks.md
 - Document decisions in context.md
 
-**After Phase 5 (Pipeline):**
+**After Milestone 5 (Pipeline):**
 - Run `cargo check` on PostResponse
 - Run `cargo clippy` for linting
 - Detect missing error handling
 
-**After Phase 6 (Process Management):**
+**After Milestone 6 (Process Management):**
 - Manage integration test processes
 - Debug test failures using log correlation
 
@@ -557,8 +557,8 @@ aiki flows show aiki/default        # Show flow details
 ## Status
 
 **Current:** Vision document  
-**Phase 1 Start:** TBD  
-**Expected Completion:** 8-12 weeks from Phase 1 start
+**Milestone 1 Start:** TBD  
+**Expected Completion:** 8-12 weeks from Milestone 1 start
 
 This document will be updated as implementation progresses.
 

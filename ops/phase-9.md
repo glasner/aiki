@@ -1,4 +1,4 @@
-# Plan: Phase 8 - Zed Extension (One-Click Setup & Status UI)
+# Plan: Phase 9 - Zed Extension (One-Click Setup & Status UI)
 
 ## Problem
 While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
@@ -321,14 +321,14 @@ fn ensure_aiki_installed(&self) -> Result<()> {
 
 ## Why This Matters
 
-**Before Phase 8 (CLI-only):**
+**Before Phase 9 (CLI-only):**
 ```
 User: "How do I set up Aiki?"
 Docs: "Run these 5 terminal commands..."
 User: *gets confused, gives up*
 ```
 
-**After Phase 8 (Extension):**
+**After Phase 9 (Extension):**
 ```
 User: "How do I set up Aiki?"
 Docs: "Install the Zed extension, click Initialize"
@@ -349,5 +349,5 @@ User: *done in 30 seconds*
 - Phase 3 (CLI Streamlining) - Extension delegates to `aiki doctor`
 
 **Enables:**
-- Phase 9 (Autonomous Review Flow) - Extension shows review results in UI
+- Future phases - Extension shows review results in UI
 - Future: Extensions for other IDEs (Neovim, VSCode, JetBrains)
