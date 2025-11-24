@@ -291,6 +291,60 @@ impl FlowExecutor {
 
     /// Execute a JJ command
     fn execute_jj(action: &JjAction, context: &mut AikiState) -> Result<ActionResult> {
+        // Handle with_author_and_message if provided - it sets both author and message
+        if let Some(ref metadata_fn) = action.with_author_and_message {
+            let resolved_metadata = if metadata_fn.trim().starts_with("self.") {
+                // Execute the metadata function
+                let self_action = SelfAction {
+                    self_: metadata_fn.trim().to_string(),
+                    on_failure: FailureMode::Stop,
+                };
+                let result = Self::execute_self(&self_action, context)?;
+                result.stdout.trim().to_string()
+            } else {
+                // Resolve variable reference
+                let mut resolver = Self::create_resolver(context);
+                resolver.resolve(metadata_fn)
+            };
+
+            // Parse the JSON result
+            let json: serde_json::Value = serde_json::from_str(&resolved_metadata)
+                .context("Failed to parse metadata function result as JSON")?;
+
+            let author = json["author"]
+                .as_str()
+                .ok_or_else(|| {
+                    AikiError::Other(anyhow::anyhow!("Metadata missing 'author' field"))
+                })?
+                .to_string();
+
+            let message = json["message"]
+                .as_str()
+                .ok_or_else(|| {
+                    AikiError::Other(anyhow::anyhow!("Metadata missing 'message' field"))
+                })?
+                .to_string();
+
+            // Store message in context so it can be referenced as $message
+            context.store_action_result(
+                "message".to_string(),
+                ActionResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout: message,
+                    stderr: String::new(),
+                },
+            );
+
+            // Create a new JjAction with with_author set
+            let mut new_action = action.clone();
+            new_action.with_author = Some(author);
+            new_action.with_author_and_message = None; // Clear to avoid infinite loop
+
+            // Execute the modified action
+            return Self::execute_jj(&new_action, context);
+        }
+
         // Create variable resolver with consistent variable availability
         let mut resolver = Self::create_resolver(context);
 
@@ -987,14 +1041,19 @@ impl FlowExecutor {
                 };
                 crate::flows::core::build_metadata(event, Some(context))
             }
-            ("core", "build_user_metadata") => {
-                // build_user_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
-                    return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_user_metadata can only be called for PostFileChange events"
-                    )));
-                };
-                crate::flows::core::build_user_metadata(event, Some(context))
+            ("core", "build_human_metadata") => {
+                // build_human_metadata works with PreFileChange or PostFileChange events
+                match &context.event {
+                    crate::events::AikiEvent::PreFileChange(event) => {
+                        crate::flows::core::build_human_metadata(event, Some(context))
+                    }
+                    crate::events::AikiEvent::PostFileChange(event) => {
+                        crate::flows::core::build_human_metadata_post(event, Some(context))
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "build_human_metadata can only be called for PreFileChange or PostFileChange events"
+                    ))),
+                }
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
@@ -1131,14 +1190,19 @@ impl FlowExecutor {
                 };
                 crate::flows::core::build_metadata(event, Some(context))
             }
-            ("core", "build_user_metadata") => {
-                // build_user_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
-                    return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_user_metadata can only be called for PostFileChange events"
-                    )));
-                };
-                crate::flows::core::build_user_metadata(event, Some(context))
+            ("core", "build_human_metadata") => {
+                // build_human_metadata works with PreFileChange or PostFileChange events
+                match &context.event {
+                    crate::events::AikiEvent::PreFileChange(event) => {
+                        crate::flows::core::build_human_metadata(event, Some(context))
+                    }
+                    crate::events::AikiEvent::PostFileChange(event) => {
+                        crate::flows::core::build_human_metadata_post(event, Some(context))
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "build_human_metadata can only be called for PreFileChange or PostFileChange events"
+                    ))),
+                }
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
@@ -1926,6 +1990,7 @@ mod tests {
                 on_failure: FailureMode::Continue,
                 alias: None,
                 with_author: None,
+                with_author_and_message: None,
             }),
         ];
 

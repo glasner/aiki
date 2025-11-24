@@ -26,7 +26,9 @@
 
 use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::error::{AikiError, Result};
-use crate::events::{AikiPostFileChangeEvent, AikiPrepareCommitMessageEvent};
+use crate::events::{
+    AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrepareCommitMessageEvent,
+};
 use crate::flows::state::ActionResult;
 use crate::provenance::ProvenanceRecord;
 use anyhow::Context;
@@ -203,10 +205,20 @@ pub fn build_metadata(
 ///       - let: user_metadata = self.build_user_metadata
 ///       - jj: metaedit --message "$user_metadata.message" --author "$user_metadata.author"
 /// ```
-pub fn build_user_metadata(
-    event: &AikiPostFileChangeEvent,
-    _context: Option<&crate::flows::state::AikiState>,
-) -> Result<ActionResult> {
+/// Build metadata for human changes (works with both PreFileChange and PostFileChange)
+///
+/// Creates an [aiki] metadata block with the git user as author and author_type=human.
+/// This is used for any changes made by the human user (before or during AI edits).
+///
+/// # Returns
+/// JSON with author and message fields:
+/// ```json
+/// {
+///   "author": "Name <email>",
+///   "message": "[aiki]\nauthor=Name <email>\nauthor_type=human\nsession=session-id\n[/aiki]"
+/// }
+/// ```
+fn build_human_metadata_impl(session_id: &str) -> Result<ActionResult> {
     let git_user = get_git_user().ok_or_else(|| {
         crate::error::AikiError::Other(anyhow::anyhow!(
             "Git user not configured. Run 'git config user.name' and 'git config user.email'"
@@ -218,17 +230,14 @@ pub fn build_user_metadata(
         "[aiki]".to_string(),
         format!("author={}", git_user),
         "author_type=human".to_string(),
-        format!("session={}", event.session_id),
+        format!("session={}", session_id),
     ];
 
-    let message = format!(
-        "User changes (during AI edit)\n\n{}\n[/aiki]",
-        lines.join("\n")
-    );
+    let message = format!("{}\n[/aiki]", lines.join("\n"));
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
-            "[flows/core] Generated user metadata - author: {}",
+            "[flows/core] Generated human metadata - author: {}",
             git_user
         );
     }
@@ -244,6 +253,22 @@ pub fn build_user_metadata(
         stdout: json.to_string(),
         stderr: String::new(),
     })
+}
+
+/// Build human metadata - works with PreFileChange events
+pub fn build_human_metadata(
+    event: &AikiPreFileChangeEvent,
+    _context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    build_human_metadata_impl(&event.session_id)
+}
+
+/// Build human metadata - works with PostFileChange events
+pub fn build_human_metadata_post(
+    event: &AikiPostFileChangeEvent,
+    _context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    build_human_metadata_impl(&event.session_id)
 }
 
 // =============================================================================
