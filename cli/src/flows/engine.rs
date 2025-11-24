@@ -38,9 +38,9 @@ impl FlowTiming {
 }
 
 /// Executes flow actions
-pub struct FlowExecutor;
+pub struct FlowEngine;
 
-impl FlowExecutor {
+impl FlowEngine {
     /// Create a variable resolver with consistent variable availability
     ///
     /// Makes variables available both with and without `event.` prefix:
@@ -1500,7 +1500,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_log(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_log(&action, &mut context).unwrap();
         assert!(result.success);
     }
 
@@ -1513,7 +1513,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_log(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_log(&action, &mut context).unwrap();
         assert!(result.success);
     }
 
@@ -1528,7 +1528,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let result = FlowExecutor::execute_shell(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_shell(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test"));
     }
@@ -1544,7 +1544,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_shell(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_shell(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test.rs"));
     }
@@ -1570,7 +1570,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let (result, timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
         assert!(timing.duration_secs >= 0.0);
     }
@@ -1592,7 +1592,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedContinue since first action failed but flow continued
         assert!(matches!(result, FlowResult::FailedContinue(_)));
     }
@@ -1615,7 +1615,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedStop since action failed with on_failure: stop
         assert!(matches!(result, FlowResult::FailedStop(_)));
     }
@@ -1623,20 +1623,20 @@ mod tests {
     #[test]
     fn test_is_valid_variable_name() {
         // Valid names
-        assert!(FlowExecutor::is_valid_variable_name("description"));
-        assert!(FlowExecutor::is_valid_variable_name("desc"));
-        assert!(FlowExecutor::is_valid_variable_name("_private"));
-        assert!(FlowExecutor::is_valid_variable_name("var123"));
-        assert!(FlowExecutor::is_valid_variable_name("my_var"));
-        assert!(FlowExecutor::is_valid_variable_name("CamelCase"));
+        assert!(FlowEngine::is_valid_variable_name("description"));
+        assert!(FlowEngine::is_valid_variable_name("desc"));
+        assert!(FlowEngine::is_valid_variable_name("_private"));
+        assert!(FlowEngine::is_valid_variable_name("var123"));
+        assert!(FlowEngine::is_valid_variable_name("my_var"));
+        assert!(FlowEngine::is_valid_variable_name("CamelCase"));
 
         // Invalid names
-        assert!(!FlowExecutor::is_valid_variable_name(""));
-        assert!(!FlowExecutor::is_valid_variable_name("123var")); // starts with number
-        assert!(!FlowExecutor::is_valid_variable_name("my-var")); // contains hyphen
-        assert!(!FlowExecutor::is_valid_variable_name("my.var")); // contains dot
-        assert!(!FlowExecutor::is_valid_variable_name("my var")); // contains space
-        assert!(!FlowExecutor::is_valid_variable_name("$var")); // starts with $
+        assert!(!FlowEngine::is_valid_variable_name(""));
+        assert!(!FlowEngine::is_valid_variable_name("123var")); // starts with number
+        assert!(!FlowEngine::is_valid_variable_name("my-var")); // contains hyphen
+        assert!(!FlowEngine::is_valid_variable_name("my.var")); // contains dot
+        assert!(!FlowEngine::is_valid_variable_name("my var")); // contains space
+        assert!(!FlowEngine::is_valid_variable_name("$var")); // starts with $
     }
 
     #[test]
@@ -1648,7 +1648,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -1663,7 +1663,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_let(&action, &mut context);
+        let result = FlowEngine::execute_let(&action, &mut context);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1691,7 +1691,7 @@ mod tests {
             let event = create_test_event();
             let mut context = AikiState::new(event);
 
-            let result = FlowExecutor::execute_let(&action, &mut context);
+            let result = FlowEngine::execute_let(&action, &mut context);
             assert!(result.is_err(), "Should reject: {}", let_str);
             assert!(
                 result.unwrap_err().to_string().contains("Invalid variable"),
@@ -1710,7 +1710,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -1730,7 +1730,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1749,7 +1749,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1773,7 +1773,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Check that structured metadata was stored
         assert!(context.get_metadata("desc").is_some());
@@ -1794,7 +1794,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Check that no extra variables were stored (except for any built-ins)
         // The metadata should be empty since no alias was provided
@@ -1818,7 +1818,7 @@ mod tests {
         context.flow_name = Some("aiki/core".to_string());
 
         // This should succeed because PostFileChangeEvent has session_id and tool_name
-        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
         assert!(result.stdout.contains("author"));
@@ -1841,7 +1841,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event());
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Both should have the same value
         assert_eq!(
@@ -1884,7 +1884,7 @@ mod tests {
         // PostFileChange event has tool_name and session_id fields
         let mut context = AikiState::new(create_test_event());
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Second assignment should overwrite first
         assert_eq!(context.get_variable("x"), Some(&"test-session".to_string()));
@@ -1905,7 +1905,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Both should have the value
         assert_eq!(context.get_variable("file"), Some(&"test.rs".to_string()));
@@ -1927,7 +1927,7 @@ mod tests {
         let mut context = AikiState::new(event);
         context.flow_name = Some("aiki/core".to_string());
 
-        let result = FlowExecutor::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("author"));
         assert!(result.stdout.contains("message"));
@@ -1944,7 +1944,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let result = FlowExecutor::execute_let(&action, &mut context);
+        let result = FlowEngine::execute_let(&action, &mut context);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1969,7 +1969,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
@@ -1997,7 +1997,7 @@ mod tests {
         let event = create_test_event();
         let mut context = AikiState::new(event);
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         // Should succeed (we don't validate jj commands in tests)
         assert!(matches!(
             result,
@@ -2020,7 +2020,7 @@ mod tests {
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         assert!(matches!(result, FlowResult::Success));
     }
 
@@ -2029,7 +2029,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowExecutor::append_trailer(content, trailer);
+        let result = FlowEngine::append_trailer(content, trailer);
 
         // Should have blank line before trailer
         assert!(
@@ -2047,7 +2047,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.\n";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowExecutor::append_trailer(content, trailer);
+        let result = FlowEngine::append_trailer(content, trailer);
 
         // Should add blank line since content doesn't end with blank line
         assert!(
@@ -2061,7 +2061,7 @@ mod tests {
         let content = "Commit title\n\nCommit body.\n\nSigned-off-by: Author <author@example.com>";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowExecutor::append_trailer(content, trailer);
+        let result = FlowEngine::append_trailer(content, trailer);
 
         // Should NOT add blank line before second trailer (trailers stay together)
         assert!(
@@ -2075,7 +2075,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.\n\n";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowExecutor::append_trailer(content, trailer);
+        let result = FlowEngine::append_trailer(content, trailer);
 
         // Should not add another blank line since one already exists
         assert!(
@@ -2109,7 +2109,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2142,7 +2142,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2170,7 +2170,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // result should not be set since neither branch executed
@@ -2191,7 +2191,7 @@ mod tests {
         let mut context = AikiState::new(create_test_event());
         context.flow_name = Some("aiki/core".to_string());
 
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // This test just verifies syntax doesn't crash
     }
@@ -2224,7 +2224,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2247,12 +2247,12 @@ mod tests {
         );
 
         // Test equality
-        assert!(FlowExecutor::evaluate_condition("$test == value", &mut context).unwrap());
-        assert!(!FlowExecutor::evaluate_condition("$test == other", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$test == value", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$test == other", &mut context).unwrap());
 
         // Test inequality
-        assert!(!FlowExecutor::evaluate_condition("$test != value", &mut context).unwrap());
-        assert!(FlowExecutor::evaluate_condition("$test != other", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$test != value", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$test != other", &mut context).unwrap());
     }
 
     #[test]
@@ -2269,7 +2269,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowExecutor::evaluate_condition("$empty", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$empty", &mut context).unwrap());
 
         // Non-empty string is truthy
         context.store_action_result(
@@ -2281,7 +2281,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowExecutor::evaluate_condition("$nonempty", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$nonempty", &mut context).unwrap());
 
         // "false" literal is falsy
         context.store_action_result(
@@ -2293,7 +2293,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowExecutor::evaluate_condition("$false_str", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$false_str", &mut context).unwrap());
 
         // "true" literal is truthy
         context.store_action_result(
@@ -2305,7 +2305,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowExecutor::evaluate_condition("$true_str", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$true_str", &mut context).unwrap());
     }
 
     #[test]
@@ -2314,11 +2314,11 @@ mod tests {
 
         // Test string literals with quotes
         assert_eq!(
-            FlowExecutor::resolve_condition_value("\"hello\"", &mut context).unwrap(),
+            FlowEngine::resolve_condition_value("\"hello\"", &mut context).unwrap(),
             "hello"
         );
         assert_eq!(
-            FlowExecutor::resolve_condition_value("'world'", &mut context).unwrap(),
+            FlowEngine::resolve_condition_value("'world'", &mut context).unwrap(),
             "world"
         );
     }
@@ -2357,7 +2357,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2396,7 +2396,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2432,7 +2432,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // No match and no default = success (no-op)
         assert!(matches!(result, FlowResult::Success));
@@ -2475,7 +2475,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // Note: Variable resolver will parse the JSON and extract the field
@@ -2509,7 +2509,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Should execute the then branch because changed_files is non-empty
         assert_eq!(
@@ -2544,7 +2544,7 @@ mod tests {
         ];
 
         let mut context = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowExecutor::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Should execute the else branch because changed_files is empty
         assert_eq!(

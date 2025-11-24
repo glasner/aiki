@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::events::{
     AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrepareCommitMessageEvent, AikiStartEvent,
 };
-use crate::flows::{AikiState, FlowExecutor, FlowResult};
+use crate::flows::{AikiState, FlowEngine, FlowResult};
 
 /// Generic hook response (editor-agnostic)
 #[derive(Debug, Clone)]
@@ -117,8 +117,7 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute SessionStart actions from the core flow
-    let (flow_result, _timing) =
-        FlowExecutor::execute_actions(&core_flow.session_start, &mut state)?;
+    let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.session_start, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success().with_metadata(vec![
@@ -170,7 +169,7 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
 
     // Execute PreFileChange actions from the core flow
     let (flow_result, _timing) =
-        FlowExecutor::execute_actions(&core_flow.pre_file_change, &mut state)?;
+        FlowEngine::execute_actions(&core_flow.pre_file_change, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success()),
@@ -218,7 +217,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
 
     // Execute PostFileChange actions from the core flow
     let (flow_result, _timing) =
-        FlowExecutor::execute_actions(&core_flow.post_file_change, &mut state)?;
+        FlowEngine::execute_actions(&core_flow.post_file_change, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message(format!(
@@ -269,7 +268,7 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
 
     // Execute PrepareCommitMessage actions from the core flow
     let (flow_result, _timing) =
-        FlowExecutor::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
+        FlowEngine::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success_with_message("✅ Co-authors added")
