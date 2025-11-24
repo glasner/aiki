@@ -139,7 +139,15 @@ PreCommit:
   timeout: 10s
 
 # JJ command
-- jj: ["describe", "-m", "reviewed"]
+- jj: describe -m "reviewed"
+
+# JJ command with author
+- with_author: "Name <email>"
+  jj: describe -m "User changes"
+
+# JJ command with metadata (sets both author and message)
+- with_author_and_message: self.build_human_metadata
+  jj: describe -m "$message"
 
 # Inline conditional (when: guard)
 - when: $security.failed

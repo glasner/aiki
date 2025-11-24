@@ -425,11 +425,23 @@ Aiki uses hooks to automatically record metadata when AI agents edit files. This
 
 ```
 [aiki]
-agent=claude-code
+author=claude
+author_type=agent
 session=claude-session-abc123
 tool=Edit
 confidence=High
 method=Hook
+coauthor=User Name <user@email.com>
+[/aiki]
+```
+
+For human changes (when users modify files before or during AI edits), Aiki creates metadata blocks with `author_type=human`:
+
+```
+[aiki]
+author=User Name <user@email.com>
+author_type=human
+session=claude-session-abc123
 [/aiki]
 ```
 

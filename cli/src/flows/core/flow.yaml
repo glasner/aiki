@@ -13,6 +13,16 @@ SessionStart:
   - shell: aiki init --quiet
     on_failure: stop
 
+  # If aiki init created files, record them with Aiki as author
+  - jj: diff -r @ --name-only
+    alias: init_changes
+
+  - if: $init_changes
+    then:
+      - with_author: "Aiki <noreply@aiki.dev>"
+        jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession=$event.session_id\n[/aiki]"
+      - jj: new
+
 # PreFileChange: Stash any user changes before AI starts editing
 PreFileChange:
   # Check if working copy has any changes
@@ -22,8 +32,9 @@ PreFileChange:
   # If there are changes (non-empty string), stash them before AI starts
   - if: $changed_files
     then:
-      - with_author: self.get_git_user
-        jj: describe --message "User changes (pre-AI edit)"
+      - with_author_and_message: self.build_human_metadata
+        jj: describe --message "$message"
+
       - jj: new # Give AI a clean working copy
 
 # PostFileChange: Record provenance metadata after every AI edit
@@ -44,15 +55,16 @@ PostFileChange:
 
       - self: restore_original_files
       # Add aiki metadata with git user as author and AI as coauthor
-      - let: user_metadata = self.build_user_metadata
-      - with_author: $user_metadata.author
-        jj: metaedit --message "$user_metadata.message"
+      - with_author_and_message: self.build_human_metadata
+        jj: metaedit --message "$message"
+
     else:
       # For ExactMatch or OverlappingUserEdits, set AI metadata
       - let: metadata = self.build_metadata
         on_failure: stop
-      - with_author: $metadata.author
-        jj: metaedit --message "$metadata.message"
+
+      - with_author_and_message: $metadata
+        jj: metaedit --message "$message"
 
   # Create a new change for the next edit
   - jj: new

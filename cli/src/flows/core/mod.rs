@@ -6,6 +6,7 @@
 mod functions;
 
 pub use functions::{
-    build_metadata, build_user_metadata, classify_edits, generate_coauthors, get_git_user_function,
-    prepare_separation, restore_original_files, separate_edits, write_ai_files,
+    build_human_metadata, build_human_metadata_post, build_metadata, classify_edits,
+    generate_coauthors, get_git_user_function, prepare_separation, restore_original_files,
+    separate_edits, write_ai_files,
 };

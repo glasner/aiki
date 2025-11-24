@@ -56,7 +56,8 @@ impl VariableResolver {
         self.cached_patterns = self
             .variables
             .iter()
-            .filter(|(k, _)| !self.json_variables.contains_key(*k)) // Exclude JSON variables
+            // Include all variables in cache - JSON variables can be used both as
+            // $var (raw value) and $var.field (field access)
             .map(|(k, v)| (format!("${}", k), v.clone()))
             .collect();
 

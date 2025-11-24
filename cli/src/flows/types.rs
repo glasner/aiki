@@ -96,6 +96,11 @@ pub struct JjAction {
     /// Format: "Name <email>"
     #[serde(default)]
     pub with_author: Option<String>,
+
+    /// Optional function that returns {author, message}
+    /// Automatically sets with_author and makes $message available
+    #[serde(default)]
+    pub with_author_and_message: Option<String>,
 }
 
 /// Log message action
