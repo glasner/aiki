@@ -1,4 +1,3 @@
-10
 # Aiki Product Roadmap
 
 ## Overview
@@ -134,7 +133,7 @@ Overall: 100% attribution accuracy ✓
 - **100% attribution accuracy** - Claude Code hooks provide perfect information
 - **Dramatically simplified** - No complex process detection needed
 - **Fast implementation** - 2-3 weeks vs 4-6 weeks
-- **Testing foundation** - Enables comprehensive testing of Phase 7 (Autonomous Review Flow)
+- **Testing foundation** - Enables comprehensive testing of Phase 13 (Autonomous Review Flow)
 - **Session tracking** - Understand how Claude Code works over time
 - **Confidence indicators** - All attributions marked as High confidence
 
@@ -641,7 +640,7 @@ Report includes:
 ## Phase 5: Internal Flow Engine
 
 ### Problem
-Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 7 (Autonomous Review Flow).
+Aiki's core functionality (provenance embedding, session tracking, JJ integration) is hardcoded in Rust, making it difficult to test, modify, and extend. We need a declarative system to define Aiki's behavior and enable Phase 13 (Autonomous Review Flow).
 
 **With provenance (Phase 1-4), we can now:**
 - Trigger workflows on specific agent events (PostFileChange, PreCommit, Start, Stop)
@@ -709,7 +708,8 @@ PostFileChange:
 ### Value Delivered
 - **Cleaner architecture** - Aiki's behavior in declarative flows, not scattered Rust
 - **Dog-fooding** - Aiki uses its own flow system internally
-- **Enables Phase 6** - Autonomous review can be built as a default flow
+- **Enables Phase 8** - Core extensions (PrePrompt, PostResponse, Task System)
+- **Enables Phase 13** - Autonomous review can be built as a default flow
 - **Easier testing** - Test flows, not Rust code
 - **User customization** - Inline steps in `.aiki/flow.yaml`
 
@@ -728,13 +728,14 @@ PostFileChange:
 - ✅ Default flows ship with Aiki (autonomous review)
 - ✅ Users can add inline steps to `.aiki/flow.yaml`
 - ✅ Flows execute on events (PostFileChange, PreCommit, Start, Stop)
-- ✅ Phase 6 can build on this foundation
+- ✅ Phase 8 and Phase 13 can build on this foundation
 
 ### Why This Enables Future Phases
-- **Phase 6**: Autonomous review built as default flow
-- **Phase 7**: Complete event system for all Git and agent hooks
-- **Phase 8**: Users write their own flows in `.aiki/flows/`
-- **Phase 9**: External flow ecosystem with bundled binaries
+- **Phase 8**: Core extensions (PrePrompt, PostResponse, Task System, Flow Composition)
+- **Phase 13**: Autonomous review built as default flow
+- **Phase 15**: Complete event system for all Git and agent hooks
+- **Phase 16**: Users write their own flows in `.aiki/flows/`
+- **Phase 17**: External flow ecosystem with bundled binaries
 - **Rapid iteration**: Change workflows without Aiki releases
 
 ---
@@ -1269,7 +1270,7 @@ Flows need a way to create, update, and query structured documentation within th
 
 ### Solution
 
-Implement the `doc_management` action type that allows flows to create, update, append to, and query markdown documents. This enables Phase 8's architecture caching, task docs, and other documentation patterns.
+Implement the `doc_management` action type that allows flows to create, update, append to, and query markdown documents. This enables Phase 10 (architecture caching), Phase 8 (task docs), and other documentation patterns.
 
 **Key capabilities:**
 - **Create** - Create new documents (error if exists)
@@ -1339,9 +1340,9 @@ PostResponse:
 
 ### Value Delivered
 
-**For Phase 8 milestones:**
-- **Enables Milestone 2** - Architecture docs cached via doc_management
-- **Enables Milestone 5** - Task docs created and updated automatically
+**For subsequent phases:**
+- **Enables Phase 10** - Architecture docs cached via doc_management
+- **Enables Phase 8 Milestone 1** - Task docs created and updated automatically
 - **Enables session notes** - Track work across sessions in `.aiki/sessions/`
 
 **For flow authors:**
@@ -1372,14 +1373,14 @@ PostResponse:
 - ✅ Atomic writes prevent corruption
 - ✅ Clear error messages for invalid operations
 
-### Why This Enables Phase 8
+### Why This Enables Subsequent Phases
 
-Phase 8's "Aiki Way" patterns depend on doc_management:
+Multiple phases depend on doc_management:
 
-1. **Architecture Caching (Milestone 2)** - Needs to store discovered patterns
-2. **Task Documentation (Milestone 5)** - Needs to create/update task docs
-3. **Session Notes** - Needs to append session progress
-4. **Skills** - May need to query existing documentation
+1. **Phase 10 (Architecture Caching)** - Needs to store discovered patterns
+2. **Phase 8 (Task System)** - Needs to create/update task docs  
+3. **Phase 11 (Skills)** - May need to query existing documentation
+4. **Session Notes** - Needs to append session progress
 
 Without doc_management, these features would need separate, redundant implementations.
 
@@ -3179,7 +3180,7 @@ Agent SDK for real-time feedback, intent capture, and active participation in co
 - Trust scoring informs agent behavior (analyze past changes via JJ revsets)
 
 ### Important Note
-**Phases 1-11 deliver full value WITHOUT vendor cooperation.** Phase 12 is an optional enhancement, not a requirement for success.
+**Phases 1-12 deliver full value WITHOUT vendor cooperation.** Phase 18 (Multi-Agent Fallback Detection) and beyond are optional enhancements.
 
 ---
 
@@ -3196,41 +3197,59 @@ Phase 3 (CLI Streamlining & Health Diagnostics) ✅ ← aiki doctor command
     ↓
 Phase 4 (Cryptographic Signing) ← Tamper-proof attribution
     ↓
-Phase 5 (Internal Flow Engine) ← Event-driven workflow system
+Phase 5 (Internal Flow Engine) ✅ ← Event-driven workflow system
     ↓
 Phase 6 (ACP Support) ← Generic ACP proxy for IDE-agent communication
     ↓
-Phase 7 (Autonomous Review Flow) ← Built on Phase 5 flows
+Phase 7 (User Edit Detection & Separation) ← Distinguish AI vs human edits
     ↓
-Phase 8 (Zed Extension) ← One-click setup & status UI
+Phase 8 (The Aiki Way - Core Extensions) ← PrePrompt, PostResponse, Task System, Flow Composition
+    ├─ Enables Phase 9 (Doc Management)
+    ├─ Enables Phase 10 (Auto Architecture Docs)
+    ├─ Enables Phase 11 (Skills Auto-Activation)
+    └─ Enables Phase 12 (Process Management)
     ↓
-Phase 9 (Comprehensive Event System) ← All Git & agent hooks supported
+Phase 9 (Doc Management Action Type) ← Create/update/query docs in .aiki/
     ↓
-Phase 10 (User-Defined Flows) ← Users write reusable flows
+Phase 10 (Auto Architecture Documentation) ← Cache architecture exploration
     ↓
-Phase 11 (External Flow Ecosystem) ← WASM functions + bundled binaries
+Phase 11 (Skills Auto-Activation) ← Pattern-based guideline injection
     ↓
-Phase 12 (Multi-Agent: Fallback Detection)
+Phase 12 (Process Management) ← Background service integration
     ↓
-Phase 13 (Local Multi-Agent Coordination) ← Uses Phase 1+2+12 provenance
+Phase 13 (Autonomous Review Flow) ← Built on Phase 5+8 flows
     ↓
-Phase 14 (PR Review for Non-Aiki Agents)
+Phase 14 (Zed Extension) ← One-click setup & status UI
     ↓
-Phase 15 (Shared JJ Brain & Team Coordination) ← Team provenance via JJ commit descriptions
+Phase 15 (Comprehensive Event System) ← All Git & agent hooks supported
     ↓
-Phase 16 (Windsurf Support) ← Additional editor before enterprise
+Phase 16 (User-Defined Flows) ← Users write reusable flows
     ↓
-Phase 17 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+Phase 17 (External Flow Ecosystem) ← WASM functions + bundled binaries
     ↓
-Phase 18 (Native Agent Integration) ← Agent SDK with trust scoring
+Phase 18 (Multi-Agent: Fallback Detection)
+    ↓
+Phase 19 (Local Multi-Agent Coordination) ← Uses Phase 1+2+18 provenance
+    ↓
+Phase 20 (PR Review for Non-Aiki Agents)
+    ↓
+Phase 21 (Shared JJ Brain & Team Coordination) ← Team provenance via JJ commit descriptions
+    ↓
+Phase 22 (Windsurf Support) ← Additional editor before enterprise
+    ↓
+Phase 23 (Enterprise Compliance) ← Immutable audit trails via JJ + Phase 4 signing
+    ↓
+Phase 24 (Native Agent Integration) ← Agent SDK with trust scoring
 ```
 
 **Key Insights:** 
 - Phase 1 (Provenance) provides the SQLite-free foundation (~120 bytes per change in JJ commit descriptions)
-- Phase 2 (Cursor) and Phase 16 (Windsurf) extend to additional editors using same architecture
+- Phase 2 (Cursor) and Phase 22 (Windsurf) extend to additional editors using same architecture
 - Phase 3 (CLI Streamlining) provides `aiki doctor` for health diagnostics
 - Phase 4 (Cryptographic Signing) adds tamper-proof verification layer for enterprise compliance
+- Phase 5 (Flow Engine) enables all intelligent automation (Phases 8-17)
 - Phase 6 (ACP Support) enables IDE-agnostic provenance tracking
-- Phase 8 (Zed Extension) provides polished UX for zero-friction onboarding
+- Phase 8 (Core Extensions) unlocks Phases 9-12 with PrePrompt, PostResponse, and Task System
+- Phase 14 (Zed Extension) provides polished UX for zero-friction onboarding
 - All subsequent phases query provenance via JJ revsets (no database needed)
 - JJ's immutable commit graph + cryptographic signatures provide audit-ready trails for compliance
