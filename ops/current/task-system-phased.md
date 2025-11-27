@@ -686,11 +686,15 @@ enum TaskSubcommand {
     /// Start working on a task
     Start {
         task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
     },
     
     /// Close a task
     Close {
         task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
         #[arg(long)]
         fixed: bool,
         #[arg(long)]
@@ -731,27 +735,22 @@ pub fn run(cmd: TaskCommand) -> Result<()> {
                 evidence: parse_evidence(&evidence)?,
             };
             
-            let agent = std::env::var("AIKI_AGENT").unwrap_or_else(|_| "cli-user".to_string());
-            let task_id = manager.create_task(definition, &agent)?;
+            // CLI creates use "cli-user" as agent (flows use agent from notification)
+            let task_id = manager.create_task(definition, "cli-user")?;
             println!("Created: {}", task_id);
         }
         
-        TaskSubcommand::Start { task_id } => {
-            let agent = std::env::var("AIKI_AGENT").unwrap_or_else(|_| "unknown".to_string());
-            manager.start_task(&task_id, &agent)?;
+        TaskSubcommand::Start { task_id, agent } => {
+            let agent = agent.as_deref().unwrap_or("cli-user");
+            manager.start_task(&task_id, agent)?;
             println!("Started: {}", task_id);
         }
         
-        TaskSubcommand::Close { task_id, fixed, abandoned } => {
-            let outcome = if fixed {
-                AttemptOutcome::Fixed
-            } else if abandoned {
-                AttemptOutcome::Abandoned
-            } else {
-                AttemptOutcome::Failed
-            };
+        TaskSubcommand::Close { task_id, agent, fixed, abandoned } => {
+            let agent = agent.as_deref().unwrap_or("cli-user");
+            let fixed = if abandoned { false } else { fixed };
             
-            manager.close_task(&task_id, outcome)?;
+            manager.close_task(&task_id, agent, fixed)?;
             println!("Closed: {}", task_id);
         }
         
