@@ -7,26 +7,27 @@
 
 ## Overview
 
-Implement the shared MessageBuilder parser infrastructure that provides consistent syntax and behavior across all three message-building events:
-- **PrePrompt** (`prompt:` action)
-- **PostResponse** (`autoreply:` action)  
-- **PrepareCommitMessage** (`commit_message:` action)
+Implement the shared MessageBuilder parser infrastructure that provides consistent syntax and behavior across message-building events:
+- **PrePrompt** (`prompt:` action) - New in Milestone 1.1
+- **PrepareCommitMessage** (`commit_message:` action) - Refactored from existing implementation
 
-This is foundational work that must be completed before implementing any of the individual event handlers.
+This milestone includes **refactoring the existing PrepareCommitMessage hook** to use the new MessageBuilder infrastructure, ensuring consistent syntax across all message-building events.
+
+**Note:** PostResponse uses a task-based system instead of text-based autoreplies. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
 
 ## Why This Comes First
 
-All three events need to:
+PrePrompt and PrepareCommitMessage both need to:
 1. Parse both short form (`action: "string"`) and explicit form (`action: { prepend: [...], append: [...] }`)
 2. Handle multiple invocations (append to growing message)
 3. Provide consistent error messages for malformed syntax
-4. Generate content-based check IDs for stuck detection
 
 By creating shared infrastructure, we ensure:
-- **Consistency**: All events behave the same way
+- **Consistency**: Both events behave the same way
 - **Maintainability**: Bug fixes apply everywhere
 - **Testability**: Comprehensive tests in one place
 - **Documentation**: Single source of truth for syntax
+- **Refactoring benefit**: Existing PrepareCommitMessage hook gets cleaner, more maintainable code
 
 ## The Unified Syntax Pattern
 
@@ -942,28 +943,29 @@ impl MessageBuilder {
 - [ ] Test deterministic check ID generation
 - [ ] Add serde serialization/deserialization tests
 
-### Phase 2: Integration Stubs (2-3 days)
+### Phase 2: Event Integration (2-3 days)
 
-- [ ] Create event struct stubs in `cli/src/flows/events/`
-  - [ ] `preprompt.rs` (for Milestone 1.1)
-  - [ ] `postresponse.rs` (for Milestone 1.2)
-  - [ ] `prepare_commit_message.rs` (for future milestone)
-- [ ] Each stub should have:
-  - [ ] Message field with `RefCell` for mutability
-  - [ ] Method to apply MessageBuilder
-  - [ ] Method to get final message
-- [ ] Write integration tests for each event stub
-- [ ] Document how event implementations will use MessageBuilder
+- [ ] Create `cli/src/flows/events/preprompt.rs` (for Milestone 1.1)
+  - [ ] `PrePromptEvent` struct with MessageBuilder support
+  - [ ] `apply_prompt_action()` method
+  - [ ] `build_prompt()` method
+- [ ] Refactor existing PrepareCommitMessage hook
+  - [ ] Create `cli/src/flows/events/prepare_commit_message.rs`
+  - [ ] Migrate existing logic to use MessageBuilder
+  - [ ] Support `body:` and `trailers:` sub-fields
+  - [ ] Maintain backward compatibility with existing flows
+- [ ] Write integration tests for both events
+- [ ] Document how event implementations use MessageBuilder
 
 ### Phase 3: Documentation and Migration (1-2 days)
 
 - [ ] Update FLOW_SYNTAX.md with MessageBuilder examples
 - [ ] Migrate existing flows to new syntax:
-  - [ ] `cli/src/flows/core/flow.yaml` - Update PrepareCommitMessage section
-  - [ ] Change `append_trailer: $coauthors` to `trailers: $coauthors`
-- [ ] Create migration guide for any existing prompt/autoreply usage
+  - [ ] Update any existing PrepareCommitMessage flows to use new `body:` / `trailers:` syntax
+  - [ ] Document migration path from old to new syntax
 - [ ] Add troubleshooting section for common issues
 - [ ] Create examples directory with sample flows
+- [ ] Document PrepareCommitMessage refactoring in CHANGELOG
 
 ## Success Criteria
 
@@ -990,17 +992,22 @@ impl MessageBuilder {
 
 This milestone blocks:
 - **Milestone 1.1**: PrePrompt event (needs MessageBuilder for `prompt:` action)
-- **Milestone 1.2**: PostResponse event (needs MessageBuilder for `autoreply:` action)
-- **PrepareCommitMessage**: Future milestone (needs MessageBuilder for `commit_message:` action)
+
+**What This Delivers:**
+- Consistent syntax for prompt modification (PrePrompt) 
+- Refactored PrepareCommitMessage with cleaner, more maintainable code
+- Shared testing and validation infrastructure
+
+**Note:** Milestone 1.2 (PostResponse) does not depend on MessageBuilder - it uses a task-based system instead.
 
 ## Notes
 
-- The content-based check ID is critical for Milestone 1.2's stuck detection
-- The same MessageBuilder code will be used by all three events, ensuring consistency
+- The same MessageBuilder code is used by PrePrompt and PrepareCommitMessage, ensuring consistency
+- PrepareCommitMessage refactoring is included in this milestone (not a future milestone)
 - Keep the implementation simple - just string manipulation, no file system interaction
 
 ## See Also
 
-- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - First consumer of MessageBuilder
-- [Milestone 1.2: PostResponse Event](./milestone-1.2-post-response.md) - Uses check IDs for stuck detection
+- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageBuilder for `prompt:` action
+- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Task-based system (doesn't use MessageBuilder)
 - [Milestone 1: Event System Overview](./milestone-1.md) - Context for the full event system
