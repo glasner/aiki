@@ -1,6 +1,6 @@
 # Milestone 1: Core Extensions (Phase 8 - The Aiki Way)
 
-**Timeline:** 2-3 weeks  
+**Timeline:** 4 weeks  
 **Goal:** Add event types and capabilities needed for all aiki/default patterns
 
 ---
@@ -9,10 +9,9 @@
 
 Milestone 1 extends Aiki's flow system (built in Phase 5) with new event types and capabilities that enable the four key patterns in aiki/default:
 1. **PrePrompt event** - Inject context before agent sees prompt
-2. **PostResponse event** - Validate after agent responds
+2. **PostResponse event & Task System** - Validate after agent responds with structured task management
 3. **Flow composition** - Reuse flows via `includes:` directive
-4. **Session state** - Track data across multiple events
-5. **Doc management** - Create/update/query structured docs
+4. **Doc management** - Create/update/query structured docs
 
 **Why this matters:** These primitives unlock Milestone 2-6 features. Without them, we can't inject skills, cache architecture docs, run builds automatically, or manage tasks.
 
@@ -67,7 +66,7 @@ PrepareCommitMessage:
 
 ## What Gets Built
 
-This milestone delivers six core capabilities. Each has its own detailed documentation:
+This milestone delivers five core capabilities. Each has its own detailed documentation:
 
 ### 1.0. MessageBuilder Shared Syntax
 📄 **Detailed doc:** [milestone-1.0-message-builder.md](./milestone-1.0-message-builder.md)
@@ -109,28 +108,42 @@ PrePrompt:
 
 ---
 
-### 1.2. PostResponse Event
-📄 **Detailed doc:** [milestone-1.2-post-response.md](./milestone-1.2-post-response.md)
+### 1.2. PostResponse Event & Task System
+📄 **Detailed doc:** [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md)
 
-**Summary:** Fire after agent completes response, enabling validation and automatic iteration.
+**Summary:** Fire after agent completes response, enabling validation and structured task management.
 
 **Key capabilities:**
-- Run builds/lints automatically after AI edits
-- Use `autoreply:` action to send follow-up requests to agent
-- Smart stuck detection (content-based check IDs)
-- Automatic scope reduction when stuck
-- Max iteration limits prevent infinite loops
+- Event-sourced task system stored on JJ `aiki/tasks` branch
+- Create/query/start/close tasks via PostResponse flows
+- CLI commands: `aiki task ready`, `aiki task create`, `aiki task start`, `aiki task close`
+- Task state reconstruction from immutable event log
+- Agent workflow: query tasks → start task → make changes → PostToolUse auto-closes
+- Attempt-based stuck detection (3+ failed attempts)
+- Content-addressed task IDs prevent duplicates
 
 **Example:**
 ```yaml
 PostResponse:
-  - let: error_count = self.count_build_errors
-  - if: $error_count > 0 && $event.loop_count < 3
+  - let: ts_errors = self.count_typescript_errors
+  - for: error in $ts_errors
     then:
-      autoreply: "Build failed with $error_count errors. Please fix."
+      task.create:
+        objective: "Fix: $error.message"
+        type: error
+        file: $error.file
+        line: $error.line
+        evidence:
+          - source: typescript
+            message: $error.message
+            code: $error.code
+  
+  - if: self.ready_tasks | length > 0
+    then:
+      autoreply: "Run `aiki task ready --json` to see what needs fixing"
 ```
 
-**Timeline:** Week 1-2
+**Timeline:** 2-3 weeks (Phase 1 of phased implementation)
 
 ---
 
@@ -160,35 +173,8 @@ PostResponse:
 
 ---
 
-### 1.4. Session State Persistence
-📄 **Detailed doc:** *(to be created)*
-
-**Summary:** Store data across multiple events within a session.
-
-**Key capabilities:**
-- Track edited files and affected repos
-- Store intermediate computation results
-- Built-in helper functions (`get_edited_files`, `get_affected_repos`, etc.)
-- Automatic cleanup on session end
-
-**Example:**
-```yaml
-PostResponse:
-  - let: repos = self.get_affected_repos
-  - shell: |
-      for repo in $repos; do
-        cd $repo && npm run build
-      done
-```
-
-**Storage:** `.aiki/.session-state/` (ephemeral, not committed)
-
-**Timeline:** Week 2
-
----
-
-### 1.5. Doc Management Action Type
-📄 **Detailed doc:** *(to be created)*
+### 1.4. Doc Management Action Type
+📄 **Detailed doc:** [milestone-1.4-doc-management.md](./milestone-1.4-doc-management.md)
 
 **Summary:** Create, update, and query structured documentation.
 
@@ -242,27 +228,27 @@ Response shown to user
 ```
 cli/src/
 ├── events.rs                    # Event type definitions
+├── tasks/                       # Task system (event-sourced)
+│   ├── manager.rs              # TaskManager with JJ operations
+│   ├── types.rs                # Task, TaskEvent, TaskDefinition
+│   └── cli.rs                  # CLI command handlers
 ├── flows/
 │   ├── engine.rs               # Event dispatch, action execution
 │   ├── parser.rs               # Flow YAML parsing
 │   ├── loader.rs               # Flow loading and composition
 │   ├── resolver.rs             # Flow path resolution
-│   ├── session_state.rs        # Session state management
 │   ├── handlers/
 │   │   ├── pre_prompt.rs       # PrePrompt handler
 │   │   ├── post_response.rs    # PostResponse handler
 │   │   └── mod.rs
 │   ├── actions/
-│   │   ├── prepend.rs          # Prepend action (PrePrompt)
-│   │   ├── append.rs           # Append action (PrePrompt)
-│   │   ├── respond.rs          # Respond action (PostResponse)
+│   │   ├── message_builder.rs  # Shared MessageBuilder parser
+│   │   ├── task.rs             # Task actions (create, start, close)
 │   │   ├── doc_management.rs   # Doc management action
 │   │   ├── flow.rs             # Flow composition action
 │   │   └── mod.rs
 │   └── functions/              # Built-in helper functions
-│       ├── get_edited_files.rs
-│       ├── get_affected_repos.rs
-│       ├── determine_repo_for_file.rs
+│       ├── count_typescript_errors.rs
 │       ├── count_build_errors.rs
 │       └── mod.rs
 └── vendors/
@@ -275,19 +261,23 @@ cli/src/
 
 **Unit tests:**
 - Event struct serialization/deserialization
+- Task event serialization/deserialization
+- Task state reconstruction from events
 - Flow parser (includes, flow action, doc_management)
-- Session state persistence
+- MessageBuilder parser (short/explicit forms)
 - Helper function logic
 
 **Integration tests:**
 - PrePrompt → Agent → PostResponse lifecycle
 - Flow composition (includes + flow action)
-- Session state across multiple events
+- Task creation and querying
+- PostToolUse auto-closing tasks
 - Doc management operations
 
 **Manual testing:**
 - Real Claude Code session with PrePrompt injection
-- Real build failure detection in PostResponse
+- Real build failure detection creating tasks in PostResponse
+- Agent querying tasks with `aiki task ready --json`
 - Flow composition with aiki/core + custom flow
 
 ---
@@ -313,31 +303,29 @@ cli/src/
 
 ---
 
-### Week 2: PostResponse & Flow Composition
+### Week 2-3: PostResponse & Task System (Milestone 1.2)
 
-**Day 1-2: PostResponse Event (Milestone 1.2)**
-- Define `PostResponseEvent` and `PostResponseResult` structs
-- Implement `respond:` action
-- Add event dispatch in vendors (Stop hook for Claude Code/Cursor)
-- Track `files_edited` during response
-- Track `loop_count` and enforce max 5 iterations
-- Implement handler in flow engine
-- Return followup_message to vendors
-- Unit tests for respond action and loop limits
+**Week 2: Core Task System**
+- Define `TaskEvent`, `TaskDefinition`, `Task` structs
+- Implement `TaskManager` with JJ operations (event-sourced)
+- Implement `aiki/tasks` branch management
+- Implement event append and reconstruction
+- CLI commands: `aiki task ready`, `aiki task create`, `aiki task start`, `aiki task close`
+- Unit tests for task operations
 
-**Day 5: Integration Testing**
-- End-to-end test: PrePrompt → Agent → PostResponse
-- Test respond action with real agent (verify it continues working)
-- Test loop_count increments correctly
-- Test max iterations enforced
-- Verify event data is correct
-- Test across all three integrations
+**Week 3: Flow Integration & Testing**
+- Implement `task:` flow actions (create, start, close, fail)
+- Add `self.ready_tasks` and `self.current_task` to flow context
+- Implement PostToolUse auto-closing
+- Implement attempt-based stuck detection
+- Integration tests: task creation from errors, auto-closing
+- E2E tests with real agent workflow
 
 ---
 
-### Week 2: Flow Composition & Session State
+### Week 3: Flow Composition & Doc Management
 
-**Day 1-2: Flow Composition**
+**Day 1-2: Flow Composition (Milestone 1.3)**
 - Parse `includes:` directive
 - Implement flow loader with includes support
 - Implement `flow:` action type
@@ -345,49 +333,40 @@ cli/src/
 - Detect circular dependencies
 - Unit tests
 
-**Day 3-4: Session State**
-- Implement session state manager
-- Create built-in helper functions:
-  - `get_edited_files`
-  - `get_affected_repos`
-  - `determine_repo_for_file`
-  - `count_build_errors`
-- Session lifecycle (init, cleanup)
-- Unit tests
-
-**Day 5: Integration Testing**
-- Test flow composition with multiple includes
-- Test session state across multiple events
-- Manual testing with real workflows
-
----
-
-### Week 3: Doc Management & Polish
-
-**Day 1-2: Doc Management**
+**Day 3-4: Doc Management (Milestone 1.4)**
 - Implement `doc_management` action
 - Operations: create, update, append, query
 - Path validation and security
 - Atomic writes
 - Unit tests
 
-**Day 3: Integration Testing**
+**Day 5: Integration Testing**
+- Test flow composition with multiple includes
+- Test doc management operations
+- Manual testing with real workflows
+
+---
+
+### Week 4: Integration & Polish
+
+**Day 1: Integration Testing**
 - End-to-end workflow tests
 - Test all features together:
   - PrePrompt injects skills
-  - PostResponse runs build
-  - Session state tracks files
-  - Doc management updates tasks
-- Performance testing (event dispatch overhead)
+  - PostResponse creates tasks from errors
+  - Task system queries and auto-closes
+  - Flow composition with includes
+  - Doc management operations
+- Performance testing (event dispatch overhead, task queries)
 
-**Day 4: Documentation**
+**Day 2-3: Documentation**
 - API documentation for new events
+- Task system guide (event-sourced architecture)
 - Flow composition guide
-- Session state guide
 - Built-in function reference
 - Example flows
 
-**Day 5: Code Review & Cleanup**
+**Day 4-5: Code Review & Cleanup**
 - Code review with team
 - Address feedback
 - Final testing
@@ -400,15 +379,18 @@ cli/src/
 ### Functional Requirements
 - ✅ PrePrompt event fires before agent sees prompt
 - ✅ PostResponse event fires after agent responds
+- ✅ Task system creates/queries/closes tasks via PostResponse
+- ✅ Task events stored on JJ `aiki/tasks` branch
+- ✅ Task state reconstruction from event log works correctly
+- ✅ CLI commands work: `aiki task ready`, `aiki task create`, `aiki task start`, `aiki task close`
+- ✅ Attempt-based stuck detection works (3+ failed attempts)
 - ✅ Flow composition works (includes + flow action)
-- ✅ Session state persists across events
 - ✅ Doc management operations work (create, update, append, query)
-- ✅ Built-in helper functions work correctly
 - ✅ All integrations supported (Claude Code, Cursor, ACP)
 
 ### Non-Functional Requirements
 - ✅ Event dispatch overhead < 50ms
-- ✅ Session state operations < 10ms
+- ✅ Task query operations < 100ms (for <100 tasks)
 - ✅ Flow composition resolves in < 100ms
 - ✅ No memory leaks in long-running sessions
 - ✅ All tests pass (unit + integration)
@@ -416,8 +398,8 @@ cli/src/
 
 ### Documentation Requirements
 - ✅ Event API documentation complete
+- ✅ Task system guide complete (event-sourced architecture)
 - ✅ Flow composition guide complete
-- ✅ Session state guide complete
 - ✅ Built-in function reference complete
 - ✅ At least 3 example flows demonstrating new features
 
@@ -431,9 +413,9 @@ cli/src/
 **Enables:**
 - Milestone 2 (Auto Architecture Docs) - Needs PrePrompt for injection, doc_management for cache
 - Milestone 3 (Skills Auto-Activation) - Needs PrePrompt for injection
-- Milestone 4 (Multi-Stage Pipeline) - Needs PostResponse for builds, session state for tracking
+- Milestone 4 (Multi-Stage Pipeline) - Needs PostResponse for builds, task system for tracking
 - Milestone 5 (Dev Docs System) - Needs doc_management for task docs
-- Milestone 6 (Process Management) - Needs session state for log tracking
+- Milestone 6 (Process Management) - Needs task system for process tracking
 
 ---
 
@@ -451,11 +433,12 @@ cli/src/
 - Error immediately on duplicate flow name
 - Add unit tests for common circular patterns
 
-### Risk 3: Session state cleanup failures leave stale files
+### Risk 3: Task event log grows too large and queries become slow
 **Mitigation:**
-- Add SessionEnd hook to all integrations
-- Implement cleanup retry logic
-- Add TTL-based cleanup (delete files > 24h old)
+- Phase 1 targets <100 tasks (acceptable performance)
+- Phase 2 adds SQLite cache for scale
+- Monitor query performance in production
+- Set performance budget: <100ms for task queries
 
 ### Risk 4: Doc management security vulnerabilities (path traversal)
 **Mitigation:**

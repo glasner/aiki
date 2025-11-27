@@ -1,6 +1,6 @@
-# Milestone 1.5: Doc Management Action Type
+# Milestone 1.4: Doc Management Action Type
 
-This document outlines the implementation plan for the Doc Management action system (Milestone 1.5).
+This document outlines the implementation plan for the Doc Management action system (Milestone 1.4).
 
 See [milestone-1.md](./milestone-1.md) for the full Milestone 1 overview.
 
