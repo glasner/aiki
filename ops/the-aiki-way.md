@@ -19,23 +19,44 @@ aiki flows install aiki/default
 
 ## Implementation Roadmap
 
-The `aiki/default` flow implements four key patterns through six implementation milestones:
+The `aiki/default` flow is implemented across multiple phases in the Aiki roadmap. This document focuses on **Phase 8** (Core Extensions) and **references related phases**:
 
-### Milestone 1: Core Extensions (2-3 weeks)
-**Goal:** Add event types and capabilities needed for all patterns.
+### Phase 8: Core Extensions (3-5 weeks)
 
-**What gets built:**
-- PrePrompt event (fires before agent sees prompt)
-- PostResponse event (fires after agent responds)
-- Flow composition (`flow:` action, `includes:` directive)
-- doc_management action type
-- Session state persistence
+Phase 8 implements the foundational event types and capabilities. See `ops/current/milestone-1.md` for detailed plans.
 
-**Success metric:** Can compose flows and track session state
+**Milestone 1: Core Extensions (2-3 weeks)**
+- PrePrompt event (inject context before agent sees prompt)
+- PostResponse event & Task System (validate after agent responds)
+- Flow composition (`includes:` directive)
+
+**Milestone 2: Multi-Stage Pipeline (1-2 weeks)**
+- Session state tracking (edited files, affected repos)
+- PostResponse hook for automatic builds
+- Error parsing (TypeScript, Rust, ESLint)
+- Pattern detection (missing error handling, async without try-catch)
+- Gentle reminder system (non-blocking suggestions)
+
+**Success metric:** Zero errors left behind, structured task tracking
+
+See `ops/ROADMAP.md` Phase 8 for complete details.
 
 ---
 
-### Milestone 2: Auto Architecture Documentation (1-2 weeks)
+### Phase 9: Doc Management Action Type (1 week)
+
+Foundation for architecture caching and task documentation. See `ops/phase-9.md` for details.
+
+**What gets built:**
+- `doc_management` action type (create/update/append/query)
+- Path security and validation
+- Atomic writes
+
+This enables Phase 10 (architecture caching) and integrates with Phase 8's task system.
+
+---
+
+### Phase 10: Auto Architecture Documentation (1-2 weeks)
 **Goal:** Cache architecture exploration so agents don't re-discover the same patterns repeatedly.
 
 **The Problem:**
@@ -116,38 +137,49 @@ PrePrompt:
 
 **Success metric:** Agents can answer "how does X work?" instantly from cache instead of exploring 20+ files
 
+See `ops/ROADMAP.md` Phase 10 for complete details.
+
 ---
 
-### Milestone 3: Skills Auto-Activation (2-3 weeks)
-**Goal:** Implement automatic guideline injection.
+### Phase 11: Skills Auto-Activation (2-3 weeks)
+
+Automatic guideline injection based on context. See `ops/ROADMAP.md` Phase 11 for details.
 
 **What gets built:**
 - Pattern matching engine (keywords, files, content)
-- Skill configuration format (skill-rules.yaml)
+- Skill configuration format (`.aiki/skills/skill-rules.yaml`)
 - PrePrompt flow implementation
 - Example skills (backend, frontend, database)
-- CLI commands (aiki skills list/show/create)
+- CLI commands (`aiki skills list/show/create`)
 
 **Success metric:** 90%+ of relevant prompts trigger correct skills
 
 ---
 
-### Milestone 4: Multi-Stage Pipeline (1-2 weeks)
-**Goal:** Zero errors left behind.
+### Phase 12: Process Management (2 weeks)
+
+Background service integration for multi-service applications. See `ops/ROADMAP.md` Phase 12 for details.
+
+**What gets built:**
+- Process action type (start/stop/logs/status)
+- Process configuration format (`.aiki/processes.yaml`)
+- Log aggregation and correlation
+- Health monitoring
+- CLI commands (`aiki process start/stop/logs`)
+
+**Success metric:** Agents can autonomously debug using logs
+
+---
+
+## Multi-Stage Pipeline Details
+
+This section provides implementation details for **Phase 8, Milestone 2**.
 
 **The Problem:**
 Agents make changes but don't validate them. Two hours later you discover TypeScript errors, broken builds, failing tests. Errors compound - one mistake becomes ten.
 
 **The Solution:**
 Automatic quality checks after every agent response. Catch errors immediately while context is hot.
-
-**What gets built:**
-- Session state tracking (edited files, affected repos)
-- PostResponse hook that runs builds automatically
-- Error parsing (TypeScript, Rust, ESLint, etc.)
-- Pattern detection (missing error handling, async without try-catch)
-- Gentle reminder system (non-blocking suggestions)
-- Integration with provenance (record build status in change descriptions)
 
 **How it works:**
 
@@ -250,35 +282,11 @@ You: "Great! Now let's add the frontend"
 
 ---
 
-### Milestone 5: Dev Docs System (1-2 weeks)
-**Goal:** Structured task management.
+**Related Phases:**
+- See `ops/ROADMAP.md` for the complete phase structure
+- Phase 13 onwards cover additional capabilities like Autonomous Review Flow, Skill Marketplace, etc.
 
-**What gets built:**
-- Task directory structure (.aiki/tasks/)
-- Doc management operations (create/update/query)
-- Session resumption (auto-load active tasks)
-- Task tracking in change descriptions
-- CLI commands (aiki tasks list/resume/complete)
-
-**Success metric:** Can resume tasks across sessions without losing context
-
----
-
-### Milestone 6: Process Management (2 weeks)
-**Goal:** Background service integration.
-
-**What gets built:**
-- Process action type (start/stop/logs/status)
-- Process configuration format (.aiki/processes.yaml)
-- Log aggregation and correlation
-- Health monitoring
-- CLI commands (aiki process start/stop/logs)
-
-**Success metric:** Agents can autonomously debug using logs
-
----
-
-**Total Timeline:** 10-14 weeks
+**Core Timeline:** 8-12 weeks for Phases 8-12
 
 ---
 
@@ -286,27 +294,28 @@ You: "Great! Now let's add the frontend"
 
 Use aiki/default to build aiki/default:
 
-**After Milestone 2 (Auto Architecture):**
+**After Phase 8 (Core Extensions):**
+- Use PrePrompt to inject Aiki-specific guidelines
+- Use PostResponse to run `cargo check` and `cargo clippy`
+- Use task system to track implementation progress
+- Test multi-stage pipeline on Aiki's own builds
+
+**After Phase 9 (Doc Management):**
+- Store Aiki's own task documentation in `.aiki/tasks/`
+- Test create/update/append/query operations
+- Use for tracking Phase 10-12 implementation
+
+**After Phase 10 (Auto Architecture):**
 - Cache Aiki's own architecture (flow system, event bus, handlers)
 - Agents instantly understand Aiki's structure
 - Test with: "How does the flow executor work?"
 
-**After Milestone 3 (Skills):**
+**After Phase 11 (Skills Auto-Activation):**
 - Create `rust-guidelines` skill for Aiki development
 - Create `jj-integration` skill for change-centric patterns
 - Create `aiki-architecture` skill for flow system patterns
 
-**After Milestone 4 (Dev Docs):**
-- Use task system for Milestone 5 and Milestone 6 implementation
-- Track progress in tasks.md
-- Document decisions in context.md
-
-**After Milestone 5 (Pipeline):**
-- Run `cargo check` on PostResponse
-- Run `cargo clippy` for linting
-- Detect missing error handling
-
-**After Milestone 6 (Process Management):**
+**After Phase 12 (Process Management):**
 - Manage integration test processes
 - Debug test failures using log correlation
 
@@ -557,8 +566,8 @@ aiki flows show aiki/default        # Show flow details
 ## Status
 
 **Current:** Vision document  
-**Milestone 1 Start:** TBD  
-**Expected Completion:** 8-12 weeks from Milestone 1 start
+**Phase 8 Start:** TBD  
+**Expected Completion:** 8-12 weeks for Phases 8-12
 
 This document will be updated as implementation progresses.
 
