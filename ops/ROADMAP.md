@@ -1147,58 +1147,28 @@ Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven
 
 ### What We Build
 
-**Implementation in five milestones:**
+**Implementation in two milestones:**
 
 **Milestone 1: Core Extensions (2-3 weeks)**
 - PrePrompt event type
 - PostResponse event type & Task System
 - Flow composition (`includes:` directive)
 
-**Milestone 2: Auto Architecture Documentation (1-2 weeks)**
-- Exploration detection (5+ files read in directory)
-- Auto-summarization of patterns
-- Shadow directory structure (`.aiki/arch/structure/`)
-- Staleness tracking and auto-regeneration
-- CLI commands (`aiki arch show/refresh/clear`)
-
-**Milestone 3: Skills Auto-Activation (2-3 weeks)**
-- Pattern matching engine (keywords, files, content)
-- Skill configuration format (`skill-rules.yaml`)
-- PrePrompt flow implementation
-- Example skills (backend, frontend, database)
-- CLI commands (`aiki skills list/show/create`)
-
-**Milestone 4: Multi-Stage Pipeline (1-2 weeks)**
+**Milestone 2: Multi-Stage Pipeline (1-2 weeks)**
 - Session state tracking (edited files, affected repos)
 - PostResponse hook for automatic builds
 - Error parsing (TypeScript, Rust, ESLint)
 - Pattern detection (missing error handling, etc.)
 - Gentle reminder system (non-blocking suggestions)
 
-**Milestone 5: Process Management (2 weeks)**
-- Process action type (start/stop/logs/status)
-- Process configuration format (`.aiki/processes.yaml`)
-- Log aggregation and correlation
-- Health monitoring
-- CLI commands (`aiki process start/stop/logs`)
-
 ### Commands Delivered
 
 ```bash
-# Architecture docs
-aiki arch show src/components       # Show cached architecture
-aiki arch refresh src/components    # Force regeneration
-aiki arch clear                     # Clear cache
-
-# Skills management
-aiki skills list                    # Show available skills
-aiki skills show backend-guidelines # Show skill details
-aiki skills create my-skill         # Create new skill
-
-# Process management
-aiki process start backend          # Start service
-aiki process logs backend --errors  # Show error logs
-aiki process status                 # All services status
+# Task management
+aiki task ready                     # List ready tasks
+aiki task create                    # Create new task
+aiki task start <id>                # Start working on task
+aiki task close <id>                # Close completed task
 
 # Flow installation
 aiki flows install aiki/default     # Install this flow
@@ -1208,10 +1178,9 @@ aiki flows show aiki/default        # Show flow details
 ### Value Delivered
 
 **For developers:**
-- **10x faster context loading** - Read cached docs instead of exploring 20+ files
-- **Consistent quality** - Skills ensure guidelines are never forgotten
 - **Zero errors left behind** - Catch problems immediately while context is hot
-- **Observable systems** - Debug multi-service apps with log correlation
+- **Structured task tracking** - Tasks auto-created from build failures
+- **Agent-driven workflow** - AI queries and closes tasks automatically
 
 **For Aiki:**
 - **Proves the flow system** - Demonstrates Phase 5's power with real patterns
@@ -1224,21 +1193,18 @@ aiki flows show aiki/default        # Show flow details
 | Component | Complexity | Priority | Timeline |
 |-----------|------------|----------|----------|
 | PrePrompt/PostResponse events | Medium | High | Week 1-2 |
-| Flow composition system | Medium | High | Week 2-3 |
-| Exploration detection | Medium | High | Week 4-5 |
-| Auto architecture docs | High | High | Week 5-6 |
-| Skills pattern matching | Medium | High | Week 7-8 |
-| Multi-stage pipeline | Medium | High | Week 9-10 |
-| Process management | Medium | Medium | Week 11-12 |
+| Task system (event-sourced) | High | High | Week 2-3 |
+| Flow composition system | Medium | High | Week 3 |
+| Multi-stage pipeline | Medium | High | Week 4 |
 
 ### Success Criteria
 
 - ✅ `aiki flows install aiki/default` works end-to-end
-- ✅ Architecture docs cache and auto-regenerate correctly
-- ✅ Skills activate based on context (90%+ accuracy)
+- ✅ PrePrompt injects context before agent sees prompt
+- ✅ PostResponse creates tasks from build failures
 - ✅ Builds run automatically after AI responses
 - ✅ Task system enables multi-session workflows
-- ✅ Process logs are queryable and correlated with changes
+- ✅ Agent can query and close tasks via CLI
 - ✅ All patterns dogfooded during Aiki development
 - ✅ Documentation shows before/after examples
 
@@ -1248,12 +1214,9 @@ aiki flows show aiki/default        # Show flow details
 
 ### Timeline
 
-**Estimated: 8-12 weeks**
+**Estimated: 3-5 weeks**
 - Milestone 1: 2-3 weeks
 - Milestone 2: 1-2 weeks
-- Milestone 3: 2-3 weeks
-- Milestone 4: 1-2 weeks
-- Milestone 5: 2 weeks
 
 **Before Phase 8:**
 - Users have flow primitives but no guidance
@@ -1408,7 +1371,563 @@ Without doc_management, these features would need separate, redundant implementa
 
 ---
 
-## Phase 10: Autonomous Review Flow
+## Phase 10: Auto Architecture Documentation
+
+### Problem
+
+AI agents repeatedly explore the same codebases, reading 20+ files to understand patterns that haven't changed. This wastes time, tokens, and creates inconsistent mental models across sessions.
+
+**Current pain points:**
+- Agent re-discovers "we use Zod for validation" every session
+- Same 15 files read to understand backend structure
+- Exploration expensive (time + tokens)
+- No memory of previous discoveries
+- Different explanations each time
+
+### Solution
+
+Automatically detect when an agent explores a directory (5+ files read), summarize the discovered patterns, and cache them in a shadow directory structure. Future sessions inject cached docs via PrePrompt instead of re-exploring.
+
+**Key capabilities:**
+- **Exploration detection** - Recognize when agent is learning architecture
+- **Auto-summarization** - Extract patterns from file contents
+- **Shadow directory** - Store discoveries in `.aiki/arch/structure/`
+- **Staleness tracking** - Regenerate when underlying files change
+- **PrePrompt injection** - Load cached docs automatically
+
+### What We Build
+
+**1. Exploration Detection**
+
+Monitor PostToolUse events to detect exploration patterns:
+
+```rust
+// Detect exploration: 5+ files read in same directory within session
+if session.files_read_in("src/backend/") > 5 {
+    trigger_summarization("src/backend/");
+}
+```
+
+**2. Auto-Summarization**
+
+Generate architecture docs from discovered patterns:
+
+```yaml
+PostResponse:
+  - if: self.exploration_detected("src/backend/")
+    then:
+      - let: summary = self.summarize_directory("src/backend/")
+      - doc_management:
+          operation: create
+          path: .aiki/arch/structure/backend/index.md
+          content: |
+            # Backend Architecture
+            
+            $summary
+            
+            Generated: $timestamp
+            Source files: $files_analyzed
+```
+
+**3. Shadow Directory Structure**
+
+Cache follows source structure:
+
+```
+src/backend/
+├── controllers/
+├── models/
+└── services/
+
+.aiki/arch/structure/backend/
+├── index.md              # Overview
+├── controllers.md        # Controllers summary
+├── models.md            # Models summary
+└── services.md          # Services summary
+```
+
+**4. Staleness Detection**
+
+Track source file changes and mark cached docs stale:
+
+```yaml
+PostFileChange:
+  - if: $event.file_path starts_with "src/backend/"
+    then:
+      - doc_management:
+          operation: update
+          path: .aiki/arch/structure/backend/.stale
+          content: "true"
+```
+
+**5. PrePrompt Auto-Injection**
+
+Load cached architecture docs before each prompt:
+
+```yaml
+PrePrompt:
+  - let: working_dir = self.get_working_directory()
+  - let: arch_doc = ".aiki/arch/structure/" + $working_dir + "/index.md"
+  
+  - if: file_exists($arch_doc) AND NOT is_stale($arch_doc)
+    then:
+      - doc_management:
+          operation: query
+          path: $arch_doc
+          variable: arch_content
+      
+      - prompt:
+          prepend: |
+            # Cached Architecture
+            
+            $arch_content
+```
+
+### Commands Delivered
+
+```bash
+# Show cached architecture
+aiki arch show src/components
+# Output: Displays cached architecture doc for src/components
+
+# Force regeneration
+aiki arch refresh src/components
+# Triggers new exploration and summarization
+
+# Clear all cached architecture
+aiki arch clear
+# Removes all .aiki/arch/structure/ docs
+
+# List all cached directories
+aiki arch list
+# Shows which directories have cached docs
+
+# Check staleness
+aiki arch status
+# Shows which cached docs are stale
+```
+
+### Value Delivered
+
+**For developers:**
+- **10x faster context loading** - Read cached doc instead of exploring 20+ files
+- **Consistent mental models** - Same architecture explanation every session
+- **Token savings** - Avoid re-reading same files repeatedly
+- **Automatic updates** - Docs regenerate when code changes
+
+**For Aiki:**
+- **Killer feature** - Unique value proposition vs raw AI coding
+- **Dogfood opportunity** - Use for Aiki's own development
+- **Composable primitive** - Works with other patterns (skills, tasks)
+
+### Technical Components
+
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| Exploration detection | Medium | High | 2 days |
+| Directory summarization | High | High | 3 days |
+| Shadow directory management | Low | High | 1 day |
+| Staleness tracking | Medium | High | 2 days |
+| PrePrompt injection | Low | High | 1 day |
+| CLI commands | Low | Medium | 2 days |
+
+### Success Criteria
+
+- ✅ Exploration detection triggers after 5+ file reads
+- ✅ Summaries accurately capture directory patterns
+- ✅ Shadow directory structure mirrors source
+- ✅ Stale docs regenerate when source changes
+- ✅ PrePrompt injects cached docs automatically
+- ✅ CLI commands work for manual management
+- ✅ Token usage reduced by 50%+ for repeat exploration
+- ✅ Summaries are accurate and useful
+
+### Why This Enables Future Phases
+
+Architecture caching is foundational for:
+- **Skills Auto-Activation** - Skills reference cached architecture
+- **Multi-Stage Pipeline** - Builds use architecture knowledge
+- **Dev Docs** - Task docs link to architecture
+- **Team sharing** - Cached docs can be committed to Git
+
+### Timeline
+
+**Estimated: 1-2 weeks**
+- Exploration detection: 2 days
+- Auto-summarization: 3 days
+- Shadow directory + staleness: 3 days
+- PrePrompt injection: 1 day
+- CLI + testing: 2 days
+
+**Detailed Plan:** See `ops/current/milestone-2.md` (to be created)
+
+---
+
+## Phase 11: Skills Auto-Activation
+
+### Problem
+
+AI agents forget project-specific guidelines and best practices between prompts. Developers waste time correcting the same mistakes: wrong error handling patterns, forgotten testing requirements, inconsistent code style.
+
+**Current pain points:**
+- Agent forgets "always use Zod for validation"
+- Inconsistent error handling across sessions
+- Testing guidelines ignored
+- Code style drifts from conventions
+- Manual reminders in every prompt
+
+### Solution
+
+Implement pattern-based skill activation that automatically injects relevant guidelines via PrePrompt based on context (keywords, files, content patterns).
+
+**Key capabilities:**
+- **Pattern matching engine** - Detect when skills are relevant
+- **Skill configuration** - Define rules for activation
+- **PrePrompt injection** - Auto-inject skill docs
+- **Skill library** - Curated examples (backend, frontend, database)
+
+### What We Build
+
+**1. Pattern Matching Engine**
+
+Match prompts/files against skill activation rules:
+
+```rust
+pub struct SkillRule {
+    pub name: String,
+    pub triggers: Vec<Trigger>,
+    pub skill_path: PathBuf,
+}
+
+pub enum Trigger {
+    KeywordInPrompt(String),
+    FilePathPattern(String),
+    ContentContains { file: String, pattern: String },
+}
+```
+
+**2. Skill Configuration**
+
+Define skills in `.aiki/skills/skill-rules.yaml`:
+
+```yaml
+skills:
+  - name: backend-guidelines
+    skill_path: .aiki/skills/backend.md
+    triggers:
+      - keyword_in_prompt: "backend"
+      - keyword_in_prompt: "API"
+      - file_path_pattern: "src/backend/**/*.ts"
+  
+  - name: testing-requirements
+    skill_path: .aiki/skills/testing.md
+    triggers:
+      - keyword_in_prompt: "test"
+      - file_path_pattern: "**/*.test.ts"
+      - content_contains:
+          file: "package.json"
+          pattern: "vitest"
+  
+  - name: database-patterns
+    skill_path: .aiki/skills/database.md
+    triggers:
+      - keyword_in_prompt: "database"
+      - keyword_in_prompt: "query"
+      - file_path_pattern: "src/db/**/*.ts"
+```
+
+**3. PrePrompt Flow**
+
+Auto-inject matched skills:
+
+```yaml
+PrePrompt:
+  - let: matched_skills = self.match_skills($event.prompt, $event.recent_files)
+  
+  - for: skill in $matched_skills
+    then:
+      - doc_management:
+          operation: query
+          path: $skill.path
+          variable: skill_content
+      
+      - prompt:
+          prepend: |
+            # Skill: $skill.name
+            
+            $skill_content
+```
+
+**4. Example Skills**
+
+Ship with curated examples:
+
+**.aiki/skills/backend.md:**
+```markdown
+# Backend Guidelines
+
+## Error Handling
+- Always use custom error types
+- Include error codes for client errors
+- Log errors with context
+
+## Validation
+- Use Zod for all input validation
+- Validate at API boundary
+- Return 400 with clear messages
+
+## Testing
+- Unit tests for business logic
+- Integration tests for API endpoints
+- Mock external dependencies
+```
+
+### Commands Delivered
+
+```bash
+# List available skills
+aiki skills list
+# Shows all configured skills
+
+# Show skill details
+aiki skills show backend-guidelines
+# Displays skill content and triggers
+
+# Create new skill
+aiki skills create my-skill
+# Generates template skill file
+
+# Test skill matching
+aiki skills test "prompt text"
+# Shows which skills would activate
+```
+
+### Value Delivered
+
+**For developers:**
+- **Consistent quality** - Guidelines never forgotten
+- **Reduced corrections** - Fewer mistakes to fix
+- **Context-aware help** - Right guidance at right time
+- **Onboarding** - New team members learn conventions
+
+**For Aiki:**
+- **Differentiation** - Not just code completion
+- **Customizable** - Teams define their own skills
+- **Composable** - Works with architecture caching
+
+### Technical Components
+
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| Pattern matching engine | Medium | High | 3 days |
+| Skill configuration parser | Low | High | 2 days |
+| PrePrompt integration | Low | High | 1 day |
+| Example skills | Low | High | 2 days |
+| CLI commands | Low | Medium | 2 days |
+
+### Success Criteria
+
+- ✅ Skills activate based on keyword triggers (90%+ accuracy)
+- ✅ File pattern matching works correctly
+- ✅ Content-based triggers detect patterns
+- ✅ PrePrompt injects matched skills
+- ✅ Example skills are useful and accurate
+- ✅ CLI commands work for skill management
+- ✅ Skill matching is fast (<10ms)
+
+### Timeline
+
+**Estimated: 2-3 weeks**
+- Pattern matching: 3 days
+- Configuration format: 2 days
+- PrePrompt integration: 1 day
+- Example skills: 2 days
+- Testing + CLI: 3 days
+
+**Detailed Plan:** See `ops/current/milestone-3.md` (to be created)
+
+---
+
+## Phase 12: Process Management
+
+### Problem
+
+Modern development involves multiple long-running processes (backend servers, databases, queues). Developers manually start/stop these services and struggle to correlate logs with code changes.
+
+**Current pain points:**
+- Manual process management (`npm run dev`, `docker-compose up`)
+- Lost terminal output when restarting
+- Hard to correlate errors with recent changes
+- No health monitoring
+- Process failures go unnoticed
+
+### Solution
+
+Implement flow-based process management with automatic startup, log aggregation, health monitoring, and correlation with code changes.
+
+**Key capabilities:**
+- **Process action type** - Start/stop/status from flows
+- **Process configuration** - Define services in `.aiki/processes.yaml`
+- **Log aggregation** - Collect and query process logs
+- **Health monitoring** - Detect failures and restart
+- **Change correlation** - Link errors to recent edits
+
+### What We Build
+
+**1. Process Action Type**
+
+Manage processes from flows:
+
+```yaml
+PostFileChange:
+  # Restart backend when code changes
+  - if: $event.file_path starts_with "src/backend/"
+    then:
+      - process.restart: backend
+      - process.wait_healthy: backend
+  
+SessionStart:
+  # Start all services
+  - process.start_all:
+      parallel: true
+  
+SessionEnd:
+  # Stop all services
+  - process.stop_all
+```
+
+**2. Process Configuration**
+
+Define services in `.aiki/processes.yaml`:
+
+```yaml
+processes:
+  backend:
+    command: npm run dev
+    cwd: ./backend
+    env:
+      NODE_ENV: development
+    health_check:
+      type: http
+      url: http://localhost:3000/health
+      interval: 5s
+    restart_on_failure: true
+  
+  database:
+    command: docker-compose up postgres
+    health_check:
+      type: tcp
+      port: 5432
+      interval: 2s
+  
+  queue:
+    command: npm run queue
+    depends_on:
+      - database
+```
+
+**3. Log Aggregation**
+
+Collect logs with metadata:
+
+```rust
+pub struct ProcessLog {
+    pub process: String,
+    pub timestamp: DateTime<Utc>,
+    pub level: LogLevel,
+    pub message: String,
+    pub change_id: Option<String>,  // Correlate with JJ change
+}
+```
+
+**4. Health Monitoring**
+
+Detect failures and restart:
+
+```yaml
+ProcessHealthCheck:
+  - if: $process.health == "unhealthy"
+    then:
+      - log: "Process $process.name is unhealthy, restarting..."
+      - process.restart: $process.name
+      - task.create:
+          objective: "Investigate $process.name crash"
+          evidence:
+            - source: process_logs
+              logs: $process.recent_errors
+```
+
+### Commands Delivered
+
+```bash
+# Start process
+aiki process start backend
+# Starts backend service
+
+# Stop process
+aiki process stop backend
+# Stops backend service
+
+# Show logs
+aiki process logs backend --errors
+# Shows error logs for backend
+
+# Show all process status
+aiki process status
+# Lists all processes with health status
+
+# Correlate errors with changes
+aiki process errors --since-change <change-id>
+# Shows errors since specific JJ change
+```
+
+### Value Delivered
+
+**For developers:**
+- **Observable systems** - All logs in one place
+- **Automatic restarts** - Services recover from crashes
+- **Change correlation** - Know which edit broke what
+- **Task integration** - Crashes create investigation tasks
+
+**For Aiki:**
+- **Full-stack support** - Not just code editing
+- **Differentiation** - Unique process management
+- **Composable** - Works with tasks, architecture
+
+### Technical Components
+
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| Process action type | Medium | High | 3 days |
+| Process manager | High | High | 4 days |
+| Log aggregation | Medium | High | 3 days |
+| Health monitoring | Medium | High | 2 days |
+| CLI commands | Low | Medium | 2 days |
+
+### Success Criteria
+
+- ✅ Can start/stop processes from flows
+- ✅ Process configuration works correctly
+- ✅ Logs aggregated with timestamps
+- ✅ Health checks detect failures
+- ✅ Automatic restarts work
+- ✅ Change correlation is accurate
+- ✅ CLI commands work for management
+
+### Timeline
+
+**Estimated: 2 weeks**
+- Process action + manager: 4 days
+- Log aggregation: 3 days
+- Health monitoring: 2 days
+- Change correlation: 2 days
+- Testing + CLI: 3 days
+
+**Detailed Plan:** See `ops/current/milestone-5.md` (to be created)
+
+---
+
+## Phase 13: Autonomous Review Flow
 
 ### Problem
 Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
@@ -1549,7 +2068,7 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 10: Zed Extension (One-Click Setup & Status UI)
+## Phase 14: Zed Extension (One-Click Setup & Status UI)
 
 ### Problem
 While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
@@ -1661,7 +2180,7 @@ Aiki ⚠  - Error or health check failed
 
 ---
 
-## Phase 11: Comprehensive Event System (All Git & Agent Hooks)
+## Phase 15: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
 Phase 5 introduced the flow system with 4 core events (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
@@ -1989,7 +2508,7 @@ pub struct Flow {
 
 ---
 
-## Phase 12: User-Defined Flows
+## Phase 16: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -2050,7 +2569,7 @@ PreCommit:
 
 ---
 
-## Phase 13: External Flow Ecosystem
+## Phase 17: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -2342,7 +2861,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 14: Multi-Agent Provenance (Fallback Detection)
+## Phase 18: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -2422,7 +2941,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 15: Local Multi-Agent Coordination
+## Phase 19: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -2454,7 +2973,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 16: PR Review for Non-Aiki Agents
+## Phase 20: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -2477,7 +2996,7 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 
 ---
 
-## Phase 17: Shared JJ Brain & Team Coordination
+## Phase 21: Shared JJ Brain & Team Coordination
 
 ### Problem
 Even with local coordination (Phase 6) and PR review (Phase 7), developers with Aiki work independently. No visibility into what other developers' agents are working on until push/merge. Conflicts discovered late, resulting in wasted work.
@@ -2507,7 +3026,7 @@ Distributed JJ repository mirroring for team-wide pre-merge conflict detection a
 
 ---
 
-## Phase 18: Windsurf Support
+## Phase 22: Windsurf Support
 
 ### Problem
 Windsurf is another AI-powered code editor gaining traction, but it lacks provenance tracking integration with Aiki. Teams using Windsurf alongside Claude Code and Cursor need unified attribution across all their AI tools.
@@ -2574,7 +3093,7 @@ xyz98765 (Windsurf     session-789  High  )    3|     return validate(user)
 
 ---
 
-## Phase 19: Enterprise Compliance
+## Phase 23: Enterprise Compliance
 
 ### Problem
 Enterprise organizations have regulatory requirements for code changes (SOX, PCI-DSS, ISO 27001, etc.). Current AI tools lack:
@@ -2608,7 +3127,7 @@ Enterprise governance layer with path-based policies, mandatory review gates, an
 
 ---
 
-## Phase 20: Native Agent Integration
+## Phase 24: Native Agent Integration
 
 ### Problem
 AI agents want deeper collaboration than passive observation. Current approach (Phases 1-10) observes agents post-facto. Agents can't:
