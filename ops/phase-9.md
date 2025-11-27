@@ -1,353 +1,511 @@
-# Plan: Phase 9 - Zed Extension (One-Click Setup & Status UI)
+# Plan: Phase 9 - Doc Management Action Type
 
 ## Problem
-While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
-- Users must run `aiki init` and `aiki hooks install` manually
-- No visual indication that Aiki is active and working
-- Review results only visible via CLI commands
-- Configuration requires editing JSON files
-- No discoverability for Aiki features within Zed
 
-**Current user flow (CLI-only):**
-```bash
-$ aiki init
-$ aiki hooks install
-# Edit ~/.config/zed/settings.json manually
-# Restart Zed
-# No visual feedback that it's working
-```
+Flows need a way to create, update, and query structured documentation within the `.aiki/` directory. Phase 8's "Aiki Way" patterns (architecture caching, task documentation, session notes) all require persistent document storage that flows can interact with programmatically.
 
-### Solution
-Build a thin Zed extension that provides one-click setup and visual status UI. The extension sits ABOVE the ACP proxy (Phase 6) and delegates all logic to the `aiki` CLI tool.
+**Current situation (without doc management):**
+- No way to cache architecture discoveries in flows
+- Task documentation must be manual
+- Session notes can't be auto-generated  
+- Architecture patterns can't be stored and queried
+- Each feature would need its own custom file I/O implementation
 
-**Key Principle:** The extension is a UI/UX layer only. All real work happens in the `aiki` CLI.
+**This blocks Phase 8 milestones:**
+- Milestone 2 (Auto Architecture Docs) needs to store discovered patterns
+- Milestone 5 (Dev Docs System) needs to create/update task docs
+- Session notes and other patterns need persistent storage
 
-## Architecture
+## Solution
 
-```
-┌─────────────────────────────────────────────────┐
-│  Zed Extension (UI Layer)                       │
-│  - Command palette integration                  │
-│  - Status bar indicator                         │
-│  - Settings UI                                  │
-│  - Notifications                                │
-└──────────────────┬──────────────────────────────┘
-                   │ Delegates to CLI
-                   ↓
-┌─────────────────────────────────────────────────┐
-│  aiki CLI (All Logic)                           │
-│  - aiki init                                    │
-│  - aiki hooks install                           │
-│  - aiki doctor                                  │
-│  - aiki acp (proxy)                             │
-└─────────────────────────────────────────────────┘
-```
+Implement the `doc_management` action type that allows flows to create, update, append to, and query markdown documents. This provides a secure, consistent interface for document operations across all flows.
+
+**Key capabilities:**
+- **Create** - Create new documents (error if exists)
+- **Update** - Overwrite entire documents
+- **Append** - Add content to end of documents  
+- **Query** - Read document content into variables
+
+**Security built-in:**
+- All operations restricted to `.aiki/` directory
+- Path traversal detection (blocks `..` attempts)
+- Atomic writes (temp file + rename)
+- Clear error messages
 
 ## What We Build
 
-### Zed Extension Features
-1. **One-click installation** - Run `aiki init` from command palette
-2. **Status bar indicator** - Shows "Aiki ✓" or "Aiki ⚠" with current status
-3. **Command palette commands** - Access Aiki features without CLI
-4. **Settings UI** - Configure Aiki from Zed's settings panel
-5. **Notifications** - Alert users to review failures or issues
-6. **Health check** - Display `aiki doctor` results in UI
+### 1. Doc Management Action Type
 
-### Extension Implementation
+Four operations for managing docs in flows:
+
+**Create** - Create new document (error if exists):
+```yaml
+doc_management:
+  operation: create
+  path: .aiki/arch/structure/backend/index.md
+  content: |
+    # Backend Architecture
+    Discovered patterns...
+```
+
+**Update** - Overwrite entire document:
+```yaml
+doc_management:
+  operation: update
+  path: .aiki/tasks/current/status.md
+  content: "Status: In Progress"
+```
+
+**Append** - Add content to end of document:
+```yaml
+doc_management:
+  operation: append
+  path: .aiki/sessions/notes.md
+  content: |
+    - Completed auth implementation
+```
+
+**Query** - Read document content into variable:
+```yaml
+- doc_management:
+    operation: query
+    path: .aiki/arch/structure/backend/index.md
+    variable: backend_arch
+
+- if: $backend_arch contains "OAuth2"
+  then:
+    prompt: "Remember we use OAuth2 for auth"
+```
+
+### 2. Automatic Directory Creation
+
+Parent directories created automatically:
+
+```yaml
+doc_management:
+  operation: create
+  path: .aiki/tasks/deep/nested/path/doc.md  # Creates all parent dirs
+  content: "Content"
+```
+
+### 3. Path Security
+
+**Valid paths** (within `.aiki/`):
+```yaml
+doc_management:
+  operation: create
+  path: .aiki/tasks/plan.md
+```
+
+**Invalid paths** (blocked):
+```yaml
+# Outside .aiki/
+doc_management:
+  operation: create
+  path: /etc/passwd  # ERROR: Path must be within .aiki/
+
+# Path traversal attempt
+doc_management:
+  operation: create
+  path: .aiki/../../../etc/passwd  # ERROR: Path traversal detected
+```
+
+### 4. Atomic Writes
+
+All write operations are atomic to prevent corruption:
 
 ```rust
-// extension/src/lib.rs
-use zed_extension_api as zed;
+// Write to temp file first
+let temp_path = path.with_extension("tmp");
+fs::write(&temp_path, content)?;
 
-struct AikiExtension {
-    status: AikiStatus,
-}
+// Then rename (atomic on most filesystems)
+fs::rename(temp_path, path)?;
+```
 
-enum AikiStatus {
-    NotInstalled,
-    Installed,
-    Running,
-    Error(String),
-}
+## Example Use Cases
 
-impl zed::Extension for AikiExtension {
-    fn new() -> Self {
-        AikiExtension {
-            status: AikiStatus::NotInstalled,
-        }
-    }
-    
-    fn command_palette_entries(&mut self) -> Vec<CommandEntry> {
-        vec![
-            CommandEntry {
-                name: "Aiki: Initialize Repository",
-                action: || self.run_init(),
-            },
-            CommandEntry {
-                name: "Aiki: Show Status",
-                action: || self.show_status(),
-            },
-            CommandEntry {
-                name: "Aiki: Run Health Check",
-                action: || self.run_doctor(),
-            },
-            CommandEntry {
-                name: "Aiki: Configure Policies",
-                action: || self.open_config(),
-            },
-        ]
-    }
-    
-    fn status_bar_items(&mut self) -> Vec<StatusBarItem> {
-        vec![StatusBarItem {
-            text: format!("Aiki {}", self.status_icon()),
-            tooltip: self.status_tooltip(),
-            on_click: || self.show_status(),
-        }]
-    }
-    
-    fn language_server_command(
-        &mut self,
-        language_server_id: &str,
-    ) -> Result<Command> {
-        // Wrap agent with aiki acp proxy
-        if self.is_ai_agent(language_server_id) {
-            return Ok(Command {
-                command: "aiki",
-                args: vec!["acp", self.agent_type(language_server_id)],
-            });
-        }
-        Ok(Command::default())
-    }
-}
+### Use Case 1: Architecture Caching (Phase 8, Milestone 2)
 
-impl AikiExtension {
-    fn run_init(&mut self) {
-        // Execute: aiki init
-        let output = std::process::Command::new("aiki")
-            .arg("init")
-            .output()
-            .expect("Failed to run aiki init");
+```yaml
+PostResponse:
+  # Detect architecture exploration
+  - if: self.files_read_in_directory("src/") > 5
+    then:
+      - let: pattern_description = self.extract_pattern()
+      - doc_management:
+          operation: append
+          path: .aiki/arch/structure/backend/index.md
+          content: |
+            
+            ## Pattern Discovered - $timestamp
+            $pattern_description
+```
+
+### Use Case 2: Task Documentation (Phase 8, Milestone 5)
+
+```yaml
+PrePrompt:
+  # Create task plan when user starts new task
+  - doc_management:
+      operation: create
+      path: .aiki/tasks/$task_id/plan.md
+      content: |
+        # Task: $task_name
         
-        if output.status.success() {
-            self.status = AikiStatus::Installed;
-            self.show_notification("Aiki initialized successfully");
-        } else {
-            self.status = AikiStatus::Error(
-                String::from_utf8_lossy(&output.stderr).to_string()
-            );
-        }
-    }
-    
-    fn run_doctor(&mut self) {
-        // Execute: aiki doctor
-        let output = std::process::Command::new("aiki")
-            .arg("doctor")
-            .output()
-            .expect("Failed to run aiki doctor");
+        ## Goal
+        $task_description
         
-        let result = String::from_utf8_lossy(&output.stdout);
-        self.show_panel("Aiki Health Check", &result);
-    }
-    
-    fn status_icon(&self) -> &str {
-        match self.status {
-            AikiStatus::NotInstalled => "○",
-            AikiStatus::Installed => "◐",
-            AikiStatus::Running => "✓",
-            AikiStatus::Error(_) => "⚠",
-        }
-    }
-}
+        ## Created
+        $timestamp
+
+PostResponse:
+  # Update progress as work proceeds
+  - doc_management:
+      operation: append
+      path: .aiki/tasks/$task_id/plan.md
+      content: |
+        
+        ## Progress Update - $timestamp
+        - $completed_work
 ```
 
-## User Experience
+### Use Case 3: Session Notes
 
-### Installation Flow
-```
-# User in Zed:
-Cmd+Shift+P → "Install Aiki Extension"
-  ↓
-Extension downloaded from Zed marketplace
-  ↓
-Status bar shows: "Aiki ○" (not initialized)
-  ↓
-Click status bar → "Initialize Aiki in this repository?"
-  ↓
-Extension runs: aiki init && aiki hooks install
-  ↓
-Status bar updates: "Aiki ✓"
-  ↓
-Notification: "Aiki is ready! All AI changes will be tracked."
+```yaml
+PostResponse:
+  # Record what was accomplished
+  - doc_management:
+      operation: append
+      path: .aiki/sessions/$session_id/notes.md
+      content: |
+        - $timestamp: $event.response summary()
 ```
 
-### Status Indicators
-```
-Aiki ○  - Not initialized (click to set up)
-Aiki ◐  - Installed but not running
-Aiki ✓  - Running, all checks passing
-Aiki ⚠  - Error or health check failed
+### Use Case 4: Checklist Management
+
+```yaml
+PrePrompt:
+  # Read checklist
+  - doc_management:
+      operation: query
+      path: .aiki/tasks/current/checklist.md
+      variable: checklist
+  
+  # Check if all items completed
+  - if: $checklist not_contains "[ ]"
+    then:
+      - shell: echo "All checklist items complete!"
 ```
 
-### Command Palette
-```
-Cmd+Shift+P:
-  - Aiki: Initialize Repository
-  - Aiki: Show Status
-  - Aiki: Run Health Check
-  - Aiki: Configure Policies
-  - Aiki: Show Review Results
-  - Aiki: Open Documentation
-```
+## Commands Delivered
 
-### Status Panel
-```
-┌─────────────────────────────────────┐
-│ Aiki Status                     ✓   │
-├─────────────────────────────────────┤
-│ Repository: Initialized             │
-│ ACP Proxy: Running                  │
-│ Last Activity: 2m ago               │
-│                                     │
-│ Recent Reviews:                     │
-│  ✓ auth.rs - 0 issues               │
-│  ⚠ utils.rs - 2 issues caught       │
-│                                     │
-│ [Run Health Check] [View Settings]  │
-└─────────────────────────────────────┘
+**No new CLI commands** - This is a flow action type only. Flows use it programmatically.
+
+Example usage in flows:
+```yaml
+PostResponse:
+  - doc_management:
+      operation: append
+      path: .aiki/arch/patterns/discovered.md
+      content: |
+        ## Pattern: $pattern_name
+        $pattern_description
 ```
 
 ## Value Delivered
 
-### For End Users
-- **Zero-friction setup** - Install extension, click "Initialize", done
-- **Visual feedback** - Always know if Aiki is working
-- **Discoverability** - Find Aiki features via command palette
-- **Better UX** - No need to drop to terminal for basic tasks
-- **Confidence** - Status indicator provides peace of mind
+### For Phase 8 Milestones
+- ✅ **Enables Milestone 2** - Architecture docs cached via doc_management
+- ✅ **Enables Milestone 5** - Task docs created and updated automatically  
+- ✅ **Enables session notes** - Track work across sessions in `.aiki/sessions/`
 
-### For Aiki Adoption
-- **Lower barrier to entry** - Non-technical users can set up Aiki
-- **Professional appearance** - Feels like a native Zed feature
-- **Increased visibility** - Extension marketplace exposure
-- **Better onboarding** - Guided setup flow
-- **Viral growth** - Easy to recommend ("Just install the extension")
+### For Flow Authors
+- **Persistent state** - Store data across flow executions
+- **Queryable docs** - Load and check existing documentation
+- **Safe operations** - Security built-in, no path traversal risks
+- **Consistent API** - Same interface for all document operations
+
+### For Aiki
+- **Single implementation** - All document features use the same code path
+- **Secure by default** - Path validation prevents common vulnerabilities
+- **Composable** - Works with other flow actions (if/then, let, etc.)
 
 ## Technical Components
 
-| Component | Complexity | Priority |
-|-----------|------------|----------|
-| Zed extension scaffold | Low | High |
-| Command palette integration | Low | High |
-| Status bar indicator | Low | High |
-| CLI delegation (init, doctor) | Low | High |
-| Settings UI schema | Medium | Medium |
-| Notification system | Low | Medium |
-| Status panel | Medium | Low |
-| Extension marketplace submission | Low | Medium |
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| Doc management action parser | Low | High | 1 day |
+| Path validation & security | Medium | High | 1 day |
+| Create/update/append operations | Low | High | 1 day |
+| Query operation with variables | Low | High | 1 day |
+| Atomic write implementation | Low | High | 1 day |
+| Unit tests | Medium | High | 1 day |
+| Integration tests | Medium | High | 1 day |
+| Documentation & examples | Low | Medium | 1 day |
 
-## Implementation Notes
+## Implementation Tasks
 
-### Extension Structure
-```
-extension/
-├── extension.toml           # Extension metadata
-├── Cargo.toml              # Rust dependencies
-└── src/
-    ├── lib.rs              # Main extension code
-    └── commands.rs         # Command implementations
-```
+### Core Action (3 days)
 
-### Extension Manifest (extension.toml)
-```toml
-id = "aiki"
-name = "Aiki"
-description = "AI code provenance tracking and autonomous review"
-version = "0.1.0"
-schema_version = 1
-authors = ["Aiki Team"]
-repository = "https://github.com/your-org/aiki"
-```
+- [ ] Create `cli/src/flows/actions/doc_management.rs`
+  - [ ] `DocManagementAction` struct with operation enum
+  - [ ] Parse `doc_management` action from YAML
+  - [ ] Implement `create` operation
+  - [ ] Implement `update` operation
+  - [ ] Implement `append` operation
+  - [ ] Implement `query` operation
+  - [ ] Path validation logic
+  - [ ] Atomic write implementation
 
-### Delegation Pattern
-The extension never implements business logic. It always delegates to `aiki` CLI:
+### Path Security (1 day)
+
+- [ ] Validate paths are within `.aiki/`
+  - [ ] Check path starts with `.aiki/`
+  - [ ] Detect path traversal attempts (`..`)
+  - [ ] Resolve symlinks and check final path
+  - [ ] Error on invalid paths with clear messages
+
+### Engine Integration (1 day)
+
+- [ ] Register `doc_management` action in flow parser
+- [ ] Add action executor to engine
+- [ ] Variable assignment for `query` operation
+- [ ] Error handling and reporting
+
+### Testing (2 days)
+
+**Unit tests:**
+- [ ] Create operation (new file, error if exists)
+- [ ] Update operation (overwrite file)
+- [ ] Append operation (add to end)
+- [ ] Query operation (read into variable)
+- [ ] Path validation (valid paths accepted)
+- [ ] Path traversal detection (invalid paths blocked)
+- [ ] Atomic writes (temp file + rename)
+
+**Integration tests:**
+- [ ] Multiple operations in sequence
+- [ ] Variable assignment from query
+- [ ] Real doc management workflows
+
+**E2E tests:**
+- [ ] Architecture caching workflow
+- [ ] Task documentation workflow
+- [ ] Session notes workflow
+
+### Documentation (1 day)
+
+- [ ] Tutorial: "Managing Documentation with Flows"
+- [ ] Cookbook: Common patterns (task docs, architecture discovery)
+- [ ] Reference: Doc management syntax
+- [ ] Examples: Real-world doc management flows
+
+## Technical Design
+
+### Action Structure
 
 ```rust
-// ✅ GOOD: Delegate to CLI
-fn run_init(&mut self) {
-    Command::new("aiki").arg("init").spawn()?;
+pub struct DocManagementAction {
+    pub operation: DocOperation,
+    pub path: PathBuf,
+    pub content: Option<String>,
+    pub variable: Option<String>,  // For query operation
 }
 
-// ❌ BAD: Duplicate logic in extension
-fn run_init(&mut self) {
-    // Don't duplicate aiki init logic here!
+pub enum DocOperation {
+    Create,
+    Update,
+    Append,
+    Query,
 }
 ```
 
-### Error Handling
+### Path Validation
+
 ```rust
-fn ensure_aiki_installed(&self) -> Result<()> {
-    if !Command::new("aiki").arg("--version").status()?.success() {
-        return Err(anyhow!(
-            "Aiki CLI not found. Install via: cargo install aiki"
-        ));
+pub fn validate_path(path: &Path) -> Result<PathBuf> {
+    // Ensure path starts with .aiki/
+    if !path.starts_with(".aiki/") {
+        return Err(AikiError::InvalidDocPath {
+            path: path.to_path_buf(),
+            reason: "Path must be within .aiki/ directory".to_string(),
+        });
     }
+    
+    // Resolve to absolute path
+    let absolute = workspace_root()?.join(path);
+    let canonical = absolute.canonicalize()?;
+    
+    // Ensure resolved path is still within .aiki/
+    let aiki_dir = workspace_root()?.join(".aiki").canonicalize()?;
+    if !canonical.starts_with(&aiki_dir) {
+        return Err(AikiError::PathTraversalDetected {
+            path: path.to_path_buf(),
+        });
+    }
+    
+    Ok(canonical)
+}
+```
+
+### Atomic Write
+
+```rust
+pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    // Create parent directories
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    
+    // Write to temp file
+    let temp_path = path.with_extension("tmp");
+    fs::write(&temp_path, content)?;
+    
+    // Atomic rename
+    fs::rename(&temp_path, path)?;
+    
     Ok(())
 }
 ```
 
 ## Success Criteria
 
-- ✅ Extension installable from Zed marketplace
-- ✅ One-click "Initialize Repository" from command palette
-- ✅ Status bar shows Aiki status (○/◐/✓/⚠)
-- ✅ `aiki doctor` results displayed in panel
-- ✅ Settings UI for common configurations
-- ✅ Notifications for errors and important events
-- ✅ All logic delegated to `aiki` CLI (no duplication)
-- ✅ Works on macOS, Linux, Windows
-- ✅ Documentation for extension users
+- ✅ Can create new documents from flows
+- ✅ Can update existing documents
+- ✅ Can append to documents
+- ✅ Can query document content into variables
+- ✅ Parent directories created automatically
+- ✅ Path validation prevents security issues
+- ✅ Path traversal attempts blocked
+- ✅ Atomic writes prevent corruption
+- ✅ Clear error messages for invalid operations
+- ✅ All operations work in real flows
+- ✅ Integration with Phase 8 milestones validated
+
+## Error Handling
+
+### Document Already Exists
+
+```
+Error: Document already exists
+
+Path: .aiki/tasks/my-feature/plan.md
+
+Use operation 'update' to overwrite or 'append' to add content.
+```
+
+### Document Not Found (Query)
+
+```
+Error: Document not found
+
+Path: .aiki/tasks/missing/plan.md
+
+Create the document first with operation 'create'.
+```
+
+### Invalid Path
+
+```
+Error: Invalid document path
+
+Path: /etc/passwd
+
+Doc management paths must be within .aiki/ directory for security.
+```
+
+### Path Traversal Detected
+
+```
+Error: Path traversal detected
+
+Path: .aiki/../../../etc/passwd
+Resolved to: /etc/passwd
+
+This path escapes the .aiki/ directory and is not allowed.
+```
 
 ## Timeline
 
-- Extension scaffold + command palette: 1-2 days
-- Status bar indicator: 1 day
-- CLI delegation (init, doctor, hooks): 1 day
-- Settings UI: 1-2 days
-- Notifications: 1 day
-- Testing + marketplace submission: 2 days
+**Estimated: 1 week**
 
-**Total: ~1.5 weeks**
+| Day | Focus |
+|-----|-------|
+| 1-2 | Core operations, path validation |
+| 3 | Engine integration, variable assignment |
+| 4-5 | Testing (unit, integration, E2E) |
+| 6 | Documentation and examples |
+| 7 | Code review and polish |
 
-## Why This Matters
+## Why This Enables Phase 8
 
-**Before Phase 9 (CLI-only):**
+Phase 8's "Aiki Way" patterns fundamentally depend on doc_management:
+
+1. **Architecture Caching (Milestone 2)** - Needs to store discovered patterns in `.aiki/arch/`
+2. **Task Documentation (Milestone 5)** - Needs to create/update task docs in `.aiki/tasks/`
+3. **Session Notes** - Needs to append session progress to `.aiki/sessions/`
+4. **Skills** - May need to query existing documentation for context
+
+Without doc_management, each of these features would need custom file I/O implementations, leading to:
+- Inconsistent security checks
+- Duplicated atomic write logic
+- Different error handling patterns
+- More code to maintain
+
+By implementing doc_management first, we provide a secure, tested foundation for all document operations in flows.
+
+## Future Enhancements
+
+### 1. Template Support
+
+Use templates for common doc types:
+
+```yaml
+doc_management:
+  operation: create_from_template
+  template: aiki/task-plan
+  path: .aiki/tasks/$task_id/plan.md
+  variables:
+    task_name: "User Authentication"
+    priority: "High"
 ```
-User: "How do I set up Aiki?"
-Docs: "Run these 5 terminal commands..."
-User: *gets confused, gives up*
+
+### 2. Doc Queries with Selectors
+
+Query document structure:
+
+```yaml
+- doc_management:
+    operation: query
+    path: .aiki/tasks/current/plan.md
+    selector: "## Progress"  # Extract specific section
+    variable: progress
 ```
 
-**After Phase 9 (Extension):**
-```
-User: "How do I set up Aiki?"
-Docs: "Install the Zed extension, click Initialize"
-User: *done in 30 seconds*
-```
+### 3. Batch Operations
 
-**Impact:**
-- 10x easier onboarding
-- Professional, polished UX
-- Marketplace visibility
-- Viral growth potential
-- Makes Aiki feel "native" to Zed
+Operate on multiple docs:
+
+```yaml
+doc_management:
+  operation: update_all
+  pattern: ".aiki/tasks/*/status.md"
+  content: "Status: In Progress"
+```
 
 ## Phase Dependencies
 
 **Depends on:**
-- Phase 6 (ACP Support) - Extension wraps the `aiki acp` proxy
-- Phase 3 (CLI Streamlining) - Extension delegates to `aiki doctor`
+- Phase 5 (Internal Flow Engine) - Provides flow action infrastructure
 
 **Enables:**
-- Future phases - Extension shows review results in UI
-- Future: Extensions for other IDEs (Neovim, VSCode, JetBrains)
+- Phase 8, Milestone 2 (Auto Architecture Docs) - Uses doc_management for caching
+- Phase 8, Milestone 5 (Dev Docs System) - Uses doc_management for task docs
+- Future phases that need persistent document storage
+
+## References
+
+- `ops/ROADMAP.md` - Overall phase plan
+- `ops/current/milestone-1.4-doc-management.md` - Original milestone document (deprecated, now part of Phase 9)
+- `ops/the-aiki-way.md` - Phase 8 patterns that use doc_management

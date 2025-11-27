@@ -7,13 +7,12 @@
 
 ## Overview
 
-Milestone 1 extends Aiki's flow system (built in Phase 5) with new event types and capabilities that enable the four key patterns in aiki/default:
+Milestone 1 extends Aiki's flow system (built in Phase 5) with new event types and capabilities that enable the three key patterns in aiki/default:
 1. **PrePrompt event** - Inject context before agent sees prompt
 2. **PostResponse event & Task System** - Validate after agent responds with structured task management
 3. **Flow composition** - Reuse flows via `includes:` directive
-4. **Doc management** - Create/update/query structured docs
 
-**Why this matters:** These primitives unlock Milestone 2-6 features. Without them, we can't inject skills, cache architecture docs, run builds automatically, or manage tasks.
+**Why this matters:** These primitives unlock Milestone 2-5 features. Without them, we can't inject skills, cache architecture docs, run builds automatically, or manage tasks.
 
 ---
 
@@ -66,7 +65,7 @@ PrepareCommitMessage:
 
 ## What Gets Built
 
-This milestone delivers five core capabilities. Each has its own detailed documentation:
+This milestone delivers four core capabilities. Each has its own detailed documentation:
 
 ### 1.0. MessageBuilder Shared Syntax
 📄 **Detailed doc:** [milestone-1.0-message-builder.md](./milestone-1.0-message-builder.md)
@@ -93,7 +92,6 @@ This milestone delivers five core capabilities. Each has its own detailed docume
 **Key capabilities:**
 - Inject architecture docs, skills, and task context
 - Use `prompt:` action with MessageBuilder (short/explicit forms)
-- File path detection (reads file contents automatically)
 - Prepend and append to user's original prompt
 
 **Example:**
@@ -173,32 +171,6 @@ PostResponse:
 
 ---
 
-### 1.4. Doc Management Action Type
-📄 **Detailed doc:** [milestone-1.4-doc-management.md](./milestone-1.4-doc-management.md)
-
-**Summary:** Create, update, and query structured documentation.
-
-**Key capabilities:**
-- Create/update/append to markdown docs
-- Operations: `create`, `update`, `append`, `query`
-- Automatic directory creation
-- Path validation for security
-
-**Example:**
-```yaml
-PostResponse:
-  - doc_management:
-      operation: create
-      path: .aiki/tasks/my-feature/plan.md
-      content: |
-        # Feature Plan
-        Implement user authentication
-```
-
-**Timeline:** Week 3
-
----
-
 ## Technical Architecture
 
 ### Event Flow Diagram
@@ -244,7 +216,6 @@ cli/src/
 │   ├── actions/
 │   │   ├── message_builder.rs  # Shared MessageBuilder parser
 │   │   ├── task.rs             # Task actions (create, start, close)
-│   │   ├── doc_management.rs   # Doc management action
 │   │   ├── flow.rs             # Flow composition action
 │   │   └── mod.rs
 │   └── functions/              # Built-in helper functions
@@ -263,7 +234,7 @@ cli/src/
 - Event struct serialization/deserialization
 - Task event serialization/deserialization
 - Task state reconstruction from events
-- Flow parser (includes, flow action, doc_management)
+- Flow parser (includes, flow action)
 - MessageBuilder parser (short/explicit forms)
 - Helper function logic
 
@@ -272,7 +243,6 @@ cli/src/
 - Flow composition (includes + flow action)
 - Task creation and querying
 - PostToolUse auto-closing tasks
-- Doc management operations
 
 **Manual testing:**
 - Real Claude Code session with PrePrompt injection
@@ -323,7 +293,7 @@ cli/src/
 
 ---
 
-### Week 3: Flow Composition & Doc Management
+### Week 3: Flow Composition
 
 **Day 1-2: Flow Composition (Milestone 1.3)**
 - Parse `includes:` directive
@@ -333,17 +303,10 @@ cli/src/
 - Detect circular dependencies
 - Unit tests
 
-**Day 3-4: Doc Management (Milestone 1.4)**
-- Implement `doc_management` action
-- Operations: create, update, append, query
-- Path validation and security
-- Atomic writes
-- Unit tests
-
-**Day 5: Integration Testing**
+**Day 3-5: Integration Testing**
 - Test flow composition with multiple includes
-- Test doc management operations
 - Manual testing with real workflows
+- Integration tests across all milestone 1 features
 
 ---
 
@@ -356,7 +319,6 @@ cli/src/
   - PostResponse creates tasks from errors
   - Task system queries and auto-closes
   - Flow composition with includes
-  - Doc management operations
 - Performance testing (event dispatch overhead, task queries)
 
 **Day 2-3: Documentation**
@@ -385,7 +347,6 @@ cli/src/
 - ✅ CLI commands work: `aiki task ready`, `aiki task create`, `aiki task start`, `aiki task close`
 - ✅ Attempt-based stuck detection works (3+ failed attempts)
 - ✅ Flow composition works (includes + flow action)
-- ✅ Doc management operations work (create, update, append, query)
 - ✅ All integrations supported (Claude Code, Cursor, ACP)
 
 ### Non-Functional Requirements
@@ -411,11 +372,11 @@ cli/src/
 - Phase 5 (Internal Flow Engine) - Core flow system must be complete
 
 **Enables:**
-- Milestone 2 (Auto Architecture Docs) - Needs PrePrompt for injection, doc_management for cache
+- Phase 9 (Doc Management) - Flow action infrastructure ready
+- Milestone 2 (Auto Architecture Docs) - Needs PrePrompt for injection
 - Milestone 3 (Skills Auto-Activation) - Needs PrePrompt for injection
 - Milestone 4 (Multi-Stage Pipeline) - Needs PostResponse for builds, task system for tracking
-- Milestone 5 (Dev Docs System) - Needs doc_management for task docs
-- Milestone 6 (Process Management) - Needs task system for process tracking
+- Milestone 5 (Process Management) - Needs task system for process tracking
 
 ---
 

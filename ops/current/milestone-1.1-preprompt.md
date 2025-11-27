@@ -54,23 +54,7 @@ PrePrompt:
 [appended content 2]
 ```
 
-### 2. File Path Detection
-
-MessageBuilder automatically detects file paths and reads contents:
-
-```yaml
-PrePrompt:
-  prompt:
-    prepend: .aiki/arch/backend.md  # File exists → reads contents
-```
-
-**Detection logic:**
-- If string is a valid file path that exists → read file contents
-- Otherwise → treat as inline markdown content
-- Supports both relative and absolute paths
-- Paths relative to workspace root
-
-### 3. Multiple Prompt Actions
+### 2. Multiple Prompt Actions
 
 Can use multiple `prompt:` actions in the same flow:
 
@@ -207,7 +191,6 @@ PrePrompt:
 ### Testing
 
 - [ ] Unit tests: MessageBuilder with `prompt:` action
-- [ ] Unit tests: File path detection and reading
 - [ ] Unit tests: Inline content preservation
 - [ ] Unit tests: Multiple prepend items accumulate correctly
 - [ ] Unit tests: Multiple append items accumulate correctly
@@ -231,7 +214,6 @@ PrePrompt:
 ✅ Short form `prompt: "string"` defaults to append  
 ✅ Explicit form `prompt: { prepend: [...], append: [...] }` works  
 ✅ MessageBuilder correctly parses both forms  
-✅ File paths are correctly detected and contents read  
 ✅ Inline content is preserved as-is  
 ✅ Multiple prepend items accumulate in correct order  
 ✅ Multiple append items accumulate in correct order  

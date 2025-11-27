@@ -1147,14 +1147,12 @@ Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven
 
 ### What We Build
 
-**Implementation in six milestones:**
+**Implementation in five milestones:**
 
 **Milestone 1: Core Extensions (2-3 weeks)**
 - PrePrompt event type
-- PostResponse event type  
+- PostResponse event type & Task System
 - Flow composition (`includes:` directive)
-- Session state persistence
-- doc_management action type
 
 **Milestone 2: Auto Architecture Documentation (1-2 weeks)**
 - Exploration detection (5+ files read in directory)
@@ -1177,14 +1175,7 @@ Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven
 - Pattern detection (missing error handling, etc.)
 - Gentle reminder system (non-blocking suggestions)
 
-**Milestone 5: Dev Docs System (1-2 weeks)**
-- Task directory structure (`.aiki/tasks/`)
-- Doc management operations (create/update/query)
-- Session resumption (auto-load active tasks)
-- Task tracking in change descriptions
-- CLI commands (`aiki tasks list/resume/complete`)
-
-**Milestone 6: Process Management (2 weeks)**
+**Milestone 5: Process Management (2 weeks)**
 - Process action type (start/stop/logs/status)
 - Process configuration format (`.aiki/processes.yaml`)
 - Log aggregation and correlation
@@ -1204,11 +1195,6 @@ aiki skills list                    # Show available skills
 aiki skills show backend-guidelines # Show skill details
 aiki skills create my-skill         # Create new skill
 
-# Task management
-aiki tasks create feature-name      # Create task docs
-aiki tasks resume feature-name      # Resume task
-aiki tasks show feature-name        # Show task status
-
 # Process management
 aiki process start backend          # Start service
 aiki process logs backend --errors  # Show error logs
@@ -1225,7 +1211,6 @@ aiki flows show aiki/default        # Show flow details
 - **10x faster context loading** - Read cached docs instead of exploring 20+ files
 - **Consistent quality** - Skills ensure guidelines are never forgotten
 - **Zero errors left behind** - Catch problems immediately while context is hot
-- **Seamless task resumption** - Pick up multi-session work without losing context
 - **Observable systems** - Debug multi-service apps with log correlation
 
 **For Aiki:**
@@ -1244,8 +1229,7 @@ aiki flows show aiki/default        # Show flow details
 | Auto architecture docs | High | High | Week 5-6 |
 | Skills pattern matching | Medium | High | Week 7-8 |
 | Multi-stage pipeline | Medium | High | Week 9-10 |
-| Dev docs system | Low | Medium | Week 11-12 |
-| Process management | Medium | Medium | Week 13-14 |
+| Process management | Medium | Medium | Week 11-12 |
 
 ### Success Criteria
 
@@ -1264,13 +1248,12 @@ aiki flows show aiki/default        # Show flow details
 
 ### Timeline
 
-**Estimated: 10-14 weeks**
+**Estimated: 8-12 weeks**
 - Milestone 1: 2-3 weeks
 - Milestone 2: 1-2 weeks
 - Milestone 3: 2-3 weeks
 - Milestone 4: 1-2 weeks
-- Milestone 5: 1-2 weeks
-- Milestone 6: 2 weeks
+- Milestone 5: 2 weeks
 
 **Before Phase 8:**
 - Users have flow primitives but no guidance
@@ -1286,7 +1269,146 @@ aiki flows show aiki/default        # Show flow details
 
 ---
 
-## Phase 9: Autonomous Review Flow
+## Phase 9: Doc Management Action Type
+
+### Problem
+
+Flows need a way to create, update, and query structured documentation within the `.aiki/` directory. While Phase 8 delivers core patterns like architecture caching and task management, these features require persistent document storage that flows can interact with programmatically.
+
+**Without doc management:**
+- No way to cache architecture discoveries in flows
+- Task documentation must be manual
+- Session notes can't be auto-generated
+- Architecture patterns can't be stored and queried
+
+### Solution
+
+Implement the `doc_management` action type that allows flows to create, update, append to, and query markdown documents. This enables Phase 8's architecture caching, task docs, and other documentation patterns.
+
+**Key capabilities:**
+- **Create** - Create new documents (error if exists)
+- **Update** - Overwrite entire documents
+- **Append** - Add content to end of documents
+- **Query** - Read document content into variables
+
+All operations are restricted to the `.aiki/` directory for security, with path traversal detection and atomic writes.
+
+### What We Build
+
+**Core doc_management action with four operations:**
+
+```yaml
+# Create new document
+doc_management:
+  operation: create
+  path: .aiki/arch/structure/backend/index.md
+  content: |
+    # Backend Architecture
+    Discovered patterns...
+
+# Update existing document
+doc_management:
+  operation: update
+  path: .aiki/tasks/current/status.md
+  content: "Status: In Progress"
+
+# Append to document
+doc_management:
+  operation: append
+  path: .aiki/sessions/notes.md
+  content: |
+    - Completed auth implementation
+
+# Query document into variable
+- doc_management:
+    operation: query
+    path: .aiki/arch/structure/backend/index.md
+    variable: backend_arch
+
+- if: $backend_arch contains "OAuth2"
+  then:
+    prompt: "Remember we use OAuth2 for auth"
+```
+
+**Security features:**
+- Path validation (must be within `.aiki/`)
+- Path traversal detection (blocks `..` attempts)
+- Automatic directory creation
+- Atomic writes (temp file + rename)
+
+### Commands Delivered
+
+No new CLI commands - this is a flow action type only. Flows use it programmatically:
+
+```yaml
+PostResponse:
+  # Architecture caching example
+  - doc_management:
+      operation: append
+      path: .aiki/arch/patterns/discovered.md
+      content: |
+        ## Pattern: $pattern_name
+        $pattern_description
+```
+
+### Value Delivered
+
+**For Phase 8 milestones:**
+- **Enables Milestone 2** - Architecture docs cached via doc_management
+- **Enables Milestone 5** - Task docs created and updated automatically
+- **Enables session notes** - Track work across sessions in `.aiki/sessions/`
+
+**For flow authors:**
+- **Persistent state** - Store data across flow executions
+- **Queryable docs** - Load and check existing documentation
+- **Safe operations** - Security built-in, no path traversal risks
+
+### Technical Components
+
+| Component | Complexity | Priority | Timeline |
+|-----------|------------|----------|----------|
+| Doc management action parser | Low | High | 1 day |
+| Path validation & security | Medium | High | 1 day |
+| Create/update/append operations | Low | High | 1 day |
+| Query operation with variables | Low | High | 1 day |
+| Atomic write implementation | Low | High | 1 day |
+| Unit & integration tests | Medium | High | 2 days |
+
+### Success Criteria
+
+- ✅ Can create new documents from flows
+- ✅ Can update existing documents
+- ✅ Can append to documents
+- ✅ Can query document content into variables
+- ✅ Parent directories created automatically
+- ✅ Path validation prevents security issues
+- ✅ Path traversal attempts blocked
+- ✅ Atomic writes prevent corruption
+- ✅ Clear error messages for invalid operations
+
+### Why This Enables Phase 8
+
+Phase 8's "Aiki Way" patterns depend on doc_management:
+
+1. **Architecture Caching (Milestone 2)** - Needs to store discovered patterns
+2. **Task Documentation (Milestone 5)** - Needs to create/update task docs
+3. **Session Notes** - Needs to append session progress
+4. **Skills** - May need to query existing documentation
+
+Without doc_management, these features would need separate, redundant implementations.
+
+### Timeline
+
+**Estimated: 1 week**
+- Implementation: 3-4 days
+- Testing: 2 days  
+- Documentation: 1 day
+
+**Detailed Plan:** See `ops/phase-9.md`
+
+---
+
+## Phase 10: Autonomous Review Flow
 
 ### Problem
 Developers waste significant time fixing AI-generated code through manual iteration loops. AI commits blindly, humans discover issues through slow manual testing or CI failures.
