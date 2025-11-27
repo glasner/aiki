@@ -1127,32 +1127,36 @@ PostFileChange:
 
 ### Problem
 
-We've built powerful primitives (flows, events, provenance), but users need opinionated patterns for AI-assisted development. Six months of production use with Claude Code has revealed four critical patterns that prevent common pitfalls and maximize code quality.
+We've built powerful primitives (flows, events, provenance), but users need event types to build intelligent automation. The flow system (Phase 5) needs PrePrompt and PostResponse events to enable context injection, validation, and task management.
 
-**Common problems developers face:**
-1. **Context loss** - AI re-discovers architecture every session (expensive, repetitive)
-2. **Error accumulation** - One mistake today becomes ten tomorrow
-3. **Guideline drift** - AI forgets project conventions between prompts
-4. **Manual validation** - Developers catch issues too late in the cycle
+**What's missing:**
+1. **PrePrompt event** - No way to inject context before agent sees prompt
+2. **PostResponse event** - No way to validate after agent responds
+3. **Task system** - No structured way to track work across sessions
+4. **Flow composition** - No way to reuse flows via `includes:`
 
 ### Solution
 
-Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven patterns from real-world AI-assisted development. This builds on the flow system (Phase 5) to deliver immediate value through curated automation.
+Extend the flow system with core event types and capabilities that enable intelligent AI workflows. This phase delivers the foundational primitives that unlock all subsequent phases (9-12).
 
-**The four key patterns:**
-1. **Auto Architecture Docs** - Cache exploration so AI doesn't re-discover patterns
-2. **Skills Auto-Activation** - Inject guidelines based on context
-3. **Multi-Stage Pipeline** - Zero errors left behind with automatic validation
-4. **Dev Docs System** - Structured task management across sessions
+**The three core extensions:**
+1. **PrePrompt event** - Inject skills, architecture docs, and task context
+2. **PostResponse event & Task System** - Validate builds, create tasks from errors, auto-close completed work
+3. **Flow composition** - Reuse flows via `includes:` directive
 
 ### What We Build
 
 **Implementation in two milestones:**
 
-**Milestone 1: Core Extensions (2-3 weeks)**
-- PrePrompt event type
-- PostResponse event type & Task System
-- Flow composition (`includes:` directive)
+**Milestone 1: Core Extensions (4 weeks)**
+- MessageBuilder shared syntax (week 1)
+- PrePrompt event type (week 1)
+- PostResponse event type & Task System (weeks 2-3)
+  - Event-sourced task storage on JJ `aiki/tasks` branch
+  - CLI commands: `aiki task ready/create/start/close`
+  - Auto-closing via PostToolUse
+  - Attempt-based stuck detection
+- Flow composition via `includes:` directive (week 2)
 
 **Milestone 2: Multi-Stage Pipeline (1-2 weeks)**
 - Session state tracking (edited files, affected repos)
@@ -1160,6 +1164,12 @@ Ship `aiki/default` - a comprehensive, battle-tested flow that implements proven
 - Error parsing (TypeScript, Rust, ESLint)
 - Pattern detection (missing error handling, etc.)
 - Gentle reminder system (non-blocking suggestions)
+
+**Key architectural decisions:**
+- Task system uses event sourcing (immutable event log on JJ branch)
+- Content-addressed task IDs prevent duplicate task creation
+- Tasks auto-close when PostToolUse detects fixes
+- Attempt-based stuck detection (3+ failed attempts)
 
 ### Commands Delivered
 
@@ -1178,39 +1188,52 @@ aiki flows show aiki/default        # Show flow details
 ### Value Delivered
 
 **For developers:**
-- **Zero errors left behind** - Catch problems immediately while context is hot
-- **Structured task tracking** - Tasks auto-created from build failures
-- **Agent-driven workflow** - AI queries and closes tasks automatically
+- **Context injection** - PrePrompt injects skills and architecture docs automatically
+- **Structured task tracking** - Tasks auto-created from build failures, tracked across sessions
+- **Agent-driven workflow** - AI queries and closes tasks automatically via CLI
+- **Zero errors left behind** - Milestone 2 builds on this to catch problems immediately
 
 **For Aiki:**
-- **Proves the flow system** - Demonstrates Phase 5's power with real patterns
-- **Dogfood opportunity** - Build Aiki using aiki/default
-- **Opinionated defaults** - Users get value immediately without configuration
-- **Community patterns** - Foundation for sharing proven workflows
+- **Unlocks all subsequent phases** - Phases 9-12 all depend on PrePrompt/PostResponse/Tasks
+- **Proves the flow system** - Demonstrates Phase 5's power with real event types
+- **Dogfood opportunity** - Use task system to build Aiki itself
+- **Foundation for automation** - Core primitives for intelligent AI workflows
 
 ### Technical Components
 
 | Component | Complexity | Priority | Timeline |
 |-----------|------------|----------|----------|
-| PrePrompt/PostResponse events | Medium | High | Week 1-2 |
+| MessageBuilder shared syntax | Low | High | Week 1 (Days 1-3) |
+| PrePrompt event | Medium | High | Week 1 (Days 4-5) |
+| PostResponse event | Medium | High | Week 2 (Day 1) |
 | Task system (event-sourced) | High | High | Week 2-3 |
-| Flow composition system | Medium | High | Week 3 |
-| Multi-stage pipeline | Medium | High | Week 4 |
+| Flow composition (`includes:`) | Medium | High | Week 2 |
+| Multi-stage pipeline (Milestone 2) | Medium | High | Week 5 |
 
 ### Success Criteria
 
-- ✅ `aiki flows install aiki/default` works end-to-end
-- ✅ PrePrompt injects context before agent sees prompt
-- ✅ PostResponse creates tasks from build failures
+**Milestone 1:**
+- ✅ MessageBuilder parses short form (`action: "string"`) and explicit form (`action: { prepend: [...], append: [...] }`)
+- ✅ PrePrompt event fires before agent sees prompt
+- ✅ PostResponse event fires after agent responds
+- ✅ Task system creates/queries/starts/closes tasks
+- ✅ Tasks stored as events on JJ `aiki/tasks` branch
+- ✅ CLI commands work: `aiki task ready/create/start/close`
+- ✅ PostToolUse auto-closes tasks when fixes detected
+- ✅ Attempt-based stuck detection works (3+ failed attempts)
+- ✅ Flow composition works (`includes:` directive)
+- ✅ Content-addressed task IDs prevent duplicates
+
+**Milestone 2:**
+- ✅ Session state tracking works (edited files, affected repos)
 - ✅ Builds run automatically after AI responses
-- ✅ Task system enables multi-session workflows
-- ✅ Agent can query and close tasks via CLI
+- ✅ Error parsing works (TypeScript, Rust, ESLint)
+- ✅ Pattern detection works (missing error handling, etc.)
 - ✅ All patterns dogfooded during Aiki development
-- ✅ Documentation shows before/after examples
 
 ### Why This Matters
 
-**This is the "aha moment" for Aiki users.** Phase 5 gave us the flow engine. Phase 8 shows what you can build with it. Users see immediate, tangible value from battle-tested patterns.
+**This unlocks everything.** Phase 5 gave us the flow engine. Phase 8 adds the event types and task system that make flows truly powerful. Phases 9-12 all build on PrePrompt, PostResponse, and the task system. Without this foundation, intelligent automation isn't possible.
 
 ### Timeline
 
