@@ -522,7 +522,11 @@ impl TaskManager {
             
             match &event.event {
                 EventType::Created { task } => {
-                    definition = Some(task.clone());
+                    // If multiple agents create the same task concurrently,
+                    // multiple Created events will exist. Take the first one.
+                    if definition.is_none() {
+                        definition = Some(task.clone());
+                    }
                 }
                 EventType::Started => {
                     status = TaskStatus::InProgress;
@@ -1308,7 +1312,7 @@ jj branch set aiki/tasks -r @
 
 ### Deduplication Across Agents
 
-**Content-addressed task IDs prevent duplicate task creation:**
+**Content-addressed task IDs provide logical deduplication:**
 
 ```rust
 // Agent A creates task for "TS2322 at auth.ts:42"
@@ -1317,8 +1321,32 @@ let task_id_a = generate_task_id(&definition);  // → "err-a1b2c3d4"
 // Agent B creates task for same error (concurrent)
 let task_id_b = generate_task_id(&definition);  // → "err-a1b2c3d4" (same!)
 
-// Only one "created" event persists (same task_id)
+// Both agents append "created" events to the log
+// Both events persist (useful audit trail: shows both agents detected the error)
 ```
+
+**During reconstruction, duplicates are handled gracefully:**
+
+```rust
+fn reconstruct_task(&self, events: &[TaskEvent]) -> Result<Task> {
+    let mut definition: Option<TaskDefinition> = None;
+    // ...
+    for event in events {
+        match &event.event {
+            EventType::Created { task } => {
+                // If multiple agents create the same task concurrently,
+                // multiple Created events will exist. Take the first one.
+                if definition.is_none() {
+                    definition = Some(task.clone());
+                }
+            }
+            // ...
+        }
+    }
+}
+```
+
+**Result:** Idempotent task creation with full audit trail. Multiple "created" events for the same task_id don't cause errors—they just show that multiple agents independently detected the same issue.
 
 ### Phase 4 Deliverables
 
