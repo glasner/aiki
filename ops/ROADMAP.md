@@ -733,9 +733,9 @@ PostFileChange:
 ### Why This Enables Future Phases
 - **Phase 8**: Core extensions (PrePrompt, PostResponse, Task System, Flow Composition)
 - **Phase 13**: Autonomous review built as default flow
-- **Phase 15**: Complete event system for all Git and agent hooks
-- **Phase 16**: Users write their own flows in `.aiki/flows/`
-- **Phase 17**: External flow ecosystem with bundled binaries
+- **Phase 14**: Complete event system for all Git and agent hooks
+- **Phase 15**: Users write their own flows in `.aiki/flows/`
+- **Phase 16**: External flow ecosystem with bundled binaries
 - **Rapid iteration**: Change workflows without Aiki releases
 
 ---
@@ -2092,119 +2092,7 @@ This demonstrates the power of Phase 5: **complex features become configuration,
 
 ---
 
-## Phase 14: Zed Extension (One-Click Setup & Status UI)
-
-### Problem
-While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
-- Users must run `aiki init` manually
-- No visual indication that Aiki is active and working
-- Review results only visible via CLI commands
-- Configuration requires editing JSON files
-- No discoverability for Aiki features within Zed
-
-**Current user flow (CLI-only):**
-```bash
-$ aiki init
-# Edit ~/.config/zed/settings.json manually
-# Restart Zed
-# No visual feedback that it's working
-```
-
-### Solution
-Build a thin Zed extension that provides one-click setup and visual status UI. The extension sits ABOVE the ACP proxy (Phase 6) and delegates all logic to the `aiki` CLI tool.
-
-**Key Principle:** The extension is a UI/UX layer only. All real work happens in the `aiki` CLI.
-
-### Architecture
-```
-┌─────────────────────────────────────┐
-│  Zed Extension (UI Layer)           │
-│  - Command palette                  │
-│  - Status bar                       │
-│  - Settings UI                      │
-└───────────┬─────────────────────────┘
-            │ Delegates to CLI
-            ↓
-┌─────────────────────────────────────┐
-│  aiki CLI (All Logic)               │
-│  - aiki init                        │
-│  - aiki acp (proxy)                 │
-└─────────────────────────────────────┘
-```
-
-### What We Build
-- **One-click installation** - Run `aiki init` from command palette
-- **Status bar indicator** - Shows "Aiki ✓" or "Aiki ⚠"
-- **Command palette commands** - Access Aiki features without CLI
-- **Settings UI** - Configure Aiki from Zed's settings panel
-- **Health check UI** - Display `aiki doctor` results
-
-### User Experience
-
-**Installation:**
-```
-Cmd+Shift+P → "Install Aiki Extension"
-  ↓
-Extension runs: aiki init
-  ↓
-Status bar shows: "Aiki ✓"
-  ↓
-Done! AI changes now tracked.
-```
-
-**Status Indicators:**
-```
-Aiki ○  - Not initialized
-Aiki ◐  - Installed but not running  
-Aiki ✓  - Running, all checks passing
-Aiki ⚠  - Error or health check failed
-```
-
-### Value Delivered
-- **Zero-friction setup** - Install extension, click Initialize, done
-- **Visual feedback** - Always know if Aiki is working
-- **Discoverability** - Find features via command palette
-- **Professional UX** - Feels native to Zed
-- **Lower barrier** - Non-technical users can use Aiki
-
-### Technical Components
-| Component | Complexity | Priority |
-|-----------|------------|----------|
-| Zed extension scaffold | Low | High |
-| Command palette integration | Low | High |
-| Status bar indicator | Low | High |
-| CLI delegation | Low | High |
-| Settings UI | Medium | Medium |
-| Extension marketplace submission | Low | Medium |
-
-### Success Criteria
-- ✅ Extension installable from Zed marketplace
-- ✅ One-click "Initialize Repository" from command palette
-- ✅ Status bar shows Aiki status (○/◐/✓/⚠)
-- ✅ `aiki doctor` results displayed in panel
-- ✅ All logic delegated to `aiki` CLI (no duplication)
-- ✅ Works on macOS, Linux, Windows
-
-### Timeline
-- Extension scaffold + commands: 1-2 days
-- Status bar indicator: 1 day
-- CLI delegation: 1 day
-- Settings UI: 1-2 days
-- Testing + marketplace: 2 days
-
-**Total: ~1.5 weeks**
-
-**Detailed Plan:** See `ops/phase-9.md`
-
-### Why This Matters
-**Before:** Users must run 5 terminal commands  
-**After:** Click "Install Extension", click "Initialize"  
-
-**Impact:** 10x easier onboarding, professional UX, marketplace visibility
-
----
-
-## Phase 15: Comprehensive Event System (All Git & Agent Hooks)
+## Phase 14: Comprehensive Event System (All Git & Agent Hooks)
 
 ### Problem
 Phase 5 introduced the flow system with 4 core events (SessionStart, PreFileChange, PostFileChange, PrepareCommitMessage), but Git provides 20+ hooks and agents (like Claude Code) provide 10+ lifecycle hooks. Users need access to the full event lifecycle to build sophisticated workflows.
@@ -2532,7 +2420,7 @@ pub struct Flow {
 
 ---
 
-## Phase 16: User-Defined Flows
+## Phase 15: User-Defined Flows
 
 ### Problem
 Phase 5 and 6 provide built-in flows, but users need to write their own reusable flows without duplicating inline steps across `.aiki/flow.yaml`.
@@ -2593,7 +2481,7 @@ PreCommit:
 
 ---
 
-## Phase 17: External Flow Ecosystem
+## Phase 16: External Flow Ecosystem
 
 ### Problem
 Vendors want to distribute complete, working flows with bundled binaries. Users want to install flows from vendors without manual setup.
@@ -2885,7 +2773,7 @@ Side-by-Side Comparison
 
 ---
 
-## Phase 18: Multi-Agent Provenance (Fallback Detection)
+## Phase 17: Multi-Agent Provenance (Fallback Detection)
 
 ### Problem
 Developers use agents beyond Claude Code (Cursor, Copilot, custom tools, or manual edits), but Phase 1 only tracks Claude Code. Without provenance for these agents:
@@ -2965,7 +2853,7 @@ Overall: 85% high confidence, 12% medium confidence
 
 ---
 
-## Phase 19: Local Multi-Agent Coordination
+## Phase 18: Local Multi-Agent Coordination
 
 ### Problem
 Multiple local AIs (Claude Code + Cursor + Copilot + custom agents) overwrite each other's changes. Each AI works independently on the same filesystem, unaware of others. Conflicts discovered late (at commit or code review), resulting in wasted AI work.
@@ -2997,7 +2885,7 @@ Sequential overwrite detection, auto-merge, and quarantine functionality for loc
 
 ---
 
-## Phase 20: PR Review for Non-Aiki Agents
+## Phase 19: PR Review for Non-Aiki Agents
 
 ### Problem
 Cloud-based AI agents (Copilot Workspace, Devin, Sweep) generate PRs from isolated environments where Aiki daemon cannot be installed. These PRs bypass all Aiki quality gates, creating inconsistent quality across the team.
@@ -3017,6 +2905,118 @@ GitHub/GitLab webhook integration to run autonomous review on all PRs, regardles
 - Cloud agent PRs reviewed automatically
 - No agent cooperation required (works via webhooks)
 - Teams get uniform quality standards
+
+---
+
+## Phase 20: Zed Extension (One-Click Setup & Status UI)
+
+### Problem
+While Phase 6 provides ACP proxy support, setup requires manual CLI steps and users have no visual feedback about Aiki's status. This creates friction:
+- Users must run `aiki init` manually
+- No visual indication that Aiki is active and working
+- Review results only visible via CLI commands
+- Configuration requires editing JSON files
+- No discoverability for Aiki features within Zed
+
+**Current user flow (CLI-only):**
+```bash
+$ aiki init
+# Edit ~/.config/zed/settings.json manually
+# Restart Zed
+# No visual feedback that it's working
+```
+
+### Solution
+Build a thin Zed extension that provides one-click setup and visual status UI. The extension sits ABOVE the ACP proxy (Phase 6) and delegates all logic to the `aiki` CLI tool.
+
+**Key Principle:** The extension is a UI/UX layer only. All real work happens in the `aiki` CLI.
+
+### Architecture
+```
+┌─────────────────────────────────────┐
+│  Zed Extension (UI Layer)           │
+│  - Command palette                  │
+│  - Status bar                       │
+│  - Settings UI                      │
+└───────────┬─────────────────────────┘
+            │ Delegates to CLI
+            ↓
+┌─────────────────────────────────────┐
+│  aiki CLI (All Logic)               │
+│  - aiki init                        │
+│  - aiki acp (proxy)                 │
+└─────────────────────────────────────┘
+```
+
+### What We Build
+- **One-click installation** - Run `aiki init` from command palette
+- **Status bar indicator** - Shows "Aiki ✓" or "Aiki ⚠"
+- **Command palette commands** - Access Aiki features without CLI
+- **Settings UI** - Configure Aiki from Zed's settings panel
+- **Health check UI** - Display `aiki doctor` results
+
+### User Experience
+
+**Installation:**
+```
+Cmd+Shift+P → "Install Aiki Extension"
+  ↓
+Extension runs: aiki init
+  ↓
+Status bar shows: "Aiki ✓"
+  ↓
+Done! AI changes now tracked.
+```
+
+**Status Indicators:**
+```
+Aiki ○  - Not initialized
+Aiki ◐  - Installed but not running  
+Aiki ✓  - Running, all checks passing
+Aiki ⚠  - Error or health check failed
+```
+
+### Value Delivered
+- **Zero-friction setup** - Install extension, click Initialize, done
+- **Visual feedback** - Always know if Aiki is working
+- **Discoverability** - Find features via command palette
+- **Professional UX** - Feels native to Zed
+- **Lower barrier** - Non-technical users can use Aiki
+
+### Technical Components
+| Component | Complexity | Priority |
+|-----------|------------|----------|
+| Zed extension scaffold | Low | High |
+| Command palette integration | Low | High |
+| Status bar indicator | Low | High |
+| CLI delegation | Low | High |
+| Settings UI | Medium | Medium |
+| Extension marketplace submission | Low | Medium |
+
+### Success Criteria
+- ✅ Extension installable from Zed marketplace
+- ✅ One-click "Initialize Repository" from command palette
+- ✅ Status bar shows Aiki status (○/◐/✓/⚠)
+- ✅ `aiki doctor` results displayed in panel
+- ✅ All logic delegated to `aiki` CLI (no duplication)
+- ✅ Works on macOS, Linux, Windows
+
+### Timeline
+- Extension scaffold + commands: 1-2 days
+- Status bar indicator: 1 day
+- CLI delegation: 1 day
+- Settings UI: 1-2 days
+- Testing + marketplace: 2 days
+
+**Total: ~1.5 weeks**
+
+**Detailed Plan:** See `ops/phase-9.md`
+
+### Why This Matters
+**Before:** Users must run 5 terminal commands  
+**After:** Click "Install Extension", click "Initialize"  
+
+**Impact:** 10x easier onboarding, professional UX, marketplace visibility
 
 ---
 
@@ -3180,7 +3180,7 @@ Agent SDK for real-time feedback, intent capture, and active participation in co
 - Trust scoring informs agent behavior (analyze past changes via JJ revsets)
 
 ### Important Note
-**Phases 1-12 deliver full value WITHOUT vendor cooperation.** Phase 18 (Multi-Agent Fallback Detection) and beyond are optional enhancements.
+**Phases 1-12 deliver full value WITHOUT vendor cooperation.** Phase 17 (Multi-Agent Fallback Detection) and beyond are optional enhancements.
 
 ---
 
@@ -3219,19 +3219,19 @@ Phase 12 (Process Management) ← Background service integration
     ↓
 Phase 13 (Autonomous Review Flow) ← Built on Phase 5+8 flows
     ↓
-Phase 14 (Zed Extension) ← One-click setup & status UI
+Phase 14 (Comprehensive Event System) ← All Git & agent hooks supported
     ↓
-Phase 15 (Comprehensive Event System) ← All Git & agent hooks supported
+Phase 15 (User-Defined Flows) ← Users write reusable flows
     ↓
-Phase 16 (User-Defined Flows) ← Users write reusable flows
+Phase 16 (External Flow Ecosystem) ← WASM functions + bundled binaries
     ↓
-Phase 17 (External Flow Ecosystem) ← WASM functions + bundled binaries
+Phase 17 (Multi-Agent: Fallback Detection)
     ↓
-Phase 18 (Multi-Agent: Fallback Detection)
+Phase 18 (Local Multi-Agent Coordination) ← Uses Phase 1+2+17 provenance
     ↓
-Phase 19 (Local Multi-Agent Coordination) ← Uses Phase 1+2+18 provenance
+Phase 19 (PR Review for Non-Aiki Agents)
     ↓
-Phase 20 (PR Review for Non-Aiki Agents)
+Phase 20 (Zed Extension) ← One-click setup & status UI
     ↓
 Phase 21 (Shared JJ Brain & Team Coordination) ← Team provenance via JJ commit descriptions
     ↓
@@ -3250,6 +3250,6 @@ Phase 24 (Native Agent Integration) ← Agent SDK with trust scoring
 - Phase 5 (Flow Engine) enables all intelligent automation (Phases 8-17)
 - Phase 6 (ACP Support) enables IDE-agnostic provenance tracking
 - Phase 8 (Core Extensions) unlocks Phases 9-12 with PrePrompt, PostResponse, and Task System
-- Phase 14 (Zed Extension) provides polished UX for zero-friction onboarding
+- Phase 20 (Zed Extension) provides polished UX for zero-friction onboarding
 - All subsequent phases query provenance via JJ revsets (no database needed)
 - JJ's immutable commit graph + cryptographic signatures provide audit-ready trails for compliance
