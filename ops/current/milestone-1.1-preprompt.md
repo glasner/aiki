@@ -172,11 +172,20 @@ PrePrompt:
 
 ## Implementation Tasks
 
+### Refactoring (Pre-requisite)
+
+- [ ] Extract actions from `flows/types.rs` to `flows/actions.rs`
+  - [ ] Move `Action` enum and all action structs to new file
+  - [ ] Move `FailureMode` enum and helpers
+  - [ ] Keep only `Flow` struct in `types.rs`
+  - [ ] Update imports across codebase
+  - [ ] Verify all tests pass
+
 ### Core Engine
 
 - [ ] Add `PrePromptEvent` struct to `cli/src/events.rs`
 - [ ] Add `prompt:` action to flow DSL
-- [ ] Implement `cli/src/flows/actions/prompt.rs` using MessageBuilder
+- [ ] Implement `cli/src/flows/actions/prompt.rs` using MessageAssembler
 - [ ] Add PrePrompt handler: `cli/src/flows/handlers/pre_prompt.rs`
 - [ ] Hook into vendor prompt submission lifecycle
 
