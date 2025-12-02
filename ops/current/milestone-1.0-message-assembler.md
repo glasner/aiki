@@ -130,25 +130,21 @@ PrepareCommitMessage:
 ### Location
 
 ```
-cli/src/flows/actions/message_chunk.rs       - MessageChunk struct
-cli/src/flows/actions/message_assembler.rs   - MessageAssembler struct
-cli/src/flows/actions/mod.rs                 - Re-exports for clean imports
+cli/src/flows/messages.rs  - MessageChunk and MessageAssembler (single file)
+cli/src/flows/mod.rs       - Re-exports for clean imports
 ```
 
-**Re-exports in mod.rs:**
+**Re-export in mod.rs:**
 ```rust
-// cli/src/flows/actions/mod.rs
-pub mod message_chunk;
-pub mod message_assembler;
-
-pub use message_chunk::MessageChunk;
-pub use message_assembler::MessageAssembler;
+// cli/src/flows/mod.rs
+pub mod messages;
+pub use messages::{MessageChunk, MessageAssembler};
 ```
 
 ### MessageChunk (Data Structure)
 
 ```rust
-// cli/src/flows/actions/message_chunk.rs
+// cli/src/flows/messages.rs
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -219,8 +215,8 @@ impl MessageChunk {
 ### MessageAssembler (Stateful Builder)
 
 ```rust
-// cli/src/flows/actions/message_assembler.rs
-use super::message_chunk::MessageChunk;
+// cli/src/flows/messages.rs (continued in same file)
+// MessageAssembler uses MessageChunk defined above
 
 /// Stateful builder that collects MessageChunks and assembles them into a final message
 pub struct MessageAssembler {
@@ -302,7 +298,7 @@ Each event implementation follows this pattern:
 
 ```rust
 // cli/src/flows/events/preprompt.rs
-use crate::flows::actions::{MessageChunk, MessageAssembler};
+use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PrePromptEvent {
     prompt_assembler: MessageAssembler,
@@ -329,7 +325,7 @@ impl PrePromptEvent {
 
 ```rust
 // cli/src/flows/events/postresponse.rs
-use crate::flows::actions::{MessageChunk, MessageAssembler};
+use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PostResponseEvent {
     autoreply_assembler: MessageAssembler,
@@ -356,7 +352,7 @@ impl PostResponseEvent {
 
 ```rust
 // cli/src/flows/events/prepare_commit_message.rs
-use crate::flows::actions::{MessageChunk, MessageAssembler};
+use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PrepareCommitMessageEvent {
     original_message: String,
@@ -448,7 +444,7 @@ PrepareCommitMessage:
 Test the MessageChunk in isolation:
 
 ```rust
-// cli/src/flows/actions/message_chunk.rs
+// cli/src/flows/messages.rs
 
 #[cfg(test)]
 mod tests {
@@ -571,12 +567,11 @@ mod tests {
 Test the MessageAssembler:
 
 ```rust
-// cli/src/flows/actions/message_assembler.rs
+// cli/src/flows/messages.rs (tests in same file)
 
 #[cfg(test)]
-mod tests {
+mod assembler_tests {
     use super::*;
-    use crate::flows::actions::message_chunk::{MessageChunk, StringOrArray};
     
     #[test]
     fn test_build_with_single_chunk() {
@@ -1036,25 +1031,24 @@ impl MessageChunk {
 
 ### Phase 1: Core Infrastructure (3-5 days)
 
-- [ ] Create `cli/src/flows/actions/message_chunk.rs`
+- [ ] Create `cli/src/flows/messages.rs`
   - [ ] Implement `StringOrArray` enum
   - [ ] Implement `MessageChunk` struct with prepend/append fields
   - [ ] Implement `check_id()` method using `DefaultHasher`
   - [ ] Implement `prepend_items()` and `append_items()` methods
   - [ ] Implement `validate()` method
-  - [ ] Write unit tests for MessageChunk
-  - [ ] Test deterministic check ID generation
-  - [ ] Add serde serialization/deserialization tests
-- [ ] Create `cli/src/flows/actions/message_assembler.rs`
   - [ ] Implement `MessageAssembler` struct with chunks, original, separator fields
   - [ ] Implement `new()` constructor
   - [ ] Implement `add_chunk()` method
   - [ ] Implement `build()` method
+  - [ ] Write unit tests for MessageChunk
   - [ ] Write unit tests for MessageAssembler
+  - [ ] Test deterministic check ID generation
   - [ ] Test various separator configurations
-- [ ] Update `cli/src/flows/actions/mod.rs`
-  - [ ] Add module declarations for `message_chunk` and `message_assembler`
-  - [ ] Re-export `MessageChunk` and `MessageAssembler` for clean imports
+  - [ ] Add serde serialization/deserialization tests
+- [ ] Update `cli/src/flows/mod.rs`
+  - [ ] Add `pub mod messages;`
+  - [ ] Re-export `pub use messages::{MessageChunk, MessageAssembler};`
 
 ### Phase 2: Event Integration (2-3 days)
 
