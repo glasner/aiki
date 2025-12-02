@@ -297,7 +297,8 @@ Each event implementation follows this pattern:
 ### PrePrompt Event
 
 ```rust
-// cli/src/flows/events/preprompt.rs
+// Example: How PrePrompt event would use MessageAssembler
+// (Actual implementation location TBD - likely in flows/engine.rs or a new flows/events.rs)
 use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PrePromptEvent {
@@ -324,7 +325,8 @@ impl PrePromptEvent {
 ### PostResponse Event
 
 ```rust
-// cli/src/flows/events/postresponse.rs
+// Example: How PostResponse event would use MessageAssembler
+// (Actual implementation location TBD - likely in flows/engine.rs or a new flows/events.rs)
 use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PostResponseEvent {
@@ -351,7 +353,8 @@ impl PostResponseEvent {
 ### PrepareCommitMessage Event
 
 ```rust
-// cli/src/flows/events/prepare_commit_message.rs
+// Example: How PrepareCommitMessage event would use MessageAssembler
+// (Actual implementation location TBD - likely in flows/engine.rs or a new flows/events.rs)
 use crate::flows::{MessageChunk, MessageAssembler};
 
 pub struct PrepareCommitMessageEvent {
@@ -1067,18 +1070,21 @@ impl MessageChunk {
 
 ### Phase 2: Event Integration (2-3 days)
 
-- [ ] Create `cli/src/flows/events/preprompt.rs` (for Milestone 1.1)
-  - [ ] `PrePromptEvent` struct with `prompt_assembler: MessageAssembler` field
-  - [ ] `new()` constructor that creates MessageAssembler with original prompt
-  - [ ] `apply_prompt_action()` method that calls `builder.add_chunk()`
-  - [ ] `build_prompt()` method that calls `builder.build()`
-- [ ] Refactor existing PrepareCommitMessage hook
-  - [ ] Create `cli/src/flows/events/prepare_commit_message.rs`
-  - [ ] `PrepareCommitMessageEvent` with `body_assembler` and `trailers_assembler` fields
-  - [ ] Support `body:` and `trailers:` sub-fields
-  - [ ] Maintain backward compatibility with existing flows
-- [ ] Write integration tests for both events
-- [ ] Document how event implementations use MessageAssembler pattern
+**Note:** Event implementation details (where structs live, etc.) will be finalized in Milestone 1.1. This phase focuses on ensuring MessageChunk/MessageAssembler are ready for use.
+
+- [ ] Design event integration pattern
+  - [ ] Decide where event structs will live (flows/engine.rs vs new flows/events.rs)
+  - [ ] Document how events will use MessageAssembler
+  - [ ] Create example event usage patterns
+- [ ] Prepare for PrepareCommitMessage refactoring
+  - [ ] Review existing PrepareCommitMessage implementation
+  - [ ] Plan migration to use MessageAssembler
+  - [ ] Ensure backward compatibility approach
+- [ ] Write integration test examples
+  - [ ] Example: Event with single MessageAssembler
+  - [ ] Example: Event with multiple MessageAssemblers (body + trailers)
+  - [ ] Example: Multiple chunks accumulating correctly
+- [ ] Document event integration patterns for Milestone 1.1
 
 ### Phase 3: Documentation and Migration (1-2 days)
 
