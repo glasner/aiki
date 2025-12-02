@@ -1,4 +1,4 @@
-# Milestone 1.0: MessageBuilder Shared Syntax
+# Milestone 1.0: MessageChunk & MessageBuilder Shared Syntax
 
 **Status**: 🔴 Not Started  
 **Priority**: Critical (blocks 1.1, 1.2, and PrepareCommitMessage)  
@@ -7,23 +7,27 @@
 
 ## Overview
 
-Implement the shared MessageBuilder parser infrastructure that provides consistent syntax and behavior across message-building events:
+Implement the shared MessageChunk and MessageBuilder infrastructure that provides consistent syntax and behavior across message-building events:
 - **PrePrompt** (`prompt:` action) - New in Milestone 1.1
 - **PrepareCommitMessage** (`commit_message:` action) - Refactored from existing implementation
 
-This milestone includes **refactoring the existing PrepareCommitMessage hook** to use the new MessageBuilder infrastructure, ensuring consistent syntax across all message-building events.
+This milestone includes **refactoring the existing PrepareCommitMessage hook** to use the new infrastructure, ensuring consistent syntax across all message-building events.
 
-**Note:** PostResponse uses a task-based system instead of text-based autoreplies. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
+**Architecture:**
+- `MessageChunk` - Data structure representing prepend/append parsed from YAML
+- `message_builder::build_message()` - Function that assembles chunks into final message
+
+**Note:** PostResponse uses a task-based system to *decide when* to send autoreplies, but still uses MessageChunk/message_builder to *build* the autoreply content. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
 
 ## Why This Comes First
 
-PrePrompt and PrepareCommitMessage both need to:
+All three message-building events (PrePrompt, PostResponse, PrepareCommitMessage) need to:
 1. Parse both short form (`action: "string"`) and explicit form (`action: { prepend: [...], append: [...] }`)
 2. Handle multiple invocations (append to growing message)
 3. Provide consistent error messages for malformed syntax
 
 By creating shared infrastructure, we ensure:
-- **Consistency**: Both events behave the same way
+- **Consistency**: All events behave the same way
 - **Maintainability**: Bug fixes apply everywhere
 - **Testability**: Comprehensive tests in one place
 - **Documentation**: Single source of truth for syntax
@@ -120,17 +124,19 @@ PrepareCommitMessage:
 - Trailers section joined with single newline (not double)
 - **Shortcut**: `append:`/`prepend:` at `commit_message:` level automatically routes to `body.append`/`body.prepend`
 
-## Implementation: MessageBuilder Struct
+## Implementation: MessageChunk and MessageBuilder
 
 ### Location
 
 ```
-cli/src/flows/actions/message_builder.rs
+cli/src/flows/actions/message_chunk.rs     - Data structure
+cli/src/flows/actions/message_builder.rs   - Assembly function
 ```
 
-### Core Structure
+### MessageChunk (Data Structure)
 
 ```rust
+// cli/src/flows/actions/message_chunk.rs
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -161,9 +167,9 @@ impl StringOrArray {
     }
 }
 
-/// Unified message builder for prompt/autoreply/commit_message actions
+/// A chunk of message content parsed from YAML (prepend/append fields)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageBuilder {
+pub struct MessageChunk {
     #[serde(default)]
     pub prepend: Option<StringOrArray>,
     
@@ -171,12 +177,12 @@ pub struct MessageBuilder {
     pub append: Option<StringOrArray>,
 }
 
-impl MessageBuilder {
+impl MessageChunk {
     /// Generate content-based check ID from YAML representation
     /// This is deterministic and immune to runtime variable substitution
     pub fn check_id(&self) -> String {
         let yaml = serde_yaml::to_string(self)
-            .expect("MessageBuilder should always serialize");
+            .expect("MessageChunk should always serialize");
         
         let mut hasher = DefaultHasher::new();
         yaml.hash(&mut hasher);
@@ -198,16 +204,66 @@ impl MessageBuilder {
 }
 ```
 
+### MessageBuilder (Assembly Function)
+
+```rust
+// cli/src/flows/actions/message_builder.rs
+use super::message_chunk::MessageChunk;
+
+/// Build a message from multiple MessageChunks
+/// 
+/// # Arguments
+/// * `chunks` - The message chunks to assemble
+/// * `original` - Optional original content (e.g., user's prompt or commit message)
+/// * `separator` - Separator between sections (typically "\n\n")
+/// 
+/// # Returns
+/// Assembled message with structure: [prepends] + [original] + [appends]
+pub fn build_message(
+    chunks: &[MessageChunk],
+    original: Option<&str>,
+    separator: &str,
+) -> String {
+    let mut prepends = Vec::new();
+    let mut appends = Vec::new();
+    
+    // Collect all prepends and appends in order
+    for chunk in chunks {
+        prepends.extend(chunk.prepend_items());
+        appends.extend(chunk.append_items());
+    }
+    
+    // Build final message
+    let mut parts = Vec::new();
+    
+    if !prepends.is_empty() {
+        parts.push(prepends.join("\n"));
+    }
+    
+    if let Some(orig) = original {
+        if !orig.is_empty() {
+            parts.push(orig.to_string());
+        }
+    }
+    
+    if !appends.is_empty() {
+        parts.push(appends.join("\n"));
+    }
+    
+    parts.join(separator)
+}
+```
+
 ## Integration with Events
 
 **Design Decision: Collect-Then-Apply Pattern**
 
-Instead of applying each MessageBuilder immediately (which would cause prepends to stack in reverse order), events collect all MessageBuilders first, then apply them all at once when building the final message. This ensures:
+Instead of applying each MessageChunk immediately (which would cause prepends to stack in reverse order), events collect all MessageChunks first, then use `message_builder::build_message()` to assemble them. This ensures:
 
 1. **Intuitive ordering**: Flow A fires first → Flow A's content appears first
 2. **Correct prepend order**: All prepends appear in the order flows fired
 3. **Correct append order**: All appends appear in the order flows fired
-4. **Single assembly point**: `build_prompt()` / `build_reply()` / `build_message()` methods
+4. **Single assembly point**: Each event calls `message_builder::build_message()`
 
 Each event implementation follows this pattern:
 
@@ -215,51 +271,32 @@ Each event implementation follows this pattern:
 
 ```rust
 // cli/src/flows/events/preprompt.rs
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_chunk::MessageChunk;
+use crate::flows::actions::message_builder;
 
 pub struct PrePromptEvent {
     original_prompt: String,
-    builders: Vec<MessageBuilder>,
+    chunks: Vec<MessageChunk>,
 }
 
 impl PrePromptEvent {
     pub fn new(prompt: String) -> Self {
         Self {
             original_prompt: prompt,
-            builders: Vec::new(),
+            chunks: Vec::new(),
         }
     }
     
-    pub fn apply_prompt_action(&mut self, builder: MessageBuilder) {
-        self.builders.push(builder);
+    pub fn apply_prompt_action(&mut self, chunk: MessageChunk) {
+        self.chunks.push(chunk);
     }
     
     pub fn build_prompt(&self) -> String {
-        let mut prepends = Vec::new();
-        let mut appends = Vec::new();
-        
-        // Collect all prepends and appends in order
-        for builder in &self.builders {
-            prepends.extend(builder.prepend_items());
-            appends.extend(builder.append_items());
-        }
-        
-        // Build final message: [prepends] + [original] + [appends]
-        let mut parts = Vec::new();
-        
-        if !prepends.is_empty() {
-            parts.push(prepends.join("\n"));
-        }
-        
-        if !self.original_prompt.is_empty() {
-            parts.push(self.original_prompt.clone());
-        }
-        
-        if !appends.is_empty() {
-            parts.push(appends.join("\n"));
-        }
-        
-        parts.join("\n\n")
+        message_builder::build_message(
+            &self.chunks,
+            Some(&self.original_prompt),
+            "\n\n"
+        )
     }
 }
 ```
@@ -268,46 +305,30 @@ impl PrePromptEvent {
 
 ```rust
 // cli/src/flows/events/postresponse.rs
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_chunk::MessageChunk;
+use crate::flows::actions::message_builder;
 
 pub struct PostResponseEvent {
-    builders: Vec<MessageBuilder>,
+    chunks: Vec<MessageChunk>,
 }
 
 impl PostResponseEvent {
     pub fn new() -> Self {
         Self {
-            builders: Vec::new(),
+            chunks: Vec::new(),
         }
     }
     
-    pub fn add_autoreply(&mut self, builder: MessageBuilder) {
-        self.builders.push(builder);
+    pub fn add_autoreply(&mut self, chunk: MessageChunk) {
+        self.chunks.push(chunk);
     }
     
     pub fn build_reply(&self) -> String {
-        let mut prepends = Vec::new();
-        let mut appends = Vec::new();
-        
-        // Collect all prepends and appends in order
-        for builder in &self.builders {
-            prepends.extend(builder.prepend_items());
-            appends.extend(builder.append_items());
-        }
-        
-        // Build final message: [prepends] + [appends]
-        // (No original message for autoreplies)
-        let mut parts = Vec::new();
-        
-        if !prepends.is_empty() {
-            parts.push(prepends.join("\n"));
-        }
-        
-        if !appends.is_empty() {
-            parts.push(appends.join("\n"));
-        }
-        
-        parts.join("\n\n")
+        message_builder::build_message(
+            &self.chunks,
+            None,  // No original message for autoreplies
+            "\n\n"
+        )
     }
 }
 ```
@@ -316,29 +337,30 @@ impl PostResponseEvent {
 
 ```rust
 // cli/src/flows/events/prepare_commit_message.rs
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_chunk::MessageChunk;
+use crate::flows::actions::message_builder;
 
 pub struct PrepareCommitMessageEvent {
     original_message: String,
-    body_builders: Vec<MessageBuilder>,
-    trailer_builders: Vec<MessageBuilder>,
+    body_chunks: Vec<MessageChunk>,
+    trailer_chunks: Vec<MessageChunk>,
 }
 
 impl PrepareCommitMessageEvent {
     pub fn new(message: String) -> Self {
         Self {
             original_message: message,
-            body_builders: Vec::new(),
-            trailer_builders: Vec::new(),
+            body_chunks: Vec::new(),
+            trailer_chunks: Vec::new(),
         }
     }
     
-    pub fn apply_body_action(&mut self, builder: MessageBuilder) {
-        self.body_builders.push(builder);
+    pub fn apply_body_action(&mut self, chunk: MessageChunk) {
+        self.body_chunks.push(chunk);
     }
     
-    pub fn apply_trailers_action(&mut self, builder: MessageBuilder) {
-        self.trailer_builders.push(builder);
+    pub fn apply_trailers_action(&mut self, chunk: MessageChunk) {
+        self.trailer_chunks.push(chunk);
     }
     
     pub fn build_message(&self) -> String {
@@ -349,36 +371,24 @@ impl PrepareCommitMessageEvent {
             parts.push(self.original_message.clone());
         }
         
-        // Body section: collect prepends and appends from all body builders
-        let mut body_prepends = Vec::new();
-        let mut body_appends = Vec::new();
-        for builder in &self.body_builders {
-            body_prepends.extend(builder.prepend_items());
-            body_appends.extend(builder.append_items());
+        // Body section: use message_builder to assemble body chunks
+        let body_section = message_builder::build_message(
+            &self.body_chunks,
+            None,  // No original content for body section
+            "\n"   // Body items joined with single newline
+        );
+        if !body_section.is_empty() {
+            parts.push(body_section);
         }
         
-        let mut body_parts = Vec::new();
-        body_parts.extend(body_prepends);
-        body_parts.extend(body_appends);
-        if !body_parts.is_empty() {
-            parts.push(body_parts.join("\n"));
-        }
-        
-        // Trailers section: collect prepends and appends from all trailer builders
-        // Special formatting: joined with single newline (not double)
-        let mut trailer_prepends = Vec::new();
-        let mut trailer_appends = Vec::new();
-        for builder in &self.trailer_builders {
-            trailer_prepends.extend(builder.prepend_items());
-            trailer_appends.extend(builder.append_items());
-        }
-        
-        let mut trailer_parts = Vec::new();
-        trailer_parts.extend(trailer_prepends);
-        trailer_parts.extend(trailer_appends);
-        if !trailer_parts.is_empty() {
-            let trailer_block = trailer_parts.join("\n"); // Single newline!
-            parts.push(trailer_block);
+        // Trailers section: use message_builder to assemble trailer chunks
+        let trailer_section = message_builder::build_message(
+            &self.trailer_chunks,
+            None,  // No original content for trailer section
+            "\n"   // Trailers joined with single newline (not double!)
+        );
+        if !trailer_section.is_empty() {
+            parts.push(trailer_section);
         }
         
         // Join sections with double newline
@@ -402,9 +412,9 @@ PrepareCommitMessage:
 
 // The parser:
 // 1. Recognizes "commit_message" as a meta-action
-// 2. Parses "body:" as a MessageBuilder and calls event.apply_body_action(builder)
-// 3. Parses "trailers:" as a MessageBuilder and calls event.apply_trailers_action(builder)
-// 4. Each MessageBuilder can have prepend:/append: fields
+// 2. Parses "body:" as a MessageChunk and calls event.apply_body_action(chunk)
+// 3. Parses "trailers:" as a MessageChunk and calls event.apply_trailers_action(chunk)
+// 4. Each MessageChunk can have prepend:/append: fields
 
 // Shortcut syntax - append/prepend at commit_message level routes to body:
 PrepareCommitMessage:
@@ -425,87 +435,85 @@ PrepareCommitMessage:
 
 ### Unit Tests
 
-Test the MessageBuilder in isolation:
+Test the MessageChunk in isolation:
 
 ```rust
-// cli/src/flows/actions/message_builder.rs
+// cli/src/flows/actions/message_chunk.rs
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::TempDir;
     
     #[test]
     fn test_prepend_only() {
-        let builder = MessageBuilder {
+        let chunk = MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: None,
         };
-        assert_eq!(builder.prepend_items(), vec!["header"]);
-        assert_eq!(builder.append_items(), Vec::<String>::new());
+        assert_eq!(chunk.prepend_items(), vec!["header"]);
+        assert_eq!(chunk.append_items(), Vec::<String>::new());
     }
     
     #[test]
     fn test_append_only() {
-        let builder = MessageBuilder {
+        let chunk = MessageChunk {
             prepend: None,
             append: Some(StringOrArray::Single("footer".to_string())),
         };
-        assert_eq!(builder.prepend_items(), Vec::<String>::new());
-        assert_eq!(builder.append_items(), vec!["footer"]);
+        assert_eq!(chunk.prepend_items(), Vec::<String>::new());
+        assert_eq!(chunk.append_items(), vec!["footer"]);
     }
     
     #[test]
     fn test_both_prepend_and_append() {
-        let builder = MessageBuilder {
+        let chunk = MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: Some(StringOrArray::Single("footer".to_string())),
         };
-        assert_eq!(builder.prepend_items(), vec!["header"]);
-        assert_eq!(builder.append_items(), vec!["footer"]);
+        assert_eq!(chunk.prepend_items(), vec!["header"]);
+        assert_eq!(chunk.append_items(), vec!["footer"]);
     }
     
     #[test]
     fn test_with_arrays() {
-        let builder = MessageBuilder {
+        let chunk = MessageChunk {
             prepend: Some(StringOrArray::Multiple(vec!["line1".to_string(), "line2".to_string()])),
             append: Some(StringOrArray::Multiple(vec!["line3".to_string(), "line4".to_string()])),
         };
-        assert_eq!(builder.prepend_items(), vec!["line1", "line2"]);
-        assert_eq!(builder.append_items(), vec!["line3", "line4"]);
+        assert_eq!(chunk.prepend_items(), vec!["line1", "line2"]);
+        assert_eq!(chunk.append_items(), vec!["line3", "line4"]);
     }
     
     #[test]
     fn test_check_id_is_deterministic() {
-        let builder1 = MessageBuilder {
+        let chunk1 = MessageChunk {
             prepend: None,
             append: Some(StringOrArray::Single("test".to_string())),
         };
-        let builder2 = MessageBuilder {
+        let chunk2 = MessageChunk {
             prepend: None,
             append: Some(StringOrArray::Single("test".to_string())),
         };
-        assert_eq!(builder1.check_id(), builder2.check_id());
+        assert_eq!(chunk1.check_id(), chunk2.check_id());
     }
     
     #[test]
     fn test_check_id_differs_for_different_content() {
-        let builder1 = MessageBuilder {
+        let chunk1 = MessageChunk {
             prepend: None,
             append: Some(StringOrArray::Single("test1".to_string())),
         };
-        let builder2 = MessageBuilder {
+        let chunk2 = MessageChunk {
             prepend: None,
             append: Some(StringOrArray::Single("test2".to_string())),
         };
-        assert_ne!(builder1.check_id(), builder2.check_id());
+        assert_ne!(chunk1.check_id(), chunk2.check_id());
     }
     
     #[test]
     fn test_yaml_block_scalar_trailing_newline_stripped() {
         // YAML block scalar (|) adds trailing newline - we strip it
-        let block_scalar = MessageBuilder {
+        let block_scalar = MessageChunk {
             prepend: Some(StringOrArray::Single("line1\nline2\n".to_string())),
             append: None,
         };
@@ -517,7 +525,7 @@ mod tests {
     #[test]
     fn test_yaml_array_form() {
         // Array form produces multiple strings
-        let array_form = MessageBuilder {
+        let array_form = MessageChunk {
             prepend: Some(StringOrArray::Multiple(vec!["line1".to_string(), "line2".to_string()])),
             append: None,
         };
@@ -528,13 +536,13 @@ mod tests {
     #[test]
     fn test_yaml_forms_produce_same_output() {
         // Block scalar produces single string with embedded newline
-        let block_scalar = MessageBuilder {
+        let block_scalar = MessageChunk {
             prepend: Some(StringOrArray::Single("line1\nline2\n".to_string())),
             append: None,
         };
         
         // Array produces separate strings
-        let array_form = MessageBuilder {
+        let array_form = MessageChunk {
             prepend: Some(StringOrArray::Multiple(vec!["line1".to_string(), "line2".to_string()])),
             append: None,
         };
@@ -550,9 +558,98 @@ mod tests {
 }
 ```
 
+Test the message_builder function:
+
+```rust
+// cli/src/flows/actions/message_builder.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flows::actions::message_chunk::{MessageChunk, StringOrArray};
+    
+    #[test]
+    fn test_build_with_single_chunk() {
+        let chunks = vec![
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header".to_string())),
+                append: Some(StringOrArray::Single("footer".to_string())),
+            }
+        ];
+        
+        let result = build_message(&chunks, Some("original"), "\n\n");
+        assert_eq!(result, "header\n\noriginal\n\nfooter");
+    }
+    
+    #[test]
+    fn test_build_with_multiple_chunks() {
+        let chunks = vec![
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header1".to_string())),
+                append: Some(StringOrArray::Single("footer1".to_string())),
+            },
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header2".to_string())),
+                append: Some(StringOrArray::Single("footer2".to_string())),
+            }
+        ];
+        
+        let result = build_message(&chunks, Some("original"), "\n\n");
+        // Prepends in order, then original, then appends in order
+        assert_eq!(result, "header1\nheader2\n\noriginal\n\nfooter1\nfooter2");
+    }
+    
+    #[test]
+    fn test_build_without_original() {
+        let chunks = vec![
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header".to_string())),
+                append: Some(StringOrArray::Single("footer".to_string())),
+            }
+        ];
+        
+        let result = build_message(&chunks, None, "\n\n");
+        assert_eq!(result, "header\n\nfooter");
+    }
+    
+    #[test]
+    fn test_build_with_custom_separator() {
+        let chunks = vec![
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header".to_string())),
+                append: Some(StringOrArray::Single("footer".to_string())),
+            }
+        ];
+        
+        let result = build_message(&chunks, Some("original"), "\n");
+        assert_eq!(result, "header\noriginal\nfooter");
+    }
+    
+    #[test]
+    fn test_build_empty_chunks() {
+        let chunks = vec![];
+        let result = build_message(&chunks, Some("original"), "\n\n");
+        assert_eq!(result, "original");
+    }
+    
+    #[test]
+    fn test_build_empty_original() {
+        let chunks = vec![
+            MessageChunk {
+                prepend: Some(StringOrArray::Single("header".to_string())),
+                append: None,
+            }
+        ];
+        
+        let result = build_message(&chunks, Some(""), "\n\n");
+        assert_eq!(result, "header");
+    }
+}
+```
+
 ### Integration Tests
 
-Test that events properly use MessageBuilder:
+Test that events properly use MessageChunk and message_builder:
 
 ```rust
 // cli/tests/preprompt_event.rs
@@ -560,11 +657,11 @@ Test that events properly use MessageBuilder:
 #[test]
 fn test_preprompt_with_prepend() {
     let mut event = PrePromptEvent::new("Original prompt".to_string());
-    let builder = MessageBuilder {
+    let chunk = MessageChunk {
         prepend: Some(StringOrArray::Single("Read ARCHITECTURE.md".to_string())),
         append: None,
     };
-    event.apply_prompt_action(builder);
+    event.apply_prompt_action(chunk);
     
     let result = event.build_prompt();
     assert!(result.contains("Original prompt"));
@@ -575,17 +672,17 @@ fn test_preprompt_with_prepend() {
 fn test_preprompt_with_multiple_appends() {
     let mut event = PrePromptEvent::new("Original prompt".to_string());
     
-    let builder1 = MessageBuilder {
+    let chunk1 = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("First instruction".to_string())),
     };
-    event.apply_prompt_action(builder1);
+    event.apply_prompt_action(chunk1);
     
-    let builder2 = MessageBuilder {
+    let chunk2 = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Second instruction".to_string())),
     };
-    event.apply_prompt_action(builder2);
+    event.apply_prompt_action(chunk2);
     
     let result = event.build_prompt();
     
@@ -600,18 +697,18 @@ fn test_preprompt_order_with_prepends() {
     let mut event = PrePromptEvent::new("Original prompt".to_string());
     
     // Flow A fires first with prepend
-    let builder1 = MessageBuilder {
+    let chunk1 = MessageChunk {
         prepend: Some(StringOrArray::Single("Rule 1: Check types".to_string())),
         append: None,
     };
-    event.apply_prompt_action(builder1);
+    event.apply_prompt_action(chunk1);
     
     // Flow B fires second with prepend
-    let builder2 = MessageBuilder {
+    let chunk2 = MessageChunk {
         prepend: Some(StringOrArray::Single("Rule 2: Check security".to_string())),
         append: None,
     };
-    event.apply_prompt_action(builder2);
+    event.apply_prompt_action(chunk2);
     
     let result = event.build_prompt();
     
@@ -629,21 +726,21 @@ fn test_commit_message_with_body_and_trailers() {
     let mut event = PrepareCommitMessageEvent::new("feat(auth): add JWT validation".to_string());
     
     // Body action
-    let body_builder = MessageBuilder {
+    let body_chunk = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Implements token validation with expiry checks.".to_string())),
     };
-    event.apply_body_action(body_builder);
+    event.apply_body_action(body_chunk);
     
     // Trailers action
-    let trailers_builder = MessageBuilder {
+    let trailers_chunk = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Multiple(vec![
             "Co-authored-by: AI <ai@example.com>".to_string(),
             "Ticket: PROJ-1234".to_string(),
         ])),
     };
-    event.apply_trailers_action(trailers_builder);
+    event.apply_trailers_action(trailers_chunk);
     
     let result = event.build_message();
     
@@ -666,11 +763,11 @@ fn test_commit_message_trailers_only() {
     let mut event = PrepareCommitMessageEvent::new("feat: add feature".to_string());
     
     // Trailers action only
-    let trailers_builder = MessageBuilder {
+    let trailers_chunk = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Co-authored-by: AI <ai@example.com>".to_string())),
     };
-    event.apply_trailers_action(trailers_builder);
+    event.apply_trailers_action(trailers_chunk);
     
     let result = event.build_message();
     
@@ -683,18 +780,18 @@ fn test_commit_message_body_prepend_and_trailers() {
     let mut event = PrepareCommitMessageEvent::new("feat: add authentication".to_string());
     
     // Body with prepend
-    let body_builder = MessageBuilder {
+    let body_chunk = MessageChunk {
         prepend: Some(StringOrArray::Single("Breaking change: auth required".to_string())),
         append: None,
     };
-    event.apply_body_action(body_builder);
+    event.apply_body_action(body_chunk);
     
     // Trailers
-    let trailers_builder = MessageBuilder {
+    let trailers_chunk = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Reviewed-by: Senior Engineer".to_string())),
     };
-    event.apply_trailers_action(trailers_builder);
+    event.apply_trailers_action(trailers_chunk);
     
     let result = event.build_message();
     
@@ -714,11 +811,11 @@ fn test_commit_message_shortcut_routes_to_body() {
     // Using shortcut syntax at commit_message level
     // In practice, parser would convert `commit_message: { append: "text" }` 
     // to `body: { append: "text" }` before calling apply_body_action
-    let body_builder = MessageBuilder {
+    let body_chunk = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Additional context".to_string())),
     };
-    event.apply_body_action(body_builder);
+    event.apply_body_action(body_chunk);
     
     let result = event.build_message();
     
@@ -733,14 +830,14 @@ fn test_multiple_flows_adding_trailers() {
     let mut event = PrepareCommitMessageEvent::new("feat: add authentication".to_string());
     
     // Flow A adds a trailer
-    let trailer_a = MessageBuilder {
+    let trailer_a = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Reviewed-by: Alice".to_string())),
     };
     event.apply_trailers_action(trailer_a);
     
     // Flow B adds another trailer
-    let trailer_b = MessageBuilder {
+    let trailer_b = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Reviewed-by: Bob".to_string())),
     };
@@ -767,14 +864,14 @@ fn test_multiple_flows_adding_body() {
     let mut event = PrepareCommitMessageEvent::new("feat: add feature".to_string());
     
     // Flow A adds body content
-    let body_a = MessageBuilder {
+    let body_a = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Context from Flow A".to_string())),
     };
     event.apply_body_action(body_a);
     
     // Flow B adds more body content
-    let body_b = MessageBuilder {
+    let body_b = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Context from Flow B".to_string())),
     };
@@ -800,28 +897,28 @@ fn test_multiple_flows_body_and_trailers_mixed() {
     let mut event = PrepareCommitMessageEvent::new("feat: implement auth".to_string());
     
     // Flow A adds body
-    let body_a = MessageBuilder {
+    let body_a = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Implements JWT validation".to_string())),
     };
     event.apply_body_action(body_a);
     
     // Flow B adds trailer
-    let trailer_b = MessageBuilder {
+    let trailer_b = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Reviewed-by: Alice".to_string())),
     };
     event.apply_trailers_action(trailer_b);
     
     // Flow C adds more body
-    let body_c = MessageBuilder {
+    let body_c = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Adds token expiry checks".to_string())),
     };
     event.apply_body_action(body_c);
     
     // Flow D adds another trailer
-    let trailer_d = MessageBuilder {
+    let trailer_d = MessageChunk {
         prepend: None,
         append: Some(StringOrArray::Single("Ticket: AUTH-123".to_string())),
     };
@@ -920,10 +1017,10 @@ prompt:
 ### Validation Logic
 
 ```rust
-impl MessageBuilder {
+impl MessageChunk {
     pub fn validate(&self) -> Result<(), String> {
         if self.prepend.is_none() && self.append.is_none() {
-            return Err("MessageBuilder must have at least one field: prepend or append".to_string());
+            return Err("MessageChunk must have at least one field: prepend or append".to_string());
         }
         Ok(())
     }
@@ -932,34 +1029,39 @@ impl MessageBuilder {
 
 ## Implementation Tasks
 
-### Phase 1: Core MessageBuilder (3-5 days)
+### Phase 1: Core Infrastructure (3-5 days)
 
+- [ ] Create `cli/src/flows/actions/message_chunk.rs`
+  - [ ] Implement `StringOrArray` enum
+  - [ ] Implement `MessageChunk` struct with prepend/append fields
+  - [ ] Implement `check_id()` method using `DefaultHasher`
+  - [ ] Implement `prepend_items()` and `append_items()` methods
+  - [ ] Implement `validate()` method
+  - [ ] Write unit tests for MessageChunk
+  - [ ] Test deterministic check ID generation
+  - [ ] Add serde serialization/deserialization tests
 - [ ] Create `cli/src/flows/actions/message_builder.rs`
-- [ ] Implement `MessageBuilder` enum with Simple and Explicit variants
-- [ ] Implement `check_id()` method using `DefaultHasher`
-- [ ] Implement `apply()` method
-- [ ] Implement `validate()` method
-- [ ] Write unit tests for all variants
-- [ ] Test deterministic check ID generation
-- [ ] Add serde serialization/deserialization tests
+  - [ ] Implement `build_message()` function
+  - [ ] Write unit tests for message assembly
+  - [ ] Test various separator configurations
 
 ### Phase 2: Event Integration (2-3 days)
 
 - [ ] Create `cli/src/flows/events/preprompt.rs` (for Milestone 1.1)
-  - [ ] `PrePromptEvent` struct with MessageBuilder support
+  - [ ] `PrePromptEvent` struct with MessageChunk support
   - [ ] `apply_prompt_action()` method
-  - [ ] `build_prompt()` method
+  - [ ] `build_prompt()` method using `message_builder::build_message()`
 - [ ] Refactor existing PrepareCommitMessage hook
   - [ ] Create `cli/src/flows/events/prepare_commit_message.rs`
-  - [ ] Migrate existing logic to use MessageBuilder
+  - [ ] Migrate existing logic to use MessageChunk and message_builder
   - [ ] Support `body:` and `trailers:` sub-fields
   - [ ] Maintain backward compatibility with existing flows
 - [ ] Write integration tests for both events
-- [ ] Document how event implementations use MessageBuilder
+- [ ] Document how event implementations use MessageChunk and message_builder
 
 ### Phase 3: Documentation and Migration (1-2 days)
 
-- [ ] Update FLOW_SYNTAX.md with MessageBuilder examples
+- [ ] Update FLOW_SYNTAX.md with MessageChunk examples
 - [ ] Migrate existing flows to new syntax:
   - [ ] Update any existing PrepareCommitMessage flows to use new `body:` / `trailers:` syntax
   - [ ] Document migration path from old to new syntax
@@ -991,23 +1093,23 @@ impl MessageBuilder {
 ## Blocks
 
 This milestone blocks:
-- **Milestone 1.1**: PrePrompt event (needs MessageBuilder for `prompt:` action)
+- **Milestone 1.1**: PrePrompt event (needs MessageChunk/message_builder for `prompt:` action)
+- **Milestone 1.2**: PostResponse event (needs MessageChunk/message_builder for `autoreply:` action content)
 
 **What This Delivers:**
-- Consistent syntax for prompt modification (PrePrompt) 
+- Consistent syntax for all message-building events (PrePrompt, PostResponse, PrepareCommitMessage)
 - Refactored PrepareCommitMessage with cleaner, more maintainable code
 - Shared testing and validation infrastructure
-
-**Note:** Milestone 1.2 (PostResponse) does not depend on MessageBuilder - it uses a task-based system instead.
+- Foundation for PostResponse autoreplies (task system determines *when*, MessageChunk/message_builder determines *what*)
 
 ## Notes
 
-- The same MessageBuilder code is used by PrePrompt and PrepareCommitMessage, ensuring consistency
+- The same MessageChunk/message_builder code is used by all three events (PrePrompt, PostResponse, PrepareCommitMessage), ensuring consistency
 - PrepareCommitMessage refactoring is included in this milestone (not a future milestone)
 - Keep the implementation simple - just string manipulation, no file system interaction
 
 ## See Also
 
-- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageBuilder for `prompt:` action
-- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Task-based system (doesn't use MessageBuilder)
+- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageChunk/message_builder for `prompt:` action
+- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Uses MessageChunk/message_builder for `autoreply:` action content
 - [Milestone 1: Event System Overview](./milestone-1.md) - Context for the full event system
