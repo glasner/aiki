@@ -1,4 +1,4 @@
-# Milestone 1.0: MessageChunk & MessageBuilder Shared Syntax
+# Milestone 1.0: MessageChunk & MessageAssembler Shared Syntax
 
 **Status**: 🔴 Not Started  
 **Priority**: Critical (blocks 1.1, 1.2, and PrepareCommitMessage)  
@@ -7,7 +7,7 @@
 
 ## Overview
 
-Implement the shared MessageChunk and MessageBuilder infrastructure that provides consistent syntax and behavior across message-building events:
+Implement the shared MessageChunk and MessageAssembler infrastructure that provides consistent syntax and behavior across message-building events:
 - **PrePrompt** (`prompt:` action) - New in Milestone 1.1
 - **PrepareCommitMessage** (`commit_message:` action) - Refactored from existing implementation
 
@@ -15,10 +15,10 @@ This milestone includes **refactoring the existing PrepareCommitMessage hook** t
 
 **Architecture:**
 - `MessageChunk` - Data structure representing prepend/append fields parsed from YAML
-- `MessageBuilder` - Stateful builder that collects chunks and assembles them into final message
-- Events own a `MessageBuilder` instance (e.g., `prompt_builder`, `autoreply_builder`, `body_builder`)
+- `MessageAssembler` - Stateful builder that collects chunks and assembles them into final message
+- Events own a `MessageAssembler` instance (e.g., `prompt_assembler`, `autoreply_assembler`, `body_assembler`)
 
-**Note:** PostResponse uses a task-based system to *decide when* to send autoreplies, but still uses MessageChunk/MessageBuilder to *build* the autoreply content. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
+**Note:** PostResponse uses a task-based system to *decide when* to send autoreplies, but still uses MessageChunk/MessageAssembler to *build* the autoreply content. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
 
 ## Why This Comes First
 
@@ -38,7 +38,7 @@ By creating shared infrastructure, we ensure:
 
 ### YAML Syntax Forms
 
-The MessageBuilder accepts multiple YAML syntax forms:
+The MessageAssembler accepts multiple YAML syntax forms:
 
 ```yaml
 # 1. Block scalar with |
@@ -120,18 +120,18 @@ PrepareCommitMessage:
 ```
 
 **Note**: PrepareCommitMessage uses `commit_message:` action with `body:` and `trailers:` sub-fields:
-- Each sub-field uses MessageBuilder (supports `prepend:` and `append:`)
+- Each sub-field uses MessageAssembler (supports `prepend:` and `append:`)
 - Body section goes after original message, before trailers (joined with double newline)
 - Trailers section joined with single newline (not double)
 - **Shortcut**: `append:`/`prepend:` at `commit_message:` level automatically routes to `body.append`/`body.prepend`
 
-## Implementation: MessageChunk and MessageBuilder
+## Implementation: MessageChunk and MessageAssembler
 
 ### Location
 
 ```
 cli/src/flows/actions/message_chunk.rs     - Data structure
-cli/src/flows/actions/message_builder.rs   - Assembly function
+cli/src/flows/actions/message_assembler.rs   - Assembly function
 ```
 
 ### MessageChunk (Data Structure)
@@ -205,21 +205,21 @@ impl MessageChunk {
 }
 ```
 
-### MessageBuilder (Stateful Builder)
+### MessageAssembler (Stateful Builder)
 
 ```rust
-// cli/src/flows/actions/message_builder.rs
+// cli/src/flows/actions/message_assembler.rs
 use super::message_chunk::MessageChunk;
 
 /// Stateful builder that collects MessageChunks and assembles them into a final message
-pub struct MessageBuilder {
+pub struct MessageAssembler {
     chunks: Vec<MessageChunk>,
     original: Option<String>,
     separator: String,
 }
 
-impl MessageBuilder {
-    /// Create a new MessageBuilder
+impl MessageAssembler {
+    /// Create a new MessageAssembler
     /// 
     /// # Arguments
     /// * `original` - Optional original content (e.g., user's prompt or commit message)
@@ -277,9 +277,9 @@ impl MessageBuilder {
 
 **Design Decision: Builder Pattern**
 
-Events own a `MessageBuilder` instance that collects chunks and handles assembly. This ensures:
+Events own a `MessageAssembler` instance that collects chunks and handles assembly. This ensures:
 
-1. **Encapsulation**: MessageBuilder owns all state (chunks, original content, separator)
+1. **Encapsulation**: MessageAssembler owns all state (chunks, original content, separator)
 2. **Intuitive ordering**: Flow A fires first → Flow A's content appears first
 3. **Correct prepend order**: All prepends appear in the order flows fired
 4. **Correct append order**: All appends appear in the order flows fired
@@ -292,25 +292,25 @@ Each event implementation follows this pattern:
 ```rust
 // cli/src/flows/events/preprompt.rs
 use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_assembler::MessageAssembler;
 
 pub struct PrePromptEvent {
-    prompt_builder: MessageBuilder,
+    prompt_assembler: MessageAssembler,
 }
 
 impl PrePromptEvent {
     pub fn new(prompt: String) -> Self {
         Self {
-            prompt_builder: MessageBuilder::new(Some(prompt), "\n\n"),
+            prompt_assembler: MessageAssembler::new(Some(prompt), "\n\n"),
         }
     }
     
     pub fn apply_prompt_action(&mut self, chunk: MessageChunk) {
-        self.prompt_builder.add_chunk(chunk);
+        self.prompt_assembler.add_chunk(chunk);
     }
     
     pub fn build_prompt(&self) -> String {
-        self.prompt_builder.build()
+        self.prompt_assembler.build()
     }
 }
 ```
@@ -320,25 +320,25 @@ impl PrePromptEvent {
 ```rust
 // cli/src/flows/events/postresponse.rs
 use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_assembler::MessageAssembler;
 
 pub struct PostResponseEvent {
-    autoreply_builder: MessageBuilder,
+    autoreply_assembler: MessageAssembler,
 }
 
 impl PostResponseEvent {
     pub fn new() -> Self {
         Self {
-            autoreply_builder: MessageBuilder::new(None, "\n\n"),
+            autoreply_assembler: MessageAssembler::new(None, "\n\n"),
         }
     }
     
     pub fn add_autoreply(&mut self, chunk: MessageChunk) {
-        self.autoreply_builder.add_chunk(chunk);
+        self.autoreply_assembler.add_chunk(chunk);
     }
     
     pub fn build_reply(&self) -> String {
-        self.autoreply_builder.build()
+        self.autoreply_assembler.build()
     }
 }
 ```
@@ -348,29 +348,29 @@ impl PostResponseEvent {
 ```rust
 // cli/src/flows/events/prepare_commit_message.rs
 use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_builder::MessageBuilder;
+use crate::flows::actions::message_assembler::MessageAssembler;
 
 pub struct PrepareCommitMessageEvent {
     original_message: String,
-    body_builder: MessageBuilder,
-    trailers_builder: MessageBuilder,
+    body_assembler: MessageAssembler,
+    trailers_assembler: MessageAssembler,
 }
 
 impl PrepareCommitMessageEvent {
     pub fn new(message: String) -> Self {
         Self {
             original_message: message,
-            body_builder: MessageBuilder::new(None, "\n"),
-            trailers_builder: MessageBuilder::new(None, "\n"),
+            body_assembler: MessageAssembler::new(None, "\n"),
+            trailers_assembler: MessageAssembler::new(None, "\n"),
         }
     }
     
     pub fn apply_body_action(&mut self, chunk: MessageChunk) {
-        self.body_builder.add_chunk(chunk);
+        self.body_assembler.add_chunk(chunk);
     }
     
     pub fn apply_trailers_action(&mut self, chunk: MessageChunk) {
-        self.trailers_builder.add_chunk(chunk);
+        self.trailers_assembler.add_chunk(chunk);
     }
     
     pub fn build_message(&self) -> String {
@@ -382,13 +382,13 @@ impl PrepareCommitMessageEvent {
         }
         
         // Body section
-        let body_section = self.body_builder.build();
+        let body_section = self.body_assembler.build();
         if !body_section.is_empty() {
             parts.push(body_section);
         }
         
         // Trailers section
-        let trailer_section = self.trailers_builder.build();
+        let trailer_section = self.trailers_assembler.build();
         if !trailer_section.is_empty() {
             parts.push(trailer_section);
         }
@@ -560,10 +560,10 @@ mod tests {
 }
 ```
 
-Test the MessageBuilder:
+Test the MessageAssembler:
 
 ```rust
-// cli/src/flows/actions/message_builder.rs
+// cli/src/flows/actions/message_assembler.rs
 
 #[cfg(test)]
 mod tests {
@@ -572,7 +572,7 @@ mod tests {
     
     #[test]
     fn test_build_with_single_chunk() {
-        let mut builder = MessageBuilder::new(Some("original".to_string()), "\n\n");
+        let mut builder = MessageAssembler::new(Some("original".to_string()), "\n\n");
         builder.add_chunk(MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: Some(StringOrArray::Single("footer".to_string())),
@@ -584,7 +584,7 @@ mod tests {
     
     #[test]
     fn test_build_with_multiple_chunks() {
-        let mut builder = MessageBuilder::new(Some("original".to_string()), "\n\n");
+        let mut builder = MessageAssembler::new(Some("original".to_string()), "\n\n");
         builder.add_chunk(MessageChunk {
             prepend: Some(StringOrArray::Single("header1".to_string())),
             append: Some(StringOrArray::Single("footer1".to_string())),
@@ -601,7 +601,7 @@ mod tests {
     
     #[test]
     fn test_build_without_original() {
-        let mut builder = MessageBuilder::new(None, "\n\n");
+        let mut builder = MessageAssembler::new(None, "\n\n");
         builder.add_chunk(MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: Some(StringOrArray::Single("footer".to_string())),
@@ -613,7 +613,7 @@ mod tests {
     
     #[test]
     fn test_build_with_custom_separator() {
-        let mut builder = MessageBuilder::new(Some("original".to_string()), "\n");
+        let mut builder = MessageAssembler::new(Some("original".to_string()), "\n");
         builder.add_chunk(MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: Some(StringOrArray::Single("footer".to_string())),
@@ -625,14 +625,14 @@ mod tests {
     
     #[test]
     fn test_build_empty_chunks() {
-        let builder = MessageBuilder::new(Some("original".to_string()), "\n\n");
+        let builder = MessageAssembler::new(Some("original".to_string()), "\n\n");
         let result = builder.build();
         assert_eq!(result, "original");
     }
     
     #[test]
     fn test_build_empty_original() {
-        let mut builder = MessageBuilder::new(Some("".to_string()), "\n\n");
+        let mut builder = MessageAssembler::new(Some("".to_string()), "\n\n");
         builder.add_chunk(MessageChunk {
             prepend: Some(StringOrArray::Single("header".to_string())),
             append: None,
@@ -646,7 +646,7 @@ mod tests {
 
 ### Integration Tests
 
-Test that events properly use MessageChunk and message_builder:
+Test that events properly use MessageChunk and message_assembler:
 
 ```rust
 // cli/tests/preprompt_event.rs
@@ -993,7 +993,7 @@ commit_message:
 ```yaml
 # ❌ Empty object
 prompt: {}
-# Error: MessageBuilder must have at least prepend or append
+# Error: MessageAssembler must have at least prepend or append
 
 # ❌ Unknown field
 prompt:
@@ -1037,28 +1037,28 @@ impl MessageChunk {
   - [ ] Write unit tests for MessageChunk
   - [ ] Test deterministic check ID generation
   - [ ] Add serde serialization/deserialization tests
-- [ ] Create `cli/src/flows/actions/message_builder.rs`
-  - [ ] Implement `MessageBuilder` struct with chunks, original, separator fields
+- [ ] Create `cli/src/flows/actions/message_assembler.rs`
+  - [ ] Implement `MessageAssembler` struct with chunks, original, separator fields
   - [ ] Implement `new()` constructor
   - [ ] Implement `add_chunk()` method
   - [ ] Implement `build()` method
-  - [ ] Write unit tests for MessageBuilder
+  - [ ] Write unit tests for MessageAssembler
   - [ ] Test various separator configurations
 
 ### Phase 2: Event Integration (2-3 days)
 
 - [ ] Create `cli/src/flows/events/preprompt.rs` (for Milestone 1.1)
-  - [ ] `PrePromptEvent` struct with `prompt_builder: MessageBuilder` field
-  - [ ] `new()` constructor that creates MessageBuilder with original prompt
+  - [ ] `PrePromptEvent` struct with `prompt_assembler: MessageAssembler` field
+  - [ ] `new()` constructor that creates MessageAssembler with original prompt
   - [ ] `apply_prompt_action()` method that calls `builder.add_chunk()`
   - [ ] `build_prompt()` method that calls `builder.build()`
 - [ ] Refactor existing PrepareCommitMessage hook
   - [ ] Create `cli/src/flows/events/prepare_commit_message.rs`
-  - [ ] `PrepareCommitMessageEvent` with `body_builder` and `trailers_builder` fields
+  - [ ] `PrepareCommitMessageEvent` with `body_assembler` and `trailers_assembler` fields
   - [ ] Support `body:` and `trailers:` sub-fields
   - [ ] Maintain backward compatibility with existing flows
 - [ ] Write integration tests for both events
-- [ ] Document how event implementations use MessageBuilder pattern
+- [ ] Document how event implementations use MessageAssembler pattern
 
 ### Phase 3: Documentation and Migration (1-2 days)
 
@@ -1086,7 +1086,7 @@ impl MessageChunk {
 - `serde_yaml` - YAML parsing for check ID generation
 
 **Aiki Components:**
-- Flow parser (needs to parse MessageBuilder from YAML)
+- Flow parser (needs to parse MessageAssembler from YAML)
 
 **Standard Library:**
 - `std::collections::hash_map::DefaultHasher` - Built-in hashing for check IDs
@@ -1094,23 +1094,23 @@ impl MessageChunk {
 ## Blocks
 
 This milestone blocks:
-- **Milestone 1.1**: PrePrompt event (needs MessageChunk/message_builder for `prompt:` action)
-- **Milestone 1.2**: PostResponse event (needs MessageChunk/message_builder for `autoreply:` action content)
+- **Milestone 1.1**: PrePrompt event (needs MessageChunk/message_assembler for `prompt:` action)
+- **Milestone 1.2**: PostResponse event (needs MessageChunk/message_assembler for `autoreply:` action content)
 
 **What This Delivers:**
 - Consistent syntax for all message-building events (PrePrompt, PostResponse, PrepareCommitMessage)
 - Refactored PrepareCommitMessage with cleaner, more maintainable code
 - Shared testing and validation infrastructure
-- Foundation for PostResponse autoreplies (task system determines *when*, MessageChunk/message_builder determines *what*)
+- Foundation for PostResponse autoreplies (task system determines *when*, MessageChunk/message_assembler determines *what*)
 
 ## Notes
 
-- The same MessageChunk/message_builder code is used by all three events (PrePrompt, PostResponse, PrepareCommitMessage), ensuring consistency
+- The same MessageChunk/message_assembler code is used by all three events (PrePrompt, PostResponse, PrepareCommitMessage), ensuring consistency
 - PrepareCommitMessage refactoring is included in this milestone (not a future milestone)
 - Keep the implementation simple - just string manipulation, no file system interaction
 
 ## See Also
 
-- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageChunk/message_builder for `prompt:` action
-- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Uses MessageChunk/message_builder for `autoreply:` action content
+- [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageChunk/message_assembler for `prompt:` action
+- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Uses MessageChunk/message_assembler for `autoreply:` action content
 - [Milestone 1: Event System Overview](./milestone-1.md) - Context for the full event system
