@@ -130,8 +130,19 @@ PrepareCommitMessage:
 ### Location
 
 ```
-cli/src/flows/actions/message_chunk.rs     - Data structure
-cli/src/flows/actions/message_assembler.rs   - Assembly function
+cli/src/flows/actions/message_chunk.rs       - MessageChunk struct
+cli/src/flows/actions/message_assembler.rs   - MessageAssembler struct
+cli/src/flows/actions/mod.rs                 - Re-exports for clean imports
+```
+
+**Re-exports in mod.rs:**
+```rust
+// cli/src/flows/actions/mod.rs
+pub mod message_chunk;
+pub mod message_assembler;
+
+pub use message_chunk::MessageChunk;
+pub use message_assembler::MessageAssembler;
 ```
 
 ### MessageChunk (Data Structure)
@@ -291,8 +302,7 @@ Each event implementation follows this pattern:
 
 ```rust
 // cli/src/flows/events/preprompt.rs
-use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_assembler::MessageAssembler;
+use crate::flows::actions::{MessageChunk, MessageAssembler};
 
 pub struct PrePromptEvent {
     prompt_assembler: MessageAssembler,
@@ -319,8 +329,7 @@ impl PrePromptEvent {
 
 ```rust
 // cli/src/flows/events/postresponse.rs
-use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_assembler::MessageAssembler;
+use crate::flows::actions::{MessageChunk, MessageAssembler};
 
 pub struct PostResponseEvent {
     autoreply_assembler: MessageAssembler,
@@ -347,8 +356,7 @@ impl PostResponseEvent {
 
 ```rust
 // cli/src/flows/events/prepare_commit_message.rs
-use crate::flows::actions::message_chunk::MessageChunk;
-use crate::flows::actions::message_assembler::MessageAssembler;
+use crate::flows::actions::{MessageChunk, MessageAssembler};
 
 pub struct PrepareCommitMessageEvent {
     original_message: String,
@@ -1044,6 +1052,9 @@ impl MessageChunk {
   - [ ] Implement `build()` method
   - [ ] Write unit tests for MessageAssembler
   - [ ] Test various separator configurations
+- [ ] Update `cli/src/flows/actions/mod.rs`
+  - [ ] Add module declarations for `message_chunk` and `message_assembler`
+  - [ ] Re-export `MessageChunk` and `MessageAssembler` for clean imports
 
 ### Phase 2: Event Integration (2-3 days)
 
