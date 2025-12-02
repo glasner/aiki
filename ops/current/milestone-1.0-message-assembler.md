@@ -1029,6 +1029,21 @@ impl MessageChunk {
 
 ## Implementation Tasks
 
+### Phase 0: Code Organization (1-2 days)
+
+- [ ] Extract actions from `flows/types.rs` to `flows/actions.rs`
+  - [ ] Move `Action` enum and all action structs to new `flows/actions.rs`
+  - [ ] Move `FailureMode` enum and helper functions
+  - [ ] Keep only `Flow` struct in `flows/types.rs`
+  - [ ] Update imports across codebase (`use crate::flows::types::Action` → `use crate::flows::actions::Action`)
+  - [ ] Verify all tests pass
+  - [ ] Commit refactoring before starting Phase 1
+
+**Rationale:** This makes the codebase cleaner before adding new message-related code. After this refactoring:
+- `flows/types.rs` - Flow struct only (~40 lines)
+- `flows/actions.rs` - Action enum + all action types (~195 lines)
+- `flows/messages.rs` - MessageChunk + MessageAssembler (new)
+
 ### Phase 1: Core Infrastructure (3-5 days)
 
 - [ ] Create `cli/src/flows/messages.rs`

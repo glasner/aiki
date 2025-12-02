@@ -172,14 +172,7 @@ PrePrompt:
 
 ## Implementation Tasks
 
-### Refactoring (Pre-requisite)
-
-- [ ] Extract actions from `flows/types.rs` to `flows/actions.rs`
-  - [ ] Move `Action` enum and all action structs to new file
-  - [ ] Move `FailureMode` enum and helpers
-  - [ ] Keep only `Flow` struct in `types.rs`
-  - [ ] Update imports across codebase
-  - [ ] Verify all tests pass
+**Pre-requisite:** Complete Milestone 1.0 Phase 0 (extract actions from types.rs)
 
 ### Core Engine
 
