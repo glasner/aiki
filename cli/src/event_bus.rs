@@ -15,6 +15,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             AikiEvent::PrePrompt(_) => "PrePrompt",
             AikiEvent::PreFileChange(_) => "PreFileChange",
             AikiEvent::PostFileChange(_) => "PostFileChange",
+            AikiEvent::PostResponse(_) => "PostResponse",
             AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
         };
         eprintln!(
@@ -30,6 +31,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
         AikiEvent::PrePrompt(e) => handlers::handle_pre_prompt(e),
         AikiEvent::PreFileChange(e) => handlers::handle_pre_file_change(e),
         AikiEvent::PostFileChange(e) => handlers::handle_post_file_change(e),
+        AikiEvent::PostResponse(e) => handlers::handle_post_response(e),
         AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
     };
 

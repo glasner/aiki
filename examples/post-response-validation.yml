@@ -1,0 +1,24 @@
+# Example PostResponse Flow: Error Detection and Validation
+#
+# This flow demonstrates how to validate agent output and send autoreplies
+# when errors or issues are detected.
+
+name: "error-validation"
+version: "1"
+description: "Validate agent responses and send autoreplies for errors"
+
+PostResponse:
+  # Example 1: Simple autoreply
+  - autoreply: "Remember to run tests before committing."
+
+  # Example 2: Conditional autoreply based on response content
+  # Note: Helper functions like count_typescript_errors are not yet implemented
+  # This is a placeholder for future functionality
+
+  # Example 3: Multiple autoreplies accumulate
+  - autoreply:
+      prepend: "⚠️ Important reminders:"
+      append: "Please address these before continuing."
+
+  # Example 4: Variable interpolation in autoreplies
+  - autoreply: "Session $event.session_id completed."

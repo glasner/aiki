@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::events::{
-    AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent,
+    AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPreFileChangeEvent, AikiPrePromptEvent,
     AikiPrepareCommitMessageEvent, AikiStartEvent,
 };
 use crate::flows::{AikiState, FlowEngine, FlowResult};
@@ -190,7 +190,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
         };
 
     // Build final prompt (graceful degradation on error)
-    let final_prompt = match state.build_prompt() {
+    let final_prompt = match state.build_message() {
         Ok(prompt) => prompt,
         Err(e) => {
             // Prompt assembly failed - log warning and use original prompt
@@ -323,6 +323,80 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
                         .to_string(),
                 ),
             ))
+        }
+    }
+}
+
+/// Handle post-response event (after agent completes its response)
+///
+/// This event fires after the agent finishes generating its response, allowing flows
+/// to validate output, detect errors, and optionally send an autoreply to the agent.
+/// Returns the autoreply via metadata if non-empty, with graceful degradation on errors.
+pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse> {
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[aiki] PostResponse event from {:?}, response length: {}",
+            event.agent_type,
+            event.response.len()
+        );
+    }
+
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
+
+    // Build execution state from event
+    let mut state = AikiState::new(event);
+
+    // Set flow name for self.* function resolution
+    state.flow_name = Some("aiki/core".to_string());
+
+    // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
+    let (flow_result, _timing) =
+        match FlowEngine::execute_actions(&core_flow.post_response, &mut state) {
+            Ok(result) => result,
+            Err(e) => {
+                // Flow execution failed - log warning and skip autoreply
+                eprintln!("\n⚠️ PostResponse flow failed: {}", e);
+                eprintln!("No autoreply generated.\n");
+                return Ok(HookResponse::success());
+            }
+        };
+
+    // Build final autoreply (graceful degradation on error)
+    let autoreply = match state.build_message() {
+        Ok(reply) => reply,
+        Err(e) => {
+            // Autoreply assembly failed - log warning and skip autoreply
+            eprintln!("\n⚠️ PostResponse flow failed: {}", e);
+            eprintln!("No autoreply generated.\n");
+            String::new()
+        }
+    };
+
+    // Return response based on flow result (all errors result in no autoreply)
+    match flow_result {
+        FlowResult::Success => {
+            if !autoreply.is_empty() {
+                Ok(HookResponse::success()
+                    .with_metadata(vec![("autoreply".to_string(), autoreply)]))
+            } else {
+                Ok(HookResponse::success())
+            }
+        }
+        FlowResult::FailedContinue(msg) => {
+            eprintln!("\n⚠️ PostResponse flow failed: {}", msg);
+            eprintln!("No autoreply generated.\n");
+            Ok(HookResponse::success())
+        }
+        FlowResult::FailedStop(msg) => {
+            eprintln!("\n⚠️ PostResponse flow stopped: {}", msg);
+            eprintln!("No autoreply generated.\n");
+            Ok(HookResponse::success())
+        }
+        FlowResult::FailedBlock(msg) => {
+            eprintln!("\n⚠️ PostResponse flow blocked: {}", msg);
+            eprintln!("No autoreply generated.\n");
+            Ok(HookResponse::success())
         }
     }
 }

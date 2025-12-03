@@ -88,6 +88,20 @@ pub struct AikiPrepareCommitMessageEvent {
     pub commit_msg_file: Option<PathBuf>,
 }
 
+/// Post-response event (after agent completes its response)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiPostResponseEvent {
+    pub agent_type: AgentType,
+    pub session_id: Option<String>,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    /// The agent's original response text (immutable)
+    pub response: String,
+    /// Files that were modified by the agent during this response
+    #[serde(default)]
+    pub modified_files: Vec<PathBuf>,
+}
+
 /// Core event types in the Aiki system
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -100,6 +114,8 @@ pub enum AikiEvent {
     PreFileChange(AikiPreFileChangeEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
     PostFileChange(AikiPostFileChangeEvent),
+    /// After agent completes its response (allows validation and autoreply)
+    PostResponse(AikiPostResponseEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),
 }
@@ -113,6 +129,7 @@ impl AikiEvent {
             Self::PrePrompt(e) => &e.cwd,
             Self::PreFileChange(e) => &e.cwd,
             Self::PostFileChange(e) => &e.cwd,
+            Self::PostResponse(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
         }
     }
@@ -125,6 +142,7 @@ impl AikiEvent {
             Self::PrePrompt(e) => e.agent_type,
             Self::PreFileChange(e) => e.agent_type,
             Self::PostFileChange(e) => e.agent_type,
+            Self::PostResponse(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
         }
     }
@@ -158,5 +176,11 @@ impl From<AikiPostFileChangeEvent> for AikiEvent {
 impl From<AikiPrepareCommitMessageEvent> for AikiEvent {
     fn from(event: AikiPrepareCommitMessageEvent) -> Self {
         AikiEvent::PrepareCommitMessage(event)
+    }
+}
+
+impl From<AikiPostResponseEvent> for AikiEvent {
+    fn from(event: AikiPostResponseEvent) -> Self {
+        AikiEvent::PostResponse(event)
     }
 }
