@@ -11,41 +11,50 @@ See [milestone-1.md](./milestone-1.md) for the full Milestone 1 overview.
 Flow Composition allows flows to include and reuse other flows, enabling modular, composable workflow design.
 
 **Key Capabilities:**
-- Include other flows via `includes:` directive
-- Invoke flows inline with `flow:` action
+- Include flows via `before:` (run before this flow) and `after:` (run after this flow) directives
+- Invoke flows inline with `flow:` action (run at specific point in action list)
 - Flow resolution (aiki/*, vendor/*, local paths)
 - Circular dependency detection
+- Atomic flow execution (each flow runs its own before/after internally)
 
 ---
 
 ## Core Features
 
-### 1. Flow Includes Directive
+### 1. Before/After Directives
 
-Include other flows at the top level:
+Include flows that run before or after this flow:
 
 ```yaml
 name: "My Workflow"
 version: "1.0"
 
-includes:
-  - aiki/quick-lint
-  - aiki/build-check
-  - vendor/security-scan
-  - ./local-checks.yml
+before:
+  - aiki/quick-lint       # Runs before this flow's actions
+  - aiki/security-scan
 
-PreCommit:
-  - shell: echo "Running checks..."
+after:
+  - aiki/cleanup          # Runs after this flow's actions
+  - aiki/metrics
+
+PostResponse:
+  - shell: echo "My custom logic"
 ```
 
+**Execution order:**
+1. Flows in `before:` list (in order)
+2. This flow's actions
+3. Flows in `after:` list (in order)
+
 **How it works:**
-- Included flows are loaded and merged before parent flow executes
-- Included flow actions execute before parent flow actions
-- All events from included flows are available
+- Each included flow is executed atomically (runs its own before/after internally)
+- Before flows run first, in the order listed
+- After flows run last, in the order listed
+- All flows share the same event context (e.g., PostResponse event)
 
 ### 2. Flow Action (Inline Invocation)
 
-Invoke flows inline during execution:
+Invoke flows inline at a specific point in the action list:
 
 ```yaml
 PostResponse:
@@ -53,14 +62,19 @@ PostResponse:
   
   - if: $error_count > 0
     then:
-      - flow: aiki/quick-lint  # Invoke flow inline
+      - flow: aiki/detailed-lint  # Runs NOW (not in before/after)
   
   - shell: echo "All checks passed"
 ```
 
-**Difference from includes:**
-- `includes:` - Merge at parse time, always executes
-- `flow:` action - Invoke at runtime, conditionally
+**Key behavior:**
+- `flow:` action executes **the same event** from the referenced flow
+- Example: `flow: aiki/quick-lint` inside `PostResponse` runs `quick-lint`'s `PostResponse` actions
+- The invoked flow is atomic (runs its own before/after if it has them)
+
+**Difference from before/after:**
+- `before:` / `after:` - Always execute, fixed position
+- `flow:` action - Executes at that point in the action list, can be conditional
 
 ### 3. Flow Resolution
 
@@ -72,7 +86,7 @@ Flows are resolved in this order:
 
 **Examples:**
 ```yaml
-includes:
+before:
   - aiki/quick-lint           # ~/.aiki/flows/aiki/quick-lint.yml
   - vendor/eslint             # ~/.aiki/flows/vendor/eslint.yml
   - ./my-checks.yml           # .aiki/flows/my-checks.yml
@@ -85,18 +99,50 @@ Prevent infinite loops:
 
 ```yaml
 # flow-a.yml
-includes:
+before:
   - ./flow-b.yml
 
 # flow-b.yml
-includes:
+before:
   - ./flow-a.yml  # ERROR: Circular dependency detected
 ```
 
 **Detection mechanism:**
-- Track flow call stack during loading
+- Track flow call stack during execution
 - Error if flow appears twice in stack
 - Clear error message with cycle path
+
+### 5. Atomic Flow Execution
+
+Each flow is self-contained and runs its own before/after flows internally:
+
+```yaml
+# aiki/quick-lint.yml
+before:
+  - aiki/base-checks
+
+PostResponse:
+  - let: errors = self.lint()
+  - if: $errors > 0
+    then:
+      autoreply: "Fix lint errors"
+```
+
+```yaml
+# my-workflow.yml
+before:
+  - aiki/quick-lint      # Runs quick-lint atomically
+
+PostResponse:
+  - shell: echo "My logic"
+```
+
+**Execution order:**
+1. `aiki/base-checks` (quick-lint's before)
+2. `aiki/quick-lint` actions
+3. `my-workflow` actions
+
+The user doesn't need to know about `aiki/base-checks`—it's an implementation detail of `quick-lint`.
 
 ---
 
@@ -114,8 +160,11 @@ PostResponse:
       autoreply: "Fix $lint_errors linting issues"
 
 # User's flow
-includes:
-  - aiki/quick-lint  # Reuse lint checks
+before:
+  - aiki/quick-lint  # Runs before user's actions
+
+PostResponse:
+  - shell: echo "My custom validation"
 ```
 
 ### Use Case 2: Conditional Flow Invocation
@@ -133,33 +182,66 @@ PostResponse:
       - flow: aiki/rust-check
 ```
 
-### Use Case 3: Multi-Layer Composition
+### Use Case 3: Before and After Flows
+
+```yaml
+# User's workflow with cleanup
+before:
+  - aiki/quick-lint
+  - aiki/security-scan
+
+after:
+  - aiki/cleanup          # Clean up temp files
+  - aiki/metrics          # Report metrics
+
+PostResponse:
+  - shell: echo "Main logic here"
+```
+
+### Use Case 4: Multi-Layer Composition
 
 ```yaml
 # aiki/default.yml
-includes:
+before:
   - aiki/quick-lint
   - aiki/build-check
   - aiki/test-runner
 
+PostResponse:
+  - shell: echo "Default checks complete"
+
 # User's custom-workflow.yml
-includes:
-  - aiki/default  # Include everything from aiki/default
+before:
+  - aiki/default           # Runs default's before flows + actions
   - ./company-policies.yml
+
+PostResponse:
+  - shell: echo "Custom logic"
 ```
 
-### Use Case 4: Vendor-Specific Workflows
+**Execution order:**
+1. `aiki/quick-lint` (from aiki/default's before)
+2. `aiki/build-check` (from aiki/default's before)
+3. `aiki/test-runner` (from aiki/default's before)
+4. `aiki/default` PostResponse actions
+5. `./company-policies.yml` (atomic execution)
+6. User's PostResponse actions
+
+### Use Case 5: Vendor-Specific Workflows
 
 ```yaml
 # vendor/github/pr-checks.yml
 name: "GitHub PR Checks"
+
+before:
+  - aiki/quick-lint
+  - aiki/test-runner
+
 PostResponse:
-  - flow: aiki/quick-lint
-  - flow: aiki/test-runner
   - shell: gh pr review --approve
 
 # User includes vendor workflow
-includes:
+before:
   - vendor/github/pr-checks
 ```
 
@@ -169,8 +251,8 @@ includes:
 
 ### Core Parser
 
-- [ ] Add `includes:` directive to flow schema
-- [ ] Parse `includes` list in `cli/src/flows/parser.rs`
+- [ ] Add `before:` and `after:` directives to flow schema
+- [ ] Parse `before` and `after` lists in `cli/src/flows/parser.rs`
 - [ ] Add `flow:` action to flow DSL
 - [ ] Parse `flow:` action in `cli/src/flows/parser.rs`
 
@@ -179,9 +261,10 @@ includes:
 - [ ] Implement `cli/src/flows/loader.rs`
   - [ ] Load flow from path
   - [ ] Resolve flow paths (aiki/*, vendor/*, local)
-  - [ ] Recursive loading for includes
+  - [ ] Recursive loading for before/after flows
   - [ ] Circular dependency detection
   - [ ] Flow caching (avoid reloading same flow)
+  - [ ] Atomic flow execution (each flow runs its own before/after)
 
 ### Flow Resolver
 
@@ -192,13 +275,14 @@ includes:
   - [ ] Resolve absolute paths
   - [ ] Error handling (flow not found)
 
-### Flow Merger
+### Flow Executor
 
-- [ ] Implement flow merging logic
-  - [ ] Merge included flow actions before parent
-  - [ ] Preserve event order
-  - [ ] Handle name conflicts
-  - [ ] Merge metadata (name, version, etc.)
+- [ ] Implement flow execution logic
+  - [ ] Execute before flows in order (each atomically)
+  - [ ] Execute this flow's actions
+  - [ ] Execute after flows in order (each atomically)
+  - [ ] Pass event context through all flows
+  - [ ] Handle errors in before/after flows gracefully
 
 ### Engine Integration
 
@@ -211,11 +295,13 @@ includes:
 
 - [ ] Unit tests: Flow path resolution
 - [ ] Unit tests: Circular dependency detection
-- [ ] Unit tests: Flow merging logic
-- [ ] Integration tests: `includes:` directive
-- [ ] Integration tests: `flow:` action
-- [ ] Integration tests: Multi-level composition
-- [ ] E2E tests: Real flows with includes
+- [ ] Unit tests: Atomic flow execution
+- [ ] Unit tests: Before/after execution order
+- [ ] Integration tests: `before:` and `after:` directives
+- [ ] Integration tests: `flow:` action (inline invocation)
+- [ ] Integration tests: Multi-level composition (nested before/after)
+- [ ] Integration tests: Same event execution (PostResponse → PostResponse)
+- [ ] E2E tests: Real flows with before/after
 
 ### Documentation
 
@@ -228,14 +314,17 @@ includes:
 
 ## Success Criteria
 
-✅ Can include flows via `includes:` directive  
-✅ Can invoke flows via `flow:` action  
+✅ Can include flows via `before:` and `after:` directives  
+✅ Can invoke flows inline via `flow:` action  
 ✅ Flow paths resolve correctly (aiki/*, vendor/*, local)  
 ✅ Circular dependencies are detected and rejected  
-✅ Included flow actions execute in correct order  
+✅ Before flows execute before this flow's actions  
+✅ After flows execute after this flow's actions  
+✅ Flow: action executes at the correct point in action list  
+✅ Each flow executes atomically (runs its own before/after)  
 ✅ Flow caching prevents redundant loads  
 ✅ Clear error messages for missing flows  
-✅ Multi-level composition works (flow includes flow includes flow)  
+✅ Multi-level composition works (nested before/after)  
 
 ---
 
@@ -247,7 +336,8 @@ includes:
 pub struct Flow {
     pub name: String,
     pub version: String,
-    pub includes: Vec<String>,           // Flow paths to include
+    pub before: Vec<String>,             // Flows to run before this flow
+    pub after: Vec<String>,              // Flows to run after this flow
     pub events: HashMap<EventType, Vec<Action>>,
 }
 ```
@@ -313,26 +403,49 @@ impl FlowResolver {
 }
 ```
 
-### Flow Merger
+### Flow Executor
 
 ```rust
-pub struct FlowMerger;
+pub struct FlowExecutor<'a> {
+    loader: &'a mut FlowLoader,
+}
 
-impl FlowMerger {
-    pub fn merge(parent: &Flow, includes: Vec<Flow>) -> Flow {
-        let mut merged = parent.clone();
-        
-        for included in includes {
-            // Merge each event type
-            for (event_type, actions) in included.events {
-                merged.events
-                    .entry(event_type)
-                    .or_insert_with(Vec::new)
-                    .splice(0..0, actions);  // Prepend included actions
-            }
+impl<'a> FlowExecutor<'a> {
+    /// Execute a flow atomically (before → this flow → after)
+    pub fn execute(&mut self, flow: &Flow, event: &mut dyn Event) -> Result<()> {
+        // 1. Execute before flows (each atomically)
+        for before_path in &flow.before {
+            let before_flow = self.loader.load(before_path)?;
+            self.execute(&before_flow, event)?;  // Recursive, atomic
         }
         
-        merged
+        // 2. Execute this flow's actions
+        let actions = flow.events.get(&event.event_type())
+            .ok_or(AikiError::NoActionsForEvent)?;
+        
+        for action in actions {
+            self.execute_action(action, event)?;
+        }
+        
+        // 3. Execute after flows (each atomically)
+        for after_path in &flow.after {
+            let after_flow = self.loader.load(after_path)?;
+            self.execute(&after_flow, event)?;  // Recursive, atomic
+        }
+        
+        Ok(())
+    }
+    
+    fn execute_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
+        match action {
+            Action::Flow { path } => {
+                // Inline flow invocation
+                let flow = self.loader.load(path)?;
+                self.execute(&flow, event)?;  // Execute atomically
+            }
+            // ... other action types ...
+        }
+        Ok(())
     }
 }
 ```
@@ -344,7 +457,14 @@ impl FlowMerger {
 Given these flows:
 
 ```yaml
+# aiki/base-checks.yml
+PostResponse:
+  - shell: echo "Running base checks"
+
 # aiki/quick-lint.yml
+before:
+  - aiki/base-checks
+
 PostResponse:
   - let: lint_errors = self.count_lint_errors
   - if: $lint_errors > 0
@@ -352,8 +472,11 @@ PostResponse:
       autoreply: "Fix linting"
 
 # my-workflow.yml
-includes:
+before:
   - aiki/quick-lint
+
+after:
+  - aiki/cleanup
 
 PostResponse:
   - shell: echo "Custom check"
@@ -361,21 +484,26 @@ PostResponse:
 
 **Execution order:**
 
-1. Load `my-workflow.yml`
-2. Load `aiki/quick-lint.yml` (from includes)
-3. Merge flows:
-   ```
-   PostResponse:
-     # From aiki/quick-lint (included)
-     - let: lint_errors = self.count_lint_errors
-     - if: $lint_errors > 0
-       then:
-         autoreply: "Fix linting"
-     
-     # From my-workflow.yml (parent)
-     - shell: echo "Custom check"
-   ```
-4. Execute merged PostResponse
+1. Execute `my-workflow`'s before flows:
+   - Execute `aiki/quick-lint` atomically:
+     - Execute `aiki/base-checks` (quick-lint's before)
+     - Execute `aiki/quick-lint` PostResponse actions
+2. Execute `my-workflow`'s PostResponse actions
+3. Execute `my-workflow`'s after flows:
+   - Execute `aiki/cleanup` atomically
+
+**Output:**
+```
+Running base checks          ← aiki/base-checks
+[lint check runs]            ← aiki/quick-lint
+Custom check                 ← my-workflow
+[cleanup runs]               ← aiki/cleanup
+```
+
+**Key insights:**
+- User doesn't need to know `aiki/quick-lint` depends on `aiki/base-checks`
+- Each flow is self-contained and atomic
+- Event context (PostResponse) is shared across all flows
 
 ---
 
@@ -401,14 +529,38 @@ Available flows:
 ```
 Error: Circular dependency detected
 
-Flow include chain:
+Flow execution chain:
   my-workflow.yml
-  → aiki/shared.yml
-  → vendor/checks.yml
+  → aiki/shared.yml (before)
+  → vendor/checks.yml (before)
   → aiki/shared.yml  ← Circular!
 
-Remove the circular include to fix this.
+Remove the circular dependency to fix this.
 ```
+
+### Before/After Flow Execution Errors
+
+If a before flow fails:
+```
+Error: Before flow failed: aiki/quick-lint
+
+  Caused by: Lint errors detected
+
+Aborting execution of my-workflow.yml
+```
+
+If an after flow fails:
+```
+Warning: After flow failed: aiki/cleanup
+
+  Caused by: Failed to remove temp files
+
+Main workflow completed successfully, but cleanup failed.
+```
+
+**Error handling strategy:**
+- Before flow errors → abort entire workflow (fail fast)
+- After flow errors → log warning but don't fail workflow (best effort cleanup)
 
 ---
 

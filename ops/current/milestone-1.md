@@ -10,7 +10,7 @@
 Milestone 1 extends Aiki's flow system (built in Phase 5) with new event types and capabilities that enable the three key patterns in aiki/default:
 1. **PrePrompt event** - Inject context before agent sees prompt
 2. **PostResponse event & Task System** - Validate after agent responds with structured task management
-3. **Flow composition** - Reuse flows via `includes:` directive
+3. **Flow composition** - Reuse flows via `before:` and `after:` directives
 
 **Why this matters:** These primitives unlock Milestone 2-5 features. Without them, we can't inject skills, cache architecture docs, run builds automatically, or manage tasks.
 
@@ -140,23 +140,31 @@ PostResponse:
 ### 1.3. Flow Composition
 📄 **Detailed doc:** [milestone-1.3-flow-composition.md](./milestone-1.3-flow-composition.md)
 
-**Summary:** Allow flows to include and reuse other flows.
+**Summary:** Allow flows to include and reuse other flows with explicit ordering control.
 
 **Key capabilities:**
-- Include other flows via `includes:` directive
-- Invoke flows inline with `flow:` action
+- Include flows that run before this flow via `before:` directive
+- Include flows that run after this flow via `after:` directive
+- Invoke flows inline with `flow:` action (runs at specific point)
 - Flow resolution (aiki/*, vendor/*, local paths)
 - Circular dependency detection
+- Atomic flow execution (each flow runs its own before/after internally)
 
 **Example:**
 ```yaml
 name: "My Workflow"
-includes:
-  - aiki/quick-lint
-  - aiki/build-check
+
+before:
+  - aiki/quick-lint        # Runs before this flow
+  - aiki/security-scan
+
+after:
+  - aiki/cleanup           # Runs after this flow
 
 PostResponse:
-  - flow: aiki/quick-lint  # Invoke inline
+  - if: $errors > 0
+    then:
+      flow: aiki/detailed-lint  # Invoke inline (runs NOW)
 ```
 
 **Timeline:** Week 3
@@ -404,15 +412,17 @@ cli/src/
 ### Week 3: Flow Composition (Milestone 1.3)
 
 **Day 1-2: Flow Composition**
-- Parse `includes:` directive
-- Implement flow loader with includes support
-- Implement `flow:` action type
+- Parse `before:` and `after:` directives
+- Implement flow loader with before/after support
+- Implement `flow:` action type (inline invocation)
 - Resolve flow paths (aiki/*, vendor/*, local)
 - Detect circular dependencies
+- Implement atomic flow execution (each flow runs its own before/after)
 - Unit tests
 
 **Day 3-5: Integration Testing**
-- Test flow composition with multiple includes
+- Test flow composition with multiple before/after flows
+- Test atomic execution and nested flows
 - Manual testing with real workflows
 - Integration tests across milestones 1.0-1.3
 
@@ -449,7 +459,7 @@ cli/src/
 - ✅ PostResponse event fires after agent responds (Milestone 1.2)
 - ✅ MessageChunk/MessageAssembler provides consistent syntax (Milestone 1.0)
 - ✅ Helper functions work correctly (error counting, test parsing) (Milestone 1.2)
-- ✅ Flow composition works (includes + flow action) (Milestone 1.3)
+- ✅ Flow composition works (before/after + flow action) (Milestone 1.3)
 - ✅ All integrations supported (Claude Code, Cursor, ACP)
 
 ### Functional Requirements (Optional: Task System - Milestone 1.4)
