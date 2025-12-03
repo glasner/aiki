@@ -525,6 +525,46 @@ Ticket: AUTH-123
 
 ## Technical Design
 
+### Event Trait
+
+```rust
+/// Trait for all event types that can trigger flows
+/// 
+/// This allows FlowComposer to work with any event type polymorphically
+pub trait Event {
+    /// Get the type of this event (PrePrompt, PostResponse, etc.)
+    fn event_type(&self) -> EventType;
+}
+
+/// Event type enum for routing to correct handler
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventType {
+    PrePrompt,
+    PostResponse,
+    PrepareCommitMessage,
+    PostToolUse,
+    // Future events...
+}
+
+// Example implementations
+impl Event for PrePromptEvent {
+    fn event_type(&self) -> EventType {
+        EventType::PrePrompt
+    }
+}
+
+impl Event for PostResponseEvent {
+    fn event_type(&self) -> EventType {
+        EventType::PostResponse
+    }
+}
+```
+
+**Why this trait:**
+- **Polymorphism**: FlowComposer accepts `&mut dyn Event` instead of concrete types
+- **Extensibility**: Add new events without changing FlowComposer
+- **Type-safe routing**: Flow system uses `event.event_type()` to find correct actions in Flow struct
+
 ### Flow Structure
 
 ```rust
