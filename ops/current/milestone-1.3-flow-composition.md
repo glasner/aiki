@@ -186,7 +186,7 @@ before:
 
 # flow-b.yml in .aiki/flows/
 before:
-  - @/flows/flow-a.yml    # Project root path
+  - @/.aiki/flows/flow-a.yml    # Project root path
 
 # Without canonicalization: Looks like different files (different strings)
 # With canonicalization: Both resolve to /project/.aiki/flows/flow-a.yml → Cycle detected!
