@@ -349,25 +349,30 @@ before:
 ### Flow Loader
 
 - [ ] Implement `cli/src/flows/loader.rs`
-  - [ ] Load flow from path
-  - [ ] Resolve flow paths (aiki/*, vendor/*, local)
-  - [ ] Recursive loading for before/after flows
-  - [ ] Circular dependency detection
+  - [ ] Use FlowResolver for path resolution
+  - [ ] Load flow from path (parse YAML)
   - [ ] Flow caching (avoid reloading same flow)
-  - [ ] Atomic flow execution (each flow runs its own before/after)
+  - [ ] Pass current_flow_dir to resolver for relative paths
+
+### Path Resolver
+
+- [ ] Implement `cli/src/flows/path_resolver.rs`
+  - [ ] Implement `find_project_root()` - search upward for `.aiki/` directory
+  - [ ] Cache project_root and home_dir in PathResolver struct
+  - [ ] Resolve `@/` paths (project root)
+  - [ ] Resolve `./` and `../` paths (relative to current directory)
+  - [ ] Resolve absolute paths
+  - [ ] Validate empty path after `@/`
+  - [ ] Error handling (not in Aiki project, invalid prefix)
 
 ### Flow Resolver
 
-- [ ] Implement `cli/src/flows/resolver.rs`
-  - [ ] Implement `find_project_root()` - search upward for `.aiki/` directory
-  - [ ] Cache project_root and home_dir in FlowResolver struct
-  - [ ] Resolve `aiki/*` - try project first, then user
-  - [ ] Resolve `vendor/*` - try project first, then user
-  - [ ] Resolve `@/` paths (project root)
-  - [ ] Resolve `./` and `../` paths (flow-relative)
-  - [ ] Resolve absolute paths
-  - [ ] Validate empty path after `@/`
-  - [ ] Error handling (flow not found, not in Aiki project, invalid prefix)
+- [ ] Implement `cli/src/flows/flow_resolver.rs`
+  - [ ] Use PathResolver internally
+  - [ ] Resolve `aiki/*` - try project first, then user (adds .yml)
+  - [ ] Resolve `vendor/*` - try project first, then user (adds .yml)
+  - [ ] Delegate `@/`, `./`, `../`, `/` to PathResolver
+  - [ ] Error handling (flow not found)
 
 ### Flow Executor
 
@@ -488,16 +493,17 @@ impl FlowLoader {
 }
 ```
 
-### Flow Resolver
+### Path Resolver
 
 ```rust
-pub struct FlowResolver {
+/// Low-level path resolver for all file types (flows, docs, scripts, etc.)
+pub struct PathResolver {
     project_root: PathBuf,  // Discovered once, cached
     home_dir: PathBuf,      // Cached for performance
 }
 
-impl FlowResolver {
-    /// Create a new FlowResolver by discovering project root
+impl PathResolver {
+    /// Create a new PathResolver by discovering project root
     pub fn new() -> Result<Self> {
         Ok(Self {
             project_root: Self::find_project_root()?,
@@ -525,10 +531,63 @@ impl FlowResolver {
         }
     }
     
+    /// Resolve a generic path (does NOT add .yml extension or search flow directories)
+    /// Used for docs, configs, scripts, or any non-flow file
+    pub fn resolve(&self, path: &str, current_dir: &Path) -> Result<PathBuf> {
+        if path.is_empty() {
+            return Err(AikiError::InvalidPath {
+                path: path.to_string(),
+                reason: "Path cannot be empty".to_string(),
+            });
+        }
+        
+        let resolved = if let Some(rest) = path.strip_prefix("@/") {
+            // Project root
+            if rest.is_empty() {
+                return Err(AikiError::InvalidPath {
+                    path: path.to_string(),
+                    reason: "Path after @/ cannot be empty".to_string(),
+                });
+            }
+            self.project_root.join(rest)
+        } else if path.starts_with("./") || path.starts_with("../") {
+            // Relative to current directory
+            current_dir.join(path)
+        } else if path.starts_with('/') {
+            // Absolute path
+            PathBuf::from(path)
+        } else {
+            return Err(AikiError::InvalidPath {
+                path: path.to_string(),
+                reason: "Path must start with @/, ./, ../, or /".to_string(),
+            });
+        };
+        
+        Ok(resolved)
+    }
+}
+```
+
+### Flow Resolver
+
+```rust
+/// High-level flow resolver (uses PathResolver + flow-specific logic)
+pub struct FlowResolver {
+    path_resolver: PathResolver,
+}
+
+impl FlowResolver {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            path_resolver: PathResolver::new()?,
+        })
+    }
+    
     /// Resolve a flow path to an absolute PathBuf
+    /// Adds .yml extension and searches aiki/vendor directories
     /// 
     /// # Arguments
-    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@proj/docs/arch.md", "./helpers/lint.yml")
+    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@/docs/arch.md", "./helpers/lint.yml")
     /// * `current_flow_dir` - Directory containing the current flow file (for ./ paths)
     pub fn resolve(
         &self,
@@ -544,7 +603,7 @@ impl FlowResolver {
         
         let resolved = if let Some(rest) = path.strip_prefix("aiki/") {
             // Built-in flows: try project first, then user
-            let project_path = self.project_root
+            let project_path = self.path_resolver.project_root
                 .join(".aiki/flows/aiki")
                 .join(rest)
                 .with_extension("yml");
@@ -552,14 +611,14 @@ impl FlowResolver {
             if project_path.exists() {
                 project_path
             } else {
-                self.home_dir
+                self.path_resolver.home_dir
                     .join(".aiki/flows/aiki")
                     .join(rest)
                     .with_extension("yml")
             }
         } else if let Some(rest) = path.strip_prefix("vendor/") {
             // Vendor flows: try project first, then user
-            let project_path = self.project_root
+            let project_path = self.path_resolver.project_root
                 .join(".aiki/flows/vendor")
                 .join(rest)
                 .with_extension("yml");
@@ -567,31 +626,14 @@ impl FlowResolver {
             if project_path.exists() {
                 project_path
             } else {
-                self.home_dir
+                self.path_resolver.home_dir
                     .join(".aiki/flows/vendor")
                     .join(rest)
                     .with_extension("yml")
             }
-        } else if let Some(rest) = path.strip_prefix("@/") {
-            // Project root: @/ → {project}/
-            if rest.is_empty() {
-                return Err(AikiError::InvalidFlowPath {
-                    path: path.to_string(),
-                    reason: "Path after @/ cannot be empty".to_string(),
-                });
-            }
-            self.project_root.join(rest)
-        } else if path.starts_with("./") || path.starts_with("../") {
-            // Flow-relative: ./ or ../ → relative to current flow directory
-            current_flow_dir.join(path)
-        } else if path.starts_with('/') {
-            // Absolute path
-            PathBuf::from(path)
         } else {
-            return Err(AikiError::InvalidFlowPath {
-                path: path.to_string(),
-                reason: "Path must start with aiki/, vendor/, @/, ./, ../, or /".to_string(),
-            });
+            // For generic paths (@/, ./, ../, /), delegate to PathResolver
+            return self.path_resolver.resolve(path, current_flow_dir);
         };
         
         Ok(resolved)
@@ -601,36 +643,37 @@ impl FlowResolver {
 
 **Examples of resolution:**
 ```rust
-// Create resolver (discovers project root automatically)
-let resolver = FlowResolver::new()?;
+// Create resolvers (discover project root automatically)
+let path_resolver = PathResolver::new()?;
+let flow_resolver = FlowResolver::new()?;
 
-// Built-in flow (searches project first, then user)
-resolver.resolve(
+// Built-in flow (searches project first, then user) - FlowResolver
+flow_resolver.resolve(
     "aiki/quick-lint",
     Path::new(".aiki/flows"),
 ) // → Checks: 1) {project}/.aiki/flows/aiki/quick-lint.yml
   //          2) ~/.aiki/flows/aiki/quick-lint.yml
 
-// Project root (docs)
-resolver.resolve(
+// Project root (docs) - PathResolver for non-flow files
+path_resolver.resolve(
     "@/docs/architecture.md",
     Path::new(".aiki/flows"),
 ) // → /project/docs/architecture.md
 
-// Project root (flows outside .aiki/flows/)
-resolver.resolve(
-    "@/custom/flows/special.yml",
+// Project root (script) - PathResolver
+path_resolver.resolve(
+    "@/scripts/lint.sh",
     Path::new(".aiki/flows"),
-) // → /project/custom/flows/special.yml
+) // → /project/scripts/lint.sh
 
-// Flow-relative
-resolver.resolve(
+// Flow-relative - FlowResolver (adds .yml)
+flow_resolver.resolve(
     "./helpers/lint.yml",
     Path::new("/project/.aiki/flows"),
 ) // → /project/.aiki/flows/helpers/lint.yml
 
-// Flow-relative with parent directory
-resolver.resolve(
+// Flow-relative with parent directory - FlowResolver
+flow_resolver.resolve(
     "../shared/base.yml",
     Path::new("/project/.aiki/flows/helpers"),
 ) // → /project/.aiki/flows/shared/base.yml
