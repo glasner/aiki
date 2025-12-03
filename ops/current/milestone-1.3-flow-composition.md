@@ -376,19 +376,20 @@ before:
 
 ### Flow Executor
 
-- [ ] Implement flow execution logic
-  - [ ] Execute before flows in order (each atomically)
-  - [ ] Execute this flow's actions
-  - [ ] Execute after flows in order (each atomically)
+- [ ] Implement `cli/src/flows/executor.rs`
+  - [ ] Create FlowExecutor with loader, engine, and call_stack
+  - [ ] Implement `execute()` - orchestrate before/this flow/after
+  - [ ] Implement `execute_action()` - dispatch to engine or self
+  - [ ] Runtime cycle detection with call stack
   - [ ] Pass event context through all flows
   - [ ] Handle errors in before/after flows gracefully
 
 ### Engine Integration
 
-- [ ] Add `flow:` action executor to `cli/src/flows/engine.rs`
-- [ ] Load and execute referenced flow
-- [ ] Pass current event context to invoked flow
-- [ ] Return control after flow completes
+- [ ] Update `cli/src/flows/engine.rs`
+  - [ ] Add `Action::Flow { path }` variant to action enum
+  - [ ] FlowEngine remains unchanged (no flow: handling)
+  - [ ] FlowExecutor intercepts flow: actions before delegating to engine
 
 ### Testing
 
@@ -681,17 +682,35 @@ flow_resolver.resolve(
 
 ### Flow Executor
 
+FlowExecutor orchestrates flow composition (before/after, cycle detection) and delegates
+action execution to FlowEngine.
+
 ```rust
+/// Orchestrates flow composition and delegates action execution to FlowEngine
 pub struct FlowExecutor<'a> {
     loader: &'a mut FlowLoader,
-    call_stack: Vec<PathBuf>,  // Runtime call stack for cycle detection
+    engine: &'a mut FlowEngine,    // Executes individual actions
+    call_stack: Vec<PathBuf>,      // Runtime call stack for cycle detection
 }
 
 impl<'a> FlowExecutor<'a> {
+    pub fn new(loader: &'a mut FlowLoader, engine: &'a mut FlowEngine) -> Self {
+        Self {
+            loader,
+            engine,
+            call_stack: Vec::new(),
+        }
+    }
+    
     /// Execute a flow atomically (before → this flow → after)
+    /// 
+    /// This is the orchestration layer that handles:
+    /// - Flow composition (before/after)
+    /// - Cycle detection
+    /// - Recursive flow invocation
     pub fn execute(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
         // Load the flow
-        let flow = self.loader.load(flow_path)?;
+        let flow = self.loader.load(flow_path, current_flow_dir)?;
         let canonical_path = PathBuf::from(flow_path).canonicalize()?;
         
         // Check for circular dependency (including self-invocation)
@@ -730,18 +749,55 @@ impl<'a> FlowExecutor<'a> {
         Ok(())
     }
     
+    /// Execute a single action, handling flow: specially
     fn execute_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
         match action {
             Action::Flow { path } => {
-                // Inline flow invocation (checked by call stack)
-                self.execute(path, event)?;  // Execute atomically
+                // Inline flow invocation - delegate to execute() for composition
+                self.execute(path, event)?;
             }
-            // ... other action types ...
+            _ => {
+                // All other actions - delegate to FlowEngine
+                self.engine.execute_action(action, event)?;
+            }
         }
         Ok(())
     }
 }
 ```
+
+### Relationship with FlowEngine
+
+**FlowEngine** (already exists from Phase 5):
+- Executes individual actions: `shell`, `let`, `if`, `autoreply`, etc.
+- No knowledge of flow composition
+- Core action execution logic
+
+**FlowExecutor** (new for Milestone 1.3):
+- Orchestrates flow composition: `before:`, `after:`, `flow:` action
+- Manages call stack for cycle detection
+- Delegates individual action execution to FlowEngine
+
+**Architecture:**
+```
+User triggers event (e.g., PostResponse)
+    ↓
+FlowExecutor.execute("my-workflow.yml", event)
+    ↓
+    Loads flow via FlowLoader
+    Checks call stack for cycles
+    ↓
+    Executes before flows (recursive)
+    ↓
+    For each action in this flow:
+        - If flow: action → FlowExecutor.execute() (recursive)
+        - Otherwise → FlowEngine.execute_action() (delegate)
+    ↓
+    Executes after flows (recursive)
+```
+
+**Key insight:** FlowExecutor handles *orchestration* (what flows run when),
+FlowEngine handles *execution* (what each action does).
 
 ---
 
