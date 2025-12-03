@@ -264,6 +264,40 @@ impl MessageChunk {
 
         Ok(())
     }
+
+    /// Resolve variables in this chunk using the provided resolver function
+    ///
+    /// # Arguments
+    ///
+    /// * `resolver` - A function that resolves variables in strings
+    ///
+    /// # Returns
+    ///
+    /// A new MessageChunk with all variables resolved
+    #[must_use]
+    pub fn resolve_variables<F>(self, mut resolver: F) -> Self
+    where
+        F: FnMut(&str) -> String,
+    {
+        let resolved_prepend = self.prepend.map(|text_lines| match text_lines {
+            TextLines::Single(s) => TextLines::Single(resolver(&s)),
+            TextLines::Multiple(lines) => {
+                TextLines::Multiple(lines.iter().map(|line| resolver(line)).collect())
+            }
+        });
+
+        let resolved_append = self.append.map(|text_lines| match text_lines {
+            TextLines::Single(s) => TextLines::Single(resolver(&s)),
+            TextLines::Multiple(lines) => {
+                TextLines::Multiple(lines.iter().map(|line| resolver(line)).collect())
+            }
+        });
+
+        Self {
+            prepend: resolved_prepend,
+            append: resolved_append,
+        }
+    }
 }
 
 impl Default for MessageChunk {
@@ -716,10 +750,7 @@ append:
     #[test]
     fn test_prepend_items() {
         let chunk = MessageChunk {
-            prepend: Some(TextLines::Multiple(vec![
-                "a".to_string(),
-                "b".to_string(),
-            ])),
+            prepend: Some(TextLines::Multiple(vec!["a".to_string(), "b".to_string()])),
             append: None,
         };
 
@@ -733,10 +764,7 @@ append:
     fn test_append_items() {
         let chunk = MessageChunk {
             prepend: None,
-            append: Some(TextLines::Multiple(vec![
-                "x".to_string(),
-                "y".to_string(),
-            ])),
+            append: Some(TextLines::Multiple(vec!["x".to_string(), "y".to_string()])),
         };
 
         assert_eq!(chunk.append_items(), vec!["x".to_string(), "y".to_string()]);
@@ -920,17 +948,13 @@ mod assembler_tests {
 
         // Flow A adds context
         assembler.add_chunk(MessageChunk {
-            prepend: Some(TextLines::Single(
-                "Read ARCHITECTURE.md first".to_string(),
-            )),
+            prepend: Some(TextLines::Single("Read ARCHITECTURE.md first".to_string())),
             append: None,
         });
 
         // Flow B adds constraints
         assembler.add_chunk(MessageChunk {
-            prepend: Some(TextLines::Single(
-                "Follow security guidelines".to_string(),
-            )),
+            prepend: Some(TextLines::Single("Follow security guidelines".to_string())),
             append: None,
         });
 

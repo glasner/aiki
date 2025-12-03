@@ -30,6 +30,10 @@ pub struct Flow {
     #[serde(rename = "PostFileChange", default)]
     pub post_file_change: Vec<Action>,
 
+    /// PostResponse event handler (after agent completes its response)
+    #[serde(rename = "PostResponse", default)]
+    pub post_response: Vec<Action>,
+
     /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "PrepareCommitMessage", default)]
     pub prepare_commit_message: Vec<Action>,
@@ -63,6 +67,8 @@ pub enum Action {
     Self_(SelfAction),
     /// Prompt modification (for PrePrompt events)
     Prompt(PromptAction),
+    /// Autoreply (for PostResponse events)
+    Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
 }
@@ -207,6 +213,31 @@ pub enum PromptContent {
 
     /// Explicit form with prepend/append
     /// YAML: `prompt: { prepend: "...", append: "..." }`
+    Explicit(crate::flows::messages::MessageChunk),
+}
+
+/// Autoreply action (for PostResponse events)
+/// Sends an additional message to the agent after it completes its response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoreplyAction {
+    /// The autoreply content (MessageChunk)
+    pub autoreply: AutoreplyContent,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Content for autoreply action
+/// Can be a simple string or explicit prepend/append
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AutoreplyContent {
+    /// Short form: simple text message
+    /// YAML: `autoreply: "text"`
+    Simple(String),
+
+    /// Explicit form with prepend/append
+    /// YAML: `autoreply: { prepend: "...", append: "..." }`
     Explicit(crate::flows::messages::MessageChunk),
 }
 

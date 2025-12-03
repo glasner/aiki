@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
-    Action, CommitMessageAction, CommitMessageOp, FailureMode, IfAction, JjAction, LetAction,
-    LogAction, PromptAction, PromptContent, SelfAction, ShellAction, SwitchAction,
+    Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, FailureMode,
+    IfAction, JjAction, LetAction, LogAction, PromptAction, PromptContent, SelfAction, ShellAction,
+    SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -86,6 +87,20 @@ impl FlowEngine {
                     resolver.add_var("event.session_id".to_string(), session_id.clone());
                 }
             }
+            crate::events::AikiEvent::PostResponse(e) => {
+                resolver.add_var("event.response".to_string(), e.response.clone());
+                if let Some(ref session_id) = e.session_id {
+                    resolver.add_var("event.session_id".to_string(), session_id.clone());
+                }
+                resolver.add_var(
+                    "event.modified_files".to_string(),
+                    e.modified_files
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
             crate::events::AikiEvent::PrepareCommitMessage(e) => {
                 // Add commit message file path if available
                 if let Some(ref path) = e.commit_msg_file {
@@ -149,6 +164,7 @@ impl FlowEngine {
                     Action::Let(let_action) => &let_action.on_failure,
                     Action::Self_(self_action) => &self_action.on_failure,
                     Action::Prompt(prompt_action) => &prompt_action.on_failure,
+                    Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
                     Action::Log(_) => {
                         continue; // Log actions never fail
@@ -216,6 +232,9 @@ impl FlowEngine {
             Action::Let(let_action) => Self::execute_let(let_action, context),
             Action::Self_(self_action) => Self::execute_self(self_action, context),
             Action::Prompt(prompt_action) => Self::execute_prompt(prompt_action, context),
+            Action::Autoreply(autoreply_action) => {
+                Self::execute_autoreply(autoreply_action, context)
+            }
             Action::CommitMessage(commit_msg_action) => {
                 Self::execute_commit_message(commit_msg_action, context)
             }
@@ -263,6 +282,10 @@ impl FlowEngine {
             }
             Action::Prompt(_) => {
                 // Prompt actions modify the prompt_assembler in state directly
+                // No need to store results
+            }
+            Action::Autoreply(_) => {
+                // Autoreply actions modify the autoreply_assembler in state directly
                 // No need to store results
             }
             Action::CommitMessage(_) => {
@@ -471,52 +494,67 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(context);
 
-        // Convert PromptContent to MessageChunk
+        // Convert PromptContent to MessageChunk and resolve variables
         let chunk = match &action.prompt {
             PromptContent::Simple(text) => {
                 // Simple form: defaults to append
-                let resolved_text = resolver.resolve(text);
                 MessageChunk {
                     prepend: None,
-                    append: Some(crate::flows::messages::TextLines::Single(resolved_text)),
+                    append: Some(crate::flows::messages::TextLines::Single(text.clone())),
                 }
             }
-            PromptContent::Explicit(chunk) => {
-                // Explicit form: resolve variables in prepend/append fields
-                let resolved_prepend = chunk.prepend.as_ref().map(|text_lines| match text_lines {
-                    crate::flows::messages::TextLines::Single(s) => {
-                        crate::flows::messages::TextLines::Single(resolver.resolve(&s))
-                    }
-                    crate::flows::messages::TextLines::Multiple(lines) => {
-                        crate::flows::messages::TextLines::Multiple(
-                            lines.iter().map(|line| resolver.resolve(&line)).collect(),
-                        )
-                    }
-                });
-
-                let resolved_append = chunk.append.as_ref().map(|text_lines| match text_lines {
-                    crate::flows::messages::TextLines::Single(s) => {
-                        crate::flows::messages::TextLines::Single(resolver.resolve(&s))
-                    }
-                    crate::flows::messages::TextLines::Multiple(lines) => {
-                        crate::flows::messages::TextLines::Multiple(
-                            lines.iter().map(|line| resolver.resolve(&line)).collect(),
-                        )
-                    }
-                });
-
-                MessageChunk {
-                    prepend: resolved_prepend,
-                    append: resolved_append,
-                }
-            }
-        };
+            PromptContent::Explicit(chunk) => chunk.clone(),
+        }
+        .resolve_variables(|s| resolver.resolve(s));
 
         // Validate chunk before adding to assembler
         chunk.validate()?;
 
-        // Add chunk to prompt assembler
-        let assembler = context.get_prompt_assembler_mut()?;
+        // Add chunk to message assembler
+        let assembler = context.get_message_assembler_mut()?;
+        assembler.add_chunk(chunk);
+
+        Ok(ActionResult::success())
+    }
+
+    /// Execute an autoreply action
+    ///
+    /// This action adds content to the autoreply assembler for PostResponse events.
+    /// Only works for PostResponse events that have an autoreply_assembler.
+    fn execute_autoreply(
+        action: &AutoreplyAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        use crate::events::AikiEvent;
+
+        // Verify this is a PostResponse event
+        if !matches!(&context.event, AikiEvent::PostResponse(_)) {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "autoreply action can only be used in PostResponse events"
+            )));
+        }
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Convert AutoreplyContent to MessageChunk and resolve variables
+        let chunk = match &action.autoreply {
+            AutoreplyContent::Simple(text) => {
+                // Simple form: just text content
+                MessageChunk {
+                    prepend: None,
+                    append: Some(crate::flows::messages::TextLines::Single(text.clone())),
+                }
+            }
+            AutoreplyContent::Explicit(chunk) => chunk.clone(),
+        }
+        .resolve_variables(|s| resolver.resolve(s));
+
+        // Validate chunk before adding to assembler
+        chunk.validate()?;
+
+        // Add chunk to message assembler
+        let assembler = context.get_message_assembler_mut()?;
         assembler.add_chunk(chunk);
 
         Ok(ActionResult::success())
@@ -2663,7 +2701,7 @@ mod tests {
         assert!(matches!(result, FlowResult::Success));
 
         // Build final prompt
-        let final_prompt = context.build_prompt().unwrap();
+        let final_prompt = context.build_message().unwrap();
         assert!(final_prompt.contains("Context: You are in a test project."));
         assert!(final_prompt.contains("What files changed?"));
     }
@@ -2698,7 +2736,7 @@ mod tests {
         assert!(matches!(result, FlowResult::Success));
 
         // Build final prompt
-        let final_prompt = context.build_prompt().unwrap();
+        let final_prompt = context.build_message().unwrap();
         // Note: MessageAssembler adds "\n\n" separator between prepends and original content
         assert_eq!(
             final_prompt,
@@ -2750,7 +2788,7 @@ mod tests {
 
         // Build final prompt - prepends should be in order, appends should be in order
         // Note: MessageAssembler adds "\n\n" separator between sections
-        let final_prompt = context.build_prompt().unwrap();
+        let final_prompt = context.build_message().unwrap();
         assert_eq!(
             final_prompt,
             "CONTEXT1 \nCONTEXT2 \n\nuser prompt\n\n SUFFIX"

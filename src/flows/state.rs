@@ -53,9 +53,10 @@ pub struct AikiState {
     /// Current flow name (e.g., "aiki/core") for self references
     pub flow_name: Option<String>,
 
-    /// Prompt assembler for PrePrompt events
-    /// Accumulates prompt modifications across multiple actions
-    prompt_assembler: Option<crate::flows::messages::MessageAssembler>,
+    /// Message assembler for events that build messages
+    /// - PrePrompt: accumulates prompt modifications
+    /// - PostResponse: accumulates autoreply content
+    message_assembler: Option<crate::flows::messages::MessageAssembler>,
 }
 
 impl AikiState {
@@ -63,14 +64,20 @@ impl AikiState {
     pub fn new(event: impl Into<crate::events::AikiEvent>) -> Self {
         let event = event.into();
 
-        // Initialize prompt assembler for PrePrompt events
-        let prompt_assembler = if let crate::events::AikiEvent::PrePrompt(ref e) = event {
-            Some(crate::flows::messages::MessageAssembler::new(
-                Some(e.original_prompt.clone()),
-                "\n\n", // Double newline separator for prompt sections
-            ))
-        } else {
-            None
+        // Initialize message assembler based on event type
+        let message_assembler = match &event {
+            crate::events::AikiEvent::PrePrompt(e) => {
+                // PrePrompt: start with original prompt
+                Some(crate::flows::messages::MessageAssembler::new(
+                    Some(e.original_prompt.clone()),
+                    "\n\n",
+                ))
+            }
+            crate::events::AikiEvent::PostResponse(_) => {
+                // PostResponse: build autoreply from scratch
+                Some(crate::flows::messages::MessageAssembler::new(None, "\n\n"))
+            }
+            _ => None,
         };
 
         Self {
@@ -78,7 +85,7 @@ impl AikiState {
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
             flow_name: None,
-            prompt_assembler,
+            message_assembler,
         }
     }
 
@@ -127,36 +134,27 @@ impl AikiState {
         self.variable_metadata.get(name)
     }
 
-    /// Get mutable reference to the prompt assembler
-    /// Only available for PrePrompt events
-    pub fn get_prompt_assembler_mut(
+    /// Get mutable reference to the message assembler
+    /// Only available for PrePrompt and PostResponse events
+    pub fn get_message_assembler_mut(
         &mut self,
     ) -> crate::error::Result<&mut crate::flows::messages::MessageAssembler> {
-        self.prompt_assembler.as_mut().ok_or_else(|| {
+        self.message_assembler.as_mut().ok_or_else(|| {
             crate::error::AikiError::Other(anyhow::anyhow!(
-                "Prompt assembler not available (not a PrePrompt event)"
+                "Message assembler not available (not a PrePrompt or PostResponse event)"
             ))
         })
     }
 
-    /// Build the final prompt from accumulated chunks
-    /// Only available for PrePrompt events
-    pub fn build_prompt(&self) -> crate::error::Result<String> {
-        self.prompt_assembler
+    /// Build the final message from accumulated chunks
+    /// Works for PrePrompt (builds prompt) and PostResponse (builds autoreply)
+    pub fn build_message(&self) -> crate::error::Result<String> {
+        self.message_assembler
             .as_ref()
             .map(|assembler| assembler.build())
             .ok_or_else(|| {
-                crate::error::AikiError::Other(anyhow::anyhow!(
-                    "Prompt assembler not available (not a PrePrompt event)"
-                ))
+                crate::error::AikiError::Other(anyhow::anyhow!("Message assembler not available"))
             })
-    }
-
-    /// Clear accumulated prompt chunks (for error recovery)
-    pub fn clear_prompt_chunks(&mut self) {
-        if let Some(ref mut assembler) = self.prompt_assembler {
-            assembler.clear();
-        }
     }
 }
 
