@@ -64,6 +64,52 @@ prepend: "line1\nline2"
 
 **Check ID behavior**: Forms 1 and 3 produce identical check IDs. Form 2 produces a different check ID because the YAML structure differs. This is intentional - changing YAML structure is considered a flow edit for stuck detection purposes.
 
+### File Path Resolution (Expansion Only)
+
+Strings in `prepend:` and `append:` fields that look like paths are expanded to absolute paths, but NOT automatically loaded:
+
+```yaml
+# Path expansion (not file loading)
+PrePrompt:
+  prompt:
+    prepend:
+      - @/docs/architecture.md     # Expands to /project/docs/architecture.md
+      - ./helpers/notes.txt        # Expands to /project/.aiki/flows/helpers/notes.txt
+      - ~/user/skills/rust.md      # Expands to /home/user/user/skills/rust.md
+      - /abs/path/file.md          # Already absolute, unchanged
+      - "Remember to run tests"    # Literal text (no path pattern)
+
+# Path resolution uses PathResolver (see milestone-1.3)
+PrePrompt:
+  prompt:
+    prepend:
+      - @/docs/arch.md             # Expands to {project}/docs/arch.md
+      - ./local/notes.txt          # Expands relative to flow directory
+```
+
+**Path expansion rules:**
+- Starts with `@/` → Expand to project root path
+- Starts with `./` or `../` → Expand relative to flow directory
+- Starts with `~/` → Expand to home directory path
+- Starts with `/` → Already absolute, no expansion needed
+- Otherwise → Literal text (use as-is, no expansion)
+
+**When path expansion happens:**
+- During action execution (not YAML parsing)
+- After variable substitution (allows dynamic paths)
+- Uses PathResolver for `@/`, `./`, `../` paths
+- Expanded path replaces the original string
+
+**Note:** Path expansion does NOT load file contents. The expanded path string is used as-is. File loading (if needed) happens separately at the vendor integration layer.
+
+**Example with variable substitution:**
+```yaml
+PrePrompt:
+  - let: doc_file = "@/docs/architecture.md"
+  - prompt:
+      prepend: $doc_file  # Variable expanded to path, then path expanded to absolute
+```
+
 ### Explicit Form (Prepend and/or Append)
 
 ```yaml
@@ -1055,12 +1101,16 @@ impl MessageChunk {
   - [ ] Implement `check_id()` method using `DefaultHasher`
   - [ ] Implement `prepend_items()` and `append_items()` methods
   - [ ] Implement `validate()` method
+  - [ ] Implement path detection helper: `is_file_path(s: &str) -> bool`
+  - [ ] Implement path expansion helper: `expand_path_if_needed(s: &str, path_resolver: &PathResolver, current_dir: &Path) -> Result<String>`
   - [ ] Implement `MessageAssembler` struct with chunks, original, separator fields
   - [ ] Implement `new()` constructor
-  - [ ] Implement `add_chunk()` method
+  - [ ] Implement `add_chunk()` method with path expansion
   - [ ] Implement `build()` method
   - [ ] Write unit tests for MessageChunk
   - [ ] Write unit tests for MessageAssembler
+  - [ ] Write unit tests for path detection
+  - [ ] Write unit tests for path expansion (with mocked PathResolver)
   - [ ] Test deterministic check ID generation
   - [ ] Test various separator configurations
   - [ ] Add serde serialization/deserialization tests

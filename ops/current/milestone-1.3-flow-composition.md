@@ -335,6 +335,72 @@ before:
   - vendor/github/pr-checks
 ```
 
+### Use Case 7: Shared Event State Across Composed Flows
+
+**Example: PrePrompt with shared prompt_assembler**
+
+```yaml
+# aiki/rust-skills.yml
+PrePrompt:
+  prompt:
+    prepend: ~/.aiki/skills/rust.md
+
+# my-workflow.yml
+before:
+  - aiki/rust-skills
+
+PrePrompt:
+  prompt:
+    prepend: @/docs/architecture.md
+    append: "Remember to run tests."
+```
+
+**Final prompt:**
+```
+[rust.md content]           ← from before flow (aiki/rust-skills)
+[architecture.md content]   ← from main flow
+[original user prompt]
+Remember to run tests.      ← from main flow
+```
+
+**Key insight:** All flows share the same `prompt_assembler`, so content accumulates in execution order.
+
+**Example: PrepareCommitMessage with shared body_assembler and trailers_assembler**
+
+```yaml
+# aiki/co-author.yml
+PrepareCommitMessage:
+  - commit_message:
+      trailers:
+        append: "Co-authored-by: AI Assistant <ai@example.com>"
+
+# my-workflow.yml
+before:
+  - aiki/co-author
+
+PrepareCommitMessage:
+  - commit_message:
+      body:
+        append: "Implements authentication with JWT validation"
+      trailers:
+        append: "Ticket: AUTH-123"
+```
+
+**Final commit message:**
+```
+feat: add authentication
+
+Implements authentication with JWT validation
+
+Co-authored-by: AI Assistant <ai@example.com>
+Ticket: AUTH-123
+```
+
+**Key insight:** 
+- All flows share `body_assembler` and `trailers_assembler`
+- Trailers accumulate in execution order: before flow's Co-authored-by appears first
+- Body and trailers are separate assemblers, but both shared across flows
+
 ---
 
 ## Implementation Tasks
@@ -374,22 +440,22 @@ before:
   - [ ] Delegate `@/`, `./`, `../`, `/` to PathResolver
   - [ ] Error handling (flow not found)
 
-### Flow Executor
+### Flow Composer
 
-- [ ] Implement `cli/src/flows/executor.rs`
-  - [ ] Create FlowExecutor with loader, engine, and call_stack
-  - [ ] Implement `execute()` - orchestrate before/this flow/after
-  - [ ] Implement `execute_action()` - dispatch to engine or self
+- [ ] Implement `cli/src/flows/composer.rs`
+  - [ ] Create FlowComposer with loader, executor, and call_stack
+  - [ ] Implement `compose()` - orchestrate before/this flow/after
+  - [ ] Implement `compose_action()` - dispatch to executor or self
   - [ ] Runtime cycle detection with call stack
   - [ ] Pass event context through all flows
   - [ ] Handle errors in before/after flows gracefully
 
-### Engine Integration
+### Executor Integration
 
-- [ ] Update `cli/src/flows/engine.rs`
+- [ ] Update `cli/src/flows/executor.rs`
   - [ ] Add `Action::Flow { path }` variant to action enum
-  - [ ] FlowEngine remains unchanged (no flow: handling)
-  - [ ] FlowExecutor intercepts flow: actions before delegating to engine
+  - [ ] FlowExecutor remains unchanged (no flow: handling)
+  - [ ] FlowComposer intercepts flow: actions before delegating to executor
 
 ### Testing
 
@@ -680,42 +746,42 @@ flow_resolver.resolve(
 ) // → /project/.aiki/flows/shared/base.yml
 ```
 
-### Flow Executor
+### Flow Composer
 
-FlowExecutor orchestrates flow composition (before/after, cycle detection) and delegates
-action execution to FlowEngine.
+FlowComposer orchestrates flow composition (before/after, cycle detection) and delegates
+action execution to FlowExecutor.
 
 ```rust
-/// Orchestrates flow composition and delegates action execution to FlowEngine
-pub struct FlowExecutor<'a> {
+/// Orchestrates flow composition and delegates action execution to FlowExecutor
+pub struct FlowComposer<'a> {
     loader: &'a mut FlowLoader,
-    engine: &'a mut FlowEngine,    // Executes individual actions
-    call_stack: Vec<PathBuf>,      // Runtime call stack for cycle detection
+    executor: &'a mut FlowExecutor,    // Executes individual actions
+    call_stack: Vec<PathBuf>,          // Runtime call stack for cycle detection
 }
 
-impl<'a> FlowExecutor<'a> {
-    pub fn new(loader: &'a mut FlowLoader, engine: &'a mut FlowEngine) -> Self {
+impl<'a> FlowComposer<'a> {
+    pub fn new(loader: &'a mut FlowLoader, executor: &'a mut FlowExecutor) -> Self {
         Self {
             loader,
-            engine,
+            executor,
             call_stack: Vec::new(),
         }
     }
     
-    /// Execute a flow atomically (before → this flow → after)
+    /// Compose and execute a flow atomically (before → this flow → after)
     /// 
     /// This is the orchestration layer that handles:
     /// - Flow composition (before/after)
     /// - Cycle detection
     /// - Recursive flow invocation
-    pub fn execute(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
+    pub fn compose_flow(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
         // Load the flow
         let flow = self.loader.load(flow_path, current_flow_dir)?;
         let canonical_path = PathBuf::from(flow_path).canonicalize()?;
         
         // Check for circular dependency (including self-invocation)
         if self.call_stack.contains(&canonical_path) {
-            return Err(AikiError::CircularDependency {
+            return Err(AikiError::CircularFlowDependency {
                 path: flow_path.to_string(),
                 stack: self.call_stack.iter()
                     .map(|p| p.display().to_string())
@@ -728,20 +794,19 @@ impl<'a> FlowExecutor<'a> {
         
         // 1. Execute before flows (each atomically)
         for before_path in &flow.before {
-            self.execute(before_path, event)?;  // Recursive, atomic
+            self.compose_flow(before_path, event)?;  // Recursive, atomic
         }
         
-        // 2. Execute this flow's actions
-        let actions = flow.events.get(&event.event_type())
-            .ok_or(AikiError::NoActionsForEvent)?;
-        
-        for action in actions {
-            self.execute_action(action, event)?;
+        // 2. Execute this flow's actions (if any for this event)
+        if let Some(actions) = flow.events.get(&event.event_type()) {
+            for action in actions {
+                self.compose_action(action, event)?;
+            }
         }
         
         // 3. Execute after flows (each atomically)
         for after_path in &flow.after {
-            self.execute(after_path, event)?;  // Recursive, atomic
+            self.compose_flow(after_path, event)?;  // Recursive, atomic
         }
         
         // Pop from call stack
@@ -749,16 +814,16 @@ impl<'a> FlowExecutor<'a> {
         Ok(())
     }
     
-    /// Execute a single action, handling flow: specially
-    fn execute_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
+    /// Compose a single action (delegates to executor or recurses for flow: actions)
+    fn compose_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
         match action {
             Action::Flow { path } => {
-                // Inline flow invocation - delegate to execute() for composition
-                self.execute(path, event)?;
+                // Inline flow invocation - delegate to compose_flow() for composition
+                self.compose_flow(path, event)?;
             }
             _ => {
-                // All other actions - delegate to FlowEngine
-                self.engine.execute_action(action, event)?;
+                // All other actions - delegate to FlowExecutor
+                self.executor.execute_action(action, event)?;
             }
         }
         Ok(())
@@ -766,38 +831,60 @@ impl<'a> FlowExecutor<'a> {
 }
 ```
 
-### Relationship with FlowEngine
+### Relationship with FlowExecutor
 
-**FlowEngine** (already exists from Phase 5):
-- Executes individual actions: `shell`, `let`, `if`, `autoreply`, etc.
-- No knowledge of flow composition
-- Core action execution logic
+**FlowExecutor** (already exists from Phase 5):
+- Executes lists of actions: `shell`, `let`, `if`, `autoreply`, etc.
+- Handles failure modes (`continue`, `stop`, `block`)
+- Stores action results in context (via `alias`)
+- Returns `FlowResult` with timing
 
-**FlowExecutor** (new for Milestone 1.3):
+**FlowComposer** (new for Milestone 1.3):
 - Orchestrates flow composition: `before:`, `after:`, `flow:` action
 - Manages call stack for cycle detection
-- Delegates individual action execution to FlowEngine
+- Provides variable isolation (each flow gets fresh variable context)
+- Shares event state across all flows (e.g., PrePromptEvent's MessageAssembler)
+- Splits action lists around `flow:` actions
+- Delegates action chunks to FlowExecutor
+
+**Key insight on isolation:**
+- **Variables are isolated** - Each flow gets fresh variable context
+- **Event state is shared** - All flows modify the same event object
+  - Example: PrePromptEvent's MessageAssembler accumulates chunks from all flows
+  - Example: PostResponseEvent's response builder accumulates from all flows
+  - This allows composed flows to contribute to the same output
 
 **Architecture:**
 ```
 User triggers event (e.g., PostResponse)
     ↓
-FlowExecutor.execute("my-workflow.yml", event)
+FlowComposer.compose_flow("my-workflow.yml", &mut event)
     ↓
     Loads flow via FlowLoader
     Checks call stack for cycles
     ↓
-    Executes before flows (recursive)
+    Executes before flows (each gets fresh variable context, shares event state)
     ↓
-    For each action in this flow:
-        - If flow: action → FlowExecutor.execute() (recursive)
-        - Otherwise → FlowEngine.execute_action() (delegate)
+    For actions in this flow (fresh variable context, shares event state):
+        - Accumulate non-flow actions in a chunk
+        - When flow: action encountered:
+            1. Execute chunk via FlowExecutor
+            2. Execute flow: recursively via FlowComposer.compose_flow()
+        - Continue accumulating
+        - Execute remaining chunk via FlowExecutor
     ↓
-    Executes after flows (recursive)
+    Executes after flows (each gets fresh variable context, shares event state)
+    ↓
+    Returns ActionResult (like shell/jj actions)
 ```
 
-**Key insight:** FlowExecutor handles *orchestration* (what flows run when),
-FlowEngine handles *execution* (what each action does).
+**Key insights:** 
+- FlowComposer handles *orchestration* (what flows run when, isolation)
+- FlowExecutor handles *execution* (action chunks with shared context)
+- FlowExecutor already has the loop and failure handling
+- FlowComposer splits around `flow:` actions for chunking
+- Event object (&mut event) passed through entire composition tree
+- Each flow gets fresh variables, but all modify the same event state
 
 ---
 
@@ -949,25 +1036,28 @@ Main workflow completed successfully, but cleanup failed.
 
 ### 1. Flow Parameters
 
-Pass parameters to included flows:
+Pass parameters to composed flows:
 
 ```yaml
-includes:
+before:
   - flow: aiki/lint-check
-    params:
+    with:
       max_warnings: 10
       auto_fix: true
 ```
 
-### 2. Conditional Includes
+### 2. Conditional Composition
 
-Include flows based on conditions:
+Conditionally compose flows based on runtime conditions:
 
 ```yaml
-includes:
+before:
   - if: $project.language == "typescript"
     then:
       - aiki/typescript-check
+  - if: $project.language == "rust"
+    then:
+      - aiki/rust-check
 ```
 
 ### 3. Flow Registry

@@ -82,10 +82,16 @@ PostResponse:
       autoreply: "Build failed. Run `npm run build` to diagnose."
 ```
 
-**Accumulation order:**
-- All autoreply chunks accumulate in order
+**Accumulation behavior:**
+- All autoreply chunks accumulate in order (no short-circuit)
+- All conditions are evaluated, even if an earlier autoreply was added
 - Final autoreply assembled via MessageAssembler
 - Single autoreply message sent to agent (not multiple messages)
+
+**Why no short-circuit?**
+- Agent sees all validation issues at once
+- Can fix multiple problems together
+- Consistent with PrePrompt and PrepareCommitMessage (shared state pattern)
 
 ---
 
@@ -209,6 +215,58 @@ PostResponse:
 ```
 
 **Result:** Immediate feedback on security issues
+
+### Use Case 5: Composed Flows with Shared Autoreply Accumulation
+
+**Example: Multiple validation flows compose together**
+
+```yaml
+# aiki/typescript-check.yml
+PostResponse:
+  - let: ts_errors = self.count_typescript_errors
+  - if: $ts_errors > 0
+    then:
+      autoreply: "🔴 Fix TypeScript errors before continuing."
+
+# aiki/test-check.yml
+PostResponse:
+  - let: test_failures = self.count_test_failures
+  - if: $test_failures > 0
+    then:
+      autoreply: "🔴 Tests are failing. Run `npm test` to see details."
+
+# my-workflow.yml
+before:
+  - aiki/typescript-check
+  - aiki/test-check
+
+PostResponse:
+  - let: lint_warnings = self.count_lint_warnings
+  - if: $lint_warnings > 0
+    then:
+      autoreply: "⚠️ Address lint warnings when you have time."
+```
+
+**Final autoreply (all flows accumulate):**
+```
+🔴 Fix TypeScript errors before continuing.
+
+🔴 Tests are failing. Run `npm test` to see details.
+
+⚠️ Address lint warnings when you have time.
+```
+
+**Key behaviors:**
+- **No short-circuit**: All three flows execute completely, even though first flow added autoreply
+- **Execution order**: before flows execute first (typescript-check, test-check), then main flow
+- **Accumulation**: All autoreply chunks accumulate in `autoreply_assembler` in execution order
+- **Single message**: Agent receives one autoreply with all validation results
+- **Shared state**: All composed flows share the same `autoreply_assembler` (consistent with PrePrompt/PrepareCommitMessage)
+
+**Why this matters:**
+- Agent sees **all** validation issues at once, not just the first one
+- Can fix multiple problems together in one iteration
+- More efficient than serial fix-one-issue-at-a-time workflow
 
 ---
 
