@@ -67,6 +67,17 @@ pub struct AikiPostFileChangeEvent {
     pub edit_details: Vec<EditDetail>,
 }
 
+/// Pre-prompt event (before agent sees the user's prompt)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiPrePromptEvent {
+    pub agent_type: AgentType,
+    pub session_id: Option<String>,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    /// The original prompt text from the user (immutable)
+    pub original_prompt: String,
+}
+
 /// Prepare commit message event (Git's prepare-commit-msg hook)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPrepareCommitMessageEvent {
@@ -83,6 +94,8 @@ pub struct AikiPrepareCommitMessageEvent {
 pub enum AikiEvent {
     /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
     SessionStart(AikiStartEvent),
+    /// Before agent sees the user's prompt (allows context injection)
+    PrePrompt(AikiPrePromptEvent),
     /// Before file modification begins (fired when agent requests permission for file-modifying tools)
     PreFileChange(AikiPreFileChangeEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
@@ -97,6 +110,7 @@ impl AikiEvent {
     pub fn cwd(&self) -> &Path {
         match self {
             Self::SessionStart(e) => &e.cwd,
+            Self::PrePrompt(e) => &e.cwd,
             Self::PreFileChange(e) => &e.cwd,
             Self::PostFileChange(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
@@ -108,6 +122,7 @@ impl AikiEvent {
     pub fn agent_type(&self) -> AgentType {
         match self {
             Self::SessionStart(e) => e.agent_type,
+            Self::PrePrompt(e) => e.agent_type,
             Self::PreFileChange(e) => e.agent_type,
             Self::PostFileChange(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
@@ -119,6 +134,12 @@ impl AikiEvent {
 impl From<AikiStartEvent> for AikiEvent {
     fn from(event: AikiStartEvent) -> Self {
         AikiEvent::SessionStart(event)
+    }
+}
+
+impl From<AikiPrePromptEvent> for AikiEvent {
+    fn from(event: AikiPrePromptEvent) -> Self {
+        AikiEvent::PrePrompt(event)
     }
 }
 

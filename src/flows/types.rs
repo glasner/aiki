@@ -14,21 +14,25 @@ pub struct Flow {
     #[serde(default = "default_version")]
     pub version: String,
 
-    /// PostFileChange event handler
-    #[serde(rename = "PostFileChange", default)]
-    pub post_file_change: Vec<Action>,
+    /// SessionStart event handler
+    #[serde(rename = "SessionStart", default)]
+    pub session_start: Vec<Action>,
+
+    /// PrePrompt event handler (before agent sees the user's prompt)
+    #[serde(rename = "PrePrompt", default)]
+    pub pre_prompt: Vec<Action>,
 
     /// PreFileChange event handler (before file modification begins)
     #[serde(rename = "PreFileChange", default)]
     pub pre_file_change: Vec<Action>,
 
+    /// PostFileChange event handler
+    #[serde(rename = "PostFileChange", default)]
+    pub post_file_change: Vec<Action>,
+
     /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "PrepareCommitMessage", default)]
     pub prepare_commit_message: Vec<Action>,
-
-    /// SessionStart event handler
-    #[serde(rename = "SessionStart", default)]
-    pub session_start: Vec<Action>,
 
     /// Stop event handler
     #[serde(rename = "Stop", default)]
@@ -57,6 +61,8 @@ pub enum Action {
     Let(LetAction),
     /// Self function call (call a function without storing result)
     Self_(SelfAction),
+    /// Prompt modification (for PrePrompt events)
+    Prompt(PromptAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
 }
@@ -177,6 +183,31 @@ pub struct SwitchAction {
     /// What to do when switch evaluation fails
     #[serde(default = "default_on_failure")]
     pub on_failure: FailureMode,
+}
+
+/// Prompt action (for PrePrompt events)
+/// Modifies the user's prompt before it's sent to the agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptAction {
+    /// The prompt modification content (MessageChunk)
+    pub prompt: PromptContent,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Content for prompt action
+/// Can be a simple string (defaults to append) or explicit prepend/append
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PromptContent {
+    /// Short form: defaults to append
+    /// YAML: `prompt: "text"`
+    Simple(String),
+
+    /// Explicit form with prepend/append
+    /// YAML: `prompt: { prepend: "...", append: "..." }`
+    Explicit(crate::flows::messages::MessageChunk),
 }
 
 /// Commit message action (for PrepareCommitMessage events)
