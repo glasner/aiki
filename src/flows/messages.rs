@@ -12,14 +12,14 @@
 //! # Usage Example
 //!
 //! ```rust
-//! use aiki::messages::{MessageChunk, MessageAssembler};
+//! use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
 //!
 //! let mut assembler = MessageAssembler::new(Some("original content".to_string()), "\n");
 //!
 //! // Add chunks from different flows
 //! let chunk1 = MessageChunk {
-//!     prepend: Some(vec!["First line".to_string()]),
-//!     append: Some(vec!["Last line".to_string()]),
+//!     prepend: Some(StringOrArray::Single("First line".to_string())),
+//!     append: Some(StringOrArray::Single("Last line".to_string())),
 //! };
 //! assembler.add_chunk(chunk1);
 //!
@@ -42,38 +42,89 @@ use serde::{Deserialize, Serialize};
 ///   - "line 1"
 ///   - "line 2"
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// # Normalization
+///
+/// Trailing newlines are automatically stripped during deserialization to ensure that
+/// YAML block scalars (`|`) and inline strings produce identical results.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum StringOrArray {
-    /// Single string value
+    /// Single string value (normalized - trailing newlines stripped)
     Single(String),
-    /// Multiple string values
+    /// Multiple string values (each normalized - trailing newlines stripped)
     Multiple(Vec<String>),
 }
 
+impl<'de> serde::Deserialize<'de> for StringOrArray {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+        use std::fmt;
+
+        struct StringOrArrayVisitor;
+
+        impl<'de> Visitor<'de> for StringOrArrayVisitor {
+            type Value = StringOrArray;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string or array of strings")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                // Normalize: strip trailing newlines from YAML block scalars
+                Ok(StringOrArray::Single(
+                    value.trim_end_matches('\n').to_string(),
+                ))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                // Normalize: strip trailing newlines from YAML block scalars
+                Ok(StringOrArray::Single(
+                    value.trim_end_matches('\n').to_string(),
+                ))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                let mut vec = Vec::new();
+                while let Some(value) = seq.next_element::<String>()? {
+                    // Normalize each item: strip trailing newlines
+                    vec.push(value.trim_end_matches('\n').to_string());
+                }
+                Ok(StringOrArray::Multiple(vec))
+            }
+        }
+
+        deserializer.deserialize_any(StringOrArrayVisitor)
+    }
+}
+
 impl StringOrArray {
-    /// Convert to a vector of strings, consuming self and normalizing trailing newlines.
+    /// Convert to a vector of strings, consuming self.
     ///
-    /// This ensures `prepend: |` and `prepend: ["line"]` behave identically by stripping
-    /// the trailing newline that YAML block scalars include.
+    /// The data is already normalized during deserialization, so trailing newlines
+    /// have been stripped. This ensures `prepend: |` and `prepend: ["line"]` behave identically.
     ///
     /// # Returns
     ///
-    /// - `Single(s)` → `vec![s.trim_end_matches('\n')]`
-    /// - `Multiple(v)` → `v` with each item's trailing newlines stripped
+    /// - `Single(s)` → `vec![s]`
+    /// - `Multiple(v)` → `v`
     #[must_use]
     pub fn to_vec(self) -> Vec<String> {
         match self {
-            Self::Single(s) => {
-                // Strip trailing newline from YAML block scalars (|)
-                vec![s.trim_end_matches('\n').to_string()]
-            }
-            Self::Multiple(v) => {
-                // Normalize each item in the array
-                v.into_iter()
-                    .map(|s| s.trim_end_matches('\n').to_string())
-                    .collect()
-            }
+            Self::Single(s) => vec![s],
+            Self::Multiple(v) => v,
         }
     }
 
@@ -143,7 +194,12 @@ impl MessageChunk {
     /// Generate a deterministic checksum ID for this chunk.
     ///
     /// This is used for deduplication and change tracking. The same content
-    /// will always produce the same ID by serializing to YAML and hashing.
+    /// will always produce the same ID.
+    ///
+    /// # Normalization
+    ///
+    /// Trailing newlines are automatically stripped during YAML deserialization,
+    /// so `prepend: |` and `prepend: "text"` produce identical check IDs.
     ///
     /// # Returns
     ///
@@ -153,14 +209,15 @@ impl MessageChunk {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
+        // Data is already normalized during deserialization
         let yaml = serde_yaml::to_string(self).expect("MessageChunk should always serialize");
 
         let mut hasher = DefaultHasher::new();
         yaml.hash(&mut hasher);
         let hash = hasher.finish();
 
-        // Return first 8 hex chars for readability
-        format!("{:08x}", hash)
+        // Return first 8 hex chars for readability (truncate u64 to 32 bits)
+        format!("{:08x}", (hash & 0xFFFF_FFFF) as u32)
     }
 
     /// Get prepend items as a vector of strings.
@@ -230,19 +287,19 @@ impl Default for MessageChunk {
 /// # Example
 ///
 /// ```rust
-/// use aiki::messages::{MessageChunk, MessageAssembler};
+/// use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
 ///
 /// let mut assembler = MessageAssembler::new(Some("Middle".to_string()), "\n");
 ///
 /// let chunk1 = MessageChunk {
-///     prepend: Some(vec!["Top".to_string()]),
+///     prepend: Some(StringOrArray::Single("Top".to_string())),
 ///     append: None,
 /// };
 /// assembler.add_chunk(chunk1);
 ///
 /// let chunk2 = MessageChunk {
 ///     prepend: None,
-///     append: Some(vec!["Bottom".to_string()]),
+///     append: Some(StringOrArray::Single("Bottom".to_string())),
 /// };
 /// assembler.add_chunk(chunk2);
 ///
@@ -335,6 +392,33 @@ impl MessageAssembler {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
+    }
+
+    /// Clear all accumulated chunks, resetting the assembler.
+    ///
+    /// This is useful for error recovery where you want to discard all
+    /// accumulated chunks without allocating a new assembler.
+    ///
+    /// The original content and separator are preserved.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
+    ///
+    /// let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+    /// assembler.add_chunk(MessageChunk {
+    ///     prepend: Some(StringOrArray::Single("bad".to_string())),
+    ///     append: None,
+    /// });
+    ///
+    /// // Error occurred, reset
+    /// assembler.clear();
+    /// assert!(assembler.is_empty());
+    /// assert_eq!(assembler.build(), "original"); // Original preserved
+    /// ```
+    pub fn clear(&mut self) {
+        self.chunks.clear();
     }
 }
 
@@ -448,6 +532,105 @@ mod tests {
         };
 
         assert_ne!(chunk1.check_id(), chunk2.check_id());
+    }
+
+    #[test]
+    fn test_yaml_forms_produce_same_check_id() {
+        // Form 1: Block scalar with trailing newline (as it appears in raw YAML)
+        let yaml_block = r#"
+prepend: |
+  line1
+  line2
+"#;
+
+        // Form 2: Array syntax
+        let yaml_array = r#"
+prepend:
+  - "line1"
+  - "line2"
+"#;
+
+        // Form 3: Inline string with \n
+        let yaml_inline = r#"
+prepend: "line1\nline2"
+"#;
+
+        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_array: MessageChunk = serde_yaml::from_str(yaml_array).unwrap();
+        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+
+        // Forms 1 and 3 should produce identical check IDs (both single strings)
+        assert_eq!(
+            chunk_block.check_id(),
+            chunk_inline.check_id(),
+            "Block scalar and inline string should have same check ID"
+        );
+
+        // Form 2 (array) will have a different check ID because the structure differs
+        // This is intentional - changing YAML structure is considered a flow edit
+        assert_ne!(
+            chunk_block.check_id(),
+            chunk_array.check_id(),
+            "Array form should have different check ID from single string"
+        );
+    }
+
+    #[test]
+    fn test_check_id_normalization_via_yaml() {
+        // Test normalization through YAML deserialization (the real-world path)
+        // Block scalar form (has trailing newline in YAML)
+        let yaml_block = r#"
+prepend: |
+  Header text
+append: |
+  Footer text
+"#;
+
+        // Inline string form (no trailing newline)
+        let yaml_inline = r#"
+prepend: "Header text"
+append: "Footer text"
+"#;
+
+        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+
+        // Should produce identical check IDs after normalization during deserialization
+        assert_eq!(
+            chunk_block.check_id(),
+            chunk_inline.check_id(),
+            "Trailing newlines should be normalized during YAML deserialization"
+        );
+    }
+
+    #[test]
+    fn test_check_id_normalization_arrays_via_yaml() {
+        // Test array normalization through YAML deserialization
+        // Array with block scalars (each item has trailing newline in YAML)
+        let yaml_block = r#"
+prepend:
+  - |
+    line1
+  - |
+    line2
+"#;
+
+        // Array with inline strings (no trailing newlines)
+        let yaml_inline = r#"
+prepend:
+  - "line1"
+  - "line2"
+"#;
+
+        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+
+        // Should produce identical check IDs after normalization during deserialization
+        assert_eq!(
+            chunk_block.check_id(),
+            chunk_inline.check_id(),
+            "Array items should have trailing newlines normalized during YAML deserialization"
+        );
     }
 
     #[test]
@@ -667,5 +850,311 @@ mod assembler_tests {
 
         assembler.add_chunk(MessageChunk::new());
         assert!(!assembler.is_empty());
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n\n");
+
+        // Add some chunks
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("header".to_string())),
+            append: None,
+        });
+        assembler.add_chunk(MessageChunk {
+            prepend: None,
+            append: Some(StringOrArray::Single("footer".to_string())),
+        });
+
+        assert_eq!(assembler.chunk_count(), 2);
+        assert!(!assembler.is_empty());
+
+        // Clear all chunks
+        assembler.clear();
+
+        assert_eq!(assembler.chunk_count(), 0);
+        assert!(assembler.is_empty());
+
+        // Original content should be preserved
+        assert_eq!(assembler.build(), "original");
+    }
+
+    #[test]
+    fn test_clear_and_reuse() {
+        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n\n");
+
+        // First batch of chunks
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("bad".to_string())),
+            append: None,
+        });
+
+        // Error occurred, clear
+        assembler.clear();
+
+        // Add good chunks
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("good".to_string())),
+            append: None,
+        });
+
+        assert_eq!(assembler.build(), "good\n\noriginal");
+    }
+
+    #[test]
+    fn test_build_with_double_newline_separator() {
+        // PrePrompt and PostResponse use double-newline separator
+        let mut assembler = MessageAssembler::new(Some("middle".to_string()), "\n\n");
+
+        let chunk = MessageChunk {
+            prepend: Some(StringOrArray::Single("before".to_string())),
+            append: Some(StringOrArray::Single("after".to_string())),
+        };
+        assembler.add_chunk(chunk);
+
+        // Should have double newlines between sections
+        assert_eq!(assembler.build(), "before\n\nmiddle\n\nafter");
+    }
+
+    #[test]
+    fn test_preprompt_style_message_assembly() {
+        // Simulate PrePrompt event usage with double-newline separator
+        let mut assembler =
+            MessageAssembler::new(Some("User's original prompt".to_string()), "\n\n");
+
+        // Flow A adds context
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single(
+                "Read ARCHITECTURE.md first".to_string(),
+            )),
+            append: None,
+        });
+
+        // Flow B adds constraints
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single(
+                "Follow security guidelines".to_string(),
+            )),
+            append: None,
+        });
+
+        // Flow C adds footer
+        assembler.add_chunk(MessageChunk {
+            prepend: None,
+            append: Some(StringOrArray::Single("Confirm you understand".to_string())),
+        });
+
+        let result = assembler.build();
+
+        // Verify structure: prepends (joined with \n), original, appends
+        // with \n\n between major sections
+        assert!(result.starts_with("Read ARCHITECTURE.md first\nFollow security guidelines\n\n"));
+        assert!(result.contains("\n\nUser's original prompt\n\n"));
+        assert!(result.ends_with("\n\nConfirm you understand"));
+    }
+
+    #[test]
+    fn test_single_newline_separator_for_commit_messages() {
+        // PrepareCommitMessage uses single-newline separator for trailers
+        let mut assembler = MessageAssembler::new(None, "\n");
+
+        assembler.add_chunk(MessageChunk {
+            prepend: None,
+            append: Some(StringOrArray::Multiple(vec![
+                "Co-authored-by: Alice <alice@example.com>".to_string(),
+                "Co-authored-by: Bob <bob@example.com>".to_string(),
+                "Ticket: PROJ-123".to_string(),
+            ])),
+        });
+
+        let result = assembler.build();
+
+        // Trailers should be joined with single newline (not double)
+        assert_eq!(
+            result,
+            "Co-authored-by: Alice <alice@example.com>\nCo-authored-by: Bob <bob@example.com>\nTicket: PROJ-123"
+        );
+        // Should NOT have double newlines
+        assert!(!result.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        // Test various Unicode characters: emoji, CJK, RTL, accents
+        let mut assembler = MessageAssembler::new(Some("中文内容 🚀".to_string()), "\n\n");
+
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("🎯 Priority: مرتفع".to_string())),
+            append: Some(StringOrArray::Single("Café ☕ — Naïve résumé".to_string())),
+        });
+
+        let result = assembler.build();
+
+        // Verify Unicode is preserved correctly
+        assert!(result.contains("🎯 Priority: مرتفع"));
+        assert!(result.contains("中文内容 🚀"));
+        assert!(result.contains("Café ☕ — Naïve résumé"));
+
+        // Verify structure is maintained
+        assert_eq!(
+            result,
+            "🎯 Priority: مرتفع\n\n中文内容 🚀\n\nCafé ☕ — Naïve résumé"
+        );
+    }
+
+    #[test]
+    fn test_unicode_in_check_id() {
+        // Verify check_id handles Unicode correctly and deterministically
+        let chunk1 = MessageChunk {
+            prepend: Some(StringOrArray::Single("Hello 世界 🌍".to_string())),
+            append: None,
+        };
+
+        let chunk2 = MessageChunk {
+            prepend: Some(StringOrArray::Single("Hello 世界 🌍".to_string())),
+            append: None,
+        };
+
+        let chunk3 = MessageChunk {
+            prepend: Some(StringOrArray::Single("Hello world".to_string())),
+            append: None,
+        };
+
+        // Same Unicode content should produce same check_id
+        assert_eq!(chunk1.check_id(), chunk2.check_id());
+
+        // Different content should produce different check_id
+        assert_ne!(chunk1.check_id(), chunk3.check_id());
+    }
+
+    #[test]
+    fn test_very_long_content() {
+        // Test with very long strings (simulating large documentation)
+        let long_prepend = "A".repeat(10_000);
+        let long_original = "B".repeat(50_000);
+        let long_append = "C".repeat(10_000);
+
+        let mut assembler = MessageAssembler::new(Some(long_original.clone()), "\n\n");
+
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single(long_prepend.clone())),
+            append: Some(StringOrArray::Single(long_append.clone())),
+        });
+
+        let result = assembler.build();
+
+        // Verify all content is present
+        assert!(result.starts_with(&long_prepend));
+        assert!(result.contains(&long_original));
+        assert!(result.ends_with(&long_append));
+
+        // Verify expected length (with separators)
+        let expected_len = long_prepend.len() + 2 + long_original.len() + 2 + long_append.len();
+        assert_eq!(result.len(), expected_len);
+    }
+
+    #[test]
+    fn test_very_long_check_id_performance() {
+        // Verify check_id works efficiently with large content
+        let large_content = "X".repeat(100_000);
+
+        let chunk = MessageChunk {
+            prepend: Some(StringOrArray::Single(large_content)),
+            append: None,
+        };
+
+        // Should complete without panic or excessive memory usage
+        let id = chunk.check_id();
+
+        // Check ID should still be 8 hex chars (format! ensures this)
+        assert_eq!(id.len(), 8);
+        // Verify it's valid hex
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_chunk_order_preservation_explicit() {
+        // Explicit test that chunks are processed in the order they're added
+        let mut assembler = MessageAssembler::new(Some("ORIGINAL".to_string()), " | ");
+
+        // Add chunks in specific order
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("FIRST_PRE".to_string())),
+            append: Some(StringOrArray::Single("FIRST_APP".to_string())),
+        });
+
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("SECOND_PRE".to_string())),
+            append: Some(StringOrArray::Single("SECOND_APP".to_string())),
+        });
+
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("THIRD_PRE".to_string())),
+            append: Some(StringOrArray::Single("THIRD_APP".to_string())),
+        });
+
+        let result = assembler.build();
+
+        // Expected: all prepends joined with \n, then separator, then original, then separator, then all appends joined with \n
+        // Note: prepends/appends are ALWAYS joined with \n internally, separator is only between major sections
+        let expected =
+            "FIRST_PRE\nSECOND_PRE\nTHIRD_PRE | ORIGINAL | FIRST_APP\nSECOND_APP\nTHIRD_APP";
+        assert_eq!(result, expected);
+
+        // Verify positions are in correct order
+        let first_pre_pos = result.find("FIRST_PRE").unwrap();
+        let second_pre_pos = result.find("SECOND_PRE").unwrap();
+        let third_pre_pos = result.find("THIRD_PRE").unwrap();
+        let original_pos = result.find("ORIGINAL").unwrap();
+        let first_app_pos = result.find("FIRST_APP").unwrap();
+        let second_app_pos = result.find("SECOND_APP").unwrap();
+        let third_app_pos = result.find("THIRD_APP").unwrap();
+
+        assert!(first_pre_pos < second_pre_pos);
+        assert!(second_pre_pos < third_pre_pos);
+        assert!(third_pre_pos < original_pos);
+        assert!(original_pos < first_app_pos);
+        assert!(first_app_pos < second_app_pos);
+        assert!(second_app_pos < third_app_pos);
+    }
+
+    #[test]
+    fn test_chunk_order_with_mixed_prepend_append() {
+        // Test order preservation when chunks have different combinations
+        let mut assembler = MessageAssembler::new(Some("MID".to_string()), "-");
+
+        // Chunk 1: prepend only
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("P1".to_string())),
+            append: None,
+        });
+
+        // Chunk 2: append only
+        assembler.add_chunk(MessageChunk {
+            prepend: None,
+            append: Some(StringOrArray::Single("A1".to_string())),
+        });
+
+        // Chunk 3: both
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("P2".to_string())),
+            append: Some(StringOrArray::Single("A2".to_string())),
+        });
+
+        // Chunk 4: prepend only
+        assembler.add_chunk(MessageChunk {
+            prepend: Some(StringOrArray::Single("P3".to_string())),
+            append: None,
+        });
+
+        let result = assembler.build();
+
+        // All prepends should come first in order (P1, P2, P3) joined with \n
+        // Then separator (-)
+        // Then original (MID)
+        // Then separator (-)
+        // Then all appends in order (A1, A2) joined with \n
+        // Note: Within prepend/append sections, items are joined with \n (not the separator)
+        assert_eq!(result, "P1\nP2\nP3-MID-A1\nA2");
     }
 }
