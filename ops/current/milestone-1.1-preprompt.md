@@ -10,7 +10,7 @@ See [milestone-1.md](./milestone-1.md) for the full Milestone 1 overview.
 
 The PrePrompt event fires before the agent sees the user's prompt, allowing flows to inject context, skills, architecture docs, and task information.
 
-**Key Decision:** Use the shared MessageBuilder parser for consistent syntax across all events.
+**Key Decision:** Use the shared MessageChunk/MessageAssembler infrastructure for consistent syntax across all events.
 
 **Syntax:** See [Shared Syntax Pattern](./milestone-1.md#shared-syntax-pattern) in milestone-1.md for the `prompt:` action syntax (short form and explicit form).
 
@@ -38,9 +38,9 @@ PrePrompt:
 **How it works:**
 1. User submits prompt
 2. PrePrompt event fires with original prompt
-3. Flow executes `prompt:` actions via MessageBuilder
-4. Prepended content added before original prompt
-5. Appended content added after original prompt
+3. Flow parser creates MessageChunk from YAML `prompt:` action
+4. PrePrompt event handler adds chunk to its `prompt_assembler`
+5. Handler calls `prompt_assembler.build()` to assemble final prompt
 6. Agent receives modified prompt
 
 **Final prompt structure:**
@@ -83,21 +83,43 @@ PrePrompt:
 
 ```rust
 pub struct PrePromptEvent {
-    pub original_prompt: String,         // Immutable original prompt
-    pub prompt: RefCell<String>,         // Mutable, modified by MessageBuilder
-    pub session_id: Option<String>,      // Current session
+    pub original_prompt: String,              // Immutable original prompt
+    pub prompt_assembler: MessageAssembler,   // Owns MessageAssembler for building final prompt
+    pub session_id: Option<String>,           // Current session
     pub timestamp: DateTime<Utc>,
-    pub working_directory: PathBuf,      // Current working directory
-    pub recent_files: Vec<PathBuf>,      // Files edited recently (optional)
+    pub working_directory: PathBuf,           // Current working directory
+    pub recent_files: Vec<PathBuf>,           // Files edited recently (optional)
+}
+
+impl PrePromptEvent {
+    pub fn new(prompt: String) -> Self {
+        Self {
+            original_prompt: prompt.clone(),
+            prompt_assembler: MessageAssembler::new(Some(prompt), "\n\n"),
+            session_id: None,
+            timestamp: Utc::now(),
+            working_directory: std::env::current_dir().unwrap(),
+            recent_files: Vec::new(),
+        }
+    }
+    
+    pub fn apply_prompt_action(&mut self, chunk: MessageChunk) {
+        self.prompt_assembler.add_chunk(chunk);
+    }
+    
+    pub fn build_prompt(&self) -> String {
+        self.prompt_assembler.build()
+    }
 }
 ```
 
 **Event lifecycle:**
 1. User submits prompt
-2. `PrePromptEvent` created with original prompt
+2. `PrePromptEvent` created with original prompt and `MessageAssembler`
 3. Flow engine executes PrePrompt flow
-4. `prompt:` actions modify `event.prompt` via RefCell
-5. Modified prompt sent to agent
+4. `prompt:` actions parsed as MessageChunk, added to `prompt_assembler`
+5. Handler calls `build_prompt()` to assemble final message
+6. Modified prompt sent to agent
 
 ---
 
@@ -176,10 +198,11 @@ PrePrompt:
 
 ### Core Engine
 
-- [ ] Add `PrePromptEvent` struct to `cli/src/events.rs`
-- [ ] Add `prompt:` action to flow DSL
-- [ ] Implement `cli/src/flows/actions/prompt.rs` using MessageAssembler
-- [ ] Add PrePrompt handler: `cli/src/flows/handlers/pre_prompt.rs`
+- [ ] Add `PrePromptEvent` struct to `cli/src/events.rs` (owns `MessageAssembler`)
+- [ ] Add `prompt:` action to flow DSL (parses as `MessageChunk`)
+- [ ] Implement `cli/src/flows/actions/prompt.rs` that creates MessageChunk from YAML
+- [ ] Add PrePrompt handler: `cli/src/flows/handlers/pre_prompt.rs` (calls `event.apply_prompt_action(chunk)`)
+- [ ] Implement error handling (graceful degradation: use original prompt on error)
 - [ ] Hook into vendor prompt submission lifecycle
 
 ### Vendor Integration
@@ -192,14 +215,17 @@ PrePrompt:
 
 ### Testing
 
-- [ ] Unit tests: MessageBuilder with `prompt:` action
-- [ ] Unit tests: Inline content preservation
-- [ ] Unit tests: Multiple prepend items accumulate correctly
-- [ ] Unit tests: Multiple append items accumulate correctly
+- [ ] Unit tests: MessageChunk parsing from YAML `prompt:` action
+- [ ] Unit tests: PrePromptEvent owns MessageAssembler correctly
+- [ ] Unit tests: Multiple prepend chunks accumulate correctly
+- [ ] Unit tests: Multiple append chunks accumulate correctly
+- [ ] Unit tests: Error handling (file not found, parse errors)
 - [ ] Integration tests: PrePrompt flow execution
 - [ ] Integration tests: Multiple `prompt:` actions
+- [ ] Integration tests: Flow error triggers graceful degradation
 - [ ] E2E tests: Real agent receives modified prompt
-- [ ] E2E tests: File injection works end-to-end
+- [ ] E2E tests: File content injection works end-to-end
+- [ ] E2E tests: Flow error shows warning but doesn't block agent
 
 ### Documentation
 
@@ -215,13 +241,125 @@ PrePrompt:
 ✅ PrePrompt fires before agent sees prompt (all vendor integrations)  
 ✅ Short form `prompt: "string"` defaults to append  
 ✅ Explicit form `prompt: { prepend: [...], append: [...] }` works  
-✅ MessageBuilder correctly parses both forms  
-✅ Inline content is preserved as-is  
-✅ Multiple prepend items accumulate in correct order  
-✅ Multiple append items accumulate in correct order  
+✅ MessageChunk correctly parses both forms from YAML  
+✅ PrePromptEvent owns MessageAssembler instance  
+✅ Multiple prepend chunks accumulate in correct order  
+✅ Multiple append chunks accumulate in correct order  
 ✅ Multiple `prompt:` actions can be used in same flow  
 ✅ Modified prompt is sent to agent  
 ✅ Session ID is captured and available  
+✅ Flow errors trigger graceful degradation (original prompt used)  
+✅ User sees warning when flow fails, but workflow continues  
+
+---
+
+## Error Handling
+
+**Strategy: Graceful Degradation**
+
+If a PrePrompt flow fails, the system falls back to the original prompt. The agent workflow continues without interruption.
+
+### Common Error Scenarios
+
+#### 1. File Not Found
+
+```yaml
+PrePrompt:
+  prompt:
+    prepend: .aiki/arch/missing-file.md
+```
+
+**User sees:**
+```
+⚠️ PrePrompt flow failed: File not found: .aiki/arch/missing-file.md
+Continuing with original prompt...
+
+[Agent receives and responds to original prompt normally]
+```
+
+#### 2. Invalid YAML Syntax
+
+```yaml
+PrePrompt:
+  prompt:
+    prepend:
+      - "Text"
+      - 123  # Invalid: should be string
+```
+
+**User sees:**
+```
+⚠️ PrePrompt flow failed: Invalid YAML: expected string, got number
+Continuing with original prompt...
+
+[Agent receives and responds to original prompt normally]
+```
+
+#### 3. MessageChunk Validation Error
+
+```yaml
+PrePrompt:
+  prompt: {}  # Invalid: empty object
+```
+
+**User sees:**
+```
+⚠️ PrePrompt flow failed: MessageChunk must have at least prepend or append
+Continuing with original prompt...
+
+[Agent receives and responds to original prompt normally]
+```
+
+### Implementation Pattern
+
+```rust
+impl PrePromptHandler {
+    pub fn execute(&self, event: &mut PrePromptEvent, flow: &Flow) -> Result<()> {
+        match self.execute_flow(event, flow) {
+            Ok(()) => {
+                // Flow succeeded - use modified prompt
+                Ok(())
+            }
+            Err(e) => {
+                // Flow failed - log error, show warning, use original prompt
+                eprintln!("⚠️ PrePrompt flow failed: {}", e);
+                eprintln!("Continuing with original prompt...\n");
+                
+                // Reset assembler to use original prompt
+                event.prompt_assembler = MessageAssembler::new(
+                    Some(event.original_prompt.clone()),
+                    "\n\n"
+                );
+                
+                // Don't propagate error - graceful degradation
+                Ok(())
+            }
+        }
+    }
+}
+```
+
+**Key points:**
+- Error is logged and shown to user
+- Original prompt is preserved and used
+- Agent invocation proceeds normally
+- User can continue working without interruption
+
+### Future: Strict Mode (Not in Milestone 1.1)
+
+For teams that want validation gates:
+
+```yaml
+# .aiki/config.toml
+[flows]
+error_handling = "strict"
+```
+
+**Strict mode behavior:**
+- PrePrompt error → Don't invoke agent, show error to user
+- User must fix flow before agent can respond
+
+**Use case:** Teams that require certain context (e.g., security guidelines) to always be present.
 
 ---
 
@@ -271,11 +409,11 @@ Remember to write tests.
 
 ```
 cli/src/
-├── events.rs                          # PrePromptEvent struct
+├── events.rs                          # PrePromptEvent struct (owns MessageAssembler)
 ├── flows/
+│   ├── messages.rs                    # MessageChunk + MessageAssembler (see milestone-1.0)
 │   ├── actions/
-│   │   ├── message_builder.rs         # Shared parser (see milestone-1.md)
-│   │   └── prompt.rs                  # Prompt action using MessageBuilder
+│   │   └── prompt.rs                  # Parses YAML to MessageChunk
 │   ├── handlers/
 │   │   └── pre_prompt.rs              # PrePrompt handler
 │   └── engine.rs                      # Flow execution
@@ -289,16 +427,14 @@ cli/src/
 
 ```rust
 // cli/src/flows/actions/prompt.rs
-pub fn execute_prompt(value: &Value, event: &PrePromptEvent) -> Result<()> {
-    let builder = MessageBuilder::parse(value)?;
+use crate::flows::MessageChunk;
+
+pub fn execute_prompt(value: &Value, event: &mut PrePromptEvent) -> Result<()> {
+    // Parse YAML into MessageChunk
+    let chunk: MessageChunk = serde_yaml::from_value(value.clone())?;
     
-    for prepend in &builder.prepends {
-        event.prompt.borrow_mut().insert_str(0, prepend);
-    }
-    
-    for append in &builder.appends {
-        event.prompt.borrow_mut().push_str(append);
-    }
+    // Add chunk to event's assembler
+    event.apply_prompt_action(chunk);
     
     Ok(())
 }

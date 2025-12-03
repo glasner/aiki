@@ -1,12 +1,23 @@
-# Aiki Task System: Phased Implementation for PostResponse
+# Milestone 1.4: Task System (Optional)
 
-This document breaks down the task system implementation into phases, with **Phase 1 focused exclusively on what's needed for PostResponse event validation**.
+**Status**: 🔴 Not Started  
+**Priority**: Low (optional enhancement to PostResponse)  
+**Complexity**: High  
+**Timeline**: 2-3 weeks (Phase 1), expandable to 6-8 weeks (all phases)
+
+## Overview
+
+The Task System provides structured, event-sourced task management for PostResponse workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically.
+
+**Key Architecture:** Event-sourced task log stored on JJ `aiki/tasks` branch. Tasks reconstructed from immutable event stream.
+
+**This is optional:** Milestone 1.2 (PostResponse) works fine with text autoreplies. The task system adds structure for complex multi-error scenarios. **Recommend completing Milestones 1.0-1.3 first and evaluating whether task system is needed.**
 
 ---
 
 ## Table of Contents
 
-1. [Phase 1: PostResponse Foundation (2-3 weeks)](#phase-1-postresponse-foundation-2-3-weeks) ← **START HERE**
+1. [Phase 1: PostResponse Integration (2-3 weeks)](#phase-1-postresponse-integration-2-3-weeks) ← **START HERE**
 2. [Phase 2: Performance & Scale (1 week)](#phase-2-performance--scale-1-week)
 3. [Phase 3: Code Provenance (1 week)](#phase-3-code-provenance-1-week)
 4. [Phase 4: Multi-Agent Coordination (1 week)](#phase-4-multi-agent-coordination-1-week)
@@ -14,9 +25,11 @@ This document breaks down the task system implementation into phases, with **Pha
 
 ---
 
-## Phase 1: PostResponse Foundation (2-3 weeks)
+## Phase 1: PostResponse Integration (2-3 weeks)
 
 **Goal**: Enable PostResponse flows to create, query, and close tasks. Agent gets structured work queue instead of text autoreplies.
+
+**Depends on:** Milestone 1.2 (PostResponse event)
 
 ### What We're Building
 
@@ -823,16 +836,28 @@ impl FlowAction for TaskAction {
         
         match &self.operation {
             TaskOperation::Create { objective, r#type, file, line, evidence } => {
+                // Build scope from optional file/line
+                let files = match (file, line) {
+                    (Some(path), Some(line_num)) => {
+                        vec![FileScope {
+                            path: path.clone(),
+                            lines: vec![*line_num],
+                        }]
+                    }
+                    (Some(path), None) => {
+                        vec![FileScope {
+                            path: path.clone(),
+                            lines: vec![],
+                        }]
+                    }
+                    (None, _) => vec![],
+                };
+                
                 let definition = TaskDefinition {
                     objective: objective.clone(),
                     r#type: parse_task_type(r#type)?,
                     priority: 0,
-                    scope: TaskScope {
-                        files: vec![FileScope {
-                            path: file.clone(),
-                            lines: vec![*line],
-                        }],
-                    },
+                    scope: TaskScope { files },
                     evidence: vec![Evidence {
                         source: evidence.source.clone(),
                         message: evidence.message.clone(),
