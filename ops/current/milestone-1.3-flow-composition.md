@@ -493,28 +493,66 @@ impl FlowResolver {
         current_flow_dir: &Path,
         project_root: &Path,
     ) -> Result<PathBuf> {
-        if path.starts_with("aiki/") {
+        if path.is_empty() {
+            return Err(AikiError::InvalidFlowPath {
+                path: path.to_string(),
+                reason: "Path cannot be empty".to_string(),
+            });
+        }
+        
+        let resolved = if let Some(rest) = path.strip_prefix("aiki/") {
             // Built-in flows: aiki/* → ~/.aiki/flows/aiki/
-            Ok(home_dir()?.join(".aiki/flows").join(path).with_extension("yml"))
-        } else if path.starts_with("vendor/") {
+            home_dir()?
+                .join(".aiki/flows/aiki")
+                .join(rest)
+                .with_extension("yml")
+        } else if let Some(rest) = path.strip_prefix("vendor/") {
             // Vendor flows: vendor/* → ~/.aiki/flows/vendor/
-            Ok(home_dir()?.join(".aiki/flows").join(path).with_extension("yml"))
-        } else if path.starts_with("@flows/") {
+            home_dir()?
+                .join(".aiki/flows/vendor")
+                .join(rest)
+                .with_extension("yml")
+        } else if let Some(rest) = path.strip_prefix("@flows/") {
             // Project flows: @flows/ → {project}/.aiki/flows/
-            Ok(project_root.join(".aiki/flows").join(&path[7..]))  // Strip @flows/
-        } else if path.starts_with("@proj/") {
+            if rest.is_empty() {
+                return Err(AikiError::InvalidFlowPath {
+                    path: path.to_string(),
+                    reason: "Path after @flows/ cannot be empty".to_string(),
+                });
+            }
+            project_root.join(".aiki/flows").join(rest)
+        } else if let Some(rest) = path.strip_prefix("@proj/") {
             // Project root: @proj/ → {project}/
-            Ok(project_root.join(&path[6..]))  // Strip @proj/
-        } else if path.starts_with("@project/") {
+            if rest.is_empty() {
+                return Err(AikiError::InvalidFlowPath {
+                    path: path.to_string(),
+                    reason: "Path after @proj/ cannot be empty".to_string(),
+                });
+            }
+            project_root.join(rest)
+        } else if let Some(rest) = path.strip_prefix("@project/") {
             // Project root (alias): @project/ → {project}/
-            Ok(project_root.join(&path[9..]))  // Strip @project/
+            if rest.is_empty() {
+                return Err(AikiError::InvalidFlowPath {
+                    path: path.to_string(),
+                    reason: "Path after @project/ cannot be empty".to_string(),
+                });
+            }
+            project_root.join(rest)
         } else if path.starts_with("./") || path.starts_with("../") {
             // Flow-relative: ./ or ../ → relative to current flow directory
-            Ok(current_flow_dir.join(path))
-        } else {
+            current_flow_dir.join(path)
+        } else if path.starts_with('/') {
             // Absolute path
-            Ok(PathBuf::from(path))
-        }
+            PathBuf::from(path)
+        } else {
+            return Err(AikiError::InvalidFlowPath {
+                path: path.to_string(),
+                reason: "Path must start with aiki/, vendor/, @flows/, @proj/, ./, ../, or /".to_string(),
+            });
+        };
+        
+        Ok(resolved)
     }
 }
 ```
