@@ -78,44 +78,56 @@ PostResponse:
 
 ### 3. Flow Resolution
 
-Flows are resolved using different path prefixes, similar to TypeScript/Vite path mapping:
+Flows are resolved using different path prefixes with explicit, self-documenting names:
 
 1. **Built-in flows:** `aiki/*` → `~/.aiki/flows/aiki/`
 2. **Vendor flows:** `vendor/*` → `~/.aiki/flows/vendor/`
-3. **Project-relative:** `@/` → Relative to project root (where `.aiki/` is)
-4. **Flow-relative:** `./` → Relative to directory containing current flow file
-5. **Absolute paths:** `/path/to/file` → As-is
+3. **Project flows:** `@flows/` → `{project}/.aiki/flows/`
+4. **Project root:** `@proj/` (or `@project/`) → `{project}/` (for docs, configs, scripts)
+5. **Flow-relative:** `./` or `../` → Relative to current flow directory
+6. **Absolute paths:** `/path/to/file` → As-is
+
+**Note:** `@project/` is an alias for `@proj/`. Use `@proj/` as the standard for brevity.
 
 **Examples:**
 ```yaml
 before:
   - aiki/quick-lint               # Built-in: ~/.aiki/flows/aiki/quick-lint.yml
   - vendor/eslint                 # Vendor: ~/.aiki/flows/vendor/eslint.yml
-  - @/.aiki/flows/custom.yml      # Project root: {project}/.aiki/flows/custom.yml
+  - @flows/company/policy.yml     # Project flows: {project}/.aiki/flows/company/policy.yml
   - ./helpers/lint.yml            # Flow-relative: {current_flow_dir}/helpers/lint.yml
   - /abs/path/checks.yml          # Absolute path
 
 PrePrompt:
   prompt:
     prepend:
-      - @/docs/architecture.md    # Project root: {project}/docs/architecture.md
-      - aiki/skills/rust          # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
+      - @proj/docs/architecture.md  # Project root: {project}/docs/architecture.md
+      - @proj/README.md             # Project root: {project}/README.md
+      - aiki/skills/rust            # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
 ```
 
-**Why two path types?**
-- `@/` - When you want to reference project files (docs, configs) or flows from project root
-- `./` - When you want to organize flows into subdirectories relative to each other
+**When to use which path type?**
+
+| Path Type | Use Case | Example |
+|-----------|----------|---------|
+| `aiki/*` | Built-in Aiki flows | `aiki/quick-lint` |
+| `vendor/*` | Third-party flows | `vendor/github/pr-checks` |
+| `@flows/` | Project flows with stable paths | `@flows/company/policy.yml` |
+| `./` or `../` | Flows organized in nearby subdirs | `./helpers/lint.yml` |
+| `@proj/` | Non-flow project files | `@proj/docs/arch.md` |
 
 **Path resolution from nested flows:**
 ```yaml
 # .aiki/flows/my-workflow.yml
 before:
-  - ./helpers/lint.yml            # Resolves to: .aiki/flows/helpers/lint.yml
+  - ./helpers/lint.yml            # Flow-relative: .aiki/flows/helpers/lint.yml
+  - @flows/shared/base.yml        # Project flows: {project}/.aiki/flows/shared/base.yml
 
 # .aiki/flows/helpers/lint.yml
 before:
-  - ../shared/base.yml            # Resolves to: .aiki/flows/shared/base.yml
-  - @/.aiki/flows/custom.yml      # Always resolves to: {project}/.aiki/flows/custom.yml
+  - ../shared/base.yml            # Flow-relative: .aiki/flows/shared/base.yml
+  - @flows/company/policy.yml     # Always resolves to: {project}/.aiki/flows/company/policy.yml
+  - @proj/scripts/custom-lint.sh  # Project root: {project}/scripts/custom-lint.sh
 ```
 
 ### 4. Circular Dependency Detection
@@ -245,28 +257,29 @@ PostResponse:
   - shell: echo "Main logic here"
 ```
 
-### Use Case 4: Project-Relative and Flow-Relative Paths
+### Use Case 4: Multiple Path Types
 
 ```yaml
 # .aiki/flows/my-workflow.yml
 PrePrompt:
   prompt:
     prepend:
-      - @/docs/architecture.md      # Project root: {project}/docs/architecture.md
-      - @/docs/coding-style.md      # Project root: {project}/docs/coding-style.md
-      - aiki/skills/rust            # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
+      - @proj/docs/architecture.md    # Project root: {project}/docs/architecture.md
+      - @proj/docs/coding-style.md    # Project root: {project}/docs/coding-style.md
+      - aiki/skills/rust              # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
 
 before:
-  - ./helpers/lint.yml              # Flow-relative: .aiki/flows/helpers/lint.yml
-  - @/.aiki/flows/company/policy.yml # Project root: {project}/.aiki/flows/company/policy.yml
+  - ./helpers/lint.yml                # Flow-relative: .aiki/flows/helpers/lint.yml
+  - @flows/company/policy.yml         # Project flows: {project}/.aiki/flows/company/policy.yml
 
 PostResponse:
   - shell: echo "Custom logic"
 
 # .aiki/flows/helpers/lint.yml (referenced above)
 before:
-  - ../shared/base-checks.yml       # Parent dir: .aiki/flows/shared/base-checks.yml
-  - @/scripts/custom-lint.sh        # Project root: {project}/scripts/custom-lint.sh
+  - ../shared/base-checks.yml         # Parent dir: .aiki/flows/shared/base-checks.yml
+  - @flows/shared/rust-checks.yml     # Project flows: {project}/.aiki/flows/shared/rust-checks.yml
+  - @proj/scripts/custom-lint.sh      # Project root: {project}/scripts/custom-lint.sh
 ```
 
 ### Use Case 5: Multi-Layer Composition
@@ -342,11 +355,13 @@ before:
 - [ ] Implement `cli/src/flows/resolver.rs`
   - [ ] Resolve `aiki/*` to `~/.aiki/flows/aiki/`
   - [ ] Resolve `vendor/*` to `~/.aiki/flows/vendor/`
-  - [ ] Resolve `@/` paths (project-relative)
+  - [ ] Resolve `@flows/` paths (project flows)
+  - [ ] Resolve `@proj/` paths (project root)
+  - [ ] Resolve `@project/` as alias for `@proj/`
   - [ ] Resolve `./` and `../` paths (flow-relative)
   - [ ] Resolve absolute paths
   - [ ] Track current_flow_dir for flow-relative resolution
-  - [ ] Track project_root for project-relative resolution
+  - [ ] Track project_root for @flows/ and @proj/ resolution
   - [ ] Error handling (flow not found)
 
 ### Flow Executor
@@ -370,7 +385,9 @@ before:
 - [ ] Unit tests: Flow path resolution
   - [ ] Test `aiki/*` resolution
   - [ ] Test `vendor/*` resolution
-  - [ ] Test `@/` project-relative resolution
+  - [ ] Test `@flows/` resolution (project flows)
+  - [ ] Test `@proj/` resolution (project root)
+  - [ ] Test `@project/` alias for `@proj/`
   - [ ] Test `./` flow-relative resolution
   - [ ] Test `../` parent directory resolution
   - [ ] Test absolute path resolution
@@ -384,7 +401,7 @@ before:
 - [ ] Integration tests: `flow:` action (inline invocation)
 - [ ] Integration tests: Multi-level composition (nested before/after)
 - [ ] Integration tests: Same event execution (PostResponse → PostResponse)
-- [ ] Integration tests: Mix of path types (aiki/*, @/, ./)
+- [ ] Integration tests: Mix of path types (aiki/*, @flows/, @proj/, ./)
 - [ ] E2E tests: Real flows with before/after
 
 ### Documentation
@@ -468,9 +485,9 @@ impl FlowResolver {
     /// Resolve a flow path to an absolute PathBuf
     /// 
     /// # Arguments
-    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@/docs/arch.md", "./helpers/lint.yml")
+    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@proj/docs/arch.md", "./helpers/lint.yml")
     /// * `current_flow_dir` - Directory containing the current flow file (for ./ paths)
-    /// * `project_root` - Project root directory where .aiki/ is located (for @/ paths)
+    /// * `project_root` - Project root directory where .aiki/ is located (for @proj/ and @flows/ paths)
     pub fn resolve(
         path: &str,
         current_flow_dir: &Path,
@@ -482,9 +499,15 @@ impl FlowResolver {
         } else if path.starts_with("vendor/") {
             // Vendor flows: vendor/* → ~/.aiki/flows/vendor/
             Ok(home_dir()?.join(".aiki/flows").join(path).with_extension("yml"))
-        } else if path.starts_with("@/") {
-            // Project-relative: @/ → {project_root}/
-            Ok(project_root.join(&path[2..]))  // Strip @/ prefix
+        } else if path.starts_with("@flows/") {
+            // Project flows: @flows/ → {project}/.aiki/flows/
+            Ok(project_root.join(".aiki/flows").join(&path[7..]))  // Strip @flows/
+        } else if path.starts_with("@proj/") {
+            // Project root: @proj/ → {project}/
+            Ok(project_root.join(&path[6..]))  // Strip @proj/
+        } else if path.starts_with("@project/") {
+            // Project root (alias): @project/ → {project}/
+            Ok(project_root.join(&path[9..]))  // Strip @project/
         } else if path.starts_with("./") || path.starts_with("../") {
             // Flow-relative: ./ or ../ → relative to current flow directory
             Ok(current_flow_dir.join(path))
@@ -505,9 +528,23 @@ FlowResolver::resolve(
     Path::new("/project"),
 ) // → ~/.aiki/flows/aiki/quick-lint.yml
 
-// Project-relative
+// Project flows
 FlowResolver::resolve(
-    "@/docs/architecture.md",
+    "@flows/company/policy.yml",
+    Path::new(".aiki/flows"),
+    Path::new("/project"),
+) // → /project/.aiki/flows/company/policy.yml
+
+// Project root
+FlowResolver::resolve(
+    "@proj/docs/architecture.md",
+    Path::new(".aiki/flows"),
+    Path::new("/project"),
+) // → /project/docs/architecture.md
+
+// Project root (alias)
+FlowResolver::resolve(
+    "@project/docs/architecture.md",
     Path::new(".aiki/flows"),
     Path::new("/project"),
 ) // → /project/docs/architecture.md
@@ -666,24 +703,34 @@ Available aiki/* flows:
   - aiki/test-runner
 ```
 
-**Example 2: Project-relative path not found**
+**Example 2: Project flows not found**
 ```
-Error: Flow not found: '@/.aiki/flows/custom.yml'
+Error: Flow not found: '@flows/company/policy.yml'
 
 Searched location:
-  - /Users/you/project/.aiki/flows/custom.yml
+  - /Users/you/project/.aiki/flows/company/policy.yml
 
-Path type: project-relative (@ means project root)
+Path type: project flows (@flows/ means {project}/.aiki/flows/)
 ```
 
-**Example 3: Flow-relative path not found**
+**Example 3: Project root file not found**
+```
+Error: Flow not found: '@proj/docs/architecture.md'
+
+Searched location:
+  - /Users/you/project/docs/architecture.md
+
+Path type: project root (@proj/ means project root directory)
+```
+
+**Example 4: Flow-relative path not found**
 ```
 Error: Flow not found: './helpers/lint.yml'
 
 Searched location:
   - /Users/you/project/.aiki/flows/helpers/lint.yml
 
-Path type: flow-relative (. means relative to current flow directory)
+Path type: flow-relative (./ means relative to current flow directory)
 Current flow: .aiki/flows/my-workflow.yml
 ```
 
