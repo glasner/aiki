@@ -7,19 +7,19 @@
 //!
 //! - [`MessageChunk`]: Represents content to prepend and/or append
 //! - [`MessageAssembler`]: Stateful builder that accumulates chunks and produces final output
-//! - [`StringOrArray`]: YAML value that can be a single string or array of strings
+//! - [`TextLines`]: YAML value that can be a single string or array of strings
 //!
 //! # Usage Example
 //!
 //! ```rust
-//! use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
+//! use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
 //!
 //! let mut assembler = MessageAssembler::new(Some("original content".to_string()), "\n");
 //!
 //! // Add chunks from different flows
 //! let chunk1 = MessageChunk {
-//!     prepend: Some(StringOrArray::Single("First line".to_string())),
-//!     append: Some(StringOrArray::Single("Last line".to_string())),
+//!     prepend: Some(TextLines::Single("First line".to_string())),
+//!     append: Some(TextLines::Single("Last line".to_string())),
 //! };
 //! assembler.add_chunk(chunk1);
 //!
@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A string value that can be represented as either a single string or an array of strings in YAML.
+/// One or more lines of text for message assembly.
 ///
 /// This type handles the YAML flexibility where users can write:
 /// ```yaml
@@ -49,14 +49,14 @@ use serde::{Deserialize, Serialize};
 /// YAML block scalars (`|`) and inline strings produce identical results.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
-pub enum StringOrArray {
-    /// Single string value (normalized - trailing newlines stripped)
+pub enum TextLines {
+    /// Single line of text (normalized - trailing newlines stripped)
     Single(String),
-    /// Multiple string values (each normalized - trailing newlines stripped)
+    /// Multiple lines of text (each normalized - trailing newlines stripped)
     Multiple(Vec<String>),
 }
 
-impl<'de> serde::Deserialize<'de> for StringOrArray {
+impl<'de> serde::Deserialize<'de> for TextLines {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -64,10 +64,10 @@ impl<'de> serde::Deserialize<'de> for StringOrArray {
         use serde::de::{self, Visitor};
         use std::fmt;
 
-        struct StringOrArrayVisitor;
+        struct TextLinesVisitor;
 
-        impl<'de> Visitor<'de> for StringOrArrayVisitor {
-            type Value = StringOrArray;
+        impl<'de> Visitor<'de> for TextLinesVisitor {
+            type Value = TextLines;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("a string or array of strings")
@@ -78,9 +78,7 @@ impl<'de> serde::Deserialize<'de> for StringOrArray {
                 E: de::Error,
             {
                 // Normalize: strip trailing newlines from YAML block scalars
-                Ok(StringOrArray::Single(
-                    value.trim_end_matches('\n').to_string(),
-                ))
+                Ok(TextLines::Single(value.trim_end_matches('\n').to_string()))
             }
 
             fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
@@ -88,9 +86,7 @@ impl<'de> serde::Deserialize<'de> for StringOrArray {
                 E: de::Error,
             {
                 // Normalize: strip trailing newlines from YAML block scalars
-                Ok(StringOrArray::Single(
-                    value.trim_end_matches('\n').to_string(),
-                ))
+                Ok(TextLines::Single(value.trim_end_matches('\n').to_string()))
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -102,15 +98,15 @@ impl<'de> serde::Deserialize<'de> for StringOrArray {
                     // Normalize each item: strip trailing newlines
                     vec.push(value.trim_end_matches('\n').to_string());
                 }
-                Ok(StringOrArray::Multiple(vec))
+                Ok(TextLines::Multiple(vec))
             }
         }
 
-        deserializer.deserialize_any(StringOrArrayVisitor)
+        deserializer.deserialize_any(TextLinesVisitor)
     }
 }
 
-impl StringOrArray {
+impl TextLines {
     /// Convert to a vector of strings, consuming self.
     ///
     /// The data is already normalized during deserialization, so trailing newlines
@@ -174,11 +170,11 @@ impl StringOrArray {
 pub struct MessageChunk {
     /// Content to add before the existing message
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepend: Option<StringOrArray>,
+    pub prepend: Option<TextLines>,
 
     /// Content to add after the existing message
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub append: Option<StringOrArray>,
+    pub append: Option<TextLines>,
 }
 
 impl MessageChunk {
@@ -287,19 +283,19 @@ impl Default for MessageChunk {
 /// # Example
 ///
 /// ```rust
-/// use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
+/// use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
 ///
 /// let mut assembler = MessageAssembler::new(Some("Middle".to_string()), "\n");
 ///
 /// let chunk1 = MessageChunk {
-///     prepend: Some(StringOrArray::Single("Top".to_string())),
+///     prepend: Some(TextLines::Single("Top".to_string())),
 ///     append: None,
 /// };
 /// assembler.add_chunk(chunk1);
 ///
 /// let chunk2 = MessageChunk {
 ///     prepend: None,
-///     append: Some(StringOrArray::Single("Bottom".to_string())),
+///     append: Some(TextLines::Single("Bottom".to_string())),
 /// };
 /// assembler.add_chunk(chunk2);
 ///
@@ -404,11 +400,11 @@ impl MessageAssembler {
     /// # Example
     ///
     /// ```rust
-    /// use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
+    /// use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
     ///
     /// let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
     /// assembler.add_chunk(MessageChunk {
-    ///     prepend: Some(StringOrArray::Single("bad".to_string())),
+    ///     prepend: Some(TextLines::Single("bad".to_string())),
     ///     append: None,
     /// });
     ///
@@ -428,31 +424,31 @@ mod tests {
 
     #[test]
     fn test_string_or_array_single() {
-        let single = StringOrArray::Single("test".to_string());
+        let single = TextLines::Single("test".to_string());
         assert!(!single.is_empty());
         assert_eq!(single.to_vec(), vec!["test".to_string()]);
     }
 
     #[test]
     fn test_string_or_array_multiple() {
-        let multiple = StringOrArray::Multiple(vec!["a".to_string(), "b".to_string()]);
+        let multiple = TextLines::Multiple(vec!["a".to_string(), "b".to_string()]);
         assert!(!multiple.is_empty());
         assert_eq!(multiple.to_vec(), vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
     fn test_string_or_array_empty() {
-        let empty_single = StringOrArray::Single("".to_string());
+        let empty_single = TextLines::Single("".to_string());
         assert!(empty_single.is_empty());
 
-        let empty_multiple = StringOrArray::Multiple(vec![]);
+        let empty_multiple = TextLines::Multiple(vec![]);
         assert!(empty_multiple.is_empty());
     }
 
     #[test]
     fn test_prepend_only() {
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("prepended".to_string())),
+            prepend: Some(TextLines::Single("prepended".to_string())),
             append: None,
         };
 
@@ -466,7 +462,7 @@ mod tests {
     fn test_append_only() {
         let chunk = MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Single("appended".to_string())),
+            append: Some(TextLines::Single("appended".to_string())),
         };
 
         let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
@@ -478,8 +474,8 @@ mod tests {
     #[test]
     fn test_both_prepend_and_append() {
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("before".to_string())),
-            append: Some(StringOrArray::Single("after".to_string())),
+            prepend: Some(TextLines::Single("before".to_string())),
+            append: Some(TextLines::Single("after".to_string())),
         };
 
         let mut assembler = MessageAssembler::new(Some("middle".to_string()), "\n");
@@ -491,11 +487,11 @@ mod tests {
     #[test]
     fn test_with_arrays() {
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Multiple(vec![
+            prepend: Some(TextLines::Multiple(vec![
                 "line1".to_string(),
                 "line2".to_string(),
             ])),
-            append: Some(StringOrArray::Single("line3".to_string())),
+            append: Some(TextLines::Single("line3".to_string())),
         };
 
         let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
@@ -507,13 +503,13 @@ mod tests {
     #[test]
     fn test_check_id_is_deterministic() {
         let chunk1 = MessageChunk {
-            prepend: Some(StringOrArray::Single("test".to_string())),
-            append: Some(StringOrArray::Single("content".to_string())),
+            prepend: Some(TextLines::Single("test".to_string())),
+            append: Some(TextLines::Single("content".to_string())),
         };
 
         let chunk2 = MessageChunk {
-            prepend: Some(StringOrArray::Single("test".to_string())),
-            append: Some(StringOrArray::Single("content".to_string())),
+            prepend: Some(TextLines::Single("test".to_string())),
+            append: Some(TextLines::Single("content".to_string())),
         };
 
         assert_eq!(chunk1.check_id(), chunk2.check_id());
@@ -522,12 +518,12 @@ mod tests {
     #[test]
     fn test_check_id_differs_for_different_content() {
         let chunk1 = MessageChunk {
-            prepend: Some(StringOrArray::Single("test1".to_string())),
+            prepend: Some(TextLines::Single("test1".to_string())),
             append: None,
         };
 
         let chunk2 = MessageChunk {
-            prepend: Some(StringOrArray::Single("test2".to_string())),
+            prepend: Some(TextLines::Single("test2".to_string())),
             append: None,
         };
 
@@ -710,7 +706,7 @@ append:
     #[test]
     fn test_validate_valid_chunk() {
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("test".to_string())),
+            prepend: Some(TextLines::Single("test".to_string())),
             append: None,
         };
 
@@ -720,7 +716,7 @@ append:
     #[test]
     fn test_prepend_items() {
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Multiple(vec![
+            prepend: Some(TextLines::Multiple(vec![
                 "a".to_string(),
                 "b".to_string(),
             ])),
@@ -737,7 +733,7 @@ append:
     fn test_append_items() {
         let chunk = MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Multiple(vec![
+            append: Some(TextLines::Multiple(vec![
                 "x".to_string(),
                 "y".to_string(),
             ])),
@@ -756,8 +752,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("before".to_string())),
-            append: Some(StringOrArray::Single("after".to_string())),
+            prepend: Some(TextLines::Single("before".to_string())),
+            append: Some(TextLines::Single("after".to_string())),
         };
         assembler.add_chunk(chunk);
 
@@ -769,14 +765,14 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
 
         let chunk1 = MessageChunk {
-            prepend: Some(StringOrArray::Single("first".to_string())),
+            prepend: Some(TextLines::Single("first".to_string())),
             append: None,
         };
         assembler.add_chunk(chunk1);
 
         let chunk2 = MessageChunk {
-            prepend: Some(StringOrArray::Single("second".to_string())),
-            append: Some(StringOrArray::Single("end".to_string())),
+            prepend: Some(TextLines::Single("second".to_string())),
+            append: Some(TextLines::Single("end".to_string())),
         };
         assembler.add_chunk(chunk2);
 
@@ -789,8 +785,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(None, "\n");
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("start".to_string())),
-            append: Some(StringOrArray::Single("end".to_string())),
+            prepend: Some(TextLines::Single("start".to_string())),
+            append: Some(TextLines::Single("end".to_string())),
         };
         assembler.add_chunk(chunk);
 
@@ -802,8 +798,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("middle".to_string()), " | ");
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("A".to_string())),
-            append: Some(StringOrArray::Single("B".to_string())),
+            prepend: Some(TextLines::Single("A".to_string())),
+            append: Some(TextLines::Single("B".to_string())),
         };
         assembler.add_chunk(chunk);
 
@@ -822,8 +818,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("".to_string()), "\n");
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("before".to_string())),
-            append: Some(StringOrArray::Single("after".to_string())),
+            prepend: Some(TextLines::Single("before".to_string())),
+            append: Some(TextLines::Single("after".to_string())),
         };
         assembler.add_chunk(chunk);
 
@@ -858,12 +854,12 @@ mod assembler_tests {
 
         // Add some chunks
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("header".to_string())),
+            prepend: Some(TextLines::Single("header".to_string())),
             append: None,
         });
         assembler.add_chunk(MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Single("footer".to_string())),
+            append: Some(TextLines::Single("footer".to_string())),
         });
 
         assert_eq!(assembler.chunk_count(), 2);
@@ -885,7 +881,7 @@ mod assembler_tests {
 
         // First batch of chunks
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("bad".to_string())),
+            prepend: Some(TextLines::Single("bad".to_string())),
             append: None,
         });
 
@@ -894,7 +890,7 @@ mod assembler_tests {
 
         // Add good chunks
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("good".to_string())),
+            prepend: Some(TextLines::Single("good".to_string())),
             append: None,
         });
 
@@ -907,8 +903,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("middle".to_string()), "\n\n");
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single("before".to_string())),
-            append: Some(StringOrArray::Single("after".to_string())),
+            prepend: Some(TextLines::Single("before".to_string())),
+            append: Some(TextLines::Single("after".to_string())),
         };
         assembler.add_chunk(chunk);
 
@@ -924,7 +920,7 @@ mod assembler_tests {
 
         // Flow A adds context
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single(
+            prepend: Some(TextLines::Single(
                 "Read ARCHITECTURE.md first".to_string(),
             )),
             append: None,
@@ -932,7 +928,7 @@ mod assembler_tests {
 
         // Flow B adds constraints
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single(
+            prepend: Some(TextLines::Single(
                 "Follow security guidelines".to_string(),
             )),
             append: None,
@@ -941,7 +937,7 @@ mod assembler_tests {
         // Flow C adds footer
         assembler.add_chunk(MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Single("Confirm you understand".to_string())),
+            append: Some(TextLines::Single("Confirm you understand".to_string())),
         });
 
         let result = assembler.build();
@@ -960,7 +956,7 @@ mod assembler_tests {
 
         assembler.add_chunk(MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Multiple(vec![
+            append: Some(TextLines::Multiple(vec![
                 "Co-authored-by: Alice <alice@example.com>".to_string(),
                 "Co-authored-by: Bob <bob@example.com>".to_string(),
                 "Ticket: PROJ-123".to_string(),
@@ -984,8 +980,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some("中文内容 🚀".to_string()), "\n\n");
 
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("🎯 Priority: مرتفع".to_string())),
-            append: Some(StringOrArray::Single("Café ☕ — Naïve résumé".to_string())),
+            prepend: Some(TextLines::Single("🎯 Priority: مرتفع".to_string())),
+            append: Some(TextLines::Single("Café ☕ — Naïve résumé".to_string())),
         });
 
         let result = assembler.build();
@@ -1006,17 +1002,17 @@ mod assembler_tests {
     fn test_unicode_in_check_id() {
         // Verify check_id handles Unicode correctly and deterministically
         let chunk1 = MessageChunk {
-            prepend: Some(StringOrArray::Single("Hello 世界 🌍".to_string())),
+            prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
             append: None,
         };
 
         let chunk2 = MessageChunk {
-            prepend: Some(StringOrArray::Single("Hello 世界 🌍".to_string())),
+            prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
             append: None,
         };
 
         let chunk3 = MessageChunk {
-            prepend: Some(StringOrArray::Single("Hello world".to_string())),
+            prepend: Some(TextLines::Single("Hello world".to_string())),
             append: None,
         };
 
@@ -1037,8 +1033,8 @@ mod assembler_tests {
         let mut assembler = MessageAssembler::new(Some(long_original.clone()), "\n\n");
 
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single(long_prepend.clone())),
-            append: Some(StringOrArray::Single(long_append.clone())),
+            prepend: Some(TextLines::Single(long_prepend.clone())),
+            append: Some(TextLines::Single(long_append.clone())),
         });
 
         let result = assembler.build();
@@ -1059,7 +1055,7 @@ mod assembler_tests {
         let large_content = "X".repeat(100_000);
 
         let chunk = MessageChunk {
-            prepend: Some(StringOrArray::Single(large_content)),
+            prepend: Some(TextLines::Single(large_content)),
             append: None,
         };
 
@@ -1079,18 +1075,18 @@ mod assembler_tests {
 
         // Add chunks in specific order
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("FIRST_PRE".to_string())),
-            append: Some(StringOrArray::Single("FIRST_APP".to_string())),
+            prepend: Some(TextLines::Single("FIRST_PRE".to_string())),
+            append: Some(TextLines::Single("FIRST_APP".to_string())),
         });
 
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("SECOND_PRE".to_string())),
-            append: Some(StringOrArray::Single("SECOND_APP".to_string())),
+            prepend: Some(TextLines::Single("SECOND_PRE".to_string())),
+            append: Some(TextLines::Single("SECOND_APP".to_string())),
         });
 
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("THIRD_PRE".to_string())),
-            append: Some(StringOrArray::Single("THIRD_APP".to_string())),
+            prepend: Some(TextLines::Single("THIRD_PRE".to_string())),
+            append: Some(TextLines::Single("THIRD_APP".to_string())),
         });
 
         let result = assembler.build();
@@ -1125,25 +1121,25 @@ mod assembler_tests {
 
         // Chunk 1: prepend only
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("P1".to_string())),
+            prepend: Some(TextLines::Single("P1".to_string())),
             append: None,
         });
 
         // Chunk 2: append only
         assembler.add_chunk(MessageChunk {
             prepend: None,
-            append: Some(StringOrArray::Single("A1".to_string())),
+            append: Some(TextLines::Single("A1".to_string())),
         });
 
         // Chunk 3: both
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("P2".to_string())),
-            append: Some(StringOrArray::Single("A2".to_string())),
+            prepend: Some(TextLines::Single("P2".to_string())),
+            append: Some(TextLines::Single("A2".to_string())),
         });
 
         // Chunk 4: prepend only
         assembler.add_chunk(MessageChunk {
-            prepend: Some(StringOrArray::Single("P3".to_string())),
+            prepend: Some(TextLines::Single("P3".to_string())),
             append: None,
         });
 
