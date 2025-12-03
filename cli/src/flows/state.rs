@@ -38,6 +38,7 @@ impl ActionResult {
 /// - Let-bound variables computed during execution
 /// - Metadata about action results
 /// - Current flow context
+/// - Prompt assembler (for PrePrompt events)
 #[derive(Debug, Clone)]
 pub struct AikiState {
     /// The original event that triggered this execution
@@ -51,16 +52,33 @@ pub struct AikiState {
 
     /// Current flow name (e.g., "aiki/core") for self references
     pub flow_name: Option<String>,
+
+    /// Prompt assembler for PrePrompt events
+    /// Accumulates prompt modifications across multiple actions
+    prompt_assembler: Option<crate::flows::messages::MessageAssembler>,
 }
 
 impl AikiState {
     #[must_use]
     pub fn new(event: impl Into<crate::events::AikiEvent>) -> Self {
+        let event = event.into();
+
+        // Initialize prompt assembler for PrePrompt events
+        let prompt_assembler = if let crate::events::AikiEvent::PrePrompt(ref e) = event {
+            Some(crate::flows::messages::MessageAssembler::new(
+                Some(e.original_prompt.clone()),
+                "\n\n", // Double newline separator for prompt sections
+            ))
+        } else {
+            None
+        };
+
         Self {
-            event: event.into(),
+            event,
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
             flow_name: None,
+            prompt_assembler,
         }
     }
 
@@ -107,6 +125,38 @@ impl AikiState {
     #[cfg(test)]
     pub fn get_metadata(&self, name: &str) -> Option<&ActionResult> {
         self.variable_metadata.get(name)
+    }
+
+    /// Get mutable reference to the prompt assembler
+    /// Only available for PrePrompt events
+    pub fn get_prompt_assembler_mut(
+        &mut self,
+    ) -> crate::error::Result<&mut crate::flows::messages::MessageAssembler> {
+        self.prompt_assembler.as_mut().ok_or_else(|| {
+            crate::error::AikiError::Other(anyhow::anyhow!(
+                "Prompt assembler not available (not a PrePrompt event)"
+            ))
+        })
+    }
+
+    /// Build the final prompt from accumulated chunks
+    /// Only available for PrePrompt events
+    pub fn build_prompt(&self) -> crate::error::Result<String> {
+        self.prompt_assembler
+            .as_ref()
+            .map(|assembler| assembler.build())
+            .ok_or_else(|| {
+                crate::error::AikiError::Other(anyhow::anyhow!(
+                    "Prompt assembler not available (not a PrePrompt event)"
+                ))
+            })
+    }
+
+    /// Clear accumulated prompt chunks (for error recovery)
+    pub fn clear_prompt_chunks(&mut self) {
+        if let Some(ref mut assembler) = self.prompt_assembler {
+            assembler.clear();
+        }
     }
 }
 

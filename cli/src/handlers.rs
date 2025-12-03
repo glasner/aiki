@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::events::{
-    AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrepareCommitMessageEvent, AikiStartEvent,
+    AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent,
+    AikiPrepareCommitMessageEvent, AikiStartEvent,
 };
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 
@@ -141,6 +142,83 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
                 format!("❌ Failed to initialize session: {}", msg),
                 Some("Please run 'aiki init' or 'aiki doctor' to fix setup.".to_string()),
             ))
+        }
+    }
+}
+
+/// Handle pre-prompt event (before agent sees the user's prompt)
+///
+/// This event fires before the agent receives the user's prompt, allowing flows
+/// to inject additional context (e.g., project conventions, active files, etc.).
+/// Returns the modified prompt via metadata, with graceful degradation on errors.
+pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[aiki] PrePrompt event from {:?}, original prompt length: {}",
+            event.agent_type,
+            event.original_prompt.len()
+        );
+    }
+
+    // Load core flow
+    let core_flow = crate::flows::load_core_flow()?;
+
+    // Build execution state from event
+    let mut state = AikiState::new(event);
+
+    // Set flow name for self.* function resolution
+    state.flow_name = Some("aiki/core".to_string());
+
+    // Execute PrePrompt actions from the core flow
+    let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.pre_prompt, &mut state)?;
+
+    // Build final prompt (graceful degradation on error)
+    let final_prompt = match state.build_prompt() {
+        Ok(prompt) => prompt,
+        Err(e) => {
+            eprintln!("Warning: Failed to build prompt, using original: {}", e);
+            // Fall back to original prompt from the event
+            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
+                evt.original_prompt.clone()
+            } else {
+                // This should never happen, but return empty string as fallback
+                String::new()
+            }
+        }
+    };
+
+    // Return response based on flow result
+    match flow_result {
+        FlowResult::Success => Ok(HookResponse::success()
+            .with_metadata(vec![("modified_prompt".to_string(), final_prompt)])),
+        FlowResult::FailedContinue(msg) => {
+            eprintln!("Warning: PrePrompt flow failed (continue): {}", msg);
+            Ok(HookResponse::success()
+                .with_metadata(vec![("modified_prompt".to_string(), final_prompt)]))
+        }
+        FlowResult::FailedStop(msg) => {
+            eprintln!("Warning: PrePrompt flow stopped: {}", msg);
+            // Return original prompt on stop
+            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
+                Ok(HookResponse::success().with_metadata(vec![(
+                    "modified_prompt".to_string(),
+                    evt.original_prompt.clone(),
+                )]))
+            } else {
+                Ok(HookResponse::success())
+            }
+        }
+        FlowResult::FailedBlock(msg) => {
+            eprintln!("Warning: PrePrompt flow blocked: {}", msg);
+            // Return original prompt on block (don't actually block the user)
+            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
+                Ok(HookResponse::success().with_metadata(vec![(
+                    "modified_prompt".to_string(),
+                    evt.original_prompt.clone(),
+                )]))
+            } else {
+                Ok(HookResponse::success())
+            }
         }
     }
 }
