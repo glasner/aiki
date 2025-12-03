@@ -173,9 +173,24 @@ PostResponse:
 
 **Detection mechanism:**
 - Track flow call stack during execution (runtime checking)
-- Use canonical paths to detect cycles regardless of path format
+- **Use canonical paths** to detect cycles regardless of path format
+- **Canonicalization happens in FlowResolver** - all path variants (./, ../, @/, symlinks) resolve to same canonical path
 - Error if any flow appears twice in the call stack
 - Clear error message showing full cycle path
+
+**Why canonical paths are critical:**
+```yaml
+# flow-a.yml in .aiki/flows/
+before:
+  - ./flow-b.yml          # Relative path
+
+# flow-b.yml in .aiki/flows/
+before:
+  - @/flows/flow-a.yml    # Project root path
+
+# Without canonicalization: Looks like different files (different strings)
+# With canonicalization: Both resolve to /project/.aiki/flows/flow-a.yml → Cycle detected!
+```
 
 ### 5. Atomic Flow Execution
 
@@ -526,8 +541,8 @@ pub struct Flow {
 
 ```rust
 pub struct FlowLoader {
-    resolver: FlowResolver,              // Path resolution with cached project root
-    cache: HashMap<PathBuf, Flow>,       // Loaded flows cache
+    resolver: FlowResolver,              // Path resolution with cached project root (returns canonical paths)
+    cache: HashMap<PathBuf, Flow>,       // Loaded flows cache (keyed by canonical path)
 }
 
 impl FlowLoader {
@@ -538,20 +553,25 @@ impl FlowLoader {
         })
     }
     
-    pub fn load(&mut self, path: &str, current_flow_dir: &Path) -> Result<Flow> {
-        let resolved_path = self.resolver.resolve(path, current_flow_dir)?;
+    /// Load a flow and return both the flow and its canonical path
+    /// 
+    /// The canonical path is used by FlowComposer for cycle detection.
+    /// Caching is done by canonical path to avoid loading the same file multiple times.
+    pub fn load(&mut self, path: &str, current_flow_dir: &Path) -> Result<(Flow, PathBuf)> {
+        // Resolve to canonical path (handles ./, ../, @/, symlinks)
+        let canonical_path = self.resolver.resolve(path, current_flow_dir)?;
         
-        // Check cache
-        if let Some(flow) = self.cache.get(&resolved_path) {
-            return Ok(flow.clone());
+        // Check cache (by canonical path)
+        if let Some(flow) = self.cache.get(&canonical_path) {
+            return Ok((flow.clone(), canonical_path));
         }
         
         // Load and parse flow file
-        let flow = self.load_from_file(&resolved_path)?;
+        let flow = self.load_from_file(&canonical_path)?;
         
-        // Cache and return
-        self.cache.insert(resolved_path, flow.clone());
-        Ok(flow)
+        // Cache by canonical path and return both flow and path
+        self.cache.insert(canonical_path.clone(), flow.clone());
+        Ok((flow, canonical_path))
     }
     
     fn load_from_file(&self, path: &Path) -> Result<Flow> {
@@ -652,8 +672,11 @@ impl FlowResolver {
         })
     }
     
-    /// Resolve a flow path to an absolute PathBuf
+    /// Resolve a flow path to an absolute, canonical PathBuf
     /// Adds .yml extension and searches aiki/vendor directories
+    /// 
+    /// **IMPORTANT**: Returns canonicalized path for reliable cycle detection.
+    /// All path variants (./, ../, @/, symlinks) are resolved to the same canonical path.
     /// 
     /// # Arguments
     /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@/docs/arch.md", "./helpers/lint.yml")
@@ -702,10 +725,17 @@ impl FlowResolver {
             }
         } else {
             // For generic paths (@/, ./, ../, /), delegate to PathResolver
-            return self.path_resolver.resolve(path, current_flow_dir);
+            self.path_resolver.resolve(path, current_flow_dir)?
         };
         
-        Ok(resolved)
+        // CRITICAL: Canonicalize path for reliable cycle detection
+        // This ensures ./foo.yml, ../flows/foo.yml, and @/flows/foo.yml
+        // all resolve to the same canonical path if they reference the same file
+        resolved.canonicalize().map_err(|e| AikiError::FlowNotFound {
+            path: path.to_string(),
+            resolved_path: resolved.display().to_string(),
+            source: e,
+        })
     }
 }
 ```
@@ -777,21 +807,22 @@ impl<'a> FlowComposer<'a> {
     /// - Cycle detection
     /// - Recursive flow invocation
     pub fn compose_flow(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
-        // Load the flow
-        let flow = self.loader.load(flow_path, current_flow_dir)?;
-        let canonical_path = PathBuf::from(flow_path).canonicalize()?;
+        // Load the flow (FlowLoader uses FlowResolver which returns canonical paths)
+        let (flow, canonical_path) = self.loader.load(flow_path, current_flow_dir)?;
         
         // Check for circular dependency (including self-invocation)
+        // canonical_path is already canonicalized by FlowResolver, so this comparison is reliable
         if self.call_stack.contains(&canonical_path) {
             return Err(AikiError::CircularFlowDependency {
                 path: flow_path.to_string(),
+                canonical_path: canonical_path.display().to_string(),
                 stack: self.call_stack.iter()
                     .map(|p| p.display().to_string())
                     .collect(),
             });
         }
         
-        // Push onto call stack
+        // Push canonical path onto call stack for cycle detection
         self.call_stack.push(canonical_path.clone());
         
         // 1. Execute before flows (each atomically)
