@@ -80,17 +80,29 @@ PostResponse:
 
 Flows are resolved using different path prefixes:
 
-1. **Built-in flows:** `aiki/*` → `~/.aiki/flows/aiki/`
-2. **Vendor flows:** `vendor/*` → `~/.aiki/flows/vendor/`
+1. **Built-in flows:** `aiki/*` → Search project first, then user
+   - Try `{project}/.aiki/flows/aiki/` first
+   - If not found, try `~/.aiki/flows/aiki/`
+2. **Vendor flows:** `vendor/*` → Search project first, then user
+   - Try `{project}/.aiki/flows/vendor/` first
+   - If not found, try `~/.aiki/flows/vendor/`
 3. **Project root:** `@/` → `{project}/` (for docs, configs, or flows outside .aiki/flows/)
 4. **Flow-relative:** `./` or `../` → Relative to current flow directory
 5. **Absolute paths:** `/path/to/file` → As-is
 
+**Why project-first for aiki/* and vendor/*?**
+- Projects can override built-in flows (e.g., custom `aiki/quick-lint.yml`)
+- Team-specific configurations in version control
+- User flows provide defaults/fallbacks
+- Standard precedence (like `.gitignore` - project overrides user)
+
 **Examples:**
 ```yaml
 before:
-  - aiki/quick-lint               # Built-in: ~/.aiki/flows/aiki/quick-lint.yml
-  - vendor/eslint                 # Vendor: ~/.aiki/flows/vendor/eslint.yml
+  - aiki/quick-lint               # Searches: 1) {project}/.aiki/flows/aiki/quick-lint.yml
+                                  #           2) ~/.aiki/flows/aiki/quick-lint.yml
+  - vendor/eslint                 # Searches: 1) {project}/.aiki/flows/vendor/eslint.yml
+                                  #           2) ~/.aiki/flows/vendor/eslint.yml
   - ./helpers/lint.yml            # Flow-relative: {current_flow_dir}/helpers/lint.yml
   - /abs/path/checks.yml          # Absolute path
 
@@ -99,7 +111,7 @@ PrePrompt:
     prepend:
       - @/docs/architecture.md    # Project root: {project}/docs/architecture.md
       - @/README.md               # Project root: {project}/README.md
-      - aiki/skills/rust          # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
+      - aiki/skills/rust          # Searches project, then user
 ```
 
 **When to use which path type?**
@@ -349,8 +361,8 @@ before:
 - [ ] Implement `cli/src/flows/resolver.rs`
   - [ ] Implement `find_project_root()` - search upward for `.aiki/` directory
   - [ ] Cache project_root and home_dir in FlowResolver struct
-  - [ ] Resolve `aiki/*` to `~/.aiki/flows/aiki/`
-  - [ ] Resolve `vendor/*` to `~/.aiki/flows/vendor/`
+  - [ ] Resolve `aiki/*` - try project first, then user
+  - [ ] Resolve `vendor/*` - try project first, then user
   - [ ] Resolve `@/` paths (project root)
   - [ ] Resolve `./` and `../` paths (flow-relative)
   - [ ] Resolve absolute paths
@@ -376,8 +388,9 @@ before:
 ### Testing
 
 - [ ] Unit tests: Flow path resolution
-  - [ ] Test `aiki/*` resolution
-  - [ ] Test `vendor/*` resolution
+  - [ ] Test `aiki/*` resolution (project first, then user)
+  - [ ] Test `vendor/*` resolution (project first, then user)
+  - [ ] Test project override of built-in flows
   - [ ] Test `@/` resolution (project root)
   - [ ] Test `./` flow-relative resolution
   - [ ] Test `../` parent directory resolution
@@ -530,17 +543,35 @@ impl FlowResolver {
         }
         
         let resolved = if let Some(rest) = path.strip_prefix("aiki/") {
-            // Built-in flows: aiki/* → ~/.aiki/flows/aiki/
-            self.home_dir
+            // Built-in flows: try project first, then user
+            let project_path = self.project_root
                 .join(".aiki/flows/aiki")
                 .join(rest)
-                .with_extension("yml")
+                .with_extension("yml");
+            
+            if project_path.exists() {
+                project_path
+            } else {
+                self.home_dir
+                    .join(".aiki/flows/aiki")
+                    .join(rest)
+                    .with_extension("yml")
+            }
         } else if let Some(rest) = path.strip_prefix("vendor/") {
-            // Vendor flows: vendor/* → ~/.aiki/flows/vendor/
-            self.home_dir
+            // Vendor flows: try project first, then user
+            let project_path = self.project_root
                 .join(".aiki/flows/vendor")
                 .join(rest)
-                .with_extension("yml")
+                .with_extension("yml");
+            
+            if project_path.exists() {
+                project_path
+            } else {
+                self.home_dir
+                    .join(".aiki/flows/vendor")
+                    .join(rest)
+                    .with_extension("yml")
+            }
         } else if let Some(rest) = path.strip_prefix("@/") {
             // Project root: @/ → {project}/
             if rest.is_empty() {
@@ -573,11 +604,12 @@ impl FlowResolver {
 // Create resolver (discovers project root automatically)
 let resolver = FlowResolver::new()?;
 
-// Built-in flow
+// Built-in flow (searches project first, then user)
 resolver.resolve(
     "aiki/quick-lint",
     Path::new(".aiki/flows"),
-) // → ~/.aiki/flows/aiki/quick-lint.yml
+) // → Checks: 1) {project}/.aiki/flows/aiki/quick-lint.yml
+  //          2) ~/.aiki/flows/aiki/quick-lint.yml
 
 // Project root (docs)
 resolver.resolve(
