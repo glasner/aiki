@@ -401,6 +401,8 @@ Ticket: AUTH-123
 - Trailers accumulate in execution order: before flow's Co-authored-by appears first
 - Body and trailers are separate assemblers, but both shared across flows
 
+**See also:** [Use Case 5 in milestone-1.2](./milestone-1.2-post-response.md#use-case-5-composed-flows-with-shared-autoreply-accumulation) for how PostResponse `autoreply:` actions accumulate across composed flows without short-circuiting.
+
 ---
 
 ## Implementation Tasks
