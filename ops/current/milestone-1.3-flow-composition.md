@@ -95,8 +95,9 @@ before:
 
 ### 4. Circular Dependency Detection
 
-Prevent infinite loops:
+Prevent infinite loops by tracking all flow invocations at runtime:
 
+**Static cycles (before/after):**
 ```yaml
 # flow-a.yml
 before:
@@ -107,10 +108,31 @@ before:
   - ./flow-a.yml  # ERROR: Circular dependency detected
 ```
 
+**Runtime cycles (flow: action):**
+```yaml
+# flow-a.yml
+PostResponse:
+  - flow: ./flow-b.yml
+
+# flow-b.yml
+PostResponse:
+  - flow: ./flow-a.yml  # ERROR: Circular dependency detected
+```
+
+**Self-invocation (not allowed):**
+```yaml
+# my-workflow.yml
+PostResponse:
+  - if: $counter < 10
+    then:
+      flow: ./my-workflow.yml  # ERROR: Circular dependency (self-invocation)
+```
+
 **Detection mechanism:**
-- Track flow call stack during execution
-- Error if flow appears twice in stack
-- Clear error message with cycle path
+- Track flow call stack during execution (runtime checking)
+- Use canonical paths to detect cycles regardless of path format
+- Error if any flow appears twice in the call stack
+- Clear error message showing full cycle path
 
 ### 5. Atomic Flow Execution
 
@@ -317,13 +339,14 @@ before:
 ✅ Can include flows via `before:` and `after:` directives  
 ✅ Can invoke flows inline via `flow:` action  
 ✅ Flow paths resolve correctly (aiki/*, vendor/*, local)  
-✅ Circular dependencies are detected and rejected  
+✅ Circular dependencies are detected at runtime (before/after + flow: action)  
+✅ Self-invocation is detected and rejected  
 ✅ Before flows execute before this flow's actions  
 ✅ After flows execute after this flow's actions  
 ✅ Flow: action executes at the correct point in action list  
 ✅ Each flow executes atomically (runs its own before/after)  
 ✅ Flow caching prevents redundant loads  
-✅ Clear error messages for missing flows  
+✅ Clear error messages for missing flows and cycles  
 ✅ Multi-level composition works (nested before/after)  
 
 ---
@@ -347,33 +370,28 @@ pub struct Flow {
 ```rust
 pub struct FlowLoader {
     cache: HashMap<PathBuf, Flow>,       // Loaded flows cache
-    call_stack: Vec<PathBuf>,            // For circular detection
 }
 
 impl FlowLoader {
     pub fn load(&mut self, path: &str) -> Result<Flow> {
         let resolved_path = FlowResolver::resolve(path)?;
         
-        // Check circular dependency
-        if self.call_stack.contains(&resolved_path) {
-            return Err(AikiError::CircularDependency {
-                path: path.to_string(),
-                stack: self.call_stack.clone(),
-            });
-        }
-        
         // Check cache
         if let Some(flow) = self.cache.get(&resolved_path) {
             return Ok(flow.clone());
         }
         
-        // Load flow
-        self.call_stack.push(resolved_path.clone());
+        // Load and parse flow file
         let flow = self.load_from_file(&resolved_path)?;
-        self.call_stack.pop();
         
         // Cache and return
         self.cache.insert(resolved_path, flow.clone());
+        Ok(flow)
+    }
+    
+    fn load_from_file(&self, path: &Path) -> Result<Flow> {
+        let contents = std::fs::read_to_string(path)?;
+        let flow: Flow = serde_yaml::from_str(&contents)?;
         Ok(flow)
     }
 }
@@ -408,15 +426,32 @@ impl FlowResolver {
 ```rust
 pub struct FlowExecutor<'a> {
     loader: &'a mut FlowLoader,
+    call_stack: Vec<PathBuf>,  // Runtime call stack for cycle detection
 }
 
 impl<'a> FlowExecutor<'a> {
     /// Execute a flow atomically (before → this flow → after)
-    pub fn execute(&mut self, flow: &Flow, event: &mut dyn Event) -> Result<()> {
+    pub fn execute(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
+        // Load the flow
+        let flow = self.loader.load(flow_path)?;
+        let canonical_path = PathBuf::from(flow_path).canonicalize()?;
+        
+        // Check for circular dependency (including self-invocation)
+        if self.call_stack.contains(&canonical_path) {
+            return Err(AikiError::CircularDependency {
+                path: flow_path.to_string(),
+                stack: self.call_stack.iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+            });
+        }
+        
+        // Push onto call stack
+        self.call_stack.push(canonical_path.clone());
+        
         // 1. Execute before flows (each atomically)
         for before_path in &flow.before {
-            let before_flow = self.loader.load(before_path)?;
-            self.execute(&before_flow, event)?;  // Recursive, atomic
+            self.execute(before_path, event)?;  // Recursive, atomic
         }
         
         // 2. Execute this flow's actions
@@ -429,19 +464,19 @@ impl<'a> FlowExecutor<'a> {
         
         // 3. Execute after flows (each atomically)
         for after_path in &flow.after {
-            let after_flow = self.loader.load(after_path)?;
-            self.execute(&after_flow, event)?;  // Recursive, atomic
+            self.execute(after_path, event)?;  // Recursive, atomic
         }
         
+        // Pop from call stack
+        self.call_stack.pop();
         Ok(())
     }
     
     fn execute_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
         match action {
             Action::Flow { path } => {
-                // Inline flow invocation
-                let flow = self.loader.load(path)?;
-                self.execute(&flow, event)?;  // Execute atomically
+                // Inline flow invocation (checked by call stack)
+                self.execute(path, event)?;  // Execute atomically
             }
             // ... other action types ...
         }
