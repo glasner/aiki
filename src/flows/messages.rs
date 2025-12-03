@@ -12,7 +12,7 @@
 //! # Usage Example
 //!
 //! ```rust
-//! use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
+//! use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
 //!
 //! let mut assembler = MessageAssembler::new(Some("original content".to_string()), "\n");
 //!
@@ -287,7 +287,7 @@ impl Default for MessageChunk {
 /// # Example
 ///
 /// ```rust
-/// use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
+/// use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
 ///
 /// let mut assembler = MessageAssembler::new(Some("Middle".to_string()), "\n");
 ///
@@ -404,7 +404,7 @@ impl MessageAssembler {
     /// # Example
     ///
     /// ```rust
-    /// use aiki::messages::{MessageChunk, MessageAssembler, StringOrArray};
+    /// use aiki::flows::messages::{MessageChunk, MessageAssembler, StringOrArray};
     ///
     /// let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
     /// assembler.add_chunk(MessageChunk {
