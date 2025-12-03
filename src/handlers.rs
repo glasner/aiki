@@ -169,56 +169,58 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PrePrompt actions from the core flow
-    let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.pre_prompt, &mut state)?;
+    // Extract original prompt for error recovery
+    let original_prompt = if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
+        evt.original_prompt.clone()
+    } else {
+        String::new()
+    };
+
+    // Execute PrePrompt actions from the core flow (catch errors for graceful degradation)
+    let (flow_result, _timing) =
+        match FlowEngine::execute_actions(&core_flow.pre_prompt, &mut state) {
+            Ok(result) => result,
+            Err(e) => {
+                // Flow execution failed - log warning and use original prompt
+                eprintln!("⚠️ PrePrompt flow failed: {}", e);
+                eprintln!("Continuing with original prompt...\n");
+                return Ok(HookResponse::success()
+                    .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]));
+            }
+        };
 
     // Build final prompt (graceful degradation on error)
     let final_prompt = match state.build_prompt() {
         Ok(prompt) => prompt,
         Err(e) => {
-            eprintln!("Warning: Failed to build prompt, using original: {}", e);
-            // Fall back to original prompt from the event
-            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
-                evt.original_prompt.clone()
-            } else {
-                // This should never happen, but return empty string as fallback
-                String::new()
-            }
+            // Prompt assembly failed - log warning and use original prompt
+            eprintln!("⚠️ PrePrompt flow failed: {}", e);
+            eprintln!("Continuing with original prompt...\n");
+            original_prompt.clone()
         }
     };
 
-    // Return response based on flow result
+    // Return response based on flow result (all errors use original prompt)
     match flow_result {
         FlowResult::Success => Ok(HookResponse::success()
             .with_metadata(vec![("modified_prompt".to_string(), final_prompt)])),
         FlowResult::FailedContinue(msg) => {
-            eprintln!("Warning: PrePrompt flow failed (continue): {}", msg);
+            eprintln!("⚠️ PrePrompt flow failed: {}", msg);
+            eprintln!("Continuing with original prompt...\n");
             Ok(HookResponse::success()
-                .with_metadata(vec![("modified_prompt".to_string(), final_prompt)]))
+                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
         }
         FlowResult::FailedStop(msg) => {
-            eprintln!("Warning: PrePrompt flow stopped: {}", msg);
-            // Return original prompt on stop
-            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
-                Ok(HookResponse::success().with_metadata(vec![(
-                    "modified_prompt".to_string(),
-                    evt.original_prompt.clone(),
-                )]))
-            } else {
-                Ok(HookResponse::success())
-            }
+            eprintln!("⚠️ PrePrompt flow stopped: {}", msg);
+            eprintln!("Continuing with original prompt...\n");
+            Ok(HookResponse::success()
+                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
         }
         FlowResult::FailedBlock(msg) => {
-            eprintln!("Warning: PrePrompt flow blocked: {}", msg);
-            // Return original prompt on block (don't actually block the user)
-            if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
-                Ok(HookResponse::success().with_metadata(vec![(
-                    "modified_prompt".to_string(),
-                    evt.original_prompt.clone(),
-                )]))
-            } else {
-                Ok(HookResponse::success())
-            }
+            eprintln!("⚠️ PrePrompt flow blocked: {}", msg);
+            eprintln!("Continuing with original prompt...\n");
+            Ok(HookResponse::success()
+                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
         }
     }
 }

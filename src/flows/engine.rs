@@ -512,6 +512,9 @@ impl FlowEngine {
             }
         };
 
+        // Validate chunk before adding to assembler
+        chunk.validate()?;
+
         // Add chunk to prompt assembler
         let assembler = context.get_prompt_assembler_mut()?;
         assembler.add_chunk(chunk);
@@ -2774,5 +2777,218 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("can only be used in PrePrompt events"));
+    }
+
+    // ===== Error Handling Tests =====
+
+    #[test]
+    fn test_prompt_validates_empty_chunk() {
+        use crate::events::{AikiEvent, AikiPrePromptEvent};
+        use crate::flows::messages::TextLines;
+
+        // Create PrePrompt event
+        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+            agent_type: crate::provenance::AgentType::Claude,
+            original_prompt: "test".to_string(),
+            session_id: None,
+            timestamp: chrono::Utc::now(),
+            cwd: std::path::PathBuf::from("/tmp"),
+        });
+
+        // Create action with empty chunk (both prepend and append are None)
+        let actions = vec![Action::Prompt(PromptAction {
+            prompt: PromptContent::Explicit(MessageChunk {
+                prepend: None,
+                append: None,
+            }),
+            on_failure: FailureMode::Continue,
+        })];
+
+        let mut context = AikiState::new(event);
+        let result = FlowEngine::execute_actions(&actions, &mut context);
+
+        // Should fail with validation error
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("MessageChunk must have at least prepend or append"));
+    }
+
+    #[test]
+    fn test_prompt_validates_empty_prepend() {
+        use crate::events::{AikiEvent, AikiPrePromptEvent};
+        use crate::flows::messages::TextLines;
+
+        // Create PrePrompt event
+        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+            agent_type: crate::provenance::AgentType::Claude,
+            original_prompt: "test".to_string(),
+            session_id: None,
+            timestamp: chrono::Utc::now(),
+            cwd: std::path::PathBuf::from("/tmp"),
+        });
+
+        // Create action with empty prepend
+        let actions = vec![Action::Prompt(PromptAction {
+            prompt: PromptContent::Explicit(MessageChunk {
+                prepend: Some(TextLines::Single("".to_string())),
+                append: None,
+            }),
+            on_failure: FailureMode::Continue,
+        })];
+
+        let mut context = AikiState::new(event);
+        let result = FlowEngine::execute_actions(&actions, &mut context);
+
+        // Should fail with validation error
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("prepend cannot be empty"));
+    }
+
+    #[test]
+    fn test_prompt_validates_empty_append() {
+        use crate::events::{AikiEvent, AikiPrePromptEvent};
+        use crate::flows::messages::TextLines;
+
+        // Create PrePrompt event
+        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+            agent_type: crate::provenance::AgentType::Claude,
+            original_prompt: "test".to_string(),
+            session_id: None,
+            timestamp: chrono::Utc::now(),
+            cwd: std::path::PathBuf::from("/tmp"),
+        });
+
+        // Create action with empty append
+        let actions = vec![Action::Prompt(PromptAction {
+            prompt: PromptContent::Explicit(MessageChunk {
+                prepend: None,
+                append: Some(TextLines::Single("".to_string())),
+            }),
+            on_failure: FailureMode::Continue,
+        })];
+
+        let mut context = AikiState::new(event);
+        let result = FlowEngine::execute_actions(&actions, &mut context);
+
+        // Should fail with validation error
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("append cannot be empty"));
+    }
+
+    #[test]
+    fn test_shell_action_error_with_continue() {
+        // Test that shell action with on_failure: continue allows flow to proceed
+        let actions = vec![
+            Action::Shell(ShellAction {
+                shell: "false".to_string(), // Fails
+                timeout: None,
+                on_failure: FailureMode::Continue,
+                alias: None,
+            }),
+            Action::Log(LogAction {
+                log: "Still executed".to_string(),
+                alias: Some("result".to_string()),
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+
+        // Should return FailedContinue
+        assert!(matches!(result, FlowResult::FailedContinue(_)));
+
+        // Second action should still execute
+        assert_eq!(
+            context.get_variable("result"),
+            Some(&"Still executed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_shell_action_error_with_stop() {
+        // Test that shell action with on_failure: stop halts execution
+        let actions = vec![
+            Action::Shell(ShellAction {
+                shell: "false".to_string(), // Fails
+                timeout: None,
+                on_failure: FailureMode::Stop,
+                alias: None,
+            }),
+            Action::Log(LogAction {
+                log: "Should not execute".to_string(),
+                alias: Some("result".to_string()),
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+
+        // Should return FailedStop
+        assert!(matches!(result, FlowResult::FailedStop(_)));
+
+        // Second action should NOT execute
+        assert!(context.get_variable("result").is_none());
+    }
+
+    #[test]
+    fn test_shell_action_error_with_block() {
+        // Test that shell action with on_failure: block halts execution
+        let actions = vec![
+            Action::Shell(ShellAction {
+                shell: "false".to_string(), // Fails
+                timeout: None,
+                on_failure: FailureMode::Block,
+                alias: None,
+            }),
+            Action::Log(LogAction {
+                log: "Should not execute".to_string(),
+                alias: Some("result".to_string()),
+            }),
+        ];
+
+        let mut context = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+
+        // Should return FailedBlock
+        assert!(matches!(result, FlowResult::FailedBlock(_)));
+
+        // Second action should NOT execute
+        assert!(context.get_variable("result").is_none());
+    }
+
+    #[test]
+    fn test_self_function_error_propagation() {
+        use crate::events::{AikiEvent, AikiPrePromptEvent};
+
+        // Create PrePrompt event
+        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+            agent_type: crate::provenance::AgentType::Claude,
+            original_prompt: "test".to_string(),
+            session_id: None,
+            timestamp: chrono::Utc::now(),
+            cwd: std::path::PathBuf::from("/tmp"),
+        });
+
+        // Create action that calls a self.* function that doesn't exist
+        let actions = vec![Action::Self_(SelfAction {
+            self_: "self.nonexistent_function".to_string(),
+            on_failure: FailureMode::Stop,
+        })];
+
+        let mut context = AikiState::new(event);
+        context.flow_name = Some("aiki/core".to_string());
+
+        let result = FlowEngine::execute_actions(&actions, &mut context);
+
+        // Should fail
+        assert!(result.is_err());
     }
 }
