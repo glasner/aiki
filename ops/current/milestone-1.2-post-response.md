@@ -653,7 +653,7 @@ pub fn execute_autoreply(value: &Value, event: &mut PostResponseEvent) -> Result
 
 ### 1. Task-Based Workflows
 
-Instead of text autoreplies, create structured tasks. **This is Milestone 1.3**.
+Instead of text autoreplies, create structured tasks. **This is Milestone 1.4**.
 
 ```yaml
 PostResponse:
@@ -694,7 +694,7 @@ PostResponse:
 ## Relationship to Other Milestones
 
 - **Depends on:** Milestone 1.0 (MessageChunk/MessageAssembler), Milestone 1.1 (PrePrompt pattern)
-- **Enables:** Milestone 1.3 (Task System) - provides event hook for task creation
+- **Enables:** Milestone 1.4 (Task System) - provides event hook for task creation
 - **Parallel to:** Milestone 1.4 (Flow Composition) - can be developed independently
 
 ---
@@ -704,5 +704,5 @@ PostResponse:
 - [milestone-1.md](./milestone-1.md) - Milestone 1 overview and shared syntax
 - [milestone-1.0-message-assembler.md](./milestone-1.0-message-assembler.md) - MessageChunk/MessageAssembler infrastructure
 - [milestone-1.1-preprompt.md](./milestone-1.1-preprompt.md) - Similar event pattern
-- [milestone-1.3-task-system.md](./milestone-1.3-task-system.md) - Task-based alternative to text autoreplies
+- [milestone-1.4-task-system.md](./milestone-1.4-task-system.md) - Task-based alternative to text autoreplies
 - [ROADMAP.md](../ROADMAP.md) - Strategic context

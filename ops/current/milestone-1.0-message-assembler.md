@@ -9,6 +9,7 @@
 
 Implement the shared MessageChunk and MessageAssembler infrastructure that provides consistent syntax and behavior across message-building events:
 - **PrePrompt** (`prompt:` action) - New in Milestone 1.1
+- **PostResponse** (`autoreply:` action) - New in Milestone 1.2
 - **PrepareCommitMessage** (`commit_message:` action) - Refactored from existing implementation
 
 This milestone includes **refactoring the existing PrepareCommitMessage hook** to use the new infrastructure, ensuring consistent syntax across all message-building events.
@@ -18,7 +19,7 @@ This milestone includes **refactoring the existing PrepareCommitMessage hook** t
 - `MessageAssembler` - Stateful builder that collects chunks and assembles them into final message
 - Events own a `MessageAssembler` instance (e.g., `prompt_assembler`, `autoreply_assembler`, `body_assembler`)
 
-**Note:** PostResponse uses a task-based system to *decide when* to send autoreplies, but still uses MessageChunk/MessageAssembler to *build* the autoreply content. See [milestone-1.2-post-response-and-tasks.md](./milestone-1.2-post-response-and-tasks.md) for details.
+**Note:** PostResponse uses a task-based system to *decide when* to send autoreplies, but still uses MessageChunk/MessageAssembler to *build* the autoreply content. See [milestone-1.2-post-response.md](./milestone-1.2-post-response.md) for details.
 
 ## Why This Comes First
 
@@ -64,51 +65,23 @@ prepend: "line1\nline2"
 
 **Check ID behavior**: Forms 1 and 3 produce identical check IDs. Form 2 produces a different check ID because the YAML structure differs. This is intentional - changing YAML structure is considered a flow edit for stuck detection purposes.
 
-### File Path Resolution (Expansion Only)
+### Path Expansion (Not in Milestone 1.0)
 
-Strings in `prepend:` and `append:` fields that look like paths are expanded to absolute paths, but NOT automatically loaded:
+**Important:** Path expansion is NOT implemented in Milestone 1.0. Strings in `prepend:` and `append:` fields are used as-is (no path resolution).
 
 ```yaml
-# Path expansion (not file loading)
+# Milestone 1.0 behavior - strings used as-is
 PrePrompt:
   prompt:
     prepend:
-      - @/docs/architecture.md     # Expands to /project/docs/architecture.md
-      - ./helpers/notes.txt        # Expands to /project/.aiki/flows/helpers/notes.txt
-      - ~/user/skills/rust.md      # Expands to /home/user/user/skills/rust.md
-      - /abs/path/file.md          # Already absolute, unchanged
-      - "Remember to run tests"    # Literal text (no path pattern)
-
-# Path resolution uses PathResolver (see milestone-1.3)
-PrePrompt:
-  prompt:
-    prepend:
-      - @/docs/arch.md             # Expands to {project}/docs/arch.md
-      - ./local/notes.txt          # Expands relative to flow directory
+      - "@/docs/architecture.md"     # Literal string (not expanded)
+      - "./helpers/notes.txt"        # Literal string (not expanded)
+      - "Remember to run tests"      # Literal string
 ```
 
-**Path expansion rules:**
-- Starts with `@/` → Expand to project root path
-- Starts with `./` or `../` → Expand relative to flow directory
-- Starts with `~/` → Expand to home directory path
-- Starts with `/` → Already absolute, no expansion needed
-- Otherwise → Literal text (use as-is, no expansion)
+**Path expansion will be added in Milestone 1.3 (Flow Composition)** when PathResolver is implemented. At that point, path patterns like `@/`, `./`, `../` will be expanded to absolute paths. See [milestone-1.3-flow-composition.md](./milestone-1.3-flow-composition.md) for details.
 
-**When path expansion happens:**
-- During action execution (not YAML parsing)
-- After variable substitution (allows dynamic paths)
-- Uses PathResolver for `@/`, `./`, `../` paths
-- Expanded path replaces the original string
-
-**Note:** Path expansion does NOT load file contents. The expanded path string is used as-is. File loading (if needed) happens separately at the vendor integration layer.
-
-**Example with variable substitution:**
-```yaml
-PrePrompt:
-  - let: doc_file = "@/docs/architecture.md"
-  - prompt:
-      prepend: $doc_file  # Variable expanded to path, then path expanded to absolute
-```
+**Rationale:** Keep Milestone 1.0 simple and focused on the core MessageChunk/MessageAssembler infrastructure. Path resolution is a separate concern that can be added later without breaking the API.
 
 ### Explicit Form (Prepend and/or Append)
 
@@ -1101,16 +1074,12 @@ impl MessageChunk {
   - [ ] Implement `check_id()` method using `DefaultHasher`
   - [ ] Implement `prepend_items()` and `append_items()` methods
   - [ ] Implement `validate()` method
-  - [ ] Implement path detection helper: `is_file_path(s: &str) -> bool`
-  - [ ] Implement path expansion helper: `expand_path_if_needed(s: &str, path_resolver: &PathResolver, current_dir: &Path) -> Result<String>`
   - [ ] Implement `MessageAssembler` struct with chunks, original, separator fields
   - [ ] Implement `new()` constructor
-  - [ ] Implement `add_chunk()` method with path expansion
+  - [ ] Implement `add_chunk()` method
   - [ ] Implement `build()` method
   - [ ] Write unit tests for MessageChunk
   - [ ] Write unit tests for MessageAssembler
-  - [ ] Write unit tests for path detection
-  - [ ] Write unit tests for path expansion (with mocked PathResolver)
   - [ ] Test deterministic check ID generation
   - [ ] Test various separator configurations
   - [ ] Add serde serialization/deserialization tests
@@ -1126,10 +1095,14 @@ impl MessageChunk {
   - [ ] Decide where event structs will live (flows/engine.rs vs new flows/events.rs)
   - [ ] Document how events will use MessageAssembler
   - [ ] Create example event usage patterns
-- [ ] Prepare for PrepareCommitMessage refactoring
-  - [ ] Review existing PrepareCommitMessage implementation
-  - [ ] Plan migration to use MessageAssembler
-  - [ ] Ensure backward compatibility approach
+- [ ] Refactor existing PrepareCommitMessage implementation
+  - [ ] Review current implementation in `cli/src/handlers.rs::handle_prepare_commit_message`
+  - [ ] Review current flow actions in `cli/src/flows/engine.rs` for commit_message handling
+  - [ ] Identify where commit message string manipulation happens
+  - [ ] Replace string building with MessageAssembler
+  - [ ] Update flow parser to create MessageChunk from `commit_message:` action
+  - [ ] Ensure backward compatibility with existing flows
+  - [ ] Update aiki/core flow to use new `body:` / `trailers:` syntax
 - [ ] Write integration test examples
   - [ ] Example: Event with single MessageAssembler
   - [ ] Example: Event with multiple MessageAssemblers (body + trailers)
@@ -1188,5 +1161,5 @@ This milestone blocks:
 ## See Also
 
 - [Milestone 1.1: PrePrompt Event](./milestone-1.1-preprompt.md) - Uses MessageChunk/message_assembler for `prompt:` action
-- [Milestone 1.2: PostResponse & Task System](./milestone-1.2-post-response-and-tasks.md) - Uses MessageChunk/message_assembler for `autoreply:` action content
+- [Milestone 1.2: PostResponse Event](./milestone-1.2-post-response.md) - Uses MessageChunk/message_assembler for `autoreply:` action content
 - [Milestone 1: Event System Overview](./milestone-1.md) - Context for the full event system

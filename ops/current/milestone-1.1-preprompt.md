@@ -224,7 +224,7 @@ PrePrompt:
 - [ ] Integration tests: Multiple `prompt:` actions
 - [ ] Integration tests: Flow error triggers graceful degradation
 - [ ] E2E tests: Real agent receives modified prompt
-- [ ] E2E tests: File content injection works end-to-end
+- [ ] E2E tests: Path expansion works end-to-end
 - [ ] E2E tests: Flow error shows warning but doesn't block agent
 
 ### Documentation
@@ -383,9 +383,7 @@ And user prompt: `"Add login endpoint"`
 **Agent sees:**
 
 ```markdown
-# Backend Architecture
-
-[contents of .aiki/arch/backend.md]
+/Users/myuser/project/arch/backend.md
 
 ---
 
@@ -400,6 +398,8 @@ Add login endpoint
 
 Remember to write tests.
 ```
+
+**Note:** Paths like `.aiki/arch/backend.md` are expanded to absolute paths (e.g., `/Users/myuser/project/arch/backend.md`) but NOT automatically loaded. The path string is passed as-is. File loading (if needed) happens at the vendor integration layer.
 
 ---
 
@@ -494,5 +494,5 @@ PrePrompt:
 ## References
 
 - [milestone-1.md](./milestone-1.md) - Milestone 1 overview and shared syntax
-- [response-strategy-comparison.md](./response-strategy-comparison.md) - Related PostResponse design
+- [milestone-1.2-post-response.md](./milestone-1.2-post-response.md) - Related PostResponse design
 - [ROADMAP.md](../ROADMAP.md) - Strategic context
