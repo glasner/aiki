@@ -154,6 +154,18 @@ impl JsonRpcId {
     }
 }
 
+/// Session ID type using Arc<str> for cheap cloning
+///
+/// Instead of cloning full strings (~32 bytes + allocation), we use Arc<str>
+/// which is just a pointer copy. This eliminates ~20+ allocations per message
+/// when session IDs are used in HashMap operations.
+type SessionId = Arc<str>;
+
+/// Helper to create a SessionId from a string slice
+fn session_id(s: &str) -> SessionId {
+    Arc::from(s)
+}
+
 /// State coordination messages sent between proxy threads
 /// (IDE→Agent thread sends, Agent→IDE thread owns state)
 #[derive(Debug, Clone)]
@@ -165,12 +177,12 @@ enum StateMessage {
     /// Track session/prompt request for PostResponse event matching
     TrackPrompt {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
-        session_id: String,
+        session_id: SessionId,
     },
     /// Clear response accumulator for a session (on new prompt)
-    ClearAccumulator { session_id: String },
+    ClearAccumulator { session_id: SessionId },
     /// Reset autoreply counter for a session (on new user prompt)
-    ResetAutoreplyCounter { session_id: String },
+    ResetAutoreplyCounter { session_id: SessionId },
     /// Track session/new request ID to match with response for SessionStart event
     TrackNewSession {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
@@ -200,7 +212,7 @@ enum AutoreplyChannelMessage {
 #[derive(Debug, Clone)]
 struct AutoreplyMessage {
     /// The session ID to send the prompt to
-    session_id: String,
+    session_id: SessionId,
     /// The text content of the autoreply
     text: String,
     /// The raw request ID string (for JSON serialization)
@@ -216,14 +228,14 @@ impl AutoreplyMessage {
     /// * `session_id` - The session ID to send the prompt to
     /// * `autoreply_text` - The text content to send as the prompt
     /// * `counter` - The autoreply counter for this session (for unique ID generation)
-    fn new(session_id: &str, autoreply_text: String, counter: usize) -> Self {
+    fn new(session_id: &SessionId, autoreply_text: String, counter: usize) -> Self {
         // Generate unique request ID (raw string without quotes)
         let raw_id = format!("aiki-autoreply-{}-{}", session_id, counter);
         // Normalize for HashMap tracking (with quotes for string IDs)
         let normalized_id = JsonRpcId::from_value(&serde_json::Value::String(raw_id.clone()));
 
         Self {
-            session_id: session_id.to_string(),
+            session_id: Arc::clone(session_id),
             text: autoreply_text,
             raw_request_id: raw_id,
             normalized_request_id: normalized_id,
@@ -511,16 +523,16 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 // of old text if the previous turn ended without end_turn (error, cancel, etc.)
                                 // Also resets autoreply counter per turn (not permanently after 5 total)
                                 // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
-                                let session_id = params
+                                let session_id_str = params
                                     .get("sessionId")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string();
+                                    .unwrap_or_default();
 
-                                if !session_id.is_empty() {
+                                if !session_id_str.is_empty() {
+                                    let session_id = session_id(session_id_str);
                                     let _ =
                                         metadata_tx_clone.send(StateMessage::ClearAccumulator {
-                                            session_id: session_id.clone(),
+                                            session_id: Arc::clone(&session_id),
                                         });
                                     let _ = metadata_tx_clone
                                         .send(StateMessage::ResetAutoreplyCounter { session_id });
@@ -597,21 +609,21 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Track prompt requests for PostResponse event
     // Key is JsonRpcId (normalized request_id), value is session_id
-    let mut prompt_requests: HashMap<JsonRpcId, String> = HashMap::new();
+    let mut prompt_requests: HashMap<JsonRpcId, SessionId> = HashMap::new();
 
     // Track session/new requests for SessionStart event
     // Key is JsonRpcId (normalized request_id), value is boolean (true = pending)
     let mut session_new_requests: HashMap<JsonRpcId, bool> = HashMap::new();
 
     // Track autoreply counters per session (not global)
-    let mut autoreply_counters: HashMap<String, usize> = HashMap::new();
+    let mut autoreply_counters: HashMap<SessionId, usize> = HashMap::new();
     const MAX_AUTOREPLIES: usize = 5;
 
     // Track response text accumulation per session (not per request_id)
     // A session only has one active prompt at a time, so we key by session_id
     // rather than request_id. This simplifies accumulation across multiple
     // agent_message_chunk updates, which all share the same session_id.
-    let mut response_accumulator: HashMap<String, String> = HashMap::new();
+    let mut response_accumulator: HashMap<SessionId, String> = HashMap::new();
 
     // Run main forwarding loop, capturing any errors
     let loop_result = (|| -> Result<()> {
@@ -787,7 +799,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             if let Ok(notification) =
                                 serde_json::from_value::<SessionNotification>(params.clone())
                             {
-                                let session_id = notification.session_id.to_string();
+                                let session_id = session_id(&notification.session_id.to_string());
 
                                 // Check if this is an agent_message_chunk with text content
                                 if let Some(update_obj) =
@@ -805,7 +817,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                                 // Accumulate response text per session
                                                 // Pre-allocate 4KB capacity to reduce reallocations
                                                 response_accumulator
-                                                    .entry(session_id.clone())
+                                                    .entry(Arc::clone(&session_id))
                                                     .or_insert_with(|| String::with_capacity(4096))
                                                     .push_str(text);
                                             }
@@ -1233,11 +1245,12 @@ fn handle_session_prompt(
     use serde_json::json;
 
     // Extract session_id
-    let session_id = params
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let session_id = session_id(
+        params
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    );
 
     // Extract all text content from prompt array
     let prompt_array = params
@@ -1266,7 +1279,7 @@ fn handle_session_prompt(
     // Fire PrePrompt event
     let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
         agent_type: *agent_type,
-        session_id: Some(session_id.clone()),
+        session_id: Some(session_id.to_string()),
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         original_prompt: original_text.clone(),
@@ -1304,7 +1317,7 @@ fn handle_session_prompt(
     if let Some(request_id) = msg.id.clone() {
         let _ = metadata_tx.send(StateMessage::TrackPrompt {
             request_id, // Pass raw Value; normalization happens at consumption
-            session_id: session_id.clone(),
+            session_id: Arc::clone(&session_id),
         });
     }
 
@@ -1347,14 +1360,14 @@ fn handle_session_prompt(
 /// Dispatches PostResponse event to flows, and if they return an autoreply,
 /// sends it back to the agent (up to MAX_AUTOREPLIES times per session).
 fn handle_post_response(
-    session_id: &str,
+    session_id: &SessionId,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
     response_text: &str,
-    autoreply_counters: &mut HashMap<String, usize>,
+    autoreply_counters: &mut HashMap<SessionId, usize>,
     max_autoreplies: usize,
     autoreply_tx: &mpsc::Sender<AutoreplyChannelMessage>,
-    prompt_requests: &mut HashMap<JsonRpcId, String>,
+    prompt_requests: &mut HashMap<JsonRpcId, SessionId>,
 ) -> Result<()> {
     // Get working directory with fallback
     let working_dir = cwd
@@ -1388,7 +1401,7 @@ fn handle_post_response(
         if !autoreply_text.is_empty() && current_count < max_autoreplies {
             // Increment counter for this session
             let new_count = current_count + 1;
-            autoreply_counters.insert(session_id.to_string(), new_count);
+            autoreply_counters.insert(Arc::clone(session_id), new_count);
 
             if std::env::var("AIKI_DEBUG").is_ok() {
                 eprintln!(
@@ -1415,7 +1428,7 @@ fn handle_post_response(
             // The correct order is: prepare state first, then trigger the action.
             prompt_requests.insert(
                 autoreply_msg.normalized_request_id().clone(),
-                session_id.to_string(),
+                Arc::clone(session_id),
             );
 
             // Send via channel to autoreply forwarder thread
@@ -1546,7 +1559,8 @@ mod tests {
     #[test]
     fn test_autoreply_message_id_serialization() {
         // Create an autoreply message
-        let msg = AutoreplyMessage::new("test-session-123", "Fix the errors".to_string(), 1);
+        let sid = session_id("test-session-123");
+        let msg = AutoreplyMessage::new(&sid, "Fix the errors".to_string(), 1);
 
         // Verify the raw ID is a plain string (no quotes)
         assert_eq!(msg.raw_request_id, "aiki-autoreply-test-session-123-1");
@@ -1595,9 +1609,11 @@ mod tests {
     #[test]
     fn test_autoreply_message_unique_ids() {
         // Verify that different counters produce different IDs
-        let msg1 = AutoreplyMessage::new("session-1", "text1".to_string(), 1);
-        let msg2 = AutoreplyMessage::new("session-1", "text2".to_string(), 2);
-        let msg3 = AutoreplyMessage::new("session-2", "text3".to_string(), 1);
+        let sid1 = session_id("session-1");
+        let sid2 = session_id("session-2");
+        let msg1 = AutoreplyMessage::new(&sid1, "text1".to_string(), 1);
+        let msg2 = AutoreplyMessage::new(&sid1, "text2".to_string(), 2);
+        let msg3 = AutoreplyMessage::new(&sid2, "text3".to_string(), 1);
 
         assert_ne!(msg1.raw_request_id, msg2.raw_request_id);
         assert_ne!(msg1.raw_request_id, msg3.raw_request_id);
