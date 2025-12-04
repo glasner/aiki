@@ -19,9 +19,10 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-/// Metadata messages sent from IDE→Agent thread to Agent→IDE thread
+/// Messages sent between proxy threads for state coordination
+/// (IDE→Agent thread sends, Agent→IDE thread owns state)
 #[derive(Debug, Clone)]
-enum MetadataMessage {
+enum ThreadMessage {
     /// Client (IDE) information detected from initialize request
     ClientInfo(ClientInfo),
     /// Agent information detected from initialize response
@@ -132,7 +133,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Create channel for metadata communication
     // IDE→Agent thread will send discovered metadata
     // Agent→IDE thread will receive and own the state
-    let (metadata_tx, metadata_rx) = mpsc::channel::<MetadataMessage>();
+    let (metadata_tx, metadata_rx) = mpsc::channel::<ThreadMessage>();
 
     // Create channel for autoreplies
     // Agent→IDE thread detects PostResponse and sends autoreply requests
@@ -223,7 +224,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     if let Some(client_info) = init_req.client_info {
                                         // Send full client info to Agent→IDE thread
                                         let _ = metadata_tx_clone
-                                            .send(MetadataMessage::ClientInfo(client_info.clone()));
+                                            .send(ThreadMessage::ClientInfo(client_info.clone()));
 
                                         if let Some(ref ver) = client_info.version {
                                             eprintln!(
@@ -251,7 +252,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                     // Send working directory to Agent→IDE thread
                                     let _ = metadata_tx_clone
-                                        .send(MetadataMessage::WorkingDirectory(path));
+                                        .send(ThreadMessage::WorkingDirectory(path));
 
                                     if std::env::var("AIKI_DEBUG").is_ok() {
                                         eprintln!(
@@ -277,7 +278,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                 if !session_id.is_empty() {
                                     let _ = metadata_tx_clone
-                                        .send(MetadataMessage::ClearAccumulator { session_id });
+                                        .send(ThreadMessage::ClearAccumulator { session_id });
                                 }
 
                                 // Pass the thread's tracked cwd
@@ -349,16 +350,16 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             // Drain all pending metadata updates from IDE→Agent thread
             while let Ok(msg) = metadata_rx.try_recv() {
                 match msg {
-                    MetadataMessage::ClientInfo(info) => {
+                    ThreadMessage::ClientInfo(info) => {
                         client_info = Some(info);
                     }
-                    MetadataMessage::AgentInfo(info) => {
+                    ThreadMessage::AgentInfo(info) => {
                         agent_info = Some(info);
                     }
-                    MetadataMessage::WorkingDirectory(path) => {
+                    ThreadMessage::WorkingDirectory(path) => {
                         cwd = Some(path);
                     }
-                    MetadataMessage::PromptRequest {
+                    ThreadMessage::PromptRequest {
                         request_id,
                         session_id,
                     } => {
@@ -366,7 +367,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // This handles any JSON-RPC ID format (string, number, null)
                         prompt_requests.insert(normalize_jsonrpc_id(&request_id), session_id);
                     }
-                    MetadataMessage::ClearAccumulator { session_id } => {
+                    ThreadMessage::ClearAccumulator { session_id } => {
                         // Clear accumulated response text for this session
                         // This happens on each new prompt to prevent stale text from failed turns
                         response_accumulator.remove(&session_id);
@@ -908,7 +909,7 @@ fn handle_session_prompt(
     params: &serde_json::Value,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
-    metadata_tx: &mpsc::Sender<MetadataMessage>,
+    metadata_tx: &mpsc::Sender<ThreadMessage>,
 ) -> Result<()> {
     use serde_json::json;
 
@@ -982,7 +983,7 @@ fn handle_session_prompt(
 
     // Send metadata about this prompt request for PostResponse tracking
     if let Some(request_id) = msg.id.clone() {
-        let _ = metadata_tx.send(MetadataMessage::PromptRequest {
+        let _ = metadata_tx.send(ThreadMessage::PromptRequest {
             request_id, // Pass raw Value; normalization happens at consumption
             session_id: session_id.clone(),
         });
