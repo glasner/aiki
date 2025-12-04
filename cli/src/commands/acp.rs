@@ -32,9 +32,11 @@ enum MetadataMessage {
     WorkingDirectory(PathBuf),
     /// Session ID from session/prompt request (for PostResponse tracking)
     PromptRequest {
-        request_id: String, // Stringified JSON-RPC "id" field
+        request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
         session_id: String,
     },
+    /// Clear response accumulator for a session (on new prompt)
+    ClearAccumulator { session_id: String },
 }
 
 /// Normalize a JSON-RPC request/response ID to a consistent string key
@@ -271,6 +273,17 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         "session/prompt" => {
                             // PrePrompt event: intercept and potentially modify prompt
                             if let Some(params) = &msg.params {
+                                // Signal Agent→IDE thread to clear response accumulator for this session
+                                // This ensures we start fresh for each new prompt, preventing concatenation
+                                // of old text if the previous turn ended without end_turn (error, cancel, etc.)
+                                if let Ok(notification) =
+                                    serde_json::from_value::<SessionNotification>(params.clone())
+                                {
+                                    let session_id = notification.session_id.to_string();
+                                    let _ = metadata_tx_clone
+                                        .send(MetadataMessage::ClearAccumulator { session_id });
+                                }
+
                                 // Pass the thread's tracked cwd
                                 if let Err(e) = handle_session_prompt(
                                     &agent_stdin_for_ide,
@@ -355,7 +368,14 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         request_id,
                         session_id,
                     } => {
-                        prompt_requests.insert(request_id, session_id);
+                        // Normalize the ID at consumption point to ensure consistent HashMap keys
+                        // This handles any JSON-RPC ID format (string, number, null)
+                        prompt_requests.insert(normalize_jsonrpc_id(&request_id), session_id);
+                    }
+                    MetadataMessage::ClearAccumulator { session_id } => {
+                        // Clear accumulated response text for this session
+                        // This happens on each new prompt to prevent stale text from failed turns
+                        response_accumulator.remove(&session_id);
                     }
                 }
             }
@@ -978,7 +998,7 @@ fn handle_session_prompt(
     // Send metadata about this prompt request for PostResponse tracking
     if let Some(request_id) = msg.id.clone() {
         let _ = metadata_tx.send(MetadataMessage::PromptRequest {
-            request_id: normalize_jsonrpc_id(&request_id),
+            request_id, // Pass raw Value; normalization happens at consumption
             session_id: session_id.clone(),
         });
     }
@@ -1080,8 +1100,8 @@ fn handle_post_response(
             });
 
             // Track this autoreply request ID for future PostResponse
-            // CRITICAL: Use normalize_jsonrpc_id() to match the serialization used when
-            // looking up responses. This ensures "aiki-autoreply-X-Y" becomes "\"aiki-autoreply-X-Y\""
+            // Normalize the ID here since this path directly inserts into prompt_requests
+            // (doesn't go through the metadata channel where normalization happens at consumption)
             let autoreply_id_json = serde_json::Value::String(autoreply_id.clone());
             prompt_requests.insert(
                 normalize_jsonrpc_id(&autoreply_id_json),
