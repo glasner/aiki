@@ -1,3 +1,110 @@
+//! ACP (Agent Client Protocol) Proxy
+//!
+//! This module implements a transparent proxy between an IDE and an AI agent that
+//! communicates via the [Agent Client Protocol](https://agentclientprotocol.com).
+//!
+//! # Architecture
+//!
+//! The proxy uses a **three-thread architecture** with explicit state ownership:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────────┐
+//! │                         ACP Proxy Process                               │
+//! │                                                                         │
+//! │  ┌──────────────────────┐                    ┌──────────────────────┐  │
+//! │  │ IDE → Agent Thread   │   StateMessage     │ Agent → IDE Thread   │  │
+//! │  │                      │  ─────────────────▶│                      │  │
+//! │  │ - Parse IDE requests │   mpsc::channel    │ - OWNS all state     │  │
+//! │  │ - Fire PrePrompt     │                    │ - Parse agent msgs   │  │
+//! │  │ - Fire PreFileChange │                    │ - Fire PostResponse  │  │
+//! │  │ - Forward to agent   │                    │ - Fire PostFileChange│  │
+//! │  │                      │                    │ - Track tool calls   │  │
+//! │  │                      │  AutoreplyChannel  │ - Accumulate text    │  │
+//! │  │                      │  ◀─────────────────│                      │  │
+//! │  └──────────────────────┘   Message          └──────────────────────┘  │
+//! │         ▲                                              │                │
+//! │         │                                              ▼                │
+//! │    IDE stdin                                     Agent stdout           │
+//! │         │                                              ▲                │
+//! │         ▼                                              │                │
+//! │    Agent stdin ◀───────────────────────────────────────┘                │
+//! │         ▲                                                               │
+//! │         │                                                               │
+//! │  ┌──────┴──────────────┐                                               │
+//! │  │ Autoreply Forwarder │                                               │
+//! │  │ Thread              │                                               │
+//! │  │ - Drains autoreply  │                                               │
+//! │  │   channel           │                                               │
+//! │  │ - Sends to agent    │                                               │
+//! │  └─────────────────────┘                                               │
+//! └─────────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Thread Responsibilities
+//!
+//! ## IDE → Agent Thread
+//!
+//! - Reads JSON-RPC messages from IDE (stdin)
+//! - Extracts metadata (client info, session IDs, working directory)
+//! - Sends metadata updates via `StateMessage` channel to Agent→IDE thread
+//! - Fires `PrePrompt` events (allows flows to inject context)
+//! - Forwards messages to agent stdin
+//!
+//! ## Agent → IDE Thread (State Owner)
+//!
+//! - **Owns all proxy state** (client info, agent info, cwd, tool call contexts)
+//! - Receives metadata updates from IDE→Agent thread via channel
+//! - Reads JSON-RPC messages from agent (stdout)
+//! - Fires `SessionStart`, `PostResponse`, `PostFileChange` events
+//! - Tracks response text accumulation per session
+//! - Detects autoreplies from flows and queues them via autoreply channel
+//! - Forwards messages to IDE (stdout)
+//!
+//! ## Autoreply Forwarder Thread
+//!
+//! - Dedicated thread to drain the autoreply channel
+//! - Ensures autoreplies are sent even when IDE is idle
+//! - Writes autoreply JSON-RPC requests to agent stdin
+//!
+//! # State Synchronization
+//!
+//! The proxy uses **message-passing channels** for thread communication:
+//!
+//! - `StateMessage` channel: IDE→Agent thread sends metadata to Agent→IDE thread
+//! - `AutoreplyChannelMessage` channel: Agent→IDE thread sends autoreplies to forwarder
+//!
+//! This design prevents data races and makes state ownership explicit.
+//!
+//! # Shutdown Protocol
+//!
+//! When the agent process exits:
+//!
+//! 1. Agent→IDE thread detects EOF on agent stdout
+//! 2. Main thread sends `Shutdown` messages to both channels
+//! 3. Threads exit their recv() loops cleanly
+//! 4. Main thread joins all threads before exiting
+//!
+//! # Events Fired
+//!
+//! - **SessionStart**: When `session/new` response is received with `sessionId`
+//! - **PrePrompt**: Before `session/prompt` is forwarded to agent (allows context injection)
+//! - **PreFileChange**: Before `session/request_permission` for file-modifying tools
+//! - **PostFileChange**: When tool calls complete (from `session/update` notifications)
+//! - **PostResponse**: When agent completes a turn (`stopReason: end_turn`)
+//!
+//! # Example Flow
+//!
+//! 1. IDE sends `initialize` request → IDE→Agent thread extracts client info
+//! 2. Agent responds with `initialize` response → Agent→IDE thread extracts agent info
+//! 3. IDE sends `session/new` → IDE→Agent thread tracks request ID
+//! 4. Agent responds with `sessionId` → Agent→IDE thread fires `SessionStart` event
+//! 5. IDE sends `session/prompt` → IDE→Agent thread fires `PrePrompt` event
+//! 6. Agent sends `session/update` chunks → Agent→IDE thread accumulates response text
+//! 7. Agent completes turn → Agent→IDE thread fires `PostResponse` event
+//! 8. Flow returns autoreply → Agent→IDE thread queues it via autoreply channel
+//! 9. Autoreply forwarder sends it to agent stdin
+//! 10. Process repeats
+
 use crate::acp::protocol::{
     AgentInfo, ClientInfo, InitializeRequest, InitializeResponse, JsonRpcMessage,
     SessionNotification,
