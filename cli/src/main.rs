@@ -14,6 +14,7 @@ mod provenance;
 mod repo;
 mod sign_setup_wizard;
 mod signing;
+mod utils;
 mod vendors;
 mod verify;
 

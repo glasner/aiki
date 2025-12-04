@@ -276,53 +276,8 @@ impl AutoreplyMessage {
 /// * `bin` - Optional custom binary path (defaults to derived from agent_type)
 /// * `agent_args` - Optional arguments to pass to the agent executable
 pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()> {
-    // Install panic hook to diagnose crashes - write to file since stderr might be buffered
-    std::panic::set_hook(Box::new(|panic_info| {
-        use std::io::Write;
-
-        // Try to write to a debug file in system temp directory
-        let log_path = std::env::temp_dir().join("aiki-proxy-panic.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            let _ = writeln!(
-                file,
-                "\n=== PANIC IN ACP PROXY at {} ===",
-                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
-            );
-            let _ = writeln!(file, "{}", panic_info);
-            if let Some(location) = panic_info.location() {
-                let _ = writeln!(
-                    file,
-                    "Location: {}:{}:{}",
-                    location.file(),
-                    location.line(),
-                    location.column()
-                );
-            }
-            let _ = writeln!(file, "=== END PANIC ===\n");
-            let _ = file.flush();
-        }
-
-        // Also write to stderr
-        let stderr = std::io::stderr();
-        let mut handle = stderr.lock();
-        let _ = writeln!(handle, "=== PANIC IN ACP PROXY ===");
-        let _ = writeln!(handle, "{}", panic_info);
-        if let Some(location) = panic_info.location() {
-            let _ = writeln!(
-                handle,
-                "Location: {}:{}:{}",
-                location.file(),
-                location.line(),
-                location.column()
-            );
-        }
-        let _ = writeln!(handle, "=== END PANIC ===");
-        let _ = handle.flush();
-    }));
+    // Install panic hook to diagnose crashes - writes to both file and stderr
+    crate::utils::panic::install_acp_panic_hook();
 
     // Validate agent_type matches our enum
     let validated_agent_type = parse_agent_type(&agent_type)?;
@@ -331,13 +286,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let (command, command_args) = if let Some(custom_bin) = bin {
         // User provided custom binary path - use it directly
         eprintln!("  Using custom binary: {}", custom_bin);
-        (custom_bin, agent_args.clone())
+        (custom_bin, agent_args)
     } else {
         // Auto-detect using Zed detection with PATH fallback
         let resolved = zed_detection::resolve_agent_binary(&agent_type)?;
         let cmd = resolved.command();
         let mut args = resolved.args();
-        args.extend(agent_args.clone());
+        args.extend(agent_args);
         (cmd, args)
     };
 
@@ -411,14 +366,27 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                     }
 
                     // Always send to agent
-                    let mut stdin = agent_stdin_for_autoreplies.lock().unwrap();
-                    if let Err(e) = writeln!(stdin, "{}", json) {
-                        eprintln!("Warning: Failed to send autoreply to agent: {}", e);
-                        break;
-                    } else if let Err(e) = stdin.flush() {
-                        eprintln!("Warning: Failed to flush autoreply to agent: {}", e);
-                        break;
-                    } else if std::env::var("AIKI_DEBUG").is_ok() {
+                    // Serialize outside lock to minimize critical section
+                    let data = format!("{}\n", json).into_bytes();
+                    {
+                        // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
+                        let mut stdin = match agent_stdin_for_autoreplies.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => {
+                                eprintln!("Warning: Mutex poisoned (another thread panicked), attempting recovery");
+                                poisoned.into_inner()
+                            }
+                        };
+                        if let Err(e) = stdin.write_all(&data) {
+                            eprintln!("Warning: Failed to send autoreply to agent: {}", e);
+                            break;
+                        }
+                        if let Err(e) = stdin.flush() {
+                            eprintln!("Warning: Failed to flush autoreply to agent: {}", e);
+                            break;
+                        }
+                    }
+                    if std::env::var("AIKI_DEBUG").is_ok() {
                         eprintln!("[acp] Sent autoreply to agent: {} bytes", json.len());
                     }
                 }
@@ -569,9 +537,19 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 ) {
                                     eprintln!("Warning: Failed to handle session/prompt: {}", e);
                                     // On error, forward original message
-                                    let mut stdin = agent_stdin_for_ide.lock().unwrap();
-                                    writeln!(stdin, "{}", line)?;
-                                    stdin.flush()?;
+                                    let data = format!("{}\n", line).into_bytes();
+                                    {
+                                        // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
+                                        let mut stdin = match agent_stdin_for_ide.lock() {
+                                            Ok(guard) => guard,
+                                            Err(poisoned) => {
+                                                eprintln!("Warning: Mutex poisoned (another thread panicked), attempting recovery");
+                                                poisoned.into_inner()
+                                            }
+                                        };
+                                        stdin.write_all(&data)?;
+                                        stdin.flush()?;
+                                    }
                                 }
                                 // Skip the normal forwarding since handle_session_prompt already did it
                                 continue;
@@ -589,9 +567,20 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             }
 
             // Forward raw line to agent (no re-serialization)
-            let mut stdin = agent_stdin_for_ide.lock().unwrap();
-            writeln!(stdin, "{}", line)?;
-            stdin.flush()?;
+            // Serialize outside lock to minimize critical section
+            let data = format!("{}\n", line).into_bytes();
+            {
+                // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
+                let mut stdin = match agent_stdin_for_ide.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        eprintln!("Warning: Mutex poisoned (another thread panicked), attempting recovery");
+                        poisoned.into_inner()
+                    }
+                };
+                stdin.write_all(&data)?;
+                stdin.flush()?;
+            }
         }
         if std::env::var("AIKI_DEBUG").is_ok() {
             eprintln!("ACP Proxy: IDE stdin closed, stopping IDE → Agent thread");
@@ -877,6 +866,9 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let _ = metadata_tx.send(StateMessage::Shutdown);
 
     // ALWAYS join the IDE → Agent thread to ensure clean shutdown
+    // Join threads in reverse dependency order to ensure graceful shutdown:
+    // 1. IDE→Agent thread (may still be sending autoreplies)
+    // 2. Autoreply forwarder thread (drains final messages)
     match ide_to_agent_thread.join() {
         Ok(Ok(())) => {
             if std::env::var("AIKI_DEBUG").is_ok() {
@@ -911,6 +903,9 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Exit with agent's exit code, or 1 if we couldn't get it
     let exit_code = status_result.ok().and_then(|s| s.code()).unwrap_or(1);
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("ACP Proxy: Exiting with code {}", exit_code);
+    }
     std::process::exit(exit_code);
 }
 
@@ -1319,9 +1314,20 @@ fn handle_session_prompt(
             e
         ))
     })?;
-    let mut stdin = agent_stdin.lock().unwrap();
-    writeln!(stdin, "{}", modified_line)?;
-    stdin.flush()?;
+    // Serialize outside lock to minimize critical section
+    let data = format!("{}\n", modified_line).into_bytes();
+    {
+        // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
+        let mut stdin = match agent_stdin.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("Warning: Mutex poisoned (another thread panicked), attempting recovery");
+                poisoned.into_inner()
+            }
+        };
+        stdin.write_all(&data)?;
+        stdin.flush()?;
+    }
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
@@ -1395,18 +1401,21 @@ fn handle_post_response(
             // Create autoreply message (JSON generated on-demand when sent)
             let autoreply_msg = AutoreplyMessage::new(session_id, autoreply_text, new_count);
 
-            // Track this autoreply request ID for future PostResponse (use normalized ID for HashMap)
-            prompt_requests.insert(
-                autoreply_msg.normalized_request_id().clone(),
-                session_id.to_string(),
-            );
-
             // Extract debug info before moving
             let debug_request_id = if std::env::var("AIKI_DEBUG").is_ok() {
                 Some(autoreply_msg.raw_request_id_display().to_string())
             } else {
                 None
             };
+
+            // ✅ FIX for Issue #2: Insert into HashMap BEFORE sending to channel
+            // This prevents a race condition where the agent responds before we've
+            // registered the request ID, causing the PostResponse event to be lost.
+            // The correct order is: prepare state first, then trigger the action.
+            prompt_requests.insert(
+                autoreply_msg.normalized_request_id().clone(),
+                session_id.to_string(),
+            );
 
             // Send via channel to autoreply forwarder thread
             // forward_to_ide=true ensures the IDE sees the autoreply prompt in chat history
