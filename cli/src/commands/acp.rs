@@ -4,7 +4,9 @@ use crate::acp::protocol::{
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostFileChangeEvent};
+use crate::events::{
+    AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent,
+};
 use crate::provenance::AgentType;
 use agent_client_protocol::{
     SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -28,6 +30,11 @@ enum MetadataMessage {
     AgentVersion(String),
     /// Working directory from session/new or session/load
     WorkingDirectory(PathBuf),
+    /// Session ID from session/prompt request (for PostResponse tracking)
+    PromptRequest {
+        request_id: serde_json::Value,
+        session_id: String,
+    },
 }
 
 /// Run the ACP bidirectional proxy
@@ -113,6 +120,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Agent→IDE thread will receive and own the state
     let (metadata_tx, metadata_rx) = mpsc::channel::<MetadataMessage>();
 
+    // Create channel for autoreplies
+    // Agent→IDE thread detects PostResponse and sends autoreply requests
+    // IDE→Agent thread receives and forwards them to agent
+    let (autoreply_tx, autoreply_rx) = mpsc::channel::<String>();
+
     // Launch agent with piped stdin/stdout
     let mut agent = Command::new(&command)
         .args(&command_args)
@@ -143,7 +155,24 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let ide_to_agent_thread = thread::spawn(move || -> Result<()> {
         let stdin = io::stdin();
         eprintln!("ACP Proxy: IDE → Agent thread started");
+
+        // Check for autoreplies from Agent→IDE thread (non-blocking)
         for line in stdin.lock().lines() {
+            // First, check if there are any pending autoreplies to send
+            while let Ok(autoreply_prompt) = autoreply_rx.try_recv() {
+                // Send the autoreply as a new session/prompt request
+                if let Err(e) = writeln!(agent_stdin, "{}", autoreply_prompt) {
+                    eprintln!("Warning: Failed to send autoreply: {}", e);
+                } else if let Err(e) = agent_stdin.flush() {
+                    eprintln!("Warning: Failed to flush autoreply: {}", e);
+                } else if std::env::var("AIKI_DEBUG").is_ok() {
+                    eprintln!(
+                        "[acp] Sent autoreply to agent: {} bytes",
+                        autoreply_prompt.len()
+                    );
+                }
+            }
+
             let line = line?;
             // Removed verbose logging to prevent stderr overflow panic
 
@@ -202,6 +231,28 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 }
                             }
                         }
+                        "session/prompt" => {
+                            // PrePrompt event: intercept and potentially modify prompt
+                            if let Some(params) = &msg.params {
+                                // Get current working directory (not available in this thread's scope)
+                                // Pass None and let handle_session_prompt use fallback
+                                if let Err(e) = handle_session_prompt(
+                                    &mut agent_stdin,
+                                    &msg,
+                                    params,
+                                    &validated_agent_type,
+                                    &None,
+                                    &metadata_tx_clone,
+                                ) {
+                                    eprintln!("Warning: Failed to handle session/prompt: {}", e);
+                                    // On error, forward original message
+                                    writeln!(agent_stdin, "{}", line)?;
+                                    agent_stdin.flush()?;
+                                }
+                                // Skip the normal forwarding since handle_session_prompt already did it
+                                continue;
+                            }
+                        }
                         "authenticate" => {
                             // Just observe and forward - let the agent handle authentication
                             if std::env::var("AIKI_DEBUG").is_ok() {
@@ -231,6 +282,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let mut cwd: Option<PathBuf> = None;
     let mut tool_call_contexts: HashMap<ToolCallId, ToolCallContext> = HashMap::new();
 
+    // Track prompt requests for PostResponse event
+    let mut prompt_requests: HashMap<serde_json::Value, String> = HashMap::new();
+    let mut autoreply_counter: usize = 0;
+    const MAX_AUTOREPLIES: usize = 5;
+
     // Run main forwarding loop, capturing any errors
     let loop_result = (|| -> Result<()> {
         eprintln!("ACP Proxy: Agent → IDE thread started");
@@ -250,6 +306,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                     }
                     MetadataMessage::WorkingDirectory(path) => {
                         cwd = Some(path);
+                    }
+                    MetadataMessage::PromptRequest {
+                        request_id,
+                        session_id,
+                    } => {
+                        prompt_requests.insert(request_id, session_id);
                     }
                 }
             }
@@ -271,6 +333,38 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         "ACP Proxy: Detected agent '{}' version '{}'",
                                         agent_info.name, version
                                     );
+                                }
+                            }
+                        }
+
+                        // Check for stopReason (turn completion)
+                        if let Some(stop_reason) = result.get("stopReason").and_then(|v| v.as_str())
+                        {
+                            // PostResponse event: agent finished responding
+                            if stop_reason == "end_turn" {
+                                if let Some(response_id) = &msg.id {
+                                    // Look up session_id from the original request
+                                    if let Some(session_id) = prompt_requests.remove(response_id) {
+                                        // Fire PostResponse event
+                                        if let Err(e) = handle_post_response(
+                                            &session_id,
+                                            &validated_agent_type,
+                                            &cwd,
+                                            &mut autoreply_counter,
+                                            MAX_AUTOREPLIES,
+                                            &autoreply_tx,
+                                        ) {
+                                            eprintln!(
+                                                "Warning: Failed to handle PostResponse: {}",
+                                                e
+                                            );
+                                        }
+                                    } else if std::env::var("AIKI_DEBUG").is_ok() {
+                                        eprintln!(
+                                            "[acp] Detected stopReason but no matching request_id: {:?}",
+                                            response_id
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -688,6 +782,213 @@ fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
     }
 
     false
+}
+
+/// Handle session/prompt request and fire PrePrompt event
+///
+/// This intercepts the user's prompt, fires a PrePrompt event, and potentially
+/// modifies the prompt before forwarding to the agent. Implements graceful
+/// degradation - on any error, forwards the original message.
+fn handle_session_prompt(
+    agent_stdin: &mut std::process::ChildStdin,
+    msg: &JsonRpcMessage,
+    params: &serde_json::Value,
+    agent_type: &AgentType,
+    cwd: &Option<PathBuf>,
+    metadata_tx: &mpsc::Sender<MetadataMessage>,
+) -> Result<()> {
+    use serde_json::json;
+
+    // Extract session_id
+    let session_id = params
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    // Extract all text content from prompt array
+    let prompt_array = params
+        .get("prompt")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing prompt array")))?;
+
+    let mut original_text = String::new();
+    for item in prompt_array {
+        if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if !original_text.is_empty() {
+                    original_text.push_str("\n\n");
+                }
+                original_text.push_str(text);
+            }
+        }
+    }
+
+    // Get working directory with fallback
+    let working_dir = cwd
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+    // Fire PrePrompt event
+    let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+        agent_type: *agent_type,
+        session_id: Some(session_id.clone()),
+        cwd: working_dir,
+        timestamp: chrono::Utc::now(),
+        original_prompt: original_text.clone(),
+    });
+
+    let response = event_bus::dispatch(event)?;
+
+    // Extract modified_prompt from metadata (use original if not found)
+    let modified_prompt = response
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "modified_prompt")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| original_text.clone());
+
+    // Modify the JSON params to replace prompt text
+    let mut modified_msg = msg.clone();
+    if let Some(params_mut) = modified_msg.params.as_mut() {
+        if let Some(params_obj) = params_mut.as_object_mut() {
+            if let Some(prompt_arr) = params_obj.get_mut("prompt").and_then(|v| v.as_array_mut()) {
+                // Find first text item and replace it
+                for item in prompt_arr.iter_mut() {
+                    if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        if let Some(item_obj) = item.as_object_mut() {
+                            item_obj.insert("text".to_string(), json!(modified_prompt));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Send metadata about this prompt request for PostResponse tracking
+    if let Some(request_id) = msg.id.clone() {
+        let _ = metadata_tx.send(MetadataMessage::PromptRequest {
+            request_id,
+            session_id: session_id.clone(),
+        });
+    }
+
+    // Forward modified message to agent
+    let modified_line = serde_json::to_string(&modified_msg).map_err(|e| {
+        AikiError::Other(anyhow::anyhow!(
+            "Failed to serialize modified prompt: {}",
+            e
+        ))
+    })?;
+    writeln!(agent_stdin, "{}", modified_line)?;
+    agent_stdin.flush()?;
+
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[acp] Fired PrePrompt event for session: {}, modified: {}",
+            session_id,
+            modified_prompt != original_text
+        );
+    }
+
+    Ok(())
+}
+
+/// Handle PostResponse event and autoreply
+///
+/// Fires when the agent completes a turn (stopReason: end_turn).
+/// Dispatches PostResponse event to flows, and if they return an autoreply,
+/// sends it back to the agent (up to MAX_AUTOREPLIES times).
+fn handle_post_response(
+    session_id: &str,
+    agent_type: &AgentType,
+    cwd: &Option<PathBuf>,
+    autoreply_counter: &mut usize,
+    max_autoreplies: usize,
+    autoreply_tx: &mpsc::Sender<String>,
+) -> Result<()> {
+    // Get working directory with fallback
+    let working_dir = cwd
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+    // Fire PostResponse event
+    let event = AikiEvent::PostResponse(AikiPostResponseEvent {
+        agent_type: *agent_type,
+        session_id: Some(session_id.to_string()),
+        cwd: working_dir,
+        timestamp: chrono::Utc::now(),
+        response: String::new(), // Response text not available in ACP (agent streams to IDE directly)
+        modified_files: Vec::new(), // Files tracked separately via PostFileChange events
+    });
+
+    let response = event_bus::dispatch(event)?;
+
+    // Check for autoreply in metadata
+    let autoreply = response
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "autoreply")
+        .map(|(_, v)| v.clone());
+
+    if let Some(autoreply_text) = autoreply {
+        if !autoreply_text.is_empty() && *autoreply_counter < max_autoreplies {
+            *autoreply_counter += 1;
+
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!(
+                    "[acp] PostResponse autoreply #{}: {} chars",
+                    autoreply_counter,
+                    autoreply_text.len()
+                );
+            }
+
+            // Construct a new session/prompt JSON-RPC request with the autoreply
+            use serde_json::json;
+            let autoreply_request = json!({
+                "jsonrpc": "2.0",
+                "id": format!("aiki-autoreply-{}", *autoreply_counter),
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{
+                        "type": "text",
+                        "text": autoreply_text
+                    }]
+                }
+            });
+
+            // Send via channel to IDE→Agent thread
+            let autoreply_json = serde_json::to_string(&autoreply_request).map_err(|e| {
+                AikiError::Other(anyhow::anyhow!("Failed to serialize autoreply: {}", e))
+            })?;
+            autoreply_tx.send(autoreply_json).map_err(|e| {
+                AikiError::Other(anyhow::anyhow!("Failed to send autoreply: {}", e))
+            })?;
+
+            if std::env::var("AIKI_DEBUG").is_ok() {
+                eprintln!(
+                    "[acp] Queued autoreply #{} for session: {}",
+                    autoreply_counter, session_id
+                );
+            }
+        } else if *autoreply_counter >= max_autoreplies {
+            eprintln!(
+                "Warning: Maximum autoreplies ({}) reached, ignoring autoreply from flow",
+                max_autoreplies
+            );
+        }
+    } else if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!(
+            "[acp] Fired PostResponse event for session: {}, no autoreply",
+            session_id
+        );
+    }
+
+    Ok(())
 }
 
 /// Fire PreFileChange event before file-modifying tool executes
