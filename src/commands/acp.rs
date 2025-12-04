@@ -803,9 +803,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                                 content.get("text").and_then(|v| v.as_str())
                                             {
                                                 // Accumulate response text per session
+                                                // Pre-allocate 4KB capacity to reduce reallocations
                                                 response_accumulator
                                                     .entry(session_id.clone())
-                                                    .or_insert_with(String::new)
+                                                    .or_insert_with(|| String::with_capacity(4096))
                                                     .push_str(text);
                                             }
                                         }
