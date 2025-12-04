@@ -79,10 +79,16 @@
 //!
 //! When the agent process exits:
 //!
-//! 1. Agent→IDE thread detects EOF on agent stdout
-//! 2. Main thread sends `Shutdown` messages to both channels
-//! 3. Threads exit their recv() loops cleanly
-//! 4. Main thread joins all threads before exiting
+//! 1. Agent→IDE thread detects EOF on agent stdout and exits its forwarding loop
+//! 2. Main thread sends `Shutdown` messages to both autoreply and metadata channels
+//! 3. Agent→IDE thread (if still running) exits on `StateMessage::Shutdown`
+//! 4. Autoreply forwarder thread exits on `AutoreplyChannelMessage::Shutdown`
+//! 5. IDE→Agent thread exits when IDE closes stdin (natural EOF on stdin.lock().lines())
+//! 6. Main thread joins all threads before exiting
+//!
+//! Note: IDE→Agent thread shutdown is driven by stdin EOF, not by the Shutdown message,
+//! because it's blocked on stdin.lock().lines() and cannot check the metadata channel.
+//! This is correct behavior - the thread only needs to exit when the IDE disconnects.
 //!
 //! # Events Fired
 //!
@@ -152,32 +158,37 @@ impl JsonRpcId {
 /// (IDE→Agent thread sends, Agent→IDE thread owns state)
 #[derive(Debug, Clone)]
 enum StateMessage {
-    /// Client (IDE) information detected from initialize request
-    ClientInfo(ClientInfo),
-    /// Agent information detected from initialize response
-    AgentInfo(AgentInfo),
-    /// Working directory from session/new or session/load
-    WorkingDirectory(PathBuf),
-    /// Session ID from session/prompt request (for PostResponse tracking)
-    PromptRequest {
+    /// Update client (IDE) information detected from initialize request
+    SetClientInfo(ClientInfo),
+    /// Update working directory from session/new or session/load
+    SetWorkingDirectory(PathBuf),
+    /// Track session/prompt request for PostResponse event matching
+    TrackPrompt {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
         session_id: String,
     },
     /// Clear response accumulator for a session (on new prompt)
     ClearAccumulator { session_id: String },
-    /// Track session/new request ID (to match with response for SessionStart event)
-    SessionNewRequest {
+    /// Reset autoreply counter for a session (on new user prompt)
+    ResetAutoreplyCounter { session_id: String },
+    /// Track session/new request ID to match with response for SessionStart event
+    TrackNewSession {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
     },
-    /// Explicit shutdown signal (sent when agent process exits)
+    /// Signal shutdown when agent process exits
     Shutdown,
 }
 
 /// Messages sent through the autoreply channel
 #[derive(Debug, Clone)]
 enum AutoreplyChannelMessage {
-    /// A JSON-RPC autoreply message to be sent to the agent
-    Autoreply(AutoreplyMessage),
+    /// A JSON-RPC autoreply message to be sent to the agent (and optionally to IDE for visibility)
+    Autoreply {
+        message: AutoreplyMessage,
+        /// Whether to also forward this autoreply to the IDE for visibility
+        /// (allows user to see the autoreply prompt in the IDE chat history)
+        forward_to_ide: bool,
+    },
     /// Explicit shutdown signal
     Shutdown,
 }
@@ -192,8 +203,10 @@ struct AutoreplyMessage {
     session_id: String,
     /// The text content of the autoreply
     text: String,
-    /// The request ID for tracking the response
-    request_id: JsonRpcId,
+    /// The raw request ID string (for JSON serialization)
+    raw_request_id: String,
+    /// The normalized request ID (for HashMap tracking)
+    normalized_request_id: JsonRpcId,
 }
 
 impl AutoreplyMessage {
@@ -204,14 +217,16 @@ impl AutoreplyMessage {
     /// * `autoreply_text` - The text content to send as the prompt
     /// * `counter` - The autoreply counter for this session (for unique ID generation)
     fn new(session_id: &str, autoreply_text: String, counter: usize) -> Self {
-        // Generate unique request ID
-        let autoreply_id = format!("aiki-autoreply-{}-{}", session_id, counter);
-        let request_id = JsonRpcId::from_value(&serde_json::Value::String(autoreply_id));
+        // Generate unique request ID (raw string without quotes)
+        let raw_id = format!("aiki-autoreply-{}-{}", session_id, counter);
+        // Normalize for HashMap tracking (with quotes for string IDs)
+        let normalized_id = JsonRpcId::from_value(&serde_json::Value::String(raw_id.clone()));
 
         Self {
             session_id: session_id.to_string(),
             text: autoreply_text,
-            request_id,
+            raw_request_id: raw_id,
+            normalized_request_id: normalized_id,
         }
     }
 
@@ -221,7 +236,7 @@ impl AutoreplyMessage {
 
         let autoreply_request = json!({
             "jsonrpc": "2.0",
-            "id": &self.request_id.0,
+            "id": &self.raw_request_id,  // Use raw string, not normalized
             "method": "session/prompt",
             "params": {
                 "sessionId": &self.session_id,
@@ -236,14 +251,14 @@ impl AutoreplyMessage {
             .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to serialize autoreply: {}", e)))
     }
 
-    /// Get the request ID for tracking the response
-    fn request_id(&self) -> &JsonRpcId {
-        &self.request_id
+    /// Get the normalized request ID for HashMap tracking
+    fn normalized_request_id(&self) -> &JsonRpcId {
+        &self.normalized_request_id
     }
 
     /// Get the raw request ID string for display/debugging
-    fn request_id_display(&self) -> &str {
-        &self.request_id.0
+    fn raw_request_id_display(&self) -> &str {
+        &self.raw_request_id
     }
 }
 
@@ -371,7 +386,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         // Block on the autoreply channel and forward messages as they arrive
         while let Ok(msg) = autoreply_rx.recv() {
             match msg {
-                AutoreplyChannelMessage::Autoreply(autoreply_msg) => {
+                AutoreplyChannelMessage::Autoreply {
+                    message: autoreply_msg,
+                    forward_to_ide,
+                } => {
                     // Generate JSON on-demand
                     let json = match autoreply_msg.as_json() {
                         Ok(j) => j,
@@ -381,12 +399,24 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         }
                     };
 
+                    // Forward to IDE first (if requested) so it sees the prompt before the response
+                    if forward_to_ide {
+                        if let Err(e) = writeln!(io::stdout(), "{}", json) {
+                            eprintln!("Warning: Failed to forward autoreply to IDE: {}", e);
+                        } else if let Err(e) = io::stdout().flush() {
+                            eprintln!("Warning: Failed to flush autoreply to IDE: {}", e);
+                        } else if std::env::var("AIKI_DEBUG").is_ok() {
+                            eprintln!("[acp] Forwarded autoreply to IDE for visibility");
+                        }
+                    }
+
+                    // Always send to agent
                     let mut stdin = agent_stdin_for_autoreplies.lock().unwrap();
                     if let Err(e) = writeln!(stdin, "{}", json) {
-                        eprintln!("Warning: Failed to send autoreply: {}", e);
+                        eprintln!("Warning: Failed to send autoreply to agent: {}", e);
                         break;
                     } else if let Err(e) = stdin.flush() {
-                        eprintln!("Warning: Failed to flush autoreply: {}", e);
+                        eprintln!("Warning: Failed to flush autoreply to agent: {}", e);
                         break;
                     } else if std::env::var("AIKI_DEBUG").is_ok() {
                         eprintln!("[acp] Sent autoreply to agent: {} bytes", json.len());
@@ -417,7 +447,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: IDE → Agent thread started");
 
         // Track cwd in this thread for PrePrompt events
-        // This mirrors the `cwd` in Agent→IDE thread, both updated via StateMessage::WorkingDirectory
+        // This mirrors the `cwd` in Agent→IDE thread, both updated via StateMessage::SetWorkingDirectory
         let mut cwd: Option<PathBuf> = None;
 
         for line in stdin.lock().lines() {
@@ -437,7 +467,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     if let Some(client_info) = init_req.client_info {
                                         // Send full client info to Agent→IDE thread
                                         let _ = metadata_tx_clone
-                                            .send(StateMessage::ClientInfo(client_info.clone()));
+                                            .send(StateMessage::SetClientInfo(client_info.clone()));
 
                                         if let Some(ref ver) = client_info.version {
                                             eprintln!(
@@ -465,7 +495,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                     // Send working directory to Agent→IDE thread
                                     let _ = metadata_tx_clone
-                                        .send(StateMessage::WorkingDirectory(path));
+                                        .send(StateMessage::SetWorkingDirectory(path));
 
                                     if std::env::var("AIKI_DEBUG").is_ok() {
                                         eprintln!(
@@ -478,7 +508,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                             // Track session/new request for SessionStart event
                             if let Some(request_id) = &msg.id {
-                                let _ = metadata_tx_clone.send(StateMessage::SessionNewRequest {
+                                let _ = metadata_tx_clone.send(StateMessage::TrackNewSession {
                                     request_id: request_id.clone(),
                                 });
                             }
@@ -494,7 +524,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                     // Send working directory to Agent→IDE thread
                                     let _ = metadata_tx_clone
-                                        .send(StateMessage::WorkingDirectory(path));
+                                        .send(StateMessage::SetWorkingDirectory(path));
 
                                     if std::env::var("AIKI_DEBUG").is_ok() {
                                         eprintln!(
@@ -508,9 +538,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         "session/prompt" => {
                             // PrePrompt event: intercept and potentially modify prompt
                             if let Some(params) = &msg.params {
-                                // Signal Agent→IDE thread to clear response accumulator for this session
+                                // Signal Agent→IDE thread to clear response accumulator and reset autoreply counter
                                 // This ensures we start fresh for each new prompt, preventing concatenation
                                 // of old text if the previous turn ended without end_turn (error, cancel, etc.)
+                                // Also resets autoreply counter per turn (not permanently after 5 total)
                                 // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
                                 let session_id = params
                                     .get("sessionId")
@@ -519,8 +550,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     .to_string();
 
                                 if !session_id.is_empty() {
+                                    let _ =
+                                        metadata_tx_clone.send(StateMessage::ClearAccumulator {
+                                            session_id: session_id.clone(),
+                                        });
                                     let _ = metadata_tx_clone
-                                        .send(StateMessage::ClearAccumulator { session_id });
+                                        .send(StateMessage::ResetAutoreplyCounter { session_id });
                                 }
 
                                 // Pass the thread's tracked cwd
@@ -599,16 +634,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             // Drain all pending metadata updates from IDE→Agent thread
             while let Ok(msg) = metadata_rx.try_recv() {
                 match msg {
-                    StateMessage::ClientInfo(info) => {
+                    StateMessage::SetClientInfo(info) => {
                         client_info = Some(info);
                     }
-                    StateMessage::AgentInfo(info) => {
-                        agent_info = Some(info);
-                    }
-                    StateMessage::WorkingDirectory(path) => {
+                    StateMessage::SetWorkingDirectory(path) => {
                         cwd = Some(path);
                     }
-                    StateMessage::PromptRequest {
+                    StateMessage::TrackPrompt {
                         request_id,
                         session_id,
                     } => {
@@ -621,7 +653,16 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // This happens on each new prompt to prevent stale text from failed turns
                         response_accumulator.remove(&session_id);
                     }
-                    StateMessage::SessionNewRequest { request_id } => {
+                    StateMessage::ResetAutoreplyCounter { session_id } => {
+                        // Reset autoreply counter for this session (per-turn, not permanent)
+                        // This allows each turn to use up to MAX_AUTOREPLIES, preventing
+                        // permanent blocking after the session accumulates 5 total autoreplies
+                        autoreply_counters.remove(&session_id);
+                        if std::env::var("AIKI_DEBUG").is_ok() {
+                            eprintln!("[acp] Reset autoreply counter for session: {}", session_id);
+                        }
+                    }
+                    StateMessage::TrackNewSession { request_id } => {
                         // Track session/new request to match with response
                         session_new_requests.insert(JsonRpcId::from_value(&request_id), true);
                     }
@@ -1265,7 +1306,7 @@ fn handle_session_prompt(
 
     // Send metadata about this prompt request for PostResponse tracking
     if let Some(request_id) = msg.id.clone() {
-        let _ = metadata_tx.send(StateMessage::PromptRequest {
+        let _ = metadata_tx.send(StateMessage::TrackPrompt {
             request_id, // Pass raw Value; normalization happens at consumption
             session_id: session_id.clone(),
         });
@@ -1354,19 +1395,26 @@ fn handle_post_response(
             // Create autoreply message (JSON generated on-demand when sent)
             let autoreply_msg = AutoreplyMessage::new(session_id, autoreply_text, new_count);
 
-            // Track this autoreply request ID for future PostResponse
-            prompt_requests.insert(autoreply_msg.request_id().clone(), session_id.to_string());
+            // Track this autoreply request ID for future PostResponse (use normalized ID for HashMap)
+            prompt_requests.insert(
+                autoreply_msg.normalized_request_id().clone(),
+                session_id.to_string(),
+            );
 
             // Extract debug info before moving
             let debug_request_id = if std::env::var("AIKI_DEBUG").is_ok() {
-                Some(autoreply_msg.request_id_display().to_string())
+                Some(autoreply_msg.raw_request_id_display().to_string())
             } else {
                 None
             };
 
-            // Send via channel to IDE→Agent thread
+            // Send via channel to autoreply forwarder thread
+            // forward_to_ide=true ensures the IDE sees the autoreply prompt in chat history
             autoreply_tx
-                .send(AutoreplyChannelMessage::Autoreply(autoreply_msg))
+                .send(AutoreplyChannelMessage::Autoreply {
+                    message: autoreply_msg,
+                    forward_to_ide: true, // Make autoreplies visible to user
+                })
                 .map_err(|e| {
                     AikiError::Other(anyhow::anyhow!("Failed to send autoreply: {}", e))
                 })?;
@@ -1483,6 +1531,112 @@ mod tests {
             result.unwrap_err(),
             AikiError::UnknownAgentType(_)
         ));
+    }
+
+    #[test]
+    fn test_autoreply_message_id_serialization() {
+        // Create an autoreply message
+        let msg = AutoreplyMessage::new("test-session-123", "Fix the errors".to_string(), 1);
+
+        // Verify the raw ID is a plain string (no quotes)
+        assert_eq!(msg.raw_request_id, "aiki-autoreply-test-session-123-1");
+
+        // Verify the normalized ID has quotes (for HashMap key)
+        assert_eq!(
+            msg.normalized_request_id.0,
+            "\"aiki-autoreply-test-session-123-1\""
+        );
+
+        // Verify JSON serialization uses the raw ID (no double-quoting)
+        let json = msg.as_json().expect("Failed to serialize autoreply");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("Failed to parse JSON");
+
+        // The ID field should be a string (not a string containing quotes)
+        assert_eq!(
+            parsed["id"].as_str().unwrap(),
+            "aiki-autoreply-test-session-123-1"
+        );
+
+        // Verify the JSON structure is correct
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["method"], "session/prompt");
+        assert_eq!(parsed["params"]["sessionId"], "test-session-123");
+        assert_eq!(parsed["params"]["prompt"][0]["text"], "Fix the errors");
+    }
+
+    #[test]
+    fn test_json_rpc_id_normalization() {
+        // Test string ID normalization
+        let string_id = serde_json::Value::String("test-123".to_string());
+        let normalized = JsonRpcId::from_value(&string_id);
+        assert_eq!(normalized.0, "\"test-123\""); // Includes quotes
+
+        // Test number ID normalization
+        let number_id = serde_json::Value::Number(serde_json::Number::from(42));
+        let normalized = JsonRpcId::from_value(&number_id);
+        assert_eq!(normalized.0, "42"); // No quotes
+
+        // Test null ID normalization
+        let null_id = serde_json::Value::Null;
+        let normalized = JsonRpcId::from_value(&null_id);
+        assert_eq!(normalized.0, "null"); // No quotes
+    }
+
+    #[test]
+    fn test_autoreply_message_unique_ids() {
+        // Verify that different counters produce different IDs
+        let msg1 = AutoreplyMessage::new("session-1", "text1".to_string(), 1);
+        let msg2 = AutoreplyMessage::new("session-1", "text2".to_string(), 2);
+        let msg3 = AutoreplyMessage::new("session-2", "text3".to_string(), 1);
+
+        assert_ne!(msg1.raw_request_id, msg2.raw_request_id);
+        assert_ne!(msg1.raw_request_id, msg3.raw_request_id);
+        assert_ne!(msg2.raw_request_id, msg3.raw_request_id);
+    }
+
+    #[test]
+    fn test_json_rpc_id_round_trip_through_hashmap() {
+        use std::collections::HashMap;
+
+        // This is the critical pattern used in the proxy:
+        // 1. IDE sends request with ID
+        // 2. We normalize and store in HashMap
+        // 3. Agent sends response with same ID
+        // 4. We normalize and look up in HashMap
+
+        // Test with string ID (most common case)
+        let request_id = serde_json::Value::String("test-request-123".to_string());
+        let normalized_request = JsonRpcId::from_value(&request_id);
+
+        let mut map = HashMap::new();
+        map.insert(normalized_request.clone(), "test-session".to_string());
+
+        // Simulate receiving a response with the same ID
+        let response_id = serde_json::Value::String("test-request-123".to_string());
+        let normalized_response = JsonRpcId::from_value(&response_id);
+
+        // Critical: normalized IDs must match for HashMap lookup
+        assert_eq!(normalized_request, normalized_response);
+        assert_eq!(
+            map.get(&normalized_response),
+            Some(&"test-session".to_string())
+        );
+
+        // Test with number ID
+        let request_id = serde_json::Value::Number(serde_json::Number::from(42));
+        let normalized_request = JsonRpcId::from_value(&request_id);
+
+        let mut map = HashMap::new();
+        map.insert(normalized_request.clone(), "test-session-2".to_string());
+
+        let response_id = serde_json::Value::Number(serde_json::Number::from(42));
+        let normalized_response = JsonRpcId::from_value(&response_id);
+
+        assert_eq!(normalized_request, normalized_response);
+        assert_eq!(
+            map.get(&normalized_response),
+            Some(&"test-session-2".to_string())
+        );
     }
 
     // Note: derive_executable tests moved to zed_detection module tests
