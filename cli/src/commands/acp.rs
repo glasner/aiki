@@ -6,7 +6,7 @@ use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::{
-    AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent,
+    AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent, AikiStartEvent,
 };
 use crate::provenance::AgentType;
 use agent_client_protocol::{
@@ -58,6 +58,10 @@ enum StateMessage {
     },
     /// Clear response accumulator for a session (on new prompt)
     ClearAccumulator { session_id: String },
+    /// Track session/new request ID (to match with response for SessionStart event)
+    SessionNewRequest {
+        request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
+    },
 }
 
 /// A JSON-RPC autoreply message to be sent to the agent
@@ -322,7 +326,36 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 }
                             }
                         }
-                        "session/new" | "session/load" => {
+                        "session/new" => {
+                            // Extract working directory from session requests
+                            if let Some(params) = &msg.params {
+                                if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
+                                    let path = PathBuf::from(cwd_str);
+
+                                    // Store in this thread's cwd
+                                    cwd = Some(path.clone());
+
+                                    // Send working directory to Agent→IDE thread
+                                    let _ = metadata_tx_clone
+                                        .send(StateMessage::WorkingDirectory(path));
+
+                                    if std::env::var("AIKI_DEBUG").is_ok() {
+                                        eprintln!(
+                                            "ACP Proxy: Set working directory to: {}",
+                                            cwd_str
+                                        );
+                                    }
+                                }
+                            }
+
+                            // Track session/new request for SessionStart event
+                            if let Some(request_id) = &msg.id {
+                                let _ = metadata_tx_clone.send(StateMessage::SessionNewRequest {
+                                    request_id: request_id.clone(),
+                                });
+                            }
+                        }
+                        "session/load" => {
                             // Extract working directory from session requests
                             if let Some(params) = &msg.params {
                                 if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
@@ -414,6 +447,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Key is JsonRpcId (normalized request_id), value is session_id
     let mut prompt_requests: HashMap<JsonRpcId, String> = HashMap::new();
 
+    // Track session/new requests for SessionStart event
+    // Key is JsonRpcId (normalized request_id), value is boolean (true = pending)
+    let mut session_new_requests: HashMap<JsonRpcId, bool> = HashMap::new();
+
     // Track autoreply counters per session (not global)
     let mut autoreply_counters: HashMap<String, usize> = HashMap::new();
     const MAX_AUTOREPLIES: usize = 5;
@@ -456,6 +493,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // This happens on each new prompt to prevent stale text from failed turns
                         response_accumulator.remove(&session_id);
                     }
+                    StateMessage::SessionNewRequest { request_id } => {
+                        // Track session/new request to match with response
+                        session_new_requests.insert(JsonRpcId::from_value(&request_id), true);
+                    }
                 }
             }
 
@@ -477,6 +518,29 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     );
                                 }
                                 agent_info = Some(info);
+                            }
+                        }
+
+                        // Check for session/new response (SessionStart event)
+                        if let Some(response_id) = &msg.id {
+                            let request_id = JsonRpcId::from_value(response_id);
+                            if session_new_requests.remove(&request_id).is_some() {
+                                // This is a session/new response
+                                if let Some(session_id) =
+                                    result.get("sessionId").and_then(|v| v.as_str())
+                                {
+                                    // Fire SessionStart event
+                                    if let Err(e) = fire_session_start_event(
+                                        session_id,
+                                        &validated_agent_type,
+                                        &cwd,
+                                    ) {
+                                        eprintln!(
+                                            "Warning: Failed to fire SessionStart event: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                         }
 
@@ -1205,6 +1269,35 @@ fn handle_post_response(
 /// This is called when we intercept a session/request_permission for
 /// file-modifying tools (Edit, Delete, Move). It allows flows to stash
 /// user edits before the AI starts making changes.
+fn fire_session_start_event(
+    session_id: &str,
+    agent_type: &AgentType,
+    cwd: &Option<PathBuf>,
+) -> Result<()> {
+    // Get working directory (required)
+    let working_dir = cwd
+        .as_ref()
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
+        .clone();
+
+    // Create and dispatch SessionStart event
+    let event = AikiEvent::SessionStart(AikiStartEvent {
+        agent_type: *agent_type,
+        session_id: Some(session_id.to_string()),
+        cwd: working_dir,
+        timestamp: chrono::Utc::now(),
+    });
+
+    // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
+    if let Err(e) = event_bus::dispatch(event) {
+        eprintln!("Warning: SessionStart event bus dispatch failed: {}", e);
+    } else if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("[acp] Fired SessionStart event for session: {}", session_id);
+    }
+
+    Ok(())
+}
+
 fn fire_pre_file_change_event(
     session_id: &str,
     agent_type: &AgentType,
