@@ -276,10 +276,14 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 // Signal Agent→IDE thread to clear response accumulator for this session
                                 // This ensures we start fresh for each new prompt, preventing concatenation
                                 // of old text if the previous turn ended without end_turn (error, cancel, etc.)
-                                if let Ok(notification) =
-                                    serde_json::from_value::<SessionNotification>(params.clone())
-                                {
-                                    let session_id = notification.session_id.to_string();
+                                // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
+                                let session_id = params
+                                    .get("sessionId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+
+                                if !session_id.is_empty() {
                                     let _ = metadata_tx_clone
                                         .send(MetadataMessage::ClearAccumulator { session_id });
                                 }
