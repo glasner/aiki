@@ -1,5 +1,6 @@
 use crate::acp::protocol::{
-    InitializeRequest, InitializeResponse, JsonRpcMessage, SessionNotification,
+    AgentInfo, ClientInfo, InitializeRequest, InitializeResponse, JsonRpcMessage,
+    SessionNotification,
 };
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
@@ -22,12 +23,9 @@ use std::thread;
 #[derive(Debug, Clone)]
 enum MetadataMessage {
     /// Client (IDE) information detected from initialize request
-    ClientInfo {
-        name: String,
-        version: Option<String>,
-    },
-    /// Agent version detected from initialize response
-    AgentVersion(String),
+    ClientInfo(ClientInfo),
+    /// Agent information detected from initialize response
+    AgentInfo(AgentInfo),
     /// Working directory from session/new or session/load
     WorkingDirectory(PathBuf),
     /// Session ID from session/prompt request (for PostResponse tracking)
@@ -223,25 +221,19 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     serde_json::from_value::<InitializeRequest>(params.clone())
                                 {
                                     if let Some(client_info) = init_req.client_info {
-                                        let name = client_info.name.clone();
-                                        let version = client_info.version.clone();
+                                        // Send full client info to Agent→IDE thread
+                                        let _ = metadata_tx_clone
+                                            .send(MetadataMessage::ClientInfo(client_info.clone()));
 
-                                        // Send client info to Agent→IDE thread
-                                        let _ =
-                                            metadata_tx_clone.send(MetadataMessage::ClientInfo {
-                                                name: name.clone(),
-                                                version: version.clone(),
-                                            });
-
-                                        if let Some(ref ver) = version {
+                                        if let Some(ref ver) = client_info.version {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' version '{}' connecting to agent '{}'",
-                                                name, ver, agent_type_clone
+                                                client_info.name, ver, agent_type_clone
                                             );
                                         } else {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' connecting to agent '{}'",
-                                                name, agent_type_clone
+                                                client_info.name, agent_type_clone
                                             );
                                         }
                                     }
@@ -331,9 +323,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Thread 2: Agent → IDE (observe and record)
     // This thread OWNS all metadata state and receives updates via channel
-    let mut client_name: Option<String> = None;
-    let mut client_version: Option<String> = None;
-    let mut agent_version: Option<String> = None;
+    let mut client_info: Option<ClientInfo> = None;
+    let mut agent_info: Option<AgentInfo> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut tool_call_contexts: HashMap<ToolCallId, ToolCallContext> = HashMap::new();
 
@@ -358,12 +349,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             // Drain all pending metadata updates from IDE→Agent thread
             while let Ok(msg) = metadata_rx.try_recv() {
                 match msg {
-                    MetadataMessage::ClientInfo { name, version } => {
-                        client_name = Some(name);
-                        client_version = version;
+                    MetadataMessage::ClientInfo(info) => {
+                        client_info = Some(info);
                     }
-                    MetadataMessage::AgentVersion(version) => {
-                        agent_version = Some(version);
+                    MetadataMessage::AgentInfo(info) => {
+                        agent_info = Some(info);
                     }
                     MetadataMessage::WorkingDirectory(path) => {
                         cwd = Some(path);
@@ -388,20 +378,20 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
                 // Removed verbose logging to prevent stderr overflow panic
 
-                // Capture agent version from initialize response
+                // Capture agent info from initialize response
                 if msg.id.is_some() && msg.result.is_some() {
                     if let Some(result) = &msg.result {
                         if let Ok(init_resp) =
                             serde_json::from_value::<InitializeResponse>(result.clone())
                         {
-                            if let Some(agent_info) = init_resp.agent_info {
-                                if let Some(version) = agent_info.version {
-                                    agent_version = Some(version.clone());
+                            if let Some(info) = init_resp.agent_info {
+                                if let Some(ref version) = info.version {
                                     eprintln!(
                                         "ACP Proxy: Detected agent '{}' version '{}'",
-                                        agent_info.name, version
+                                        info.name, version
                                     );
                                 }
+                                agent_info = Some(info);
                             }
                         }
 
@@ -516,9 +506,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         if let Err(e) = handle_session_update(
                             &msg,
                             &validated_agent_type,
-                            &client_name,
-                            &client_version,
-                            &agent_version,
+                            &client_info,
+                            &agent_info,
                             &cwd,
                             &mut tool_call_contexts,
                         ) {
@@ -619,9 +608,8 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
 fn handle_session_update(
     msg: &JsonRpcMessage,
     agent_type: &AgentType,
-    client_name: &Option<String>,
-    client_version: &Option<String>,
-    agent_version: &Option<String>,
+    client_info: &Option<ClientInfo>,
+    agent_info: &Option<AgentInfo>,
     cwd: &Option<PathBuf>,
     tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
@@ -646,9 +634,8 @@ fn handle_session_update(
             &session_id,
             tool_call,
             agent_type,
-            client_name,
-            client_version,
-            agent_version,
+            client_info,
+            agent_info,
             cwd,
             tool_call_contexts,
         ),
@@ -656,9 +643,8 @@ fn handle_session_update(
             &session_id,
             update,
             agent_type,
-            client_name,
-            client_version,
-            agent_version,
+            client_info,
+            agent_info,
             cwd,
             tool_call_contexts,
         ),
@@ -670,9 +656,8 @@ fn process_tool_call(
     session_id: &str,
     tool_call: &ToolCall,
     agent_type: &AgentType,
-    client_name: &Option<String>,
-    client_version: &Option<String>,
-    agent_version: &Option<String>,
+    client_info: &Option<ClientInfo>,
+    agent_info: &Option<AgentInfo>,
     cwd: &Option<PathBuf>,
     tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
@@ -694,9 +679,8 @@ fn process_tool_call(
         record_post_change_events(
             session_id,
             agent_type,
-            client_name,
-            client_version,
-            agent_version,
+            client_info,
+            agent_info,
             cwd,
             context,
         )?;
@@ -709,9 +693,8 @@ fn process_tool_call_update(
     session_id: &str,
     tool_call: &ToolCallUpdate,
     agent_type: &AgentType,
-    client_name: &Option<String>,
-    client_version: &Option<String>,
-    agent_version: &Option<String>,
+    client_info: &Option<ClientInfo>,
+    agent_info: &Option<AgentInfo>,
     cwd: &Option<PathBuf>,
     tool_call_contexts: &mut HashMap<ToolCallId, ToolCallContext>,
 ) -> Result<()> {
@@ -755,9 +738,8 @@ fn process_tool_call_update(
         record_post_change_events(
             session_id,
             agent_type,
-            client_name,
-            client_version,
-            agent_version,
+            client_info,
+            agent_info,
             cwd,
             context,
         )?;
@@ -780,9 +762,8 @@ fn paths_from_locations(locations: &[ToolCallLocation]) -> Vec<PathBuf> {
 fn record_post_change_events(
     session_id: &str,
     agent_type: &AgentType,
-    client_name: &Option<String>,
-    client_version: &Option<String>,
-    agent_version: &Option<String>,
+    client_info: &Option<ClientInfo>,
+    agent_info: &Option<AgentInfo>,
     cwd: &Option<PathBuf>,
     context: ToolCallContext,
 ) -> Result<()> {
@@ -803,12 +784,12 @@ fn record_post_change_events(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Get client info (optional)
-    let client = client_name.clone();
-    let client_ver = client_version.clone();
+    // Extract client info fields (optional)
+    let client_name = client_info.as_ref().map(|c| c.name.clone());
+    let client_version = client_info.as_ref().and_then(|c| c.version.clone());
 
-    // Get agent version (optional)
-    let agent_ver = agent_version.clone();
+    // Extract agent version (optional)
+    let agent_version = agent_info.as_ref().and_then(|a| a.version.clone());
 
     // Get tool name from kind
     let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
@@ -826,9 +807,9 @@ fn record_post_change_events(
     // Create and dispatch a single event for all affected files
     let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
         agent_type: *agent_type,
-        client_name: client.clone(),
-        client_version: client_ver.clone(),
-        agent_version: agent_ver.clone(),
+        client_name: client_name.clone(),
+        client_version: client_version.clone(),
+        agent_version: agent_version.clone(),
         session_id: session_id.to_string(),
         tool_name: tool_name.clone(),
         file_paths,
