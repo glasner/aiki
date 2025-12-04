@@ -74,7 +74,7 @@ struct AutoreplyMessage {
 }
 
 impl AutoreplyMessage {
-    /// Create a session/prompt autoreply request
+    /// Create a new session/prompt autoreply request
     ///
     /// Constructs a JSON-RPC session/prompt request with the given text,
     /// generates a unique request ID, and serializes it.
@@ -83,11 +83,7 @@ impl AutoreplyMessage {
     /// * `session_id` - The session ID to send the prompt to
     /// * `autoreply_text` - The text content to send as the prompt
     /// * `counter` - The autoreply counter for this session (for unique ID generation)
-    fn new_session_prompt(
-        session_id: &str,
-        autoreply_text: String,
-        counter: usize,
-    ) -> Result<Self> {
+    fn new(session_id: &str, autoreply_text: String, counter: usize) -> Result<Self> {
         use serde_json::json;
 
         // Generate unique request ID
@@ -1150,8 +1146,7 @@ fn handle_post_response(
             }
 
             // Create autoreply message (constructs JSON-RPC request and generates ID)
-            let autoreply_msg =
-                AutoreplyMessage::new_session_prompt(session_id, autoreply_text, new_count)?;
+            let autoreply_msg = AutoreplyMessage::new(session_id, autoreply_text, new_count)?;
 
             // Track this autoreply request ID for future PostResponse
             prompt_requests.insert(autoreply_msg.request_id().clone(), session_id.to_string());
