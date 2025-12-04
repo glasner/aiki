@@ -143,11 +143,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     std::panic::set_hook(Box::new(|panic_info| {
         use std::io::Write;
 
-        // Try to write to a debug file
+        // Try to write to a debug file in system temp directory
+        let log_path = std::env::temp_dir().join("aiki-proxy-panic.log");
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("/tmp/aiki-proxy-panic.log")
+            .open(&log_path)
         {
             let _ = writeln!(
                 file,
@@ -284,7 +285,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: IDE → Agent thread started");
 
         // Track cwd in this thread for PrePrompt events
-        let mut thread_cwd: Option<PathBuf> = None;
+        // This mirrors the `cwd` in Agent→IDE thread, both updated via StateMessage::WorkingDirectory
+        let mut cwd: Option<PathBuf> = None;
 
         for line in stdin.lock().lines() {
             let line = line?;
@@ -327,7 +329,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let path = PathBuf::from(cwd_str);
 
                                     // Store in this thread's cwd
-                                    thread_cwd = Some(path.clone());
+                                    cwd = Some(path.clone());
 
                                     // Send working directory to Agent→IDE thread
                                     let _ = metadata_tx_clone
@@ -366,7 +368,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     &msg,
                                     params,
                                     &validated_agent_type,
-                                    &thread_cwd,
+                                    &cwd,
                                     &metadata_tx_clone,
                                 ) {
                                     eprintln!("Warning: Failed to handle session/prompt: {}", e);
@@ -416,7 +418,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let mut autoreply_counters: HashMap<String, usize> = HashMap::new();
     const MAX_AUTOREPLIES: usize = 5;
 
-    // Track response text accumulation per request_id for PostResponse
+    // Track response text accumulation per session (not per request_id)
+    // A session only has one active prompt at a time, so we key by session_id
+    // rather than request_id. This simplifies accumulation across multiple
+    // agent_message_chunk updates, which all share the same session_id.
     let mut response_accumulator: HashMap<String, String> = HashMap::new();
 
     // Run main forwarding loop, capturing any errors
@@ -625,8 +630,17 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         }
     }
 
-    // CRITICAL: Drop autoreply_tx and metadata_tx to close the channels before joining threads
-    // Without this, the forwarder thread blocks forever on recv() and the proxy hangs at shutdown
+    // ╔══════════════════════════════════════════════════════════════════════════╗
+    // ║ CRITICAL: Close channels before joining threads                         ║
+    // ║                                                                          ║
+    // ║ The spawned threads are blocked on channel.recv(). If we try to join    ║
+    // ║ them while the channel senders still exist, they will wait forever.     ║
+    // ║                                                                          ║
+    // ║ By dropping the senders here, the receivers get Err(RecvError) and      ║
+    // ║ the threads can exit cleanly.                                           ║
+    // ║                                                                          ║
+    // ║ DO NOT MOVE OR REMOVE THESE DROPS WITHOUT UPDATING THE THREAD LOGIC.    ║
+    // ╚══════════════════════════════════════════════════════════════════════════╝
     drop(autoreply_tx);
     drop(metadata_tx);
 
