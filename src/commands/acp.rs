@@ -62,6 +62,17 @@ enum StateMessage {
     SessionNewRequest {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
     },
+    /// Explicit shutdown signal (sent when agent process exits)
+    Shutdown,
+}
+
+/// Messages sent through the autoreply channel
+#[derive(Debug, Clone)]
+enum AutoreplyChannelMessage {
+    /// A JSON-RPC autoreply message to be sent to the agent
+    Autoreply(AutoreplyMessage),
+    /// Explicit shutdown signal
+    Shutdown,
 }
 
 /// A JSON-RPC autoreply message to be sent to the agent
@@ -216,7 +227,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Create channel for autoreplies
     // Agent→IDE thread detects PostResponse and sends autoreply requests
     // IDE→Agent thread receives and forwards them to agent
-    let (autoreply_tx, autoreply_rx) = mpsc::channel::<AutoreplyMessage>();
+    let (autoreply_tx, autoreply_rx) = mpsc::channel::<AutoreplyChannelMessage>();
 
     // Launch agent with piped stdin/stdout
     let mut agent = Command::new(&command)
@@ -251,25 +262,35 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: Autoreply forwarder thread started");
 
         // Block on the autoreply channel and forward messages as they arrive
-        while let Ok(autoreply_msg) = autoreply_rx.recv() {
-            // Generate JSON on-demand
-            let json = match autoreply_msg.as_json() {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("Warning: Failed to serialize autoreply: {}", e);
+        while let Ok(msg) = autoreply_rx.recv() {
+            match msg {
+                AutoreplyChannelMessage::Autoreply(autoreply_msg) => {
+                    // Generate JSON on-demand
+                    let json = match autoreply_msg.as_json() {
+                        Ok(j) => j,
+                        Err(e) => {
+                            eprintln!("Warning: Failed to serialize autoreply: {}", e);
+                            break;
+                        }
+                    };
+
+                    let mut stdin = agent_stdin_for_autoreplies.lock().unwrap();
+                    if let Err(e) = writeln!(stdin, "{}", json) {
+                        eprintln!("Warning: Failed to send autoreply: {}", e);
+                        break;
+                    } else if let Err(e) = stdin.flush() {
+                        eprintln!("Warning: Failed to flush autoreply: {}", e);
+                        break;
+                    } else if std::env::var("AIKI_DEBUG").is_ok() {
+                        eprintln!("[acp] Sent autoreply to agent: {} bytes", json.len());
+                    }
+                }
+                AutoreplyChannelMessage::Shutdown => {
+                    if std::env::var("AIKI_DEBUG").is_ok() {
+                        eprintln!("ACP Proxy: Autoreply thread received shutdown signal");
+                    }
                     break;
                 }
-            };
-
-            let mut stdin = agent_stdin_for_autoreplies.lock().unwrap();
-            if let Err(e) = writeln!(stdin, "{}", json) {
-                eprintln!("Warning: Failed to send autoreply: {}", e);
-                break;
-            } else if let Err(e) = stdin.flush() {
-                eprintln!("Warning: Failed to flush autoreply: {}", e);
-                break;
-            } else if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[acp] Sent autoreply to agent: {} bytes", json.len());
             }
         }
 
@@ -497,6 +518,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // Track session/new request to match with response
                         session_new_requests.insert(JsonRpcId::from_value(&request_id), true);
                     }
+                    StateMessage::Shutdown => {
+                        // Explicit shutdown signal - exit the loop
+                        if std::env::var("AIKI_DEBUG").is_ok() {
+                            eprintln!("ACP Proxy: Agent→IDE thread received shutdown signal");
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -694,19 +722,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         }
     }
 
-    // ╔══════════════════════════════════════════════════════════════════════════╗
-    // ║ CRITICAL: Close channels before joining threads                         ║
-    // ║                                                                          ║
-    // ║ The spawned threads are blocked on channel.recv(). If we try to join    ║
-    // ║ them while the channel senders still exist, they will wait forever.     ║
-    // ║                                                                          ║
-    // ║ By dropping the senders here, the receivers get Err(RecvError) and      ║
-    // ║ the threads can exit cleanly.                                           ║
-    // ║                                                                          ║
-    // ║ DO NOT MOVE OR REMOVE THESE DROPS WITHOUT UPDATING THE THREAD LOGIC.    ║
-    // ╚══════════════════════════════════════════════════════════════════════════╝
-    drop(autoreply_tx);
-    drop(metadata_tx);
+    // Send explicit shutdown signals to threads
+    // This is more robust than relying on channel closure via drop()
+    // The threads will exit their recv() loops when they see the Shutdown message
+    let _ = autoreply_tx.send(AutoreplyChannelMessage::Shutdown);
+    let _ = metadata_tx.send(StateMessage::Shutdown);
 
     // ALWAYS join the IDE → Agent thread to ensure clean shutdown
     match ide_to_agent_thread.join() {
@@ -1178,7 +1198,7 @@ fn handle_post_response(
     response_text: &str,
     autoreply_counters: &mut HashMap<String, usize>,
     max_autoreplies: usize,
-    autoreply_tx: &mpsc::Sender<AutoreplyMessage>,
+    autoreply_tx: &mpsc::Sender<AutoreplyChannelMessage>,
     prompt_requests: &mut HashMap<JsonRpcId, String>,
 ) -> Result<()> {
     // Get working directory with fallback
@@ -1238,9 +1258,11 @@ fn handle_post_response(
             };
 
             // Send via channel to IDE→Agent thread
-            autoreply_tx.send(autoreply_msg).map_err(|e| {
-                AikiError::Other(anyhow::anyhow!("Failed to send autoreply: {}", e))
-            })?;
+            autoreply_tx
+                .send(AutoreplyChannelMessage::Autoreply(autoreply_msg))
+                .map_err(|e| {
+                    AikiError::Other(anyhow::anyhow!("Failed to send autoreply: {}", e))
+                })?;
 
             if let Some(request_id) = debug_request_id {
                 eprintln!(
