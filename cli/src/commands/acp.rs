@@ -37,6 +37,20 @@ enum MetadataMessage {
     },
 }
 
+/// Normalize a JSON-RPC request/response ID to a consistent string key
+///
+/// JSON-RPC IDs can be strings, numbers, or null. When we use serde_json::Value::to_string(),
+/// it serializes them with quotes for strings (e.g., "\"abc\"" for a string ID "abc").
+/// This helper ensures we always use the same serialization for HashMap keys.
+///
+/// # Examples
+/// - String ID "abc" → "\"abc\""
+/// - Number ID 123 → "123"
+/// - This matches the behavior of `serde_json::Value::to_string()`
+fn normalize_jsonrpc_id(id: &serde_json::Value) -> String {
+    id.to_string()
+}
+
 /// Run the ACP bidirectional proxy
 ///
 /// This command acts as a transparent proxy between an IDE (Zed, Neovim, etc.)
@@ -374,7 +388,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             if stop_reason == "end_turn" {
                                 if let Some(response_id) = &msg.id {
                                     // Convert JSON Value to String for HashMap lookup
-                                    let request_id_str = response_id.to_string();
+                                    let request_id_str = normalize_jsonrpc_id(response_id);
 
                                     // Look up session_id from the original request
                                     if let Some(session_id) =
@@ -519,6 +533,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             );
         }
     }
+
+    // CRITICAL: Drop autoreply_tx and metadata_tx to close the channels before joining threads
+    // Without this, the forwarder thread blocks forever on recv() and the proxy hangs at shutdown
+    drop(autoreply_tx);
+    drop(metadata_tx);
 
     // ALWAYS join the IDE → Agent thread to ensure clean shutdown
     match ide_to_agent_thread.join() {
@@ -959,7 +978,7 @@ fn handle_session_prompt(
     // Send metadata about this prompt request for PostResponse tracking
     if let Some(request_id) = msg.id.clone() {
         let _ = metadata_tx.send(MetadataMessage::PromptRequest {
-            request_id: request_id.to_string(), // Convert JSON Value to String
+            request_id: normalize_jsonrpc_id(&request_id),
             session_id: session_id.clone(),
         });
     }
@@ -1061,8 +1080,13 @@ fn handle_post_response(
             });
 
             // Track this autoreply request ID for future PostResponse
-            // We're in the Agent→IDE thread which owns prompt_requests, so insert directly
-            prompt_requests.insert(autoreply_id.clone(), session_id.to_string());
+            // CRITICAL: Use normalize_jsonrpc_id() to match the serialization used when
+            // looking up responses. This ensures "aiki-autoreply-X-Y" becomes "\"aiki-autoreply-X-Y\""
+            let autoreply_id_json = serde_json::Value::String(autoreply_id.clone());
+            prompt_requests.insert(
+                normalize_jsonrpc_id(&autoreply_id_json),
+                session_id.to_string(),
+            );
 
             // Send via channel to IDE→Agent thread
             let autoreply_json = serde_json::to_string(&autoreply_request).map_err(|e| {
