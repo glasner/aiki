@@ -177,7 +177,17 @@ fn translate_response(response: HookResponse) -> (Option<String>, i32) {
             // Blocking error (exit 2)
             let mut json = Map::new();
 
-            if let Some(msg) = response.user_message {
+            // Check for first error message in new messages field
+            if let Some(first_error) = response.messages.iter().find_map(|m| match m {
+                crate::handlers::Message::Error(s) => Some(s),
+                _ => None,
+            }) {
+                json.insert(
+                    "user_message".to_string(),
+                    json!(format!("❌ {}", first_error)),
+                );
+            } else if let Some(msg) = response.user_message {
+                // Fallback to legacy user_message
                 json.insert("user_message".to_string(), json!(msg));
             }
 
@@ -191,6 +201,13 @@ fn translate_response(response: HookResponse) -> (Option<String>, i32) {
             // Success or non-blocking
             let mut json = Map::new();
 
+            // Build followup_message from messages + context (for PostResponse/stop hook)
+            let followup_text = crate::handlers::build_agent_context(&response);
+            if !followup_text.is_empty() {
+                json.insert("followup_message".to_string(), json!(followup_text));
+            }
+
+            // Legacy fields (backward compatibility)
             if let Some(msg) = response.user_message {
                 json.insert("user_message".to_string(), json!(msg));
             }
