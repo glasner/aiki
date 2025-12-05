@@ -65,7 +65,9 @@ pub enum Action {
     Let(LetAction),
     /// Self function call (call a function without storing result)
     Self_(SelfAction),
-    /// Prompt modification (for PrePrompt events)
+    /// Context injection (for PrePrompt events) - NEW: replaces Prompt
+    Context(ContextAction),
+    /// Prompt modification (for PrePrompt events) - DEPRECATED: use Context instead
     Prompt(PromptAction),
     /// Autoreply (for PostResponse events)
     Autoreply(AutoreplyAction),
@@ -191,7 +193,37 @@ pub struct SwitchAction {
     pub on_failure: FailureMode,
 }
 
-/// Prompt action (for PrePrompt events)
+/// Context action (for PrePrompt events)
+/// Injects context that is prepended to the user's prompt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextAction {
+    /// The context content to inject
+    pub context: ContextContent,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Content for context action
+/// Can be a simple string (defaults to append) or explicit prepend/append
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContextContent {
+    /// Simple form: defaults to append
+    /// YAML: `context: "text"`
+    Simple(String),
+
+    /// Explicit form with prepend/append
+    /// YAML: `context: { prepend: "...", append: "..." }`
+    Explicit {
+        #[serde(default)]
+        prepend: Option<String>,
+        #[serde(default)]
+        append: Option<String>,
+    },
+}
+
+/// Prompt action (for PrePrompt events) - DEPRECATED
 /// Modifies the user's prompt before it's sent to the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptAction {
@@ -238,7 +270,12 @@ pub enum AutoreplyContent {
 
     /// Explicit form with prepend/append
     /// YAML: `autoreply: { prepend: "...", append: "..." }`
-    Explicit(crate::flows::messages::MessageChunk),
+    Explicit {
+        #[serde(default)]
+        prepend: Option<String>,
+        #[serde(default)]
+        append: Option<String>,
+    },
 }
 
 /// Commit message action (for PrepareCommitMessage events)
