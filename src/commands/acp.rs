@@ -640,7 +640,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // Reset autoreply counter for this session (per-turn, not permanent)
                         // This allows each turn to use up to MAX_AUTOREPLIES, preventing
                         // permanent blocking after the session accumulates 5 total autoreplies
-                        autoreply_counters.remove(&session_id);
+                        reset_autoreply_counter(&mut autoreply_counters, &session_id);
                         if std::env::var("AIKI_DEBUG").is_ok() {
                             eprintln!("[acp] Reset autoreply counter for session: {}", session_id);
                         }
