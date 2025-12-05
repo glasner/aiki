@@ -124,7 +124,8 @@ use crate::events::{
 use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 use agent_client_protocol::{
-    SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
+    ContentBlock, SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus,
+    ToolCallUpdate, ToolKind,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -501,10 +502,6 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         "session/prompt" => {
                             // PrePrompt event: intercept and potentially modify prompt
                             if let Some(params) = &msg.params {
-                                // Signal Agent→IDE thread to clear response accumulator and reset autoreply counter
-                                // This ensures we start fresh for each new prompt, preventing concatenation
-                                // of old text if the previous turn ended without end_turn (error, cancel, etc.)
-                                // Also resets autoreply counter per turn (not permanently after 5 total)
                                 // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
                                 let session_id_str = params
                                     .get("sessionId")
@@ -513,6 +510,20 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                 if !session_id_str.is_empty() {
                                     let session_id = session_id(session_id_str);
+
+                                    // Track this prompt request BEFORE any fallible work
+                                    // This ensures PostResponse fires even if PrePrompt processing fails (graceful degradation)
+                                    if let Some(request_id) = &msg.id {
+                                        let _ = metadata_tx_clone.send(StateMessage::TrackPrompt {
+                                            request_id: request_id.clone(),
+                                            session_id: Arc::clone(&session_id),
+                                        });
+                                    }
+
+                                    // Signal Agent→IDE thread to clear response accumulator and reset autoreply counter
+                                    // This ensures we start fresh for each new prompt, preventing concatenation
+                                    // of old text if the previous turn ended without end_turn (error, cancel, etc.)
+                                    // Also resets autoreply counter per turn (not permanently after 5 total)
                                     let _ =
                                         metadata_tx_clone.send(StateMessage::ClearAccumulator {
                                             session_id: Arc::clone(&session_id),
@@ -532,6 +543,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 ) {
                                     eprintln!("Warning: Failed to handle session/prompt: {}", e);
                                     // On error, forward original message
+                                    // PostResponse will still fire because we tracked the request above
                                     let data = format!("{}\n", line).into_bytes();
                                     {
                                         // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
@@ -817,27 +829,20 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             {
                                 let session_id = session_id(&notification.session_id.to_string());
 
-                                // Check if this is an agent_message_chunk with text content
-                                if let Some(update_obj) =
-                                    params.get("update").and_then(|v| v.as_object())
+                                // Check if this is an AgentMessageChunk with text content
+                                // Note: SessionUpdate uses the discriminator field "sessionUpdate" (not "type")
+                                // with snake_case variant names per the ACP spec
+                                if let SessionUpdate::AgentMessageChunk(content_chunk) =
+                                    &notification.update
                                 {
-                                    if update_obj.get("type").and_then(|v| v.as_str())
-                                        == Some("agent_message_chunk")
+                                    if let ContentBlock::Text(text_content) = &content_chunk.content
                                     {
-                                        if let Some(content) =
-                                            update_obj.get("content").and_then(|v| v.as_object())
-                                        {
-                                            if let Some(text) =
-                                                content.get("text").and_then(|v| v.as_str())
-                                            {
-                                                // Accumulate response text per session
-                                                // Pre-allocate 4KB capacity to reduce reallocations
-                                                response_accumulator
-                                                    .entry(Arc::clone(&session_id))
-                                                    .or_insert_with(|| String::with_capacity(4096))
-                                                    .push_str(text);
-                                            }
-                                        }
+                                        // Accumulate response text per session
+                                        // Pre-allocate 4KB capacity to reduce reallocations
+                                        response_accumulator
+                                            .entry(Arc::clone(&session_id))
+                                            .or_insert_with(|| String::with_capacity(4096))
+                                            .push_str(&text_content.text);
                                     }
                                 }
                             }
@@ -972,24 +977,45 @@ fn concatenate_text_chunks(chunks: &[String]) -> String {
     chunks.join("\n\n")
 }
 
-/// Build a modified prompt array with a single text entry
+/// Build a modified prompt array by replacing only the first text entry
 ///
-/// Replaces all text items with a single text entry containing the modified text,
-/// while preserving all non-text resources (images, etc.).
+/// Preserves the original array order and all non-text resources (images, etc.).
+/// Replaces the first text item with the modified text, removing all other text items.
+/// This maintains the original ordering of resources while updating the user's prompt.
 fn build_modified_prompt(
     original_prompt: &[serde_json::Value],
     modified_text: &str,
 ) -> Vec<serde_json::Value> {
-    let mut new_prompt = vec![json!({
-        "type": "text",
-        "text": modified_text
-    })];
+    let mut new_prompt = Vec::new();
+    let mut replaced_first_text = false;
 
-    // Preserve all non-text resources (images, etc.)
     for item in original_prompt {
-        if item.get("type").and_then(|v| v.as_str()) != Some("text") {
+        let is_text = item.get("type").and_then(|v| v.as_str()) == Some("text");
+
+        if is_text {
+            if !replaced_first_text {
+                // Clone the first text block to preserve all fields (annotations, _meta, etc.)
+                // then mutate only the "text" field
+                let mut modified_item = item.clone();
+                if let Some(obj) = modified_item.as_object_mut() {
+                    obj.insert("text".to_string(), json!(modified_text));
+                }
+                new_prompt.push(modified_item);
+                replaced_first_text = true;
+            }
+            // Skip all other text entries (they were concatenated into modified_text)
+        } else {
+            // Preserve all non-text items in their original position
             new_prompt.push(item.clone());
         }
+    }
+
+    // If there were no text items, append a minimal text block at the end
+    if !replaced_first_text {
+        new_prompt.push(json!({
+            "type": "text",
+            "text": modified_text
+        }));
     }
 
     new_prompt
@@ -1352,16 +1378,17 @@ fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
 /// This intercepts the user's prompt, fires a PrePrompt event, and potentially
 /// modifies the prompt before forwarding to the agent. Implements graceful
 /// degradation - on any error, forwards the original message.
+///
+/// Note: Request tracking (TrackPrompt) is done by the caller before this function
+/// to ensure PostResponse fires even if PrePrompt processing fails.
 fn handle_session_prompt(
     agent_stdin: &Arc<Mutex<std::process::ChildStdin>>,
     msg: &JsonRpcMessage,
     params: &serde_json::Value,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
-    metadata_tx: &mpsc::Sender<StateMessage>,
+    _metadata_tx: &mpsc::Sender<StateMessage>,
 ) -> Result<()> {
-    use serde_json::json;
-
     // Extract session_id
     let session_id = session_id(
         params
@@ -1413,13 +1440,8 @@ fn handle_session_prompt(
         }
     }
 
-    // Send metadata about this prompt request for PostResponse tracking
-    if let Some(request_id) = msg.id.clone() {
-        let _ = metadata_tx.send(StateMessage::TrackPrompt {
-            request_id, // Pass raw Value; normalization happens at consumption
-            session_id: Arc::clone(&session_id),
-        });
-    }
+    // Note: Request tracking is now done in the caller (before this function is called)
+    // to ensure PostResponse fires even if PrePrompt processing fails (graceful degradation)
 
     // Forward modified message to agent
     let modified_line = serde_json::to_string(&modified_msg).map_err(|e| {
