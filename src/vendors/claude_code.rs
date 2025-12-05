@@ -200,6 +200,26 @@ fn translate_response(response: HookResponse, event_type: &str) -> (Option<Strin
             // Success or non-blocking warnings
             let mut json = Map::new();
 
+            // Build agent context from messages + context
+            let agent_context = crate::handlers::build_agent_context(&response);
+
+            if !agent_context.is_empty() {
+                if is_post_tool_use {
+                    // PostToolUse: use hookSpecificOutput.additionalContext
+                    let mut hook_output = Map::new();
+                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
+                    hook_output.insert("additionalContext".to_string(), json!(agent_context));
+                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
+                } else {
+                    // SessionStart, PrePrompt: use hookSpecificOutput.additionalContext
+                    let mut hook_output = Map::new();
+                    hook_output.insert("hookEventName".to_string(), json!(event_type));
+                    hook_output.insert("additionalContext".to_string(), json!(agent_context));
+                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
+                }
+            }
+
+            // Legacy fields (backward compatibility)
             // Only include systemMessage for warnings/errors (not pure success)
             let has_warning = response.user_message.as_ref().map_or(false, |msg| {
                 msg.starts_with("⚠️") || msg.contains("warning") || msg.contains("failed")
@@ -211,8 +231,8 @@ fn translate_response(response: HookResponse, event_type: &str) -> (Option<Strin
                 }
             }
 
-            if is_post_tool_use {
-                // PostToolUse: use hookSpecificOutput for agent messages
+            if is_post_tool_use && agent_context.is_empty() {
+                // PostToolUse: fallback to legacy agent_message if no new context
                 if let Some(agent_msg) = response.agent_message {
                     let mut hook_output = Map::new();
                     hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
