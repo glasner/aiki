@@ -1376,17 +1376,8 @@ fn handle_session_prompt(
         .and_then(|v| v.as_array())
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing prompt array")))?;
 
-    let mut original_text = String::new();
-    for item in prompt_array {
-        if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                if !original_text.is_empty() {
-                    original_text.push_str("\n\n");
-                }
-                original_text.push_str(text);
-            }
-        }
-    }
+    let text_chunks = extract_text_from_prompt_array(prompt_array);
+    let original_text = concatenate_text_chunks(&text_chunks);
 
     // Get working directory with fallback
     let working_dir = cwd
@@ -1406,12 +1397,7 @@ fn handle_session_prompt(
     let response = event_bus::dispatch(event)?;
 
     // Extract modified_prompt from metadata (use original if not found)
-    let modified_prompt = response
-        .metadata
-        .iter()
-        .find(|(k, _)| k == "modified_prompt")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| original_text.clone());
+    let modified_prompt = extract_modified_prompt(&response, &original_text);
 
     // Modify the JSON params to replace prompt text
     // We rebuild the prompt array with a single text entry containing the modified prompt,
@@ -1421,23 +1407,7 @@ fn handle_session_prompt(
     if let Some(params_mut) = modified_msg.params.as_mut() {
         if let Some(params_obj) = params_mut.as_object_mut() {
             if let Some(prompt_arr) = params_obj.get_mut("prompt").and_then(|v| v.as_array_mut()) {
-                // Collect all non-text items (images, resources, etc.)
-                let mut new_prompt: Vec<serde_json::Value> = Vec::new();
-
-                // Add the single modified text entry first
-                new_prompt.push(json!({
-                    "type": "text",
-                    "text": modified_prompt
-                }));
-
-                // Preserve all non-text resources
-                for item in prompt_arr.iter() {
-                    if item.get("type").and_then(|v| v.as_str()) != Some("text") {
-                        new_prompt.push(item.clone());
-                    }
-                }
-
-                // Replace the entire prompt array
+                let new_prompt = build_modified_prompt(prompt_arr, &modified_prompt);
                 *prompt_arr = new_prompt;
             }
         }
@@ -1518,20 +1488,13 @@ fn handle_post_response(
     let response = event_bus::dispatch(event)?;
 
     // Check for autoreply in metadata
-    let autoreply = response
-        .metadata
-        .iter()
-        .find(|(k, _)| k == "autoreply")
-        .map(|(_, v)| v.clone());
-
-    if let Some(autoreply_text) = autoreply {
+    if let Some(autoreply_text) = extract_autoreply(&response) {
         // Get current autoreply count for this session
         let current_count = autoreply_counters.get(session_id).copied().unwrap_or(0);
 
-        if !autoreply_text.is_empty() && current_count < max_autoreplies {
+        if !check_autoreply_limit(current_count, max_autoreplies) {
             // Increment counter for this session
-            let new_count = current_count + 1;
-            autoreply_counters.insert(Arc::clone(session_id), new_count);
+            let new_count = increment_autoreply_counter(autoreply_counters, session_id);
 
             if std::env::var("AIKI_DEBUG").is_ok() {
                 eprintln!(
