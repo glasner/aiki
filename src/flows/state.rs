@@ -53,6 +53,9 @@ pub struct AikiState {
     /// Current flow name (e.g., "aiki/core") for self references
     pub flow_name: Option<String>,
 
+    /// Context to prepend to prompts/autoreplies (NEW)
+    pub context: crate::handlers::Context,
+
     /// Message assembler for events that build messages
     /// - PrePrompt: accumulates prompt modifications
     /// - PostResponse: accumulates autoreply content
@@ -85,6 +88,10 @@ impl AikiState {
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
             flow_name: None,
+            context: crate::handlers::Context {
+                prepend: None,
+                append: None,
+            },
             message_assembler,
         }
     }
@@ -155,6 +162,25 @@ impl AikiState {
             .ok_or_else(|| {
                 crate::error::AikiError::Other(anyhow::anyhow!("Message assembler not available"))
             })
+    }
+
+    /// Build HookResponse with accumulated context
+    pub fn build_response(&self) -> crate::handlers::HookResponse {
+        let context_opt = if self.context.prepend.is_some() || self.context.append.is_some() {
+            Some(self.context.clone())
+        } else {
+            None
+        };
+
+        crate::handlers::HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: Vec::new(),
+            exit_code: None,
+            messages: Vec::new(),
+            context: context_opt,
+        }
     }
 }
 

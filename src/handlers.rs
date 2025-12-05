@@ -5,6 +5,36 @@ use crate::events::{
 };
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 
+/// Context to prepend to prompts or autoreplies
+#[derive(Debug, Clone)]
+pub struct Context {
+    /// Prepended to context block
+    pub prepend: Option<String>,
+    /// Appended to context block
+    pub append: Option<String>,
+}
+
+impl Context {
+    /// Build the context block from prepend/append
+    #[must_use]
+    pub fn build(&self) -> String {
+        match (&self.prepend, &self.append) {
+            (Some(pre), Some(app)) => format!("{}\n\n{}", pre, app),
+            (Some(pre), None) => pre.clone(),
+            (None, Some(app)) => app.clone(),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+/// Message type for validation and info
+#[derive(Debug, Clone)]
+pub enum Message {
+    Info(String),
+    Warning(String),
+    Error(String),
+}
+
 /// Generic hook response (editor-agnostic)
 #[derive(Debug, Clone)]
 pub struct HookResponse {
@@ -22,6 +52,12 @@ pub struct HookResponse {
 
     /// Exit code override (optional, defaults based on success)
     pub exit_code: Option<i32>,
+
+    /// Validation messages (Info/Warning/Error)
+    pub messages: Vec<Message>,
+
+    /// Context to prepend to prompts/autoreplies
+    pub context: Option<Context>,
 }
 
 impl HookResponse {
@@ -33,6 +69,8 @@ impl HookResponse {
             agent_message: None,
             metadata: Vec::new(),
             exit_code: None,
+            messages: Vec::new(),
+            context: None,
         }
     }
 
@@ -44,6 +82,8 @@ impl HookResponse {
             agent_message: None,
             metadata: Vec::new(),
             exit_code: None,
+            messages: Vec::new(),
+            context: None,
         }
     }
 
@@ -55,6 +95,8 @@ impl HookResponse {
             agent_message: None,
             metadata,
             exit_code: None,
+            messages: Vec::new(),
+            context: None,
         }
     }
 
@@ -66,6 +108,8 @@ impl HookResponse {
             agent_message: agent_msg,
             metadata: Vec::new(),
             exit_code: Some(0), // Exit 0 for non-blocking failure (shows JSON)
+            messages: Vec::new(),
+            context: None,
         }
     }
 
@@ -77,6 +121,8 @@ impl HookResponse {
             agent_message: agent_msg,
             metadata: Vec::new(),
             exit_code: Some(2), // Exit 2 to block operation (shows stderr)
+            messages: Vec::new(),
+            context: None,
         }
     }
 
@@ -97,6 +143,66 @@ impl HookResponse {
         self.exit_code = Some(code);
         self
     }
+
+    #[must_use]
+    pub fn with_context(mut self, context: Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    #[must_use]
+    pub fn with_info(mut self, msg: impl Into<String>) -> Self {
+        self.messages.push(Message::Info(msg.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_warning(mut self, msg: impl Into<String>) -> Self {
+        self.messages.push(Message::Warning(msg.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn with_error(mut self, msg: impl Into<String>) -> Self {
+        self.messages.push(Message::Error(msg.into()));
+        self
+    }
+
+    /// Check if this response should block the operation
+    #[must_use]
+    pub fn is_blocking(&self) -> bool {
+        self.exit_code.map_or(false, |code| code != 0)
+    }
+
+    /// Check if this response is successful
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.success && !self.is_blocking()
+    }
+}
+
+/// Build agent-visible context from messages + context
+pub fn build_agent_context(response: &HookResponse) -> String {
+    let mut parts = vec![];
+
+    // Add validation messages
+    for msg in &response.messages {
+        match msg {
+            Message::Info(s) => parts.push(format!("ℹ️ {}", s)),
+            Message::Warning(s) => parts.push(format!("⚠️ {}", s)),
+            Message::Error(s) => parts.push(format!("❌ {}", s)),
+        }
+    }
+
+    // Add context
+    if let Some(context) = &response.context {
+        let context_text = context.build();
+        if !context_text.is_empty() {
+            parts.push(context_text);
+        }
+    }
+
+    parts.join("\n\n")
 }
 
 /// Handle session start event

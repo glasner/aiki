@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
-    Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, FailureMode,
-    IfAction, JjAction, LetAction, LogAction, PromptAction, PromptContent, SelfAction, ShellAction,
-    SwitchAction,
+    Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
+    FailureMode, IfAction, JjAction, LetAction, LogAction, PromptAction, PromptContent, SelfAction,
+    ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -163,6 +163,7 @@ impl FlowEngine {
                     Action::Jj(jj_action) => &jj_action.on_failure,
                     Action::Let(let_action) => &let_action.on_failure,
                     Action::Self_(self_action) => &self_action.on_failure,
+                    Action::Context(context_action) => &context_action.on_failure,
                     Action::Prompt(prompt_action) => &prompt_action.on_failure,
                     Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
@@ -231,6 +232,7 @@ impl FlowEngine {
             Action::Log(log_action) => Self::execute_log(log_action, context),
             Action::Let(let_action) => Self::execute_let(let_action, context),
             Action::Self_(self_action) => Self::execute_self(self_action, context),
+            Action::Context(context_action) => Self::execute_context(context_action, context),
             Action::Prompt(prompt_action) => Self::execute_prompt(prompt_action, context),
             Action::Autoreply(autoreply_action) => {
                 Self::execute_autoreply(autoreply_action, context)
@@ -279,6 +281,10 @@ impl FlowEngine {
             }
             Action::Self_(_) => {
                 // Self actions don't store results (they're fire-and-forget)
+            }
+            Action::Context(_) => {
+                // Context actions accumulate in state.context directly
+                // No need to store results
             }
             Action::Prompt(_) => {
                 // Prompt actions modify the prompt_assembler in state directly
@@ -477,6 +483,57 @@ impl FlowEngine {
         })
     }
 
+    /// Execute a context action
+    ///
+    /// This action accumulates context that will be prepended to prompts/autoreplies.
+    /// Works for PrePrompt and PostResponse events.
+    fn execute_context(action: &ContextAction, context: &mut AikiState) -> Result<ActionResult> {
+        use crate::events::AikiEvent;
+
+        // Verify this is a PrePrompt or PostResponse event
+        if !matches!(
+            &context.event,
+            AikiEvent::PrePrompt(_) | AikiEvent::PostResponse(_)
+        ) {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "context action can only be used in PrePrompt or PostResponse events"
+            )));
+        }
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Extract prepend/append from ContextContent and resolve variables
+        let (prepend, append) = match &action.context {
+            crate::flows::types::ContextContent::Simple(text) => {
+                // Simple form defaults to append
+                (None, Some(resolver.resolve(text)))
+            }
+            crate::flows::types::ContextContent::Explicit { prepend, append } => {
+                let prepend_resolved = prepend.as_ref().map(|s| resolver.resolve(s));
+                let append_resolved = append.as_ref().map(|s| resolver.resolve(s));
+                (prepend_resolved, append_resolved)
+            }
+        };
+
+        // Accumulate into state.context
+        if let Some(pre) = prepend {
+            context.context.prepend = Some(match &context.context.prepend {
+                Some(existing) => format!("{}\n\n{}", existing, pre),
+                None => pre,
+            });
+        }
+
+        if let Some(app) = append {
+            context.context.append = Some(match &context.context.append {
+                Some(existing) => format!("{}\n\n{}", existing, app),
+                None => app,
+            });
+        }
+
+        Ok(ActionResult::success())
+    }
+
     /// Execute a prompt action
     ///
     /// This action adds content to the prompt assembler for PrePrompt events.
@@ -546,7 +603,16 @@ impl FlowEngine {
                     append: Some(crate::flows::messages::TextLines::Single(text.clone())),
                 }
             }
-            AutoreplyContent::Explicit(chunk) => chunk.clone(),
+            AutoreplyContent::Explicit { prepend, append } => {
+                crate::flows::messages::MessageChunk {
+                    prepend: prepend
+                        .as_ref()
+                        .map(|s| crate::flows::messages::TextLines::Single(s.clone())),
+                    append: append
+                        .as_ref()
+                        .map(|s| crate::flows::messages::TextLines::Single(s.clone())),
+                }
+            }
         }
         .resolve_variables(|s| resolver.resolve(s));
 
