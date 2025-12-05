@@ -2801,6 +2801,8 @@ mod tests {
             agent_message: None,
             metadata: vec![("modified_prompt".to_string(), "MODIFIED".to_string())],
             exit_code: Some(0),
+            messages: Vec::new(),
+            context: None,
         };
 
         let result = extract_modified_prompt(&response, "original");
@@ -2815,6 +2817,8 @@ mod tests {
             agent_message: None,
             metadata: vec![],
             exit_code: Some(0),
+            messages: Vec::new(),
+            context: None,
         };
 
         let result = extract_modified_prompt(&response, "original");
@@ -2829,6 +2833,8 @@ mod tests {
             agent_message: None,
             metadata: vec![("autoreply".to_string(), "Fix errors".to_string())],
             exit_code: Some(0),
+            messages: Vec::new(),
+            context: None,
         };
 
         let result = extract_autoreply(&response);
@@ -2843,6 +2849,8 @@ mod tests {
             agent_message: None,
             metadata: vec![],
             exit_code: Some(0),
+            messages: Vec::new(),
+            context: None,
         };
 
         let result = extract_autoreply(&response);
@@ -2857,6 +2865,8 @@ mod tests {
             agent_message: None,
             metadata: vec![("autoreply".to_string(), "".to_string())],
             exit_code: Some(0),
+            messages: Vec::new(),
+            context: None,
         };
 
         let result = extract_autoreply(&response);
