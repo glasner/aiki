@@ -74,8 +74,8 @@ pub struct AikiPrePromptEvent {
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
-    /// The original prompt text from the user (immutable)
-    pub original_prompt: String,
+    /// The prompt text from the user (immutable)
+    pub prompt: String,
 }
 
 /// Prepare commit message event (Git's prepare-commit-msg hook)

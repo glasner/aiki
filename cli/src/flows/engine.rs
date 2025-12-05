@@ -71,10 +71,7 @@ impl FlowEngine {
                 resolver.add_var("event.session_id".to_string(), e.session_id.clone());
             }
             crate::events::AikiEvent::PrePrompt(e) => {
-                resolver.add_var(
-                    "event.original_prompt".to_string(),
-                    e.original_prompt.clone(),
-                );
+                resolver.add_var("event.prompt".to_string(), e.prompt.clone());
                 if let Some(ref session_id) = e.session_id {
                     resolver.add_var("event.session_id".to_string(), session_id.clone());
                 }
@@ -2752,7 +2749,7 @@ mod tests {
             session_id: Some("test-session".to_string()),
             cwd: std::path::PathBuf::from("/test"),
             timestamp: Utc::now(),
-            original_prompt: "What files changed?".to_string(),
+            prompt: "What files changed?".to_string(),
         });
 
         // Create prompt actions using simple form
@@ -2784,7 +2781,7 @@ mod tests {
             session_id: Some("test-session".to_string()),
             cwd: std::path::PathBuf::from("/test"),
             timestamp: Utc::now(),
-            original_prompt: "Original prompt".to_string(),
+            prompt: "Original prompt".to_string(),
         });
 
         // Create prompt actions using explicit form with prepend
@@ -2822,7 +2819,7 @@ mod tests {
             session_id: Some("test-session".to_string()),
             cwd: std::path::PathBuf::from("/test"),
             timestamp: Utc::now(),
-            original_prompt: "user prompt".to_string(),
+            prompt: "user prompt".to_string(),
         });
 
         // Create multiple prompt actions
@@ -2893,7 +2890,7 @@ mod tests {
         // Create PrePrompt event
         let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
             agent_type: crate::provenance::AgentType::Claude,
-            original_prompt: "test".to_string(),
+            prompt: "test".to_string(),
             session_id: None,
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
@@ -2927,7 +2924,7 @@ mod tests {
         // Create PrePrompt event
         let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
             agent_type: crate::provenance::AgentType::Claude,
-            original_prompt: "test".to_string(),
+            prompt: "test".to_string(),
             session_id: None,
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
@@ -2961,7 +2958,7 @@ mod tests {
         // Create PrePrompt event
         let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
             agent_type: crate::provenance::AgentType::Claude,
-            original_prompt: "test".to_string(),
+            prompt: "test".to_string(),
             session_id: None,
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
@@ -3075,7 +3072,7 @@ mod tests {
         // Create PrePrompt event
         let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
             agent_type: crate::provenance::AgentType::Claude,
-            original_prompt: "test".to_string(),
+            prompt: "test".to_string(),
             session_id: None,
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),

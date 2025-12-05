@@ -72,7 +72,7 @@ impl AikiState {
             crate::events::AikiEvent::PrePrompt(e) => {
                 // PrePrompt: start with original prompt
                 Some(crate::flows::messages::MessageAssembler::new(
-                    Some(e.original_prompt.clone()),
+                    Some(e.prompt.clone()),
                     "\n\n",
                 ))
             }

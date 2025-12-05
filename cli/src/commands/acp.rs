@@ -1418,7 +1418,7 @@ fn handle_session_prompt(
         session_id: Some(session_id.to_string()),
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        original_prompt: original_text.clone(),
+        prompt: original_text.clone(),
     });
 
     let response = event_bus::dispatch(event)?;
