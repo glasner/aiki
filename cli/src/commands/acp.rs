@@ -1423,18 +1423,41 @@ fn handle_session_prompt(
 
     let response = event_bus::dispatch(event)?;
 
-    // Extract modified_prompt from metadata (use original if not found)
-    let modified_prompt = extract_modified_prompt(&response, &original_text);
+    // Emit messages to stderr (user-visible)
+    for msg in &response.messages {
+        use crate::handlers::Message;
+        match msg {
+            Message::Info(s) => eprintln!("[aiki] ℹ️  {}", s),
+            Message::Warning(s) => eprintln!("[aiki] ⚠️  {}", s),
+            Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
+        }
+    }
+
+    // Check if blocked
+    if response.is_blocking() {
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "PrePrompt validation blocked prompt"
+        )));
+    }
+
+    // Build final prompt: agent_context + original
+    let agent_context = crate::handlers::build_agent_context(&response);
+    let final_prompt = if !agent_context.is_empty() {
+        format!("{}\n\n{}", agent_context, original_text)
+    } else {
+        // Fallback: check for legacy modified_prompt in metadata
+        extract_modified_prompt(&response, &original_text)
+    };
 
     // Modify the JSON params to replace prompt text
-    // We rebuild the prompt array with a single text entry containing the modified prompt,
+    // We rebuild the prompt array with a single text entry containing the final prompt,
     // while preserving all non-text resources (images, etc.) to avoid sending duplicate
     // content when the IDE sends multiple text chunks.
     let mut modified_msg = msg.clone();
     if let Some(params_mut) = modified_msg.params.as_mut() {
         if let Some(params_obj) = params_mut.as_object_mut() {
             if let Some(prompt_arr) = params_obj.get_mut("prompt").and_then(|v| v.as_array_mut()) {
-                let new_prompt = build_modified_prompt(prompt_arr, &modified_prompt);
+                let new_prompt = build_modified_prompt(prompt_arr, &final_prompt);
                 *prompt_arr = new_prompt;
             }
         }
@@ -1469,7 +1492,7 @@ fn handle_session_prompt(
         eprintln!(
             "[acp] Fired PrePrompt event for session: {}, modified: {}",
             session_id,
-            modified_prompt != original_text
+            final_prompt != original_text
         );
     }
 
@@ -1509,8 +1532,26 @@ fn handle_post_response(
 
     let response = event_bus::dispatch(event)?;
 
-    // Check for autoreply in metadata
-    if let Some(autoreply_text) = extract_autoreply(&response) {
+    // Emit messages to stderr (user-visible only)
+    for msg in &response.messages {
+        use crate::handlers::Message;
+        match msg {
+            Message::Info(s) => eprintln!("[aiki] ℹ️  {}", s),
+            Message::Warning(s) => eprintln!("[aiki] ⚠️  {}", s),
+            Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
+        }
+    }
+
+    // Check for autoreply (agent-visible via next prompt)
+    let agent_context = crate::handlers::build_agent_context(&response);
+    let autoreply_text = if !agent_context.is_empty() {
+        Some(agent_context)
+    } else {
+        // Fallback: check for legacy autoreply in metadata
+        extract_autoreply(&response)
+    };
+
+    if let Some(autoreply_text) = autoreply_text {
         // Get current autoreply count for this session
         let current_count = autoreply_counters.get(session_id).copied().unwrap_or(0);
 
