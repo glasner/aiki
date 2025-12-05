@@ -121,10 +121,12 @@ use crate::event_bus;
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent, AikiStartEvent,
 };
+use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 use agent_client_protocol::{
     SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
+use serde_json::json;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -598,7 +600,6 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Track autoreply counters per session (not global)
     let mut autoreply_counters: HashMap<SessionId, usize> = HashMap::new();
-    const MAX_AUTOREPLIES: usize = 5;
 
     // Track response text accumulation per session (not per request_id)
     // A session only has one active prompt at a time, so we key by session_id
@@ -936,6 +937,108 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     }
     std::process::exit(exit_code);
 }
+
+// ============================================================================
+// Pure utility functions for testability
+// ============================================================================
+//
+// These functions are extracted from the main proxy logic to enable easy unit testing
+// without requiring event bus mocking. They handle prompt manipulation, metadata extraction,
+// and autoreply counter logic.
+
+/// Maximum number of autoreplies allowed per turn
+const MAX_AUTOREPLIES: usize = 5;
+
+/// Extract text content from a prompt array
+///
+/// Iterates through prompt items and collects all text from items with `type: "text"`.
+fn extract_text_from_prompt_array(prompt_array: &[serde_json::Value]) -> Vec<String> {
+    prompt_array
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                item.get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Concatenate text chunks with double newline separators
+fn concatenate_text_chunks(chunks: &[String]) -> String {
+    chunks.join("\n\n")
+}
+
+/// Build a modified prompt array with a single text entry
+///
+/// Replaces all text items with a single text entry containing the modified text,
+/// while preserving all non-text resources (images, etc.).
+fn build_modified_prompt(
+    original_prompt: &[serde_json::Value],
+    modified_text: &str,
+) -> Vec<serde_json::Value> {
+    let mut new_prompt = vec![json!({
+        "type": "text",
+        "text": modified_text
+    })];
+
+    // Preserve all non-text resources (images, etc.)
+    for item in original_prompt {
+        if item.get("type").and_then(|v| v.as_str()) != Some("text") {
+            new_prompt.push(item.clone());
+        }
+    }
+
+    new_prompt
+}
+
+/// Extract modified_prompt from metadata with fallback
+fn extract_modified_prompt(response: &HookResponse, original_text: &str) -> String {
+    response
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "modified_prompt")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| original_text.to_string())
+}
+
+/// Extract autoreply from metadata
+fn extract_autoreply(response: &HookResponse) -> Option<String> {
+    response
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "autoreply")
+        .map(|(_, v)| v.clone())
+        .filter(|v| !v.is_empty())
+}
+
+/// Check if autoreply limit has been reached
+fn check_autoreply_limit(current_count: usize, max_autoreplies: usize) -> bool {
+    current_count >= max_autoreplies
+}
+
+/// Increment autoreply counter for a session
+fn increment_autoreply_counter(
+    counters: &mut HashMap<SessionId, usize>,
+    session_id: &SessionId,
+) -> usize {
+    let current_count = counters.get(session_id).copied().unwrap_or(0);
+    let new_count = current_count + 1;
+    counters.insert(session_id.clone(), new_count);
+    new_count
+}
+
+/// Reset autoreply counter for a session
+fn reset_autoreply_counter(counters: &mut HashMap<SessionId, usize>, session_id: &SessionId) {
+    counters.remove(session_id);
+}
+
+// ============================================================================
+// Agent type parsing
+// ============================================================================
 
 /// Parse and validate agent type against our AgentType enum
 fn parse_agent_type(agent: &str) -> Result<AgentType> {
@@ -2023,7 +2126,7 @@ mod tests {
         // Should have 3 text entries
         assert_eq!(prompt.len(), 3);
 
-        for (i, chunk) in prompt.iter().enumerate() {
+        for chunk in prompt.iter() {
             assert_eq!(chunk.get("type").and_then(|v| v.as_str()), Some("text"));
         }
 
@@ -2387,8 +2490,6 @@ mod tests {
 
     #[test]
     fn test_max_autoreplies_check() {
-        const MAX_AUTOREPLIES: usize = 5;
-
         // Test counter at limit
         let current_count = 5;
         assert!(current_count >= MAX_AUTOREPLIES);
@@ -2617,6 +2718,162 @@ mod tests {
             }))
             .unwrap()
         }
+    }
+
+    // Tests for pure utility functions
+
+    #[test]
+    fn test_extract_text_from_prompt_array() {
+        let prompt = vec![
+            json!({"type": "text", "text": "Hello"}),
+            json!({"type": "image", "data": "base64"}),
+            json!({"type": "text", "text": "World"}),
+        ];
+
+        let result = extract_text_from_prompt_array(&prompt);
+        assert_eq!(result, vec!["Hello", "World"]);
+    }
+
+    #[test]
+    fn test_concatenate_text_chunks_with_separators() {
+        let chunks = vec![
+            "First".to_string(),
+            "Second".to_string(),
+            "Third".to_string(),
+        ];
+        let result = concatenate_text_chunks(&chunks);
+        assert_eq!(result, "First\n\nSecond\n\nThird");
+    }
+
+    #[test]
+    fn test_build_modified_prompt_single_text() {
+        let original = vec![json!({"type": "text", "text": "old"})];
+        let result = build_modified_prompt(&original, "new");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["text"], "new");
+    }
+
+    #[test]
+    fn test_build_modified_prompt_preserves_images() {
+        let original = vec![
+            json!({"type": "text", "text": "old"}),
+            json!({"type": "image", "data": "img"}),
+        ];
+        let result = build_modified_prompt(&original, "new");
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["text"], "new");
+        assert_eq!(result[1]["type"], "image");
+    }
+
+    #[test]
+    fn test_extract_modified_prompt_with_metadata() {
+        let response = HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: vec![("modified_prompt".to_string(), "MODIFIED".to_string())],
+            exit_code: Some(0),
+        };
+
+        let result = extract_modified_prompt(&response, "original");
+        assert_eq!(result, "MODIFIED");
+    }
+
+    #[test]
+    fn test_extract_modified_prompt_fallback_to_original() {
+        let response = HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: vec![],
+            exit_code: Some(0),
+        };
+
+        let result = extract_modified_prompt(&response, "original");
+        assert_eq!(result, "original");
+    }
+
+    #[test]
+    fn test_extract_autoreply_with_metadata() {
+        let response = HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: vec![("autoreply".to_string(), "Fix errors".to_string())],
+            exit_code: Some(0),
+        };
+
+        let result = extract_autoreply(&response);
+        assert_eq!(result, Some("Fix errors".to_string()));
+    }
+
+    #[test]
+    fn test_extract_autoreply_missing_returns_none() {
+        let response = HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: vec![],
+            exit_code: Some(0),
+        };
+
+        let result = extract_autoreply(&response);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_autoreply_empty_returns_none() {
+        let response = HookResponse {
+            success: true,
+            user_message: None,
+            agent_message: None,
+            metadata: vec![("autoreply".to_string(), "".to_string())],
+            exit_code: Some(0),
+        };
+
+        let result = extract_autoreply(&response);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_check_autoreply_limit_under_max() {
+        assert!(!check_autoreply_limit(0, 5));
+        assert!(!check_autoreply_limit(4, 5));
+    }
+
+    #[test]
+    fn test_check_autoreply_limit_at_max() {
+        assert!(check_autoreply_limit(5, 5));
+    }
+
+    #[test]
+    fn test_check_autoreply_limit_over_max() {
+        assert!(check_autoreply_limit(6, 5));
+    }
+
+    #[test]
+    fn test_increment_autoreply_counter_first_time() {
+        let mut counters = HashMap::new();
+        let session_id = session_id("test");
+
+        let count = increment_autoreply_counter(&mut counters, &session_id);
+
+        assert_eq!(count, 1);
+        assert_eq!(counters.get(&session_id), Some(&1));
+    }
+
+    #[test]
+    fn test_increment_autoreply_counter_existing() {
+        let mut counters = HashMap::new();
+        let session_id = session_id("test");
+        counters.insert(session_id.clone(), 3);
+
+        let count = increment_autoreply_counter(&mut counters, &session_id);
+
+        assert_eq!(count, 4);
+        assert_eq!(counters.get(&session_id), Some(&4));
     }
 
     // Note: derive_executable tests moved to zed_detection module tests
