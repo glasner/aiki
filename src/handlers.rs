@@ -260,9 +260,9 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
 pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
-            "[aiki] PrePrompt event from {:?}, original prompt length: {}",
+            "[aiki] PrePrompt event from {:?}, prompt length: {}",
             event.agent_type,
-            event.original_prompt.len()
+            event.prompt.len()
         );
     }
 
@@ -277,7 +277,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
 
     // Extract original prompt for error recovery
     let original_prompt = if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
-        evt.original_prompt.clone()
+        evt.prompt.clone()
     } else {
         String::new()
     };
