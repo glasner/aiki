@@ -27,11 +27,29 @@ PostFileChange:
       - block: "Fix the tests before committing"
 ```
 
-### New `block` Action
+### New Flow Control Actions
 
-Add a new action type that triggers blocking behavior:
+Add three new action types for explicit flow control:
 
 ```rust
+/// Continue action - logs a warning and continues execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinueAction {
+    /// Warning message shown when continuing after failure
+    /// Will be emitted as Message::Warning if non-empty
+    #[serde(rename = "continue")]
+    pub warning: String,
+}
+
+/// Stop action - stops the hook silently (exit code 0)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopAction {
+    /// Warning message shown when stopping
+    /// Will be emitted as Message::Warning if non-empty
+    #[serde(rename = "stop")]
+    pub warning: String,
+}
+
 /// Block action - stops the hook and returns exit code 2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
@@ -42,38 +60,53 @@ pub struct BlockAction {
 }
 ```
 
-**Important:** The `block` action triggers blocking, but the actual message shown to users comes from `error`/`warning`/`info` actions:
+**Usage Examples:**
 
 ```yaml
-# Simple block
-PrePrompt:
-  - if: "$event.prompt.len() > 10000"
-    then:
-      - error: "Prompt is too long (${event.prompt.len()} chars)"
-      - block: ""  # Just triggers blocking
+# Continue with warning (default behavior if on_failure is empty)
+PostFileChange:
+  - shell: "cargo test"
+    on_failure:
+      - warning: "Tests failed but changes were saved"
+      - continue: ""  # Optional - explicit continue
 
-# Better: Include explanation in the error
+# Stop silently
+PostFileChange:
+  - shell: "optional-check.sh"
+    on_failure:
+      - warning: "Optional check failed, skipping remaining actions"
+      - stop: ""
+
+# Block with error
 PrePrompt:
   - if: "$event.prompt.len() > 10000"
     then:
       - error: "Prompt too long: ${event.prompt.len()} chars (max 10000)"
-      - info: "Reduce prompt length before continuing"
       - block: ""
 
-# Or use block's message field for convenience (both approaches work)
-PrePrompt:
-  - shell: "validate-prompt.sh '${event.prompt}'"
+# Using built-in messages for convenience
+PostFileChange:
+  - shell: "cargo test"
     on_failure:
-      - error: "Prompt validation failed"
-      - info: "Validator output: ${SHELL.stderr}"
-      - block: "Fix validation errors"  # This becomes an info message
+      - continue: "Tests failed but continuing"  # Emits warning + continues
+
+PostFileChange:
+  - shell: "optional-linter.sh"
+    on_failure:
+      - stop: "Linter failed, skipping remaining checks"  # Emits warning + stops
+      
+PrePrompt:
+  - shell: "validate-prompt.sh"
+    on_failure:
+      - block: "Prompt validation failed"  # Emits error + blocks
 ```
 
-**Design Decision:** The `block` field could be:
-1. **Empty string**: `block: ""` - just triggers blocking, messages come from other actions
-2. **Error message**: `block: "message"` - convenience wrapper that emits error + triggers blocking
+**Design Decision:** Each flow control action has a message field:
+- `continue: "message"` → emits `Message::Warning` + continues
+- `stop: "message"` → emits `Message::Warning` + stops  
+- `block: "message"` → emits `Message::Error` + blocks
 
-For simplicity, we'll implement option 2: `block: "message"` emits an error message and triggers blocking.
+Empty strings are allowed for pure flow control without messages.
 
 ### Update Decision Enum
 
@@ -188,15 +221,28 @@ for action in actions {
 }
 ```
 
-## Implementation of `block` Action
+## Implementation of Flow Control Actions
 
 ### In types.rs
 
 ```rust
+/// Continue action - logs a warning and continues execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinueAction {
+    #[serde(rename = "continue")]
+    pub warning: String,
+}
+
+/// Stop action - stops the hook silently
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopAction {
+    #[serde(rename = "stop")]
+    pub warning: String,
+}
+
 /// Block action - stops the hook and returns exit code 2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
-    /// Error message shown when blocking
     #[serde(rename = "block")]
     pub error: String,
 }
@@ -204,6 +250,8 @@ pub struct BlockAction {
 // Add to Action enum
 pub enum Action {
     // ... existing actions ...
+    Continue(ContinueAction),
+    Stop(StopAction),
     Block(BlockAction),
 }
 ```
@@ -211,33 +259,58 @@ pub enum Action {
 ### In engine.rs
 
 ```rust
-fn execute_block(action: &BlockAction, context: &mut AikiState) -> Result<ActionResult> {
-    // Create variable resolver
+fn execute_continue(action: &ContinueAction, context: &mut AikiState) -> Result<ActionResult> {
     let mut resolver = Self::create_resolver(context);
+    let warning = resolver.resolve(&action.warning);
     
-    // Resolve variables in error message
+    if !warning.is_empty() {
+        context.add_message(crate::handlers::Message::Warning(warning));
+    }
+    
+    // Return success - this allows execution to continue
+    Ok(ActionResult::success())
+}
+
+fn execute_stop(action: &StopAction, context: &mut AikiState) -> Result<ActionResult> {
+    let mut resolver = Self::create_resolver(context);
+    let warning = resolver.resolve(&action.warning);
+    
+    if !warning.is_empty() {
+        context.add_message(crate::handlers::Message::Warning(warning));
+    }
+    
+    // Return a failure that triggers FailedStop (exit code 0, silent)
+    Ok(ActionResult {
+        success: false,
+        exit_code: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+    })
+}
+
+fn execute_block(action: &BlockAction, context: &mut AikiState) -> Result<ActionResult> {
+    let mut resolver = Self::create_resolver(context);
     let error = resolver.resolve(&action.error);
     
-    // If error message is non-empty, emit it
     if !error.is_empty() {
         context.add_message(crate::handlers::Message::Error(error));
     }
     
-    // Return a special failure that triggers FailedBlock
-    // The exit code signals blocking, but no message in stderr
+    // Return a failure that triggers FailedBlock (exit code 2)
     Ok(ActionResult {
         success: false,
         exit_code: Some(2),
         stdout: String::new(),
-        stderr: String::new(),  // ← No message here, it's in context.messages
+        stderr: String::new(),
     })
 }
 ```
 
-**Key insight:** 
-- The `block` action emits an optional error message (if provided)
-- It returns a failure with exit code 2 to signal blocking
-- The actual messages shown to users are in `context.messages`, not in the failure result
+**Key insights:** 
+- `continue` emits a warning and returns success (execution continues)
+- `stop` emits a warning and returns failure with exit code 0 (silent stop)
+- `block` emits an error and returns failure with exit code 2 (blocking)
+- All messages go in `context.messages`, not in ActionResult.stderr
 
 ## Benefits
 
@@ -294,10 +367,11 @@ The validation problem disappears:
 - Remove message parameter from Block variant
 - Update `block_message()` helper method (or remove it)
 
-### Step 2: Add `BlockAction` and `StopAction` to types.rs
+### Step 2: Add flow control actions to types.rs
+- Add `ContinueAction` struct
+- Add `StopAction` struct
 - Add `BlockAction` struct
-- Add `StopAction` struct (for silent stop behavior)
-- Add `Block(BlockAction)` and `Stop(StopAction)` variants to `Action` enum
+- Add `Continue(ContinueAction)`, `Stop(StopAction)`, `Block(BlockAction)` variants to `Action` enum
 - Remove `FailureMode` enum (no longer needed)
 
 ### Step 3: Update all action structs
@@ -306,8 +380,10 @@ The validation problem disappears:
 - Remove `default_on_failure()` function
 
 ### Step 4: Update engine.rs
-- Add `execute_block()` function
+- Add `execute_continue()` function
 - Add `execute_stop()` function
+- Add `execute_block()` function
+- Add these to `execute_action()` match statement
 - Update failure handling in `execute_actions()` to execute failure action lists
 - Remove old failure mode match logic
 
@@ -416,24 +492,29 @@ PrepareCommitMessage:
 
 ## Open Questions
 
-1. **Should `block` have `on_failure`?** 
-   - No - `block` doesn't have `on_failure` since it's the terminal action
+1. **Should flow control actions have `on_failure`?** 
+   - No - `continue`, `stop`, and `block` are terminal actions
+   - They control the flow, they don't have their own failure handling
    - Keeps the API simple and clear
 
 2. **What if failure actions themselves fail?**
    - Design: propagate the failure result
    - If a failure action uses `block`, the whole flow blocks
-   - If a failure action fails without `block`, it continues (via FailedContinue)
+   - If a failure action uses `stop`, the whole flow stops
+   - If a failure action fails without explicit flow control, it continues
 
 3. **Variable access in failure actions?**
-   - Need to make the failed action's result available as variables
-   - Options:
-     - `$FAILED.exit_code`, `$FAILED.stdout`, `$FAILED.stderr`
-     - Or use the action's alias: `$my_action.exit_code` if it had one
-   - Decision: Use the action's alias if available, otherwise no special variables
+   - The failed action's result is already available if it has an alias
+   - Example:
+     ```yaml
+     - shell: "cargo test"
+       alias: test_result
+       on_failure:
+         - error: "Tests failed with exit code ${test_result.exit_code}"
+     ```
+   - No special variables needed
 
-4. **How to implement "stop" behavior?**
-   - Old: `on_failure: stop` (silent failure)
-   - New: `on_failure: []` (empty list = continue, but silent)
-   - Or add a `stop` action that returns `FailedStop`?
-   - **Decision**: Empty `on_failure` means "continue", add `stop` action for silent stop
+4. **Default behavior when `on_failure` is empty?**
+   - Empty `on_failure: []` means "continue silently" (no messages, no stopping)
+   - This is the current default behavior
+   - Use explicit `continue: "message"` to emit a warning while continuing
