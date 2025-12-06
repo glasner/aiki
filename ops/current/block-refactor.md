@@ -33,14 +33,16 @@ Add a new action type that triggers blocking behavior:
 
 ```rust
 /// Block action - stops the hook and returns exit code 2
+/// The block action has no fields - it just signals to block the operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
-    /// The blocking message (goes into Decision::Block)
+    /// Dummy field to allow YAML syntax "block: message"
+    /// The message is actually emitted via error/warning/info actions
     pub block: String,
 }
 ```
 
-**Usage:**
+**Important:** The `block` action triggers blocking, but the actual message shown to users comes from `error`/`warning`/`info` actions:
 
 ```yaml
 # Simple block
@@ -48,15 +50,71 @@ PrePrompt:
   - if: "$event.prompt.len() > 10000"
     then:
       - error: "Prompt is too long (${event.prompt.len()} chars)"
-      - block: "Reduce prompt to under 10000 characters"
+      - block: ""  # Just triggers blocking
 
-# Block with context
+# Better: Include explanation in the error
+PrePrompt:
+  - if: "$event.prompt.len() > 10000"
+    then:
+      - error: "Prompt too long: ${event.prompt.len()} chars (max 10000)"
+      - info: "Reduce prompt length before continuing"
+      - block: ""
+
+# Or use block's message field for convenience (both approaches work)
 PrePrompt:
   - shell: "validate-prompt.sh '${event.prompt}'"
     on_failure:
-      - warning: "Prompt validation failed"
-      - info: "Error: ${SHELL.stderr}"
-      - block: "Fix validation errors above"
+      - error: "Prompt validation failed"
+      - info: "Validator output: ${SHELL.stderr}"
+      - block: "Fix validation errors"  # This becomes an info message
+```
+
+**Design Decision:** The `block` field could be:
+1. **Empty string**: `block: ""` - just triggers blocking, messages come from other actions
+2. **Error message**: `block: "message"` - convenience wrapper that emits error + triggers blocking
+
+For simplicity, we'll implement option 2: `block: "message"` emits an error message and triggers blocking.
+
+### Update Decision Enum
+
+The `Decision` enum should be simplified to not carry a message:
+
+```rust
+// Before:
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Block(String),  // ❌ Message is redundant
+}
+
+// After:
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Block,  // ✅ No message - it's in HookResponse.messages
+}
+```
+
+This means handlers no longer need to extract the block message:
+
+```rust
+// Before:
+FlowResult::FailedBlock(msg) => {
+    Ok(HookResponse {
+        context: None,
+        decision: Decision::Block(msg),  // ❌ msg goes in two places
+        messages,
+    })
+}
+
+// After:
+FlowResult::FailedBlock(_) => {
+    Ok(HookResponse {
+        context: None,
+        decision: Decision::Block,  // ✅ Simple flag
+        messages,  // ✅ All messages here (including block reason)
+    })
+}
 ```
 
 ## Implementation
@@ -138,7 +196,7 @@ for action in actions {
 /// Block action - stops the hook and returns exit code 2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
-    /// The blocking message (shown to user and agent)
+    /// Optional message (emitted as info if provided)
     pub block: String,
 }
 
@@ -159,17 +217,26 @@ fn execute_block(action: &BlockAction, context: &mut AikiState) -> Result<Action
     // Resolve variables in message
     let message = resolver.resolve(&action.block);
     
+    // If message is non-empty, emit it as error
+    if !message.is_empty() {
+        context.add_message(crate::handlers::Message::Error(message));
+    }
+    
     // Return a special failure that triggers FailedBlock
+    // The exit code signals blocking, but no message in stderr
     Ok(ActionResult {
         success: false,
         exit_code: Some(2),
         stdout: String::new(),
-        stderr: message,
+        stderr: String::new(),  // ← No message here, it's in context.messages
     })
 }
 ```
 
-**Key insight:** The `block` action just returns a failure with exit code 2. The engine's failure handling logic sees this and returns `FlowResult::FailedBlock`.
+**Key insight:** 
+- The `block` action emits an optional error message (if provided)
+- It returns a failure with exit code 2 to signal blocking
+- The actual messages shown to users are in `context.messages`, not in the failure result
 
 ## Benefits
 
@@ -221,28 +288,41 @@ The validation problem disappears:
 
 ## Implementation Steps
 
-### Step 1: Add `BlockAction` to types.rs
+### Step 1: Update Decision enum in handlers.rs
+- Change `Decision::Block(String)` to `Decision::Block`
+- Remove message parameter from Block variant
+- Update `block_message()` helper method (or remove it)
+
+### Step 2: Add `BlockAction` and `StopAction` to types.rs
 - Add `BlockAction` struct
-- Add `Block(BlockAction)` variant to `Action` enum
+- Add `StopAction` struct (for silent stop behavior)
+- Add `Block(BlockAction)` and `Stop(StopAction)` variants to `Action` enum
 - Remove `FailureMode` enum (no longer needed)
 
-### Step 2: Update all action structs
+### Step 3: Update all action structs
 - Change `on_failure: FailureMode` to `on_failure: Vec<Action>`
 - Update all 12 action types (If, Switch, Shell, Jj, Let, Self, Context, Autoreply, CommitMessage, Info, Warning, Error)
+- Remove `default_on_failure()` function
 
-### Step 3: Update engine.rs
+### Step 4: Update engine.rs
 - Add `execute_block()` function
+- Add `execute_stop()` function
 - Update failure handling in `execute_actions()` to execute failure action lists
-- Update `get_on_failure()` helper to return `&Vec<Action>`
+- Remove old failure mode match logic
 
-### Step 4: Update core flow
+### Step 5: Update handlers.rs
+- Update all handlers to use `Decision::Block` without message
+- Handlers now just check `decision.is_block()` and don't extract message
+
+### Step 6: Update core flow
 - Replace all `on_failure: continue/stop/block` with action-based syntax
 - Add examples showing the new patterns
 
-### Step 5: Update tests
+### Step 7: Update tests
 - Update all existing tests to use new syntax
-- Add tests for `block` action
+- Add tests for `block` and `stop` actions
 - Add tests for complex failure handling patterns
+- Verify all 182+ tests still pass
 
 ## Testing
 
