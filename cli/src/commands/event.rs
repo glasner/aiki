@@ -67,7 +67,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
 fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Option<String>, i32) {
     let exit_code = match response.decision {
         Decision::Allow => 0,
-        Decision::Block(_) => 2,
+        Decision::Block => 2,
     };
 
     match editor {
@@ -100,7 +100,7 @@ fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
 
     let exit_code = match response.decision {
         Decision::Allow => 0,
-        Decision::Block(_) => 2,
+        Decision::Block => 2,
     };
 
     match exit_code {
@@ -191,7 +191,7 @@ fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
 
     let exit_code = match response.decision {
         Decision::Allow => 0,
-        Decision::Block(_) => 2,
+        Decision::Block => 2,
     };
 
     match exit_code {

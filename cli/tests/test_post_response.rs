@@ -35,13 +35,13 @@ fn test_post_response_state_initialization() {
 
     // Verify context assembler is initialized for PostResponse events
     let context = state.build_context();
-    assert!(context.is_ok());
+    assert!(context.is_some());
     assert_eq!(context.unwrap(), ""); // No chunks added yet, empty autoreply
 }
 
 #[test]
 fn test_autoreply_simple_flow() {
-    use aiki::flows::types::{Action, ContextAction, ContextContent, FailureMode};
+    use aiki::flows::types::{Action, ContextAction, ContextContent};
 
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
@@ -57,7 +57,7 @@ fn test_autoreply_simple_flow() {
     // Create a simple context action (for autoreply in PostResponse)
     let action = Action::Context(ContextAction {
         context: ContextContent::Simple("Please fix the errors above.".to_string()),
-        on_failure: FailureMode::Continue,
+        on_failure: vec![],
     });
 
     // Execute the action
@@ -66,13 +66,13 @@ fn test_autoreply_simple_flow() {
 
     // Build context (autoreply)
     let autoreply = state.build_context();
-    assert!(autoreply.is_ok());
+    assert!(autoreply.is_some());
     assert!(autoreply.unwrap().contains("Please fix the errors above."));
 }
 
 #[test]
 fn test_autoreply_explicit_form() {
-    use aiki::flows::types::{Action, ContextAction, ContextContent, FailureMode};
+    use aiki::flows::types::{Action, ContextAction, ContextContent};
 
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
@@ -95,7 +95,7 @@ fn test_autoreply_explicit_form() {
                 "Please address these issues.".to_string(),
             )),
         },
-        on_failure: FailureMode::Continue,
+        on_failure: vec![],
     });
 
     // Execute the action
@@ -110,7 +110,7 @@ fn test_autoreply_explicit_form() {
 
 #[test]
 fn test_multiple_autoreply_actions_accumulate() {
-    use aiki::flows::types::{Action, ContextAction, ContextContent, FailureMode};
+    use aiki::flows::types::{Action, ContextAction, ContextContent};
 
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
@@ -127,15 +127,15 @@ fn test_multiple_autoreply_actions_accumulate() {
     let actions = vec![
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 1: TypeScript compilation failed.".to_string()),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         }),
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 2: Tests are failing.".to_string()),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         }),
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 3: Lint warnings detected.".to_string()),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         }),
     ];
 
@@ -152,7 +152,7 @@ fn test_multiple_autoreply_actions_accumulate() {
 
 #[test]
 fn test_event_variables_in_autoreply() {
-    use aiki::flows::types::{Action, ContextAction, ContextContent, FailureMode};
+    use aiki::flows::types::{Action, ContextAction, ContextContent};
 
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
@@ -173,7 +173,7 @@ fn test_event_variables_in_autoreply() {
         context: ContextContent::Simple(
             "Session: $event.session_id - Modified files detected.".to_string(),
         ),
-        on_failure: FailureMode::Continue,
+        on_failure: vec![],
     });
 
     // Execute the action

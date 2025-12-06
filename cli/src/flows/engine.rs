@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
-    FailureMode, IfAction, JjAction, LetAction, LogAction, SelfAction, ShellAction, SwitchAction,
+    IfAction, JjAction, LetAction, LogAction, SelfAction, ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -17,11 +17,11 @@ pub enum FlowResult {
     /// All actions succeeded
     Success,
     /// Action failed with on_failure: continue (logged, flow continued)
-    FailedContinue(String),
+    FailedContinue,
     /// Action failed with on_failure: stop (silent failure, flow stopped)
-    FailedStop(String),
+    FailedStop,
     /// Action failed with on_failure: block (block editor operation)
-    FailedBlock(String),
+    FailedBlock,
 }
 
 /// Timing information for flow execution
@@ -153,9 +153,9 @@ impl FlowEngine {
             // Store action results for reference by subsequent actions
             Self::store_action_result(action, &result, context);
 
-            // Handle failure based on failure mode
+            // Handle failure based on on_failure callbacks
             if !result.success {
-                let failure_mode = match action {
+                let on_failure_callbacks = match action {
                     Action::If(if_action) => &if_action.on_failure,
                     Action::Switch(switch_action) => &switch_action.on_failure,
                     Action::Shell(shell_action) => &shell_action.on_failure,
@@ -168,44 +168,79 @@ impl FlowEngine {
                     Action::Info(info_action) => &info_action.on_failure,
                     Action::Warning(warning_action) => &warning_action.on_failure,
                     Action::Error(error_action) => &error_action.on_failure,
-                    Action::Log(_) => {
-                        continue; // Log actions never fail
+                    Action::Log(_) | Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
+                        continue; // These actions control flow directly, no on_failure handling
                     }
                 };
 
-                match failure_mode {
-                    FailureMode::Continue => {
-                        // Log error but continue
+                // If no callbacks, default to continue behavior (with warning)
+                if on_failure_callbacks.is_empty() {
+                    let error_msg = if !result.stderr.is_empty() {
+                        result.stderr.clone()
+                    } else {
+                        "Action failed".to_string()
+                    };
+                    eprintln!("[aiki] Action failed but continuing: {}", error_msg);
+                    continue_failure_errors.push(error_msg);
+                    continue;
+                }
+
+                // Execute on_failure callbacks
+                let mut callback_decision = None;
+                for callback in on_failure_callbacks {
+                    let callback_result = Self::execute_action(callback, context)?;
+
+                    // Store callback results
+                    Self::store_action_result(callback, &callback_result, context);
+
+                    // Check if callback returned a decision (exit code determines behavior)
+                    if let Some(exit_code) = callback_result.exit_code {
+                        match exit_code {
+                            0 => {
+                                // Continue execution (success)
+                                callback_decision = Some(FlowResult::Success);
+                            }
+                            1 => {
+                                // Stop execution (exit 1)
+                                callback_decision = Some(FlowResult::FailedStop);
+                                break;
+                            }
+                            2 => {
+                                // Block execution (exit 2)
+                                callback_decision = Some(FlowResult::FailedBlock);
+                                break;
+                            }
+                            _ => {
+                                // Other exit codes treated as continue
+                                callback_decision = Some(FlowResult::Success);
+                            }
+                        }
+                    }
+                }
+
+                // Apply the decision from callbacks
+                match callback_decision {
+                    Some(FlowResult::FailedStop) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
+                    }
+                    Some(FlowResult::FailedBlock) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
+                    }
+                    Some(FlowResult::Success) | Some(FlowResult::FailedContinue) | None => {
+                        // Continue execution - messages already added to state by callbacks
                         let error_msg = if !result.stderr.is_empty() {
                             result.stderr.clone()
                         } else {
-                            "Action failed".to_string()
+                            "Action failed but on_failure callbacks completed successfully"
+                                .to_string()
                         };
-                        eprintln!("[aiki] Action failed but continuing: {}", error_msg);
+                        eprintln!(
+                            "[aiki] Action failed but continuing after on_failure callbacks: {}",
+                            error_msg
+                        );
                         continue_failure_errors.push(error_msg);
-                    }
-                    FailureMode::Stop => {
-                        // Stop flow silently
-                        let error_msg = if !result.stderr.is_empty() {
-                            result.stderr.clone()
-                        } else {
-                            "Action failed with on_failure: stop".to_string()
-                        };
-                        let duration = start.elapsed().as_secs_f64();
-                        return Ok((FlowResult::FailedStop(error_msg), FlowTiming::new(duration)));
-                    }
-                    FailureMode::Block => {
-                        // Stop flow and block editor
-                        let error_msg = if !result.stderr.is_empty() {
-                            result.stderr.clone()
-                        } else {
-                            "Action failed with on_failure: block".to_string()
-                        };
-                        let duration = start.elapsed().as_secs_f64();
-                        return Ok((
-                            FlowResult::FailedBlock(error_msg),
-                            FlowTiming::new(duration),
-                        ));
                     }
                 }
             }
@@ -216,10 +251,8 @@ impl FlowEngine {
         if continue_failure_errors.is_empty() {
             Ok((FlowResult::Success, FlowTiming::new(duration)))
         } else {
-            Ok((
-                FlowResult::FailedContinue(continue_failure_errors.join("; ")),
-                FlowTiming::new(duration),
-            ))
+            // Errors already logged/tracked, just return FailedContinue
+            Ok((FlowResult::FailedContinue, FlowTiming::new(duration)))
         }
     }
 
@@ -243,6 +276,9 @@ impl FlowEngine {
             Action::Info(info_action) => Self::execute_info(info_action, context),
             Action::Warning(warning_action) => Self::execute_warning(warning_action, context),
             Action::Error(error_action) => Self::execute_error(error_action, context),
+            Action::Continue(continue_action) => Self::execute_continue(continue_action, context),
+            Action::Stop(stop_action) => Self::execute_stop(stop_action, context),
+            Action::Block(block_action) => Self::execute_block(block_action, context),
         }
     }
 
@@ -300,6 +336,10 @@ impl FlowEngine {
                 // Message actions add messages to state directly
                 // No need to store results
             }
+            Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
+                // Flow control actions add messages and control execution flow
+                // No need to store results
+            }
         }
     }
 
@@ -345,7 +385,7 @@ impl FlowEngine {
                 // Execute the metadata function
                 let self_action = SelfAction {
                     self_: metadata_fn.trim().to_string(),
-                    on_failure: FailureMode::Stop,
+                    on_failure: vec![],
                 };
                 let result = Self::execute_self(&self_action, context)?;
                 result.stdout.trim().to_string()
@@ -413,7 +453,7 @@ impl FlowEngine {
                 // It's a function call - execute it now (maintains execution order)
                 let self_action = SelfAction {
                     self_: author.trim().to_string(),
-                    on_failure: FailureMode::Stop,
+                    on_failure: vec![],
                 };
                 let result = Self::execute_self(&self_action, context)?;
                 result.stdout.trim().to_string()
@@ -535,6 +575,69 @@ impl FlowEngine {
         context.add_message(crate::handlers::Message::Error(message));
 
         Ok(ActionResult::success())
+    }
+
+    /// Execute a continue action (emits warning and continues)
+    fn execute_continue(
+        action: &crate::flows::types::ContinueAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.warning);
+
+        // Add warning message to state
+        context.add_message(crate::handlers::Message::Warning(message));
+
+        Ok(ActionResult::success())
+    }
+
+    /// Execute a stop action (emits warning and returns failure)
+    fn execute_stop(
+        action: &crate::flows::types::StopAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.warning);
+
+        // Add warning message to state
+        context.add_message(crate::handlers::Message::Warning(message.clone()));
+
+        // Return failure to trigger stop behavior
+        Ok(ActionResult {
+            success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: message,
+        })
+    }
+
+    /// Execute a block action (emits error and returns failure)
+    fn execute_block(
+        action: &crate::flows::types::BlockAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.error);
+
+        // Add error message to state
+        context.add_message(crate::handlers::Message::Error(message.clone()));
+
+        // Return failure to trigger block behavior
+        Ok(ActionResult {
+            success: false,
+            exit_code: Some(2),
+            stdout: String::new(),
+            stderr: message,
+        })
     }
 
     /// Execute a context action
@@ -1031,7 +1134,7 @@ impl FlowEngine {
                     // Execute the self function
                     let self_action = SelfAction {
                         self_: format!("self.{}", function_name),
-                        on_failure: FailureMode::Stop,
+                        on_failure: vec![],
                     };
 
                     let result = Self::execute_self(&self_action, context)?;
@@ -1063,7 +1166,7 @@ impl FlowEngine {
                     // No field access - just execute the function and return its stdout
                     let self_action = SelfAction {
                         self_: expr.to_string(),
-                        on_failure: FailureMode::Stop,
+                        on_failure: vec![],
                     };
 
                     let result = Self::execute_self(&self_action, context)?;
@@ -1715,7 +1818,7 @@ mod tests {
         let action = ShellAction {
             shell: "echo 'test'".to_string(),
             timeout: None,
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
             alias: None,
         };
 
@@ -1731,7 +1834,7 @@ mod tests {
         let action = ShellAction {
             shell: "echo $event.file_paths".to_string(),
             timeout: None,
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
             alias: None,
         };
 
@@ -1752,7 +1855,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "echo 'Step 2'".to_string(),
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -1774,7 +1877,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
-                on_failure: FailureMode::Continue, // But we continue
+                on_failure: vec![], // But we continue
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -1787,7 +1890,7 @@ mod tests {
 
         let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedContinue since first action failed but flow continued
-        assert!(matches!(result, FlowResult::FailedContinue(_)));
+        assert!(matches!(result, FlowResult::FailedContinue));
     }
 
     #[test]
@@ -1796,7 +1899,9 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
-                on_failure: FailureMode::Stop, // Stop on failure
+                on_failure: vec![Action::Stop(crate::flows::types::StopAction {
+                    warning: "Action failed".to_string(),
+                })], // Stop on failure
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -1810,7 +1915,7 @@ mod tests {
 
         let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
         // Should return FailedStop since action failed with on_failure: stop
-        assert!(matches!(result, FlowResult::FailedStop(_)));
+        assert!(matches!(result, FlowResult::FailedStop));
     }
 
     #[test]
@@ -1836,7 +1941,7 @@ mod tests {
     fn test_execute_let_variable_aliasing() {
         let action = LetAction {
             let_: "desc = $event.file_paths".to_string(),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         };
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
@@ -1850,7 +1955,7 @@ mod tests {
     fn test_execute_let_invalid_syntax() {
         let action = LetAction {
             let_: "invalid_syntax".to_string(), // Missing '='
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         };
 
         let event = create_test_event();
@@ -1878,7 +1983,7 @@ mod tests {
         for let_str in invalid_names {
             let action = LetAction {
                 let_: let_str.to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             };
 
             let event = create_test_event();
@@ -1898,7 +2003,7 @@ mod tests {
     fn test_execute_let_whitespace_trimming() {
         let action = LetAction {
             let_: "  description  =  $event.file_paths  ".to_string(),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         };
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
@@ -1913,7 +2018,7 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "desc = $event.file_paths".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Log(LogAction {
                 log: "Variable: $desc".to_string(),
@@ -1935,7 +2040,7 @@ mod tests {
         let actions = vec![Action::Shell(ShellAction {
             shell: "echo 'test output'".to_string(),
             timeout: None,
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
             alias: Some("result".to_string()),
         })];
 
@@ -1961,7 +2066,7 @@ mod tests {
     fn test_let_creates_structured_metadata() {
         let actions = vec![Action::Let(LetAction {
             let_: "desc = $event.file_paths".to_string(),
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
         })];
 
         let mut context = AikiState::new(create_test_event_with_file("test.rs"));
@@ -1980,7 +2085,7 @@ mod tests {
         let actions = vec![Action::Shell(ShellAction {
             shell: "echo 'test'".to_string(),
             timeout: None,
-            on_failure: FailureMode::Continue,
+            on_failure: vec![],
             alias: None, // No alias
         })];
 
@@ -2003,7 +2108,7 @@ mod tests {
         // The type system now guarantees that PostFileChange events have all required fields.
         let action = LetAction {
             let_: "metadata = aiki/core.build_metadata".to_string(),
-            on_failure: FailureMode::Stop,
+            on_failure: vec![],
         };
 
         let event = create_test_event();
@@ -2024,11 +2129,11 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "original = $event.file_paths".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Let(LetAction {
                 let_: "copy = $original".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
         ];
 
@@ -2066,11 +2171,11 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "x = $event.tool_name".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Let(LetAction {
                 let_: "x = $event.session_id".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
         ];
 
@@ -2088,11 +2193,11 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "file = $event.file_paths".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Let(LetAction {
                 let_: "copy = $file".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
         ];
 
@@ -2113,7 +2218,7 @@ mod tests {
     fn test_let_self_reference() {
         let action = LetAction {
             let_: "metadata = self.build_metadata".to_string(),
-            on_failure: FailureMode::Stop,
+            on_failure: vec![],
         };
 
         let event = create_test_event();
@@ -2130,7 +2235,7 @@ mod tests {
     fn test_let_self_reference_without_flow_context() {
         let action = LetAction {
             let_: "metadata = self.build_metadata".to_string(),
-            on_failure: FailureMode::Stop,
+            on_failure: vec![],
         };
 
         // No flow_name set
@@ -2150,12 +2255,12 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "my_var = $event.file_paths".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Shell(ShellAction {
                 shell: "echo $my_var".to_string(),
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: None,
             }),
         ];
@@ -2175,12 +2280,12 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "msg = $event.message".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Jj(JjAction {
                 jj: "log -r $msg".to_string(),
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: None,
                 with_author: None,
                 with_author_and_message: None,
@@ -2194,7 +2299,7 @@ mod tests {
         // Should succeed (we don't validate jj commands in tests)
         assert!(matches!(
             result,
-            FlowResult::Success | FlowResult::FailedContinue(_)
+            FlowResult::Success | FlowResult::FailedContinue
         ));
     }
 
@@ -2203,7 +2308,7 @@ mod tests {
         let actions = vec![
             Action::Let(LetAction {
                 let_: "file = $event.file_paths".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             Action::Log(LogAction {
                 log: "Processing $file".to_string(),
@@ -2297,7 +2402,7 @@ mod tests {
                     alias: Some("result".to_string()),
                 })],
                 else_: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2330,7 +2435,7 @@ mod tests {
                     log: "else branch executed".to_string(),
                     alias: Some("result".to_string()),
                 })]),
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2358,7 +2463,7 @@ mod tests {
                     alias: Some("result".to_string()),
                 })],
                 else_: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2376,7 +2481,7 @@ mod tests {
             // Create JSON variable
             Action::Let(LetAction {
                 let_: "detection = aiki/core.classify_edits".to_string(),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
             // Check JSON field (will fail in test since classify_edits returns error)
         ];
@@ -2409,10 +2514,10 @@ mod tests {
                         alias: Some("result".to_string()),
                     })],
                     else_: None,
-                    on_failure: FailureMode::Stop,
+                    on_failure: vec![],
                 })],
                 else_: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2545,7 +2650,7 @@ mod tests {
                 expression: "$status".to_string(),
                 cases,
                 default: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2584,7 +2689,7 @@ mod tests {
                     log: "default case".to_string(),
                     alias: Some("result".to_string()),
                 })]),
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2620,7 +2725,7 @@ mod tests {
                 expression: "$status".to_string(),
                 cases,
                 default: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2663,7 +2768,7 @@ mod tests {
                 expression: "$detection.all_exact_match".to_string(),
                 cases,
                 default: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![],
             }),
         ];
 
@@ -2683,7 +2788,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "echo 'src/main.rs\nsrc/lib.rs'".to_string(),
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: Some("changed_files".to_string()),
             }),
             // If there are changed files (non-empty), execute the then branch
@@ -2697,7 +2802,7 @@ mod tests {
                     log: "No changes to stash".to_string(),
                     alias: Some("stash_result".to_string()),
                 })]),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
         ];
 
@@ -2719,7 +2824,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "true".to_string(), // Exits 0 but produces no output
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: Some("changed_files".to_string()),
             }),
             Action::If(IfAction {
@@ -2732,7 +2837,7 @@ mod tests {
                     log: "No changes detected".to_string(),
                     alias: Some("result".to_string()),
                 })]),
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
             }),
         ];
 
@@ -2753,7 +2858,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // Fails
                 timeout: None,
-                on_failure: FailureMode::Continue,
+                on_failure: vec![],
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -2766,7 +2871,7 @@ mod tests {
         let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Should return FailedContinue
-        assert!(matches!(result, FlowResult::FailedContinue(_)));
+        assert!(matches!(result, FlowResult::FailedContinue));
 
         // Second action should still execute
         assert_eq!(
@@ -2782,7 +2887,9 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // Fails
                 timeout: None,
-                on_failure: FailureMode::Stop,
+                on_failure: vec![Action::Stop(crate::flows::types::StopAction {
+                    warning: "Shell command failed".to_string(),
+                })],
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -2795,7 +2902,7 @@ mod tests {
         let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Should return FailedStop
-        assert!(matches!(result, FlowResult::FailedStop(_)));
+        assert!(matches!(result, FlowResult::FailedStop));
 
         // Second action should NOT execute
         assert!(context.get_variable("result").is_none());
@@ -2808,7 +2915,9 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // Fails
                 timeout: None,
-                on_failure: FailureMode::Block,
+                on_failure: vec![Action::Block(crate::flows::types::BlockAction {
+                    error: "Action failed with block".to_string(),
+                })],
                 alias: None,
             }),
             Action::Log(LogAction {
@@ -2821,7 +2930,7 @@ mod tests {
         let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock(_)));
+        assert!(matches!(result, FlowResult::FailedBlock));
 
         // Second action should NOT execute
         assert!(context.get_variable("result").is_none());
@@ -2843,7 +2952,7 @@ mod tests {
         // Create action that calls a self.* function that doesn't exist
         let actions = vec![Action::Self_(SelfAction {
             self_: "self.nonexistent_function".to_string(),
-            on_failure: FailureMode::Stop,
+            on_failure: vec![],
         })];
 
         let mut context = AikiState::new(event);

@@ -11,7 +11,8 @@ SessionStart:
 
   # Initialize Aiki (idempotent - safe to run multiple times)
   - shell: aiki init --quiet
-    on_failure: stop
+    on_failure:
+      - stop: "Failed to initialize Aiki repository"
 
   # If aiki init created files, record them with Aiki as author
   - jj: diff -r @ --name-only
@@ -61,7 +62,8 @@ PostFileChange:
     else:
       # For ExactMatch or OverlappingUserEdits, set AI metadata
       - let: metadata = self.build_metadata
-        on_failure: stop
+        on_failure:
+          - stop: "Failed to build metadata"
 
       - with_author_and_message: $metadata
         jj: metaedit --message "$message"
@@ -73,9 +75,11 @@ PostFileChange:
 PrepareCommitMessage:
   # Generate co-author lines from staged changes
   - let: coauthors = self.generate_coauthors
-    on_failure: stop
+    on_failure:
+      - stop: "Failed to generate co-authors"
 
   # Append co-authors as Git trailers
   - commit_message:
       append_trailer: $coauthors
-    on_failure: stop
+    on_failure:
+      - stop: "Failed to append co-author trailers"
