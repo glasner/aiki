@@ -218,23 +218,22 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     // Execute SessionStart actions from the core flow
     let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.session_start, &mut state)?;
 
+    // Extract messages from state
+    let messages = state.take_messages();
+
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success()),
-        FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(
-            "⚠️ Session started with warnings",
-        )
-        .with_info(format!("Some initialization actions failed: {}", msg))),
-        FlowResult::FailedStop(_msg) => {
-            // Flow stopped silently - return success (no error to user)
-            Ok(HookResponse::success())
+        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+            Ok(HookResponse {
+                context: None,
+                decision: Decision::Allow,
+                messages,
+            })
         }
-        FlowResult::FailedBlock(msg) => {
-            // Block session start
-            Ok(HookResponse::blocking_failure(
-                format!("❌ Failed to initialize session: {}", msg),
-                Some("Please run 'aiki init' or 'aiki doctor' to fix setup.".to_string()),
-            ))
-        }
+        FlowResult::FailedBlock(msg) => Ok(HookResponse {
+            context: None,
+            decision: Decision::Block(msg),
+            messages,
+        }),
     }
 }
 
@@ -271,33 +270,33 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
                 eprintln!("⚠️ PrePrompt flow failed: {}", e);
                 eprintln!("Continuing with original prompt...\n");
                 // Return built context (already initialized with original prompt)
-                return Ok(
-                    HookResponse::success().with_context(state.build_context().unwrap_or_default())
-                );
+                return Ok(HookResponse {
+                    context: Some(state.build_context().unwrap_or_default()),
+                    decision: Decision::Allow,
+                    messages: state.take_messages(),
+                });
             }
         };
 
+    // Extract messages from state
+    let messages = state.take_messages();
+
     // Return response based on flow result (build context string)
     match flow_result {
-        FlowResult::Success => {
-            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
-        }
-        FlowResult::FailedContinue(msg) => {
-            eprintln!("⚠️ PrePrompt flow failed: {}", msg);
-            eprintln!("Continuing with original prompt...\n");
-            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
-        }
-        FlowResult::FailedStop(msg) => {
-            eprintln!("⚠️ PrePrompt flow stopped: {}", msg);
-            eprintln!("Continuing with original prompt...\n");
-            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
+        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+            Ok(HookResponse {
+                context: Some(state.build_context().unwrap_or_default()),
+                decision: Decision::Allow,
+                messages,
+            })
         }
         FlowResult::FailedBlock(msg) => {
             // Block the prompt - return exit code 2
-            Ok(HookResponse::blocking_failure(
-                format!("❌ Prompt blocked: {}", msg),
-                Some("Fix the validation error before continuing.".to_string()),
-            ))
+            Ok(HookResponse {
+                context: None,
+                decision: Decision::Block(msg),
+                messages,
+            })
         }
     }
 }
@@ -328,24 +327,19 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.pre_file_change, &mut state)?;
 
+    // Extract messages from state
+    let messages = state.take_messages();
+
+    // PreFileChange never blocks - always allow
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success()),
-        FlowResult::FailedContinue(msg) => {
-            // Log warning but continue
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[aiki] PreFileChange flow warning: {}", msg);
-            }
-            Ok(HookResponse::success())
-        }
-        FlowResult::FailedStop(_msg) => {
-            // Flow stopped silently - no error
-            Ok(HookResponse::success())
-        }
-        FlowResult::FailedBlock(msg) => {
-            // PreFileChange should never block - just warn
-            eprintln!("Warning: PreFileChange flow failed (not blocking): {}", msg);
-            Ok(HookResponse::success())
-        }
+        FlowResult::Success
+        | FlowResult::FailedContinue(_)
+        | FlowResult::FailedStop(_)
+        | FlowResult::FailedBlock(_) => Ok(HookResponse {
+            context: None,
+            decision: Decision::Allow,
+            messages,
+        }),
     }
 }
 
@@ -376,31 +370,19 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.post_file_change, &mut state)?;
 
+    // Extract messages from state
+    let messages = state.take_messages();
+
+    // PostFileChange never blocks - always allow
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success_with_message(format!(
-            "✅ Provenance recorded for {} files",
-            event.file_paths.len()
-        ))),
-        FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(format!(
-            "⚠️ Provenance partially recorded for {} files",
-            event.file_paths.len()
-        ))
-        .with_info(format!("Some actions failed: {}", msg))),
-        FlowResult::FailedStop(_msg) => {
-            // Flow stopped silently - no error to user
-            Ok(HookResponse::success())
-        }
-        FlowResult::FailedBlock(msg) => {
-            // PostFileChange should never block edits, even with on_failure: block
-            // Show warning but allow the change to be saved
-            Ok(HookResponse::failure(
-                format!("⚠️ Provenance recording blocked: {}", msg),
-                Some(
-                    "Changes saved but provenance tracking failed. Please check your JJ setup."
-                        .to_string(),
-                ),
-            ))
-        }
+        FlowResult::Success
+        | FlowResult::FailedContinue(_)
+        | FlowResult::FailedStop(_)
+        | FlowResult::FailedBlock(_) => Ok(HookResponse {
+            context: None,
+            decision: Decision::Allow,
+            messages,
+        }),
     }
 }
 
@@ -436,37 +418,29 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
                 // Flow execution failed - log warning and skip autoreply
                 eprintln!("\n⚠️ PostResponse flow failed: {}", e);
                 eprintln!("No autoreply generated.\n");
-                return Ok(HookResponse::success());
+                return Ok(HookResponse {
+                    context: None,
+                    decision: Decision::Allow,
+                    messages: state.take_messages(),
+                });
             }
         };
 
-    // Return response based on flow result (build context string from assembler)
+    // Extract messages from state
+    let messages = state.take_messages();
+
+    // PostResponse never blocks - always allow
     match flow_result {
-        FlowResult::Success => {
-            if let Ok(context) = state.build_context() {
-                if !context.is_empty() {
-                    Ok(HookResponse::success().with_context(context))
-                } else {
-                    Ok(HookResponse::success())
-                }
-            } else {
-                Ok(HookResponse::success())
-            }
-        }
-        FlowResult::FailedContinue(msg) => {
-            eprintln!("\n⚠️ PostResponse flow failed: {}", msg);
-            eprintln!("No autoreply generated.\n");
-            Ok(HookResponse::success())
-        }
-        FlowResult::FailedStop(msg) => {
-            eprintln!("\n⚠️ PostResponse flow stopped: {}", msg);
-            eprintln!("No autoreply generated.\n");
-            Ok(HookResponse::success())
-        }
-        FlowResult::FailedBlock(msg) => {
-            eprintln!("\n⚠️ PostResponse flow blocked: {}", msg);
-            eprintln!("No autoreply generated.\n");
-            Ok(HookResponse::success())
+        FlowResult::Success
+        | FlowResult::FailedContinue(_)
+        | FlowResult::FailedStop(_)
+        | FlowResult::FailedBlock(_) => {
+            let context = state.build_context().ok().filter(|s| !s.is_empty());
+            Ok(HookResponse {
+                context,
+                decision: Decision::Allow,
+                messages,
+            })
         }
     }
 }
@@ -494,22 +468,24 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
+    // Extract messages from state
+    let messages = state.take_messages();
+
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success_with_message("✅ Co-authors added")),
-        FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(
-            "⚠️ Co-authors partially added",
-        )
-        .with_info(format!("Some actions failed: {}", msg))),
-        FlowResult::FailedStop(_msg) => {
-            // Flow stopped silently - return success (no error to user)
-            Ok(HookResponse::success())
+        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+            Ok(HookResponse {
+                context: None,
+                decision: Decision::Allow,
+                messages,
+            })
         }
         FlowResult::FailedBlock(msg) => {
             // Block the commit
-            Ok(HookResponse::blocking_failure(
-                format!("❌ Commit blocked: {}", msg),
-                Some("Fix the error and try committing again.".to_string()),
-            ))
+            Ok(HookResponse {
+                context: None,
+                decision: Decision::Block(msg),
+                messages,
+            })
         }
     }
 }

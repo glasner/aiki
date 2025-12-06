@@ -49,6 +49,33 @@ fn default_version() -> String {
     "1".to_string()
 }
 
+/// Info message action (user-visible notification)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InfoAction {
+    pub info: String,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Warning message action (user-visible warning)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarningAction {
+    pub warning: String,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
+/// Error message action (user-visible error)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorAction {
+    pub error: String,
+
+    #[serde(default = "default_on_failure")]
+    pub on_failure: FailureMode,
+}
+
 /// An action to execute in a flow
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -57,22 +84,28 @@ pub enum Action {
     If(IfAction),
     /// Switch/case statement
     Switch(SwitchAction),
+    /// Let binding (function call or variable aliasing)
+    Let(LetAction),
+    /// Self function call (call a function without storing result)
+    Self_(SelfAction),
     /// Shell command
     Shell(ShellAction),
     /// JJ command
     Jj(JjAction),
     /// Log message
     Log(LogAction),
-    /// Let binding (function call or variable aliasing)
-    Let(LetAction),
-    /// Self function call (call a function without storing result)
-    Self_(SelfAction),
     /// Context injection (for PrePrompt events)
     Context(ContextAction),
     /// Autoreply (for PostResponse events)
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
+    /// Info message (user-visible notification)
+    Info(InfoAction),
+    /// Warning message (user-visible warning)
+    Warning(WarningAction),
+    /// Error message (user-visible error)
+    Error(ErrorAction),
 }
 
 /// Shell command action
