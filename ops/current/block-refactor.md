@@ -59,41 +59,11 @@ PrePrompt:
       - block: "Fix validation errors above"
 ```
 
-## Migration Path
+## Implementation
 
-### Phase 1: Support Both Syntaxes
+### Step 1: Update Action Structs
 
-Allow both the old enum syntax and the new action syntax:
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum OnFailure {
-    /// Legacy: simple mode (continue, stop, block)
-    Mode(FailureMode),
-    
-    /// New: list of actions to execute on failure
-    Actions(Vec<Action>),
-}
-```
-
-**YAML examples:**
-
-```yaml
-# Old syntax (still works)
-- shell: "test"
-  on_failure: block
-
-# New syntax
-- shell: "test"
-  on_failure:
-    - error: "Test failed"
-    - block: "Fix the test"
-```
-
-### Phase 2: Update Actions to Use OnFailure
-
-Change all action structs:
+Change all action structs to use `Vec<Action>` for `on_failure`:
 
 ```rust
 // Before:
@@ -105,18 +75,16 @@ pub struct ShellAction {
 // After:
 pub struct ShellAction {
     pub shell: String,
-    #[serde(default = "default_on_failure")]
-    pub on_failure: OnFailure,  // ✅ New
-}
-
-fn default_on_failure() -> OnFailure {
-    OnFailure::Mode(FailureMode::Continue)
+    #[serde(default)]
+    pub on_failure: Vec<Action>,  // ✅ New - empty vec means "continue"
 }
 ```
 
-### Phase 3: Update Engine to Execute Failure Actions
+**Default behavior:** Empty vec = continue execution (no special failure handling)
 
-Change `execute_actions` to handle the new format:
+### Step 2: Update Engine to Execute Failure Actions
+
+Change `execute_actions` to execute failure actions:
 
 ```rust
 // In FlowEngine::execute_actions
@@ -126,40 +94,35 @@ for action in actions {
     if !result.success {
         let on_failure = get_on_failure(action);
         
-        match on_failure {
-            OnFailure::Mode(FailureMode::Continue) => {
-                // Log and continue (existing behavior)
-                continue_failure_errors.push(error_msg);
-            }
-            OnFailure::Mode(FailureMode::Stop) => {
-                // Stop silently (existing behavior)
-                return Ok((FlowResult::FailedStop(error_msg), timing));
-            }
-            OnFailure::Mode(FailureMode::Block) => {
-                // Block operation (existing behavior)
-                return Ok((FlowResult::FailedBlock(error_msg), timing));
-            }
-            OnFailure::Actions(failure_actions) => {
-                // Execute the failure actions
-                let (failure_result, _) = Self::execute_actions(&failure_actions, context)?;
-                
-                match failure_result {
-                    FlowResult::Success => {
-                        // Failure actions succeeded - continue
-                        continue;
-                    }
-                    FlowResult::FailedContinue(msg) => {
-                        // Failure actions had warnings - continue
-                        continue_failure_errors.push(msg);
-                    }
-                    FlowResult::FailedStop(msg) => {
-                        // Failure actions stopped - propagate
-                        return Ok((FlowResult::FailedStop(msg), timing));
-                    }
-                    FlowResult::FailedBlock(msg) => {
-                        // Failure actions blocked - propagate
-                        return Ok((FlowResult::FailedBlock(msg), timing));
-                    }
+        if on_failure.is_empty() {
+            // No failure actions - default to continue
+            let error_msg = if !result.stderr.is_empty() {
+                result.stderr.clone()
+            } else {
+                "Action failed".to_string()
+            };
+            eprintln!("[aiki] Action failed but continuing: {}", error_msg);
+            continue_failure_errors.push(error_msg);
+        } else {
+            // Execute the failure actions
+            let (failure_result, _) = Self::execute_actions(&on_failure, context)?;
+            
+            match failure_result {
+                FlowResult::Success => {
+                    // Failure actions succeeded - continue
+                    continue;
+                }
+                FlowResult::FailedContinue(msg) => {
+                    // Failure actions had warnings - continue
+                    continue_failure_errors.push(msg);
+                }
+                FlowResult::FailedStop(msg) => {
+                    // Failure actions stopped - propagate
+                    return Ok((FlowResult::FailedStop(msg), timing));
+                }
+                FlowResult::FailedBlock(msg) => {
+                    // Failure actions blocked - propagate
+                    return Ok((FlowResult::FailedBlock(msg), timing));
                 }
             }
         }
@@ -256,63 +219,45 @@ The validation problem disappears:
 - Event handlers decide whether to respect `Decision::Block`
 - No need for YAML-level validation
 
-## Migration Strategy
+## Implementation Steps
 
-### Step 1: Add `BlockAction` and `OnFailure` enum
-- Add types to `types.rs`
-- Keep existing `FailureMode` for backwards compatibility
+### Step 1: Add `BlockAction` to types.rs
+- Add `BlockAction` struct
+- Add `Block(BlockAction)` variant to `Action` enum
+- Remove `FailureMode` enum (no longer needed)
 
 ### Step 2: Update all action structs
-- Change `on_failure: FailureMode` to `on_failure: OnFailure`
-- Use `#[serde(default)]` to maintain backwards compatibility
+- Change `on_failure: FailureMode` to `on_failure: Vec<Action>`
+- Update all 12 action types (If, Switch, Shell, Jj, Let, Self, Context, Autoreply, CommitMessage, Info, Warning, Error)
 
-### Step 3: Update engine
+### Step 3: Update engine.rs
 - Add `execute_block()` function
-- Update failure handling to execute `OnFailure::Actions`
-- Keep legacy behavior for `OnFailure::Mode`
+- Update failure handling in `execute_actions()` to execute failure action lists
+- Update `get_on_failure()` helper to return `&Vec<Action>`
 
 ### Step 4: Update core flow
-- Gradually migrate to new syntax
-- Show examples of both styles
+- Replace all `on_failure: continue/stop/block` with action-based syntax
+- Add examples showing the new patterns
 
-### Step 5: Deprecation (future)
-- Eventually remove `OnFailure::Mode` variant
-- All flows use action-based failure handling
-
-## Backwards Compatibility
-
-The `#[serde(untagged)]` enum ensures old YAML still works:
-
-```yaml
-# Old syntax - still works
-- shell: "test"
-  on_failure: block
-
-# Deserialized as: OnFailure::Mode(FailureMode::Block)
-
-# New syntax
-- shell: "test"
-  on_failure:
-    - block: "Tests failed"
-
-# Deserialized as: OnFailure::Actions(vec![Action::Block(...)])
-```
+### Step 5: Update tests
+- Update all existing tests to use new syntax
+- Add tests for `block` action
+- Add tests for complex failure handling patterns
 
 ## Testing
 
 ```rust
 #[test]
-fn test_on_failure_legacy_block() {
+fn test_on_failure_default_empty() {
     let yaml = r#"
-shell: "false"
-on_failure: block
+shell: "echo test"
 "#;
     let action: ShellAction = serde_yaml::from_str(yaml).unwrap();
-    assert!(matches!(action.on_failure, OnFailure::Mode(FailureMode::Block)));
+    assert!(action.on_failure.is_empty());
 }
 
 #[test]
-fn test_on_failure_actions() {
+fn test_on_failure_with_actions() {
     let yaml = r#"
 shell: "false"
 on_failure:
@@ -320,7 +265,7 @@ on_failure:
   - block: "Fix the error"
 "#;
     let action: ShellAction = serde_yaml::from_str(yaml).unwrap();
-    assert!(matches!(action.on_failure, OnFailure::Actions(_)));
+    assert_eq!(action.on_failure.len(), 2);
 }
 
 #[test]
@@ -334,6 +279,23 @@ fn test_block_action_execution() {
     assert!(!result.success);
     assert_eq!(result.exit_code, Some(2));
     assert_eq!(result.stderr, "Operation blocked");
+}
+
+#[test]
+fn test_failure_actions_trigger_block() {
+    let yaml = r#"
+name: test
+PostFileChange:
+  - shell: "false"
+    on_failure:
+      - error: "Command failed"
+      - block: "Fix the error"
+"#;
+    let flow: Flow = serde_yaml::from_str(yaml).unwrap();
+    let mut state = AikiState::new(test_event());
+    
+    let (result, _) = FlowEngine::execute_actions(&flow.post_file_change, &mut state).unwrap();
+    assert!(matches!(result, FlowResult::FailedBlock(_)));
 }
 ```
 
@@ -374,17 +336,23 @@ PrepareCommitMessage:
 ## Open Questions
 
 1. **Should `block` have `on_failure`?** 
-   - Probably not - it's the terminal action
-   - Could allow it for consistency, but would be confusing
+   - No - `block` doesn't have `on_failure` since it's the terminal action
+   - Keeps the API simple and clear
 
 2. **What if failure actions themselves fail?**
-   - Current design: propagate the failure result
-   - Alternative: treat all failure action errors as `FailedStop`
+   - Design: propagate the failure result
+   - If a failure action uses `block`, the whole flow blocks
+   - If a failure action fails without `block`, it continues (via FailedContinue)
 
 3. **Variable access in failure actions?**
-   - Make `$SHELL.exit_code`, `$SHELL.stdout`, `$SHELL.stderr` available
-   - Already supported via variable resolver
+   - Need to make the failed action's result available as variables
+   - Options:
+     - `$FAILED.exit_code`, `$FAILED.stdout`, `$FAILED.stderr`
+     - Or use the action's alias: `$my_action.exit_code` if it had one
+   - Decision: Use the action's alias if available, otherwise no special variables
 
-4. **Should we keep `FailureMode` enum?**
-   - Yes for backwards compatibility
-   - Can deprecate in future major version
+4. **How to implement "stop" behavior?**
+   - Old: `on_failure: stop` (silent failure)
+   - New: `on_failure: []` (empty list = continue, but silent)
+   - Or add a `stop` action that returns `FailedStop`?
+   - **Decision**: Empty `on_failure` means "continue", add `stop` action for silent stop
