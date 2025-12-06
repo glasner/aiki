@@ -55,11 +55,11 @@ impl FlowEngine {
     /// - Let variables (user-defined): $description, $my_var (no event. prefix)
     /// - System variables: $cwd
     /// - Environment variables: $HOME, $PATH
-    fn create_resolver(context: &AikiState) -> VariableResolver {
+    fn create_resolver(state: &AikiState) -> VariableResolver {
         let mut resolver = VariableResolver::new();
 
         // Add event-specific variables based on event type
-        match &context.event {
+        match &state.event {
             crate::events::AikiEvent::PostFileChange(e) => {
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
                 resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
@@ -112,7 +112,7 @@ impl FlowEngine {
         }
 
         // Add agent type as event.agent_type
-        let agent_str = match context.event.agent_type() {
+        let agent_str = match state.event.agent_type() {
             crate::provenance::AgentType::Claude => "claude",
             crate::provenance::AgentType::Codex => "codex",
             crate::provenance::AgentType::Cursor => "cursor",
@@ -122,12 +122,12 @@ impl FlowEngine {
         resolver.add_var("event.agent_type".to_string(), agent_str.to_string());
 
         // Add let variables (accessible via $key without event. prefix)
-        for (key, value) in context.iter_variables() {
+        for (key, value) in state.iter_variables() {
             resolver.add_var(key.clone(), value.clone());
         }
 
         // Add cwd using helper method
-        resolver.add_var("cwd", context.cwd().to_string_lossy().to_string());
+        resolver.add_var("cwd", state.cwd().to_string_lossy().to_string());
 
         // Fetch environment variables on-demand
         let env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
@@ -140,7 +140,7 @@ impl FlowEngine {
     /// Returns both the flow result and timing information
     pub fn execute_actions(
         actions: &[Action],
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<(FlowResult, FlowTiming)> {
         use std::time::Instant;
 
@@ -148,10 +148,10 @@ impl FlowEngine {
         let mut continue_failure_errors = Vec::new();
 
         for action in actions {
-            let result = Self::execute_action(action, context)?;
+            let result = Self::execute_action(action, state)?;
 
             // Store action results for reference by subsequent actions
-            Self::store_action_result(action, &result, context);
+            Self::store_action_result(action, &result, state);
 
             // Handle failure based on on_failure callbacks
             if !result.success {
@@ -188,10 +188,10 @@ impl FlowEngine {
                 // Execute on_failure callbacks
                 let mut callback_decision = None;
                 for callback in on_failure_callbacks {
-                    let callback_result = Self::execute_action(callback, context)?;
+                    let callback_result = Self::execute_action(callback, state)?;
 
                     // Store callback results
-                    Self::store_action_result(callback, &callback_result, context);
+                    Self::store_action_result(callback, &callback_result, state);
 
                     // Check if callback returned a decision (exit code determines behavior)
                     if let Some(exit_code) = callback_result.exit_code {
@@ -257,28 +257,26 @@ impl FlowEngine {
     }
 
     /// Execute a single action
-    fn execute_action(action: &Action, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_action(action: &Action, state: &mut AikiState) -> Result<ActionResult> {
         match action {
-            Action::If(if_action) => Self::execute_if(if_action, context),
-            Action::Switch(switch_action) => Self::execute_switch(switch_action, context),
-            Action::Shell(shell_action) => Self::execute_shell(shell_action, context),
-            Action::Jj(jj_action) => Self::execute_jj(jj_action, context),
-            Action::Log(log_action) => Self::execute_log(log_action, context),
-            Action::Let(let_action) => Self::execute_let(let_action, context),
-            Action::Self_(self_action) => Self::execute_self(self_action, context),
-            Action::Context(context_action) => Self::execute_context(context_action, context),
-            Action::Autoreply(autoreply_action) => {
-                Self::execute_autoreply(autoreply_action, context)
-            }
+            Action::If(if_action) => Self::execute_if(if_action, state),
+            Action::Switch(switch_action) => Self::execute_switch(switch_action, state),
+            Action::Shell(shell_action) => Self::execute_shell(shell_action, state),
+            Action::Jj(jj_action) => Self::execute_jj(jj_action, state),
+            Action::Log(log_action) => Self::execute_log(log_action, state),
+            Action::Let(let_action) => Self::execute_let(let_action, state),
+            Action::Self_(self_action) => Self::execute_self(self_action, state),
+            Action::Context(context_action) => Self::execute_context(context_action, state),
+            Action::Autoreply(autoreply_action) => Self::execute_autoreply(autoreply_action, state),
             Action::CommitMessage(commit_msg_action) => {
-                Self::execute_commit_message(commit_msg_action, context)
+                Self::execute_commit_message(commit_msg_action, state)
             }
-            Action::Info(info_action) => Self::execute_info(info_action, context),
-            Action::Warning(warning_action) => Self::execute_warning(warning_action, context),
-            Action::Error(error_action) => Self::execute_error(error_action, context),
-            Action::Continue(continue_action) => Self::execute_continue(continue_action, context),
-            Action::Stop(stop_action) => Self::execute_stop(stop_action, context),
-            Action::Block(block_action) => Self::execute_block(block_action, context),
+            Action::Info(info_action) => Self::execute_info(info_action, state),
+            Action::Warning(warning_action) => Self::execute_warning(warning_action, state),
+            Action::Error(error_action) => Self::execute_error(error_action, state),
+            Action::Continue(continue_action) => Self::execute_continue(continue_action, state),
+            Action::Stop(stop_action) => Self::execute_stop(stop_action, state),
+            Action::Block(block_action) => Self::execute_block(block_action, state),
         }
     }
 
@@ -286,7 +284,7 @@ impl FlowEngine {
     ///
     /// For Let actions: stores the variable and its structured metadata
     /// For Shell/Jj/Log with alias: stores the variable with its result
-    fn store_action_result(action: &Action, result: &ActionResult, context: &mut AikiState) {
+    fn store_action_result(action: &Action, result: &ActionResult, state: &mut AikiState) {
         match action {
             Action::If(_) => {
                 // If actions execute their branches directly and store results there
@@ -300,22 +298,22 @@ impl FlowEngine {
                 // Parse the variable name from "variable = expression"
                 if let Some(variable_name) = let_action.let_.split('=').next() {
                     let variable_name = variable_name.trim();
-                    context.store_action_result(variable_name.to_string(), result.clone());
+                    state.store_action_result(variable_name.to_string(), result.clone());
                 }
             }
             Action::Shell(shell_action) => {
                 if let Some(alias) = &shell_action.alias {
-                    context.store_action_result(alias.clone(), result.clone());
+                    state.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Jj(jj_action) => {
                 if let Some(alias) = &jj_action.alias {
-                    context.store_action_result(alias.clone(), result.clone());
+                    state.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Log(log_action) => {
                 if let Some(alias) = &log_action.alias {
-                    context.store_action_result(alias.clone(), result.clone());
+                    state.store_action_result(alias.clone(), result.clone());
                 }
             }
             Action::Self_(_) => {
@@ -344,9 +342,9 @@ impl FlowEngine {
     }
 
     /// Execute a shell command
-    fn execute_shell(action: &ShellAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_shell(action: &ShellAction, state: &mut AikiState) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in command
         let command = resolver.resolve(&action.shell);
@@ -359,12 +357,12 @@ impl FlowEngine {
         let output = if let Some(timeout_str) = &action.timeout {
             // Parse timeout (e.g., "30s", "1m")
             let timeout = parse_timeout(timeout_str)?;
-            execute_with_timeout(&command, context.cwd(), timeout)?
+            execute_with_timeout(&command, state.cwd(), timeout)?
         } else {
             Command::new("sh")
                 .arg("-c")
                 .arg(&command)
-                .current_dir(context.cwd())
+                .current_dir(state.cwd())
                 .output()
                 .context("Failed to execute shell command")?
         };
@@ -378,7 +376,7 @@ impl FlowEngine {
     }
 
     /// Execute a JJ command
-    fn execute_jj(action: &JjAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_jj(action: &JjAction, state: &mut AikiState) -> Result<ActionResult> {
         // Handle with_author_and_message if provided - it sets both author and message
         if let Some(ref metadata_fn) = action.with_author_and_message {
             let resolved_metadata = if metadata_fn.trim().starts_with("self.") {
@@ -387,11 +385,11 @@ impl FlowEngine {
                     self_: metadata_fn.trim().to_string(),
                     on_failure: vec![],
                 };
-                let result = Self::execute_self(&self_action, context)?;
+                let result = Self::execute_self(&self_action, state)?;
                 result.stdout.trim().to_string()
             } else {
                 // Resolve variable reference
-                let mut resolver = Self::create_resolver(context);
+                let mut resolver = Self::create_resolver(state);
                 resolver.resolve(metadata_fn)
             };
 
@@ -414,7 +412,7 @@ impl FlowEngine {
                 .to_string();
 
             // Store message in context so it can be referenced as $message
-            context.store_action_result(
+            state.store_action_result(
                 "message".to_string(),
                 ActionResult {
                     success: true,
@@ -430,11 +428,11 @@ impl FlowEngine {
             new_action.with_author_and_message = None; // Clear to avoid infinite loop
 
             // Execute the modified action
-            return Self::execute_jj(&new_action, context);
+            return Self::execute_jj(&new_action, state);
         }
 
         // Create variable resolver with consistent variable availability
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in command
         let jj_args = resolver.resolve(&action.jj);
@@ -455,7 +453,7 @@ impl FlowEngine {
                     self_: author.trim().to_string(),
                     on_failure: vec![],
                 };
-                let result = Self::execute_self(&self_action, context)?;
+                let result = Self::execute_self(&self_action, state)?;
                 result.stdout.trim().to_string()
             } else {
                 // It's a variable reference - resolve it
@@ -478,14 +476,14 @@ impl FlowEngine {
             execute_with_timeout_argv_with_env(
                 "jj",
                 &args,
-                context.cwd(),
+                state.cwd(),
                 timeout,
                 jj_user,
                 jj_email,
             )?
         } else {
             let mut cmd = Command::new("jj");
-            cmd.args(&args).current_dir(context.cwd());
+            cmd.args(&args).current_dir(state.cwd());
 
             // Set JJ_USER and JJ_EMAIL if provided
             if let Some(user) = jj_user {
@@ -507,9 +505,9 @@ impl FlowEngine {
     }
 
     /// Execute a log action
-    fn execute_log(action: &LogAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_log(action: &LogAction, state: &mut AikiState) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.log);
@@ -529,16 +527,16 @@ impl FlowEngine {
     /// Execute an info action
     fn execute_info(
         action: &crate::flows::types::InfoAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.info);
 
         // Add info message to state
-        context.add_message(crate::handlers::Message::Info(message));
+        state.add_message(crate::handlers::Message::Info(message));
 
         Ok(ActionResult::success())
     }
@@ -546,16 +544,16 @@ impl FlowEngine {
     /// Execute a warning action
     fn execute_warning(
         action: &crate::flows::types::WarningAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
         // Add warning message to state
-        context.add_message(crate::handlers::Message::Warning(message));
+        state.add_message(crate::handlers::Message::Warning(message));
 
         Ok(ActionResult::success())
     }
@@ -563,16 +561,16 @@ impl FlowEngine {
     /// Execute an error action
     fn execute_error(
         action: &crate::flows::types::ErrorAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.error);
 
         // Add error message to state
-        context.add_message(crate::handlers::Message::Error(message));
+        state.add_message(crate::handlers::Message::Error(message));
 
         Ok(ActionResult::success())
     }
@@ -580,16 +578,16 @@ impl FlowEngine {
     /// Execute a continue action (emits warning and continues)
     fn execute_continue(
         action: &crate::flows::types::ContinueAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
         // Add warning message to state
-        context.add_message(crate::handlers::Message::Warning(message));
+        state.add_message(crate::handlers::Message::Warning(message));
 
         Ok(ActionResult::success())
     }
@@ -597,16 +595,16 @@ impl FlowEngine {
     /// Execute a stop action (emits warning and returns failure)
     fn execute_stop(
         action: &crate::flows::types::StopAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
         // Add warning message to state
-        context.add_message(crate::handlers::Message::Warning(message.clone()));
+        state.add_message(crate::handlers::Message::Warning(message.clone()));
 
         // Return failure to trigger stop behavior
         Ok(ActionResult {
@@ -620,16 +618,16 @@ impl FlowEngine {
     /// Execute a block action (emits error and returns failure)
     fn execute_block(
         action: &crate::flows::types::BlockAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
         let message = resolver.resolve(&action.error);
 
         // Add error message to state
-        context.add_message(crate::handlers::Message::Error(message.clone()));
+        state.add_message(crate::handlers::Message::Error(message.clone()));
 
         // Return failure to trigger block behavior
         Ok(ActionResult {
@@ -644,12 +642,12 @@ impl FlowEngine {
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
     /// Works for PrePrompt and PostResponse events.
-    fn execute_context(action: &ContextAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_context(action: &ContextAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
         // Verify this is a PrePrompt or PostResponse event
         if !matches!(
-            &context.event,
+            &state.event,
             AikiEvent::PrePrompt(_) | AikiEvent::PostResponse(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
@@ -658,7 +656,7 @@ impl FlowEngine {
         }
 
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Convert ContextContent to ContextChunk and resolve variables
         let chunk = match &action.context {
@@ -682,7 +680,7 @@ impl FlowEngine {
         chunk.validate()?;
 
         // Add chunk to message assembler
-        let assembler = context.get_context_assembler_mut()?;
+        let assembler = state.get_context_assembler_mut()?;
         assembler.add_chunk(chunk);
 
         Ok(ActionResult::success())
@@ -692,21 +690,18 @@ impl FlowEngine {
     ///
     /// This action adds content to the autoreply assembler for PostResponse events.
     /// Only works for PostResponse events that have an autoreply_assembler.
-    fn execute_autoreply(
-        action: &AutoreplyAction,
-        context: &mut AikiState,
-    ) -> Result<ActionResult> {
+    fn execute_autoreply(action: &AutoreplyAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
         // Verify this is a PostResponse event
-        if !matches!(&context.event, AikiEvent::PostResponse(_)) {
+        if !matches!(&state.event, AikiEvent::PostResponse(_)) {
             return Err(AikiError::Other(anyhow::anyhow!(
                 "autoreply action can only be used in PostResponse events"
             )));
         }
 
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Convert AutoreplyContent to ContextChunk and resolve variables
         let chunk = match &action.autoreply {
@@ -728,7 +723,7 @@ impl FlowEngine {
         chunk.validate()?;
 
         // Add chunk to message assembler
-        let assembler = context.get_context_assembler_mut()?;
+        let assembler = state.get_context_assembler_mut()?;
         assembler.add_chunk(chunk);
 
         Ok(ActionResult::success())
@@ -740,13 +735,13 @@ impl FlowEngine {
     /// Only works for PrepareCommitMessage events that have a commit_msg_file.
     fn execute_commit_message(
         action: &CommitMessageAction,
-        context: &mut AikiState,
+        state: &mut AikiState,
     ) -> Result<ActionResult> {
         use crate::events::AikiEvent;
         use std::fs;
 
         // Get commit message file from event
-        let commit_msg_file = match &context.event {
+        let commit_msg_file = match &state.event {
             AikiEvent::PrepareCommitMessage(e) => e
                 .commit_msg_file
                 .as_ref()
@@ -762,7 +757,7 @@ impl FlowEngine {
         let content = fs::read_to_string(commit_msg_file)?;
 
         // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
         let op = &action.commit_message;
 
         // Apply operations
@@ -945,9 +940,9 @@ impl FlowEngine {
     /// 1. Function call: `let metadata = aiki/core.build_metadata`
     /// 2. Variable aliasing: `let desc = $description`
     /// Execute a conditional if/then/else action
-    fn execute_if(action: &IfAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_if(action: &IfAction, state: &mut AikiState) -> Result<ActionResult> {
         // Evaluate the condition
-        let condition_result = Self::evaluate_condition(&action.condition, context)?;
+        let condition_result = Self::evaluate_condition(&action.condition, state)?;
 
         if std::env::var("AIKI_DEBUG").is_ok() {
             eprintln!(
@@ -983,10 +978,10 @@ impl FlowEngine {
         // Execute the branch actions recursively
         // This allows nested conditionals and proper state modification
         for branch_action in actions_to_execute {
-            let result = Self::execute_action(branch_action, context)?;
+            let result = Self::execute_action(branch_action, state)?;
 
             // Store action results for reference by subsequent actions
-            Self::store_action_result(branch_action, &result, context);
+            Self::store_action_result(branch_action, &result, state);
 
             // If any action in the branch fails, the whole if action fails
             if !result.success {
@@ -1009,9 +1004,9 @@ impl FlowEngine {
     }
 
     /// Execute a switch/case action
-    fn execute_switch(action: &SwitchAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_switch(action: &SwitchAction, state: &mut AikiState) -> Result<ActionResult> {
         // Evaluate the switch expression
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
         let switch_value = resolver.resolve(&action.expression);
 
         if std::env::var("AIKI_DEBUG").is_ok() {
@@ -1053,10 +1048,10 @@ impl FlowEngine {
 
         // Execute the matched case actions
         for case_action in actions_to_execute {
-            let result = Self::execute_action(case_action, context)?;
+            let result = Self::execute_action(case_action, state)?;
 
             // Store action results for reference by subsequent actions
-            Self::store_action_result(case_action, &result, context);
+            Self::store_action_result(case_action, &result, state);
 
             // If any action in the case fails, the whole switch action fails
             if !result.success {
@@ -1080,28 +1075,28 @@ impl FlowEngine {
 
     /// Evaluate a condition expression
     /// Supports: ==, !=, JSON field access ($var.field)
-    fn evaluate_condition(condition: &str, context: &mut AikiState) -> Result<bool> {
+    fn evaluate_condition(condition: &str, state: &mut AikiState) -> Result<bool> {
         let condition = condition.trim();
 
         // Parse comparison operators
         if let Some(pos) = condition.find("==") {
             let left = condition[..pos].trim();
             let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, context)?;
-            let right_val = Self::resolve_condition_value(right, context)?;
+            let left_val = Self::resolve_condition_value(left, state)?;
+            let right_val = Self::resolve_condition_value(right, state)?;
             return Ok(left_val == right_val);
         }
 
         if let Some(pos) = condition.find("!=") {
             let left = condition[..pos].trim();
             let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, context)?;
-            let right_val = Self::resolve_condition_value(right, context)?;
+            let left_val = Self::resolve_condition_value(left, state)?;
+            let right_val = Self::resolve_condition_value(right, state)?;
             return Ok(left_val != right_val);
         }
 
         // No operator - treat as boolean check (variable exists and is truthy)
-        let val = Self::resolve_condition_value(condition, context)?;
+        let val = Self::resolve_condition_value(condition, state)?;
         // Truthy: non-empty string that's not "false"
         // Falsy: empty string or literal "false"
         Ok(!val.is_empty() && val != "false")
@@ -1109,7 +1104,7 @@ impl FlowEngine {
 
     /// Resolve a value in a condition expression
     /// Supports: variables ($var), JSON field access ($var.field), literals
-    fn resolve_condition_value(expr: &str, context: &mut AikiState) -> Result<String> {
+    fn resolve_condition_value(expr: &str, state: &mut AikiState) -> Result<String> {
         let expr = expr.trim();
 
         // Remove quotes if present
@@ -1137,7 +1132,7 @@ impl FlowEngine {
                         on_failure: vec![],
                     };
 
-                    let result = Self::execute_self(&self_action, context)?;
+                    let result = Self::execute_self(&self_action, state)?;
 
                     // Parse the result as JSON and extract the field
                     let json_value: serde_json::Value = serde_json::from_str(&result.stdout)
@@ -1169,7 +1164,7 @@ impl FlowEngine {
                         on_failure: vec![],
                     };
 
-                    let result = Self::execute_self(&self_action, context)?;
+                    let result = Self::execute_self(&self_action, state)?;
                     return Ok(result.stdout.trim().to_string());
                 }
             }
@@ -1184,7 +1179,7 @@ impl FlowEngine {
         // Check if it's a variable reference
         if expr.starts_with('$') {
             // Use the existing variable resolver
-            let mut resolver = Self::create_resolver(context);
+            let mut resolver = Self::create_resolver(state);
             return Ok(resolver.resolve(expr));
         }
 
@@ -1192,7 +1187,7 @@ impl FlowEngine {
         Ok(expr.to_string())
     }
 
-    fn execute_let(action: &LetAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_let(action: &LetAction, state: &mut AikiState) -> Result<ActionResult> {
         // Parse the let binding: "variable = expression"
         let parts: Vec<&str> = action.let_.splitn(2, '=').collect();
         if parts.len() != 2 {
@@ -1214,10 +1209,10 @@ impl FlowEngine {
         // Check if this is variable aliasing (starts with $) or a function call
         if expression.starts_with('$') {
             // Mode 2: Variable aliasing
-            Self::execute_let_alias(variable_name, expression, context)
+            Self::execute_let_alias(variable_name, expression, state)
         } else {
             // Mode 1: Function call
-            Self::execute_let_function(variable_name, expression, context)
+            Self::execute_let_function(variable_name, expression, state)
         }
     }
 
@@ -1246,10 +1241,10 @@ impl FlowEngine {
     fn execute_let_alias(
         variable_name: &str,
         expression: &str,
-        context: &AikiState,
+        state: &AikiState,
     ) -> Result<ActionResult> {
         // Create variable resolver with consistent variable availability
-        let mut resolver = Self::create_resolver(context);
+        let mut resolver = Self::create_resolver(state);
 
         // Resolve the variable reference
         let value = resolver.resolve(expression);
@@ -1272,7 +1267,7 @@ impl FlowEngine {
     fn execute_let_function(
         variable_name: &str,
         function_path: &str,
-        context: &AikiState,
+        state: &AikiState,
     ) -> Result<ActionResult> {
         if std::env::var("AIKI_DEBUG").is_ok() {
             eprintln!(
@@ -1289,7 +1284,7 @@ impl FlowEngine {
                 .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
 
             // Get current flow name from context
-            let flow_name = context.flow_name.as_ref().ok_or_else(|| {
+            let flow_name = state.flow_name.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Cannot use 'self.{}' - no flow context available",
                     function_name
@@ -1330,21 +1325,21 @@ impl FlowEngine {
         match (module, function) {
             ("core", "build_metadata") => {
                 // build_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "build_metadata can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::build_metadata(event, Some(context))
+                crate::flows::core::build_metadata(event, Some(state))
             }
             ("core", "build_human_metadata") => {
                 // build_human_metadata works with PreFileChange or PostFileChange events
-                match &context.event {
+                match &state.event {
                     crate::events::AikiEvent::PreFileChange(event) => {
-                        crate::flows::core::build_human_metadata(event, Some(context))
+                        crate::flows::core::build_human_metadata(event, Some(state))
                     }
                     crate::events::AikiEvent::PostFileChange(event) => {
-                        crate::flows::core::build_human_metadata_post(event, Some(context))
+                        crate::flows::core::build_human_metadata_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
                         "build_human_metadata can only be called for PreFileChange or PostFileChange events"
@@ -1353,16 +1348,16 @@ impl FlowEngine {
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "get_git_user currently requires PostFileChange event"
                     )));
                 };
-                crate::flows::core::get_git_user_function(event, Some(context))
+                crate::flows::core::get_git_user_function(event, Some(state))
             }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "classify_edits can only be called for PostFileChange events"
                     )));
@@ -1371,7 +1366,7 @@ impl FlowEngine {
             }
             ("core", "separate_edits") => {
                 // separate_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "separate_edits can only be called for PostFileChange events"
                     )));
@@ -1380,7 +1375,7 @@ impl FlowEngine {
             }
             ("core", "prepare_separation") => {
                 // prepare_separation requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "prepare_separation can only be called for PostFileChange events"
                     )));
@@ -1389,25 +1384,25 @@ impl FlowEngine {
             }
             ("core", "write_ai_files") => {
                 // write_ai_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "write_ai_files can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::write_ai_files(event, Some(context))
+                crate::flows::core::write_ai_files(event, Some(state))
             }
             ("core", "restore_original_files") => {
                 // restore_original_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "restore_original_files can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::restore_original_files(event, Some(context))
+                crate::flows::core::restore_original_files(event, Some(state))
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
-                let crate::events::AikiEvent::PrepareCommitMessage(event) = &context.event else {
+                let crate::events::AikiEvent::PrepareCommitMessage(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "generate_coauthors can only be called for PrepareCommitMessage events"
                     )));
@@ -1423,7 +1418,7 @@ impl FlowEngine {
 
     /// Execute a self function call: `self: write_ai_files`
     /// This is like execute_let_function but doesn't store the result in a variable
-    fn execute_self(action: &SelfAction, context: &mut AikiState) -> Result<ActionResult> {
+    fn execute_self(action: &SelfAction, state: &mut AikiState) -> Result<ActionResult> {
         let function_path = &action.self_;
 
         if std::env::var("AIKI_DEBUG").is_ok() {
@@ -1437,8 +1432,8 @@ impl FlowEngine {
                 .strip_prefix("self.")
                 .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
 
-            // Get current flow name from context
-            let flow_name = context.flow_name.as_ref().ok_or_else(|| {
+            // Get current flow name from state
+            let flow_name = state.flow_name.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Cannot use 'self.{}' - no flow context available",
                     function_name
@@ -1479,21 +1474,21 @@ impl FlowEngine {
         match (module, function) {
             ("core", "build_metadata") => {
                 // build_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "build_metadata can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::build_metadata(event, Some(context))
+                crate::flows::core::build_metadata(event, Some(state))
             }
             ("core", "build_human_metadata") => {
                 // build_human_metadata works with PreFileChange or PostFileChange events
-                match &context.event {
+                match &state.event {
                     crate::events::AikiEvent::PreFileChange(event) => {
-                        crate::flows::core::build_human_metadata(event, Some(context))
+                        crate::flows::core::build_human_metadata(event, Some(state))
                     }
                     crate::events::AikiEvent::PostFileChange(event) => {
-                        crate::flows::core::build_human_metadata_post(event, Some(context))
+                        crate::flows::core::build_human_metadata_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
                         "build_human_metadata can only be called for PreFileChange or PostFileChange events"
@@ -1502,16 +1497,16 @@ impl FlowEngine {
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "get_git_user currently requires PostFileChange event"
                     )));
                 };
-                crate::flows::core::get_git_user_function(event, Some(context))
+                crate::flows::core::get_git_user_function(event, Some(state))
             }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "classify_edits can only be called for PostFileChange events"
                     )));
@@ -1520,7 +1515,7 @@ impl FlowEngine {
             }
             ("core", "separate_edits") => {
                 // separate_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "separate_edits can only be called for PostFileChange events"
                     )));
@@ -1529,7 +1524,7 @@ impl FlowEngine {
             }
             ("core", "prepare_separation") => {
                 // prepare_separation requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "prepare_separation can only be called for PostFileChange events"
                     )));
@@ -1538,25 +1533,25 @@ impl FlowEngine {
             }
             ("core", "write_ai_files") => {
                 // write_ai_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "write_ai_files can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::write_ai_files(event, Some(context))
+                crate::flows::core::write_ai_files(event, Some(state))
             }
             ("core", "restore_original_files") => {
                 // restore_original_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &context.event else {
+                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "restore_original_files can only be called for PostFileChange events"
                     )));
                 };
-                crate::flows::core::restore_original_files(event, Some(context))
+                crate::flows::core::restore_original_files(event, Some(state))
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
-                let crate::events::AikiEvent::PrepareCommitMessage(event) = &context.event else {
+                let crate::events::AikiEvent::PrepareCommitMessage(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "generate_coauthors can only be called for PrepareCommitMessage events"
                     )));
@@ -1794,9 +1789,9 @@ mod tests {
             alias: None,
         };
 
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let result = FlowEngine::execute_log(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_log(&action, &mut state).unwrap();
         assert!(result.success);
     }
 
@@ -1807,9 +1802,9 @@ mod tests {
             alias: None,
         };
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_log(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_log(&action, &mut state).unwrap();
         assert!(result.success);
     }
 
@@ -1822,9 +1817,9 @@ mod tests {
             alias: None,
         };
 
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let result = FlowEngine::execute_shell(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_shell(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test"));
     }
@@ -1838,9 +1833,9 @@ mod tests {
             alias: None,
         };
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_shell(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_shell(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test.rs"));
     }
@@ -1864,9 +1859,9 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let (result, timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         assert!(matches!(result, FlowResult::Success));
         assert!(timing.duration_secs >= 0.0);
     }
@@ -1886,9 +1881,9 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         // Should return FailedContinue since first action failed but flow continued
         assert!(matches!(result, FlowResult::FailedContinue));
     }
@@ -1911,9 +1906,9 @@ mod tests {
         ];
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         // Should return FailedStop since action failed with on_failure: stop
         assert!(matches!(result, FlowResult::FailedStop));
     }
@@ -1944,9 +1939,9 @@ mod tests {
             on_failure: vec![],
         };
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -1959,9 +1954,9 @@ mod tests {
         };
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let result = FlowEngine::execute_let(&action, &mut context);
+        let result = FlowEngine::execute_let(&action, &mut state);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1987,9 +1982,9 @@ mod tests {
             };
 
             let event = create_test_event();
-            let mut context = AikiState::new(event);
+            let mut state = AikiState::new(event);
 
-            let result = FlowEngine::execute_let(&action, &mut context);
+            let result = FlowEngine::execute_let(&action, &mut state);
             assert!(result.is_err(), "Should reject: {}", let_str);
             assert!(
                 result.unwrap_err().to_string().contains("Invalid variable"),
@@ -2006,9 +2001,9 @@ mod tests {
             on_failure: vec![],
         };
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -2026,13 +2021,13 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
-        assert_eq!(context.get_variable("desc"), Some(&"test.rs".to_string()));
+        assert_eq!(state.get_variable("desc"), Some(&"test.rs".to_string()));
     }
 
     #[test]
@@ -2045,21 +2040,21 @@ mod tests {
         })];
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
-        assert!(context.get_variable("result").is_some());
-        assert!(context
+        assert!(state.get_variable("result").is_some());
+        assert!(state
             .get_variable("result")
             .unwrap()
             .contains("test output"));
 
         // Check that structured metadata was stored
-        assert!(context.get_metadata("result").is_some());
-        assert!(context.get_metadata("result").unwrap().success);
+        assert!(state.get_metadata("result").is_some());
+        assert!(state.get_metadata("result").unwrap().success);
     }
 
     #[test]
@@ -2069,13 +2064,13 @@ mod tests {
             on_failure: vec![],
         })];
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Check that structured metadata was stored
-        assert!(context.get_metadata("desc").is_some());
-        let metadata = context.get_metadata("desc").unwrap();
+        assert!(state.get_metadata("desc").is_some());
+        let metadata = state.get_metadata("desc").unwrap();
         assert!(metadata.success);
         assert_eq!(metadata.stdout, "test.rs");
     }
@@ -2090,15 +2085,15 @@ mod tests {
         })];
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Check that no extra variables were stored (except for any built-ins)
         // The metadata should be empty since no alias was provided
         #[cfg(test)]
         {
-            assert!(context.get_metadata("result").is_none());
+            assert!(state.get_metadata("result").is_none());
         }
     }
 
@@ -2112,11 +2107,11 @@ mod tests {
         };
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
-        context.flow_name = Some("aiki/core".to_string());
+        let mut state = AikiState::new(event);
+        state.flow_name = Some("aiki/core".to_string());
 
         // This should succeed because PostFileChangeEvent has session_id and tool_name
-        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
         assert!(result.stdout.contains("author"));
@@ -2137,30 +2132,30 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Both should have the same value
         assert_eq!(
-            context.get_variable("original"),
+            state.get_variable("original"),
             Some(&"/tmp/file.rs".to_string())
         );
         assert_eq!(
-            context.get_variable("copy"),
+            state.get_variable("copy"),
             Some(&"/tmp/file.rs".to_string())
         );
 
         // Modify original
-        context.set_variable("original".to_string(), "modified".to_string());
+        state.set_variable("original".to_string(), "modified".to_string());
 
         // Copy should still have original value (it's a copy, not a reference)
         assert_eq!(
-            context.get_variable("copy"),
+            state.get_variable("copy"),
             Some(&"/tmp/file.rs".to_string())
         );
         assert_eq!(
-            context.get_variable("original"),
+            state.get_variable("original"),
             Some(&"modified".to_string())
         );
     }
@@ -2180,12 +2175,12 @@ mod tests {
         ];
 
         // PostFileChange event has tool_name and session_id fields
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Second assignment should overwrite first
-        assert_eq!(context.get_variable("x"), Some(&"test-session".to_string()));
+        assert_eq!(state.get_variable("x"), Some(&"test-session".to_string()));
     }
 
     #[test]
@@ -2201,17 +2196,17 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Both should have the value
-        assert_eq!(context.get_variable("file"), Some(&"test.rs".to_string()));
-        assert_eq!(context.get_variable("copy"), Some(&"test.rs".to_string()));
+        assert_eq!(state.get_variable("file"), Some(&"test.rs".to_string()));
+        assert_eq!(state.get_variable("copy"), Some(&"test.rs".to_string()));
 
         // Both should have structured metadata
-        assert!(context.get_metadata("file").is_some());
-        assert!(context.get_metadata("copy").is_some());
+        assert!(state.get_metadata("file").is_some());
+        assert!(state.get_metadata("copy").is_some());
     }
 
     #[test]
@@ -2222,10 +2217,10 @@ mod tests {
         };
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
-        context.flow_name = Some("aiki/core".to_string());
+        let mut state = AikiState::new(event);
+        state.flow_name = Some("aiki/core".to_string());
 
-        let result = FlowEngine::execute_let(&action, &mut context).unwrap();
+        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("author"));
         assert!(result.stdout.contains("message"));
@@ -2240,9 +2235,9 @@ mod tests {
 
         // No flow_name set
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let result = FlowEngine::execute_let(&action, &mut context);
+        let result = FlowEngine::execute_let(&action, &mut state);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -2265,14 +2260,14 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         assert!(matches!(result, FlowResult::Success));
 
         // Check that the variable was stored
-        assert!(context.get_variable("my_var").is_some());
-        assert_eq!(context.get_variable("my_var"), Some(&"test.rs".to_string()));
+        assert!(state.get_variable("my_var").is_some());
+        assert_eq!(state.get_variable("my_var"), Some(&"test.rs".to_string()));
     }
 
     #[test]
@@ -2293,9 +2288,9 @@ mod tests {
         ];
 
         let event = create_test_event();
-        let mut context = AikiState::new(event);
+        let mut state = AikiState::new(event);
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         // Should succeed (we don't validate jj commands in tests)
         assert!(matches!(
             result,
@@ -2316,9 +2311,9 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event_with_file("test.rs"));
+        let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
         assert!(matches!(result, FlowResult::Success));
     }
 
@@ -2406,12 +2401,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"then branch executed".to_string())
         );
     }
@@ -2439,12 +2434,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"else branch executed".to_string())
         );
     }
@@ -2467,12 +2462,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // result should not be set since neither branch executed
-        assert!(context.get_variable("result").is_none());
+        assert!(state.get_variable("result").is_none());
     }
 
     #[test]
@@ -2486,10 +2481,10 @@ mod tests {
             // Check JSON field (will fail in test since classify_edits returns error)
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        context.flow_name = Some("aiki/core".to_string());
+        let mut state = AikiState::new(create_test_event());
+        state.flow_name = Some("aiki/core".to_string());
 
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // This test just verifies syntax doesn't crash
     }
@@ -2521,20 +2516,20 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"nested then executed".to_string())
         );
     }
 
     #[test]
     fn test_evaluate_condition_equality() {
-        let mut context = AikiState::new(create_test_event());
-        context.store_action_result(
+        let mut state = AikiState::new(create_test_event());
+        state.store_action_result(
             "test".to_string(),
             ActionResult {
                 success: true,
@@ -2545,20 +2540,20 @@ mod tests {
         );
 
         // Test equality
-        assert!(FlowEngine::evaluate_condition("$test == value", &mut context).unwrap());
-        assert!(!FlowEngine::evaluate_condition("$test == other", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$test == value", &mut state).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$test == other", &mut state).unwrap());
 
         // Test inequality
-        assert!(!FlowEngine::evaluate_condition("$test != value", &mut context).unwrap());
-        assert!(FlowEngine::evaluate_condition("$test != other", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$test != value", &mut state).unwrap());
+        assert!(FlowEngine::evaluate_condition("$test != other", &mut state).unwrap());
     }
 
     #[test]
     fn test_if_condition_truthy_values() {
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
         // Empty string is falsy
-        context.store_action_result(
+        state.store_action_result(
             "empty".to_string(),
             ActionResult {
                 success: true,
@@ -2567,10 +2562,10 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowEngine::evaluate_condition("$empty", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$empty", &mut state).unwrap());
 
         // Non-empty string is truthy
-        context.store_action_result(
+        state.store_action_result(
             "nonempty".to_string(),
             ActionResult {
                 success: true,
@@ -2579,10 +2574,10 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowEngine::evaluate_condition("$nonempty", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$nonempty", &mut state).unwrap());
 
         // "false" literal is falsy
-        context.store_action_result(
+        state.store_action_result(
             "false_str".to_string(),
             ActionResult {
                 success: true,
@@ -2591,10 +2586,10 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowEngine::evaluate_condition("$false_str", &mut context).unwrap());
+        assert!(!FlowEngine::evaluate_condition("$false_str", &mut state).unwrap());
 
         // "true" literal is truthy
-        context.store_action_result(
+        state.store_action_result(
             "true_str".to_string(),
             ActionResult {
                 success: true,
@@ -2603,20 +2598,20 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowEngine::evaluate_condition("$true_str", &mut context).unwrap());
+        assert!(FlowEngine::evaluate_condition("$true_str", &mut state).unwrap());
     }
 
     #[test]
     fn test_resolve_condition_value_with_quotes() {
-        let mut context = AikiState::new(create_test_event());
+        let mut state = AikiState::new(create_test_event());
 
         // Test string literals with quotes
         assert_eq!(
-            FlowEngine::resolve_condition_value("\"hello\"", &mut context).unwrap(),
+            FlowEngine::resolve_condition_value("\"hello\"", &mut state).unwrap(),
             "hello"
         );
         assert_eq!(
-            FlowEngine::resolve_condition_value("'world'", &mut context).unwrap(),
+            FlowEngine::resolve_condition_value("'world'", &mut state).unwrap(),
             "world"
         );
     }
@@ -2654,12 +2649,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"exact match case".to_string())
         );
     }
@@ -2693,12 +2688,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"default case".to_string())
         );
     }
@@ -2729,13 +2724,13 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // No match and no default = success (no-op)
         assert!(matches!(result, FlowResult::Success));
         // result variable should not be set
-        assert!(context.get_variable("result").is_none());
+        assert!(state.get_variable("result").is_none());
     }
 
     #[test]
@@ -2772,8 +2767,8 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // Note: Variable resolver will parse the JSON and extract the field
@@ -2806,12 +2801,12 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Should execute the then branch because changed_files is non-empty
         assert_eq!(
-            context.get_variable("stash_result").unwrap(),
+            state.get_variable("stash_result").unwrap(),
             "User has changes to stash"
         );
     }
@@ -2841,14 +2836,11 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (_result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Should execute the else branch because changed_files is empty
-        assert_eq!(
-            context.get_variable("result").unwrap(),
-            "No changes detected"
-        );
+        assert_eq!(state.get_variable("result").unwrap(), "No changes detected");
     }
 
     #[test]
@@ -2867,15 +2859,15 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue
         assert!(matches!(result, FlowResult::FailedContinue));
 
         // Second action should still execute
         assert_eq!(
-            context.get_variable("result"),
+            state.get_variable("result"),
             Some(&"Still executed".to_string())
         );
     }
@@ -2898,14 +2890,14 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedStop
         assert!(matches!(result, FlowResult::FailedStop));
 
         // Second action should NOT execute
-        assert!(context.get_variable("result").is_none());
+        assert!(state.get_variable("result").is_none());
     }
 
     #[test]
@@ -2926,14 +2918,14 @@ mod tests {
             }),
         ];
 
-        let mut context = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock
         assert!(matches!(result, FlowResult::FailedBlock));
 
         // Second action should NOT execute
-        assert!(context.get_variable("result").is_none());
+        assert!(state.get_variable("result").is_none());
     }
 
     #[test]
@@ -2955,10 +2947,10 @@ mod tests {
             on_failure: vec![],
         })];
 
-        let mut context = AikiState::new(event);
-        context.flow_name = Some("aiki/core".to_string());
+        let mut state = AikiState::new(event);
+        state.flow_name = Some("aiki/core".to_string());
 
-        let result = FlowEngine::execute_actions(&actions, &mut context);
+        let result = FlowEngine::execute_actions(&actions, &mut state);
 
         // Should fail
         assert!(result.is_err());
