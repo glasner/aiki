@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::flows::context::TextLines;
+
 /// A complete flow definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Flow {
@@ -65,10 +67,8 @@ pub enum Action {
     Let(LetAction),
     /// Self function call (call a function without storing result)
     Self_(SelfAction),
-    /// Context injection (for PrePrompt events) - NEW: replaces Prompt
+    /// Context injection (for PrePrompt events)
     Context(ContextAction),
-    /// Prompt modification (for PrePrompt events) - DEPRECATED: use Context instead
-    Prompt(PromptAction),
     /// Autoreply (for PostResponse events)
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
@@ -215,37 +215,15 @@ pub enum ContextContent {
 
     /// Explicit form with prepend/append
     /// YAML: `context: { prepend: "...", append: "..." }`
+    /// Supports both scalar and array forms:
+    /// `context: { prepend: "single line" }`
+    /// `context: { prepend: ["line 1", "line 2"] }`
     Explicit {
         #[serde(default)]
-        prepend: Option<String>,
+        prepend: Option<TextLines>,
         #[serde(default)]
-        append: Option<String>,
+        append: Option<TextLines>,
     },
-}
-
-/// Prompt action (for PrePrompt events) - DEPRECATED
-/// Modifies the user's prompt before it's sent to the agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptAction {
-    /// The prompt modification content (MessageChunk)
-    pub prompt: PromptContent,
-
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
-}
-
-/// Content for prompt action
-/// Can be a simple string (defaults to append) or explicit prepend/append
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PromptContent {
-    /// Short form: defaults to append
-    /// YAML: `prompt: "text"`
-    Simple(String),
-
-    /// Explicit form with prepend/append
-    /// YAML: `prompt: { prepend: "...", append: "..." }`
-    Explicit(crate::flows::messages::MessageChunk),
 }
 
 /// Autoreply action (for PostResponse events)
@@ -270,11 +248,14 @@ pub enum AutoreplyContent {
 
     /// Explicit form with prepend/append
     /// YAML: `autoreply: { prepend: "...", append: "..." }`
+    /// Supports both scalar and array forms:
+    /// `autoreply: { prepend: "single line" }`
+    /// `autoreply: { prepend: ["line 1", "line 2"] }`
     Explicit {
         #[serde(default)]
-        prepend: Option<String>,
+        prepend: Option<TextLines>,
         #[serde(default)]
-        append: Option<String>,
+        append: Option<TextLines>,
     },
 }
 

@@ -1021,24 +1021,10 @@ fn build_modified_prompt(
     new_prompt
 }
 
-/// Extract modified_prompt from metadata with fallback
-fn extract_modified_prompt(response: &HookResponse, original_text: &str) -> String {
-    response
-        .metadata
-        .iter()
-        .find(|(k, _)| k == "modified_prompt")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| original_text.to_string())
-}
-
-/// Extract autoreply from metadata
+/// Extract modified prompt from context with fallback
+/// Extract autoreply from context
 fn extract_autoreply(response: &HookResponse) -> Option<String> {
-    response
-        .metadata
-        .iter()
-        .find(|(k, _)| k == "autoreply")
-        .map(|(_, v)| v.clone())
-        .filter(|v| !v.is_empty())
+    response.context.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
 /// Check if autoreply limit has been reached
@@ -1440,13 +1426,33 @@ fn handle_session_prompt(
         )));
     }
 
-    // Build final prompt: agent_context + original
-    let agent_context = crate::handlers::build_agent_context(&response);
-    let final_prompt = if !agent_context.is_empty() {
-        format!("{}\n\n{}", agent_context, original_text)
-    } else {
-        // Fallback: check for legacy modified_prompt in metadata
-        extract_modified_prompt(&response, &original_text)
+    // Build final prompt: messages + context + original
+    let formatted_messages = crate::handlers::format_messages(&response);
+    let prepended_context = response.context.as_deref().unwrap_or("");
+
+    let final_prompt = match (
+        !formatted_messages.is_empty(),
+        !prepended_context.is_empty(),
+    ) {
+        (true, true) => {
+            // Both messages and context: combine them
+            format!(
+                "{}\n\n{}\n\n{}",
+                formatted_messages, prepended_context, original_text
+            )
+        }
+        (true, false) => {
+            // Only messages
+            format!("{}\n\n{}", formatted_messages, original_text)
+        }
+        (false, true) => {
+            // Only context
+            format!("{}\n\n{}", prepended_context, original_text)
+        }
+        (false, false) => {
+            // Neither: use original prompt
+            original_text.to_string()
+        }
     };
 
     // Modify the JSON params to replace prompt text
@@ -1543,12 +1549,31 @@ fn handle_post_response(
     }
 
     // Check for autoreply (agent-visible via next prompt)
-    let agent_context = crate::handlers::build_agent_context(&response);
-    let autoreply_text = if !agent_context.is_empty() {
-        Some(agent_context)
-    } else {
-        // Fallback: check for legacy autoreply in metadata
-        extract_autoreply(&response)
+    // Combine both messages and context if both are present
+    let formatted_messages = crate::handlers::format_messages(&response);
+    let autoreply_context = extract_autoreply(&response);
+
+    let autoreply_text = match (formatted_messages.is_empty(), autoreply_context.is_some()) {
+        (false, true) => {
+            // Both messages and autoreply context: combine them
+            Some(format!(
+                "{}\n\n{}",
+                formatted_messages,
+                autoreply_context.unwrap()
+            ))
+        }
+        (false, false) => {
+            // Only messages
+            Some(formatted_messages)
+        }
+        (true, true) => {
+            // Only autoreply context
+            autoreply_context
+        }
+        (true, false) => {
+            // Neither
+            None
+        }
     };
 
     if let Some(autoreply_text) = autoreply_text {
@@ -2794,47 +2819,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_modified_prompt_with_metadata() {
+    fn test_extract_autoreply_with_context() {
         let response = HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: vec![("modified_prompt".to_string(), "MODIFIED".to_string())],
-            exit_code: Some(0),
+            context: Some("Fix errors".to_string()),
+            exit_code: 0,
             messages: Vec::new(),
-            context: None,
-        };
-
-        let result = extract_modified_prompt(&response, "original");
-        assert_eq!(result, "MODIFIED");
-    }
-
-    #[test]
-    fn test_extract_modified_prompt_fallback_to_original() {
-        let response = HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: vec![],
-            exit_code: Some(0),
-            messages: Vec::new(),
-            context: None,
-        };
-
-        let result = extract_modified_prompt(&response, "original");
-        assert_eq!(result, "original");
-    }
-
-    #[test]
-    fn test_extract_autoreply_with_metadata() {
-        let response = HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: vec![("autoreply".to_string(), "Fix errors".to_string())],
-            exit_code: Some(0),
-            messages: Vec::new(),
-            context: None,
         };
 
         let result = extract_autoreply(&response);
@@ -2844,13 +2833,9 @@ mod tests {
     #[test]
     fn test_extract_autoreply_missing_returns_none() {
         let response = HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: vec![],
-            exit_code: Some(0),
-            messages: Vec::new(),
             context: None,
+            exit_code: 0,
+            messages: Vec::new(),
         };
 
         let result = extract_autoreply(&response);
@@ -2860,13 +2845,9 @@ mod tests {
     #[test]
     fn test_extract_autoreply_empty_returns_none() {
         let response = HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: vec![("autoreply".to_string(), "".to_string())],
-            exit_code: Some(0),
+            context: Some("".to_string()),
+            exit_code: 0,
             messages: Vec::new(),
-            context: None,
         };
 
         let result = extract_autoreply(&response);

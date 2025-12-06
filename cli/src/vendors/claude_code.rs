@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Map};
+use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
@@ -152,119 +152,178 @@ pub fn handle(event_name: &str) -> Result<()> {
 
 /// Translate HookResponse to Claude Code JSON format
 ///
-/// Claude Code expects different JSON structures depending on the event type
-/// and the response status (success, warning, blocking error).
+/// Claude Code expects different JSON structures depending on the event type.
+/// This function dispatches to event-specific translators that handle the details.
 fn translate_response(response: HookResponse, event_type: &str) -> (Option<String>, i32) {
-    let exit_code = response
-        .exit_code
-        .unwrap_or(if response.success { 0 } else { 1 });
-
-    // PostToolUse uses different JSON structure than other hooks
-    let is_post_tool_use = event_type == "PostToolUse" || event_type == "PostFileChange";
-
-    match exit_code {
-        2 => {
-            // Blocking error
-            let mut json = Map::new();
-
-            if is_post_tool_use {
-                // PostToolUse: use decision: "block"
-                json.insert("decision".to_string(), json!("block"));
-
-                if let Some(msg) = response.user_message {
-                    json.insert("reason".to_string(), json!(msg));
-                }
-
-                if let Some(agent_msg) = response.agent_message {
-                    let mut hook_output = Map::new();
-                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
-                    hook_output.insert("additionalContext".to_string(), json!(agent_msg));
-                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
-                }
-            } else {
-                // Other hooks: use continue: false
-                json.insert("continue".to_string(), json!(false));
-
-                if let Some(msg) = response.user_message {
-                    json.insert("stopReason".to_string(), json!(msg));
-                }
-
-                if let Some(agent_msg) = response.agent_message {
-                    json.insert("systemMessage".to_string(), json!(agent_msg));
-                }
-            }
-
-            (Some(serde_json::to_string(&json).unwrap()), 0)
-        }
-        0 => {
-            // Success or non-blocking warnings
-            let mut json = Map::new();
-
-            // Build agent context from messages + context
-            let agent_context = crate::handlers::build_agent_context(&response);
-
-            if !agent_context.is_empty() {
-                if is_post_tool_use {
-                    // PostToolUse: use hookSpecificOutput.additionalContext
-                    let mut hook_output = Map::new();
-                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
-                    hook_output.insert("additionalContext".to_string(), json!(agent_context));
-                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
-                } else {
-                    // SessionStart, PrePrompt: use hookSpecificOutput.additionalContext
-                    let mut hook_output = Map::new();
-                    hook_output.insert("hookEventName".to_string(), json!(event_type));
-                    hook_output.insert("additionalContext".to_string(), json!(agent_context));
-                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
-                }
-            }
-
-            // Legacy fields (backward compatibility)
-            // Only include systemMessage for warnings/errors (not pure success)
-            let has_warning = response.user_message.as_ref().map_or(false, |msg| {
-                msg.starts_with("⚠️") || msg.contains("warning") || msg.contains("failed")
-            });
-
-            if has_warning {
-                if let Some(msg) = response.user_message {
-                    json.insert("systemMessage".to_string(), json!(msg));
-                }
-            }
-
-            if is_post_tool_use && agent_context.is_empty() {
-                // PostToolUse: fallback to legacy agent_message if no new context
-                if let Some(agent_msg) = response.agent_message {
-                    let mut hook_output = Map::new();
-                    hook_output.insert("hookEventName".to_string(), json!("PostToolUse"));
-                    hook_output.insert("additionalContext".to_string(), json!(agent_msg));
-                    json.insert("hookSpecificOutput".to_string(), json!(hook_output));
-                }
-            }
-
-            // Metadata for all events
-            if !response.metadata.is_empty() {
-                let metadata: Vec<Vec<String>> = response
-                    .metadata
-                    .into_iter()
-                    .map(|(k, v)| vec![k, v])
-                    .collect();
-                json.insert("metadata".to_string(), json!(metadata));
-            }
-
-            if json.is_empty() {
-                (None, 0)
-            } else {
-                (Some(serde_json::to_string(&json).unwrap()), 0)
-            }
-        }
+    // Claude Code hooks always return exit 0
+    let json_output = match event_type {
+        "SessionStart" => translate_session_start(&response),
+        "UserPromptSubmit" => translate_user_prompt_submit(&response),
+        "PreToolUse" => translate_pre_tool_use(&response),
+        "PostToolUse" | "PostFileChange" => translate_post_tool_use(&response),
+        "Stop" => translate_stop(&response),
         _ => {
-            // Exit 1 or other: stderr fallback
-            if let Some(msg) = response.user_message {
-                eprintln!("{}", msg);
-            }
-            (None, exit_code)
+            eprintln!("Warning: Unknown Claude Code event type: {}", event_type);
+            return (None, 0);
         }
+    };
+
+    (json_output, 0)
+}
+
+/// Combine formatted messages and context according to Phase 8 architecture
+///
+/// Returns Some(combined_string) if either messages or context are non-empty,
+/// None if both are empty.
+fn combine_messages_and_context(response: &HookResponse) -> Option<String> {
+    let formatted_messages = crate::handlers::format_messages(response);
+    let context = response.context.as_deref().unwrap_or("");
+
+    match (!formatted_messages.is_empty(), !context.is_empty()) {
+        (true, true) => Some(format!("{}\n\n{}", formatted_messages, context)),
+        (true, false) => Some(formatted_messages),
+        (false, true) => Some(context.to_string()),
+        (false, false) => None,
     }
+}
+
+/// Translate SessionStart event to Claude Code JSON format
+fn translate_session_start(response: &HookResponse) -> Option<String> {
+    let combined = combine_messages_and_context(response);
+
+    let json = if let Some(ctx) = combined {
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": ctx
+            }
+        })
+    } else {
+        json!({})
+    };
+
+    serde_json::to_string(&json).ok()
+}
+
+/// Translate UserPromptSubmit event to Claude Code JSON format
+fn translate_user_prompt_submit(response: &HookResponse) -> Option<String> {
+    if response.exit_code == 2 {
+        // Block the prompt
+        let reason = crate::handlers::format_messages(response);
+        let json = json!({
+            "decision": "block",
+            "reason": reason
+        });
+        serde_json::to_string(&json).ok()
+    } else {
+        // Allow with optional context
+        let combined = combine_messages_and_context(response);
+        let json = if let Some(ctx) = combined {
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": ctx
+                }
+            })
+        } else {
+            json!({})
+        };
+        serde_json::to_string(&json).ok()
+    }
+}
+
+/// Translate PreToolUse event to Claude Code JSON format
+fn translate_pre_tool_use(response: &HookResponse) -> Option<String> {
+    let formatted_messages = crate::handlers::format_messages(response);
+
+    // Determine permission decision from response
+    // For now, default to "allow" unless blocked
+    let (permission_decision, reason) = if response.exit_code == 2 {
+        ("deny", Some(formatted_messages))
+    } else {
+        (
+            "allow",
+            if !formatted_messages.is_empty() {
+                Some(formatted_messages)
+            } else {
+                None
+            },
+        )
+    };
+
+    let mut output = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": permission_decision
+        }
+    });
+
+    // Add reason if present
+    if let Some(reason_text) = reason {
+        output["hookSpecificOutput"]["permissionDecisionReason"] = json!(reason_text);
+    }
+
+    serde_json::to_string(&output).ok()
+}
+
+/// Translate PostToolUse event to Claude Code JSON format
+fn translate_post_tool_use(response: &HookResponse) -> Option<String> {
+    if response.exit_code == 2 {
+        // Block (autoreply with reason)
+        let reason = crate::handlers::format_messages(response);
+        let reason_text = if !reason.is_empty() {
+            reason
+        } else {
+            "Tool execution requires attention".to_string()
+        };
+
+        let mut json_obj = json!({
+            "decision": "block",
+            "reason": reason_text
+        });
+
+        // Add optional context
+        if let Some(ref ctx) = response.context {
+            json_obj["hookSpecificOutput"] = json!({
+                "hookEventName": "PostToolUse",
+                "additionalContext": ctx
+            });
+        }
+
+        serde_json::to_string(&json_obj).ok()
+    } else {
+        // Allow with optional context
+        let combined = combine_messages_and_context(response);
+        let json = if let Some(ctx) = combined {
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": ctx
+                }
+            })
+        } else {
+            json!({})
+        };
+        serde_json::to_string(&json).ok()
+    }
+}
+
+/// Translate Stop event to Claude Code JSON format
+fn translate_stop(response: &HookResponse) -> Option<String> {
+    let combined = combine_messages_and_context(response);
+
+    let json = if let Some(reason_text) = combined {
+        // Block (autoreply/force continuation)
+        json!({
+            "decision": "block",
+            "reason": reason_text
+        })
+    } else {
+        // Allow normal stop
+        json!({})
+    };
+
+    serde_json::to_string(&json).ok()
 }
 
 /// Check if a tool modifies files

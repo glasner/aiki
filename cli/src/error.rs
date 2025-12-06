@@ -42,7 +42,7 @@ pub enum AikiError {
 
     // Message assembly errors
     #[error("Invalid message chunk: {0}")]
-    InvalidMessageChunk(String),
+    InvalidContextChunk(String),
 
     #[error("Missing function: {0}")]
     MissingFunction(String),

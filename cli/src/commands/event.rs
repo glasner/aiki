@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
-use crate::handlers::HookResponse;
+use crate::handlers::{HookResponse, Message};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;
@@ -65,9 +65,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
 /// Git hooks may be called from different editors, so we need to detect
 /// which editor is active and format the response appropriately.
 fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Option<String>, i32) {
-    let exit_code = response
-        .exit_code
-        .unwrap_or(if response.success { 0 } else { 1 });
+    let exit_code = response.exit_code;
 
     match editor {
         EditorContext::Claude => {
@@ -81,8 +79,12 @@ fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Opt
         }
         EditorContext::Unknown => {
             // Generic stderr output for unknown editors
-            if let Some(msg) = response.user_message {
-                eprintln!("[aiki] {}", msg);
+            for msg in &response.messages {
+                match msg {
+                    Message::Info(s) => eprintln!("[aiki] ℹ️ {}", s),
+                    Message::Warning(s) => eprintln!("[aiki] ⚠️ {}", s),
+                    Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
+                }
             }
             (None, exit_code)
         }
@@ -99,12 +101,32 @@ fn translate_for_claude_code(response: HookResponse, exit_code: i32) -> (Option<
             let mut json = Map::new();
             json.insert("continue".to_string(), json!(false));
 
-            if let Some(msg) = response.user_message {
-                json.insert("stopReason".to_string(), json!(msg));
+            // Extract error messages for stopReason
+            let error_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Error(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !error_msgs.is_empty() {
+                json.insert("stopReason".to_string(), json!(error_msgs.join("; ")));
             }
 
-            if let Some(agent_msg) = response.agent_message {
-                json.insert("systemMessage".to_string(), json!(agent_msg));
+            // Extract info messages for systemMessage
+            let info_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Info(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !info_msgs.is_empty() {
+                json.insert("systemMessage".to_string(), json!(info_msgs.join("\n")));
             }
 
             (Some(serde_json::to_string(&json).unwrap()), 0)
@@ -113,23 +135,27 @@ fn translate_for_claude_code(response: HookResponse, exit_code: i32) -> (Option<
             // Success or non-blocking warnings
             let mut json = Map::new();
 
-            let has_warning = response.user_message.as_ref().map_or(false, |msg| {
-                msg.starts_with("⚠️") || msg.contains("warning") || msg.contains("failed")
-            });
+            // Check if there are any warnings or errors
+            let has_warning = response
+                .messages
+                .iter()
+                .any(|msg| matches!(msg, Message::Warning(_) | Message::Error(_)));
 
-            if has_warning {
-                if let Some(msg) = response.user_message {
-                    json.insert("systemMessage".to_string(), json!(msg));
-                }
-            }
-
-            if !response.metadata.is_empty() {
-                let metadata: Vec<Vec<String>> = response
-                    .metadata
-                    .into_iter()
-                    .map(|(k, v)| vec![k, v])
+            if has_warning || !response.messages.is_empty() {
+                // Combine all messages for systemMessage
+                let all_msgs: Vec<String> = response
+                    .messages
+                    .iter()
+                    .map(|msg| match msg {
+                        Message::Info(s) => format!("ℹ️ {}", s),
+                        Message::Warning(s) => format!("⚠️ {}", s),
+                        Message::Error(s) => format!("❌ {}", s),
+                    })
                     .collect();
-                json.insert("metadata".to_string(), json!(metadata));
+
+                if !all_msgs.is_empty() {
+                    json.insert("systemMessage".to_string(), json!(all_msgs.join("\n")));
+                }
             }
 
             if json.is_empty() {
@@ -139,8 +165,12 @@ fn translate_for_claude_code(response: HookResponse, exit_code: i32) -> (Option<
             }
         }
         _ => {
-            if let Some(msg) = response.user_message {
-                eprintln!("{}", msg);
+            for msg in &response.messages {
+                match msg {
+                    Message::Info(s) => eprintln!("ℹ️ {}", s),
+                    Message::Warning(s) => eprintln!("⚠️ {}", s),
+                    Message::Error(s) => eprintln!("❌ {}", s),
+                }
             }
             (None, exit_code)
         }
@@ -156,12 +186,32 @@ fn translate_for_cursor(response: HookResponse, exit_code: i32) -> (Option<Strin
             // Blocking error
             let mut json = Map::new();
 
-            if let Some(msg) = response.user_message {
-                json.insert("user_message".to_string(), json!(msg));
+            // Extract error messages for user_message
+            let error_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Error(s) | Message::Warning(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !error_msgs.is_empty() {
+                json.insert("user_message".to_string(), json!(error_msgs.join("; ")));
             }
 
-            if let Some(agent_msg) = response.agent_message {
-                json.insert("agent_message".to_string(), json!(agent_msg));
+            // Extract info messages for agent_message
+            let info_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Info(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !info_msgs.is_empty() {
+                json.insert("agent_message".to_string(), json!(info_msgs.join("\n")));
             }
 
             (Some(serde_json::to_string(&json).unwrap()), 2)
@@ -170,21 +220,19 @@ fn translate_for_cursor(response: HookResponse, exit_code: i32) -> (Option<Strin
             // Success or non-blocking
             let mut json = Map::new();
 
-            if let Some(msg) = response.user_message {
-                json.insert("user_message".to_string(), json!(msg));
-            }
+            // Combine all messages for user_message
+            let all_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .map(|msg| match msg {
+                    Message::Info(s) => format!("ℹ️ {}", s),
+                    Message::Warning(s) => format!("⚠️ {}", s),
+                    Message::Error(s) => format!("❌ {}", s),
+                })
+                .collect();
 
-            if let Some(agent_msg) = response.agent_message {
-                json.insert("agent_message".to_string(), json!(agent_msg));
-            }
-
-            if !response.metadata.is_empty() {
-                let metadata: Map<String, Value> = response
-                    .metadata
-                    .into_iter()
-                    .map(|(k, v)| (k, json!(v)))
-                    .collect();
-                json.insert("metadata".to_string(), json!(metadata));
+            if !all_msgs.is_empty() {
+                json.insert("user_message".to_string(), json!(all_msgs.join("\n")));
             }
 
             if json.is_empty() {
@@ -194,8 +242,12 @@ fn translate_for_cursor(response: HookResponse, exit_code: i32) -> (Option<Strin
             }
         }
         _ => {
-            if let Some(msg) = response.user_message {
-                eprintln!("{}", msg);
+            for msg in &response.messages {
+                match msg {
+                    Message::Info(s) => eprintln!("ℹ️ {}", s),
+                    Message::Warning(s) => eprintln!("⚠️ {}", s),
+                    Message::Error(s) => eprintln!("❌ {}", s),
+                }
             }
             (None, exit_code)
         }

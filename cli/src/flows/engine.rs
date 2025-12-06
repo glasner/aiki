@@ -5,12 +5,11 @@ use std::time::Duration;
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
-    FailureMode, IfAction, JjAction, LetAction, LogAction, PromptAction, PromptContent, SelfAction,
-    ShellAction, SwitchAction,
+    FailureMode, IfAction, JjAction, LetAction, LogAction, SelfAction, ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
-use crate::flows::messages::MessageChunk;
+use crate::flows::context::ContextChunk;
 
 /// Result of flow execution
 #[derive(Debug, Clone)]
@@ -161,7 +160,6 @@ impl FlowEngine {
                     Action::Let(let_action) => &let_action.on_failure,
                     Action::Self_(self_action) => &self_action.on_failure,
                     Action::Context(context_action) => &context_action.on_failure,
-                    Action::Prompt(prompt_action) => &prompt_action.on_failure,
                     Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
                     Action::Log(_) => {
@@ -230,7 +228,6 @@ impl FlowEngine {
             Action::Let(let_action) => Self::execute_let(let_action, context),
             Action::Self_(self_action) => Self::execute_self(self_action, context),
             Action::Context(context_action) => Self::execute_context(context_action, context),
-            Action::Prompt(prompt_action) => Self::execute_prompt(prompt_action, context),
             Action::Autoreply(autoreply_action) => {
                 Self::execute_autoreply(autoreply_action, context)
             }
@@ -281,10 +278,6 @@ impl FlowEngine {
             }
             Action::Context(_) => {
                 // Context actions accumulate in state.context directly
-                // No need to store results
-            }
-            Action::Prompt(_) => {
-                // Prompt actions modify the prompt_assembler in state directly
                 // No need to store results
             }
             Action::Autoreply(_) => {
@@ -500,64 +493,21 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(context);
 
-        // Extract prepend/append from ContextContent and resolve variables
-        let (prepend, append) = match &action.context {
+        // Convert ContextContent to ContextChunk and resolve variables
+        let chunk = match &action.context {
             crate::flows::types::ContextContent::Simple(text) => {
                 // Simple form defaults to append
-                (None, Some(resolver.resolve(text)))
-            }
-            crate::flows::types::ContextContent::Explicit { prepend, append } => {
-                let prepend_resolved = prepend.as_ref().map(|s| resolver.resolve(s));
-                let append_resolved = append.as_ref().map(|s| resolver.resolve(s));
-                (prepend_resolved, append_resolved)
-            }
-        };
-
-        // Accumulate into state.context
-        if let Some(pre) = prepend {
-            context.context.prepend = Some(match &context.context.prepend {
-                Some(existing) => format!("{}\n\n{}", existing, pre),
-                None => pre,
-            });
-        }
-
-        if let Some(app) = append {
-            context.context.append = Some(match &context.context.append {
-                Some(existing) => format!("{}\n\n{}", existing, app),
-                None => app,
-            });
-        }
-
-        Ok(ActionResult::success())
-    }
-
-    /// Execute a prompt action
-    ///
-    /// This action adds content to the prompt assembler for PrePrompt events.
-    /// Only works for PrePrompt events that have a prompt_assembler.
-    fn execute_prompt(action: &PromptAction, context: &mut AikiState) -> Result<ActionResult> {
-        use crate::events::AikiEvent;
-
-        // Verify this is a PrePrompt event
-        if !matches!(&context.event, AikiEvent::PrePrompt(_)) {
-            return Err(AikiError::Other(anyhow::anyhow!(
-                "prompt action can only be used in PrePrompt events"
-            )));
-        }
-
-        // Create variable resolver
-        let mut resolver = Self::create_resolver(context);
-
-        // Convert PromptContent to MessageChunk and resolve variables
-        let chunk = match &action.prompt {
-            PromptContent::Simple(text) => {
-                // Simple form: defaults to append
-                MessageChunk {
+                ContextChunk {
                     prepend: None,
-                    append: Some(crate::flows::messages::TextLines::Single(text.clone())),
+                    append: Some(crate::flows::context::TextLines::Single(text.clone())),
                 }
             }
-            PromptContent::Explicit(chunk) => chunk.clone(),
+            crate::flows::types::ContextContent::Explicit { prepend, append } => {
+                crate::flows::context::ContextChunk {
+                    prepend: prepend.clone(),
+                    append: append.clone(),
+                }
+            }
         }
         .resolve_variables(|s| resolver.resolve(s));
 
@@ -565,7 +515,7 @@ impl FlowEngine {
         chunk.validate()?;
 
         // Add chunk to message assembler
-        let assembler = context.get_message_assembler_mut()?;
+        let assembler = context.get_context_assembler_mut()?;
         assembler.add_chunk(chunk);
 
         Ok(ActionResult::success())
@@ -591,25 +541,19 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(context);
 
-        // Convert AutoreplyContent to MessageChunk and resolve variables
+        // Convert AutoreplyContent to ContextChunk and resolve variables
         let chunk = match &action.autoreply {
             AutoreplyContent::Simple(text) => {
                 // Simple form: just text content
-                MessageChunk {
+                ContextChunk {
                     prepend: None,
-                    append: Some(crate::flows::messages::TextLines::Single(text.clone())),
+                    append: Some(crate::flows::context::TextLines::Single(text.clone())),
                 }
             }
-            AutoreplyContent::Explicit { prepend, append } => {
-                crate::flows::messages::MessageChunk {
-                    prepend: prepend
-                        .as_ref()
-                        .map(|s| crate::flows::messages::TextLines::Single(s.clone())),
-                    append: append
-                        .as_ref()
-                        .map(|s| crate::flows::messages::TextLines::Single(s.clone())),
-                }
-            }
+            AutoreplyContent::Explicit { prepend, append } => crate::flows::context::ContextChunk {
+                prepend: prepend.clone(),
+                append: append.clone(),
+            },
         }
         .resolve_variables(|s| resolver.resolve(s));
 
@@ -617,7 +561,7 @@ impl FlowEngine {
         chunk.validate()?;
 
         // Add chunk to message assembler
-        let assembler = context.get_message_assembler_mut()?;
+        let assembler = context.get_context_assembler_mut()?;
         assembler.add_chunk(chunk);
 
         Ok(ActionResult::success())
@@ -2736,252 +2680,6 @@ mod tests {
             context.get_variable("result").unwrap(),
             "No changes detected"
         );
-    }
-
-    #[test]
-    fn test_pre_prompt_simple_form() {
-        use crate::events::AikiPrePromptEvent;
-        use chrono::Utc;
-
-        // Create a PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: AgentType::Claude,
-            session_id: Some("test-session".to_string()),
-            cwd: std::path::PathBuf::from("/test"),
-            timestamp: Utc::now(),
-            prompt: "What files changed?".to_string(),
-        });
-
-        // Create prompt actions using simple form
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Simple("Context: You are in a test project.".to_string()),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
-
-        assert!(matches!(result, FlowResult::Success));
-
-        // Build final prompt
-        let final_prompt = context.build_message().unwrap();
-        assert!(final_prompt.contains("Context: You are in a test project."));
-        assert!(final_prompt.contains("What files changed?"));
-    }
-
-    #[test]
-    fn test_pre_prompt_explicit_form_with_prepend() {
-        use crate::events::AikiPrePromptEvent;
-        use crate::flows::messages::{MessageChunk, TextLines};
-        use chrono::Utc;
-
-        // Create a PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: AgentType::Claude,
-            session_id: Some("test-session".to_string()),
-            cwd: std::path::PathBuf::from("/test"),
-            timestamp: Utc::now(),
-            prompt: "Original prompt".to_string(),
-        });
-
-        // Create prompt actions using explicit form with prepend
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Explicit(MessageChunk {
-                prepend: Some(TextLines::Single("PREPENDED CONTEXT: ".to_string())),
-                append: Some(TextLines::Single(" [END]".to_string())),
-            }),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
-
-        assert!(matches!(result, FlowResult::Success));
-
-        // Build final prompt
-        let final_prompt = context.build_message().unwrap();
-        // Note: MessageAssembler adds "\n\n" separator between prepends and original content
-        assert_eq!(
-            final_prompt,
-            "PREPENDED CONTEXT: \n\nOriginal prompt\n\n [END]"
-        );
-    }
-
-    #[test]
-    fn test_pre_prompt_multiple_chunks() {
-        use crate::events::AikiPrePromptEvent;
-        use crate::flows::messages::{MessageChunk, TextLines};
-        use chrono::Utc;
-
-        // Create a PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: AgentType::Claude,
-            session_id: Some("test-session".to_string()),
-            cwd: std::path::PathBuf::from("/test"),
-            timestamp: Utc::now(),
-            prompt: "user prompt".to_string(),
-        });
-
-        // Create multiple prompt actions
-        let actions = vec![
-            Action::Prompt(PromptAction {
-                prompt: PromptContent::Explicit(MessageChunk {
-                    prepend: Some(TextLines::Single("CONTEXT1 ".to_string())),
-                    append: None,
-                }),
-                on_failure: FailureMode::Continue,
-            }),
-            Action::Prompt(PromptAction {
-                prompt: PromptContent::Explicit(MessageChunk {
-                    prepend: Some(TextLines::Single("CONTEXT2 ".to_string())),
-                    append: None,
-                }),
-                on_failure: FailureMode::Continue,
-            }),
-            Action::Prompt(PromptAction {
-                prompt: PromptContent::Simple(" SUFFIX".to_string()),
-                on_failure: FailureMode::Continue,
-            }),
-        ];
-
-        let mut context = AikiState::new(event);
-        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut context).unwrap();
-
-        assert!(matches!(result, FlowResult::Success));
-
-        // Build final prompt - prepends should be in order, appends should be in order
-        // Note: MessageAssembler adds "\n\n" separator between sections
-        let final_prompt = context.build_message().unwrap();
-        assert_eq!(
-            final_prompt,
-            "CONTEXT1 \nCONTEXT2 \n\nuser prompt\n\n SUFFIX"
-        );
-    }
-
-    #[test]
-    fn test_pre_prompt_only_works_for_pre_prompt_events() {
-        // Create a non-PrePrompt event
-        let event = create_test_event(); // PostFileChange event
-
-        // Create prompt action
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Simple("test".to_string()),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let result = FlowEngine::execute_actions(&actions, &mut context);
-
-        // Should fail because this is not a PrePrompt event
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("can only be used in PrePrompt events"));
-    }
-
-    // ===== Error Handling Tests =====
-
-    #[test]
-    fn test_prompt_validates_empty_chunk() {
-        use crate::events::{AikiEvent, AikiPrePromptEvent};
-        use crate::flows::messages::TextLines;
-
-        // Create PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: crate::provenance::AgentType::Claude,
-            prompt: "test".to_string(),
-            session_id: None,
-            timestamp: chrono::Utc::now(),
-            cwd: std::path::PathBuf::from("/tmp"),
-        });
-
-        // Create action with empty chunk (both prepend and append are None)
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Explicit(MessageChunk {
-                prepend: None,
-                append: None,
-            }),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let result = FlowEngine::execute_actions(&actions, &mut context);
-
-        // Should fail with validation error
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("MessageChunk must have at least prepend or append"));
-    }
-
-    #[test]
-    fn test_prompt_validates_empty_prepend() {
-        use crate::events::{AikiEvent, AikiPrePromptEvent};
-        use crate::flows::messages::TextLines;
-
-        // Create PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: crate::provenance::AgentType::Claude,
-            prompt: "test".to_string(),
-            session_id: None,
-            timestamp: chrono::Utc::now(),
-            cwd: std::path::PathBuf::from("/tmp"),
-        });
-
-        // Create action with empty prepend
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Explicit(MessageChunk {
-                prepend: Some(TextLines::Single("".to_string())),
-                append: None,
-            }),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let result = FlowEngine::execute_actions(&actions, &mut context);
-
-        // Should fail with validation error
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("prepend cannot be empty"));
-    }
-
-    #[test]
-    fn test_prompt_validates_empty_append() {
-        use crate::events::{AikiEvent, AikiPrePromptEvent};
-        use crate::flows::messages::TextLines;
-
-        // Create PrePrompt event
-        let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: crate::provenance::AgentType::Claude,
-            prompt: "test".to_string(),
-            session_id: None,
-            timestamp: chrono::Utc::now(),
-            cwd: std::path::PathBuf::from("/tmp"),
-        });
-
-        // Create action with empty append
-        let actions = vec![Action::Prompt(PromptAction {
-            prompt: PromptContent::Explicit(MessageChunk {
-                prepend: None,
-                append: Some(TextLines::Single("".to_string())),
-            }),
-            on_failure: FailureMode::Continue,
-        })];
-
-        let mut context = AikiState::new(event);
-        let result = FlowEngine::execute_actions(&actions, &mut context);
-
-        // Should fail with validation error
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("append cannot be empty"));
     }
 
     #[test]

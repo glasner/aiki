@@ -1,13 +1,13 @@
 mod bundled;
+pub mod context;
 pub mod core;
 mod engine;
-pub mod messages;
 mod parser;
 mod state;
 pub mod types;
 mod variables;
 
 pub use bundled::load_core_flow;
+pub use context::{ContextAssembler, ContextChunk, TextLines};
 pub use engine::{FlowEngine, FlowResult, FlowTiming};
-pub use messages::{MessageAssembler, MessageChunk, TextLines};
 pub use state::AikiState;

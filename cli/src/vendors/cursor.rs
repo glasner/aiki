@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
-use crate::handlers::HookResponse;
+use crate::handlers::{HookResponse, Message};
 use crate::provenance::AgentType;
 
 /// Cursor hook payload structure
@@ -167,32 +167,44 @@ pub fn handle(event_name: &str) -> Result<()> {
 /// Translate HookResponse to Cursor JSON format
 ///
 /// Cursor uses a simple format with user_message and agent_message fields.
+/// Per translator-requirements.md:
+/// - user_message: For user-facing messages (warnings/errors)
+/// - agent_message: For agent-facing messages (info/context)
+/// - followup_message: For PostResponse autoreplies
 fn translate_response(response: HookResponse) -> (Option<String>, i32) {
-    let exit_code = response
-        .exit_code
-        .unwrap_or(if response.success { 0 } else { 1 });
+    let exit_code = response.exit_code;
 
     match exit_code {
         2 => {
             // Blocking error (exit 2)
             let mut json = Map::new();
 
-            // Check for first error message in new messages field
-            if let Some(first_error) = response.messages.iter().find_map(|m| match m {
-                crate::handlers::Message::Error(s) => Some(s),
-                _ => None,
-            }) {
-                json.insert(
-                    "user_message".to_string(),
-                    json!(format!("❌ {}", first_error)),
-                );
-            } else if let Some(msg) = response.user_message {
-                // Fallback to legacy user_message
-                json.insert("user_message".to_string(), json!(msg));
+            // Extract error/warning messages for user_message
+            let error_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Error(s) | Message::Warning(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !error_msgs.is_empty() {
+                json.insert("user_message".to_string(), json!(error_msgs.join("; ")));
             }
 
-            if let Some(agent_msg) = response.agent_message {
-                json.insert("agent_message".to_string(), json!(agent_msg));
+            // Extract info messages for agent_message
+            let info_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .filter_map(|msg| match msg {
+                    Message::Info(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            if !info_msgs.is_empty() {
+                json.insert("agent_message".to_string(), json!(info_msgs.join("\n")));
             }
 
             (Some(serde_json::to_string(&json).unwrap()), 2)
@@ -201,29 +213,26 @@ fn translate_response(response: HookResponse) -> (Option<String>, i32) {
             // Success or non-blocking
             let mut json = Map::new();
 
-            // Build followup_message from messages + context (for PostResponse/stop hook)
-            let followup_text = crate::handlers::build_agent_context(&response);
-            if !followup_text.is_empty() {
-                json.insert("followup_message".to_string(), json!(followup_text));
+            // Build followup_message from context (for PostResponse/stop hook)
+            if let Some(ref followup_text) = response.context {
+                if !followup_text.is_empty() {
+                    json.insert("followup_message".to_string(), json!(followup_text));
+                }
             }
 
-            // Legacy fields (backward compatibility)
-            if let Some(msg) = response.user_message {
-                json.insert("user_message".to_string(), json!(msg));
-            }
+            // Add user_message for warnings/errors shown to user
+            let user_msgs: Vec<String> = response
+                .messages
+                .iter()
+                .map(|msg| match msg {
+                    Message::Info(s) => format!("ℹ️ {}", s),
+                    Message::Warning(s) => format!("⚠️ {}", s),
+                    Message::Error(s) => format!("❌ {}", s),
+                })
+                .collect();
 
-            if let Some(agent_msg) = response.agent_message {
-                json.insert("agent_message".to_string(), json!(agent_msg));
-            }
-
-            // Metadata for all events
-            if !response.metadata.is_empty() {
-                let metadata: Map<String, Value> = response
-                    .metadata
-                    .into_iter()
-                    .map(|(k, v)| (k, json!(v)))
-                    .collect();
-                json.insert("metadata".to_string(), json!(metadata));
+            if !user_msgs.is_empty() {
+                json.insert("user_message".to_string(), json!(user_msgs.join("\n")));
             }
 
             if json.is_empty() {
@@ -234,8 +243,12 @@ fn translate_response(response: HookResponse) -> (Option<String>, i32) {
         }
         _ => {
             // Exit 1 or other: stderr fallback
-            if let Some(msg) = response.user_message {
-                eprintln!("{}", msg);
+            for msg in &response.messages {
+                match msg {
+                    Message::Info(s) => eprintln!("ℹ️ {}", s),
+                    Message::Warning(s) => eprintln!("⚠️ {}", s),
+                    Message::Error(s) => eprintln!("❌ {}", s),
+                }
             }
             (None, exit_code)
         }

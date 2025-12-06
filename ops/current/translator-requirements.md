@@ -4,6 +4,26 @@ This document details exactly what each translator needs to do for each event ty
 
 ---
 
+## HookResponse Structure (Phase 8 Architecture)
+
+```rust
+pub struct HookResponse {
+    pub context: Option<String>,  // Agent-visible content (prompts, autoreplies, commit messages)
+    pub messages: Vec<Message>,   // Validation messages (info/warning/error)
+    pub exit_code: i32,           // 0 = success, 2 = blocking
+}
+```
+
+**Key Principles:**
+- **`context`**: Content for the agent (modified prompts, autoreply text, commit messages)
+- **`messages`**: Validation feedback (warnings, errors, info) - visibility depends on event:
+  - User-only (stderr): SessionStart, PreFileChange, PostFileChange
+  - User + Agent: PrePrompt, PostResponse (combined with context)
+- **`exit_code`**: Controls blocking behavior (0 = allow, 2 = block)
+- **Combination logic**: Translators should combine `messages` + `context` when appropriate
+
+---
+
 ## Event Mapping
 
 ### Cursor Events → Aiki Events
@@ -48,14 +68,12 @@ This document details exactly what each translator needs to do for each event ty
 
 **HookResponse fields used:**
 - `messages`: Warnings/errors about initialization
-- `prompt`: Should be None (SessionStart doesn't modify prompts)
+- `context`: Not used (Cursor doesn't support injecting context at session start)
 - `exit_code`: Blocking if initialization fails
 
 **Cursor JSON output:**
 ```json
 {
-  "user_message": "Session started with warnings",
-  "agent_message": "Session started with warnings",
   "continue": true
 }
 ```
@@ -63,8 +81,7 @@ This document details exactly what each translator needs to do for each event ty
 **Blocking output:**
 ```json
 {
-  "user_message": "❌ Failed to initialize session: Repository not found",
-  "agent_message": "Failed to initialize session: Repository not found",
+  "user_message": "❌ Failed to initialize session: Repository not found", // should just be messages
   "continue": false
 }
 ```
@@ -80,7 +97,7 @@ This document details exactly what each translator needs to do for each event ty
 
 **HookResponse fields used:**
 - `messages`: Prompt validation warnings/errors
-- `prompt`: **Cannot be used** - Cursor doesn't support prompt modification
+- `context`: **Cannot be used** - Cursor doesn't support prompt modification
 - `exit_code`: Blocking if validation fails
 
 **Cursor JSON output (success):**
@@ -104,7 +121,7 @@ This document details exactly what each translator needs to do for each event ty
 
 **Limitations:**
 - Cursor's `beforeSubmitPrompt` **cannot modify the prompt** - it can only block or allow it
-- The `prompt` field in HookResponse must be ignored for Cursor
+- The `context` field in HookResponse must be ignored for Cursor
 - Use `messages` to show warnings/errors to the user, but prompt text cannot be changed
 
 ---
@@ -115,7 +132,7 @@ This document details exactly what each translator needs to do for each event ty
 
 **HookResponse fields used:**
 - `messages`: Warnings about stashing user edits or blocking reasons
-- `prompt`: Should be None (not used for PreFileChange)
+- `context`: Should be None (not used for PreFileChange)
 - `exit_code`: Can block tool execution if needed
 
 **Cursor JSON output (success):**
@@ -129,8 +146,7 @@ This document details exactly what each translator needs to do for each event ty
 ```json
 {
   "continue": false,
-  "user_message": "Policy blocked editing file"
-  "agent_message": "Policy blocked editing file"
+  "agent_message": "Policy blocked editing file" // should be error messages
 }
 ```
 
@@ -148,7 +164,7 @@ This document details exactly what each translator needs to do for each event ty
 
 **HookResponse fields used:**
 - `messages`: Status about provenance recording (informational only)
-- `prompt`: Should be None (not used for PostFileChange)
+- `context`: Should be None (not used for PostFileChange)
 - `exit_code`: Ignored (Cursor doesn't accept responses from this hook)
 
 **Cursor JSON output:**
@@ -172,25 +188,26 @@ This document details exactly what each translator needs to do for each event ty
 
 **HookResponse fields used:**
 - `messages`: Validation results (e.g., "Tests failed", "Lint errors found")
-- `prompt`: Follow-up instruction (e.g., "Please run the tests again with verbose output")
+- `context`: Follow-up instruction / autoreply text (e.g., "Please run the tests again with verbose output")
 - `exit_code`: Should never block (agent loop already finished)
 
 **Building followup_message:**
-Combine `messages` and `prompt` into a single string for the agent:
-- If both exist: `"{messages}\n\n{prompt}"`
-- If only prompt: `"{prompt}"`
-- If only messages: `"{messages}"` (unusual - typically validation feedback leads to a follow-up action)
+Combine `messages` and `context` into a single string for the agent:
+- If both exist: `"{formatted_messages}\n\n{context}"`
+- If only context: `"{context}"`
+- If only messages: `"{formatted_messages}"` (unusual - typically validation feedback leads to a follow-up action)
 - If neither: No output (no follow-up)
 
 **Example:** 
 - `messages`: `[Warning("Tests failed with 3 errors")]`
-- `prompt`: `"Please run the tests again with verbose output and fix the failures"`
-- Result: `"Tests failed with 3 errors\n\nPlease run the tests again with verbose output and fix the failures"`
+- `context`: `"Please run the tests again with verbose output and fix the failures"`
+- Formatted messages: `"⚠️ Tests failed with 3 errors"`
+- Result: `"⚠️ Tests failed with 3 errors\n\nPlease run the tests again with verbose output and fix the failures"`
 
 **Cursor JSON output (with follow-up):**
 ```json
 {
-  "followup_message": "Tests failed with 3 errors\n\nPlease run the tests again with verbose output and fix the failures"
+  "followup_message": "⚠️ Tests failed with 3 errors\n\nPlease run the tests again with verbose output and fix the failures"
 }
 ```
 
@@ -204,31 +221,45 @@ Combine `messages` and `prompt` into a single string for the agent:
 
 **Notes:**
 - Maximum of 5 auto follow-ups enforced by Cursor (tracked via `loop_count` input field)
-- Unlike Claude Code which separates validation context (`additionalContext`) from user prompts, Cursor combines everything into one `followup_message`
-- The agent sees the full context (validation results + follow-up instruction) in a single message
+- Unlike Claude Code which separates validation messages (`additionalContext`) from autoreplies, Cursor combines everything into one `followup_message`
+- The agent sees the full context (formatted validation messages + autoreply text) in a single message
+- **Phase 8 fix**: Messages and context are now properly combined instead of being mutually exclusive
 
 ---
 
 ## Claude Code Translator Requirements
+
+**IMPORTANT: All Claude Code hooks must return exit code 0 for JSON parsing to work.**
+- Use structured decision control (`decision: "block"`, `permissionDecision: "deny"`, etc.)
+- Exit code 2 bypasses JSON parsing and should not be used
+- This is different from Cursor (uses exit code 2) and ACP (uses exit code 2)
+
+---
 
 ### Event: SessionStart → SessionStart
 
 **Claude Code documentation:** https://code.claude.com/docs/en/hooks#sessionstart-decision-control
 
 **HookResponse fields used:**
-- `messages`: Context to inject at session start
-- `prompt`: Should be None (not used for SessionStart)
+- `messages`: Warnings/info about session initialization
+- `context`: Initial context to inject (e.g., "Repository: /path/to/repo. Branch: main.")
 - `exit_code`: Cannot block (SessionStart doesn't support blocking)
 
 **Claude Code JSON output:**
 ```json
 {
+  "systemMessage": "🎉 aiki initialized"
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "Session initialized. Repository: /path/to/repo. Branch: main."
+    "additionalContext": "⚠️ Working directory has uncommitted changes\n\nSession initialized. Repository: /path/to/repo. Branch: main."
   }
 }
 ```
+
+**Building additionalContext:**
+- Combine formatted `messages` + `context` (if both exist)
+- Use only `context` if no messages
+- Use only formatted `messages` if no context
 
 **No context:**
 ```json
@@ -243,69 +274,102 @@ Combine `messages` and `prompt` into a single string for the agent:
 - SessionStart **cannot block** - it only supports adding context via `additionalContext`
 - No `continue`, `decision`, or `reason` fields available
 - Designed for environment setup and context loading, not access control
-- Any warnings/errors in `messages` should be formatted as context for the agent
+- **Phase 8 fix**: Messages and context are properly combined in `additionalContext`
 
 ---
 
 ### Event: UserPromptSubmit → PrePrompt
 
 **HookResponse fields used:**
-- `messages`: Validation warnings/errors
-- `prompt`: Modified prompt text
-- `exit_code`: Blocking if validation fails
+- `messages`: Validation warnings/errors (shown to user and agent)
+- `context`: Prepended context (project conventions, active files, etc.)
+- `exit_code`: Controls blocking (must be 0 for Claude Code)
 
 **Blocking output:**
 ```json
 {
-  "continue": false,
-  "stopReason": "❌ Prompt too long",
-  "systemMessage": "Prompt too long"
+  "decision": "block",
+  "reason": "❌ Prompt too long (10,234 chars). Please shorten your prompt.", // from messages
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "My additional context here" // from context
+  }
+
 }
 ```
 
-**Success with modified prompt:**
+**Success with context and/or messages:**
 ```json
 {
-  "modifiedPrompt": "Modified prompt text here",
-  "metadata": [["modified_prompt", "Modified prompt text here"]]
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "My additional context here" // from messages + context
+  }
 }
 ```
 
+**Building additionalContext:**
+- Combine formatted `messages` + `context` + original prompt (all three if present)
+- Pattern: `"{formatted_messages}\n\n{context}\n\n{original_prompt}"`
+- **Phase 8 fix**: Messages and context are properly combined instead of being mutually exclusive
+
 **Exit code:**
-- Always exit 0
+- Always exit 0 (use `decision: "block"` to block, not exit code 2)
+
+**Important:** Claude Code uses `decision: "block"` with exit code 0 for blocking, unlike traditional hooks that use exit code 2
 
 ---
 
 ### Event: PreToolUse → PreFileChange
+https://code.claude.com/docs/en/hooks#pretooluse-decision-control
 
 **HookResponse fields used:**
-- `messages`: Warnings about stashing
-- `prompt`: Should be None
-- `exit_code`: Should never block
+- `messages`: Warnings about stashing or policy violations (shown to user and/or agent depending on decision)
+- `context`: Should be None
+- `exit_code`: **Always 0** for Claude Code (use `permissionDecision` for control)
 
-**Output format:**
+**Decision options (exit code 0):**`
+
+**Deny (block tool execution):**
 ```json
-{}
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Policy blocked editing this file" // build from messages + context
+  }
+}
 ```
-(Usually no output needed)
+*Note: `permissionDecisionReason` is shown to Claude for deny decisions*
+
 
 **Exit code:**
-- Always exit 0
+- **Always exit 0** for Claude Code hooks
+- Use `permissionDecision: "deny"` to block, not exit code 2
+- Exit code 2 bypasses JSON parsing (not recommended for Claude Code) -> should not do this
 
 ---
 
 ### Event: PostToolUse → PostFileChange
+https://code.claude.com/docs/en/hooks#posttooluse-decision-control
 
 **HookResponse fields used:**
-- `messages`: Provenance recording status
-- `prompt`: Should be None
-- `exit_code`: Non-blocking even on failure
+- `messages`: Provenance recording status (shown to user via additionalContext)
+- `context`: Extra context to pass back to claude on block
+- `exit_code`: 0 for structured `decision` control (block/None  )
 
-**Blocking output (should not happen):**
+**Blocking output:**
+Automatically reprompts Claude with reason
+
 ```json
 {
   "decision": "block",
-  "reason": "Provenance recording failed"
+  "reason": "Provenance recording failed", // from messages, should never be blank
+  "hookSpecificOutput": {
+      "hookEventName": "PostToolUse",
+      "additionalContext": "Additional information for Claude" // from context
+    }
+  
 }
 ```
 
@@ -314,7 +378,7 @@ Combine `messages` and `prompt` into a single string for the agent:
 {
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
-    "additionalContext": "Provenance recorded for 3 files"
+    "additionalContext": "Provenance recorded for 3 files" // from messages + context
   }
 }
 ```
@@ -325,30 +389,47 @@ Combine `messages` and `prompt` into a single string for the agent:
 ---
 
 ### Event: Stop → PostResponse
+https://code.claude.com/docs/en/hooks#stop%2Fsubagentstop-decision-control
 
 **HookResponse fields used:**
-- `messages`: Test/lint validation results
-- `prompt`: Autoreply text
-- `exit_code`: Should never block
+- `messages`: Test/lint validation results (shown to user via stderr, and to agent in autoreply)
+- `context`: Autoreply text (combined with messages)
+- `exit_code`: **Always 0** for Claude Code (use `decision: "block"` for control)
 
-**Success with autoreply:**
+**Decision options (exit code 0):**
+
+**Block (force Claude to continue):**
 ```json
 {
-  "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
-    "additionalContext": "Tests failed, rerunning with verbose output"
-  },
-  "metadata": [["autoreply", "Please run the tests again with verbose output"]]
+  "decision": "block",
+  "reason": "⚠️ Tests failed with 3 errors\n\nPlease run the tests again with verbose output and fix the failures"
 }
 ```
+*Note: `reason` must be provided when blocking - it tells Claude how to proceed*
 
-**Success without autoreply:**
+**Allow (normal stop):**
 ```json
 {}
 ```
+*Or omit the `decision` field entirely*
+
+**Building the autoreply/reason:**
+- Combine formatted `messages` + `context` (if both exist)
+- Use only `context` if no messages
+- Use only formatted `messages` if no context
+- **Phase 8 fix**: Messages and context are properly combined instead of being mutually exclusive
+- The combined text goes into the `reason` field when blocking
 
 **Exit code:**
-- Always exit 0
+- **Always exit 0** for Claude Code hooks
+- Use `decision: "block"` with `reason` to force continuation
+- Exit code 2 bypasses JSON parsing (not recommended for Claude Code)
+- Other codes: Non-blocking error, execution continues
+
+**Important:** 
+- Stop hook only runs when Claude finishes naturally (not on user interrupt)
+- Input includes `stop_hook_active` field to prevent infinite autoreply loops
+- When using `decision: "block"`, the `reason` field acts as the autoreply/follow-up instruction
 
 ---
 
@@ -357,8 +438,8 @@ Combine `messages` and `prompt` into a single string for the agent:
 ### Event: session/new response → SessionStart
 
 **HookResponse fields used:**
-- `messages`: Initialization warnings/errors
-- `prompt`: Should be None
+- `messages`: Initialization warnings/errors (shown to user via stderr)
+- `context`: Initial context (currently not used for SessionStart in ACP)
 - `exit_code`: Should never block (can't block session creation)
 
 **Processing:**
@@ -371,24 +452,28 @@ Combine `messages` and `prompt` into a single string for the agent:
 ### Event: session/prompt → PrePrompt
 
 **HookResponse fields used:**
-- `messages`: Validation warnings/errors
-- `prompt`: Modified prompt text
+- `messages`: Validation warnings/errors (shown to user via stderr AND agent)
+- `context`: Prepended context (project conventions, active files, etc.)
 - `exit_code`: Blocking if validation fails
 
 **Processing:**
 1. Emit all messages to stderr with emoji prefixes
 2. If `is_blocking()` → return error, don't forward prompt to agent
-3. Use `prompt` field as modified prompt (or original if None)
-4. **Question:** Should we prepend messages to the prompt so agent sees validation context?
-5. Forward modified prompt to agent stdin
+3. Build final prompt by combining:
+   - Formatted messages (if any)
+   - Context from `response.context` (if any)
+   - Original prompt text
+4. Pattern: `"{formatted_messages}\n\n{context}\n\n{original_prompt}"`
+5. **Phase 8 fix**: Messages and context are properly combined
+6. Forward modified prompt to agent stdin
 
 ---
 
 ### Event: session/request_permission → PreFileChange
 
 **HookResponse fields used:**
-- `messages`: Warnings about stashing
-- `prompt`: Should be None
+- `messages`: Warnings about stashing (shown to user via stderr)
+- `context`: Should be None
 - `exit_code`: Should never block (can't block permission requests)
 
 **Processing:**
@@ -401,8 +486,8 @@ Combine `messages` and `prompt` into a single string for the agent:
 ### Event: session/update (tool complete) → PostFileChange
 
 **HookResponse fields used:**
-- `messages`: Provenance recording status
-- `prompt`: Should be None
+- `messages`: Provenance recording status (shown to user via stderr)
+- `context`: Should be None
 - `exit_code`: Should never block
 
 **Processing:**
@@ -414,75 +499,99 @@ Combine `messages` and `prompt` into a single string for the agent:
 ### Event: session/update (stopReason) → PostResponse
 
 **HookResponse fields used:**
-- `messages`: Test/lint validation results
-- `prompt`: Autoreply text
+- `messages`: Test/lint validation results (shown to user via stderr AND agent)
+- `context`: Autoreply text
 - `exit_code`: Should never block
 
 **Processing:**
 1. Emit all messages to stderr with emoji prefixes
-2. Check `prompt` field for autoreply
-3. If autoreply exists:
-   - **Question:** Should we prepend messages to autoreply?
+2. Build autoreply by combining:
+   - Formatted messages (if any)
+   - Context from `response.context` (if any)
+3. Pattern: `"{formatted_messages}\n\n{context}"`
+4. **Phase 8 fix**: Messages and context are properly combined
+5. If combined autoreply exists:
+   - Check autoreply limit (MAX_AUTOREPLIES)
    - Queue autoreply via autoreply channel
-4. If no autoreply, just show messages to user
+6. If no autoreply, just show messages to user
 
 ---
 
-## Open Questions
+## Phase 8 Architecture Changes
 
-### 1. Should ACP proxy prepend messages to prompts/autoreplies?
+### Key Changes
 
-**PrePrompt scenario:**
-- Flow returns: `messages: [Warning("Tests are failing")], prompt: "Original prompt"`
-- Should agent see: `"Note: Tests are failing\n\nOriginal prompt"`?
-- Or just: `"Original prompt"` (with user seeing warning on stderr)?
+1. **Renamed field**: `HookResponse.prompt` → `HookResponse.context`
+   - More accurate name: represents agent context, not just prompts
+   - Used for: modified prompts, autoreply text, commit messages
 
-**PostResponse scenario:**
-- Flow returns: `messages: [Warning("Tests failed")], prompt: "Please run tests with verbose output"`
-- Should autoreply be: `"Note: Tests failed\n\nPlease run tests with verbose output"`?
-- Or just: `"Please run tests with verbose output"`?
+2. **Combination logic**: Messages and context are now properly combined
+   - **Before**: Mutually exclusive (either messages OR context)
+   - **After**: Combined when both exist
+   - Pattern: `"{formatted_messages}\n\n{context}\n\n{original}"`
 
-**Recommendation:** Don't prepend messages to prompts/autoreplies. Messages are for user feedback (stderr), `prompt` field is for agent communication. Keep them separate.
+3. **Consistent formatting**: Messages are formatted with emoji prefixes
+   - Info: `ℹ️ {text}`
+   - Warning: `⚠️ {text}`
+   - Error: `❌ {text}`
 
-### 2. Should Cursor/Claude Code translators prepend messages to metadata prompts?
+### Migration Guide for Translators
 
-**Current behavior:**
-- Cursor: `user_message` and `agent_message` both get all messages
-- Metadata gets `prompt` field as-is
-- No prepending
+**Old code (BROKEN):**
+```rust
+let final_prompt = if !agent_context.is_empty() {
+    agent_context           // Only messages
+} else {
+    response.prompt         // Only context (renamed to response.context)
+};
+```
 
-**Question:** Should we change this to match ACP (separate messages from prompt)?
+**New code (CORRECT):**
+```rust
+let agent_context = build_agent_context(&response);  // Formatted messages
+let prepended_context = response.context.as_deref().unwrap_or("");
 
-**Recommendation:** Keep current behavior. Cursor/Claude Code have separate fields for user/agent messages and metadata, so no need to combine them.
+let final_prompt = match (!agent_context.is_empty(), !prepended_context.is_empty()) {
+    (true, true) => format!("{}\n\n{}\n\n{}", agent_context, prepended_context, original),
+    (true, false) => format!("{}\n\n{}", agent_context, original),
+    (false, true) => format!("{}\n\n{}", prepended_context, original),
+    (false, false) => original.to_string(),
+};
+```
 
-### 3. Should we validate that `prompt` is None for events that don't use it?
+### Validation
 
-**Events that should never have `prompt`:**
-- SessionStart
-- PreFileChange
-- PostFileChange
-- PrepareCommitMessage
+**Events that should never have `context`:**
+- PreFileChange (only uses messages for warnings)
+- PostFileChange (only uses messages for status)
 
-**Should translators warn or error if `prompt` is set on these events?**
+**Events that should never have `messages`:**
+- (None - all events can have validation messages)
 
-**Recommendation:** Emit a debug warning if `AIKI_DEBUG=1`, otherwise ignore.
+**Recommendation:** Emit a debug warning if `AIKI_DEBUG=1` when `context` is set on events that don't use it, otherwise ignore.
 
 ---
 
 ## Summary Table
 
-| Vendor | Event | messages → | prompt → | exit_code → |
-|--------|-------|-----------|----------|-------------|
-| **Cursor** | beforeSubmitPrompt | user_message + agent_message | N/A | exit code |
-| **Cursor** | beforeMCPExecution | user_message + agent_message | N/A | 0 (never block) |
-| **Cursor** | afterFileEdit | user_message + agent_message | N/A | 0 (never block) |
-| **Claude** | SessionStart | systemMessage (warnings only) | N/A | 0 (use continue:false) |
-| **Claude** | UserPromptSubmit | systemMessage (warnings only) | modifiedPrompt + metadata | 0 (use continue:false) |
-| **Claude** | PreToolUse | (usually empty) | N/A | 0 (never block) |
-| **Claude** | PostToolUse | hookSpecificOutput.additionalContext | N/A | 0 (never block) |
-| **Claude** | Stop | hookSpecificOutput.additionalContext | metadata["autoreply"] | 0 (never block) |
-| **ACP** | SessionStart | stderr | N/A | ignored |
-| **ACP** | PrePrompt | stderr | modified prompt | blocks if exit=2 |
-| **ACP** | PreFileChange | stderr | N/A | ignored |
-| **ACP** | PostFileChange | stderr | N/A | ignored |
-| **ACP** | PostResponse | stderr | autoreply | ignored |
+| Vendor | Event | messages → | context → | exit_code → | Combination? |
+|--------|-------|-----------|----------|-------------|--------------|
+| **Cursor** | beforeSubmitPrompt (SessionStart) | user_message | N/A | exit code | N/A |
+| **Cursor** | beforeSubmitPrompt (PrePrompt) | user_message | N/A (unsupported) | exit code | N/A |
+| **Cursor** | beforeMCPExecution | user_message | N/A | 0 (never block) | N/A |
+| **Cursor** | afterFileEdit | (not shown to user) | N/A | 0 | N/A |
+| **Cursor** | stop | formatted in followup | followup_message | 0 | ✅ Yes |
+| **Claude** | SessionStart | formatted in additionalContext | additionalContext | 0 | ✅ Yes |
+| **Claude** | UserPromptSubmit | formatted in modifiedPrompt | modifiedPrompt | 0 | ✅ Yes |
+| **Claude** | PreToolUse | stderr | N/A | 0 | N/A |
+| **Claude** | PostToolUse | additionalContext | N/A | 0 | N/A |
+| **Claude** | Stop | formatted in autoreply | metadata["autoreply"] | 0 | ✅ Yes |
+| **ACP** | SessionStart | stderr | (not used) | ignored | N/A |
+| **ACP** | PrePrompt | stderr + agent | modified prompt | blocks if exit=2 | ✅ Yes |
+| **ACP** | PreFileChange | stderr | N/A | ignored | N/A |
+| **ACP** | PostFileChange | stderr | N/A | ignored | N/A |
+| **ACP** | PostResponse | stderr + agent | autoreply | ignored | ✅ Yes |
+
+**Legend:**
+- ✅ **Combination**: Messages and context are combined using Phase 8 logic
+- **N/A**: Event doesn't use context, or doesn't support combination
