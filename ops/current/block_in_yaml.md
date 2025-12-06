@@ -34,9 +34,10 @@ Use `#[serde(deserialize_with = "...")]` to validate during deserialization, giv
 ```rust
 // In cli/src/flows/types.rs
 
-/// Check if an action has on_failure: block
+/// Recursively check if an action or any nested actions use on_failure: block
 fn has_block_failure_mode(action: &Action) -> bool {
-    match action {
+    // Check this action's on_failure
+    let this_has_block = match action {
         Action::If(a) => a.on_failure == FailureMode::Block,
         Action::Switch(a) => a.on_failure == FailureMode::Block,
         Action::Shell(a) => a.on_failure == FailureMode::Block,
@@ -50,10 +51,47 @@ fn has_block_failure_mode(action: &Action) -> bool {
         Action::Warning(a) => a.on_failure == FailureMode::Block,
         Action::Error(a) => a.on_failure == FailureMode::Block,
         Action::Log(_) => false, // Log doesn't have on_failure
+    };
+    
+    if this_has_block {
+        return true;
     }
+    
+    // Check nested actions
+    match action {
+        Action::If(if_action) => {
+            // Check then branch
+            if if_action.then.iter().any(has_block_failure_mode) {
+                return true;
+            }
+            // Check else branch
+            if let Some(else_actions) = &if_action.else_ {
+                if else_actions.iter().any(has_block_failure_mode) {
+                    return true;
+                }
+            }
+        }
+        Action::Switch(switch_action) => {
+            // Check all case branches
+            for actions in switch_action.cases.values() {
+                if actions.iter().any(has_block_failure_mode) {
+                    return true;
+                }
+            }
+            // Check default branch
+            if let Some(default_actions) = &switch_action.default {
+                if default_actions.iter().any(has_block_failure_mode) {
+                    return true;
+                }
+            }
+        }
+        _ => {}
+    }
+    
+    false
 }
 
-/// Deserialize actions that cannot use on_failure: block
+/// Deserialize actions that cannot use on_failure: block (validates recursively)
 fn deserialize_non_blocking_actions<'de, D>(
     deserializer: D,
 ) -> Result<Vec<Action>, D::Error>
@@ -65,7 +103,7 @@ where
     for (idx, action) in actions.iter().enumerate() {
         if has_block_failure_mode(action) {
             return Err(serde::de::Error::custom(format!(
-                "on_failure: block not allowed in this event (action {}). \
+                "on_failure: block not allowed in this event (found in action {} or its nested actions). \
                  Use 'continue' or 'stop' instead.",
                 idx + 1
             )));
@@ -183,12 +221,63 @@ PostFileChange:
 }
 
 #[test]
+fn test_block_not_allowed_in_nested_actions() {
+    let yaml = r#"
+name: test
+PostFileChange:
+  - if: "$test_result.exit_code != 0"
+    then:
+      - warning: "Tests failed"
+        on_failure: block  # ← Should be caught!
+    on_failure: continue
+"#;
+    
+    let result: Result<Flow, _> = serde_yaml::from_str(yaml);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("on_failure: block not allowed"));
+}
+
+#[test]
+fn test_block_not_allowed_in_switch_cases() {
+    let yaml = r#"
+name: test
+PostResponse:
+  - switch: "$detection.classification"
+    cases:
+      "exact_match":
+        - info: "Exact match detected"
+          on_failure: block  # ← Should be caught!
+    on_failure: continue
+"#;
+    
+    let result: Result<Flow, _> = serde_yaml::from_str(yaml);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("on_failure: block not allowed"));
+}
+
+#[test]
 fn test_block_allowed_in_pre_prompt() {
     let yaml = r#"
 name: test
 PrePrompt:
   - shell: "echo test"
     on_failure: block
+"#;
+    
+    let result: Result<Flow, _> = serde_yaml::from_str(yaml);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_block_allowed_in_nested_actions_of_blocking_events() {
+    let yaml = r#"
+name: test
+PrePrompt:
+  - if: "$event.prompt.len() > 10000"
+    then:
+      - error: "Prompt too long"
+        on_failure: block  # ← OK in PrePrompt
+    on_failure: continue
 "#;
     
     let result: Result<Flow, _> = serde_yaml::from_str(yaml);
@@ -247,49 +336,21 @@ PrepareCommitMessage: []
 
 ## Edge Cases
 
-1. **Nested actions (if/switch)**: The validation only checks top-level actions. Nested actions inside `if` or `switch` branches aren't validated. This is acceptable because:
-   - The outer action's `on_failure` controls the overall behavior
-   - Inner actions inherit the context from the outer action
-   - Adding deep validation would be complex and likely unnecessary
+1. **Nested actions (if/switch)**: The validation recursively checks nested actions in `if` branches (then/else) and `switch` branches (cases/default). This catches errors like:
+   ```yaml
+   PostFileChange:
+     - if: "$test_failed"
+       then:
+         - error: "Tests failed"
+           on_failure: block  # ← Caught by recursive validation!
+   ```
 
 2. **Empty action lists**: Default empty vectors are fine (no actions = nothing to validate)
 
 3. **Custom flows**: User-defined flows in `~/.config/aiki/flows/` get the same validation automatically
 
-## Future Enhancements
-
-If we want to validate nested actions in the future, we could add a recursive helper:
-
-```rust
-fn validate_action_tree(action: &Action, can_block: bool) -> Result<(), String> {
-    if !can_block && has_block_failure_mode(action) {
-        return Err("on_failure: block not allowed".to_string());
-    }
-    
-    match action {
-        Action::If(if_action) => {
-            for a in &if_action.then {
-                validate_action_tree(a, can_block)?;
-            }
-            if let Some(else_actions) = &if_action.else_ {
-                for a in else_actions {
-                    validate_action_tree(a, can_block)?;
-                }
-            }
-        }
-        Action::Switch(switch_action) => {
-            for actions in switch_action.cases.values() {
-                for a in actions {
-                    validate_action_tree(a, can_block)?;
-                }
-            }
-            // ... validate default case too
-        }
-        _ => {}
-    }
-    
-    Ok(())
-}
-```
-
-But this is likely overkill for now.
+4. **Error messages**: When nested actions fail validation, the error message indicates which top-level action contains the problem:
+   ```
+   Error: on_failure: block not allowed in this event (found in action 2 or its nested actions)
+   ```
+   This could be improved in the future to show the exact path (e.g., "action 2 → then branch → action 1"), but the current message is sufficient to locate the issue.
