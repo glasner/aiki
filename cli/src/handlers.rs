@@ -271,7 +271,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
                 eprintln!("Continuing with original prompt...\n");
                 // Return built context (already initialized with original prompt)
                 return Ok(HookResponse {
-                    context: Some(state.build_context().unwrap_or_default()),
+                    context: state.build_context(),
                     decision: Decision::Allow,
                     messages: state.take_messages(),
                 });
@@ -285,7 +285,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     match flow_result {
         FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
             Ok(HookResponse {
-                context: Some(state.build_context().unwrap_or_default()),
+                context: state.build_context(),
                 decision: Decision::Allow,
                 messages,
             })
@@ -409,7 +409,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
                 eprintln!("\n⚠️ PostResponse flow failed: {}", e);
                 eprintln!("No autoreply generated.\n");
                 return Ok(HookResponse {
-                    context: None,
+                    context: state.build_context(),
                     decision: Decision::Allow,
                     messages: state.take_messages(),
                 });
@@ -420,9 +420,8 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
     let messages = state.take_messages();
 
     // PostResponse never blocks - always allow
-    let context = state.build_context().ok().filter(|s| !s.is_empty());
     Ok(HookResponse {
-        context,
+        context: state.build_context(),
         decision: Decision::Allow,
         messages,
     })
