@@ -54,8 +54,8 @@ fn default_version() -> String {
 pub struct InfoAction {
     pub info: String,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Warning message action (user-visible warning)
@@ -63,8 +63,8 @@ pub struct InfoAction {
 pub struct WarningAction {
     pub warning: String,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Error message action (user-visible error)
@@ -72,8 +72,29 @@ pub struct WarningAction {
 pub struct ErrorAction {
     pub error: String,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
+}
+
+/// Continue flow execution action (emits warning and continues)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinueAction {
+    #[serde(rename = "continue")]
+    pub warning: String,
+}
+
+/// Stop flow execution action (emits warning and stops silently)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopAction {
+    #[serde(rename = "stop")]
+    pub warning: String,
+}
+
+/// Block editor operation action (emits error and blocks with exit 2)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockAction {
+    #[serde(rename = "block")]
+    pub error: String,
 }
 
 /// An action to execute in a flow
@@ -106,6 +127,12 @@ pub enum Action {
     Warning(WarningAction),
     /// Error message (user-visible error)
     Error(ErrorAction),
+    /// Continue flow execution (emits warning)
+    Continue(ContinueAction),
+    /// Stop flow execution (emits warning and stops silently)
+    Stop(StopAction),
+    /// Block editor operation (emits error and blocks with exit 2)
+    Block(BlockAction),
 }
 
 /// Shell command action
@@ -116,8 +143,8 @@ pub struct ShellAction {
     #[serde(default)]
     pub timeout: Option<String>,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 
     /// Optional variable name to store the result
     #[serde(default)]
@@ -132,8 +159,8 @@ pub struct JjAction {
     #[serde(default)]
     pub timeout: Option<String>,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 
     /// Optional variable name to store the result
     #[serde(default)]
@@ -168,8 +195,8 @@ pub struct LetAction {
     pub let_: String,
 
     /// What to do when the action fails
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Self function call action (calls a function without storing result)
@@ -181,8 +208,8 @@ pub struct SelfAction {
     pub self_: String,
 
     /// What to do when the action fails
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Conditional action (if/then/else)
@@ -201,8 +228,8 @@ pub struct IfAction {
     pub else_: Option<Vec<Action>>,
 
     /// What to do when condition evaluation fails
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Switch/case action
@@ -222,8 +249,8 @@ pub struct SwitchAction {
     pub default: Option<Vec<Action>>,
 
     /// What to do when switch evaluation fails
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Context action (for PrePrompt events)
@@ -233,8 +260,8 @@ pub struct ContextAction {
     /// The context content to inject
     pub context: ContextContent,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Content for context action
@@ -266,8 +293,8 @@ pub struct AutoreplyAction {
     /// The autoreply content (MessageChunk)
     pub autoreply: AutoreplyContent,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Content for autoreply action
@@ -297,8 +324,8 @@ pub enum AutoreplyContent {
 pub struct CommitMessageAction {
     pub commit_message: CommitMessageOp,
 
-    #[serde(default = "default_on_failure")]
-    pub on_failure: FailureMode,
+    #[serde(default)]
+    pub on_failure: Vec<Action>,
 }
 
 /// Operations for commit messages
@@ -319,30 +346,4 @@ pub struct CommitMessageOp {
     /// Append footer (after everything)
     #[serde(default)]
     pub append_footer: Option<String>,
-}
-
-/// What to do when an action fails
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum FailureMode {
-    /// Continue to next action (default)
-    Continue,
-    /// Stop flow execution (silent, no error to editor)
-    Stop,
-    /// Stop flow and block editor operation (exit 2)
-    Block,
-}
-
-fn default_on_failure() -> FailureMode {
-    FailureMode::Continue
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_failure_mode() {
-        assert_eq!(default_on_failure(), FailureMode::Continue);
-    }
 }

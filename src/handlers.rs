@@ -19,8 +19,8 @@ pub enum Decision {
     /// Allow the operation to proceed
     Allow,
 
-    /// Block the operation with an error message
-    Block(String),
+    /// Block the operation (error messages are in HookResponse.messages)
+    Block,
 }
 
 impl Decision {
@@ -33,16 +33,7 @@ impl Decision {
     /// Check if this decision is to block the operation
     #[must_use]
     pub fn is_block(&self) -> bool {
-        matches!(self, Decision::Block(_))
-    }
-
-    /// Get the error message if this is a Block decision
-    #[must_use]
-    pub fn block_message(&self) -> Option<&str> {
-        match self {
-            Decision::Block(msg) => Some(msg),
-            Decision::Allow => None,
-        }
+        matches!(self, Decision::Block)
     }
 }
 
@@ -102,14 +93,13 @@ impl HookResponse {
 
     #[must_use]
     pub fn blocking_failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
-        let user_msg_str = user_msg.into();
-        let mut messages = vec![Message::Error(user_msg_str.clone())];
+        let mut messages = vec![Message::Error(user_msg.into())];
         if let Some(msg) = agent_msg {
             messages.push(Message::Info(msg));
         }
         Self {
             context: None,
-            decision: Decision::Block(user_msg_str), // Blocking - includes error message
+            decision: Decision::Block,
             messages,
         }
     }
@@ -222,16 +212,16 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     let messages = state.take_messages();
 
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Allow,
                 messages,
             })
         }
-        FlowResult::FailedBlock(msg) => Ok(HookResponse {
+        FlowResult::FailedBlock => Ok(HookResponse {
             context: None,
-            decision: Decision::Block(msg),
+            decision: Decision::Block,
             messages,
         }),
     }
@@ -283,18 +273,18 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
 
     // Return response based on flow result (build context string)
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
             Ok(HookResponse {
                 context: state.build_context(),
                 decision: Decision::Allow,
                 messages,
             })
         }
-        FlowResult::FailedBlock(msg) => {
+        FlowResult::FailedBlock => {
             // Block the prompt - return exit code 2
             Ok(HookResponse {
                 context: None,
-                decision: Decision::Block(msg),
+                decision: Decision::Block,
                 messages,
             })
         }
@@ -454,18 +444,18 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
     let messages = state.take_messages();
 
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue(_) | FlowResult::FailedStop(_) => {
+        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Allow,
                 messages,
             })
         }
-        FlowResult::FailedBlock(msg) => {
+        FlowResult::FailedBlock => {
             // Block the commit
             Ok(HookResponse {
                 context: None,
-                decision: Decision::Block(msg),
+                decision: Decision::Block,
                 messages,
             })
         }
