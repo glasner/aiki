@@ -359,19 +359,19 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
                 return Ok(HookResponse {
                     context: state.build_context(),
                     decision: Decision::Allow,
-                    messages: state.take_messages(),
+                    failures: state.take_failures(),
                 });
             }
         };
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     // PostResponse never blocks - always allow
     Ok(HookResponse {
         context: state.build_context(),
         decision: Decision::Allow,
-        messages,
+        failures,
     })
 }
 
@@ -398,15 +398,15 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     match flow_result {
         FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Allow,
-                messages,
+                failures,
             })
         }
         FlowResult::FailedBlock => {
@@ -414,7 +414,7 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Block,
-                messages,
+                failures,
             })
         }
     }
