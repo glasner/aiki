@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
-use crate::handlers::HookResponse;
+use crate::handlers::{Decision, HookResponse};
 use crate::provenance::AgentType;
 
 /// Claude Code hook payload structure
@@ -203,7 +203,7 @@ fn translate_session_start(response: &HookResponse) -> ClaudeCodeResponse {
 
 /// Translate UserPromptSubmit event to Claude Code JSON format
 fn translate_user_prompt_submit(response: &HookResponse) -> ClaudeCodeResponse {
-    if response.exit_code == 2 {
+    if matches!(response.decision, Decision::Block(_)) {
         // Block the prompt
         let reason = response.format_messages();
         let mut json_value = json!({
@@ -249,7 +249,7 @@ fn translate_pre_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
 
     // Determine permission decision from response
     // For now, default to "allow" unless blocked
-    let (permission_decision, reason) = if response.exit_code == 2 {
+    let (permission_decision, reason) = if matches!(response.decision, Decision::Block(_)) {
         ("deny", Some(formatted_messages))
     } else {
         (
@@ -282,7 +282,7 @@ fn translate_pre_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
 
 /// Translate PostToolUse event to Claude Code JSON format
 fn translate_post_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
-    if response.exit_code == 2 {
+    if matches!(response.decision, Decision::Block(_)) {
         // Block (autoreply with reason)
         let reason = response.format_messages();
         let reason_text = if !reason.is_empty() {

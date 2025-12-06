@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
-use crate::handlers::{HookResponse, Message};
+use crate::handlers::{Decision, HookResponse, Message};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;
@@ -65,17 +65,20 @@ pub fn run_prepare_commit_message() -> Result<()> {
 /// Git hooks may be called from different editors, so we need to detect
 /// which editor is active and format the response appropriately.
 fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Option<String>, i32) {
-    let exit_code = response.exit_code;
+    let exit_code = match response.decision {
+        Decision::Allow => 0,
+        Decision::Block(_) => 2,
+    };
 
     match editor {
         EditorContext::Claude => {
             // Delegate to Claude Code's translator
             // Note: We can't call the private function, so we inline the logic
-            translate_for_claude_code(response, exit_code)
+            translate_for_claude_code(&response)
         }
         EditorContext::Cursor => {
             // Delegate to Cursor's translator
-            translate_for_cursor(response, exit_code)
+            translate_for_cursor(&response)
         }
         EditorContext::Unknown => {
             // Generic stderr output for unknown editors
@@ -92,8 +95,13 @@ fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Opt
 }
 
 /// Translate for Claude Code (Git hook context)
-fn translate_for_claude_code(response: HookResponse, exit_code: i32) -> (Option<String>, i32) {
+fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
     use serde_json::{json, Map};
+
+    let exit_code = match response.decision {
+        Decision::Allow => 0,
+        Decision::Block(_) => 2,
+    };
 
     match exit_code {
         2 => {
@@ -178,8 +186,13 @@ fn translate_for_claude_code(response: HookResponse, exit_code: i32) -> (Option<
 }
 
 /// Translate for Cursor (Git hook context)
-fn translate_for_cursor(response: HookResponse, exit_code: i32) -> (Option<String>, i32) {
-    use serde_json::{json, Map, Value};
+fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
+    use serde_json::{json, Map};
+
+    let exit_code = match response.decision {
+        Decision::Allow => 0,
+        Decision::Block(_) => 2,
+    };
 
     match exit_code {
         2 => {
