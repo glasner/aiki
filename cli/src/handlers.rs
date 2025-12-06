@@ -13,14 +13,24 @@ pub enum Message {
     Error(String),
 }
 
+/// Decision about how to respond to a hook event
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Allow the operation to proceed
+    Allow,
+
+    /// Block the operation with an error message
+    Block(String),
+}
+
 /// Generic hook response (editor-agnostic)
 #[derive(Debug, Clone)]
 pub struct HookResponse {
     /// Context string for PrePrompt (modified prompt) or PostResponse (autoreply)
     pub context: Option<String>,
 
-    /// Exit code (0 = success, 2 = blocking error, other = non-blocking error)
-    pub exit_code: i32,
+    /// Decision about whether to allow or block the operation
+    pub decision: Decision,
 
     /// Validation messages (Info/Warning/Error)
     pub messages: Vec<Message>,
@@ -31,7 +41,7 @@ impl HookResponse {
     pub fn success() -> Self {
         Self {
             context: None,
-            exit_code: 0,
+            decision: Decision::Allow,
             messages: Vec::new(),
         }
     }
@@ -40,7 +50,7 @@ impl HookResponse {
     pub fn success_with_message(user_msg: impl Into<String>) -> Self {
         Self {
             context: None,
-            exit_code: 0,
+            decision: Decision::Allow,
             messages: vec![Message::Info(user_msg.into())],
         }
     }
@@ -49,7 +59,7 @@ impl HookResponse {
     pub fn success_with_context(context: impl Into<String>) -> Self {
         Self {
             context: Some(context.into()),
-            exit_code: 0,
+            decision: Decision::Allow,
             messages: Vec::new(),
         }
     }
@@ -62,20 +72,21 @@ impl HookResponse {
         }
         Self {
             context: None,
-            exit_code: 0, // Exit 0 for non-blocking failure (shows JSON)
+            decision: Decision::Allow, // Non-blocking - allow operation
             messages,
         }
     }
 
     #[must_use]
     pub fn blocking_failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
-        let mut messages = vec![Message::Error(user_msg.into())];
+        let user_msg_str = user_msg.into();
+        let mut messages = vec![Message::Error(user_msg_str.clone())];
         if let Some(msg) = agent_msg {
             messages.push(Message::Info(msg));
         }
         Self {
             context: None,
-            exit_code: 2, // Exit 2 to block operation (shows stderr)
+            decision: Decision::Block(user_msg_str), // Blocking - includes error message
             messages,
         }
     }
@@ -83,12 +94,6 @@ impl HookResponse {
     #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_exit_code(mut self, code: i32) -> Self {
-        self.exit_code = code;
         self
     }
 
@@ -113,13 +118,13 @@ impl HookResponse {
     /// Check if this response should block the operation
     #[must_use]
     pub fn is_blocking(&self) -> bool {
-        self.exit_code != 0
+        matches!(self.decision, Decision::Block(_))
     }
 
-    /// Check if this response is successful (exit code 0)
+    /// Check if this response is successful (no blocking and no messages)
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.exit_code == 0
+        matches!(self.decision, Decision::Allow) && self.messages.is_empty()
     }
 
     /// Format validation messages with emoji prefixes

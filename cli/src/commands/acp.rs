@@ -2822,7 +2822,7 @@ mod tests {
     fn test_extract_autoreply_with_context() {
         let response = HookResponse {
             context: Some("Fix errors".to_string()),
-            exit_code: 0,
+            decision: crate::handlers::Decision::Allow,
             messages: Vec::new(),
         };
 
@@ -2834,7 +2834,7 @@ mod tests {
     fn test_extract_autoreply_missing_returns_none() {
         let response = HookResponse {
             context: None,
-            exit_code: 0,
+            decision: crate::handlers::Decision::Allow,
             messages: Vec::new(),
         };
 
@@ -2846,7 +2846,7 @@ mod tests {
     fn test_extract_autoreply_empty_returns_none() {
         let response = HookResponse {
             context: Some("".to_string()),
-            exit_code: 0,
+            decision: crate::handlers::Decision::Allow,
             messages: Vec::new(),
         };
 
