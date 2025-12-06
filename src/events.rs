@@ -118,6 +118,8 @@ pub enum AikiEvent {
     PostResponse(AikiPostResponseEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),
+    /// Unsupported event (unknown events or non-file tools that don't require processing)
+    Unsupported,
 }
 
 impl AikiEvent {
@@ -131,6 +133,7 @@ impl AikiEvent {
             Self::PostFileChange(e) => &e.cwd,
             Self::PostResponse(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
+            Self::Unsupported => Path::new("."),
         }
     }
 
@@ -144,6 +147,7 @@ impl AikiEvent {
             Self::PostFileChange(e) => e.agent_type,
             Self::PostResponse(e) => e.agent_type,
             Self::PrepareCommitMessage(e) => e.agent_type,
+            Self::Unsupported => AgentType::Unknown,
         }
     }
 }

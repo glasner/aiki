@@ -121,31 +121,52 @@ impl HookResponse {
     pub fn is_success(&self) -> bool {
         self.exit_code == 0
     }
-}
 
-/// Format validation messages with emoji prefixes
-///
-/// Converts HookResponse messages into formatted strings with emoji prefixes:
-/// - Info: ℹ️
-/// - Warning: ⚠️
-/// - Error: ❌
-///
-/// These formatted messages can be:
-/// - Shown to user (stderr)
-/// - Combined with context and sent to agent (PrePrompt, PostResponse)
-/// - Used in vendor-specific output (Cursor followup_message, Claude Code reason)
-pub fn format_messages(response: &HookResponse) -> String {
-    let mut parts = vec![];
+    /// Format validation messages with emoji prefixes
+    ///
+    /// Converts messages into formatted strings with emoji prefixes:
+    /// - Info: ℹ️
+    /// - Warning: ⚠️
+    /// - Error: ❌
+    ///
+    /// These formatted messages can be:
+    /// - Shown to user (stderr)
+    /// - Combined with context and sent to agent (PrePrompt, PostResponse)
+    /// - Used in vendor-specific output (Cursor followup_message, Claude Code reason)
+    #[must_use]
+    pub fn format_messages(&self) -> String {
+        let mut parts = vec![];
 
-    for msg in &response.messages {
-        match msg {
-            Message::Info(s) => parts.push(format!("ℹ️ {}", s)),
-            Message::Warning(s) => parts.push(format!("⚠️ {}", s)),
-            Message::Error(s) => parts.push(format!("❌ {}", s)),
+        for msg in &self.messages {
+            match msg {
+                Message::Info(s) => parts.push(format!("ℹ️ {}", s)),
+                Message::Warning(s) => parts.push(format!("⚠️ {}", s)),
+                Message::Error(s) => parts.push(format!("❌ {}", s)),
+            }
         }
+
+        parts.join("\n\n")
     }
 
-    parts.join("\n\n")
+    /// Combine formatted messages and context according to Phase 8 architecture
+    ///
+    /// Returns Some(combined_string) if either messages or context are non-empty,
+    /// None if both are empty.
+    ///
+    /// Used by vendor translators to combine validation messages with context
+    /// for events like PrePrompt and PostResponse.
+    #[must_use]
+    pub fn combined_output(&self) -> Option<String> {
+        let formatted_messages = self.format_messages();
+        let context = self.context.as_deref().unwrap_or("");
+
+        match (!formatted_messages.is_empty(), !context.is_empty()) {
+            (true, true) => Some(format!("{}\n\n{}", formatted_messages, context)),
+            (true, false) => Some(formatted_messages),
+            (false, true) => Some(context.to_string()),
+            (false, false) => None,
+        }
+    }
 }
 
 /// Handle session start event
