@@ -152,13 +152,12 @@ impl AikiState {
 
     /// Build the final context from accumulated chunks
     /// Works for PrePrompt (builds prompt) and PostResponse (builds autoreply)
-    pub fn build_context(&self) -> crate::error::Result<String> {
+    /// Returns None if this event doesn't have a context assembler
+    #[must_use]
+    pub fn build_context(&self) -> Option<String> {
         self.context_assembler
             .as_ref()
             .map(|assembler| assembler.build())
-            .ok_or_else(|| {
-                crate::error::AikiError::Other(anyhow::anyhow!("Context assembler not available"))
-            })
     }
 
     /// Add a message to the messages list
