@@ -53,13 +53,10 @@ pub struct AikiState {
     /// Current flow name (e.g., "aiki/core") for self references
     pub flow_name: Option<String>,
 
-    /// Context to prepend to prompts/autoreplies (NEW)
-    pub context: crate::handlers::Context,
-
-    /// Message assembler for events that build messages
-    /// - PrePrompt: accumulates prompt modifications
+    /// Context assembler for events that build messages
+    /// - PrePrompt: accumulates prompt modifications and context
     /// - PostResponse: accumulates autoreply content
-    message_assembler: Option<crate::flows::messages::MessageAssembler>,
+    context_assembler: Option<crate::flows::context::ContextAssembler>,
 }
 
 impl AikiState {
@@ -67,18 +64,18 @@ impl AikiState {
     pub fn new(event: impl Into<crate::events::AikiEvent>) -> Self {
         let event = event.into();
 
-        // Initialize message assembler based on event type
-        let message_assembler = match &event {
+        // Initialize context assembler based on event type
+        let context_assembler = match &event {
             crate::events::AikiEvent::PrePrompt(e) => {
                 // PrePrompt: start with original prompt
-                Some(crate::flows::messages::MessageAssembler::new(
+                Some(crate::flows::context::ContextAssembler::new(
                     Some(e.prompt.clone()),
                     "\n\n",
                 ))
             }
             crate::events::AikiEvent::PostResponse(_) => {
                 // PostResponse: build autoreply from scratch
-                Some(crate::flows::messages::MessageAssembler::new(None, "\n\n"))
+                Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
             }
             _ => None,
         };
@@ -88,11 +85,7 @@ impl AikiState {
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
             flow_name: None,
-            context: crate::handlers::Context {
-                prepend: None,
-                append: None,
-            },
-            message_assembler,
+            context_assembler,
         }
     }
 
@@ -141,46 +134,27 @@ impl AikiState {
         self.variable_metadata.get(name)
     }
 
-    /// Get mutable reference to the message assembler
+    /// Get mutable reference to the context assembler
     /// Only available for PrePrompt and PostResponse events
-    pub fn get_message_assembler_mut(
+    pub fn get_context_assembler_mut(
         &mut self,
-    ) -> crate::error::Result<&mut crate::flows::messages::MessageAssembler> {
-        self.message_assembler.as_mut().ok_or_else(|| {
+    ) -> crate::error::Result<&mut crate::flows::context::ContextAssembler> {
+        self.context_assembler.as_mut().ok_or_else(|| {
             crate::error::AikiError::Other(anyhow::anyhow!(
-                "Message assembler not available (not a PrePrompt or PostResponse event)"
+                "Context assembler not available (not a PrePrompt or PostResponse event)"
             ))
         })
     }
 
-    /// Build the final message from accumulated chunks
+    /// Build the final context from accumulated chunks
     /// Works for PrePrompt (builds prompt) and PostResponse (builds autoreply)
-    pub fn build_message(&self) -> crate::error::Result<String> {
-        self.message_assembler
+    pub fn build_context(&self) -> crate::error::Result<String> {
+        self.context_assembler
             .as_ref()
             .map(|assembler| assembler.build())
             .ok_or_else(|| {
-                crate::error::AikiError::Other(anyhow::anyhow!("Message assembler not available"))
+                crate::error::AikiError::Other(anyhow::anyhow!("Context assembler not available"))
             })
-    }
-
-    /// Build HookResponse with accumulated context
-    pub fn build_response(&self) -> crate::handlers::HookResponse {
-        let context_opt = if self.context.prepend.is_some() || self.context.append.is_some() {
-            Some(self.context.clone())
-        } else {
-            None
-        };
-
-        crate::handlers::HookResponse {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: Vec::new(),
-            exit_code: None,
-            messages: Vec::new(),
-            context: context_opt,
-        }
     }
 }
 

@@ -5,28 +5,6 @@ use crate::events::{
 };
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 
-/// Context to prepend to prompts or autoreplies
-#[derive(Debug, Clone)]
-pub struct Context {
-    /// Prepended to context block
-    pub prepend: Option<String>,
-    /// Appended to context block
-    pub append: Option<String>,
-}
-
-impl Context {
-    /// Build the context block from prepend/append
-    #[must_use]
-    pub fn build(&self) -> String {
-        match (&self.prepend, &self.append) {
-            (Some(pre), Some(app)) => format!("{}\n\n{}", pre, app),
-            (Some(pre), None) => pre.clone(),
-            (None, Some(app)) => app.clone(),
-            (None, None) => String::new(),
-        }
-    }
-}
-
 /// Message type for validation and info
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -38,115 +16,79 @@ pub enum Message {
 /// Generic hook response (editor-agnostic)
 #[derive(Debug, Clone)]
 pub struct HookResponse {
-    /// Success or failure
-    pub success: bool,
+    /// Context string for PrePrompt (modified prompt) or PostResponse (autoreply)
+    pub context: Option<String>,
 
-    /// Message shown to user in editor UI (optional)
-    pub user_message: Option<String>,
-
-    /// Message sent to AI agent (optional)
-    pub agent_message: Option<String>,
-
-    /// Metadata key-value pairs (optional)
-    pub metadata: Vec<(String, String)>,
-
-    /// Exit code override (optional, defaults based on success)
-    pub exit_code: Option<i32>,
+    /// Exit code (0 = success, 2 = blocking error, other = non-blocking error)
+    pub exit_code: i32,
 
     /// Validation messages (Info/Warning/Error)
     pub messages: Vec<Message>,
-
-    /// Context to prepend to prompts/autoreplies
-    pub context: Option<Context>,
 }
 
 impl HookResponse {
     #[must_use]
     pub fn success() -> Self {
         Self {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata: Vec::new(),
-            exit_code: None,
-            messages: Vec::new(),
             context: None,
+            exit_code: 0,
+            messages: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn success_with_message(user_msg: impl Into<String>) -> Self {
         Self {
-            success: true,
-            user_message: Some(user_msg.into()),
-            agent_message: None,
-            metadata: Vec::new(),
-            exit_code: None,
-            messages: Vec::new(),
             context: None,
+            exit_code: 0,
+            messages: vec![Message::Info(user_msg.into())],
         }
     }
 
     #[must_use]
-    pub fn success_with_metadata(metadata: Vec<(String, String)>) -> Self {
+    pub fn success_with_context(context: impl Into<String>) -> Self {
         Self {
-            success: true,
-            user_message: None,
-            agent_message: None,
-            metadata,
-            exit_code: None,
+            context: Some(context.into()),
+            exit_code: 0,
             messages: Vec::new(),
-            context: None,
         }
     }
 
     #[must_use]
     pub fn failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
+        let mut messages = vec![Message::Error(user_msg.into())];
+        if let Some(msg) = agent_msg {
+            messages.push(Message::Info(msg));
+        }
         Self {
-            success: false,
-            user_message: Some(user_msg.into()),
-            agent_message: agent_msg,
-            metadata: Vec::new(),
-            exit_code: Some(0), // Exit 0 for non-blocking failure (shows JSON)
-            messages: Vec::new(),
             context: None,
+            exit_code: 0, // Exit 0 for non-blocking failure (shows JSON)
+            messages,
         }
     }
 
     #[must_use]
     pub fn blocking_failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
+        let mut messages = vec![Message::Error(user_msg.into())];
+        if let Some(msg) = agent_msg {
+            messages.push(Message::Info(msg));
+        }
         Self {
-            success: false,
-            user_message: Some(user_msg.into()),
-            agent_message: agent_msg,
-            metadata: Vec::new(),
-            exit_code: Some(2), // Exit 2 to block operation (shows stderr)
-            messages: Vec::new(),
             context: None,
+            exit_code: 2, // Exit 2 to block operation (shows stderr)
+            messages,
         }
     }
 
     #[must_use]
-    pub fn with_metadata(mut self, metadata: Vec<(String, String)>) -> Self {
-        self.metadata = metadata;
-        self
-    }
-
-    #[must_use]
-    pub fn with_agent_message(mut self, msg: impl Into<String>) -> Self {
-        self.agent_message = Some(msg.into());
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
         self
     }
 
     #[must_use]
     pub fn with_exit_code(mut self, code: i32) -> Self {
-        self.exit_code = Some(code);
-        self
-    }
-
-    #[must_use]
-    pub fn with_context(mut self, context: Context) -> Self {
-        self.context = Some(context);
+        self.exit_code = code;
         self
     }
 
@@ -171,34 +113,35 @@ impl HookResponse {
     /// Check if this response should block the operation
     #[must_use]
     pub fn is_blocking(&self) -> bool {
-        self.exit_code.map_or(false, |code| code != 0)
+        self.exit_code != 0
     }
 
-    /// Check if this response is successful
+    /// Check if this response is successful (exit code 0)
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.success && !self.is_blocking()
+        self.exit_code == 0
     }
 }
 
-/// Build agent-visible context from messages + context
-pub fn build_agent_context(response: &HookResponse) -> String {
+/// Format validation messages with emoji prefixes
+///
+/// Converts HookResponse messages into formatted strings with emoji prefixes:
+/// - Info: ℹ️
+/// - Warning: ⚠️
+/// - Error: ❌
+///
+/// These formatted messages can be:
+/// - Shown to user (stderr)
+/// - Combined with context and sent to agent (PrePrompt, PostResponse)
+/// - Used in vendor-specific output (Cursor followup_message, Claude Code reason)
+pub fn format_messages(response: &HookResponse) -> String {
     let mut parts = vec![];
 
-    // Add validation messages
     for msg in &response.messages {
         match msg {
             Message::Info(s) => parts.push(format!("ℹ️ {}", s)),
             Message::Warning(s) => parts.push(format!("⚠️ {}", s)),
             Message::Error(s) => parts.push(format!("❌ {}", s)),
-        }
-    }
-
-    // Add context
-    if let Some(context) = &response.context {
-        let context_text = context.build();
-        if !context_text.is_empty() {
-            parts.push(context_text);
         }
     }
 
@@ -227,17 +170,11 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.session_start, &mut state)?;
 
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success().with_metadata(vec![
-            ("session_initialized".to_string(), "true".to_string()),
-            (
-                "aiki_version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
-            ),
-        ])),
+        FlowResult::Success => Ok(HookResponse::success()),
         FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(
             "⚠️ Session started with warnings",
         )
-        .with_agent_message(format!("Some initialization actions failed: {}", msg))),
+        .with_info(format!("Some initialization actions failed: {}", msg))),
         FlowResult::FailedStop(_msg) => {
             // Flow stopped silently - return success (no error to user)
             Ok(HookResponse::success())
@@ -256,7 +193,8 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
 ///
 /// This event fires before the agent receives the user's prompt, allowing flows
 /// to inject additional context (e.g., project conventions, active files, etc.).
-/// Returns the modified prompt via metadata, with graceful degradation on errors.
+/// Returns context via `response.context` and messages via `response.messages`,
+/// with graceful degradation on errors.
 pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
@@ -275,13 +213,6 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Extract original prompt for error recovery
-    let original_prompt = if let crate::events::AikiEvent::PrePrompt(ref evt) = state.event {
-        evt.prompt.clone()
-    } else {
-        String::new()
-    };
-
     // Execute PrePrompt actions from the core flow (catch errors for graceful degradation)
     let (flow_result, _timing) =
         match FlowEngine::execute_actions(&core_flow.pre_prompt, &mut state) {
@@ -290,43 +221,34 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
                 // Flow execution failed - log warning and use original prompt
                 eprintln!("⚠️ PrePrompt flow failed: {}", e);
                 eprintln!("Continuing with original prompt...\n");
-                return Ok(HookResponse::success()
-                    .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]));
+                // Return built context (already initialized with original prompt)
+                return Ok(
+                    HookResponse::success().with_context(state.build_context().unwrap_or_default())
+                );
             }
         };
 
-    // Build final prompt (graceful degradation on error)
-    let final_prompt = match state.build_message() {
-        Ok(prompt) => prompt,
-        Err(e) => {
-            // Prompt assembly failed - log warning and use original prompt
-            eprintln!("⚠️ PrePrompt flow failed: {}", e);
-            eprintln!("Continuing with original prompt...\n");
-            original_prompt.clone()
-        }
-    };
-
-    // Return response based on flow result (all errors use original prompt)
+    // Return response based on flow result (build context string)
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success()
-            .with_metadata(vec![("modified_prompt".to_string(), final_prompt)])),
+        FlowResult::Success => {
+            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
+        }
         FlowResult::FailedContinue(msg) => {
             eprintln!("⚠️ PrePrompt flow failed: {}", msg);
             eprintln!("Continuing with original prompt...\n");
-            Ok(HookResponse::success()
-                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
+            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
         }
         FlowResult::FailedStop(msg) => {
             eprintln!("⚠️ PrePrompt flow stopped: {}", msg);
             eprintln!("Continuing with original prompt...\n");
-            Ok(HookResponse::success()
-                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
+            Ok(HookResponse::success().with_context(state.build_context().unwrap_or_default()))
         }
         FlowResult::FailedBlock(msg) => {
-            eprintln!("⚠️ PrePrompt flow blocked: {}", msg);
-            eprintln!("Continuing with original prompt...\n");
-            Ok(HookResponse::success()
-                .with_metadata(vec![("modified_prompt".to_string(), original_prompt)]))
+            // Block the prompt - return exit code 2
+            Ok(HookResponse::blocking_failure(
+                format!("❌ Prompt blocked: {}", msg),
+                Some("Fix the validation error before continuing.".to_string()),
+            ))
         }
     }
 }
@@ -414,7 +336,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
             "⚠️ Provenance partially recorded for {} files",
             event.file_paths.len()
         ))
-        .with_agent_message(format!("Some actions failed: {}", msg))),
+        .with_info(format!("Some actions failed: {}", msg))),
         FlowResult::FailedStop(_msg) => {
             // Flow stopped silently - no error to user
             Ok(HookResponse::success())
@@ -437,7 +359,8 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
 ///
 /// This event fires after the agent finishes generating its response, allowing flows
 /// to validate output, detect errors, and optionally send an autoreply to the agent.
-/// Returns the autoreply via metadata if non-empty, with graceful degradation on errors.
+/// Returns autoreply via `response.context` and messages via `response.messages`,
+/// with graceful degradation on errors.
 pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
@@ -468,23 +391,15 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
             }
         };
 
-    // Build final autoreply (graceful degradation on error)
-    let autoreply = match state.build_message() {
-        Ok(reply) => reply,
-        Err(e) => {
-            // Autoreply assembly failed - log warning and skip autoreply
-            eprintln!("\n⚠️ PostResponse flow failed: {}", e);
-            eprintln!("No autoreply generated.\n");
-            String::new()
-        }
-    };
-
-    // Return response based on flow result (all errors result in no autoreply)
+    // Return response based on flow result (build context string from assembler)
     match flow_result {
         FlowResult::Success => {
-            if !autoreply.is_empty() {
-                Ok(HookResponse::success()
-                    .with_metadata(vec![("autoreply".to_string(), autoreply)]))
+            if let Ok(context) = state.build_context() {
+                if !context.is_empty() {
+                    Ok(HookResponse::success().with_context(context))
+                } else {
+                    Ok(HookResponse::success())
+                }
             } else {
                 Ok(HookResponse::success())
             }
@@ -531,18 +446,11 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
         FlowEngine::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
 
     match flow_result {
-        FlowResult::Success => Ok(HookResponse::success_with_message("✅ Co-authors added")
-            .with_metadata(vec![
-                (
-                    "aiki_version".to_string(),
-                    env!("CARGO_PKG_VERSION").to_string(),
-                ),
-                ("flow".to_string(), "aiki/core".to_string()),
-            ])),
+        FlowResult::Success => Ok(HookResponse::success_with_message("✅ Co-authors added")),
         FlowResult::FailedContinue(msg) => Ok(HookResponse::success_with_message(
             "⚠️ Co-authors partially added",
         )
-        .with_agent_message(format!("Some actions failed: {}", msg))),
+        .with_info(format!("Some actions failed: {}", msg))),
         FlowResult::FailedStop(_msg) => {
             // Flow stopped silently - return success (no error to user)
             Ok(HookResponse::success())

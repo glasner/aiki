@@ -1,23 +1,23 @@
-//! Message assembly system for building prompts, autoreplies, and commit messages.
+//! Context assembly system for building prompts, autoreplies, and commit messages.
 //!
 //! This module provides a unified syntax for prepending and appending content to messages
 //! across different event types (PrePrompt, PostResponse, PrepareCommitMessage).
 //!
 //! # Core Types
 //!
-//! - [`MessageChunk`]: Represents content to prepend and/or append
-//! - [`MessageAssembler`]: Stateful builder that accumulates chunks and produces final output
+//! - [`ContextChunk`]: Represents content to prepend and/or append
+//! - [`ContextAssembler`]: Stateful builder that accumulates chunks and produces final output
 //! - [`TextLines`]: YAML value that can be a single string or array of strings
 //!
 //! # Usage Example
 //!
 //! ```rust
-//! use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
+//! use aiki::flows::context::{ContextChunk, ContextAssembler, TextLines};
 //!
-//! let mut assembler = MessageAssembler::new(Some("original content".to_string()), "\n");
+//! let mut assembler = ContextAssembler::new(Some("original content".to_string()), "\n");
 //!
 //! // Add chunks from different flows
-//! let chunk1 = MessageChunk {
+//! let chunk1 = ContextChunk {
 //!     prepend: Some(TextLines::Single("First line".to_string())),
 //!     append: Some(TextLines::Single("Last line".to_string())),
 //! };
@@ -136,8 +136,8 @@ impl TextLines {
 
 /// A chunk of content to prepend and/or append to a message.
 ///
-/// This is the fundamental building block for message assembly. Each flow can
-/// contribute a `MessageChunk` that specifies what to add before and/or after
+/// This is the fundamental building block for context assembly. Each flow can
+/// contribute a `ContextChunk` that specifies what to add before and/or after
 /// the existing content.
 ///
 /// # YAML Syntax
@@ -167,7 +167,7 @@ impl TextLines {
 ///   - "Line 3"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageChunk {
+pub struct ContextChunk {
     /// Content to add before the existing message
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepend: Option<TextLines>,
@@ -177,8 +177,8 @@ pub struct MessageChunk {
     pub append: Option<TextLines>,
 }
 
-impl MessageChunk {
-    /// Create a new empty `MessageChunk`.
+impl ContextChunk {
+    /// Create a new empty `ContextChunk`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -206,7 +206,7 @@ impl MessageChunk {
         use std::hash::{Hash, Hasher};
 
         // Data is already normalized during deserialization
-        let yaml = serde_yaml::to_string(self).expect("MessageChunk should always serialize");
+        let yaml = serde_yaml::to_string(self).expect("ContextChunk should always serialize");
 
         let mut hasher = DefaultHasher::new();
         yaml.hash(&mut hasher);
@@ -241,14 +241,14 @@ impl MessageChunk {
     /// - prepend or append is empty
     pub fn validate(&self) -> crate::error::Result<()> {
         if self.prepend.is_none() && self.append.is_none() {
-            return Err(crate::error::AikiError::InvalidMessageChunk(
-                "MessageChunk must have at least prepend or append".to_string(),
+            return Err(crate::error::AikiError::InvalidContextChunk(
+                "ContextChunk must have at least prepend or append".to_string(),
             ));
         }
 
         if let Some(ref p) = self.prepend {
             if p.is_empty() {
-                return Err(crate::error::AikiError::InvalidMessageChunk(
+                return Err(crate::error::AikiError::InvalidContextChunk(
                     "prepend cannot be empty".to_string(),
                 ));
             }
@@ -256,7 +256,7 @@ impl MessageChunk {
 
         if let Some(ref a) = self.append {
             if a.is_empty() {
-                return Err(crate::error::AikiError::InvalidMessageChunk(
+                return Err(crate::error::AikiError::InvalidContextChunk(
                     "append cannot be empty".to_string(),
                 ));
             }
@@ -273,7 +273,7 @@ impl MessageChunk {
     ///
     /// # Returns
     ///
-    /// A new MessageChunk with all variables resolved
+    /// A new ContextChunk with all variables resolved
     #[must_use]
     pub fn resolve_variables<F>(self, mut resolver: F) -> Self
     where
@@ -300,13 +300,13 @@ impl MessageChunk {
     }
 }
 
-impl Default for MessageChunk {
+impl Default for ContextChunk {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// A stateful builder that accumulates message chunks and produces a final assembled message.
+/// A stateful builder that accumulates context chunks and produces a final assembled message.
 ///
 /// # Usage Pattern
 ///
@@ -317,17 +317,17 @@ impl Default for MessageChunk {
 /// # Example
 ///
 /// ```rust
-/// use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
+/// use aiki::flows::context::{ContextChunk, ContextAssembler, TextLines};
 ///
-/// let mut assembler = MessageAssembler::new(Some("Middle".to_string()), "\n");
+/// let mut assembler = ContextAssembler::new(Some("Middle".to_string()), "\n");
 ///
-/// let chunk1 = MessageChunk {
+/// let chunk1 = ContextChunk {
 ///     prepend: Some(TextLines::Single("Top".to_string())),
 ///     append: None,
 /// };
 /// assembler.add_chunk(chunk1);
 ///
-/// let chunk2 = MessageChunk {
+/// let chunk2 = ContextChunk {
 ///     prepend: None,
 ///     append: Some(TextLines::Single("Bottom".to_string())),
 /// };
@@ -336,17 +336,17 @@ impl Default for MessageChunk {
 /// assert_eq!(assembler.build(), "Top\nMiddle\nBottom");
 /// ```
 #[derive(Debug, Clone)]
-pub struct MessageAssembler {
+pub struct ContextAssembler {
     /// Accumulated chunks in order they were added
-    chunks: Vec<MessageChunk>,
+    chunks: Vec<ContextChunk>,
     /// Original message content (e.g., user's prompt, existing commit message)
     original: Option<String>,
     /// Separator to use when joining sections
     separator: String,
 }
 
-impl MessageAssembler {
-    /// Create a new `MessageAssembler`.
+impl ContextAssembler {
+    /// Create a new `ContextAssembler`.
     ///
     /// # Arguments
     ///
@@ -364,7 +364,7 @@ impl MessageAssembler {
     /// Add a chunk to the assembler.
     ///
     /// Chunks are processed in the order they are added.
-    pub fn add_chunk(&mut self, chunk: MessageChunk) {
+    pub fn add_chunk(&mut self, chunk: ContextChunk) {
         self.chunks.push(chunk);
     }
 
@@ -434,10 +434,10 @@ impl MessageAssembler {
     /// # Example
     ///
     /// ```rust
-    /// use aiki::flows::messages::{MessageChunk, MessageAssembler, TextLines};
+    /// use aiki::flows::context::{ContextChunk, ContextAssembler, TextLines};
     ///
-    /// let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
-    /// assembler.add_chunk(MessageChunk {
+    /// let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
+    /// assembler.add_chunk(ContextChunk {
     ///     prepend: Some(TextLines::Single("bad".to_string())),
     ///     append: None,
     /// });
@@ -481,12 +481,12 @@ mod tests {
 
     #[test]
     fn test_prepend_only() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("prepended".to_string())),
             append: None,
         };
 
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "prepended\noriginal");
@@ -494,12 +494,12 @@ mod tests {
 
     #[test]
     fn test_append_only() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: None,
             append: Some(TextLines::Single("appended".to_string())),
         };
 
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "original\nappended");
@@ -507,12 +507,12 @@ mod tests {
 
     #[test]
     fn test_both_prepend_and_append() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("before".to_string())),
             append: Some(TextLines::Single("after".to_string())),
         };
 
-        let mut assembler = MessageAssembler::new(Some("middle".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("middle".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "before\nmiddle\nafter");
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_with_arrays() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Multiple(vec![
                 "line1".to_string(),
                 "line2".to_string(),
@@ -528,7 +528,7 @@ mod tests {
             append: Some(TextLines::Single("line3".to_string())),
         };
 
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "line1\nline2\noriginal\nline3");
@@ -536,12 +536,12 @@ mod tests {
 
     #[test]
     fn test_check_id_is_deterministic() {
-        let chunk1 = MessageChunk {
+        let chunk1 = ContextChunk {
             prepend: Some(TextLines::Single("test".to_string())),
             append: Some(TextLines::Single("content".to_string())),
         };
 
-        let chunk2 = MessageChunk {
+        let chunk2 = ContextChunk {
             prepend: Some(TextLines::Single("test".to_string())),
             append: Some(TextLines::Single("content".to_string())),
         };
@@ -551,12 +551,12 @@ mod tests {
 
     #[test]
     fn test_check_id_differs_for_different_content() {
-        let chunk1 = MessageChunk {
+        let chunk1 = ContextChunk {
             prepend: Some(TextLines::Single("test1".to_string())),
             append: None,
         };
 
-        let chunk2 = MessageChunk {
+        let chunk2 = ContextChunk {
             prepend: Some(TextLines::Single("test2".to_string())),
             append: None,
         };
@@ -585,9 +585,9 @@ prepend:
 prepend: "line1\nline2"
 "#;
 
-        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_array: MessageChunk = serde_yaml::from_str(yaml_array).unwrap();
-        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_array: ContextChunk = serde_yaml::from_str(yaml_array).unwrap();
+        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
 
         // Forms 1 and 3 should produce identical check IDs (both single strings)
         assert_eq!(
@@ -622,8 +622,8 @@ prepend: "Header text"
 append: "Footer text"
 "#;
 
-        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
 
         // Should produce identical check IDs after normalization during deserialization
         assert_eq!(
@@ -652,8 +652,8 @@ prepend:
   - "line2"
 "#;
 
-        let chunk_block: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_inline: MessageChunk = serde_yaml::from_str(yaml_inline).unwrap();
+        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
 
         // Should produce identical check IDs after normalization during deserialization
         assert_eq!(
@@ -673,8 +673,8 @@ prepend: |
   Line 2
 "#;
 
-        let chunk: MessageChunk = serde_yaml::from_str(yaml_str).unwrap();
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let chunk: ContextChunk = serde_yaml::from_str(yaml_str).unwrap();
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         let result = assembler.build();
@@ -692,8 +692,8 @@ append:
   - "Line 3"
 "#;
 
-        let chunk: MessageChunk = serde_yaml::from_str(yaml_str).unwrap();
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let chunk: ContextChunk = serde_yaml::from_str(yaml_str).unwrap();
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "Line 1\nLine 2\noriginal\nLine 3");
@@ -715,13 +715,13 @@ append:
   - "Footer"
 "#;
 
-        let chunk1: MessageChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk2: MessageChunk = serde_yaml::from_str(yaml_array).unwrap();
+        let chunk1: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
+        let chunk2: ContextChunk = serde_yaml::from_str(yaml_array).unwrap();
 
-        let mut assembler1 = MessageAssembler::new(Some("Body".to_string()), "\n");
+        let mut assembler1 = ContextAssembler::new(Some("Body".to_string()), "\n");
         assembler1.add_chunk(chunk1);
 
-        let mut assembler2 = MessageAssembler::new(Some("Body".to_string()), "\n");
+        let mut assembler2 = ContextAssembler::new(Some("Body".to_string()), "\n");
         assembler2.add_chunk(chunk2);
 
         assert_eq!(assembler1.build(), assembler2.build());
@@ -729,7 +729,7 @@ append:
 
     #[test]
     fn test_validate_empty_chunk() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: None,
             append: None,
         };
@@ -739,7 +739,7 @@ append:
 
     #[test]
     fn test_validate_valid_chunk() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("test".to_string())),
             append: None,
         };
@@ -749,7 +749,7 @@ append:
 
     #[test]
     fn test_prepend_items() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Multiple(vec!["a".to_string(), "b".to_string()])),
             append: None,
         };
@@ -762,7 +762,7 @@ append:
 
     #[test]
     fn test_append_items() {
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: None,
             append: Some(TextLines::Multiple(vec!["x".to_string(), "y".to_string()])),
         };
@@ -777,9 +777,9 @@ mod assembler_tests {
 
     #[test]
     fn test_build_with_single_chunk() {
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("before".to_string())),
             append: Some(TextLines::Single("after".to_string())),
         };
@@ -790,15 +790,15 @@ mod assembler_tests {
 
     #[test]
     fn test_build_with_multiple_chunks() {
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
 
-        let chunk1 = MessageChunk {
+        let chunk1 = ContextChunk {
             prepend: Some(TextLines::Single("first".to_string())),
             append: None,
         };
         assembler.add_chunk(chunk1);
 
-        let chunk2 = MessageChunk {
+        let chunk2 = ContextChunk {
             prepend: Some(TextLines::Single("second".to_string())),
             append: Some(TextLines::Single("end".to_string())),
         };
@@ -810,9 +810,9 @@ mod assembler_tests {
 
     #[test]
     fn test_build_without_original() {
-        let mut assembler = MessageAssembler::new(None, "\n");
+        let mut assembler = ContextAssembler::new(None, "\n");
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("start".to_string())),
             append: Some(TextLines::Single("end".to_string())),
         };
@@ -823,9 +823,9 @@ mod assembler_tests {
 
     #[test]
     fn test_build_with_custom_separator() {
-        let mut assembler = MessageAssembler::new(Some("middle".to_string()), " | ");
+        let mut assembler = ContextAssembler::new(Some("middle".to_string()), " | ");
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("A".to_string())),
             append: Some(TextLines::Single("B".to_string())),
         };
@@ -836,16 +836,16 @@ mod assembler_tests {
 
     #[test]
     fn test_build_empty_chunks() {
-        let assembler = MessageAssembler::new(Some("only original".to_string()), "\n");
+        let assembler = ContextAssembler::new(Some("only original".to_string()), "\n");
 
         assert_eq!(assembler.build(), "only original");
     }
 
     #[test]
     fn test_build_empty_original() {
-        let mut assembler = MessageAssembler::new(Some("".to_string()), "\n");
+        let mut assembler = ContextAssembler::new(Some("".to_string()), "\n");
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("before".to_string())),
             append: Some(TextLines::Single("after".to_string())),
         };
@@ -857,35 +857,35 @@ mod assembler_tests {
 
     #[test]
     fn test_chunk_count() {
-        let mut assembler = MessageAssembler::new(None, "\n");
+        let mut assembler = ContextAssembler::new(None, "\n");
         assert_eq!(assembler.chunk_count(), 0);
 
-        assembler.add_chunk(MessageChunk::new());
+        assembler.add_chunk(ContextChunk::new());
         assert_eq!(assembler.chunk_count(), 1);
 
-        assembler.add_chunk(MessageChunk::new());
+        assembler.add_chunk(ContextChunk::new());
         assert_eq!(assembler.chunk_count(), 2);
     }
 
     #[test]
     fn test_is_empty() {
-        let mut assembler = MessageAssembler::new(None, "\n");
+        let mut assembler = ContextAssembler::new(None, "\n");
         assert!(assembler.is_empty());
 
-        assembler.add_chunk(MessageChunk::new());
+        assembler.add_chunk(ContextChunk::new());
         assert!(!assembler.is_empty());
     }
 
     #[test]
     fn test_clear() {
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n\n");
 
         // Add some chunks
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("header".to_string())),
             append: None,
         });
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: None,
             append: Some(TextLines::Single("footer".to_string())),
         });
@@ -905,10 +905,10 @@ mod assembler_tests {
 
     #[test]
     fn test_clear_and_reuse() {
-        let mut assembler = MessageAssembler::new(Some("original".to_string()), "\n\n");
+        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n\n");
 
         // First batch of chunks
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("bad".to_string())),
             append: None,
         });
@@ -917,7 +917,7 @@ mod assembler_tests {
         assembler.clear();
 
         // Add good chunks
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("good".to_string())),
             append: None,
         });
@@ -928,9 +928,9 @@ mod assembler_tests {
     #[test]
     fn test_build_with_double_newline_separator() {
         // PrePrompt and PostResponse use double-newline separator
-        let mut assembler = MessageAssembler::new(Some("middle".to_string()), "\n\n");
+        let mut assembler = ContextAssembler::new(Some("middle".to_string()), "\n\n");
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single("before".to_string())),
             append: Some(TextLines::Single("after".to_string())),
         };
@@ -944,22 +944,22 @@ mod assembler_tests {
     fn test_preprompt_style_message_assembly() {
         // Simulate PrePrompt event usage with double-newline separator
         let mut assembler =
-            MessageAssembler::new(Some("User's original prompt".to_string()), "\n\n");
+            ContextAssembler::new(Some("User's original prompt".to_string()), "\n\n");
 
         // Flow A adds context
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("Read ARCHITECTURE.md first".to_string())),
             append: None,
         });
 
         // Flow B adds constraints
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("Follow security guidelines".to_string())),
             append: None,
         });
 
         // Flow C adds footer
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: None,
             append: Some(TextLines::Single("Confirm you understand".to_string())),
         });
@@ -976,9 +976,9 @@ mod assembler_tests {
     #[test]
     fn test_single_newline_separator_for_commit_messages() {
         // PrepareCommitMessage uses single-newline separator for trailers
-        let mut assembler = MessageAssembler::new(None, "\n");
+        let mut assembler = ContextAssembler::new(None, "\n");
 
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: None,
             append: Some(TextLines::Multiple(vec![
                 "Co-authored-by: Alice <alice@example.com>".to_string(),
@@ -1001,9 +1001,9 @@ mod assembler_tests {
     #[test]
     fn test_unicode_content() {
         // Test various Unicode characters: emoji, CJK, RTL, accents
-        let mut assembler = MessageAssembler::new(Some("中文内容 🚀".to_string()), "\n\n");
+        let mut assembler = ContextAssembler::new(Some("中文内容 🚀".to_string()), "\n\n");
 
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("🎯 Priority: مرتفع".to_string())),
             append: Some(TextLines::Single("Café ☕ — Naïve résumé".to_string())),
         });
@@ -1025,17 +1025,17 @@ mod assembler_tests {
     #[test]
     fn test_unicode_in_check_id() {
         // Verify check_id handles Unicode correctly and deterministically
-        let chunk1 = MessageChunk {
+        let chunk1 = ContextChunk {
             prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
             append: None,
         };
 
-        let chunk2 = MessageChunk {
+        let chunk2 = ContextChunk {
             prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
             append: None,
         };
 
-        let chunk3 = MessageChunk {
+        let chunk3 = ContextChunk {
             prepend: Some(TextLines::Single("Hello world".to_string())),
             append: None,
         };
@@ -1054,9 +1054,9 @@ mod assembler_tests {
         let long_original = "B".repeat(50_000);
         let long_append = "C".repeat(10_000);
 
-        let mut assembler = MessageAssembler::new(Some(long_original.clone()), "\n\n");
+        let mut assembler = ContextAssembler::new(Some(long_original.clone()), "\n\n");
 
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single(long_prepend.clone())),
             append: Some(TextLines::Single(long_append.clone())),
         });
@@ -1078,7 +1078,7 @@ mod assembler_tests {
         // Verify check_id works efficiently with large content
         let large_content = "X".repeat(100_000);
 
-        let chunk = MessageChunk {
+        let chunk = ContextChunk {
             prepend: Some(TextLines::Single(large_content)),
             append: None,
         };
@@ -1095,20 +1095,20 @@ mod assembler_tests {
     #[test]
     fn test_chunk_order_preservation_explicit() {
         // Explicit test that chunks are processed in the order they're added
-        let mut assembler = MessageAssembler::new(Some("ORIGINAL".to_string()), " | ");
+        let mut assembler = ContextAssembler::new(Some("ORIGINAL".to_string()), " | ");
 
         // Add chunks in specific order
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("FIRST_PRE".to_string())),
             append: Some(TextLines::Single("FIRST_APP".to_string())),
         });
 
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("SECOND_PRE".to_string())),
             append: Some(TextLines::Single("SECOND_APP".to_string())),
         });
 
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("THIRD_PRE".to_string())),
             append: Some(TextLines::Single("THIRD_APP".to_string())),
         });
@@ -1141,28 +1141,28 @@ mod assembler_tests {
     #[test]
     fn test_chunk_order_with_mixed_prepend_append() {
         // Test order preservation when chunks have different combinations
-        let mut assembler = MessageAssembler::new(Some("MID".to_string()), "-");
+        let mut assembler = ContextAssembler::new(Some("MID".to_string()), "-");
 
         // Chunk 1: prepend only
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("P1".to_string())),
             append: None,
         });
 
         // Chunk 2: append only
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: None,
             append: Some(TextLines::Single("A1".to_string())),
         });
 
         // Chunk 3: both
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("P2".to_string())),
             append: Some(TextLines::Single("A2".to_string())),
         });
 
         // Chunk 4: prepend only
-        assembler.add_chunk(MessageChunk {
+        assembler.add_chunk(ContextChunk {
             prepend: Some(TextLines::Single("P3".to_string())),
             append: None,
         });
