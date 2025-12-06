@@ -208,7 +208,7 @@ fn translate_response(response: HookResponse, event_type: &str) -> CursorRespons
 /// support prompt modification - it can only block or allow.
 fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
     // Blocking - combine messages and context for user
-    if matches!(response.decision, Decision::Block(_)) {
+    if response.decision.is_block() {
         let combined = response.combined_output();
         let user_message = combined.unwrap_or_default();
 
@@ -234,7 +234,7 @@ fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
 /// Translate beforeMCPExecution/beforeShellExecution to Cursor JSON format
 fn translate_pre_file_change(response: &HookResponse) -> CursorResponse {
     // Blocking - prevent tool execution (combine messages and context)
-    if matches!(response.decision, Decision::Block(_)) {
+    if response.decision.is_block() {
         let combined = response.combined_output();
         let agent_message = combined.unwrap_or_default();
 

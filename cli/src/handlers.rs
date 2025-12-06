@@ -23,6 +23,29 @@ pub enum Decision {
     Block(String),
 }
 
+impl Decision {
+    /// Check if this decision is to allow the operation
+    #[must_use]
+    pub fn is_allow(&self) -> bool {
+        matches!(self, Decision::Allow)
+    }
+
+    /// Check if this decision is to block the operation
+    #[must_use]
+    pub fn is_block(&self) -> bool {
+        matches!(self, Decision::Block(_))
+    }
+
+    /// Get the error message if this is a Block decision
+    #[must_use]
+    pub fn block_message(&self) -> Option<&str> {
+        match self {
+            Decision::Block(msg) => Some(msg),
+            Decision::Allow => None,
+        }
+    }
+}
+
 /// Generic hook response (editor-agnostic)
 #[derive(Debug, Clone)]
 pub struct HookResponse {
@@ -118,13 +141,13 @@ impl HookResponse {
     /// Check if this response should block the operation
     #[must_use]
     pub fn is_blocking(&self) -> bool {
-        matches!(self.decision, Decision::Block(_))
+        self.decision.is_block()
     }
 
     /// Check if this response is successful (no blocking and no messages)
     #[must_use]
     pub fn is_success(&self) -> bool {
-        matches!(self.decision, Decision::Allow) && self.messages.is_empty()
+        self.decision.is_allow() && self.messages.is_empty()
     }
 
     /// Format validation messages with emoji prefixes
