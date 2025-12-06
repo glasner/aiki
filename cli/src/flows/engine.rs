@@ -165,6 +165,9 @@ impl FlowEngine {
                     Action::Context(context_action) => &context_action.on_failure,
                     Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
+                    Action::Info(info_action) => &info_action.on_failure,
+                    Action::Warning(warning_action) => &warning_action.on_failure,
+                    Action::Error(error_action) => &error_action.on_failure,
                     Action::Log(_) => {
                         continue; // Log actions never fail
                     }
@@ -237,6 +240,9 @@ impl FlowEngine {
             Action::CommitMessage(commit_msg_action) => {
                 Self::execute_commit_message(commit_msg_action, context)
             }
+            Action::Info(info_action) => Self::execute_info(info_action, context),
+            Action::Warning(warning_action) => Self::execute_warning(warning_action, context),
+            Action::Error(error_action) => Self::execute_error(error_action, context),
         }
     }
 
@@ -289,6 +295,10 @@ impl FlowEngine {
             }
             Action::CommitMessage(_) => {
                 // commit_message actions don't produce storable results
+            }
+            Action::Info(_) | Action::Warning(_) | Action::Error(_) => {
+                // Message actions add messages to state directly
+                // No need to store results
             }
         }
     }
@@ -474,6 +484,57 @@ impl FlowEngine {
             stdout: message,
             stderr: String::new(),
         })
+    }
+
+    /// Execute an info action
+    fn execute_info(
+        action: &crate::flows::types::InfoAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.info);
+
+        // Add info message to state
+        context.add_message(crate::handlers::Message::Info(message));
+
+        Ok(ActionResult::success())
+    }
+
+    /// Execute a warning action
+    fn execute_warning(
+        action: &crate::flows::types::WarningAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.warning);
+
+        // Add warning message to state
+        context.add_message(crate::handlers::Message::Warning(message));
+
+        Ok(ActionResult::success())
+    }
+
+    /// Execute an error action
+    fn execute_error(
+        action: &crate::flows::types::ErrorAction,
+        context: &mut AikiState,
+    ) -> Result<ActionResult> {
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(context);
+
+        // Resolve variables in message
+        let message = resolver.resolve(&action.error);
+
+        // Add error message to state
+        context.add_message(crate::handlers::Message::Error(message));
+
+        Ok(ActionResult::success())
     }
 
     /// Execute a context action

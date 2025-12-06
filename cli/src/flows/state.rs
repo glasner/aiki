@@ -57,6 +57,9 @@ pub struct AikiState {
     /// - PrePrompt: accumulates prompt modifications and context
     /// - PostResponse: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
+
+    /// Messages emitted by the flow (info, warning, error)
+    messages: Vec<crate::handlers::Message>,
 }
 
 impl AikiState {
@@ -86,6 +89,7 @@ impl AikiState {
             variable_metadata: HashMap::new(),
             flow_name: None,
             context_assembler,
+            messages: Vec::new(),
         }
     }
 
@@ -155,6 +159,22 @@ impl AikiState {
             .ok_or_else(|| {
                 crate::error::AikiError::Other(anyhow::anyhow!("Context assembler not available"))
             })
+    }
+
+    /// Add a message to the messages list
+    pub fn add_message(&mut self, message: crate::handlers::Message) {
+        self.messages.push(message);
+    }
+
+    /// Take all messages (consumes and returns them, leaving empty Vec)
+    pub fn take_messages(&mut self) -> Vec<crate::handlers::Message> {
+        std::mem::take(&mut self.messages)
+    }
+
+    /// Get a reference to the messages
+    #[must_use]
+    pub fn messages(&self) -> &[crate::handlers::Message] {
+        &self.messages
     }
 }
 
