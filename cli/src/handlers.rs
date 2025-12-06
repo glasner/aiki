@@ -5,13 +5,9 @@ use crate::events::{
 };
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 
-/// Message type for validation and info
+/// Failure message type
 #[derive(Debug, Clone)]
-pub enum Message {
-    Info(String),
-    Warning(String),
-    Error(String),
-}
+pub struct Failure(pub String);
 
 /// Decision about how to respond to a hook event
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +15,7 @@ pub enum Decision {
     /// Allow the operation to proceed
     Allow,
 
-    /// Block the operation (error messages are in HookResponse.messages)
+    /// Block the operation (error messages are in HookResponse.failures)
     Block,
 }
 
@@ -46,8 +42,8 @@ pub struct HookResponse {
     /// Decision about whether to allow or block the operation
     pub decision: Decision,
 
-    /// Validation messages (Info/Warning/Error)
-    pub messages: Vec<Message>,
+    /// Failure messages
+    pub failures: Vec<Failure>,
 }
 
 impl HookResponse {
@@ -56,16 +52,7 @@ impl HookResponse {
         Self {
             context: None,
             decision: Decision::Allow,
-            messages: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn success_with_message(user_msg: impl Into<String>) -> Self {
-        Self {
-            context: None,
-            decision: Decision::Allow,
-            messages: vec![Message::Info(user_msg.into())],
+            failures: Vec::new(),
         }
     }
 
@@ -74,33 +61,25 @@ impl HookResponse {
         Self {
             context: Some(context.into()),
             decision: Decision::Allow,
-            messages: Vec::new(),
+            failures: Vec::new(),
         }
     }
 
     #[must_use]
-    pub fn failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
-        let mut messages = vec![Message::Error(user_msg.into())];
-        if let Some(msg) = agent_msg {
-            messages.push(Message::Info(msg));
-        }
+    pub fn failure(user_msg: impl Into<String>) -> Self {
         Self {
             context: None,
             decision: Decision::Allow, // Non-blocking - allow operation
-            messages,
+            failures: vec![Failure(user_msg.into())],
         }
     }
 
     #[must_use]
-    pub fn blocking_failure(user_msg: impl Into<String>, agent_msg: Option<String>) -> Self {
-        let mut messages = vec![Message::Error(user_msg.into())];
-        if let Some(msg) = agent_msg {
-            messages.push(Message::Info(msg));
-        }
+    pub fn blocking_failure(user_msg: impl Into<String>) -> Self {
         Self {
             context: None,
             decision: Decision::Block,
-            messages,
+            failures: vec![Failure(user_msg.into())],
         }
     }
 
@@ -111,20 +90,8 @@ impl HookResponse {
     }
 
     #[must_use]
-    pub fn with_info(mut self, msg: impl Into<String>) -> Self {
-        self.messages.push(Message::Info(msg.into()));
-        self
-    }
-
-    #[must_use]
-    pub fn with_warning(mut self, msg: impl Into<String>) -> Self {
-        self.messages.push(Message::Warning(msg.into()));
-        self
-    }
-
-    #[must_use]
-    pub fn with_error(mut self, msg: impl Into<String>) -> Self {
-        self.messages.push(Message::Error(msg.into()));
+    pub fn with_failure(mut self, msg: impl Into<String>) -> Self {
+        self.failures.push(Failure(msg.into()));
         self
     }
 
@@ -134,18 +101,15 @@ impl HookResponse {
         self.decision.is_block()
     }
 
-    /// Check if this response is successful (no blocking and no messages)
+    /// Check if this response is successful (no blocking and no failures)
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.decision.is_continue() && self.messages.is_empty()
+        self.decision.is_continue() && self.failures.is_empty()
     }
 
-    /// Format validation messages with emoji prefixes
+    /// Format failure messages with emoji prefixes
     ///
-    /// Converts messages into formatted strings with emoji prefixes:
-    /// - Info: ℹ️
-    /// - Warning: ⚠️
-    /// - Error: ❌
+    /// Converts failures into formatted strings with ❌ emoji prefix.
     ///
     /// These formatted messages can be:
     /// - Shown to user (stderr)
@@ -153,17 +117,11 @@ impl HookResponse {
     /// - Used in vendor-specific output (Cursor followup_message, Claude Code reason)
     #[must_use]
     pub fn format_messages(&self) -> String {
-        let mut parts = vec![];
-
-        for msg in &self.messages {
-            match msg {
-                Message::Info(s) => parts.push(format!("ℹ️ {}", s)),
-                Message::Warning(s) => parts.push(format!("⚠️ {}", s)),
-                Message::Error(s) => parts.push(format!("❌ {}", s)),
-            }
-        }
-
-        parts.join("\n\n")
+        self.failures
+            .iter()
+            .map(|Failure(s)| format!("❌ {}", s))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// Combine formatted messages and context according to Phase 8 architecture
@@ -208,21 +166,21 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     // Execute SessionStart actions from the core flow
     let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.session_start, &mut state)?;
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     match flow_result {
         FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Allow,
-                messages,
+                failures,
             })
         }
         FlowResult::FailedBlock => Ok(HookResponse {
             context: None,
             decision: Decision::Block,
-            messages,
+            failures,
         }),
     }
 }
@@ -231,7 +189,7 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
 ///
 /// This event fires before the agent receives the user's prompt, allowing flows
 /// to inject additional context (e.g., project conventions, active files, etc.).
-/// Returns context via `response.context` and messages via `response.messages`,
+/// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
@@ -263,13 +221,13 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
                 return Ok(HookResponse {
                     context: state.build_context(),
                     decision: Decision::Allow,
-                    messages: state.take_messages(),
+                    failures: state.take_failures(),
                 });
             }
         };
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     // Return response based on flow result (build context string)
     match flow_result {
@@ -277,7 +235,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
             Ok(HookResponse {
                 context: state.build_context(),
                 decision: Decision::Allow,
-                messages,
+                failures,
             })
         }
         FlowResult::FailedBlock => {
@@ -285,7 +243,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
             Ok(HookResponse {
                 context: None,
                 decision: Decision::Block,
-                messages,
+                failures,
             })
         }
     }
@@ -317,14 +275,14 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.pre_file_change, &mut state)?;
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     // PreFileChange never blocks - always allow
     Ok(HookResponse {
         context: None,
         decision: Decision::Allow,
-        messages,
+        failures,
     })
 }
 
@@ -355,14 +313,14 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     let (flow_result, _timing) =
         FlowEngine::execute_actions(&core_flow.post_file_change, &mut state)?;
 
-    // Extract messages from state
-    let messages = state.take_messages();
+    // Extract failures from state
+    let failures = state.take_failures();
 
     // PostFileChange never blocks - always allow
     Ok(HookResponse {
         context: None,
         decision: Decision::Allow,
-        messages,
+        failures,
     })
 }
 
@@ -370,7 +328,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
 ///
 /// This event fires after the agent finishes generating its response, allowing flows
 /// to validate output, detect errors, and optionally send an autoreply to the agent.
-/// Returns autoreply via `response.context` and messages via `response.messages`,
+/// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {

@@ -58,8 +58,8 @@ pub struct AikiState {
     /// - PostResponse: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
 
-    /// Messages emitted by the flow (info, warning, error)
-    messages: Vec<crate::handlers::Message>,
+    /// Failure messages emitted by the flow
+    failures: Vec<crate::handlers::Failure>,
 }
 
 impl AikiState {
@@ -89,7 +89,7 @@ impl AikiState {
             variable_metadata: HashMap::new(),
             flow_name: None,
             context_assembler,
-            messages: Vec::new(),
+            failures: Vec::new(),
         }
     }
 
@@ -160,20 +160,20 @@ impl AikiState {
             .map(|assembler| assembler.build())
     }
 
-    /// Add a message to the messages list
-    pub fn add_message(&mut self, message: crate::handlers::Message) {
-        self.messages.push(message);
+    /// Add a failure to the failures list
+    pub fn add_failure(&mut self, failure: crate::handlers::Failure) {
+        self.failures.push(failure);
     }
 
-    /// Take all messages (consumes and returns them, leaving empty Vec)
-    pub fn take_messages(&mut self) -> Vec<crate::handlers::Message> {
-        std::mem::take(&mut self.messages)
+    /// Take all failures (consumes and returns them, leaving empty Vec)
+    pub fn take_failures(&mut self) -> Vec<crate::handlers::Failure> {
+        std::mem::take(&mut self.failures)
     }
 
-    /// Get a reference to the messages
+    /// Get a reference to the failures
     #[must_use]
-    pub fn messages(&self) -> &[crate::handlers::Message] {
-        &self.messages
+    pub fn failures(&self) -> &[crate::handlers::Failure] {
+        &self.failures
     }
 }
 
