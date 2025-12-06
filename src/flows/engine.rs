@@ -234,21 +234,19 @@ impl FlowEngine {
                             "continue" => {
                                 // Default: log failure and continue
                                 eprintln!("[aiki] Action failed but continuing: {}", failure_text);
-                                state.add_message(crate::handlers::Message::Warning(
-                                    failure_text.clone(),
-                                ));
+                                state.add_failure(crate::handlers::Failure(failure_text.clone()));
                                 continue_failure_errors.push(failure_text);
                                 continue;
                             }
                             "stop" => {
                                 // Stop flow silently
-                                state.add_message(crate::handlers::Message::Warning(failure_text));
+                                state.add_failure(crate::handlers::Failure(failure_text));
                                 let duration = start.elapsed().as_secs_f64();
                                 return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
                             }
                             "block" => {
                                 // Block operation
-                                state.add_message(crate::handlers::Message::Error(failure_text));
+                                state.add_failure(crate::handlers::Failure(failure_text));
                                 let duration = start.elapsed().as_secs_f64();
                                 return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
                             }
@@ -256,9 +254,7 @@ impl FlowEngine {
                                 // Unknown shortcut, treat as continue
                                 eprintln!("[aiki] Unknown on_failure shortcut '{}', treating as 'continue'", shortcut);
                                 eprintln!("[aiki] Action failed but continuing: {}", failure_text);
-                                state.add_message(crate::handlers::Message::Warning(
-                                    failure_text.clone(),
-                                ));
+                                state.add_failure(crate::handlers::Failure(failure_text.clone()));
                                 continue_failure_errors.push(failure_text);
                                 continue;
                             }
@@ -583,7 +579,7 @@ impl FlowEngine {
         })
     }
 
-    /// Execute an info action
+    /// Execute an info action (deprecated - will be removed)
     fn execute_info(
         action: &crate::flows::types::InfoAction,
         state: &mut AikiState,
@@ -594,13 +590,13 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.info);
 
-        // Add info message to state
-        state.add_message(crate::handlers::Message::Info(message));
+        // Treat info as a failure for now (transitional)
+        state.add_failure(crate::handlers::Failure(message));
 
         Ok(ActionResult::success())
     }
 
-    /// Execute a warning action
+    /// Execute a warning action (deprecated - will be removed)
     fn execute_warning(
         action: &crate::flows::types::WarningAction,
         state: &mut AikiState,
@@ -611,13 +607,13 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
-        // Add warning message to state
-        state.add_message(crate::handlers::Message::Warning(message));
+        // Treat warning as a failure
+        state.add_failure(crate::handlers::Failure(message));
 
         Ok(ActionResult::success())
     }
 
-    /// Execute an error action
+    /// Execute an error action (deprecated - will be removed)
     fn execute_error(
         action: &crate::flows::types::ErrorAction,
         state: &mut AikiState,
@@ -628,8 +624,8 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.error);
 
-        // Add error message to state
-        state.add_message(crate::handlers::Message::Error(message));
+        // Treat error as a failure
+        state.add_failure(crate::handlers::Failure(message));
 
         Ok(ActionResult::success())
     }
@@ -647,7 +643,7 @@ impl FlowEngine {
 
         // Add failure to state only if non-empty
         if !failure.is_empty() {
-            state.add_message(crate::handlers::Message::Warning(failure));
+            state.add_failure(crate::handlers::Failure(failure));
         }
 
         Ok(ActionResult::success())
@@ -666,7 +662,7 @@ impl FlowEngine {
 
         // Add failure to state only if non-empty
         if !failure.is_empty() {
-            state.add_message(crate::handlers::Message::Warning(failure.clone()));
+            state.add_failure(crate::handlers::Failure(failure.clone()));
         }
 
         // Return failure to trigger stop behavior
@@ -691,7 +687,7 @@ impl FlowEngine {
 
         // Add failure to state only if non-empty
         if !failure.is_empty() {
-            state.add_message(crate::handlers::Message::Error(failure.clone()));
+            state.add_failure(crate::handlers::Failure(failure.clone()));
         }
 
         // Return failure to trigger block behavior
