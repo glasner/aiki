@@ -5,7 +5,7 @@ use std::time::Duration;
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
-    IfAction, JjAction, LetAction, LogAction, SelfAction, ShellAction, SwitchAction,
+    IfAction, JjAction, LetAction, LogAction, OnFailure, SelfAction, ShellAction, SwitchAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -197,8 +197,8 @@ impl FlowEngine {
                     }
                 }
 
-                // Handle failure based on on_failure callbacks
-                let on_failure_callbacks = match action {
+                // Handle failure based on on_failure behavior
+                let on_failure_behavior = match action {
                     Action::If(if_action) => &if_action.on_failure,
                     Action::Switch(switch_action) => &switch_action.on_failure,
                     Action::Shell(shell_action) => &shell_action.on_failure,
@@ -221,51 +221,85 @@ impl FlowEngine {
                     }
                 };
 
-                // If no callbacks, default to continue behavior (with warning)
-                if on_failure_callbacks.is_empty() {
-                    let error_msg = if !result.stderr.is_empty() {
-                        result.stderr.clone()
-                    } else {
-                        "Action failed".to_string()
-                    };
-                    eprintln!("[aiki] Action failed but continuing: {}", error_msg);
-                    continue_failure_errors.push(error_msg);
-                    continue;
-                }
-
-                // Execute on_failure callbacks using execute_actions to support nested on_failure
-                let (callback_result, _callback_timing) =
-                    Self::execute_actions(on_failure_callbacks, state)?;
-
-                // Apply the decision from callbacks
-                match callback_result {
-                    FlowResult::FailedStop => {
-                        let duration = start.elapsed().as_secs_f64();
-                        return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
-                    }
-                    FlowResult::FailedBlock => {
-                        let duration = start.elapsed().as_secs_f64();
-                        return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
-                    }
-                    FlowResult::Success => {
-                        // on_failure callbacks handled the error successfully
-                        // Don't add to continue_failure_errors - the error was fully handled
-                        // Continue with the next action
-                    }
-                    FlowResult::FailedContinue => {
-                        // on_failure callbacks ran but had their own recoverable failures
-                        // Track this as a continue failure
-                        let error_msg = if !result.stderr.is_empty() {
+                // Handle on_failure based on whether it's a shortcut or actions
+                match on_failure_behavior {
+                    OnFailure::Shortcut(shortcut) => {
+                        let failure_text = if !result.stderr.is_empty() {
                             result.stderr.clone()
                         } else {
-                            "Action failed but on_failure callbacks had recoverable failures"
-                                .to_string()
+                            "Action failed".to_string()
                         };
-                        eprintln!(
-                            "[aiki] Action failed, on_failure had recoverable failures: {}",
-                            error_msg
-                        );
-                        continue_failure_errors.push(error_msg);
+
+                        match shortcut.as_str() {
+                            "continue" => {
+                                // Default: log failure and continue
+                                eprintln!("[aiki] Action failed but continuing: {}", failure_text);
+                                state.add_message(crate::handlers::Message::Warning(
+                                    failure_text.clone(),
+                                ));
+                                continue_failure_errors.push(failure_text);
+                                continue;
+                            }
+                            "stop" => {
+                                // Stop flow silently
+                                state.add_message(crate::handlers::Message::Warning(failure_text));
+                                let duration = start.elapsed().as_secs_f64();
+                                return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
+                            }
+                            "block" => {
+                                // Block operation
+                                state.add_message(crate::handlers::Message::Error(failure_text));
+                                let duration = start.elapsed().as_secs_f64();
+                                return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
+                            }
+                            _ => {
+                                // Unknown shortcut, treat as continue
+                                eprintln!("[aiki] Unknown on_failure shortcut '{}', treating as 'continue'", shortcut);
+                                eprintln!("[aiki] Action failed but continuing: {}", failure_text);
+                                state.add_message(crate::handlers::Message::Warning(
+                                    failure_text.clone(),
+                                ));
+                                continue_failure_errors.push(failure_text);
+                                continue;
+                            }
+                        }
+                    }
+                    OnFailure::Actions(on_failure_actions) => {
+                        // Execute on_failure actions using execute_actions to support nested on_failure
+                        let (callback_result, _callback_timing) =
+                            Self::execute_actions(on_failure_actions, state)?;
+
+                        // Apply the decision from callbacks
+                        match callback_result {
+                            FlowResult::FailedStop => {
+                                let duration = start.elapsed().as_secs_f64();
+                                return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
+                            }
+                            FlowResult::FailedBlock => {
+                                let duration = start.elapsed().as_secs_f64();
+                                return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
+                            }
+                            FlowResult::Success => {
+                                // on_failure actions handled the error successfully
+                                // Don't add to continue_failure_errors - the error was fully handled
+                                // Continue with the next action
+                            }
+                            FlowResult::FailedContinue => {
+                                // on_failure actions ran but had their own recoverable failures
+                                // Track this as a continue failure
+                                let error_msg = if !result.stderr.is_empty() {
+                                    result.stderr.clone()
+                                } else {
+                                    "Action failed but on_failure actions had recoverable failures"
+                                        .to_string()
+                                };
+                                eprintln!(
+                                    "[aiki] Action failed, on_failure had recoverable failures: {}",
+                                    error_msg
+                                );
+                                continue_failure_errors.push(error_msg);
+                            }
+                        }
                     }
                 }
             }
@@ -408,7 +442,7 @@ impl FlowEngine {
                 // Execute the metadata function
                 let self_action = SelfAction {
                     self_: metadata_fn.trim().to_string(),
-                    on_failure: vec![],
+                    on_failure: OnFailure::default(),
                 };
                 let result = Self::execute_self(&self_action, state)?;
                 result.stdout.trim().to_string()
@@ -476,7 +510,7 @@ impl FlowEngine {
                 // It's a function call - execute it now (maintains execution order)
                 let self_action = SelfAction {
                     self_: author.trim().to_string(),
-                    on_failure: vec![],
+                    on_failure: OnFailure::default(),
                 };
                 let result = Self::execute_self(&self_action, state)?;
                 result.stdout.trim().to_string()
@@ -600,7 +634,7 @@ impl FlowEngine {
         Ok(ActionResult::success())
     }
 
-    /// Execute a continue action (emits warning and continues)
+    /// Execute a continue action (generates Failure and continues)
     fn execute_continue(
         action: &crate::flows::types::ContinueAction,
         state: &mut AikiState,
@@ -608,18 +642,18 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(state);
 
-        // Resolve variables in message
-        let message = resolver.resolve(&action.warning);
+        // Resolve variables in failure text
+        let failure = resolver.resolve(&action.failure);
 
-        // Add warning message to state only if non-empty
-        if !message.is_empty() {
-            state.add_message(crate::handlers::Message::Warning(message));
+        // Add failure to state only if non-empty
+        if !failure.is_empty() {
+            state.add_message(crate::handlers::Message::Warning(failure));
         }
 
         Ok(ActionResult::success())
     }
 
-    /// Execute a stop action (emits warning and returns failure)
+    /// Execute a stop action (generates Failure and returns failure)
     fn execute_stop(
         action: &crate::flows::types::StopAction,
         state: &mut AikiState,
@@ -627,12 +661,12 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(state);
 
-        // Resolve variables in message
-        let message = resolver.resolve(&action.warning);
+        // Resolve variables in failure text
+        let failure = resolver.resolve(&action.failure);
 
-        // Add warning message to state only if non-empty
-        if !message.is_empty() {
-            state.add_message(crate::handlers::Message::Warning(message.clone()));
+        // Add failure to state only if non-empty
+        if !failure.is_empty() {
+            state.add_message(crate::handlers::Message::Warning(failure.clone()));
         }
 
         // Return failure to trigger stop behavior
@@ -640,11 +674,11 @@ impl FlowEngine {
             success: false,
             exit_code: Some(1),
             stdout: String::new(),
-            stderr: message,
+            stderr: failure,
         })
     }
 
-    /// Execute a block action (emits error and returns failure)
+    /// Execute a block action (generates Failure and returns failure)
     fn execute_block(
         action: &crate::flows::types::BlockAction,
         state: &mut AikiState,
@@ -652,12 +686,12 @@ impl FlowEngine {
         // Create variable resolver
         let mut resolver = Self::create_resolver(state);
 
-        // Resolve variables in message
-        let message = resolver.resolve(&action.error);
+        // Resolve variables in failure text
+        let failure = resolver.resolve(&action.failure);
 
-        // Add error message to state only if non-empty
-        if !message.is_empty() {
-            state.add_message(crate::handlers::Message::Error(message.clone()));
+        // Add failure to state only if non-empty
+        if !failure.is_empty() {
+            state.add_message(crate::handlers::Message::Error(failure.clone()));
         }
 
         // Return failure to trigger block behavior
@@ -665,7 +699,7 @@ impl FlowEngine {
             success: false,
             exit_code: Some(2),
             stdout: String::new(),
-            stderr: message,
+            stderr: failure,
         })
     }
 
@@ -1199,7 +1233,7 @@ impl FlowEngine {
                     // Execute the self function
                     let self_action = SelfAction {
                         self_: format!("self.{}", function_name),
-                        on_failure: vec![],
+                        on_failure: OnFailure::default(),
                     };
 
                     let result = Self::execute_self(&self_action, state)?;
@@ -1231,7 +1265,7 @@ impl FlowEngine {
                     // No field access - just execute the function and return its stdout
                     let self_action = SelfAction {
                         self_: expr.to_string(),
-                        on_failure: vec![],
+                        on_failure: OnFailure::default(),
                     };
 
                     let result = Self::execute_self(&self_action, state)?;
@@ -1883,7 +1917,7 @@ mod tests {
         let action = ShellAction {
             shell: "echo 'test'".to_string(),
             timeout: None,
-            on_failure: vec![],
+            on_failure: OnFailure::default(),
             alias: None,
         };
 
@@ -1899,7 +1933,7 @@ mod tests {
         let action = ShellAction {
             shell: "echo $event.file_paths".to_string(),
             timeout: None,
-            on_failure: vec![],
+            on_failure: OnFailure::default(),
             alias: None,
         };
 

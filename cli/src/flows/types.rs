@@ -2,6 +2,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::flows::context::TextLines;
 
+/// On-failure behavior for actions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OnFailure {
+    /// Shortcut string: "continue", "stop", or "block"
+    Shortcut(String),
+    /// Full action list for complex failure handling
+    Actions(Vec<Action>),
+}
+
+impl Default for OnFailure {
+    fn default() -> Self {
+        OnFailure::Shortcut("continue".to_string())
+    }
+}
+
 /// A complete flow definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Flow {
@@ -55,7 +71,7 @@ pub struct InfoAction {
     pub info: String,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Warning message action (user-visible warning)
@@ -64,7 +80,7 @@ pub struct WarningAction {
     pub warning: String,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Error message action (user-visible error)
@@ -73,28 +89,28 @@ pub struct ErrorAction {
     pub error: String,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
-/// Continue flow execution action (emits warning and continues)
+/// Continue flow execution action (generates Failure and continues)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContinueAction {
     #[serde(rename = "continue")]
-    pub warning: String,
+    pub failure: String,
 }
 
-/// Stop flow execution action (emits warning and stops silently)
+/// Stop flow execution action (generates Failure and stops silently)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StopAction {
     #[serde(rename = "stop")]
-    pub warning: String,
+    pub failure: String,
 }
 
-/// Block editor operation action (emits error and blocks with exit 2)
+/// Block editor operation action (generates Failure and blocks with exit 2)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
     #[serde(rename = "block")]
-    pub error: String,
+    pub failure: String,
 }
 
 /// An action to execute in a flow
@@ -144,7 +160,7 @@ pub struct ShellAction {
     pub timeout: Option<String>,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 
     /// Optional variable name to store the result
     #[serde(default)]
@@ -160,7 +176,7 @@ pub struct JjAction {
     pub timeout: Option<String>,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 
     /// Optional variable name to store the result
     #[serde(default)]
@@ -196,7 +212,7 @@ pub struct LetAction {
 
     /// What to do when the action fails
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Self function call action (calls a function without storing result)
@@ -209,7 +225,7 @@ pub struct SelfAction {
 
     /// What to do when the action fails
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Conditional action (if/then/else)
@@ -229,7 +245,7 @@ pub struct IfAction {
 
     /// What to do when condition evaluation fails
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Switch/case action
@@ -250,7 +266,7 @@ pub struct SwitchAction {
 
     /// What to do when switch evaluation fails
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Context action (for PrePrompt events)
@@ -261,7 +277,7 @@ pub struct ContextAction {
     pub context: ContextContent,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Content for context action
@@ -294,7 +310,7 @@ pub struct AutoreplyAction {
     pub autoreply: AutoreplyContent,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Content for autoreply action
@@ -325,7 +341,7 @@ pub struct CommitMessageAction {
     pub commit_message: CommitMessageOp,
 
     #[serde(default)]
-    pub on_failure: Vec<Action>,
+    pub on_failure: OnFailure,
 }
 
 /// Operations for commit messages
