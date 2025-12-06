@@ -148,13 +148,56 @@ impl FlowEngine {
         let mut continue_failure_errors = Vec::new();
 
         for action in actions {
-            let result = Self::execute_action(action, state)?;
+            let mut result = Self::execute_action(action, state)?;
 
             // Store action results for reference by subsequent actions
             Self::store_action_result(action, &result, state);
 
-            // Handle failure based on on_failure callbacks
+            // Handle flow-control actions (Stop/Block) that failed
             if !result.success {
+                match action {
+                    Action::Stop(_) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
+                    }
+                    Action::Block(_) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
+                    }
+                    // Check if if/switch branches returned flow-control results
+                    Action::If(_) | Action::Switch(_) => {
+                        if result.stderr.starts_with("__FLOW_CONTROL__:FailedBlock:") {
+                            let duration = start.elapsed().as_secs_f64();
+                            return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
+                        } else if result.stderr.starts_with("__FLOW_CONTROL__:FailedStop:") {
+                            let duration = start.elapsed().as_secs_f64();
+                            return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
+                        } else if result
+                            .stderr
+                            .starts_with("__FLOW_CONTROL__:FailedContinue:")
+                        {
+                            // Branch had recoverable failures - extract error message
+                            // and let it fall through to on_failure handling below
+                            // so the parent action's on_failure callbacks can run
+                            // (This fixes the regression where branch failures were silently ignored)
+
+                            // Strip the flow control marker to get the actual error message
+                            result.stderr = result
+                                .stderr
+                                .strip_prefix("__FLOW_CONTROL__:FailedContinue:")
+                                .unwrap_or("Branch had recoverable failures")
+                                .to_string();
+
+                            // Now fall through to on_failure handling below
+                        }
+                        // Otherwise, continue to on_failure handling
+                    }
+                    _ => {
+                        // Not a flow-control action, continue to on_failure handling
+                    }
+                }
+
+                // Handle failure based on on_failure callbacks
                 let on_failure_callbacks = match action {
                     Action::If(if_action) => &if_action.on_failure,
                     Action::Switch(switch_action) => &switch_action.on_failure,
@@ -168,8 +211,13 @@ impl FlowEngine {
                     Action::Info(info_action) => &info_action.on_failure,
                     Action::Warning(warning_action) => &warning_action.on_failure,
                     Action::Error(error_action) => &error_action.on_failure,
-                    Action::Log(_) | Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
-                        continue; // These actions control flow directly, no on_failure handling
+                    Action::Log(_) | Action::Continue(_) => {
+                        continue; // These actions don't fail, no on_failure handling
+                    }
+                    Action::Stop(_) | Action::Block(_) => {
+                        unreachable!(
+                            "Stop and Block actions are handled above and never reach here"
+                        )
                     }
                 };
 
@@ -185,59 +233,36 @@ impl FlowEngine {
                     continue;
                 }
 
-                // Execute on_failure callbacks
-                let mut callback_decision = None;
-                for callback in on_failure_callbacks {
-                    let callback_result = Self::execute_action(callback, state)?;
-
-                    // Store callback results
-                    Self::store_action_result(callback, &callback_result, state);
-
-                    // Check if callback returned a decision (exit code determines behavior)
-                    if let Some(exit_code) = callback_result.exit_code {
-                        match exit_code {
-                            0 => {
-                                // Continue execution (success)
-                                callback_decision = Some(FlowResult::Success);
-                            }
-                            1 => {
-                                // Stop execution (exit 1)
-                                callback_decision = Some(FlowResult::FailedStop);
-                                break;
-                            }
-                            2 => {
-                                // Block execution (exit 2)
-                                callback_decision = Some(FlowResult::FailedBlock);
-                                break;
-                            }
-                            _ => {
-                                // Other exit codes treated as continue
-                                callback_decision = Some(FlowResult::Success);
-                            }
-                        }
-                    }
-                }
+                // Execute on_failure callbacks using execute_actions to support nested on_failure
+                let (callback_result, _callback_timing) =
+                    Self::execute_actions(on_failure_callbacks, state)?;
 
                 // Apply the decision from callbacks
-                match callback_decision {
-                    Some(FlowResult::FailedStop) => {
+                match callback_result {
+                    FlowResult::FailedStop => {
                         let duration = start.elapsed().as_secs_f64();
                         return Ok((FlowResult::FailedStop, FlowTiming::new(duration)));
                     }
-                    Some(FlowResult::FailedBlock) => {
+                    FlowResult::FailedBlock => {
                         let duration = start.elapsed().as_secs_f64();
                         return Ok((FlowResult::FailedBlock, FlowTiming::new(duration)));
                     }
-                    Some(FlowResult::Success) | Some(FlowResult::FailedContinue) | None => {
-                        // Continue execution - messages already added to state by callbacks
+                    FlowResult::Success => {
+                        // on_failure callbacks handled the error successfully
+                        // Don't add to continue_failure_errors - the error was fully handled
+                        // Continue with the next action
+                    }
+                    FlowResult::FailedContinue => {
+                        // on_failure callbacks ran but had their own recoverable failures
+                        // Track this as a continue failure
                         let error_msg = if !result.stderr.is_empty() {
                             result.stderr.clone()
                         } else {
-                            "Action failed but on_failure callbacks completed successfully"
+                            "Action failed but on_failure callbacks had recoverable failures"
                                 .to_string()
                         };
                         eprintln!(
-                            "[aiki] Action failed but continuing after on_failure callbacks: {}",
+                            "[aiki] Action failed, on_failure had recoverable failures: {}",
                             error_msg
                         );
                         continue_failure_errors.push(error_msg);
@@ -586,8 +611,10 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
-        // Add warning message to state
-        state.add_message(crate::handlers::Message::Warning(message));
+        // Add warning message to state only if non-empty
+        if !message.is_empty() {
+            state.add_message(crate::handlers::Message::Warning(message));
+        }
 
         Ok(ActionResult::success())
     }
@@ -603,8 +630,10 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.warning);
 
-        // Add warning message to state
-        state.add_message(crate::handlers::Message::Warning(message.clone()));
+        // Add warning message to state only if non-empty
+        if !message.is_empty() {
+            state.add_message(crate::handlers::Message::Warning(message.clone()));
+        }
 
         // Return failure to trigger stop behavior
         Ok(ActionResult {
@@ -626,8 +655,10 @@ impl FlowEngine {
         // Resolve variables in message
         let message = resolver.resolve(&action.error);
 
-        // Add error message to state
-        state.add_message(crate::handlers::Message::Error(message.clone()));
+        // Add error message to state only if non-empty
+        if !message.is_empty() {
+            state.add_message(crate::handlers::Message::Error(message.clone()));
+        }
 
         // Return failure to trigger block behavior
         Ok(ActionResult {
@@ -975,32 +1006,51 @@ impl FlowEngine {
             });
         };
 
-        // Execute the branch actions recursively
-        // This allows nested conditionals and proper state modification
-        for branch_action in actions_to_execute {
-            let result = Self::execute_action(branch_action, state)?;
+        // Execute the branch actions using execute_actions to support nested on_failure handlers
+        // This ensures that actions inside if/else branches get full failure handling
+        let (flow_result, _timing) = Self::execute_actions(actions_to_execute, state)?;
 
-            // Store action results for reference by subsequent actions
-            Self::store_action_result(branch_action, &result, state);
-
-            // If any action in the branch fails, the whole if action fails
-            if !result.success {
-                return Ok(ActionResult {
+        // Convert FlowResult to ActionResult
+        match flow_result {
+            FlowResult::Success => {
+                // Branch completed successfully
+                Ok(ActionResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout: String::from("condition_branch_completed"),
+                    stderr: String::new(),
+                })
+            }
+            FlowResult::FailedContinue => {
+                // Branch had recoverable failures - propagate as failure so parent can track it
+                // But mark it as "continue" type failure so it doesn't stop execution
+                Ok(ActionResult {
                     success: false,
-                    exit_code: result.exit_code,
-                    stdout: result.stdout,
-                    stderr: result.stderr,
-                });
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedContinue:Branch had recoverable failures"
+                        .to_string(),
+                })
+            }
+            FlowResult::FailedStop => {
+                // Branch hit a stop action - propagate as flow-control marker
+                Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedStop:Branch execution stopped".to_string(),
+                })
+            }
+            FlowResult::FailedBlock => {
+                // Branch hit a block action - propagate as flow-control marker
+                Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(2),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedBlock:Branch execution blocked".to_string(),
+                })
             }
         }
-
-        // All branch actions succeeded
-        Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::from("condition_branch_completed"),
-            stderr: String::new(),
-        })
     }
 
     /// Execute a switch/case action
@@ -1046,31 +1096,51 @@ impl FlowEngine {
             });
         };
 
-        // Execute the matched case actions
-        for case_action in actions_to_execute {
-            let result = Self::execute_action(case_action, state)?;
+        // Execute the matched case actions using execute_actions to support nested on_failure handlers
+        // This ensures that actions inside switch cases get full failure handling
+        let (flow_result, _timing) = Self::execute_actions(actions_to_execute, state)?;
 
-            // Store action results for reference by subsequent actions
-            Self::store_action_result(case_action, &result, state);
-
-            // If any action in the case fails, the whole switch action fails
-            if !result.success {
-                return Ok(ActionResult {
+        // Convert FlowResult to ActionResult
+        match flow_result {
+            FlowResult::Success => {
+                // Case completed successfully
+                Ok(ActionResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout: String::from("switch_case_completed"),
+                    stderr: String::new(),
+                })
+            }
+            FlowResult::FailedContinue => {
+                // Case had recoverable failures - propagate as failure so parent can track it
+                // But mark it as "continue" type failure so it doesn't stop execution
+                Ok(ActionResult {
                     success: false,
-                    exit_code: result.exit_code,
-                    stdout: result.stdout,
-                    stderr: result.stderr,
-                });
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedContinue:Case had recoverable failures"
+                        .to_string(),
+                })
+            }
+            FlowResult::FailedStop => {
+                // Case hit a stop action - propagate as flow-control marker
+                Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedStop:Case execution stopped".to_string(),
+                })
+            }
+            FlowResult::FailedBlock => {
+                // Case hit a block action - propagate as flow-control marker
+                Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(2),
+                    stdout: String::new(),
+                    stderr: "__FLOW_CONTROL__:FailedBlock:Case execution blocked".to_string(),
+                })
             }
         }
-
-        // All case actions succeeded
-        Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::from("switch_case_completed"),
-            stderr: String::new(),
-        })
     }
 
     /// Evaluate a condition expression
@@ -2954,5 +3024,524 @@ mod tests {
 
         // Should fail
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_standalone_stop_action() {
+        // Test that a standalone stop action halts execution
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "Before stop".to_string(),
+                alias: Some("before".to_string()),
+            }),
+            Action::Stop(crate::flows::types::StopAction {
+                warning: "Stopping execution".to_string(),
+            }),
+            Action::Log(LogAction {
+                log: "After stop - should not execute".to_string(),
+                alias: Some("after".to_string()),
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return FailedStop
+        assert!(matches!(result, FlowResult::FailedStop));
+
+        // First action should execute
+        assert_eq!(
+            state.get_variable("before"),
+            Some(&"Before stop".to_string())
+        );
+
+        // Action after stop should NOT execute
+        assert!(state.get_variable("after").is_none());
+
+        // Warning message should be added
+        assert!(state
+            .messages()
+            .iter()
+            .any(|m| matches!(m, crate::handlers::Message::Warning(s) if s.contains("Stopping execution"))));
+    }
+
+    #[test]
+    fn test_standalone_block_action() {
+        // Test that a standalone block action halts execution
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "Before block".to_string(),
+                alias: Some("before".to_string()),
+            }),
+            Action::Block(crate::flows::types::BlockAction {
+                error: "Blocking execution".to_string(),
+            }),
+            Action::Log(LogAction {
+                log: "After block - should not execute".to_string(),
+                alias: Some("after".to_string()),
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return FailedBlock
+        assert!(matches!(result, FlowResult::FailedBlock));
+
+        // First action should execute
+        assert_eq!(
+            state.get_variable("before"),
+            Some(&"Before block".to_string())
+        );
+
+        // Action after block should NOT execute
+        assert!(state.get_variable("after").is_none());
+
+        // Error message should be added
+        assert!(state.messages().iter().any(
+            |m| matches!(m, crate::handlers::Message::Error(s) if s.contains("Blocking execution"))
+        ));
+    }
+
+    #[test]
+    fn test_standalone_continue_action() {
+        // Test that a standalone continue action does not halt execution
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "Before continue".to_string(),
+                alias: Some("before".to_string()),
+            }),
+            Action::Continue(crate::flows::types::ContinueAction {
+                warning: "Continuing execution".to_string(),
+            }),
+            Action::Log(LogAction {
+                log: "After continue - should execute".to_string(),
+                alias: Some("after".to_string()),
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return Success (continue doesn't fail)
+        assert!(matches!(result, FlowResult::Success));
+
+        // Both actions should execute
+        assert_eq!(
+            state.get_variable("before"),
+            Some(&"Before continue".to_string())
+        );
+        assert_eq!(
+            state.get_variable("after"),
+            Some(&"After continue - should execute".to_string())
+        );
+
+        // Warning message should be added
+        assert!(state
+            .messages()
+            .iter()
+            .any(|m| matches!(m, crate::handlers::Message::Warning(s) if s.contains("Continuing execution"))));
+    }
+
+    #[test]
+    fn test_nested_on_failure_handlers() {
+        // Test that nested on_failure handlers are executed correctly
+        let actions = vec![
+            Action::Shell(ShellAction {
+                shell: "false".to_string(), // This fails
+                timeout: None,
+                on_failure: vec![Action::Shell(ShellAction {
+                    shell: "false".to_string(), // This also fails
+                    timeout: None,
+                    on_failure: vec![Action::Block(crate::flows::types::BlockAction {
+                        error: "Nested failure handler executed".to_string(),
+                    })],
+                    alias: None,
+                })],
+                alias: None,
+            }),
+            Action::Log(LogAction {
+                log: "Should not execute".to_string(),
+                alias: Some("after".to_string()),
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return FailedBlock from nested handler
+        assert!(matches!(result, FlowResult::FailedBlock));
+
+        // Action after first shell should NOT execute
+        assert!(state.get_variable("after").is_none());
+
+        // Error message from nested handler should be added
+        assert!(state
+            .messages()
+            .iter()
+            .any(|m| matches!(m, crate::handlers::Message::Error(s) if s.contains("Nested failure handler"))));
+    }
+
+    #[test]
+    fn test_empty_flow_control_messages() {
+        // Test that empty messages are not emitted
+        let actions = vec![
+            Action::Continue(crate::flows::types::ContinueAction {
+                warning: "".to_string(), // Empty message
+            }),
+            Action::Stop(crate::flows::types::StopAction {
+                warning: "".to_string(), // Empty message
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return FailedStop from the stop action
+        assert!(matches!(result, FlowResult::FailedStop));
+
+        // No messages should be added (both have empty strings)
+        assert_eq!(state.messages().len(), 0);
+    }
+
+    #[test]
+    fn test_empty_block_message() {
+        // Test that empty block messages are not emitted
+        let actions = vec![Action::Block(crate::flows::types::BlockAction {
+            error: "".to_string(), // Empty message
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // Should return FailedBlock
+        assert!(matches!(result, FlowResult::FailedBlock));
+
+        // No error message should be added
+        assert_eq!(state.messages().len(), 0);
+    }
+
+    #[test]
+    fn test_on_failure_with_block_simple() {
+        // Simple test: shell fails, on_failure has block
+        let actions = vec![Action::Shell(ShellAction {
+            shell: "false".to_string(),
+            timeout: None,
+            on_failure: vec![Action::Block(crate::flows::types::BlockAction {
+                error: "Blocking after failure".to_string(),
+            })],
+            alias: None,
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("Simple block result: {:?}", result);
+        eprintln!("Messages: {:?}", state.messages());
+
+        // Should return FailedBlock
+        assert!(matches!(result, FlowResult::FailedBlock));
+    }
+
+    #[test]
+    fn test_nested_action_on_failure_in_if_branch() {
+        // Test that actions nested inside if branches execute their own on_failure handlers
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("condition".to_string()),
+            }),
+            Action::If(IfAction {
+                condition: "$condition == true".to_string(),
+                then: vec![
+                    // This shell action should fail and trigger its own on_failure (warning)
+                    Action::Shell(ShellAction {
+                        shell: "false".to_string(),
+                        timeout: None,
+                        on_failure: vec![Action::Warning(crate::flows::types::WarningAction {
+                            warning: "Nested shell failed with warning".to_string(),
+                            on_failure: vec![],
+                        })],
+                        alias: Some("nested_shell".to_string()),
+                    }),
+                ],
+                else_: None,
+                on_failure: vec![],
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("Nested if on_failure result: {:?}", result);
+        eprintln!("Messages: {:?}", state.messages());
+
+        // The nested shell fails but its on_failure handler (warning) allows continuation
+        // So the overall flow should succeed
+        assert!(matches!(result, FlowResult::Success));
+
+        // Verify the warning message was added
+        let messages = state.messages();
+        assert!(messages.iter().any(
+            |m| matches!(m, crate::handlers::Message::Warning(s) if s.contains("Nested shell failed with warning"))
+        ));
+    }
+
+    #[test]
+    fn test_nested_action_on_failure_in_switch_case() {
+        // Test that actions nested inside switch cases execute their own on_failure handlers
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "case1".to_string(),
+                alias: Some("value".to_string()),
+            }),
+            Action::Switch(SwitchAction {
+                expression: "$value".to_string(),
+                cases: vec![(
+                    "case1".to_string(),
+                    vec![
+                        // This shell action should fail and trigger its own on_failure (block)
+                        Action::Shell(ShellAction {
+                            shell: "false".to_string(),
+                            timeout: None,
+                            on_failure: vec![Action::Block(crate::flows::types::BlockAction {
+                                error: "Nested shell in switch blocked".to_string(),
+                            })],
+                            alias: Some("nested_switch_shell".to_string()),
+                        }),
+                    ],
+                )]
+                .into_iter()
+                .collect(),
+                default: None,
+                on_failure: vec![],
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("Nested switch on_failure result: {:?}", result);
+        eprintln!("Messages: {:?}", state.messages());
+
+        // The nested shell fails and its on_failure handler (block) stops execution
+        // So the overall flow should return FailedBlock
+        assert!(matches!(result, FlowResult::FailedBlock));
+
+        // Verify the block message was added
+        let messages = state.messages();
+        assert!(messages.iter().any(
+            |m| matches!(m, crate::handlers::Message::Error(s) if s.contains("Nested shell in switch blocked"))
+        ));
+    }
+
+    #[test]
+    fn test_deeply_nested_on_failure_handlers() {
+        // Test that deeply nested actions (if inside if) execute their on_failure handlers
+        let actions = vec![
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("outer_condition".to_string()),
+            }),
+            Action::Log(LogAction {
+                log: "true".to_string(),
+                alias: Some("inner_condition".to_string()),
+            }),
+            Action::If(IfAction {
+                condition: "$outer_condition == true".to_string(),
+                then: vec![Action::If(IfAction {
+                    condition: "$inner_condition == true".to_string(),
+                    then: vec![
+                        // Deeply nested shell with its own on_failure
+                        Action::Shell(ShellAction {
+                            shell: "false".to_string(),
+                            timeout: None,
+                            on_failure: vec![Action::Error(crate::flows::types::ErrorAction {
+                                error: "Deeply nested error".to_string(),
+                                on_failure: vec![],
+                            })],
+                            alias: Some("deep_shell".to_string()),
+                        }),
+                    ],
+                    else_: None,
+                    on_failure: vec![],
+                })],
+                else_: None,
+                on_failure: vec![],
+            }),
+        ];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("Deeply nested on_failure result: {:?}", result);
+        eprintln!("Messages: {:?}", state.messages());
+
+        // The deeply nested shell fails and its on_failure handler (error) allows continuation
+        assert!(matches!(result, FlowResult::Success));
+
+        // Verify the error message was added
+        let messages = state.messages();
+        assert!(messages.iter().any(
+            |m| matches!(m, crate::handlers::Message::Error(s) if s.contains("Deeply nested error"))
+        ));
+    }
+
+    #[test]
+    fn test_if_branch_propagates_failed_continue() {
+        // Test that FailedContinue inside an if branch is properly propagated
+        // This is a regression test for the bug where FlowResult::FailedContinue
+        // was converted to ActionResult { success: true }, causing the parent
+        // execute_actions to not track the failure
+        let actions = vec![Action::If(IfAction {
+            condition: "true".to_string(),
+            then: vec![Action::Shell(ShellAction {
+                shell: "false".to_string(),
+                timeout: None,
+                on_failure: vec![], // No on_failure handler, should default to continue
+                alias: Some("failing_shell".to_string()),
+            })],
+            else_: None,
+            on_failure: vec![], // No on_failure on the if itself
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("If branch with failing shell result: {:?}", result);
+
+        // The shell failed and had no on_failure, so the if branch should have FailedContinue
+        // which should propagate up to the parent execute_actions
+        assert!(
+            matches!(result, FlowResult::FailedContinue),
+            "Expected FailedContinue but got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_switch_branch_propagates_failed_continue() {
+        // Test that FailedContinue inside a switch branch is properly propagated
+        use std::collections::HashMap;
+
+        let mut cases = HashMap::new();
+        cases.insert(
+            "test".to_string(),
+            vec![Action::Shell(ShellAction {
+                shell: "false".to_string(),
+                timeout: None,
+                on_failure: vec![], // No on_failure handler, should default to continue
+                alias: Some("failing_shell".to_string()),
+            })],
+        );
+
+        let actions = vec![Action::Switch(SwitchAction {
+            expression: "test".to_string(),
+            cases,
+            default: None,
+            on_failure: vec![],
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        eprintln!("Switch branch with failing shell result: {:?}", result);
+
+        // The shell failed and had no on_failure, so the switch case should have FailedContinue
+        // which should propagate up to the parent execute_actions
+        assert!(
+            matches!(result, FlowResult::FailedContinue),
+            "Expected FailedContinue but got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_if_branch_failure_triggers_parent_on_failure() {
+        // This test validates the fix for the regression where branch failures
+        // with FailedContinue were short-circuiting and not running the parent
+        // action's on_failure callbacks.
+        let actions = vec![Action::If(IfAction {
+            condition: "true".to_string(),
+            then: vec![
+                // This shell command fails
+                Action::Shell(ShellAction {
+                    shell: "false".to_string(),
+                    timeout: None,
+                    on_failure: vec![], // No on_failure on the shell action
+                    alias: None,
+                }),
+            ],
+            else_: None,
+            // The if action has an on_failure handler that should run
+            // when the branch fails
+            on_failure: vec![Action::Log(LogAction {
+                log: "parent on_failure executed".to_string(),
+                alias: Some("parent_handler".to_string()),
+            })],
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // The flow should succeed because the on_failure handler was executed
+        assert!(
+            matches!(result, FlowResult::Success),
+            "Expected Success (on_failure handled the error) but got {:?}",
+            result
+        );
+
+        // Verify the parent's on_failure handler actually ran
+        assert_eq!(
+            state.get_variable("parent_handler"),
+            Some(&"parent on_failure executed".to_string()),
+            "Parent on_failure handler should have been executed"
+        );
+    }
+
+    #[test]
+    fn test_switch_branch_failure_triggers_parent_on_failure() {
+        // Similar test for switch actions
+        let mut cases = std::collections::HashMap::new();
+        cases.insert(
+            "test".to_string(),
+            vec![
+                // This shell command fails
+                Action::Shell(ShellAction {
+                    shell: "false".to_string(),
+                    timeout: None,
+                    on_failure: vec![], // No on_failure on the shell action
+                    alias: None,
+                }),
+            ],
+        );
+
+        let actions = vec![Action::Switch(SwitchAction {
+            expression: "test".to_string(),
+            cases,
+            default: None,
+            // The switch action has an on_failure handler that should run
+            on_failure: vec![Action::Log(LogAction {
+                log: "parent on_failure executed".to_string(),
+                alias: Some("parent_handler".to_string()),
+            })],
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (result, _timing) = FlowEngine::execute_actions(&actions, &mut state).unwrap();
+
+        // The flow should succeed because the on_failure handler was executed
+        assert!(
+            matches!(result, FlowResult::Success),
+            "Expected Success (on_failure handled the error) but got {:?}",
+            result
+        );
+
+        // Verify the parent's on_failure handler actually ran
+        assert_eq!(
+            state.get_variable("parent_handler"),
+            Some(&"parent on_failure executed".to_string()),
+            "Parent on_failure handler should have been executed"
+        );
     }
 }
