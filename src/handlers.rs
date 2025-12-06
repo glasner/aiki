@@ -24,9 +24,9 @@ pub enum Decision {
 }
 
 impl Decision {
-    /// Check if this decision is to allow the operation
+    /// Check if this decision allows the operation to continue
     #[must_use]
-    pub fn is_allow(&self) -> bool {
+    pub fn is_continue(&self) -> bool {
         matches!(self, Decision::Allow)
     }
 
@@ -147,7 +147,7 @@ impl HookResponse {
     /// Check if this response is successful (no blocking and no messages)
     #[must_use]
     pub fn is_success(&self) -> bool {
-        self.decision.is_allow() && self.messages.is_empty()
+        self.decision.is_continue() && self.messages.is_empty()
     }
 
     /// Format validation messages with emoji prefixes
