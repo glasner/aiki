@@ -331,16 +331,11 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     let messages = state.take_messages();
 
     // PreFileChange never blocks - always allow
-    match flow_result {
-        FlowResult::Success
-        | FlowResult::FailedContinue(_)
-        | FlowResult::FailedStop(_)
-        | FlowResult::FailedBlock(_) => Ok(HookResponse {
-            context: None,
-            decision: Decision::Allow,
-            messages,
-        }),
-    }
+    Ok(HookResponse {
+        context: None,
+        decision: Decision::Allow,
+        messages,
+    })
 }
 
 /// Handle post-file-change event (after file modification)
@@ -374,16 +369,11 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     let messages = state.take_messages();
 
     // PostFileChange never blocks - always allow
-    match flow_result {
-        FlowResult::Success
-        | FlowResult::FailedContinue(_)
-        | FlowResult::FailedStop(_)
-        | FlowResult::FailedBlock(_) => Ok(HookResponse {
-            context: None,
-            decision: Decision::Allow,
-            messages,
-        }),
-    }
+    Ok(HookResponse {
+        context: None,
+        decision: Decision::Allow,
+        messages,
+    })
 }
 
 /// Handle post-response event (after agent completes its response)
@@ -430,19 +420,12 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
     let messages = state.take_messages();
 
     // PostResponse never blocks - always allow
-    match flow_result {
-        FlowResult::Success
-        | FlowResult::FailedContinue(_)
-        | FlowResult::FailedStop(_)
-        | FlowResult::FailedBlock(_) => {
-            let context = state.build_context().ok().filter(|s| !s.is_empty());
-            Ok(HookResponse {
-                context,
-                decision: Decision::Allow,
-                messages,
-            })
-        }
-    }
+    let context = state.build_context().ok().filter(|s| !s.is_empty());
+    Ok(HookResponse {
+        context,
+        decision: Decision::Allow,
+        messages,
+    })
 }
 
 /// Handle prepare-commit-msg event (Git's prepare-commit-msg hook)
