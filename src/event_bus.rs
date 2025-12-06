@@ -47,10 +47,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
         Ok(response) => Ok(response),
         Err(e) => {
             eprintln!("Warning: Aiki event handler failed: {}", e);
-            Ok(HookResponse::failure(
-                format!("Aiki handler failed: {}", e),
-                Some("Event processing failed, but operation continues".to_string()),
-            ))
+            Ok(HookResponse::failure(format!("Aiki handler failed: {}", e)))
         }
     }
 }

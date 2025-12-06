@@ -208,9 +208,6 @@ impl FlowEngine {
                     Action::Context(context_action) => &context_action.on_failure,
                     Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
                     Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
-                    Action::Info(info_action) => &info_action.on_failure,
-                    Action::Warning(warning_action) => &warning_action.on_failure,
-                    Action::Error(error_action) => &error_action.on_failure,
                     Action::Log(_) | Action::Continue(_) => {
                         continue; // These actions don't fail, no on_failure handling
                     }
@@ -326,9 +323,6 @@ impl FlowEngine {
             Action::CommitMessage(commit_msg_action) => {
                 Self::execute_commit_message(commit_msg_action, state)
             }
-            Action::Info(info_action) => Self::execute_info(info_action, state),
-            Action::Warning(warning_action) => Self::execute_warning(warning_action, state),
-            Action::Error(error_action) => Self::execute_error(error_action, state),
             Action::Continue(continue_action) => Self::execute_continue(continue_action, state),
             Action::Stop(stop_action) => Self::execute_stop(stop_action, state),
             Action::Block(block_action) => Self::execute_block(block_action, state),
@@ -384,10 +378,6 @@ impl FlowEngine {
             }
             Action::CommitMessage(_) => {
                 // commit_message actions don't produce storable results
-            }
-            Action::Info(_) | Action::Warning(_) | Action::Error(_) => {
-                // Message actions add messages to state directly
-                // No need to store results
             }
             Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
                 // Flow control actions add messages and control execution flow
@@ -577,57 +567,6 @@ impl FlowEngine {
             stdout: message,
             stderr: String::new(),
         })
-    }
-
-    /// Execute an info action (deprecated - will be removed)
-    fn execute_info(
-        action: &crate::flows::types::InfoAction,
-        state: &mut AikiState,
-    ) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = Self::create_resolver(state);
-
-        // Resolve variables in message
-        let message = resolver.resolve(&action.info);
-
-        // Treat info as a failure for now (transitional)
-        state.add_failure(crate::handlers::Failure(message));
-
-        Ok(ActionResult::success())
-    }
-
-    /// Execute a warning action (deprecated - will be removed)
-    fn execute_warning(
-        action: &crate::flows::types::WarningAction,
-        state: &mut AikiState,
-    ) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = Self::create_resolver(state);
-
-        // Resolve variables in message
-        let message = resolver.resolve(&action.warning);
-
-        // Treat warning as a failure
-        state.add_failure(crate::handlers::Failure(message));
-
-        Ok(ActionResult::success())
-    }
-
-    /// Execute an error action (deprecated - will be removed)
-    fn execute_error(
-        action: &crate::flows::types::ErrorAction,
-        state: &mut AikiState,
-    ) -> Result<ActionResult> {
-        // Create variable resolver
-        let mut resolver = Self::create_resolver(state);
-
-        // Resolve variables in message
-        let message = resolver.resolve(&action.error);
-
-        // Treat error as a failure
-        state.add_failure(crate::handlers::Failure(message));
-
-        Ok(ActionResult::success())
     }
 
     /// Execute a continue action (generates Failure and continues)
