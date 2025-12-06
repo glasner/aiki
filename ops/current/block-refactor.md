@@ -33,12 +33,12 @@ Add a new action type that triggers blocking behavior:
 
 ```rust
 /// Block action - stops the hook and returns exit code 2
-/// The block action has no fields - it just signals to block the operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
-    /// Dummy field to allow YAML syntax "block: message"
-    /// The message is actually emitted via error/warning/info actions
-    pub block: String,
+    /// Error message shown when blocking
+    /// Will be emitted as Message::Error if non-empty
+    #[serde(rename = "block")]
+    pub error: String,
 }
 ```
 
@@ -196,8 +196,9 @@ for action in actions {
 /// Block action - stops the hook and returns exit code 2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockAction {
-    /// Optional message (emitted as info if provided)
-    pub block: String,
+    /// Error message shown when blocking
+    #[serde(rename = "block")]
+    pub error: String,
 }
 
 // Add to Action enum
@@ -214,12 +215,12 @@ fn execute_block(action: &BlockAction, context: &mut AikiState) -> Result<Action
     // Create variable resolver
     let mut resolver = Self::create_resolver(context);
     
-    // Resolve variables in message
-    let message = resolver.resolve(&action.block);
+    // Resolve variables in error message
+    let error = resolver.resolve(&action.error);
     
-    // If message is non-empty, emit it as error
-    if !message.is_empty() {
-        context.add_message(crate::handlers::Message::Error(message));
+    // If error message is non-empty, emit it
+    if !error.is_empty() {
+        context.add_message(crate::handlers::Message::Error(error));
     }
     
     // Return a special failure that triggers FailedBlock
