@@ -8,6 +8,11 @@ use crate::handlers::{self, HookResponse};
 /// Events are routed based on their type, and handlers return generic
 /// HookResponse objects that can be translated to editor-specific formats.
 pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
+    // Handle unsupported events immediately
+    if matches!(event, AikiEvent::Unsupported) {
+        return Ok(HookResponse::success());
+    }
+
     // Log event for debugging (can be controlled by verbosity flag in future)
     if std::env::var("AIKI_DEBUG").is_ok() {
         let event_type_name = match &event {
@@ -17,6 +22,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             AikiEvent::PostFileChange(_) => "PostFileChange",
             AikiEvent::PostResponse(_) => "PostResponse",
             AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
+            AikiEvent::Unsupported => "Unsupported",
         };
         eprintln!(
             "[aiki] Dispatching event: {} from agent: {:?}",
@@ -33,6 +39,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
         AikiEvent::PostFileChange(e) => handlers::handle_post_file_change(e),
         AikiEvent::PostResponse(e) => handlers::handle_post_response(e),
         AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
+        AikiEvent::Unsupported => return Ok(HookResponse::success()),
     };
 
     // If handler fails, return a failure response instead of propagating error

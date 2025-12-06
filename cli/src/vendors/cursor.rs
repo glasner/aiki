@@ -1,11 +1,11 @@
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
-use crate::handlers::{HookResponse, Message};
+use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
 
 /// Cursor hook payload structure
@@ -29,9 +29,6 @@ struct CursorPayload {
     file_path: String,
     #[serde(default)]
     edits: Vec<CursorEdit>,
-    // Legacy field (deprecated in favor of file_path)
-    #[serde(rename = "editedFile", default)]
-    edited_file: String,
 }
 
 /// Individual edit operation in Cursor's afterFileEdit hook
@@ -41,16 +38,31 @@ struct CursorEdit {
     new_string: String,
 }
 
+/// Response structure for Cursor hooks
+struct CursorResponse {
+    json_value: Option<serde_json::Value>,
+    exit_code: i32,
+}
+
+impl CursorResponse {
+    /// Print JSON to stdout if present
+    fn print_json(&self) {
+        let Some(ref value) = self.json_value else {
+            return;
+        };
+
+        let Ok(json_string) = serde_json::to_string(value) else {
+            return;
+        };
+
+        println!("{}", json_string);
+    }
+}
+
 /// Handle a Cursor event
 ///
 /// This is the vendor-specific handler for Cursor hooks.
-/// It:
-/// 1. Reads Cursor JSON from stdin
-/// 2. Translates vendor event name to Aiki event type
-/// 3. Creates a standardized AikiEvent with agent type embedded
-/// 4. Dispatches to the event bus
-/// 5. Translates the HookResponse to Cursor JSON format
-/// 6. Outputs JSON to stdout and exits with appropriate code
+/// Dispatches to event-specific handlers based on event name.
 ///
 /// # Arguments
 /// * `event_name` - Vendor event name from CLI flag (e.g., "beforeSubmitPrompt", "afterFileEdit")
@@ -66,192 +78,218 @@ pub fn handle(event_name: &str) -> Result<()> {
         );
     }
 
-    // Create standardized event with embedded agent type
-    let event = match event_name {
-        "beforeSubmitPrompt" => AikiEvent::SessionStart(AikiStartEvent {
-            agent_type: AgentType::Cursor,
-            session_id: Some(payload.session_id),
-            cwd: PathBuf::from(&payload.working_directory),
-            timestamp: chrono::Utc::now(),
-        }),
-        "beforeMCPExecution" => {
-            // Fire PreFileChange only for file-modifying MCP tools
-            // Note: Exact payload structure TBD - this assumes toolName field exists
-            if is_file_modifying_tool(&payload.tool_name) {
-                AikiEvent::PreFileChange(AikiPreFileChangeEvent {
-                    agent_type: AgentType::Cursor,
-                    session_id: payload.session_id,
-                    cwd: PathBuf::from(&payload.working_directory),
-                    timestamp: chrono::Utc::now(),
-                })
-            } else {
-                // Non-file tools - no PreFileChange needed
-                if std::env::var("AIKI_DEBUG").is_ok() {
-                    eprintln!(
-                        "[aiki] beforeMCPExecution: Ignoring non-file tool: {}",
-                        payload.tool_name
-                    );
-                }
-                // Return success without dispatching event
-                let response = HookResponse::success();
-                let (json_output, exit_code) = translate_response(response);
-                if let Some(json) = json_output {
-                    println!("{}", json);
-                }
-                std::process::exit(exit_code);
-            }
-        }
-        "afterFileEdit" => {
-            // Use new file_path field if available, fallback to legacy editedFile
-            let file_path = if !payload.file_path.is_empty() {
-                payload.file_path
-            } else {
-                payload.edited_file
-            };
-
-            // Extract edit details from Cursor's edits array for user edit detection
-            let edit_details: Vec<crate::events::EditDetail> = payload
-                .edits
-                .iter()
-                .map(|edit| {
-                    crate::events::EditDetail::new(
-                        file_path.clone(),
-                        edit.old_string.clone(),
-                        edit.new_string.clone(),
-                    )
-                })
-                .collect();
-
-            if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
-                eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
-            }
-
-            AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-                agent_type: AgentType::Cursor,
-                client_name: None, // Hook-based detection doesn't know client (IDE)
-                client_version: None,
-                agent_version: None,
-                session_id: payload.session_id,
-                tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-                file_paths: vec![file_path],
-                cwd: PathBuf::from(&payload.working_directory),
-                timestamp: chrono::Utc::now(),
-                detection_method: crate::provenance::DetectionMethod::Hook,
-                edit_details,
-            })
-        }
-        // Future events can be added here without hook reinstallation
-        _ => {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[aiki] Ignoring unknown Cursor event: {}", event_name);
-            }
-            return Ok(());
-        }
+    // Build event from payload
+    let aiki_event = match event_name {
+        "beforeSubmitPrompt" => build_session_start_event(payload),
+        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
+        "afterFileEdit" => build_post_file_change_event(payload),
+        "stop" => build_post_response_event(payload),
+        _ => AikiEvent::Unsupported,
     };
 
-    // Dispatch to event bus and get generic response
-    let response = event_bus::dispatch(event)?;
+    // Dispatch event and exit with translated response
+    let aiki_response = event_bus::dispatch(aiki_event)?;
+    let cursor_response = translate_response(aiki_response, event_name);
 
-    // Translate to Cursor JSON format
-    let (json_output, exit_code) = translate_response(response);
+    cursor_response.print_json();
+    std::process::exit(cursor_response.exit_code);
+}
 
-    // Output JSON if present
-    if let Some(json) = json_output {
-        println!("{}", json);
+/// Build SessionStart event from beforeSubmitPrompt payload
+fn build_session_start_event(payload: CursorPayload) -> AikiEvent {
+    AikiEvent::SessionStart(AikiStartEvent {
+        agent_type: AgentType::Cursor,
+        session_id: Some(payload.session_id),
+        cwd: PathBuf::from(&payload.working_directory),
+        timestamp: chrono::Utc::now(),
+    })
+}
+
+/// Build PreFileChange event from beforeMCPExecution/beforeShellExecution payload
+fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
+    // Fire PreFileChange only for file-modifying MCP tools
+    if !is_file_modifying_tool(&payload.tool_name) {
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!(
+                "[aiki] beforeMCPExecution: Ignoring non-file tool: {}",
+                payload.tool_name
+            );
+        }
+        return AikiEvent::Unsupported;
     }
 
-    // Exit with appropriate code
-    std::process::exit(exit_code);
+    AikiEvent::PreFileChange(AikiPreFileChangeEvent {
+        agent_type: AgentType::Cursor,
+        session_id: payload.session_id,
+        cwd: PathBuf::from(&payload.working_directory),
+        timestamp: chrono::Utc::now(),
+    })
+}
+
+/// Build PostFileChange event from afterFileEdit payload
+fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
+    let file_path = payload.file_path;
+
+    // Extract edit details from Cursor's edits array for user edit detection
+    let edit_details: Vec<crate::events::EditDetail> = payload
+        .edits
+        .iter()
+        .map(|edit| {
+            crate::events::EditDetail::new(
+                file_path.clone(),
+                edit.old_string.clone(),
+                edit.new_string.clone(),
+            )
+        })
+        .collect();
+
+    if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
+        eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
+    }
+
+    AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+        agent_type: AgentType::Cursor,
+        client_name: None, // Hook-based detection doesn't know client (IDE)
+        client_version: None,
+        agent_version: None,
+        session_id: payload.session_id,
+        tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
+        file_paths: vec![file_path],
+        cwd: PathBuf::from(&payload.working_directory),
+        timestamp: chrono::Utc::now(),
+        detection_method: crate::provenance::DetectionMethod::Hook,
+        edit_details,
+    })
+}
+
+/// Build PostResponse event from stop payload
+fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
+    AikiEvent::PostResponse(crate::events::AikiPostResponseEvent {
+        agent_type: AgentType::Cursor,
+        session_id: Some(payload.session_id),
+        cwd: PathBuf::from(&payload.working_directory),
+        timestamp: chrono::Utc::now(),
+        response: String::new(), // Cursor doesn't provide response text in stop hook
+        modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
+    })
 }
 
 /// Translate HookResponse to Cursor JSON format
 ///
-/// Cursor uses a simple format with user_message and agent_message fields.
-/// Per translator-requirements.md:
-/// - user_message: For user-facing messages (warnings/errors)
-/// - agent_message: For agent-facing messages (info/context)
-/// - followup_message: For PostResponse autoreplies
-fn translate_response(response: HookResponse) -> (Option<String>, i32) {
-    let exit_code = response.exit_code;
-
-    match exit_code {
-        2 => {
-            // Blocking error (exit 2)
-            let mut json = Map::new();
-
-            // Extract error/warning messages for user_message
-            let error_msgs: Vec<String> = response
-                .messages
-                .iter()
-                .filter_map(|msg| match msg {
-                    Message::Error(s) | Message::Warning(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            if !error_msgs.is_empty() {
-                json.insert("user_message".to_string(), json!(error_msgs.join("; ")));
-            }
-
-            // Extract info messages for agent_message
-            let info_msgs: Vec<String> = response
-                .messages
-                .iter()
-                .filter_map(|msg| match msg {
-                    Message::Info(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            if !info_msgs.is_empty() {
-                json.insert("agent_message".to_string(), json!(info_msgs.join("\n")));
-            }
-
-            (Some(serde_json::to_string(&json).unwrap()), 2)
+/// Cursor expects different JSON structures depending on the event type.
+/// This function dispatches to event-specific translators that handle the details.
+fn translate_response(response: HookResponse, event_type: &str) -> CursorResponse {
+    match event_type {
+        "beforeSubmitPrompt" => {
+            // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
+            // For now, treat it as SessionStart/PrePrompt (both have same format)
+            translate_before_submit_prompt(&response)
         }
-        0 => {
-            // Success or non-blocking
-            let mut json = Map::new();
-
-            // Build followup_message from context (for PostResponse/stop hook)
-            if let Some(ref followup_text) = response.context {
-                if !followup_text.is_empty() {
-                    json.insert("followup_message".to_string(), json!(followup_text));
-                }
-            }
-
-            // Add user_message for warnings/errors shown to user
-            let user_msgs: Vec<String> = response
-                .messages
-                .iter()
-                .map(|msg| match msg {
-                    Message::Info(s) => format!("ℹ️ {}", s),
-                    Message::Warning(s) => format!("⚠️ {}", s),
-                    Message::Error(s) => format!("❌ {}", s),
-                })
-                .collect();
-
-            if !user_msgs.is_empty() {
-                json.insert("user_message".to_string(), json!(user_msgs.join("\n")));
-            }
-
-            if json.is_empty() {
-                (None, 0)
-            } else {
-                (Some(serde_json::to_string(&json).unwrap()), 0)
-            }
-        }
+        "beforeMCPExecution" | "beforeShellExecution" => translate_pre_file_change(&response),
+        "afterFileEdit" => translate_post_file_change(&response),
+        "stop" => translate_post_response(&response),
         _ => {
-            // Exit 1 or other: stderr fallback
-            for msg in &response.messages {
-                match msg {
-                    Message::Info(s) => eprintln!("ℹ️ {}", s),
-                    Message::Warning(s) => eprintln!("⚠️ {}", s),
-                    Message::Error(s) => eprintln!("❌ {}", s),
-                }
+            eprintln!("Warning: Unknown Cursor event type: {}", event_type);
+            CursorResponse {
+                json_value: None,
+                exit_code: 0,
             }
-            (None, exit_code)
         }
+    }
+}
+
+/// Translate beforeSubmitPrompt event to Cursor JSON format
+///
+/// This event serves dual purpose:
+/// - SessionStart: First prompt in session
+/// - PrePrompt: Every prompt (including first)
+///
+/// Both events have the same Cursor JSON format since Cursor doesn't
+/// support prompt modification - it can only block or allow.
+fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
+    // Blocking - combine messages and context for user
+    if response.exit_code == 2 {
+        let combined = response.combined_output();
+        let user_message = combined.unwrap_or_default();
+
+        return CursorResponse {
+            json_value: Some(json!({
+                "continue": false,
+                "user_message": user_message
+            })),
+            exit_code: 2,
+        };
+    }
+
+    // Success - allow prompt to continue
+    // Note: Cursor doesn't accept additional fields on success
+    CursorResponse {
+        json_value: Some(json!({
+            "continue": true
+        })),
+        exit_code: 0,
+    }
+}
+
+/// Translate beforeMCPExecution/beforeShellExecution to Cursor JSON format
+fn translate_pre_file_change(response: &HookResponse) -> CursorResponse {
+    // Blocking - prevent tool execution (combine messages and context)
+    if response.exit_code == 2 {
+        let combined = response.combined_output();
+        let agent_message = combined.unwrap_or_default();
+
+        return CursorResponse {
+            json_value: Some(json!({
+                "continue": false,
+                "agent_message": agent_message
+            })),
+            exit_code: 2,
+        };
+    }
+
+    // Success - allow tool execution
+    // Note: Cursor doesn't accept additional fields on success
+    CursorResponse {
+        json_value: Some(json!({
+            "continue": true
+        })),
+        exit_code: 0,
+    }
+}
+
+/// Translate afterFileEdit to Cursor JSON format
+///
+/// Per translator-requirements.md, Cursor's afterFileEdit hook does NOT
+/// accept JSON responses - it's notification-only.
+fn translate_post_file_change(_response: &HookResponse) -> CursorResponse {
+    // Cursor doesn't accept responses from afterFileEdit
+    // Return no JSON, always exit 0
+    CursorResponse {
+        json_value: None,
+        exit_code: 0,
+    }
+}
+
+/// Translate stop event to Cursor JSON format
+///
+/// Combines messages and context into followup_message for the agent.
+fn translate_post_response(response: &HookResponse) -> CursorResponse {
+    // Combine messages + context for followup_message
+    let combined = response.combined_output();
+
+    if let Some(followup_text) = combined {
+        return CursorResponse {
+            json_value: Some(json!({
+                "followup_message": followup_text
+            })),
+            exit_code: 0,
+        };
+    }
+
+    // No followup - return empty object
+    CursorResponse {
+        json_value: Some(json!({})),
+        exit_code: 0,
     }
 }
 

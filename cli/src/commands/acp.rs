@@ -1427,7 +1427,7 @@ fn handle_session_prompt(
     }
 
     // Build final prompt: messages + context + original
-    let formatted_messages = crate::handlers::format_messages(&response);
+    let formatted_messages = response.format_messages();
     let prepended_context = response.context.as_deref().unwrap_or("");
 
     let final_prompt = match (
@@ -1550,7 +1550,7 @@ fn handle_post_response(
 
     // Check for autoreply (agent-visible via next prompt)
     // Combine both messages and context if both are present
-    let formatted_messages = crate::handlers::format_messages(&response);
+    let formatted_messages = response.format_messages();
     let autoreply_context = extract_autoreply(&response);
 
     let autoreply_text = match (formatted_messages.is_empty(), autoreply_context.is_some()) {

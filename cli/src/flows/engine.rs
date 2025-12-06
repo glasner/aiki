@@ -106,6 +106,9 @@ impl FlowEngine {
                     );
                 }
             }
+            crate::events::AikiEvent::Unsupported => {
+                // No event-specific variables for unsupported events
+            }
         }
 
         // Add agent type as event.agent_type
