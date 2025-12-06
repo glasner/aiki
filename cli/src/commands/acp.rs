@@ -1409,14 +1409,11 @@ fn handle_session_prompt(
 
     let response = event_bus::dispatch(event)?;
 
-    // Emit messages to stderr (user-visible)
-    for msg in &response.messages {
-        use crate::handlers::Message;
-        match msg {
-            Message::Info(s) => eprintln!("[aiki] ℹ️  {}", s),
-            Message::Warning(s) => eprintln!("[aiki] ⚠️  {}", s),
-            Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
-        }
+    // Emit failures to stderr (user-visible)
+    for failure in &response.failures {
+        use crate::handlers::Failure;
+        let Failure(s) = failure;
+        eprintln!("[aiki] ❌ {}", s);
     }
 
     // Check if blocked
@@ -1538,14 +1535,11 @@ fn handle_post_response(
 
     let response = event_bus::dispatch(event)?;
 
-    // Emit messages to stderr (user-visible only)
-    for msg in &response.messages {
-        use crate::handlers::Message;
-        match msg {
-            Message::Info(s) => eprintln!("[aiki] ℹ️  {}", s),
-            Message::Warning(s) => eprintln!("[aiki] ⚠️  {}", s),
-            Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
-        }
+    // Emit failures to stderr (user-visible only)
+    for failure in &response.failures {
+        use crate::handlers::Failure;
+        let Failure(s) = failure;
+        eprintln!("[aiki] ❌ {}", s);
     }
 
     // Check for autoreply (agent-visible via next prompt)

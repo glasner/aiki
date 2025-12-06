@@ -65,33 +65,6 @@ fn default_version() -> String {
     "1".to_string()
 }
 
-/// Info message action (user-visible notification)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InfoAction {
-    pub info: String,
-
-    #[serde(default)]
-    pub on_failure: OnFailure,
-}
-
-/// Warning message action (user-visible warning)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WarningAction {
-    pub warning: String,
-
-    #[serde(default)]
-    pub on_failure: OnFailure,
-}
-
-/// Error message action (user-visible error)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorAction {
-    pub error: String,
-
-    #[serde(default)]
-    pub on_failure: OnFailure,
-}
-
 /// Continue flow execution action (generates Failure and continues)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContinueAction {
@@ -137,13 +110,7 @@ pub enum Action {
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
-    /// Info message (user-visible notification)
-    Info(InfoAction),
-    /// Warning message (user-visible warning)
-    Warning(WarningAction),
-    /// Error message (user-visible error)
-    Error(ErrorAction),
-    /// Continue flow execution (emits warning)
+    /// Continue flow execution (generates Failure and continues)
     Continue(ContinueAction),
     /// Stop flow execution (emits warning and stops silently)
     Stop(StopAction),

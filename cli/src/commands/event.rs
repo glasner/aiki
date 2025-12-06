@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
-use crate::handlers::{Decision, HookResponse, Message};
+use crate::handlers::{Decision, Failure, HookResponse};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;
@@ -82,12 +82,9 @@ fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Opt
         }
         EditorContext::Unknown => {
             // Generic stderr output for unknown editors
-            for msg in &response.messages {
-                match msg {
-                    Message::Info(s) => eprintln!("[aiki] ℹ️ {}", s),
-                    Message::Warning(s) => eprintln!("[aiki] ⚠️ {}", s),
-                    Message::Error(s) => eprintln!("[aiki] ❌ {}", s),
-                }
+            for failure in &response.failures {
+                let Failure(s) = failure;
+                eprintln!("[aiki] ❌ {}", s);
             }
             (None, exit_code)
         }
@@ -109,61 +106,32 @@ fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
             let mut json = Map::new();
             json.insert("continue".to_string(), json!(false));
 
-            // Extract error messages for stopReason
-            let error_msgs: Vec<String> = response
-                .messages
+            // Extract failure messages for stopReason
+            let failure_msgs: Vec<String> = response
+                .failures
                 .iter()
-                .filter_map(|msg| match msg {
-                    Message::Error(s) => Some(s.clone()),
-                    _ => None,
-                })
+                .map(|Failure(s)| s.clone())
                 .collect();
 
-            if !error_msgs.is_empty() {
-                json.insert("stopReason".to_string(), json!(error_msgs.join("; ")));
-            }
-
-            // Extract info messages for systemMessage
-            let info_msgs: Vec<String> = response
-                .messages
-                .iter()
-                .filter_map(|msg| match msg {
-                    Message::Info(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            if !info_msgs.is_empty() {
-                json.insert("systemMessage".to_string(), json!(info_msgs.join("\n")));
+            if !failure_msgs.is_empty() {
+                json.insert("stopReason".to_string(), json!(failure_msgs.join("; ")));
             }
 
             (Some(serde_json::to_string(&json).unwrap()), 0)
         }
         0 => {
-            // Success or non-blocking warnings
+            // Success or non-blocking failures
             let mut json = Map::new();
 
-            // Check if there are any warnings or errors
-            let has_warning = response
-                .messages
-                .iter()
-                .any(|msg| matches!(msg, Message::Warning(_) | Message::Error(_)));
-
-            if has_warning || !response.messages.is_empty() {
-                // Combine all messages for systemMessage
+            if !response.failures.is_empty() {
+                // Combine all failures for systemMessage
                 let all_msgs: Vec<String> = response
-                    .messages
+                    .failures
                     .iter()
-                    .map(|msg| match msg {
-                        Message::Info(s) => format!("ℹ️ {}", s),
-                        Message::Warning(s) => format!("⚠️ {}", s),
-                        Message::Error(s) => format!("❌ {}", s),
-                    })
+                    .map(|Failure(s)| format!("❌ {}", s))
                     .collect();
 
-                if !all_msgs.is_empty() {
-                    json.insert("systemMessage".to_string(), json!(all_msgs.join("\n")));
-                }
+                json.insert("systemMessage".to_string(), json!(all_msgs.join("\n")));
             }
 
             if json.is_empty() {
@@ -173,12 +141,9 @@ fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
             }
         }
         _ => {
-            for msg in &response.messages {
-                match msg {
-                    Message::Info(s) => eprintln!("ℹ️ {}", s),
-                    Message::Warning(s) => eprintln!("⚠️ {}", s),
-                    Message::Error(s) => eprintln!("❌ {}", s),
-                }
+            for failure in &response.failures {
+                let Failure(s) = failure;
+                eprintln!("❌ {}", s);
             }
             (None, exit_code)
         }
@@ -199,32 +164,15 @@ fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
             // Blocking error
             let mut json = Map::new();
 
-            // Extract error messages for user_message
-            let error_msgs: Vec<String> = response
-                .messages
+            // Extract failure messages for user_message
+            let failure_msgs: Vec<String> = response
+                .failures
                 .iter()
-                .filter_map(|msg| match msg {
-                    Message::Error(s) | Message::Warning(s) => Some(s.clone()),
-                    _ => None,
-                })
+                .map(|Failure(s)| s.clone())
                 .collect();
 
-            if !error_msgs.is_empty() {
-                json.insert("user_message".to_string(), json!(error_msgs.join("; ")));
-            }
-
-            // Extract info messages for agent_message
-            let info_msgs: Vec<String> = response
-                .messages
-                .iter()
-                .filter_map(|msg| match msg {
-                    Message::Info(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            if !info_msgs.is_empty() {
-                json.insert("agent_message".to_string(), json!(info_msgs.join("\n")));
+            if !failure_msgs.is_empty() {
+                json.insert("user_message".to_string(), json!(failure_msgs.join("; ")));
             }
 
             (Some(serde_json::to_string(&json).unwrap()), 2)
@@ -233,15 +181,11 @@ fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
             // Success or non-blocking
             let mut json = Map::new();
 
-            // Combine all messages for user_message
+            // Combine all failures for user_message
             let all_msgs: Vec<String> = response
-                .messages
+                .failures
                 .iter()
-                .map(|msg| match msg {
-                    Message::Info(s) => format!("ℹ️ {}", s),
-                    Message::Warning(s) => format!("⚠️ {}", s),
-                    Message::Error(s) => format!("❌ {}", s),
-                })
+                .map(|Failure(s)| format!("❌ {}", s))
                 .collect();
 
             if !all_msgs.is_empty() {
@@ -255,12 +199,9 @@ fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
             }
         }
         _ => {
-            for msg in &response.messages {
-                match msg {
-                    Message::Info(s) => eprintln!("ℹ️ {}", s),
-                    Message::Warning(s) => eprintln!("⚠️ {}", s),
-                    Message::Error(s) => eprintln!("❌ {}", s),
-                }
+            for failure in &response.failures {
+                let Failure(s) = failure;
+                eprintln!("❌ {}", s);
             }
             (None, exit_code)
         }
