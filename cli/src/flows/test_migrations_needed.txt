@@ -1,0 +1,28 @@
+# Tests that need migration to FlowStatement
+
+The following tests in src/flows/engine.rs need to be migrated from Action::If/Switch to FlowStatement:
+
+Line 2504: test_if_condition_true_executes_then_branch
+Line 2534: test_if_condition_false_executes_else_branch
+Line 2565: test_if_condition_false_no_else_is_noop
+Line 2614: test_nested_if_conditions
+Line 2755: test_switch_matches_case
+Line 2791: test_switch_uses_default_when_no_match
+Line 2830: test_switch_no_match_no_default_is_noop
+Line 2873: test_switch_with_variable_expression
+Line 2901: test_if_with_on_failure_continue
+Line 2936: test_if_with_on_failure_stop
+Line 3310: test_if_condition_evaluation_failure
+Line 3355: test_switch_expression_evaluation
+Line 3409: test_nested_control_flow_with_failures
+Line 3457: test_if_with_json_field_access
+Line 3499: test_switch_with_empty_cases
+Line 3525: test_if_else_both_fail_continues
+Line 3580: test_switch_case_with_on_failure
+
+Migration approach:
+1. Replace Action::If(IfAction {...}) with FlowStatement::If(IfStatement {...})
+2. Replace Action::Switch(SwitchAction {...}) with FlowStatement::Switch(SwitchStatement {...})
+3. Wrap plain Actions in FlowStatement::Action()
+4. Change execute_actions to execute_statements
+5. Change OnFailure::Actions to OnFailure::Statements

@@ -1,20 +1,75 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::flows::context::TextLines;
+
+/// Flow control statement - top level unit of execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FlowStatement {
+    /// Conditional if/then/else
+    If(IfStatement),
+    /// Switch/case statement
+    Switch(SwitchStatement),
+    /// Action to execute
+    Action(Action),
+}
+
+/// Conditional if statement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IfStatement {
+    /// Condition to evaluate
+    #[serde(rename = "if")]
+    pub condition: String,
+
+    /// Statements to execute if condition is true
+    pub then: Vec<FlowStatement>,
+
+    /// Optional statements to execute if condition is false
+    #[serde(default, rename = "else")]
+    pub else_: Option<Vec<FlowStatement>>,
+}
+
+/// Switch/case statement
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwitchStatement {
+    /// Expression to evaluate and match against cases
+    #[serde(rename = "switch")]
+    pub expression: String,
+
+    /// Map of case values to statements
+    pub cases: HashMap<String, Vec<FlowStatement>>,
+
+    /// Optional default case if no cases match
+    #[serde(default)]
+    pub default: Option<Vec<FlowStatement>>,
+}
+
+/// Strongly-typed shortcuts for on_failure behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnFailureShortcut {
+    /// Continue: Log failure and continue execution (default)
+    Continue,
+    /// Stop: Add failure and stop flow silently
+    Stop,
+    /// Block: Add failure and block operation with exit code 2
+    Block,
+}
 
 /// On-failure behavior for actions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OnFailure {
-    /// Shortcut string: "continue", "stop", or "block"
-    Shortcut(String),
-    /// Full action list for complex failure handling
-    Actions(Vec<Action>),
+    /// Shortcut: "continue", "stop", or "block"
+    Shortcut(OnFailureShortcut),
+    /// Full statements list for complex failure handling
+    Statements(Vec<FlowStatement>),
 }
 
 impl Default for OnFailure {
     fn default() -> Self {
-        OnFailure::Shortcut("continue".to_string())
+        OnFailure::Shortcut(OnFailureShortcut::Continue)
     }
 }
 
@@ -34,31 +89,31 @@ pub struct Flow {
 
     /// SessionStart event handler
     #[serde(rename = "SessionStart", default)]
-    pub session_start: Vec<Action>,
+    pub session_start: Vec<FlowStatement>,
 
     /// PrePrompt event handler (before agent sees the user's prompt)
     #[serde(rename = "PrePrompt", default)]
-    pub pre_prompt: Vec<Action>,
+    pub pre_prompt: Vec<FlowStatement>,
 
     /// PreFileChange event handler (before file modification begins)
     #[serde(rename = "PreFileChange", default)]
-    pub pre_file_change: Vec<Action>,
+    pub pre_file_change: Vec<FlowStatement>,
 
     /// PostFileChange event handler
     #[serde(rename = "PostFileChange", default)]
-    pub post_file_change: Vec<Action>,
+    pub post_file_change: Vec<FlowStatement>,
 
     /// PostResponse event handler (after agent completes its response)
     #[serde(rename = "PostResponse", default)]
-    pub post_response: Vec<Action>,
+    pub post_response: Vec<FlowStatement>,
 
     /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "PrepareCommitMessage", default)]
-    pub prepare_commit_message: Vec<Action>,
+    pub prepare_commit_message: Vec<FlowStatement>,
 
     /// Stop event handler
     #[serde(rename = "Stop", default)]
-    pub stop: Vec<Action>,
+    pub stop: Vec<FlowStatement>,
 }
 
 fn default_version() -> String {
@@ -86,14 +141,10 @@ pub struct BlockAction {
     pub failure: String,
 }
 
-/// An action to execute in a flow
+/// An action to execute in a flow (no flow control)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Action {
-    /// Conditional execution (if/then/else)
-    If(IfAction),
-    /// Switch/case statement
-    Switch(SwitchAction),
     /// Let binding (function call or variable aliasing)
     Let(LetAction),
     /// Self function call (call a function without storing result)
@@ -191,47 +242,6 @@ pub struct SelfAction {
     pub self_: String,
 
     /// What to do when the action fails
-    #[serde(default)]
-    pub on_failure: OnFailure,
-}
-
-/// Conditional action (if/then/else)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IfAction {
-    /// Condition to evaluate (supports variable access with $, JSON field access with .)
-    /// Examples: "$detection.all_exact_match == true", "$metadata.tool == Edit"
-    #[serde(rename = "if")]
-    pub condition: String,
-
-    /// Actions to execute if condition is true
-    pub then: Vec<Action>,
-
-    /// Optional actions to execute if condition is false
-    #[serde(default, rename = "else")]
-    pub else_: Option<Vec<Action>>,
-
-    /// What to do when condition evaluation fails
-    #[serde(default)]
-    pub on_failure: OnFailure,
-}
-
-/// Switch/case action
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SwitchAction {
-    /// Expression to evaluate and match against cases
-    /// Examples: "$detection.classification", "$metadata.tool"
-    #[serde(rename = "switch")]
-    pub expression: String,
-
-    /// Map of case values to actions
-    /// The key is matched against the evaluated expression
-    pub cases: std::collections::HashMap<String, Vec<Action>>,
-
-    /// Optional default case if no cases match
-    #[serde(default)]
-    pub default: Option<Vec<Action>>,
-
-    /// What to do when switch evaluation fails
     #[serde(default)]
     pub on_failure: OnFailure,
 }

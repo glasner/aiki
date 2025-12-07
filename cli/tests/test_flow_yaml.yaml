@@ -1,0 +1,41 @@
+name: test-flow
+description: Test flow for new statement syntax
+version: "1"
+
+SessionStart:
+  - if: $SESSION_ID != ""
+    then:
+      - log: "Resuming session"
+    else:
+      - shell: "echo 'New session'"
+
+PrePrompt:
+  - switch: $event.agent_type
+    cases:
+      claude:
+        - log: "Claude agent detected"
+      cursor:
+        - log: "Cursor agent detected"
+    default:
+      - log: "Unknown agent"
+
+PostFileChange:
+  - shell: "echo 'File changed'"
+    on_failure:
+      - if: $EXIT_CODE == 1
+        then:
+          - log: "Recoverable error"
+        else:
+          - stop: "Fatal error"
+
+PostResponse:
+  - if: $event.modified_files != ""
+    then:
+      - switch: $event.response
+        cases:
+          "success":
+            - log: "Changes successful"
+          "error":
+            - log: "Changes had errors"
+        default:
+          - log: "Unknown response"
