@@ -9,28 +9,6 @@ pub struct ActionResult {
     pub stderr: String,
 }
 
-impl ActionResult {
-    #[must_use]
-    pub fn success() -> Self {
-        Self {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn failure(exit_code: i32, stderr: String) -> Self {
-        Self {
-            success: false,
-            exit_code: Some(exit_code),
-            stdout: String::new(),
-            stderr,
-        }
-    }
-}
-
 /// Aiki execution state for flow processing
 ///
 /// This holds the mutable state that accumulates during flow execution:
@@ -175,6 +153,12 @@ impl AikiState {
     pub fn failures(&self) -> &[crate::handlers::Failure] {
         &self.failures
     }
+
+    /// Get the number of failures
+    #[must_use]
+    pub fn failures_count(&self) -> usize {
+        self.failures.len()
+    }
 }
 
 #[cfg(test)]
@@ -183,14 +167,24 @@ mod tests {
 
     #[test]
     fn test_action_result_success() {
-        let result = ActionResult::success();
+        let result = ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
     }
 
     #[test]
     fn test_action_result_failure() {
-        let result = ActionResult::failure(1, "error".to_string());
+        let result = ActionResult {
+            success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "error".to_string(),
+        };
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
         assert_eq!(result.stderr, "error");

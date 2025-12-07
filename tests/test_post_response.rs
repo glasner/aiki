@@ -57,7 +57,7 @@ fn test_autoreply_simple_flow() {
     // Create a simple context action (for autoreply in PostResponse)
     let action = Action::Context(ContextAction {
         context: ContextContent::Simple("Please fix the errors above.".to_string()),
-        on_failure: vec![],
+        on_failure: aiki::flows::types::OnFailure::default(),
     });
 
     // Execute the action
@@ -95,7 +95,7 @@ fn test_autoreply_explicit_form() {
                 "Please address these issues.".to_string(),
             )),
         },
-        on_failure: vec![],
+        on_failure: aiki::flows::types::OnFailure::default(),
     });
 
     // Execute the action
@@ -127,15 +127,15 @@ fn test_multiple_autoreply_actions_accumulate() {
     let actions = vec![
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 1: TypeScript compilation failed.".to_string()),
-            on_failure: vec![],
+            on_failure: aiki::flows::types::OnFailure::default(),
         }),
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 2: Tests are failing.".to_string()),
-            on_failure: vec![],
+            on_failure: aiki::flows::types::OnFailure::default(),
         }),
         Action::Context(ContextAction {
             context: ContextContent::Simple("Error 3: Lint warnings detected.".to_string()),
-            on_failure: vec![],
+            on_failure: aiki::flows::types::OnFailure::default(),
         }),
     ];
 
@@ -173,7 +173,7 @@ fn test_event_variables_in_autoreply() {
         context: ContextContent::Simple(
             "Session: $event.session_id - Modified files detected.".to_string(),
         ),
-        on_failure: vec![],
+        on_failure: aiki::flows::types::OnFailure::default(),
     });
 
     // Execute the action

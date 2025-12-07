@@ -389,18 +389,6 @@ impl FlowEngine {
                     return Ok(FlowResult::FailedContinue);
                 }
 
-                // Store EXIT_CODE and other failure context for on_failure handlers
-                // Always set or clear these variables to prevent stale data from previous failures
-                if let Some(exit_code) = result.exit_code {
-                    state.set_variable("EXIT_CODE".to_string(), exit_code.to_string());
-                } else {
-                    state.set_variable("EXIT_CODE".to_string(), String::new());
-                }
-
-                // Always set stdout/stderr, even if empty, to clear previous failure data
-                state.set_variable("STDOUT".to_string(), result.stdout.clone());
-                state.set_variable("STDERR".to_string(), result.stderr.clone());
-
                 // Execute on_failure statements
                 let (callback_result, _) = Self::execute_statements(on_failure_statements, state)?;
                 Ok(callback_result)
@@ -1204,27 +1192,11 @@ impl FlowEngine {
     }
 
     /// Evaluate a condition expression
-    /// Supports: ==, !=, >, <, >=, <=, JSON field access ($var.field)
+    /// Supports: ==, !=, JSON field access ($var.field)
     fn evaluate_condition(condition: &str, state: &mut AikiState) -> Result<bool> {
         let condition = condition.trim();
 
-        // Parse comparison operators (order matters: check >= before >, <= before <)
-        if let Some(pos) = condition.find(">=") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, ">=");
-        }
-
-        if let Some(pos) = condition.find("<=") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, "<=");
-        }
-
+        // Parse comparison operators
         if let Some(pos) = condition.find("==") {
             let left = condition[..pos].trim();
             let right = condition[pos + 2..].trim();
@@ -1241,55 +1213,11 @@ impl FlowEngine {
             return Ok(left_val != right_val);
         }
 
-        if let Some(pos) = condition.find('>') {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 1..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, ">");
-        }
-
-        if let Some(pos) = condition.find('<') {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 1..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, "<");
-        }
-
         // No operator - treat as boolean check (variable exists and is truthy)
         let val = Self::resolve_condition_value(condition, state)?;
         // Truthy: non-empty string that's not "false"
         // Falsy: empty string or literal "false"
         Ok(!val.is_empty() && val != "false")
-    }
-
-    /// Compare two values numerically with the given operator
-    fn compare_numeric(left: &str, right: &str, op: &str) -> Result<bool> {
-        // Try to parse both sides as numbers
-        let left_num = left.parse::<f64>().map_err(|_| {
-            AikiError::InvalidCondition(format!(
-                "Cannot compare '{}' with operator '{}': left side is not a number",
-                left, op
-            ))
-        })?;
-        let right_num = right.parse::<f64>().map_err(|_| {
-            AikiError::InvalidCondition(format!(
-                "Cannot compare '{}' with operator '{}': right side is not a number",
-                right, op
-            ))
-        })?;
-
-        match op {
-            ">" => Ok(left_num > right_num),
-            "<" => Ok(left_num < right_num),
-            ">=" => Ok(left_num >= right_num),
-            "<=" => Ok(left_num <= right_num),
-            _ => Err(AikiError::InvalidCondition(format!(
-                "Unsupported comparison operator: '{}'",
-                op
-            ))),
-        }
     }
 
     /// Resolve a value in a condition expression
@@ -3926,108 +3854,5 @@ mod tests {
 
         // Failure should be recorded
         assert_eq!(state.failures().len(), 1);
-    }
-
-    #[test]
-    fn test_numeric_comparison_greater_than() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("count".to_string(), "5".to_string());
-
-        // 5 > 3 should be true
-        let result = FlowEngine::evaluate_condition("$count > 3", &mut state).unwrap();
-        assert!(result, "5 > 3 should be true");
-
-        // 5 > 10 should be false
-        let result = FlowEngine::evaluate_condition("$count > 10", &mut state).unwrap();
-        assert!(!result, "5 > 10 should be false");
-    }
-
-    #[test]
-    fn test_numeric_comparison_less_than() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("count".to_string(), "5".to_string());
-
-        // 5 < 10 should be true
-        let result = FlowEngine::evaluate_condition("$count < 10", &mut state).unwrap();
-        assert!(result, "5 < 10 should be true");
-
-        // 5 < 3 should be false
-        let result = FlowEngine::evaluate_condition("$count < 3", &mut state).unwrap();
-        assert!(!result, "5 < 3 should be false");
-    }
-
-    #[test]
-    fn test_numeric_comparison_greater_equal() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("count".to_string(), "5".to_string());
-
-        // 5 >= 5 should be true
-        let result = FlowEngine::evaluate_condition("$count >= 5", &mut state).unwrap();
-        assert!(result, "5 >= 5 should be true");
-
-        // 5 >= 3 should be true
-        let result = FlowEngine::evaluate_condition("$count >= 3", &mut state).unwrap();
-        assert!(result, "5 >= 3 should be true");
-
-        // 5 >= 10 should be false
-        let result = FlowEngine::evaluate_condition("$count >= 10", &mut state).unwrap();
-        assert!(!result, "5 >= 10 should be false");
-    }
-
-    #[test]
-    fn test_numeric_comparison_less_equal() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("count".to_string(), "5".to_string());
-
-        // 5 <= 5 should be true
-        let result = FlowEngine::evaluate_condition("$count <= 5", &mut state).unwrap();
-        assert!(result, "5 <= 5 should be true");
-
-        // 5 <= 10 should be true
-        let result = FlowEngine::evaluate_condition("$count <= 10", &mut state).unwrap();
-        assert!(result, "5 <= 10 should be true");
-
-        // 5 <= 3 should be false
-        let result = FlowEngine::evaluate_condition("$count <= 3", &mut state).unwrap();
-        assert!(!result, "5 <= 3 should be false");
-    }
-
-    #[test]
-    fn test_numeric_comparison_decimal() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("value".to_string(), "3.14".to_string());
-
-        // 3.14 > 3.0 should be true
-        let result = FlowEngine::evaluate_condition("$value > 3.0", &mut state).unwrap();
-        assert!(result, "3.14 > 3.0 should be true");
-
-        // 3.14 < 3.2 should be true
-        let result = FlowEngine::evaluate_condition("$value < 3.2", &mut state).unwrap();
-        assert!(result, "3.14 < 3.2 should be true");
-    }
-
-    #[test]
-    fn test_numeric_comparison_invalid_number() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("text".to_string(), "not_a_number".to_string());
-
-        // Should return error for non-numeric value
-        let result = FlowEngine::evaluate_condition("$text > 5", &mut state);
-        assert!(result.is_err(), "Comparing non-numeric value should error");
-        assert!(result.unwrap_err().to_string().contains("not a number"));
-    }
-
-    #[test]
-    fn test_numeric_comparison_with_json_field() {
-        let mut state = AikiState::new(create_test_event());
-        state.set_variable("event".to_string(), r#"{"file_count": 3}"#.to_string());
-
-        // $event.file_count > 1 should be true
-        let result = FlowEngine::evaluate_condition("$event.file_count > 1", &mut state).unwrap();
-        assert!(result, "$event.file_count (3) > 1 should be true");
-
-        // $event.file_count > 5 should be false
-        let result = FlowEngine::evaluate_condition("$event.file_count > 5", &mut state).unwrap();
-        assert!(!result, "$event.file_count (3) > 5 should be false");
     }
 }

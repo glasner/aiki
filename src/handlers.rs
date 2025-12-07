@@ -163,8 +163,9 @@ pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute SessionStart actions from the core flow
-    let (flow_result, _timing) = FlowEngine::execute_actions(&core_flow.session_start, &mut state)?;
+    // Execute SessionStart statements from the core flow
+    let (flow_result, _timing) =
+        FlowEngine::execute_statements(&core_flow.session_start, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
@@ -209,9 +210,9 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PrePrompt actions from the core flow (catch errors for graceful degradation)
+    // Execute PrePrompt statements from the core flow (catch errors for graceful degradation)
     let (flow_result, _timing) =
-        match FlowEngine::execute_actions(&core_flow.pre_prompt, &mut state) {
+        match FlowEngine::execute_statements(&core_flow.pre_prompt, &mut state) {
             Ok(result) => result,
             Err(e) => {
                 // Flow execution failed - log warning and use original prompt
@@ -273,7 +274,7 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
 
     // Execute PreFileChange actions from the core flow
     let (flow_result, _timing) =
-        FlowEngine::execute_actions(&core_flow.pre_file_change, &mut state)?;
+        FlowEngine::execute_statements(&core_flow.pre_file_change, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
@@ -311,7 +312,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
 
     // Execute PostFileChange actions from the core flow
     let (flow_result, _timing) =
-        FlowEngine::execute_actions(&core_flow.post_file_change, &mut state)?;
+        FlowEngine::execute_statements(&core_flow.post_file_change, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
@@ -350,7 +351,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
 
     // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
     let (flow_result, _timing) =
-        match FlowEngine::execute_actions(&core_flow.post_response, &mut state) {
+        match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
             Ok(result) => result,
             Err(e) => {
                 // Flow execution failed - log warning and skip autoreply
@@ -396,7 +397,7 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
 
     // Execute PrepareCommitMessage actions from the core flow
     let (flow_result, _timing) =
-        FlowEngine::execute_actions(&core_flow.prepare_commit_message, &mut state)?;
+        FlowEngine::execute_statements(&core_flow.prepare_commit_message, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();

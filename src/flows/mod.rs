@@ -9,5 +9,5 @@ mod variables;
 
 pub use bundled::load_core_flow;
 pub use context::{ContextAssembler, ContextChunk, TextLines};
-pub use engine::{FlowEngine, FlowResult, FlowTiming};
+pub use engine::{FlowEngine, FlowResult, FlowTiming, StatementTiming};
 pub use state::AikiState;

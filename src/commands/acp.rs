@@ -2817,7 +2817,7 @@ mod tests {
         let response = HookResponse {
             context: Some("Fix errors".to_string()),
             decision: crate::handlers::Decision::Allow,
-            messages: Vec::new(),
+            failures: Vec::new(),
         };
 
         let result = extract_autoreply(&response);
@@ -2829,7 +2829,7 @@ mod tests {
         let response = HookResponse {
             context: None,
             decision: crate::handlers::Decision::Allow,
-            messages: Vec::new(),
+            failures: Vec::new(),
         };
 
         let result = extract_autoreply(&response);
@@ -2841,7 +2841,7 @@ mod tests {
         let response = HookResponse {
             context: Some("".to_string()),
             decision: crate::handlers::Decision::Allow,
-            messages: Vec::new(),
+            failures: Vec::new(),
         };
 
         let result = extract_autoreply(&response);
