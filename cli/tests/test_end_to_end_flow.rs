@@ -109,7 +109,7 @@ PostResponse:
 
         // The shell command will fail but on_failure handles it
         println!("Result: {:?}", result);
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, FlowResult::FailedContinue));
 
         // Verify timing includes both the switch and the shell with on_failure
         assert!(timing.statement_timings.len() >= 2);
@@ -210,8 +210,8 @@ fn test_on_failure_with_statements() {
     let (result, timing) = FlowEngine::execute_statements(&statements, &mut state)
         .expect("Failed to execute on_failure test");
 
-    // Should succeed because on_failure handles the error correctly
-    assert!(matches!(result, FlowResult::Success));
+    // Should return FailedContinue because on_failure handled the error and continued
+    assert!(matches!(result, FlowResult::FailedContinue));
     assert_eq!(timing.statement_timings.len(), 2); // Shell and Log
 }
 

@@ -61,7 +61,8 @@ fn test_autoreply_simple_flow() {
     });
 
     // Execute the action
-    let result = FlowEngine::execute_actions(&[action], &mut state);
+    let statements = vec![aiki::flows::types::FlowStatement::Action(action)];
+    let result = FlowEngine::execute_statements(&statements, &mut state);
     assert!(result.is_ok());
 
     // Build context (autoreply)
@@ -99,7 +100,8 @@ fn test_autoreply_explicit_form() {
     });
 
     // Execute the action
-    let result = FlowEngine::execute_actions(&[action], &mut state);
+    let statements = vec![aiki::flows::types::FlowStatement::Action(action)];
+    let result = FlowEngine::execute_statements(&statements, &mut state);
     assert!(result.is_ok());
 
     // Build context (autoreply)
@@ -140,7 +142,11 @@ fn test_multiple_autoreply_actions_accumulate() {
     ];
 
     // Execute all actions
-    let result = FlowEngine::execute_actions(&actions, &mut state);
+    let statements: Vec<_> = actions
+        .into_iter()
+        .map(|a| aiki::flows::types::FlowStatement::Action(a))
+        .collect();
+    let result = FlowEngine::execute_statements(&statements, &mut state);
     assert!(result.is_ok());
 
     // Build context (autoreply) - should contain all three messages
@@ -177,7 +183,8 @@ fn test_event_variables_in_autoreply() {
     });
 
     // Execute the action
-    let result = FlowEngine::execute_actions(&[action], &mut state);
+    let statements = vec![aiki::flows::types::FlowStatement::Action(action)];
+    let result = FlowEngine::execute_statements(&statements, &mut state);
     assert!(result.is_ok());
 
     // Build context (autoreply) - should have variables resolved

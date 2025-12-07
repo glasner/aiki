@@ -132,8 +132,8 @@ fn test_action_with_on_failure() {
     let mut state = AikiState::new(create_test_event());
     let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
-    // Should succeed because on_failure handles it
-    assert!(matches!(result, FlowResult::Success));
+    // Should return FailedContinue because on_failure handled the error
+    assert!(matches!(result, FlowResult::FailedContinue));
 }
 
 #[test]
