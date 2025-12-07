@@ -403,7 +403,13 @@ impl FlowEngine {
 
                 // Execute on_failure statements
                 let (callback_result, _) = Self::execute_statements(on_failure_statements, state)?;
-                Ok(callback_result)
+
+                // If the on_failure handler succeeded (returned Success),
+                // translate it to FailedContinue since we had a failure but handled it
+                match callback_result {
+                    FlowResult::Success => Ok(FlowResult::FailedContinue),
+                    other => Ok(other),
+                }
             }
         }
     }
@@ -659,6 +665,7 @@ impl FlowEngine {
         };
         state.add_failure(crate::handlers::Failure(failure_text));
 
+        // Return success - the on_failure handler will translate this to FailedContinue
         Ok(ActionResult {
             success: true,
             exit_code: Some(0),
@@ -3251,7 +3258,7 @@ mod tests {
         let mut state = AikiState::new(create_test_event());
         let (result, _timing) = execute_actions(&actions, &mut state).unwrap();
 
-        // Should return Success (continue doesn't fail)
+        // Should return Success (standalone continue action succeeds)
         assert!(matches!(result, FlowResult::Success));
 
         // Both actions should execute
@@ -3418,9 +3425,9 @@ mod tests {
         eprintln!("Nested if on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
 
-        // The nested shell fails but its on_failure handler (continue action) executes
-        // When on_failure handlers execute successfully, they return Success
-        assert!(matches!(result, FlowResult::Success));
+        // The nested shell fails but its on_failure handler (continue action) executes successfully
+        // Successful on_failure handlers return FailedContinue (handled the failure, continuing)
+        assert!(matches!(result, FlowResult::FailedContinue));
 
         // Verify the failure message was added
         let failures = state.failures();
@@ -3520,9 +3527,8 @@ mod tests {
         eprintln!("Failures: {:?}", state.failures());
 
         // The deeply nested shell fails and its on_failure handler (continue action) executes
-        // When on_failure handlers execute successfully, they return Success
-        // (the handler handled the error, so the flow succeeds)
-        assert!(matches!(result, FlowResult::Success));
+        // Continue actions should return FailedContinue to match shortcut behavior
+        assert!(matches!(result, FlowResult::FailedContinue));
 
         // Verify the failure message was added
         let failures = state.failures();
@@ -3672,12 +3678,11 @@ mod tests {
         let mut state = AikiState::new(create_test_event());
         let (result, _timing) = execute_actions(&actions, &mut state).unwrap();
 
-        // When on_failure handlers execute continue actions, they return Success
-        // This is different from the shortcut form (on_failure: continue) which returns FailedContinue
-        // The explicit form executes the continue action, which adds a failure and returns Success
+        // Should return FailedContinue (same as shortcut form)
+        // The explicit continue action should behave identically to on_failure: continue
         assert!(
-            matches!(result, FlowResult::Success),
-            "Expected Success but got {:?}. Explicit continue actions execute successfully after adding failure.",
+            matches!(result, FlowResult::FailedContinue),
+            "Expected FailedContinue but got {:?}. Explicit continue actions should match shortcut behavior.",
             result
         );
 
