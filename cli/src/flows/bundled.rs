@@ -14,6 +14,7 @@ pub fn load_core_flow() -> Result<Flow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flows::types::{Action, FlowStatement};
 
     #[test]
     fn test_load_core_flow() {
@@ -62,18 +63,18 @@ mod tests {
         // Should have PostFileChange handler
         assert!(!core.post_file_change.is_empty());
 
-        // First action should be an If with inline function call to classify_edits
+        // First statement should be an If with inline function call to classify_edits
         match &core.post_file_change[0] {
-            Action::If(if_action) => {
+            FlowStatement::If(if_stmt) => {
                 // Verify uses inline self.classify_edits for condition
                 assert!(
-                    if_action.condition.contains("self.classify_edits"),
+                    if_stmt.condition.contains("self.classify_edits"),
                     "Flow should use inline 'self.classify_edits' in condition"
                 );
-                // First action in then block should be the prepare_separation let binding
-                assert!(!if_action.then.is_empty());
-                match &if_action.then[0] {
-                    Action::Let(let_action) => {
+                // First statement in then block should be the prepare_separation let binding
+                assert!(!if_stmt.then.is_empty());
+                match &if_stmt.then[0] {
+                    FlowStatement::Action(Action::Let(let_action)) => {
                         assert_eq!(
                             let_action.let_, "prep = self.prepare_separation",
                             "Flow should prepare separation when user edits are detected"
@@ -82,7 +83,7 @@ mod tests {
                     _ => panic!("Expected Let action as first step in then block"),
                 }
             }
-            _ => panic!("Expected If action as first step"),
+            _ => panic!("Expected If statement as first step"),
         }
     }
 }
