@@ -4,13 +4,16 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
+use crate::events::{
+    AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPreFileChangeEvent,
+    AikiPrePromptEvent, AikiStartEvent,
+};
 use crate::handlers::{Decision, HookResponse};
 use crate::provenance::AgentType;
 
 /// Claude Code hook payload structure
 ///
-/// This matches the JSON that Claude Code sends to PostToolUse hooks.
+/// This matches the JSON that Claude Code sends to various hooks.
 /// See: https://docs.claude.com/claude-code/hooks
 #[derive(Deserialize, Debug)]
 struct ClaudeCodePayload {
@@ -24,6 +27,9 @@ struct ClaudeCodePayload {
     tool_input: Option<ToolInput>,
     #[serde(default)]
     tool_output: String,
+    /// User prompt text (for UserPromptSubmit hook)
+    #[serde(default)]
+    prompt: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,8 +84,10 @@ pub fn handle(event_name: &str) -> Result<()> {
     // Build event from payload
     let aiki_event = match event_name {
         "SessionStart" => build_session_start_event(payload),
+        "UserPromptSubmit" => build_pre_prompt_event(payload),
         "PreToolUse" => build_pre_file_change_event(payload),
         "PostToolUse" => build_post_file_change_event(payload),
+        "Stop" => build_post_response_event(payload),
         _ => AikiEvent::Unsupported,
     };
 
@@ -98,6 +106,17 @@ fn build_session_start_event(payload: ClaudeCodePayload) -> AikiEvent {
         session_id: Some(payload.session_id),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+    })
+}
+
+/// Build PrePrompt event from UserPromptSubmit payload
+fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
+    AikiEvent::PrePrompt(AikiPrePromptEvent {
+        agent_type: AgentType::Claude,
+        session_id: Some(payload.session_id),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        prompt: payload.prompt,
     })
 }
 
@@ -153,6 +172,21 @@ fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
         timestamp: chrono::Utc::now(),
         detection_method: crate::provenance::DetectionMethod::Hook,
         edit_details,
+    })
+}
+
+/// Build PostResponse event from Stop payload
+fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
+    // Note: Claude Code's Stop hook doesn't include the response text in the payload.
+    // This is intentional - flows use self.* functions to check files/run tests
+    // rather than parsing the response text.
+    AikiEvent::PostResponse(AikiPostResponseEvent {
+        agent_type: AgentType::Claude,
+        session_id: Some(payload.session_id),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        response: String::new(), // Empty - flows check files/run tests via self.* functions
+        modified_files: vec![],  // Could track from PostToolUse events if needed
     })
 }
 
@@ -224,18 +258,17 @@ fn translate_user_prompt_submit(response: &HookResponse) -> ClaudeCodeResponse {
             exit_code: 0,
         }
     } else {
-        // Allow with optional context
-        let combined = response.combined_output();
-        let json_value = if let Some(ctx) = combined {
-            json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": ctx
-                }
-            })
-        } else {
-            json!({})
-        };
+        // Allow with optional modified prompt
+        // The context field contains the modified prompt text from the flow
+        let mut json_value = json!({
+            "decision": "continue"
+        });
+
+        // If context exists, use it as the modified prompt
+        if let Some(ref modified_prompt) = response.context {
+            json_value["modifiedPrompt"] = json!(modified_prompt);
+        }
+
         ClaudeCodeResponse {
             json_value: Some(json_value),
             exit_code: 0,
@@ -330,17 +363,18 @@ fn translate_post_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
 
 /// Translate Stop event to Claude Code JSON format
 fn translate_stop(response: &HookResponse) -> ClaudeCodeResponse {
-    let combined = response.combined_output();
-
-    let json_value = if let Some(reason_text) = combined {
-        // Block (autoreply/force continuation)
+    // The context field contains the autoreply text from the flow
+    let json_value = if let Some(ref autoreply_text) = response.context {
+        // Force continuation with autoreply via additionalContext
         json!({
-            "decision": "block",
-            "reason": reason_text
+            "decision": "continue",
+            "additionalContext": autoreply_text
         })
     } else {
-        // Allow normal stop
-        json!({})
+        // No autoreply - allow normal stop
+        json!({
+            "decision": "stop"
+        })
     };
 
     ClaudeCodeResponse {
