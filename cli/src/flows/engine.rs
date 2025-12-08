@@ -256,9 +256,20 @@ impl FlowEngine {
                 let (result, timings) = Self::execute_switch_with_timing(switch_stmt, state)?;
                 Ok((result, timings))
             }
-            FlowStatement::Action(_) => {
-                let result = Self::execute_statement(statement, state)?;
-                Ok((result, Vec::new())) // Actions don't have nested timings
+            FlowStatement::Action(action) => {
+                // Execute the action
+                let result = Self::execute_action(action, state)?;
+
+                // Store action results for reference by subsequent actions
+                Self::store_action_result(action, &result, state);
+
+                // Handle action failures with on_failure behavior
+                // This now returns nested timing from on_failure handlers
+                if !result.success {
+                    Self::handle_action_failure(action, &result, state)
+                } else {
+                    Ok((FlowResult::Success, Vec::new()))
+                }
             }
         }
     }
@@ -302,7 +313,9 @@ impl FlowEngine {
 
                 // Handle action failures with on_failure behavior
                 if !result.success {
-                    Self::handle_action_failure(action, &result, state)
+                    let (flow_result, _timing) =
+                        Self::handle_action_failure(action, &result, state)?;
+                    Ok(flow_result)
                 } else {
                     Ok(FlowResult::Success)
                 }
@@ -330,11 +343,12 @@ impl FlowEngine {
     }
 
     /// Handle action failure based on on_failure behavior
+    /// Returns both the FlowResult and any nested timings from on_failure handlers
     fn handle_action_failure(
         action: &Action,
         result: &ActionResult,
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
+    ) -> Result<(FlowResult, Vec<StatementTiming>)> {
         let on_failure_behavior = match action {
             Action::Shell(shell_action) => &shell_action.on_failure,
             Action::Jj(jj_action) => &jj_action.on_failure,
@@ -345,15 +359,15 @@ impl FlowEngine {
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
             Action::Log(_) | Action::Continue(_) => {
                 // These actions don't fail
-                return Ok(FlowResult::Success);
+                return Ok((FlowResult::Success, Vec::new()));
             }
             Action::Stop(_) => {
                 // Stop action failed - return FailedStop
-                return Ok(FlowResult::FailedStop);
+                return Ok((FlowResult::FailedStop, Vec::new()));
             }
             Action::Block(_) => {
                 // Block action failed - return FailedBlock
-                return Ok(FlowResult::FailedBlock);
+                return Ok((FlowResult::FailedBlock, Vec::new()));
             }
         };
 
@@ -368,15 +382,15 @@ impl FlowEngine {
                 OnFailureShortcut::Continue => {
                     eprintln!("[aiki] Action failed but continuing: {}", failure_text);
                     state.add_failure(crate::handlers::Failure(failure_text));
-                    Ok(FlowResult::FailedContinue)
+                    Ok((FlowResult::FailedContinue, Vec::new()))
                 }
                 OnFailureShortcut::Stop => {
                     state.add_failure(crate::handlers::Failure(failure_text));
-                    Ok(FlowResult::FailedStop)
+                    Ok((FlowResult::FailedStop, Vec::new()))
                 }
                 OnFailureShortcut::Block => {
                     state.add_failure(crate::handlers::Failure(failure_text));
-                    Ok(FlowResult::FailedBlock)
+                    Ok((FlowResult::FailedBlock, Vec::new()))
                 }
             },
             OnFailure::Statements(on_failure_statements) => {
@@ -386,8 +400,11 @@ impl FlowEngine {
                         failure_text
                     );
                     state.add_failure(crate::handlers::Failure(failure_text));
-                    return Ok(FlowResult::FailedContinue);
+                    return Ok((FlowResult::FailedContinue, Vec::new()));
                 }
+
+                // Record current failure count to detect if on_failure handlers add their own failures
+                let failures_before = state.failures().len();
 
                 // Store EXIT_CODE and other failure context for on_failure handlers
                 // Always set or clear these variables to prevent stale data from previous failures
@@ -401,15 +418,26 @@ impl FlowEngine {
                 state.set_variable("STDOUT".to_string(), result.stdout.clone());
                 state.set_variable("STDERR".to_string(), result.stderr.clone());
 
-                // Execute on_failure statements
-                let (callback_result, _) = Self::execute_statements(on_failure_statements, state)?;
+                // Execute on_failure statements and capture their timing
+                let (callback_result, callback_timing) =
+                    Self::execute_statements(on_failure_statements, state)?;
+
+                // Add default failure record if on_failure handlers didn't add any failures
+                // This ensures custom handlers (like simple logging) don't silently drop provenance
+                let failures_after = state.failures().len();
+                if failures_after == failures_before {
+                    state.add_failure(crate::handlers::Failure(failure_text));
+                }
 
                 // If the on_failure handler succeeded (returned Success),
                 // translate it to FailedContinue since we had a failure but handled it
-                match callback_result {
-                    FlowResult::Success => Ok(FlowResult::FailedContinue),
-                    other => Ok(other),
-                }
+                let flow_result = match callback_result {
+                    FlowResult::Success => FlowResult::FailedContinue,
+                    other => other,
+                };
+
+                // Return both the result and the timing from the on_failure handler
+                Ok((flow_result, callback_timing.statement_timings))
             }
         }
     }
@@ -3964,5 +3992,48 @@ mod tests {
         // $event.file_count > 5 should be false
         let result = FlowEngine::evaluate_condition("$event.file_count > 5", &mut state).unwrap();
         assert!(!result, "$event.file_count (3) > 5 should be false");
+    }
+
+    #[test]
+    fn test_on_failure_timing_captured() {
+        // Test that on_failure handler timing is properly captured as nested timings
+        let actions = vec![Action::Shell(ShellAction {
+            shell: "false".to_string(),
+            timeout: None,
+            on_failure: OnFailure::Statements(vec![
+                FlowStatement::Action(Action::Log(LogAction {
+                    log: "Handling failure".to_string(),
+                    alias: None,
+                })),
+                FlowStatement::Action(Action::Shell(ShellAction {
+                    shell: "echo 'recovery'".to_string(),
+                    timeout: None,
+                    on_failure: OnFailure::default(),
+                    alias: None,
+                })),
+            ]),
+            alias: None,
+        })];
+
+        let mut state = AikiState::new(create_test_event());
+        let (_result, timing) = execute_actions(&actions, &mut state).unwrap();
+
+        // Should have exactly one statement timing (the Shell action)
+        assert_eq!(timing.statement_timings.len(), 1);
+        let shell_timing = &timing.statement_timings[0];
+        assert_eq!(shell_timing.statement_type, "Shell");
+
+        // The Shell action should have nested timings from the on_failure handler
+        assert_eq!(
+            shell_timing.nested.len(),
+            2,
+            "Expected 2 nested timings from on_failure handler (Log + Shell)"
+        );
+        assert_eq!(shell_timing.nested[0].statement_type, "Log");
+        assert_eq!(shell_timing.nested[1].statement_type, "Shell");
+
+        // Nested timings should have non-zero durations
+        assert!(shell_timing.nested[0].duration >= 0.0);
+        assert!(shell_timing.nested[1].duration >= 0.0);
     }
 }
