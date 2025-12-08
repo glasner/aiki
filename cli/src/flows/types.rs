@@ -161,7 +161,7 @@ pub enum Action {
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
-    /// Continue flow execution (generates Failure and continues)
+    /// Continue flow execution (generates Failure and returns FailedContinue)
     Continue(ContinueAction),
     /// Stop flow execution (emits warning and stops silently)
     Stop(StopAction),

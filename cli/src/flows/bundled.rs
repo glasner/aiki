@@ -14,7 +14,7 @@ pub fn load_core_flow() -> Result<Flow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flows::types::{Action, FlowStatement};
+    use crate::flows::types::FlowStatement;
 
     #[test]
     fn test_load_core_flow() {

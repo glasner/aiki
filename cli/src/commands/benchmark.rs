@@ -178,7 +178,8 @@ pub fn run(flow_name: String, num_edits: usize) -> Result<()> {
                 "file_path": file_path.to_str().unwrap(),
                 "cwd": repo_path.to_str().unwrap()
             },
-            "cwd": repo_path.to_str().unwrap()
+            "cwd": repo_path.to_str().unwrap(),
+            "transcript_path": "/dev/null"
         });
 
         println!("  Edit {}/{}", i, num_edits);

@@ -273,7 +273,7 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PreFileChange actions from the core flow
-    let (flow_result, _timing) =
+    let (_flow_result, _timing) =
         FlowEngine::execute_statements(&core_flow.pre_file_change, &mut state)?;
 
     // Extract failures from state
@@ -311,7 +311,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PostFileChange actions from the core flow
-    let (flow_result, _timing) =
+    let (_flow_result, _timing) =
         FlowEngine::execute_statements(&core_flow.post_file_change, &mut state)?;
 
     // Extract failures from state
@@ -350,7 +350,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
-    let (flow_result, _timing) =
+    let (_flow_result, _timing) =
         match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
             Ok(result) => result,
             Err(e) => {
