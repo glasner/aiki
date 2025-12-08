@@ -4,7 +4,9 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiStartEvent};
+use crate::events::{
+    AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
+};
 use crate::handlers::{Decision, HookResponse};
 use crate::provenance::AgentType;
 
@@ -21,6 +23,11 @@ struct CursorPayload {
     working_directory: String,
     #[serde(rename = "eventName")]
     event_name: String,
+    // beforeSubmitPrompt fields
+    #[serde(default)]
+    prompt: String,
+    #[serde(rename = "conversation_id", default)]
+    conversation_id: String,
     // beforeMCPExecution fields (TBD - exact structure not yet documented)
     #[serde(rename = "toolName", default)]
     tool_name: String,
@@ -80,7 +87,7 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Build event from payload
     let aiki_event = match event_name {
-        "beforeSubmitPrompt" => build_session_start_event(payload),
+        "beforeSubmitPrompt" => build_pre_prompt_event(payload),
         "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
         "afterFileEdit" => build_post_file_change_event(payload),
         "stop" => build_post_response_event(payload),
@@ -95,13 +102,22 @@ pub fn handle(event_name: &str) -> Result<()> {
     std::process::exit(cursor_response.exit_code);
 }
 
-/// Build SessionStart event from beforeSubmitPrompt payload
-fn build_session_start_event(payload: CursorPayload) -> AikiEvent {
-    AikiEvent::SessionStart(AikiStartEvent {
+/// Build PrePrompt event from beforeSubmitPrompt payload
+///
+/// Note: Cursor's beforeSubmitPrompt fires on EVERY prompt submission.
+/// Ideally we should track conversation_id changes to fire SessionStart only
+/// on new conversations, but that requires stateful tracking across invocations.
+/// For now, we fire PrePrompt on every call, which enables validation workflows.
+///
+/// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
+/// The modifiedPrompt field is not supported - only blocking via user_message.
+fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
+    AikiEvent::PrePrompt(AikiPrePromptEvent {
         agent_type: AgentType::Cursor,
         session_id: Some(payload.session_id),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
+        prompt: payload.prompt,
     })
 }
 
@@ -200,12 +216,20 @@ fn translate_response(response: HookResponse, event_type: &str) -> CursorRespons
 
 /// Translate beforeSubmitPrompt event to Cursor JSON format
 ///
-/// This event serves dual purpose:
-/// - SessionStart: First prompt in session
-/// - PrePrompt: Every prompt (including first)
+/// Maps PrePrompt event responses to Cursor's beforeSubmitPrompt format.
 ///
-/// Both events have the same Cursor JSON format since Cursor doesn't
-/// support prompt modification - it can only block or allow.
+/// LIMITATION: Cursor's beforeSubmitPrompt can only BLOCK or ALLOW prompts.
+/// It does NOT support modifying the prompt text (no modifiedPrompt field).
+/// If the flow returns a modified_prompt in context, it will be IGNORED.
+///
+/// Supported use cases:
+/// - Validation workflows (block prompts that don't meet requirements)
+/// - Enforcement (require certain conditions before agent runs)
+/// - Warnings (show messages to user based on prompt analysis)
+///
+/// NOT supported:
+/// - Context injection (prepending/appending content to prompts)
+/// - Prompt rewriting
 fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
     // Blocking - combine messages and context for user
     if response.decision.is_block() {
@@ -223,6 +247,7 @@ fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
 
     // Success - allow prompt to continue
     // Note: Cursor doesn't accept additional fields on success
+    // Note: Any modified_prompt in response.context is IGNORED (not supported by Cursor)
     CursorResponse {
         json_value: Some(json!({
             "continue": true
