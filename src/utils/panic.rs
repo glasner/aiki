@@ -33,7 +33,7 @@ pub fn install_acp_panic_hook() {
 /// Write formatted panic report to a writer (file or stderr)
 fn write_panic_report(
     writer: &mut dyn Write,
-    panic_info: &std::panic::PanicInfo,
+    panic_info: &std::panic::PanicHookInfo,
 ) -> std::io::Result<()> {
     writeln!(
         writer,

@@ -300,29 +300,6 @@ impl FlowEngine {
         }
     }
 
-    /// Execute a single statement
-    fn execute_statement(statement: &FlowStatement, state: &mut AikiState) -> Result<FlowResult> {
-        match statement {
-            FlowStatement::If(if_stmt) => Self::execute_if(if_stmt, state),
-            FlowStatement::Switch(switch_stmt) => Self::execute_switch(switch_stmt, state),
-            FlowStatement::Action(action) => {
-                let result = Self::execute_action(action, state)?;
-
-                // Store action results for reference by subsequent actions
-                Self::store_action_result(action, &result, state);
-
-                // Handle action failures with on_failure behavior
-                if !result.success {
-                    let (flow_result, _timing) =
-                        Self::handle_action_failure(action, &result, state)?;
-                    Ok(flow_result)
-                } else {
-                    Ok(FlowResult::Success)
-                }
-            }
-        }
-    }
-
     /// Execute a single action
     fn execute_action(action: &Action, state: &mut AikiState) -> Result<ActionResult> {
         match action {
@@ -357,9 +334,13 @@ impl FlowEngine {
             Action::Context(context_action) => &context_action.on_failure,
             Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
-            Action::Log(_) | Action::Continue(_) => {
-                // These actions don't fail
+            Action::Log(_) => {
+                // Log action doesn't fail
                 return Ok((FlowResult::Success, Vec::new()));
+            }
+            Action::Continue(_) => {
+                // Continue action "failed" - return FailedContinue
+                return Ok((FlowResult::FailedContinue, Vec::new()));
             }
             Action::Stop(_) => {
                 // Stop action failed - return FailedStop
@@ -691,14 +672,14 @@ impl FlowEngine {
         } else {
             "Action triggered continue (no message provided)".to_string()
         };
-        state.add_failure(crate::handlers::Failure(failure_text));
+        state.add_failure(crate::handlers::Failure(failure_text.clone()));
 
-        // Return success - the on_failure handler will translate this to FailedContinue
+        // Return failure to trigger continue behavior through handle_action_failure
         Ok(ActionResult {
-            success: true,
+            success: false,
             exit_code: Some(0),
             stdout: String::new(),
-            stderr: String::new(),
+            stderr: failure_text,
         })
     }
 
@@ -1113,42 +1094,6 @@ impl FlowEngine {
         Ok((flow_result, timing.statement_timings))
     }
 
-    /// Execute a conditional if/then/else statement
-    fn execute_if(stmt: &IfStatement, state: &mut AikiState) -> Result<FlowResult> {
-        // Evaluate the condition
-        let condition_result = Self::evaluate_condition(&stmt.condition, state)?;
-
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[flows] If condition '{}' evaluated to: {}",
-                stmt.condition, condition_result
-            );
-        }
-
-        // Execute the appropriate branch
-        let statements_to_execute = if condition_result {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Executing 'then' branch");
-            }
-            &stmt.then
-        } else if let Some(else_statements) = &stmt.else_ {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Executing 'else' branch");
-            }
-            else_statements
-        } else {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] No else branch, condition false - no-op");
-            }
-            // No else branch and condition is false - treat as success (no-op)
-            return Ok(FlowResult::Success);
-        };
-
-        // Execute the branch statements and return the result directly
-        let (flow_result, _timing) = Self::execute_statements(statements_to_execute, state)?;
-        Ok(flow_result)
-    }
-
     /// Execute a switch/case statement with timing
     fn execute_switch_with_timing(
         stmt: &SwitchStatement,
@@ -1193,49 +1138,6 @@ impl FlowEngine {
         // Execute the matched case statements and return the result with timings
         let (flow_result, timing) = Self::execute_statements(statements_to_execute, state)?;
         Ok((flow_result, timing.statement_timings))
-    }
-
-    /// Execute a switch/case statement
-    fn execute_switch(stmt: &SwitchStatement, state: &mut AikiState) -> Result<FlowResult> {
-        // Evaluate the switch expression
-        let mut resolver = Self::create_resolver(state);
-        let switch_value = resolver.resolve(&stmt.expression);
-
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[flows] Switch expression '{}' evaluated to: {}",
-                stmt.expression, switch_value
-            );
-        }
-
-        // Find matching case
-        let statements_to_execute = if let Some(case_statements) = stmt.cases.get(&switch_value) {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Switch matched case: {}", switch_value);
-            }
-            case_statements
-        } else if let Some(default_statements) = &stmt.default {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
-                    "[flows] Switch using default case (no match for '{}')",
-                    switch_value
-                );
-            }
-            default_statements
-        } else {
-            // No match and no default - treat as success (no-op)
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
-                    "[flows] Switch: no match for '{}' and no default case",
-                    switch_value
-                );
-            }
-            return Ok(FlowResult::Success);
-        };
-
-        // Execute the matched case statements and return the result directly
-        let (flow_result, _timing) = Self::execute_statements(statements_to_execute, state)?;
-        Ok(flow_result)
     }
 
     /// Evaluate a condition expression
@@ -1829,16 +1731,6 @@ fn parse_author(author: &str) -> Result<(Option<String>, Option<String>)> {
         "Invalid author format '{}'. Expected 'Name <email>'",
         author
     )))
-}
-
-/// Execute command with timeout using direct argv (no shell invocation)
-fn execute_with_timeout_argv(
-    program: &str,
-    args: &[String],
-    cwd: &std::path::Path,
-    timeout: Duration,
-) -> Result<std::process::Output> {
-    execute_with_timeout_argv_with_env(program, args, cwd, timeout, None, None)
 }
 
 /// Execute command with timeout using direct argv and optional environment variables
@@ -3286,8 +3178,8 @@ mod tests {
         let mut state = AikiState::new(create_test_event());
         let (result, _timing) = execute_actions(&actions, &mut state).unwrap();
 
-        // Should return Success (standalone continue action succeeds)
-        assert!(matches!(result, FlowResult::Success));
+        // Should return FailedContinue (standalone continue action records a failure)
+        assert!(matches!(result, FlowResult::FailedContinue));
 
         // Both actions should execute
         assert_eq!(
