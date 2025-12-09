@@ -1635,7 +1635,6 @@ fn handle_post_response(
 
     Ok(())
 }
-
 /// Fire PreFileChange event before file-modifying tool executes
 ///
 /// This is called when we intercept a session/request_permission for
