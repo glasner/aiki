@@ -82,7 +82,7 @@ if !session_id.is_empty() {
 
 10. **`test_end_turn_with_accumulated_text`**
     - Tests the complete flow: prompt → chunks → end_turn
-    - Validates that accumulated text is available for PostResponse event
+    - Validates that accumulated text is available for SessionEnd event
 
 11. **`test_session_update_without_agent_message_chunk`**
     - Tests that non-text updates (tool_call, etc.) don't affect accumulator
@@ -139,8 +139,8 @@ These unit tests validate the fix at the logic level. For complete validation, c
    - Accepts new prompt
    - Validates response text doesn't contain old chunks
 
-2. **PostResponse event test**:
-   - Fire PostResponse with accumulated text
+2. **SessionEnd event test**:
+   - Fire SessionEnd with accumulated text
    - Validate autoreply contains correct text
    - Ensure no stale text from previous turns
 
@@ -230,7 +230,7 @@ To manually validate the fix under a real ACP session:
 4. **How to observe**:
    - Enable debug logging: `export AIKI_DEBUG=1`
    - Look for log lines: `[acp] Fired PrePrompt event for session: {id}, modified: false`
-   - Check PostResponse autoreply (if using flows) doesn't contain stale text
+   - Check SessionEnd autoreply (if using flows) doesn't contain stale text
 
 ## Conclusion
 

@@ -310,7 +310,7 @@ fn test_end_turn_with_accumulated_text() {
     let final_text = accumulator.get(session_id);
     assert_eq!(final_text, "I've analyzed your code and found 3 issues.");
 
-    // After PostResponse event, accumulator would be cleared for this session
+    // After SessionEnd event, accumulator would be cleared for this session
     accumulator.clear(session_id);
     assert_eq!(accumulator.get(session_id), "");
 }
@@ -403,7 +403,7 @@ fn test_full_scenario_cancelled_prompt_then_new_prompt() {
     accumulator.append(session_id, "I see that you're using ");
 
     // User presses Ctrl-C (cancels) or agent errors out
-    // NO end_turn is sent, so PostResponse never fires
+    // NO end_turn is sent, so SessionEnd never fires
     // Stale text is left in accumulator: "I'll refactor this code. First, let me analyze..."
 
     let stale_text = accumulator.get(session_id);
@@ -469,7 +469,7 @@ fn test_multiple_cancelled_prompts_no_accumulation() {
 }
 
 /// Test that request tracking happens BEFORE handle_session_prompt processing
-/// This ensures PostResponse fires even when PrePrompt processing fails (graceful degradation)
+/// This ensures SessionEnd fires even when PrePrompt processing fails (graceful degradation)
 #[test]
 fn test_request_tracked_before_fallible_work() {
     // Simulate the tracking flow from the fixed code:
@@ -585,9 +585,9 @@ fn test_request_tracked_before_fallible_work() {
     assert!(tracked_requests.contains("\"req-badjson-789\""));
 }
 
-/// Test that PostResponse cleanup happens for tracked requests even on errors
+/// Test that SessionEnd cleanup happens for tracked requests even on errors
 #[test]
-fn test_post_response_cleanup_after_failed_preprompt() {
+fn test_session_end_cleanup_after_failed_preprompt() {
     // Simulate the flow: track request → PrePrompt fails → agent responds → cleanup
     let mut prompt_requests: HashMap<String, String> = HashMap::new();
 
@@ -627,7 +627,7 @@ fn test_post_response_cleanup_after_failed_preprompt() {
         assert!(session.is_some()); // Found it!
         assert_eq!(session.unwrap(), session_id);
 
-        // PostResponse would fire here (even though PrePrompt failed)
+        // SessionEnd would fire here (even though PrePrompt failed)
     }
 
     // Verify cleanup happened

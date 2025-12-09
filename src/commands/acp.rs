@@ -55,7 +55,7 @@
 //! - **Owns all proxy state** (client info, agent info, cwd, tool call contexts)
 //! - Receives metadata updates from IDE→Agent thread via channel
 //! - Reads JSON-RPC messages from agent (stdout)
-//! - Fires `SessionStart`, `PostResponse`, `PostFileChange` events
+//! - Fires `SessionStart`, `SessionEnd`, `PostFileChange` events
 //! - Tracks response text accumulation per session
 //! - Detects autoreplies from flows and queues them via autoreply channel
 //! - Forwards messages to IDE (stdout)
@@ -96,7 +96,7 @@
 //! - **PrePrompt**: Before `session/prompt` is forwarded to agent (allows context injection)
 //! - **PreFileChange**: Before `session/request_permission` for file-modifying tools
 //! - **PostFileChange**: When tool calls complete (from `session/update` notifications)
-//! - **PostResponse**: When agent completes a turn (`stopReason: end_turn`)
+//! - **SessionEnd**: When agent completes a turn (`stopReason: end_turn`)
 //!
 //! # Example Flow
 //!
@@ -106,7 +106,7 @@
 //! 4. Agent responds with `sessionId` → Agent→IDE thread fires `SessionStart` event
 //! 5. IDE sends `session/prompt` → IDE→Agent thread fires `PrePrompt` event
 //! 6. Agent sends `session/update` chunks → Agent→IDE thread accumulates response text
-//! 7. Agent completes turn → Agent→IDE thread fires `PostResponse` event
+//! 7. Agent completes turn → Agent→IDE thread fires `SessionEnd` event
 //! 8. Flow returns autoreply → Agent→IDE thread queues it via autoreply channel
 //! 9. Autoreply forwarder sends it to agent stdin
 //! 10. Process repeats
@@ -177,7 +177,7 @@ enum StateMessage {
     SetClientInfo(ClientInfo),
     /// Update working directory from session/new or session/load
     SetWorkingDirectory(PathBuf),
-    /// Track session/prompt request for PostResponse event matching
+    /// Track session/prompt request for SessionEnd event matching
     TrackPrompt {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
         session_id: SessionId,
@@ -312,7 +312,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let (metadata_tx, metadata_rx) = mpsc::channel::<StateMessage>();
 
     // Create channel for autoreplies
-    // Agent→IDE thread detects PostResponse and sends autoreply requests
+    // Agent→IDE thread detects SessionEnd and sends autoreply requests
     // IDE→Agent thread receives and forwards them to agent
     let (autoreply_tx, autoreply_rx) = mpsc::channel::<AutoreplyMessage>();
 
@@ -512,7 +512,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let session_id = session_id(session_id_str);
 
                                     // Track this prompt request BEFORE any fallible work
-                                    // This ensures PostResponse fires even if PrePrompt processing fails (graceful degradation)
+                                    // This ensures SessionEnd fires even if PrePrompt processing fails (graceful degradation)
                                     if let Some(request_id) = &msg.id {
                                         let _ = metadata_tx_clone.send(StateMessage::TrackPrompt {
                                             request_id: request_id.clone(),
@@ -543,7 +543,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 ) {
                                     eprintln!("Warning: Failed to handle session/prompt: {}", e);
                                     // On error, forward original message
-                                    // PostResponse will still fire because we tracked the request above
+                                    // SessionEnd will still fire because we tracked the request above
                                     let data = format!("{}\n", line).into_bytes();
                                     {
                                         // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
@@ -602,7 +602,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let mut cwd: Option<PathBuf> = None;
     let mut tool_call_contexts: HashMap<ToolCallId, ToolCallContext> = HashMap::new();
 
-    // Track prompt requests for PostResponse event
+    // Track prompt requests for SessionEnd event
     // Key is JsonRpcId (normalized request_id), value is session_id
     let mut prompt_requests: HashMap<JsonRpcId, SessionId> = HashMap::new();
 
@@ -727,15 +727,15 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                 // Always remove the prompt tracking entry to prevent memory leaks
                                 if let Some(session_id) = prompt_requests.remove(&request_id) {
-                                    // Fire PostResponse event only for successful end_turn
+                                    // Fire SessionEnd event only for successful end_turn
                                     if stop_reason == "end_turn" {
                                         // Get accumulated response text for this session
                                         let response_text = response_accumulator
                                             .remove(&session_id)
                                             .unwrap_or_default();
 
-                                        // Fire PostResponse event
-                                        if let Err(e) = handle_post_response(
+                                        // Fire SessionEnd event
+                                        if let Err(e) = handle_session_end(
                                             &session_id,
                                             &validated_agent_type,
                                             &cwd,
@@ -746,13 +746,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                             &mut prompt_requests,
                                         ) {
                                             eprintln!(
-                                                "Warning: Failed to handle PostResponse: {}",
+                                                "Warning: Failed to handle SessionEnd: {}",
                                                 e
                                             );
                                         }
                                     } else {
                                         // Non-end_turn stopReason (max_tokens, refusal, cancelled, etc.)
-                                        // Clean up accumulated response but don't fire PostResponse
+                                        // Clean up accumulated response but don't fire SessionEnd
                                         response_accumulator.remove(&session_id);
 
                                         if std::env::var("AIKI_DEBUG").is_ok() {
@@ -1502,12 +1502,12 @@ fn handle_session_prompt(
     Ok(())
 }
 
-/// Handle PostResponse event and autoreply
+/// Handle SessionEnd event and autoreply
 ///
 /// Fires when the agent completes a turn (stopReason: end_turn).
-/// Dispatches PostResponse event to flows, and if they return an autoreply,
+/// Dispatches SessionEnd event to flows, and if they return an autoreply,
 /// sends it back to the agent (up to MAX_AUTOREPLIES times per session).
-fn handle_post_response(
+fn handle_session_end(
     session_id: &SessionId,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
