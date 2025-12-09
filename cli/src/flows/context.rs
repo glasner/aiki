@@ -1,7 +1,7 @@
 //! Context assembly system for building prompts, autoreplies, and commit messages.
 //!
 //! This module provides a unified syntax for prepending and appending content to messages
-//! across different event types (PrePrompt, PostResponse, PrepareCommitMessage).
+//! across different event types (PrePrompt, SessionEnd, PrepareCommitMessage).
 //!
 //! # Core Types
 //!
@@ -927,7 +927,7 @@ mod assembler_tests {
 
     #[test]
     fn test_build_with_double_newline_separator() {
-        // PrePrompt and PostResponse use double-newline separator
+        // PrePrompt and SessionEnd use double-newline separator
         let mut assembler = ContextAssembler::new(Some("middle".to_string()), "\n\n");
 
         let chunk = ContextChunk {

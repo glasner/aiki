@@ -28,7 +28,7 @@ PostFileChange:
         else:
           - stop: "Fatal error"
 
-PostResponse:
+SessionEnd:
   - if: $event.modified_files != ""
     then:
       - switch: $event.response

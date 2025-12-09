@@ -103,7 +103,7 @@ fn test_parse_action_with_on_failure_statements() {
 name: test-flow
 version: "1"
 
-PostResponse:
+SessionEnd:
   - shell: "risky-command"
     on_failure:
       - if: "$EXIT_CODE == 1"
@@ -115,7 +115,7 @@ PostResponse:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.post_response[0] {
+    match &flow.session_end[0] {
         FlowStatement::Action(Action::Shell(shell_action)) => {
             match &shell_action.on_failure {
                 aiki::flows::types::OnFailure::Statements(stmts) => {

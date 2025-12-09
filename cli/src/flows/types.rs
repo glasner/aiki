@@ -103,9 +103,9 @@ pub struct Flow {
     #[serde(rename = "PostFileChange", default)]
     pub post_file_change: Vec<FlowStatement>,
 
-    /// PostResponse event handler (after agent completes its response)
-    #[serde(rename = "PostResponse", default)]
-    pub post_response: Vec<FlowStatement>,
+    /// SessionEnd event handler (after agent session ends)
+    #[serde(rename = "SessionEnd", default)]
+    pub session_end: Vec<FlowStatement>,
 
     /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "PrepareCommitMessage", default)]
@@ -157,7 +157,7 @@ pub enum Action {
     Log(LogAction),
     /// Context injection (for PrePrompt events)
     Context(ContextAction),
-    /// Autoreply (for PostResponse events)
+    /// Autoreply (for SessionEnd events)
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),

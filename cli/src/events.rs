@@ -88,7 +88,7 @@ pub struct AikiPrepareCommitMessageEvent {
     pub commit_msg_file: Option<PathBuf>,
 }
 
-/// Post-response event (after agent completes its response)
+/// Post-response event (after agent response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPostResponseEvent {
     pub agent_type: AgentType,
@@ -114,7 +114,7 @@ pub enum AikiEvent {
     PreFileChange(AikiPreFileChangeEvent),
     /// After file modification (maps to PostToolUse, afterFileEdit)
     PostFileChange(AikiPostFileChangeEvent),
-    /// After agent completes its response (allows validation and autoreply)
+    /// Post-response (after agent response, allows validation and autoreply)
     PostResponse(AikiPostResponseEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),

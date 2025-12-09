@@ -325,10 +325,10 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     })
 }
 
-/// Handle post-response event (after agent completes its response)
+/// Handle post-response event (after agent generates response)
 ///
-/// This event fires after the agent finishes generating its response, allowing flows
-/// to validate output, detect errors, and optionally send an autoreply to the agent.
+/// This event fires when the agent finishes generating its response,
+/// allowing flows to validate output, detect errors, and optionally send an autoreply to the agent.
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse> {
@@ -351,7 +351,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
 
     // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
     let (_flow_result, _timing) =
-        match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
+        match FlowEngine::execute_statements(&core_flow.session_end, &mut state) {
             Ok(result) => result,
             Err(e) => {
                 // Flow execution failed - log warning and skip autoreply

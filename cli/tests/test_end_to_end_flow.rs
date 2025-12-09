@@ -53,7 +53,7 @@ PostFileChange:
         else:
           - stop: "Unexpected error"
 
-PostResponse:
+SessionEnd:
   - if: "$event.modified_files != ''"
     then:
       - switch: "$event.agent_type"

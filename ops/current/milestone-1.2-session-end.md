@@ -1,4 +1,4 @@
-# Milestone 1.2: PostResponse Event
+# Milestone 1.2: SessionEnd Event
 
 **Status**: 🔴 Not Started  
 **Priority**: High (blocks task-based validation workflows)  
@@ -7,7 +7,7 @@
 
 ## Overview
 
-The PostResponse event fires after the agent completes its response, allowing flows to validate output, detect errors, and decide whether to send an autoreply.
+The SessionEnd event fires after the agent completes its response and the session ends, allowing flows to validate output, detect errors, and decide whether to send an autoreply.
 
 **Key Decision:** Use the shared MessageChunk/MessageAssembler infrastructure for building autoreply content.
 
@@ -19,14 +19,14 @@ The PostResponse event fires after the agent completes its response, allowing fl
 
 ### 1. Event Timing
 
-PostResponse fires after the agent finishes generating its response but before showing it to the user:
+SessionEnd fires after the agent finishes generating its response but before showing it to the user:
 
 ```
 User sends prompt
     ↓
 Agent generates response
     ↓
-PostResponse event fires  ← Flow can validate/react
+SessionEnd event fires  ← Flow can validate/react
     ↓
 Response shown to user (potentially with autoreply prepended/appended)
 ```
@@ -36,7 +36,7 @@ Response shown to user (potentially with autoreply prepended/appended)
 The `autoreply:` action sends an additional message to the agent:
 
 ```yaml
-PostResponse:
+SessionEnd:
   # Short form - defaults to append
   - let: errors = self.count_typescript_errors
   - if: $errors > 0
@@ -65,7 +65,7 @@ PostResponse:
 Can use multiple `autoreply:` actions in the same flow:
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: ts_errors = self.count_typescript_errors
   - if: $ts_errors > 0
     then:
@@ -102,7 +102,7 @@ use crate::flows::{MessageChunk, MessageAssembler};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
-pub struct PostResponseEvent {
+pub struct SessionEndEvent {
     pub response: String,                      // Agent's original response (immutable)
     pub autoreply_assembler: MessageAssembler, // Owns MessageAssembler for building autoreply
     pub session_id: Option<String>,            // Current session
@@ -111,7 +111,7 @@ pub struct PostResponseEvent {
     pub modified_files: Vec<PathBuf>,          // Files modified by agent
 }
 
-impl PostResponseEvent {
+impl SessionEndEvent {
     pub fn new(response: String) -> Self {
         Self {
             response,
@@ -139,8 +139,8 @@ impl PostResponseEvent {
 
 **Event lifecycle:**
 1. Agent completes response
-2. `PostResponseEvent` created with response and empty `MessageAssembler`
-3. Flow engine executes PostResponse flow
+2. `SessionEndEvent` created with response and empty `MessageAssembler`
+3. Flow engine executes SessionEnd flow
 4. `autoreply:` actions parsed as MessageChunk, added to `autoreply_assembler`
 5. Handler calls `build_autoreply()` to assemble final message
 6. If non-empty, autoreply sent to agent
@@ -152,7 +152,7 @@ impl PostResponseEvent {
 ### Use Case 1: Error Detection
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: rust_errors = self.count_rust_errors
   - if: $rust_errors > 0
     then:
@@ -166,7 +166,7 @@ PostResponse:
 ### Use Case 2: Lint Warnings
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: eslint_warnings = self.count_eslint_warnings
   - if: $eslint_warnings > 0 && $eslint_warnings < 10
     then:
@@ -184,7 +184,7 @@ PostResponse:
 ### Use Case 3: Test Validation
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: test_results = self.run_tests
   - if: $test_results.failed > 0
     then:
@@ -201,7 +201,7 @@ PostResponse:
 ### Use Case 4: Security Checks
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: secrets = self.detect_secrets_in_response
   - if: $secrets | length > 0
     then:
@@ -275,7 +275,7 @@ PostResponse:
 The PostResponse event provides these helper functions:
 
 ```rust
-impl PostResponseEvent {
+impl SessionEndEvent {
     // Error detection
     pub fn count_typescript_errors(&self) -> usize { /* ... */ }
     pub fn count_rust_errors(&self) -> usize { /* ... */ }
@@ -298,7 +298,7 @@ impl PostResponseEvent {
 
 These are available in flows as:
 ```yaml
-PostResponse:
+SessionEnd:
   - let: ts_errors = self.count_typescript_errors
   - let: warnings = self.count_eslint_warnings
   - let: test_results = self.run_tests
@@ -312,10 +312,10 @@ PostResponse:
 
 ### Core Engine
 
-- [ ] Add `PostResponseEvent` struct to `cli/src/events.rs` (owns `MessageAssembler`)
+- [ ] Add `SessionEndEvent` struct to `cli/src/events.rs` (owns `MessageAssembler`)
 - [ ] Add `autoreply:` action to flow DSL (parses as `MessageChunk`)
 - [ ] Implement `cli/src/flows/actions/autoreply.rs` that creates MessageChunk from YAML
-- [ ] Add PostResponse handler: `cli/src/flows/handlers/post_response.rs` (calls `event.add_autoreply(chunk)`)
+- [ ] Add SessionEnd handler: `cli/src/flows/handlers/session_end.rs` (calls `event.add_autoreply(chunk)`)
 - [ ] Implement error handling (graceful degradation: skip autoreply on error)
 - [ ] Hook into vendor response lifecycle
 
@@ -340,11 +340,11 @@ PostResponse:
 ### Testing
 
 - [ ] Unit tests: MessageChunk parsing from YAML `autoreply:` action
-- [ ] Unit tests: PostResponseEvent owns MessageAssembler correctly
+- [ ] Unit tests: SessionEndEvent owns MessageAssembler correctly
 - [ ] Unit tests: Multiple autoreply chunks accumulate correctly
 - [ ] Unit tests: Helper functions (error counting, test parsing)
 - [ ] Unit tests: Error handling (helper function crashes, timeouts)
-- [ ] Integration tests: PostResponse flow execution
+- [ ] Integration tests: SessionEnd flow execution
 - [ ] Integration tests: Multiple `autoreply:` actions
 - [ ] Integration tests: Conditional autoreplies
 - [ ] Integration tests: Flow error triggers graceful degradation
@@ -354,21 +354,21 @@ PostResponse:
 
 ### Documentation
 
-- [ ] Tutorial: "Validating Agent Output with PostResponse"
+- [ ] Tutorial: "Validating Agent Output with SessionEnd"
 - [ ] Cookbook: Common patterns (errors, warnings, tests, security)
-- [ ] Reference: PostResponse DSL syntax
+- [ ] Reference: SessionEnd DSL syntax
 - [ ] Reference: Helper function API
-- [ ] Examples: Real-world PostResponse flows
+- [ ] Examples: Real-world SessionEnd flows
 
 ---
 
 ## Success Criteria
 
-✅ PostResponse fires after agent completes response (all vendor integrations)  
+✅ SessionEnd fires after agent completes response (all vendor integrations)  
 ✅ Short form `autoreply: "string"` works  
 ✅ Explicit form `autoreply: { prepend: [...], append: [...] }` works  
 ✅ MessageChunk correctly parses both forms from YAML  
-✅ PostResponseEvent owns MessageAssembler instance  
+✅ SessionEndEvent owns MessageAssembler instance  
 ✅ Multiple autoreply chunks accumulate correctly  
 ✅ Autoreply sent to agent only if non-empty  
 ✅ Helper functions work correctly (error counting, test parsing)  
@@ -384,14 +384,14 @@ PostResponse:
 
 **Strategy: Graceful Degradation**
 
-If a PostResponse flow fails, the agent's response is still shown to the user. The autoreply is skipped, but the workflow continues.
+If a SessionEnd flow fails, the agent's response is still shown to the user. The autoreply is skipped, but the workflow continues.
 
 ### Common Error Scenarios
 
 #### 1. Helper Function Crash
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: ts_errors = self.count_typescript_errors  # tsc not found or crashes
   - if: $ts_errors > 0
     then:
@@ -402,14 +402,14 @@ PostResponse:
 ```
 [Agent's response shown normally]
 
-⚠️ PostResponse flow failed: Helper function 'count_typescript_errors' crashed: tsc command not found
+⚠️ SessionEnd flow failed: Helper function 'count_typescript_errors' crashed: tsc command not found
 No autoreply generated.
 ```
 
 #### 2. Helper Function Timeout
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: test_results = self.run_tests  # Tests run for >30s
   - if: $test_results.failed > 0
     then:
@@ -420,14 +420,14 @@ PostResponse:
 ```
 [Agent's response shown normally]
 
-⚠️ PostResponse flow failed: Helper function 'run_tests' timed out after 30s
+⚠️ SessionEnd flow failed: Helper function 'run_tests' timed out after 30s
 No autoreply generated.
 ```
 
 #### 3. Invalid YAML Syntax
 
 ```yaml
-PostResponse:
+SessionEnd:
   - autoreply:
       prepend:
         - "Text"
@@ -438,14 +438,14 @@ PostResponse:
 ```
 [Agent's response shown normally]
 
-⚠️ PostResponse flow failed: Invalid YAML: expected string, got number
+⚠️ SessionEnd flow failed: Invalid YAML: expected string, got number
 No autoreply generated.
 ```
 
 #### 4. MessageChunk Validation Error
 
 ```yaml
-PostResponse:
+SessionEnd:
   - autoreply: {}  # Invalid: empty object
 ```
 
@@ -453,15 +453,15 @@ PostResponse:
 ```
 [Agent's response shown normally]
 
-⚠️ PostResponse flow failed: MessageChunk must have at least prepend or append
+⚠️ SessionEnd flow failed: MessageChunk must have at least prepend or append
 No autoreply generated.
 ```
 
 ### Implementation Pattern
 
 ```rust
-impl PostResponseHandler {
-    pub fn execute(&self, event: &mut PostResponseEvent, flow: &Flow) -> Result<()> {
+impl SessionEndHandler {
+    pub fn execute(&self, event: &mut SessionEndEvent, flow: &Flow) -> Result<()> {
         match self.execute_flow(event, flow) {
             Ok(()) => {
                 // Flow succeeded - use autoreply if any
@@ -494,7 +494,7 @@ impl PostResponseHandler {
 Helper functions should handle errors internally and return safe defaults:
 
 ```rust
-impl PostResponseEvent {
+impl SessionEndEvent {
     pub fn count_typescript_errors(&self) -> Result<usize> {
         let output = Command::new("tsc")
             .arg("--noEmit")
@@ -543,7 +543,7 @@ error_handling = "strict"
 ## Example: Complete Error Validation Flow
 
 ```yaml
-PostResponse:
+SessionEnd:
   # Check TypeScript errors
   - let: ts_errors = self.count_typescript_errors
   - if: $ts_errors > 0
@@ -656,7 +656,7 @@ pub fn execute_autoreply(value: &Value, event: &mut PostResponseEvent) -> Result
 Instead of text autoreplies, create structured tasks. **This is Milestone 1.4**.
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: errors = self.count_typescript_errors
   - for: error in $errors
     then:
@@ -671,7 +671,7 @@ PostResponse:
 Only send autoreply if agent hasn't seen similar error recently:
 
 ```yaml
-PostResponse:
+SessionEnd:
   - let: errors = self.count_rust_errors
   - if: $errors > 0 && !self.recently_notified_about("rust_errors")
     then:
@@ -683,7 +683,7 @@ PostResponse:
 Reusable templates for common scenarios:
 
 ```yaml
-PostResponse:
+SessionEnd:
   - if: self.has_build_errors
     then:
       autoreply.template: "build-errors"  # Load from .aiki/templates/
@@ -695,7 +695,7 @@ PostResponse:
 
 - **Depends on:** Milestone 1.0 (MessageChunk/MessageAssembler), Milestone 1.1 (PrePrompt pattern)
 - **Enables:** Milestone 1.4 (Task System) - provides event hook for task creation
-- **Parallel to:** Milestone 1.4 (Flow Composition) - can be developed independently
+- **Parallel to:** Milestone 1.3 (Flow Composition) - can be developed independently
 
 ---
 

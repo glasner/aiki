@@ -6,7 +6,7 @@ use chrono::Utc;
 use std::path::PathBuf;
 
 #[test]
-fn test_post_response_event_creation() {
+fn test_session_end_event_creation() {
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
         session_id: Some("test-session".to_string()),
@@ -21,7 +21,7 @@ fn test_post_response_event_creation() {
 }
 
 #[test]
-fn test_post_response_state_initialization() {
+fn test_session_end_state_initialization() {
     let event = AikiPostResponseEvent {
         agent_type: AgentType::Claude,
         session_id: Some("test-session".to_string()),
@@ -33,7 +33,7 @@ fn test_post_response_state_initialization() {
 
     let state = AikiState::new(event);
 
-    // Verify context assembler is initialized for PostResponse events
+    // Verify context assembler is initialized for SessionEnd events
     let context = state.build_context();
     assert!(context.is_some());
     assert_eq!(context.unwrap(), ""); // No chunks added yet, empty autoreply
@@ -54,7 +54,7 @@ fn test_autoreply_simple_flow() {
 
     let mut state = AikiState::new(event);
 
-    // Create a simple context action (for autoreply in PostResponse)
+    // Create a simple context action (for autoreply in SessionEnd)
     let action = Action::Context(ContextAction {
         context: ContextContent::Simple("Please fix the errors above.".to_string()),
         on_failure: aiki::flows::types::OnFailure::default(),
