@@ -27,8 +27,10 @@ atty = "0.2"
 shell-words = "1.1"
 agent-client-protocol = "0.7"
 which = "6.0"
+uuid = { version = "1.0", features = ["v5"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3.0"
+criterion = "0.5"

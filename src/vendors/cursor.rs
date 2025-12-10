@@ -8,7 +8,24 @@ use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
 };
 use crate::handlers::{Decision, HookResponse};
-use crate::provenance::AgentType;
+use crate::provenance::{AgentType, DetectionMethod};
+use crate::session::AikiSession;
+
+/// Create a session for Cursor events
+///
+/// This helper ensures consistent session creation across all Cursor event builders.
+/// Takes the full payload to allow easy extension if we need additional fields in the future.
+/// Extracts `cursor_version` from the payload to populate `agent_version`.
+/// Panics on failure since session creation errors are unrecoverable in the hook context.
+fn create_session(payload: &CursorPayload) -> AikiSession {
+    AikiSession::new(
+        AgentType::Cursor,
+        &payload.session_id,
+        payload.cursor_version.as_deref(),
+        DetectionMethod::Hook,
+    )
+    .expect("Failed to create AikiSession for Cursor")
+}
 
 /// Cursor hook payload structure
 ///
@@ -23,11 +40,22 @@ struct CursorPayload {
     working_directory: String,
     #[serde(rename = "eventName")]
     event_name: String,
+    // Common fields across all hooks
+    #[serde(rename = "cursor_version", default)]
+    cursor_version: Option<String>,
+    #[serde(rename = "conversation_id", default)]
+    conversation_id: String,
+    #[serde(rename = "generation_id", default)]
+    generation_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(rename = "workspace_roots", default)]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "user_email", default)]
+    user_email: Option<String>,
     // beforeSubmitPrompt fields
     #[serde(default)]
     prompt: String,
-    #[serde(rename = "conversation_id", default)]
-    conversation_id: String,
     // beforeMCPExecution fields (TBD - exact structure not yet documented)
     #[serde(rename = "toolName", default)]
     tool_name: String,
@@ -113,8 +141,7 @@ pub fn handle(event_name: &str) -> Result<()> {
 /// The modifiedPrompt field is not supported - only blocking via user_message.
 fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
     AikiEvent::PrePrompt(AikiPrePromptEvent {
-        agent_type: AgentType::Cursor,
-        session_id: Some(payload.session_id),
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
@@ -135,8 +162,7 @@ fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
     }
 
     AikiEvent::PreFileChange(AikiPreFileChangeEvent {
-        agent_type: AgentType::Cursor,
-        session_id: payload.session_id,
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
     })
@@ -144,6 +170,8 @@ fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
 
 /// Build PostFileChange event from afterFileEdit payload
 fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
+    // Create session first before moving any fields
+    let session = create_session(&payload);
     let file_path = payload.file_path;
 
     // Extract edit details from Cursor's edits array for user edit detection
@@ -164,16 +192,11 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
     }
 
     AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-        agent_type: AgentType::Cursor,
-        client_name: None, // Hook-based detection doesn't know client (IDE)
-        client_version: None,
-        agent_version: None,
-        session_id: payload.session_id,
+        session,
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         file_paths: vec![file_path],
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
-        detection_method: crate::provenance::DetectionMethod::Hook,
         edit_details,
     })
 }
@@ -181,8 +204,7 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
 /// Build PostResponse event from stop payload
 fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
     AikiEvent::PostResponse(crate::events::AikiPostResponseEvent {
-        agent_type: AgentType::Cursor,
-        session_id: Some(payload.session_id),
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
         response: String::new(), // Cursor doesn't provide response text in stop hook

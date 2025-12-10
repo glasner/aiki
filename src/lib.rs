@@ -7,6 +7,7 @@ pub mod flows;
 pub mod handlers;
 pub mod jj;
 pub mod provenance;
+pub mod session;
 pub mod utils;
 pub mod verify;
 

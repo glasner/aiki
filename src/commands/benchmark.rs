@@ -115,6 +115,12 @@ pub fn run(flow_name: String, num_edits: usize) -> Result<()> {
         .or_insert_with(|| EventTiming::new("SessionStart".to_string()))
         .add_timing(aiki_init_time.as_secs_f64());
 
+    // Seed session file with fake version to model real-world caching behavior
+    // In production, SessionStart would detect version and cache it in the session file.
+    // Subsequent events would read from cache. We simulate this by writing the session
+    // file after init, so PostFileChange events can use cached version.
+    seed_session_file(&repo_path, "benchmark-session-id", "0.0.0-benchmark")?;
+
     let init_time = start.elapsed();
     println!(
         "  ✓ Git init: {:.1}ms",
@@ -169,9 +175,9 @@ pub fn run(flow_name: String, num_edits: usize) -> Result<()> {
         let mut file = fs::OpenOptions::new().append(true).open(&file_path)?;
         writeln!(file, "    println!(\"Edit {}\");", i)?;
 
-        // Create hook payload
+        // Create hook payload (use same session_id as seeded file)
         let payload = serde_json::json!({
-            "session_id": format!("benchmark-session-{}", i),
+            "session_id": "benchmark-session-id",
             "hook_event_name": "PostToolUse",
             "tool_name": "Edit",
             "tool_input": {
@@ -468,6 +474,28 @@ fn run_command(cwd: &PathBuf, program: &str, args: &[&str]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         )));
     }
+
+    Ok(())
+}
+
+/// Seed session file with a fake version for benchmark
+///
+/// Models real-world behavior where SessionStart creates a session file with
+/// cached agent version, and subsequent events read from this cache.
+fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Result<()> {
+    use crate::provenance::{AgentType, DetectionMethod};
+    use crate::session::AikiSession;
+
+    // Create session with fake version
+    let session = AikiSession::new(
+        AgentType::Claude,
+        session_id,
+        Some(version),
+        DetectionMethod::Hook,
+    )?;
+
+    // Write session file
+    session.file(repo_path).create(repo_path)?;
 
     Ok(())
 }

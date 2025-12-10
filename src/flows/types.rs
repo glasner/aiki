@@ -103,6 +103,10 @@ pub struct Flow {
     #[serde(rename = "PostFileChange", default)]
     pub post_file_change: Vec<FlowStatement>,
 
+    /// PostResponse event handler (after agent response)
+    #[serde(rename = "PostResponse", default)]
+    pub post_response: Vec<FlowStatement>,
+
     /// SessionEnd event handler (after agent session ends)
     #[serde(rename = "SessionEnd", default)]
     pub session_end: Vec<FlowStatement>,

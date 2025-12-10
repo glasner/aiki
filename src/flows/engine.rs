@@ -109,27 +109,36 @@ impl FlowEngine {
                     "event.file_count".to_string(),
                     e.file_paths.len().to_string(),
                 );
-                resolver.add_var("event.session_id".to_string(), e.session_id.clone());
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
             }
             crate::events::AikiEvent::PrePrompt(e) => {
                 resolver.add_var("event.prompt".to_string(), e.prompt.clone());
-                if let Some(ref session_id) = e.session_id {
-                    resolver.add_var("event.session_id".to_string(), session_id.clone());
-                }
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
             }
             crate::events::AikiEvent::PreFileChange(e) => {
-                resolver.add_var("event.session_id".to_string(), e.session_id.clone());
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
             }
             crate::events::AikiEvent::SessionStart(e) => {
-                if let Some(ref session_id) = e.session_id {
-                    resolver.add_var("event.session_id".to_string(), session_id.clone());
-                }
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
             }
             crate::events::AikiEvent::PostResponse(e) => {
                 resolver.add_var("event.response".to_string(), e.response.clone());
-                if let Some(ref session_id) = e.session_id {
-                    resolver.add_var("event.session_id".to_string(), session_id.clone());
-                }
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
                 resolver.add_var(
                     "event.modified_files".to_string(),
                     e.modified_files
@@ -1839,37 +1848,42 @@ mod tests {
     use super::*;
     use crate::events::{AikiEvent, AikiPostFileChangeEvent};
     use crate::provenance::AgentType;
+    use crate::session::AikiSession;
 
     // Helper to create a simple test event
     fn create_test_event() -> AikiEvent {
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test-session".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![],
         })
     }
 
     // Helper to create a test event with custom file_path
     fn create_test_event_with_file(file_path: &str) -> AikiEvent {
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test-session".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec![file_path.to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![],
         })
     }
@@ -3057,10 +3071,16 @@ mod tests {
         use crate::events::{AikiEvent, AikiPrePromptEvent};
 
         // Create PrePrompt event
+        let session = AikiSession::new(
+            crate::provenance::AgentType::Claude,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-            agent_type: crate::provenance::AgentType::Claude,
+            session,
             prompt: "test".to_string(),
-            session_id: None,
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
         });

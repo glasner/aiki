@@ -78,7 +78,7 @@ pub enum AttributionConfidence {
 }
 
 /// Method used to detect the AI agent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DetectionMethod {
     /// ACP (Agent Client Protocol) bidirectional proxy
     ACP,
@@ -118,20 +118,20 @@ impl ProvenanceRecord {
     ///
     /// This constructor extracts all necessary fields from the event and creates
     /// a provenance record with default confidence (High) and the detection
-    /// method from the event.
+    /// method from the session.
     pub fn from_post_file_change_event(event: &crate::events::AikiPostFileChangeEvent) -> Self {
         Self {
             agent: AgentInfo {
-                agent_type: event.agent_type,
-                version: event.agent_version.clone(),
+                agent_type: event.session.agent_type(),
+                version: event.session.agent_version().map(|s| s.to_string()),
                 detected_at: event.timestamp,
                 confidence: AttributionConfidence::High,
-                detection_method: event.detection_method.clone(),
+                detection_method: event.session.detection_method().clone(),
             },
-            client_name: event.client_name.clone(),
-            client_version: event.client_version.clone(),
-            agent_version: event.agent_version.clone(),
-            session_id: event.session_id.clone(),
+            client_name: event.session.client_name().map(|s| s.to_string()),
+            client_version: event.session.client_version().map(|s| s.to_string()),
+            agent_version: event.session.agent_version().map(|s| s.to_string()),
+            session_id: event.session.external_id().to_string(),
             tool_name: event.tool_name.clone(),
             coauthor: None,
         }

@@ -123,6 +123,7 @@ use crate::events::{
 };
 use crate::handlers::HookResponse;
 use crate::provenance::AgentType;
+use crate::session::AikiSession;
 use agent_client_protocol::{
     ContentBlock, SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus,
     ToolCallUpdate, ToolKind,
@@ -1063,6 +1064,21 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
     }
 }
 
+/// Create an AikiSession for ACP protocol tracking
+fn create_session(
+    agent_type: AgentType,
+    session_id: impl Into<String>,
+    agent_version: Option<&str>,
+) -> AikiSession {
+    AikiSession::new(
+        agent_type,
+        session_id,
+        agent_version,
+        crate::provenance::DetectionMethod::ACP,
+    )
+    .expect("Failed to create AikiSession for ACP")
+}
+
 /// Handle session/update notification from agent
 ///
 /// Extracts tool_call information and dispatches provenance recording via event bus.
@@ -1246,13 +1262,6 @@ fn record_post_change_events(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Extract client info fields (optional)
-    let client_name = client_info.as_ref().map(|c| c.name.clone());
-    let client_version = client_info.as_ref().and_then(|c| c.version.clone());
-
-    // Extract agent version (optional)
-    let agent_version = agent_info.as_ref().and_then(|a| a.version.clone());
-
     // Get tool name from kind
     let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
 
@@ -1266,18 +1275,21 @@ fn record_post_change_events(
     // Extract edit details from tool call parameters (if available)
     let edit_details = extract_edit_details(&context);
 
+    // Create session with agent version and client info
+    let agent_version = agent_info.as_ref().and_then(|a| a.version.as_deref());
+    let session = create_session(*agent_type, session_id.to_string(), agent_version)
+        .with_client_info(
+            client_info.as_ref().map(|c| c.name.as_str()),
+            client_info.as_ref().and_then(|c| c.version.as_deref()),
+        );
+
     // Create and dispatch a single event for all affected files
     let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-        agent_type: *agent_type,
-        client_name: client_name.clone(),
-        client_version: client_version.clone(),
-        agent_version: agent_version.clone(),
-        session_id: session_id.to_string(),
+        session,
         tool_name: tool_name.clone(),
         file_paths,
         cwd: working_dir.clone(),
         timestamp: chrono::Utc::now(),
-        detection_method: crate::provenance::DetectionMethod::ACP,
         edit_details,
     });
 
@@ -1399,9 +1411,9 @@ fn handle_session_prompt(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
     // Fire PrePrompt event
+    let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
     let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
-        agent_type: *agent_type,
-        session_id: Some(session_id.to_string()),
+        session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         prompt: original_text.clone(),
@@ -1524,9 +1536,9 @@ fn handle_session_end(
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
     // Fire PostResponse event with accumulated response text
+    let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
     let event = AikiEvent::PostResponse(AikiPostResponseEvent {
-        agent_type: *agent_type,
-        session_id: Some(session_id.to_string()),
+        session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         response: response_text.to_string(),
@@ -1652,9 +1664,9 @@ fn fire_session_start_event(
         .clone();
 
     // Create and dispatch SessionStart event
+    let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
     let event = AikiEvent::SessionStart(AikiStartEvent {
-        agent_type: *agent_type,
-        session_id: Some(session_id.to_string()),
+        session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
     });
@@ -1681,9 +1693,9 @@ fn fire_pre_file_change_event(
         .clone();
 
     // Create and dispatch PreFileChange event
+    let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
     let event = AikiEvent::PreFileChange(crate::events::AikiPreFileChangeEvent {
-        agent_type: *agent_type,
-        session_id: session_id.to_string(),
+        session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
     });

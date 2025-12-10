@@ -161,7 +161,7 @@ pub fn build_metadata(
     }
 
     let message = provenance.to_description();
-    let author = event.agent_type.git_author();
+    let author = event.session.agent_type().git_author();
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
@@ -218,7 +218,7 @@ pub fn build_metadata(
 ///   "message": "[aiki]\nauthor=Name <email>\nauthor_type=human\nsession=session-id\n[/aiki]"
 /// }
 /// ```
-fn build_human_metadata_impl(session_id: &str) -> Result<ActionResult> {
+fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<ActionResult> {
     let git_user = get_git_user().ok_or_else(|| {
         crate::error::AikiError::Other(anyhow::anyhow!(
             "Git user not configured. Run 'git config user.name' and 'git config user.email'"
@@ -230,7 +230,7 @@ fn build_human_metadata_impl(session_id: &str) -> Result<ActionResult> {
         "[aiki]".to_string(),
         format!("author={}", git_user),
         "author_type=human".to_string(),
-        format!("session={}", session_id),
+        format!("session={}", session.external_id()),
     ];
 
     let message = format!("{}\n[/aiki]", lines.join("\n"));
@@ -260,7 +260,7 @@ pub fn build_human_metadata(
     event: &AikiPreFileChangeEvent,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
-    build_human_metadata_impl(&event.session_id)
+    build_human_metadata_impl(&event.session)
 }
 
 /// Build human metadata - works with PostFileChange events
@@ -268,7 +268,7 @@ pub fn build_human_metadata_post(
     event: &AikiPostFileChangeEvent,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
-    build_human_metadata_impl(&event.session_id)
+    build_human_metadata_impl(&event.session)
 }
 
 // =============================================================================
@@ -547,7 +547,7 @@ pub fn prepare_separation(event: &AikiPostFileChangeEvent) -> Result<ActionResul
     // Generate metadata for AI change
     let provenance = ProvenanceRecord::from_post_file_change_event(event);
     let ai_message = provenance.to_description();
-    let ai_author = event.agent_type.git_author();
+    let ai_author = event.session.agent_type().git_author();
 
     // Files that will be separated (have edit details)
     let files_with_edits: HashSet<String> = event
@@ -844,7 +844,7 @@ pub fn separate_edits(event: &AikiPostFileChangeEvent) -> Result<ActionResult> {
     // Generate metadata for AI change
     let provenance = ProvenanceRecord::from_post_file_change_event(event);
     let ai_message = provenance.to_description();
-    let ai_author = event.agent_type.git_author();
+    let ai_author = event.session.agent_type().git_author();
 
     // Files that will be separated (have edit details)
     let files_with_edits: HashSet<String> = event
@@ -1170,6 +1170,7 @@ mod tests {
     use super::*;
     use crate::events::EditDetail;
     use crate::provenance::AgentType;
+    use crate::session::AikiSession;
     use tempfile::TempDir;
 
     // =========================================================================
@@ -1178,17 +1179,19 @@ mod tests {
 
     #[test]
     fn test_build_metadata_with_claude() {
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test-session-123".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test-session-123".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![],
         };
 
@@ -1210,17 +1213,19 @@ mod tests {
 
     #[test]
     fn test_build_metadata_with_cursor() {
+        let session = AikiSession::new(
+            AgentType::Cursor,
+            "cursor-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiPostFileChangeEvent {
-            agent_type: AgentType::Cursor,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "cursor-session".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![],
         };
 
@@ -1241,17 +1246,19 @@ mod tests {
         file_paths: Vec<String>,
         edit_details: Vec<EditDetail>,
     ) -> AikiPostFileChangeEvent {
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths,
             cwd: cwd.to_path_buf(),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details,
         }
     }
@@ -1349,17 +1356,19 @@ mod tests {
     #[test]
     fn test_reconstruct_ai_only_simple() {
         let current_content = "Hello World\nExtra user line";
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![EditDetail::new("test.txt", "", "Hello World")],
         };
 
@@ -1372,17 +1381,19 @@ mod tests {
     #[test]
     fn test_reconstruct_ai_only_revert() {
         let current_content = "Hello"; // User reverted AI's change
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![EditDetail::new("test.txt", "Hello", "Hello World")],
         };
 
