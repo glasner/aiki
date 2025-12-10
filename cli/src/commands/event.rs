@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
+use crate::events::response::{Decision, Failure, HookResponse};
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
-use crate::events::{Decision, Failure, HookResponse};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;

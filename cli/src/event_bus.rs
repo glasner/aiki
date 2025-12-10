@@ -1,5 +1,6 @@
 use crate::error::Result;
-use crate::events::{self, AikiEvent, HookResponse};
+use crate::events::response::HookResponse;
+use crate::events::{self, AikiEvent};
 
 /// Dispatch an event to the appropriate handler
 ///
@@ -73,10 +74,12 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
                     Err(e) => {
                         // SessionEnd failed entirely - log but don't fail PostResponse
                         eprintln!("Warning: SessionEnd dispatch failed: {}", e);
-                        response.failures.push(crate::events::Failure(format!(
-                            "SessionEnd cleanup failed: {}",
-                            e
-                        )));
+                        response
+                            .failures
+                            .push(crate::events::response::Failure(format!(
+                                "SessionEnd cleanup failed: {}",
+                                e
+                            )));
                     }
                 }
             }
