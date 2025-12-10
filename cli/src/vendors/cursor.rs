@@ -7,7 +7,7 @@ use crate::event_bus;
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
 };
-use crate::handlers::{Decision, HookResponse};
+use crate::events::{Decision, HookResponse};
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 

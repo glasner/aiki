@@ -377,15 +377,15 @@ impl FlowEngine {
             OnFailure::Shortcut(shortcut) => match shortcut {
                 OnFailureShortcut::Continue => {
                     eprintln!("[aiki] Action failed but continuing: {}", failure_text);
-                    state.add_failure(crate::handlers::Failure(failure_text));
+                    state.add_failure(crate::events::Failure(failure_text));
                     Ok((FlowResult::FailedContinue, Vec::new()))
                 }
                 OnFailureShortcut::Stop => {
-                    state.add_failure(crate::handlers::Failure(failure_text));
+                    state.add_failure(crate::events::Failure(failure_text));
                     Ok((FlowResult::FailedStop, Vec::new()))
                 }
                 OnFailureShortcut::Block => {
-                    state.add_failure(crate::handlers::Failure(failure_text));
+                    state.add_failure(crate::events::Failure(failure_text));
                     Ok((FlowResult::FailedBlock, Vec::new()))
                 }
             },
@@ -395,7 +395,7 @@ impl FlowEngine {
                         "[aiki] Action failed with empty on_failure list, continuing: {}",
                         failure_text
                     );
-                    state.add_failure(crate::handlers::Failure(failure_text));
+                    state.add_failure(crate::events::Failure(failure_text));
                     return Ok((FlowResult::FailedContinue, Vec::new()));
                 }
 
@@ -422,7 +422,7 @@ impl FlowEngine {
                 // This ensures custom handlers (like simple logging) don't silently drop provenance
                 let failures_after = state.failures().len();
                 if failures_after == failures_before {
-                    state.add_failure(crate::handlers::Failure(failure_text));
+                    state.add_failure(crate::events::Failure(failure_text));
                 }
 
                 // If the on_failure handler succeeded (returned Success),
@@ -687,7 +687,7 @@ impl FlowEngine {
         } else {
             "Action triggered continue (no message provided)".to_string()
         };
-        state.add_failure(crate::handlers::Failure(failure_text.clone()));
+        state.add_failure(crate::events::Failure(failure_text.clone()));
 
         // Return failure to trigger continue behavior through handle_action_failure
         Ok(ActionResult {
@@ -715,7 +715,7 @@ impl FlowEngine {
         } else {
             "Action triggered stop (no message provided)".to_string()
         };
-        state.add_failure(crate::handlers::Failure(failure_text.clone()));
+        state.add_failure(crate::events::Failure(failure_text.clone()));
 
         // Return failure to trigger stop behavior
         Ok(ActionResult {
@@ -743,7 +743,7 @@ impl FlowEngine {
         } else {
             "Action triggered block (no message provided)".to_string()
         };
-        state.add_failure(crate::handlers::Failure(failure_text.clone()));
+        state.add_failure(crate::events::Failure(failure_text.clone()));
 
         // Return failure to trigger block behavior
         Ok(ActionResult {

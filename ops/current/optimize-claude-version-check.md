@@ -182,22 +182,6 @@ fn resolve_via_which() -> Option<String> {
 }
 ```
 
-### Caching (Optional)
-
-If version is checked multiple times per process:
-
-```rust
-use std::sync::OnceLock;
-
-static CLAUDE_VERSION: OnceLock<Option<String>> = OnceLock::new();
-
-pub fn get_claude_version_cached() -> Option<&'static str> {
-    CLAUDE_VERSION
-        .get_or_init(get_claude_version)
-        .as_deref()
-}
-```
-
 ## Performance Comparison
 
 | Approach | Time | Notes |
@@ -206,7 +190,7 @@ pub fn get_claude_version_cached() -> Option<&'static str> {
 | `npm root -g` | ~100ms | Also spawns Node.js |
 | `which` + fs read | ~10ms | Process spawn for path resolution |
 | Direct fs read | <1ms | No process spawn |
-| Cached | ~0ms | After first call |
+| Cached | ~0ms | After first call (with exiting caching) |
 
 ## Detection Priority
 

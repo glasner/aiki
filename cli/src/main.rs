@@ -7,7 +7,6 @@ mod error;
 mod event_bus;
 mod events;
 mod flows;
-mod handlers;
 mod ide_config;
 mod jj;
 mod provenance;

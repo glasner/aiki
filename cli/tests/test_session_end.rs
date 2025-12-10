@@ -1,3 +1,4 @@
+use aiki::events::HookResponse;
 /// Unit and integration tests for SessionEnd behavior
 ///
 /// These tests verify:
@@ -9,7 +10,6 @@ use aiki::events::{AikiPostResponseEvent, AikiSessionEndEvent};
 use aiki::flows::context::ContextAssembler;
 use aiki::flows::types::{Action, ContextAction, ContextContent, FlowStatement};
 use aiki::flows::{AikiState, FlowEngine};
-use aiki::handlers::HookResponse;
 use aiki::provenance::{AgentType, DetectionMethod};
 use aiki::session::AikiSession;
 use chrono::Utc;
