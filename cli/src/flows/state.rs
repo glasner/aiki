@@ -37,7 +37,7 @@ pub struct AikiState {
     context_assembler: Option<crate::flows::context::ContextAssembler>,
 
     /// Failure messages emitted by the flow
-    failures: Vec<crate::events::response::Failure>,
+    failures: Vec<crate::events::result::Failure>,
 }
 
 impl AikiState {
@@ -145,18 +145,18 @@ impl AikiState {
     }
 
     /// Add a failure to the failures list
-    pub fn add_failure(&mut self, failure: crate::events::response::Failure) {
+    pub fn add_failure(&mut self, failure: crate::events::result::Failure) {
         self.failures.push(failure);
     }
 
     /// Take all failures (consumes and returns them, leaving empty Vec)
-    pub fn take_failures(&mut self) -> Vec<crate::events::response::Failure> {
+    pub fn take_failures(&mut self) -> Vec<crate::events::result::Failure> {
         std::mem::take(&mut self.failures)
     }
 
     /// Get a reference to the failures
     #[must_use]
-    pub fn failures(&self) -> &[crate::events::response::Failure] {
+    pub fn failures(&self) -> &[crate::events::result::Failure] {
         &self.failures
     }
 

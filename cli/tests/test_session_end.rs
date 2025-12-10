@@ -1,4 +1,4 @@
-use aiki::events::response::HookResult;
+use aiki::events::result::HookResult;
 /// Unit and integration tests for SessionEnd behavior
 ///
 /// These tests verify:

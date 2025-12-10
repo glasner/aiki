@@ -118,7 +118,7 @@ use crate::acp::protocol::{
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
-use crate::events::response::HookResult;
+use crate::events::result::HookResult;
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent, AikiStartEvent,
 };
@@ -1423,7 +1423,7 @@ fn handle_session_prompt(
 
     // Emit failures to stderr (user-visible)
     for failure in &response.failures {
-        use crate::events::response::Failure;
+        use crate::events::result::Failure;
         let Failure(s) = failure;
         eprintln!("[aiki] ❌ {}", s);
     }
@@ -1549,7 +1549,7 @@ fn handle_session_end(
 
     // Emit failures to stderr (user-visible only)
     for failure in &response.failures {
-        use crate::events::response::Failure;
+        use crate::events::result::Failure;
         let Failure(s) = failure;
         eprintln!("[aiki] ❌ {}", s);
     }
@@ -2827,7 +2827,7 @@ mod tests {
     fn test_extract_autoreply_with_context() {
         let response = HookResult {
             context: Some("Fix errors".to_string()),
-            decision: crate::events::response::Decision::Allow,
+            decision: crate::events::result::Decision::Allow,
             failures: Vec::new(),
         };
 
@@ -2839,7 +2839,7 @@ mod tests {
     fn test_extract_autoreply_missing_returns_none() {
         let response = HookResult {
             context: None,
-            decision: crate::events::response::Decision::Allow,
+            decision: crate::events::result::Decision::Allow,
             failures: Vec::new(),
         };
 
@@ -2851,7 +2851,7 @@ mod tests {
     fn test_extract_autoreply_empty_returns_none() {
         let response = HookResult {
             context: Some("".to_string()),
-            decision: crate::events::response::Decision::Allow,
+            decision: crate::events::result::Decision::Allow,
             failures: Vec::new(),
         };
 

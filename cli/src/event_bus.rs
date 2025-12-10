@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::events::response::HookResult;
+use crate::events::result::HookResult;
 use crate::events::{self, AikiEvent, AikiSessionEndEvent};
 use crate::session::AikiSession;
 use std::path::PathBuf;
