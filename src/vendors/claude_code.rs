@@ -4,7 +4,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::event_bus;
-use crate::events::response::{Decision, HookResponse};
+use crate::events::response::{Decision, HookResult};
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPreFileChangeEvent,
     AikiPrePromptEvent, AikiStartEvent,
@@ -272,11 +272,11 @@ fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
     })
 }
 
-/// Translate HookResponse to Claude Code JSON format
+/// Translate HookResult to Claude Code JSON format
 ///
 /// Claude Code expects different JSON structures depending on the event type.
 /// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResponse, event_type: &str) -> ClaudeCodeResponse {
+fn translate_response(response: HookResult, event_type: &str) -> ClaudeCodeResponse {
     match event_type {
         "SessionStart" => translate_session_start(&response),
         "UserPromptSubmit" => translate_user_prompt_submit(&response),
@@ -294,7 +294,7 @@ fn translate_response(response: HookResponse, event_type: &str) -> ClaudeCodeRes
 }
 
 /// Translate SessionStart event to Claude Code JSON format
-fn translate_session_start(response: &HookResponse) -> ClaudeCodeResponse {
+fn translate_session_start(response: &HookResult) -> ClaudeCodeResponse {
     let combined = response.combined_output();
 
     let json_value = if let Some(ctx) = combined {
@@ -318,7 +318,7 @@ fn translate_session_start(response: &HookResponse) -> ClaudeCodeResponse {
 }
 
 /// Translate UserPromptSubmit event to Claude Code JSON format
-fn translate_user_prompt_submit(response: &HookResponse) -> ClaudeCodeResponse {
+fn translate_user_prompt_submit(response: &HookResult) -> ClaudeCodeResponse {
     if response.decision.is_block() {
         // Block the prompt
         let reason = response.format_messages();
@@ -359,7 +359,7 @@ fn translate_user_prompt_submit(response: &HookResponse) -> ClaudeCodeResponse {
 }
 
 /// Translate PreToolUse event to Claude Code JSON format
-fn translate_pre_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
+fn translate_pre_tool_use(response: &HookResult) -> ClaudeCodeResponse {
     let formatted_messages = response.format_messages();
 
     // Determine permission decision from response
@@ -396,7 +396,7 @@ fn translate_pre_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
 }
 
 /// Translate PostToolUse event to Claude Code JSON format
-fn translate_post_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
+fn translate_post_tool_use(response: &HookResult) -> ClaudeCodeResponse {
     if response.decision.is_block() {
         // Block (autoreply with reason)
         let reason = response.format_messages();
@@ -444,7 +444,7 @@ fn translate_post_tool_use(response: &HookResponse) -> ClaudeCodeResponse {
 }
 
 /// Translate Stop event to Claude Code JSON format
-fn translate_stop(response: &HookResponse) -> ClaudeCodeResponse {
+fn translate_stop(response: &HookResult) -> ClaudeCodeResponse {
     // The context field contains the autoreply text from the flow
     let json_value = if let Some(ref autoreply_text) = response.context {
         // Force continuation with autoreply via additionalContext

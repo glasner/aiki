@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResponse};
+use super::response::{Decision, HookResult};
 
 /// Post-response event (after agent response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct AikiPostResponseEvent {
 /// allowing flows to validate output, detect errors, and optionally send an autoreply to the agent.
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse> {
+pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PostResponse event from {:?}, response length: {}",
@@ -52,7 +52,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
                 // Flow execution failed - log warning and skip autoreply
                 eprintln!("\n⚠️ PostResponse flow failed: {}", e);
                 eprintln!("No autoreply generated.\n");
-                return Ok(HookResponse {
+                return Ok(HookResult {
                     context: state.build_context(),
                     decision: Decision::Allow,
                     failures: state.take_failures(),
@@ -64,7 +64,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
     let failures = state.take_failures();
 
     // PostResponse never blocks - always allow
-    Ok(HookResponse {
+    Ok(HookResult {
         context: state.build_context(),
         decision: Decision::Allow,
         failures,

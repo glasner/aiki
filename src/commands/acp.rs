@@ -118,7 +118,7 @@ use crate::acp::protocol::{
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
-use crate::events::response::HookResponse;
+use crate::events::response::HookResult;
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent, AikiStartEvent,
 };
@@ -1024,7 +1024,7 @@ fn build_modified_prompt(
 
 /// Extract modified prompt from context with fallback
 /// Extract autoreply from context
-fn extract_autoreply(response: &HookResponse) -> Option<String> {
+fn extract_autoreply(response: &HookResult) -> Option<String> {
     response.context.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
@@ -2825,7 +2825,7 @@ mod tests {
 
     #[test]
     fn test_extract_autoreply_with_context() {
-        let response = HookResponse {
+        let response = HookResult {
             context: Some("Fix errors".to_string()),
             decision: crate::events::response::Decision::Allow,
             failures: Vec::new(),
@@ -2837,7 +2837,7 @@ mod tests {
 
     #[test]
     fn test_extract_autoreply_missing_returns_none() {
-        let response = HookResponse {
+        let response = HookResult {
             context: None,
             decision: crate::events::response::Decision::Allow,
             failures: Vec::new(),
@@ -2849,7 +2849,7 @@ mod tests {
 
     #[test]
     fn test_extract_autoreply_empty_returns_none() {
-        let response = HookResponse {
+        let response = HookResult {
             context: Some("".to_string()),
             decision: crate::events::response::Decision::Allow,
             failures: Vec::new(),

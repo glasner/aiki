@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // ============================================================================
-// Response Types Module
+// Response Types Module (contains HookResult, Decision, Failure)
 // ============================================================================
 
 pub mod response;

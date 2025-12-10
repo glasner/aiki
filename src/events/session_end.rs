@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResponse};
+use super::response::{Decision, HookResult};
 
 /// Session end event (when agent session ends/disconnects)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub struct AikiSessionEndEvent {
 /// Executes the SessionEnd flow section for user-defined cleanup actions,
 /// then cleans up the session file. This event fires when the agent session
 /// ends, either explicitly or when PostResponse doesn't generate an autoreply.
-pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResponse> {
+pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Session ended by {:?}", event.session.agent_type());
     }
@@ -44,16 +44,16 @@ pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResponse> {
     // Extract failures from state
     let failures = state.take_failures();
 
-    // Translate FlowResult to HookResponse
+    // Translate FlowResult to HookResult
     match flow_result {
         FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
-            Ok(HookResponse {
+            Ok(HookResult {
                 context: None,
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => Ok(HookResponse {
+        FlowResult::FailedBlock => Ok(HookResult {
             context: None,
             decision: Decision::Block,
             failures,
