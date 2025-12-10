@@ -44,11 +44,11 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             let cwd = e.cwd.clone();
 
             // Handle PostResponse and check for autoreply
-            let response = handlers::handle_post_response(e)?;
+            let mut response = handlers::handle_post_response(e)?;
 
             // If PostResponse didn't produce an autoreply, the session is done
             // Automatically fire SessionEnd event for cleanup
-            if response.context.is_none() {
+            if !response.has_context() {
                 if std::env::var("AIKI_DEBUG").is_ok() {
                     eprintln!("[aiki] No autoreply generated - ending session automatically");
                 }
@@ -59,8 +59,27 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
                     timestamp: chrono::Utc::now(),
                 };
 
-                // Dispatch SessionEnd event (ignore failures to preserve PostResponse result)
-                let _ = handlers::handle_session_end(session_end_event);
+                // Dispatch SessionEnd event recursively through this dispatcher
+                // Gracefully degrade on SessionEnd errors - log but don't fail PostResponse
+                match dispatch(AikiEvent::SessionEnd(session_end_event)) {
+                    Ok(session_end_response) => {
+                        // If SessionEnd blocked, propagate that decision
+                        if session_end_response.is_blocking() {
+                            response.decision = session_end_response.decision;
+                        }
+
+                        // Merge SessionEnd failures into PostResponse (after checking is_blocking)
+                        response.failures.extend(session_end_response.failures);
+                    }
+                    Err(e) => {
+                        // SessionEnd failed entirely - log but don't fail PostResponse
+                        eprintln!("Warning: SessionEnd dispatch failed: {}", e);
+                        response.failures.push(handlers::Failure(format!(
+                            "SessionEnd cleanup failed: {}",
+                            e
+                        )));
+                    }
+                }
             }
 
             Ok(response)

@@ -2,6 +2,7 @@
 pub mod authors;
 pub mod blame;
 pub mod error;
+pub mod event_bus;
 pub mod events;
 pub mod flows;
 pub mod handlers;
