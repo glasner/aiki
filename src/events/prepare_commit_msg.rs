@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::{Decision, HookResponse};
+use super::response::{Decision, HookResponse};
 
 /// Prepare commit message event (Git's prepare-commit-msg hook)
 #[derive(Debug, Clone, Serialize, Deserialize)]
