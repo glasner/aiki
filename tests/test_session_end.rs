@@ -1,15 +1,20 @@
 /// Integration tests for PostResponse event and autoreply functionality
 use aiki::events::AikiPostResponseEvent;
 use aiki::flows::{AikiState, FlowEngine};
-use aiki::provenance::AgentType;
+use aiki::provenance::{AgentType, DetectionMethod};
 use aiki::session::AikiSession;
 use chrono::Utc;
 use std::path::PathBuf;
 
 #[test]
 fn test_session_end_event_creation() {
-    let session =
-        AikiSession::new(AgentType::Claude, "test-session".to_string(), None::<&str>).unwrap();
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
     let event = AikiPostResponseEvent {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -24,8 +29,13 @@ fn test_session_end_event_creation() {
 
 #[test]
 fn test_session_end_state_initialization() {
-    let session =
-        AikiSession::new(AgentType::Claude, "test-session".to_string(), None::<&str>).unwrap();
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
     let event = AikiPostResponseEvent {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -46,8 +56,13 @@ fn test_session_end_state_initialization() {
 fn test_autoreply_simple_flow() {
     use aiki::flows::types::{Action, ContextAction, ContextContent};
 
-    let session =
-        AikiSession::new(AgentType::Claude, "test-session".to_string(), None::<&str>).unwrap();
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
     let event = AikiPostResponseEvent {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -79,8 +94,13 @@ fn test_autoreply_simple_flow() {
 fn test_autoreply_explicit_form() {
     use aiki::flows::types::{Action, ContextAction, ContextContent};
 
-    let session =
-        AikiSession::new(AgentType::Claude, "test-session".to_string(), None::<&str>).unwrap();
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
     let event = AikiPostResponseEvent {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -119,8 +139,13 @@ fn test_autoreply_explicit_form() {
 fn test_multiple_autoreply_actions_accumulate() {
     use aiki::flows::types::{Action, ContextAction, ContextContent};
 
-    let session =
-        AikiSession::new(AgentType::Claude, "test-session".to_string(), None::<&str>).unwrap();
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
     let event = AikiPostResponseEvent {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -170,6 +195,7 @@ fn test_event_variables_in_autoreply() {
         AgentType::Claude,
         "test-session-123".to_string(),
         None::<&str>,
+        DetectionMethod::Hook,
     )
     .unwrap();
     let event = AikiPostResponseEvent {

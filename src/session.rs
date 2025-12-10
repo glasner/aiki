@@ -186,7 +186,7 @@ impl AikiSession {
     ///     AgentType::Claude,
     ///     "claude-session-abc123",
     ///     Some("0.10.6"),
-    ///     DetectionMethod::Acp
+    ///     DetectionMethod::ACP
     /// ).unwrap();
     ///
     /// // Same inputs produce same UUID (deterministic)
@@ -238,11 +238,16 @@ impl AikiSession {
     /// # Example
     /// ```
     /// use aiki::session::AikiSession;
-    /// use aiki::provenance::AgentType;
+    /// use aiki::provenance::{AgentType, DetectionMethod};
     ///
-    /// let session = AikiSession::new(AgentType::Claude, "session-123", None::<&str>)
-    ///     .unwrap()
-    ///     .with_client_info(Some("zed"), Some("0.213.3"));
+    /// let session = AikiSession::new(
+    ///     AgentType::Claude,
+    ///     "session-123",
+    ///     None::<&str>,
+    ///     DetectionMethod::ACP
+    /// )
+    /// .unwrap()
+    /// .with_client_info(Some("zed"), Some("0.213.3"));
     /// ```
     #[must_use]
     pub fn with_client_info(
@@ -301,6 +306,14 @@ impl AikiSession {
     #[must_use]
     pub fn file(&self, repo_path: impl AsRef<Path>) -> AikiSessionFile {
         AikiSessionFile::new(self, repo_path)
+    }
+
+    /// End this session and clean up its session file
+    ///
+    /// Deletes the session file from `.aiki/sessions/`. This is called automatically
+    /// when a SessionEnd event is dispatched.
+    pub fn end(&self, repo_path: impl AsRef<Path>) -> Result<()> {
+        self.file(repo_path).delete()
     }
 }
 

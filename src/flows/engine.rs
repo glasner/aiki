@@ -148,6 +148,12 @@ impl FlowEngine {
                         .join(" "),
                 );
             }
+            crate::events::AikiEvent::SessionEnd(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+            }
             crate::events::AikiEvent::PrepareCommitMessage(e) => {
                 // Add commit message file path if available
                 if let Some(ref path) = e.commit_msg_file {
