@@ -46,11 +46,11 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             let cwd = e.cwd.clone();
 
             // Handle PostResponse and check for autoreply
-            let result = events::handle_post_response(e)?;
+            let response = events::handle_post_response(e)?;
 
             // If PostResponse produced an autoreply, return it (session continues)
-            if result.has_context() {
-                return Ok(result);
+            if response.has_context() {
+                return Ok(response);
             }
 
             // No autoreply - session is done, trigger SessionEnd event
