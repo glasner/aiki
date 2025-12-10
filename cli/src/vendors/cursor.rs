@@ -4,7 +4,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::response::{Decision, HookResponse};
+use crate::events::response::{Decision, HookResult};
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
 };
@@ -212,11 +212,11 @@ fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
     })
 }
 
-/// Translate HookResponse to Cursor JSON format
+/// Translate HookResult to Cursor JSON format
 ///
 /// Cursor expects different JSON structures depending on the event type.
 /// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResponse, event_type: &str) -> CursorResponse {
+fn translate_response(response: HookResult, event_type: &str) -> CursorResponse {
     match event_type {
         "beforeSubmitPrompt" => {
             // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
@@ -252,7 +252,7 @@ fn translate_response(response: HookResponse, event_type: &str) -> CursorRespons
 /// NOT supported:
 /// - Context injection (prepending/appending content to prompts)
 /// - Prompt rewriting
-fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
+fn translate_before_submit_prompt(response: &HookResult) -> CursorResponse {
     // Blocking - combine messages and context for user
     if response.decision.is_block() {
         let combined = response.combined_output();
@@ -279,7 +279,7 @@ fn translate_before_submit_prompt(response: &HookResponse) -> CursorResponse {
 }
 
 /// Translate beforeMCPExecution/beforeShellExecution to Cursor JSON format
-fn translate_pre_file_change(response: &HookResponse) -> CursorResponse {
+fn translate_pre_file_change(response: &HookResult) -> CursorResponse {
     // Blocking - prevent tool execution (combine messages and context)
     if response.decision.is_block() {
         let combined = response.combined_output();
@@ -308,7 +308,7 @@ fn translate_pre_file_change(response: &HookResponse) -> CursorResponse {
 ///
 /// Per translator-requirements.md, Cursor's afterFileEdit hook does NOT
 /// accept JSON responses - it's notification-only.
-fn translate_post_file_change(_response: &HookResponse) -> CursorResponse {
+fn translate_post_file_change(_response: &HookResult) -> CursorResponse {
     // Cursor doesn't accept responses from afterFileEdit
     // Return no JSON, always exit 0
     CursorResponse {
@@ -320,7 +320,7 @@ fn translate_post_file_change(_response: &HookResponse) -> CursorResponse {
 /// Translate stop event to Cursor JSON format
 ///
 /// Combines messages and context into followup_message for the agent.
-fn translate_post_response(response: &HookResponse) -> CursorResponse {
+fn translate_post_response(response: &HookResult) -> CursorResponse {
     // Combine messages + context for followup_message
     let combined = response.combined_output();
 

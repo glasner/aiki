@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResponse};
+use super::response::{Decision, HookResult};
 
 /// Pre-file-change event (before file modification begins)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub struct AikiPreFileChangeEvent {
 /// This event fires when the agent requests permission to modify files.
 /// It allows flows to stash user edits before the AI starts making changes,
 /// ensuring clean separation between human and AI work.
-pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookResponse> {
+pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PreFileChange event from {:?}, session: {}",
@@ -46,7 +46,7 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     let failures = state.take_failures();
 
     // PreFileChange never blocks - always allow
-    Ok(HookResponse {
+    Ok(HookResult {
         context: None,
         decision: Decision::Allow,
         failures,

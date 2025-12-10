@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResponse};
+use super::response::{Decision, HookResult};
 
 /// Pre-prompt event (before agent sees the user's prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +23,7 @@ pub struct AikiPrePromptEvent {
 /// to inject additional context (e.g., project conventions, active files, etc.).
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
+pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PrePrompt event from {:?}, prompt length: {}",
@@ -50,7 +50,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
                 eprintln!("⚠️ PrePrompt flow failed: {}", e);
                 eprintln!("Continuing with original prompt...\n");
                 // Return built context (already initialized with original prompt)
-                return Ok(HookResponse {
+                return Ok(HookResult {
                     context: state.build_context(),
                     decision: Decision::Allow,
                     failures: state.take_failures(),
@@ -64,7 +64,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     // Return response based on flow result (build context string)
     match flow_result {
         FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
-            Ok(HookResponse {
+            Ok(HookResult {
                 context: state.build_context(),
                 decision: Decision::Allow,
                 failures,
@@ -72,7 +72,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
         }
         FlowResult::FailedBlock => {
             // Block the prompt - return exit code 2
-            Ok(HookResponse {
+            Ok(HookResult {
                 context: None,
                 decision: Decision::Block,
                 failures,

@@ -26,9 +26,9 @@ impl Decision {
     }
 }
 
-/// Generic hook response (editor-agnostic)
+/// Generic hook result (editor-agnostic)
 #[derive(Debug, Clone)]
-pub struct HookResponse {
+pub struct HookResult {
     /// Context string for PrePrompt (modified prompt) or PostResponse (autoreply)
     pub context: Option<String>,
 
@@ -39,7 +39,7 @@ pub struct HookResponse {
     pub failures: Vec<Failure>,
 }
 
-impl HookResponse {
+impl HookResult {
     #[must_use]
     pub fn success() -> Self {
         Self {
@@ -144,14 +144,14 @@ impl HookResponse {
     ///
     /// # Examples
     /// ```
-    /// # use aiki::events::response::HookResponse;
-    /// let resp1 = HookResponse::success_with_context("autoreply text");
+    /// # use aiki::events::response::HookResult;
+    /// let resp1 = HookResult::success_with_context("autoreply text");
     /// assert!(resp1.has_context());
     ///
-    /// let resp2 = HookResponse::success_with_context("");
+    /// let resp2 = HookResult::success_with_context("");
     /// assert!(!resp2.has_context());
     ///
-    /// let resp3 = HookResponse::success();
+    /// let resp3 = HookResult::success();
     /// assert!(!resp3.has_context());
     /// ```
     #[must_use]

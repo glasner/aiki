@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResponse};
+use super::response::{Decision, HookResult};
 
 /// Details about an individual edit operation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub struct AikiPostFileChangeEvent {
 ///
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
-pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookResponse> {
+pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookResult> {
     // No validation needed - all required fields are guaranteed by type system
 
     if std::env::var("AIKI_DEBUG").is_ok() {
@@ -81,7 +81,7 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     let failures = state.take_failures();
 
     // PostFileChange never blocks - always allow
-    Ok(HookResponse {
+    Ok(HookResult {
         context: None,
         decision: Decision::Allow,
         failures,

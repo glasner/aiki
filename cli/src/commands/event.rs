@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event_bus;
-use crate::events::response::{Decision, Failure, HookResponse};
+use crate::events::response::{Decision, Failure, HookResult};
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
 use crate::provenance::AgentType;
 use chrono::Utc;
@@ -60,11 +60,11 @@ pub fn run_prepare_commit_message() -> Result<()> {
     std::process::exit(exit_code);
 }
 
-/// Translate HookResponse for Git hooks based on editor context
+/// Translate HookResult for Git hooks based on editor context
 ///
 /// Git hooks may be called from different editors, so we need to detect
 /// which editor is active and format the response appropriately.
-fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Option<String>, i32) {
+fn translate_for_git_hook(response: HookResult, editor: EditorContext) -> (Option<String>, i32) {
     let exit_code = match response.decision {
         Decision::Allow => 0,
         Decision::Block => 2,
@@ -92,7 +92,7 @@ fn translate_for_git_hook(response: HookResponse, editor: EditorContext) -> (Opt
 }
 
 /// Translate for Claude Code (Git hook context)
-fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
+fn translate_for_claude_code(response: &HookResult) -> (Option<String>, i32) {
     use serde_json::{json, Map};
 
     let exit_code = match response.decision {
@@ -151,7 +151,7 @@ fn translate_for_claude_code(response: &HookResponse) -> (Option<String>, i32) {
 }
 
 /// Translate for Cursor (Git hook context)
-fn translate_for_cursor(response: &HookResponse) -> (Option<String>, i32) {
+fn translate_for_cursor(response: &HookResult) -> (Option<String>, i32) {
     use serde_json::{json, Map};
 
     let exit_code = match response.decision {

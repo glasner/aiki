@@ -1,8 +1,8 @@
-use aiki::events::response::HookResponse;
+use aiki::events::response::HookResult;
 /// Unit and integration tests for SessionEnd behavior
 ///
 /// These tests verify:
-/// 1. HookResponse::has_context() correctly identifies non-empty context
+/// 1. HookResult::has_context() correctly identifies non-empty context
 /// 2. AikiState::build_context() returns None when no Context actions executed
 /// 3. Event dispatcher properly triggers SessionEnd when no autoreply
 /// 4. SessionEnd errors propagate through to PostResponse
@@ -16,12 +16,12 @@ use chrono::Utc;
 use std::path::PathBuf;
 
 // ============================================================================
-// Unit Tests for HookResponse::has_context()
+// Unit Tests for HookResult::has_context()
 // ============================================================================
 
 #[test]
 fn test_has_context_with_text() {
-    let resp = HookResponse::success_with_context("Some autoreply");
+    let resp = HookResult::success_with_context("Some autoreply");
     assert!(
         resp.has_context(),
         "Should have context with non-empty string"
@@ -30,7 +30,7 @@ fn test_has_context_with_text() {
 
 #[test]
 fn test_has_context_empty_string() {
-    let resp = HookResponse::success_with_context("");
+    let resp = HookResult::success_with_context("");
     assert!(
         !resp.has_context(),
         "Should not have context with empty string"
@@ -39,7 +39,7 @@ fn test_has_context_empty_string() {
 
 #[test]
 fn test_has_context_none() {
-    let resp = HookResponse::success();
+    let resp = HookResult::success();
     assert!(!resp.has_context(), "Should not have context when None");
 }
 
@@ -215,10 +215,10 @@ fn test_session_end_not_triggered_with_context_action() {
 #[test]
 fn test_documented_behavior() {
     // 1. has_context() checks for non-empty strings
-    let empty = HookResponse::success_with_context("");
+    let empty = HookResult::success_with_context("");
     assert!(!empty.has_context());
 
-    let non_empty = HookResponse::success_with_context("text");
+    let non_empty = HookResult::success_with_context("text");
     assert!(non_empty.has_context());
 
     // 2. build_context() returns None when assembler is empty
