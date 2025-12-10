@@ -75,6 +75,12 @@ PostFileChange:
 PostResponse:
   # Empty by default - can be customized in user flows
 
+# SessionEnd: Handle actions when agent session ends
+# Session file cleanup is handled automatically by the event handler
+# This section is for user-defined cleanup actions
+SessionEnd:
+  # Empty by default - can be customized in user flows
+
 # PrepareCommitMessage: Modify commit message via Git's prepare-commit-msg hook
 PrepareCommitMessage:
   # Generate co-author lines from staged changes

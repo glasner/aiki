@@ -89,15 +89,19 @@ SessionEnd:
 
     // Test PostFileChange with switch statement
     {
-        let session =
-            AikiSession::new(AgentType::Claude, "test-123".to_string(), None::<&str>).unwrap();
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test-123".to_string(),
+            None::<&str>,
+            DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiPostFileChangeEvent {
             session,
             cwd: PathBuf::from("/tmp"),
             timestamp: Utc::now(),
             tool_name: "Edit".to_string(),
             file_paths: vec!["file1.rs".to_string(), "file2.rs".to_string()],
-            detection_method: DetectionMethod::Unknown,
             edit_details: Vec::new(),
         };
 

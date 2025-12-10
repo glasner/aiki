@@ -21,6 +21,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             AikiEvent::PreFileChange(_) => "PreFileChange",
             AikiEvent::PostFileChange(_) => "PostFileChange",
             AikiEvent::PostResponse(_) => "PostResponse",
+            AikiEvent::SessionEnd(_) => "SessionEnd",
             AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
             AikiEvent::Unsupported => "Unsupported",
         };
@@ -37,7 +38,34 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
         AikiEvent::PrePrompt(e) => handlers::handle_pre_prompt(e),
         AikiEvent::PreFileChange(e) => handlers::handle_pre_file_change(e),
         AikiEvent::PostFileChange(e) => handlers::handle_post_file_change(e),
-        AikiEvent::PostResponse(e) => handlers::handle_post_response(e),
+        AikiEvent::PostResponse(e) => {
+            // Extract fields we'll need for SessionEnd before consuming the event
+            let session = e.session.clone();
+            let cwd = e.cwd.clone();
+
+            // Handle PostResponse and check for autoreply
+            let response = handlers::handle_post_response(e)?;
+
+            // If PostResponse didn't produce an autoreply, the session is done
+            // Automatically fire SessionEnd event for cleanup
+            if response.context.is_none() {
+                if std::env::var("AIKI_DEBUG").is_ok() {
+                    eprintln!("[aiki] No autoreply generated - ending session automatically");
+                }
+
+                let session_end_event = crate::events::AikiSessionEndEvent {
+                    session,
+                    cwd,
+                    timestamp: chrono::Utc::now(),
+                };
+
+                // Dispatch SessionEnd event (ignore failures to preserve PostResponse result)
+                let _ = handlers::handle_session_end(session_end_event);
+            }
+
+            Ok(response)
+        }
+        AikiEvent::SessionEnd(e) => handlers::handle_session_end(e),
         AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
         AikiEvent::Unsupported => return Ok(HookResponse::success()),
     };

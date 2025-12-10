@@ -1,241 +1,809 @@
-# SessionEnd Event Bug - Never Emitted
+# SessionEnd Implementation Fix Plan
 
-**Status**: Identified - Ready to Fix  
-**Date**: 2025-12-10  
-**Priority**: High (causes resource leak and dead code)
+## Executive Summary
 
-## The Problem
+The SessionEnd event implementation has **three critical bugs** that prevent it from working as designed:
 
-**`AikiEvent::SessionEnd` is never emitted**, causing two critical failures:
+1. **PostResponse always fills context** → SessionEnd never fires (context is `Some("")`, not `None`)
+2. **SessionEnd errors are silently discarded** → failures go unnoticed (direct call, not dispatched)
+3. **Tests don't verify intended behavior** → regressions slip through (no session file lifecycle tests)
 
-1. **Session file leak**: `.aiki/sessions/*` files accumulate and are never cleaned up
-2. **Dead code**: SessionEnd flows never execute (user-defined session cleanup/validation workflows)
+**Note:** The vendors (ACP, Cursor, Claude Code) are actually correct - they emit PostResponse, and the event bus is supposed to automatically trigger SessionEnd when there's no autoreply. The bug is in the event bus logic (Bug #1 and #2), not the vendors.
 
-## Root Causes
+**Impact:** Session files persist indefinitely, SessionEnd flows never execute, users cannot react to session completion.
 
-1. **Missing event type**: No `AikiSessionEndEvent` struct or `AikiEvent::SessionEnd` variant exists in the codebase
-2. **Naming confusion**: The `handle_session_end()` function in `acp.rs` (line 1522) is **misnamed** - it actually handles turn completion (`stopReason: end_turn`) and fires `PostResponse`, not a SessionEnd event
-3. **Incomplete implementation**: The session cleanup function `session::end_session()` exists but is never called outside of tests
+## Root Cause Analysis
 
-## PostResponse vs SessionEnd Distinction
+### Bug 1: PostResponse Always Fills Context
 
-Based on the code and documentation:
+**Location:** `cli/src/handlers.rs:360-379` (`handle_post_response`)
 
-**PostResponse**: 
-- Fires after *each agent response* during a turn
-- Used for response validation and autoreplies
-- Can fire multiple times per session (for streaming responses)
-- **Currently implemented**: The ACP proxy's `handle_session_end` function (line 1522) dispatches `AikiEvent::PostResponse` when `stopReason == "end_turn"`
+**Problem:**
+```rust
+// PostResponse never blocks - always allow
+Ok(HookResponse {
+    context: state.build_context(),  // ❌ Always Some(String), never None
+    decision: Decision::Allow,
+    failures,
+})
+```
 
-**SessionEnd** (intended but not implemented):
-- Should fire *once when the session actually ends* (agent/IDE disconnects)
-- Should trigger session file cleanup (delete `.aiki/sessions/{uuid}`)
-- Should execute the `SessionEnd:` flow section from `flow.yaml`
-- **Not implemented**: There is no `AikiEvent::SessionEnd` variant, no `AikiSessionEndEvent` struct, and no handler in the event bus
+**Why it's wrong:**
+- `state.build_context()` returns `Some(String)` even when empty (`Some("")`)
+- Dispatcher checks `response.context.is_none()` to fire SessionEnd (`cli/src/event_bus.rs:50`)
+- Condition is **never true**, so SessionEnd never fires
 
-## Current State Analysis
+**Evidence from tests:** `cli/tests/test_session_end.rs:30-53` confirms context is `Some("")` with no actions.
 
-### 1. Events Module (`cli/src/events.rs`)
-- ❌ No `AikiSessionEndEvent` struct exists
-- ❌ No `AikiEvent::SessionEnd` variant exists
-- ✅ Only has: `SessionStart`, `PrePrompt`, `PreFileChange`, `PostFileChange`, `PostResponse`, `PrepareCommitMessage`, `Unsupported`
+### Bug 2: SessionEnd Errors Are Discarded
 
-### 2. Event Bus (`cli/src/event_bus.rs`)
-- ❌ No handler for `AikiEvent::SessionEnd`
-- The dispatch function only routes 7 event types (none for SessionEnd)
+**Location:** `cli/src/event_bus.rs:60-62`
 
-### 3. Handlers Module (`cli/src/handlers.rs`)
-- ❌ No `handle_session_end` function exists in handlers.rs
-- There's a `handle_session_end` function in `acp.rs` but it's **misnamed** - it actually fires `PostResponse`, not a SessionEnd event
+**Problem:**
+```rust
+// Dispatch SessionEnd event (ignore failures to preserve PostResponse result)
+let _ = handlers::handle_session_end(session_end_event);
+```
 
-### 4. ACP Proxy (`cli/src/commands/acp.rs`)
-- ✅ Lines 720-769: Detects `stopReason == "end_turn"` 
-- ❌ Calls `handle_session_end()` function (line 1522) which **only dispatches PostResponse**
-- ❌ Never cleans up session files
-- ❌ Never emits `AikiEvent::SessionEnd`
+**Why it's wrong:**
+- Comment says "ignore failures" but **discards ALL output**
+- Plan (`ops/current/plan.md:1250-1305`) requires dispatching through `event_bus::dispatch` and merging failures
+- User-defined SessionEnd flows' failures are silently lost
+- Session file deletion errors are silently lost
 
-### 5. Vendor Hooks (Cursor/Claude Code)
-- ✅ Both have "Stop" events
-- ❌ Both build `PostResponse` events (cursor.rs:206, claude_code.rs:267)
-- ❌ Neither emits SessionEnd events
-- ❌ Neither cleans up session files
+**Correct design:** Dispatch through event bus, merge failures into PostResponse response.
 
-### 6. Flow Engine (`cli/src/flows/types.rs`)
-- ✅ Line 112: `session_end: Vec<FlowStatement>` field exists
-- ✅ Flow.yaml can have a `SessionEnd:` section
-- ❌ This section is **dead code** - never executed because no SessionEnd events are dispatched
+### Bug 3: Actually Not a Bug - Vendors Are Correct
 
-### 7. Core Flow (`cli/src/flows/core/flow.yaml`)
-- ❌ No `SessionEnd:` section defined
-- The test flow (`cli/tests/test_flow_yaml.yaml`) has a SessionEnd section, but it's never tested
+**Locations:**
+- `cli/src/commands/acp.rs:1517-1546` - ACP `handle_session_end`
+- `cli/src/vendors/cursor.rs:204-213` - Cursor `stop` hook
+- `cli/src/vendors/claude_code.rs:262-273` - Claude Code `stop` hook
 
-### 8. Session Cleanup (`cli/src/session.rs`)
-- ✅ Line 351: `end_session()` function exists
-- ✅ Line 363: Calls `session.file(&repo_path).delete()`
-- ❌ **This function is never called** - only used in unit tests
+**What they do:** All three emit `PostResponse` events when the agent session ends.
 
-## What Cleanup/Flows Are Not Running?
+**This is CORRECT design:**
+- ✅ Vendors emit PostResponse (simple, consistent)
+- ✅ Event bus handles PostResponse → SessionEnd transition automatically
+- ✅ SessionEnd fires when PostResponse has no autoreply
+- ✅ Clean separation of concerns
 
-**Session file cleanup:**
-- `.aiki/sessions/{uuid}` files are created on SessionStart
-- They're **never deleted** because `session::end_session()` is never called
-- This causes `.aiki/sessions/` to accumulate stale session files over time
+**Why SessionEnd doesn't work:**
+- Not because vendors are wrong
+- Because Bug #1 (context check) prevents the transition from happening
+- Fix Bug #1 and #2, and vendors will work correctly
 
-**SessionEnd flows:**
-- Users can define `SessionEnd:` sections in their flow.yaml
-- The flow engine supports parsing this section (`Flow.session_end`)
-- **These flows never execute** because no SessionEnd events are dispatched
-- Example use cases that don't work:
-  - Session-level cleanup actions
-  - Final validation workflows
-  - Metrics/logging aggregation
-  - Resource cleanup
+### Bug 4: Tests Don't Cover Intended Behavior
 
-## Implementation Plan
+**Location:** `cli/tests/test_session_end.rs:1-160`
 
-### Phase 1: Define SessionEnd Event Type
+**Problem:** Tests build `AikiPostResponseEvent` and assert autoreply assembly, but **never verify:**
+- PostResponse without autoreply removes session file
+- PostResponse with autoreply keeps session file
+- SessionEnd flows execute
+- SessionEnd can block/fail
 
-1. **Add `AikiSessionEndEvent` struct** (`cli/src/events.rs`)
-   ```rust
-   pub struct AikiSessionEndEvent {
-       pub session: AikiSession,
-       pub cwd: PathBuf,
-       pub timestamp: DateTime<Utc>,
-   }
-   ```
+**What plan requires:** `ops/current/plan.md:1330-1381` specifies exactly these checks.
 
-2. **Add `SessionEnd` variant to `AikiEvent` enum** (`cli/src/events.rs`)
-   ```rust
-   pub enum AikiEvent {
-       // ... existing variants ...
-       SessionEnd(AikiSessionEndEvent),
-   }
-   ```
+## Fix Strategy
 
-3. **Update `impl AikiState<T>`** to handle `AikiSessionEndEvent`
+### Principle: Minimal, Targeted Changes
 
-### Phase 2: Add SessionEnd Handler
+We'll fix each bug independently with minimal disruption:
 
-4. **Create `handle_session_end()` in handlers.rs** (`cli/src/handlers.rs`)
-   ```rust
-   pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResponse> {
-       if std::env::var("AIKI_DEBUG").is_ok() {
-           eprintln!("[aiki] Session ended by {:?}", event.session.agent_type());
-       }
+1. **Fix context check logic** - Add `has_context()` helper method
+2. **Fix error propagation** - Dispatch through event bus, merge failures
+3. **Add graceful degradation** - SessionEnd errors don't break PostResponse (Aiki promise)
+4. **Keep vendor behavior** - Vendors emit PostResponse (not SessionEnd)
+5. **Add integration tests** - Verify session file lifecycle
 
-       // Load core flow
-       let core_flow = crate::flows::load_core_flow()?;
-       
-       // Build execution state from event
-       let mut state = AikiState::new(event.clone());
-       
-       // Set flow name for self.* function resolution
-       state.flow_name = Some("aiki/core".to_string());
-       
-       // Execute SessionEnd statements from the core flow
-       let (flow_result, _timing) =
-           FlowEngine::execute_statements(&core_flow.session_end, &mut state)?;
-       
-       // Clean up session file
-       crate::session::end_session(
-           &event.cwd,
-           event.session.agent_type(),
-           event.session.external_id(),
-           event.session.detection_method().clone(),
-       )?;
-       
-       // Extract failures from state
-       let failures = state.take_failures();
-       
-       // Translate FlowResult to HookResponse
-       match flow_result {
-           FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
-               Ok(HookResponse {
-                   context: None,
-                   decision: Decision::Allow,
-                   failures,
-               })
-           }
-           FlowResult::FailedBlock => Ok(HookResponse {
-               context: None,
-               decision: Decision::Block,
-               failures,
-           }),
-       }
-   }
-   ```
+**Key decisions:**
+- Vendors should NOT emit SessionEnd directly. The dispatcher handles the PostResponse → SessionEnd transition based on autoreply presence. This maintains clean separation of concerns.
+- **Graceful degradation is required**: Per Aiki's core promise, hook failures must not block agent execution. If SessionEnd dispatch fails or session file cleanup fails, we log warnings but allow PostResponse to succeed.
 
-5. **Update event bus dispatch** (`cli/src/event_bus.rs`)
-   - Add SessionEnd arm to dispatch match statement
-   - Route to new `handle_session_end()` handler
+## Detailed Fixes
 
-### Phase 3: Emit SessionEnd Events
+### Fix 1: Context Check Logic
 
-6. **Event Bus** (`cli/src/event_bus.rs`) - **Primary SessionEnd trigger**
-   - After `handle_post_response()` returns, check if `response.context` contains an autoreply
-   - If no autoreply exists, fire `SessionEnd` event automatically
-   - This provides automatic session cleanup when conversation naturally ends
-   - Implementation:
-     ```rust
-     AikiEvent::PostResponse(e) => {
-         let response = handlers::handle_post_response(e.clone())?;
-         
-         // If PostResponse didn't produce an autoreply, the session is done
-         if response.context.is_none() {
-             let session_end_event = AikiEvent::SessionEnd(AikiSessionEndEvent {
-                 session: e.session,
-                 cwd: e.cwd,
-                 timestamp: chrono::Utc::now(),
-             });
-             handlers::handle_session_end(session_end_event)?;
-         }
-         
-         Ok(response)
-     }
-     ```
+**File:** `cli/src/event_bus.rs:42-67`
 
+**Current code:**
+```rust
+AikiEvent::PostResponse(e) => {
+    // Extract fields we'll need for SessionEnd before consuming the event
+    let session = e.session.clone();
+    let cwd = e.cwd.clone();
 
-### Phase 4: Add Flow Definition
+    // Handle PostResponse and check for autoreply
+    let response = handlers::handle_post_response(e)?;
 
-9. **Add SessionEnd section to core flow.yaml** (`cli/src/flows/core/flow.yaml`)
-   ```yaml
-   # SessionEnd: Handle actions when agent session ends
-   SessionEnd:
-     # Session file cleanup is handled automatically by the event handler
-     # This section is for user-defined cleanup actions
-     # (empty by default, users can override in their flows)
-   ```
+    // If PostResponse didn't produce an autoreply, the session is done
+    // Automatically fire SessionEnd event for cleanup
+    if response.context.is_none() {  // ❌ Never true!
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[aiki] No autoreply generated - ending session automatically");
+        }
 
-### Phase 5: Test & Verify
+        let session_end_event = crate::events::AikiSessionEndEvent {
+            session,
+            cwd,
+            timestamp: chrono::Utc::now(),
+        };
 
-10. **Verify compilation** - `cargo build`
-11. **Test session cleanup** - Start and end a session, verify `.aiki/sessions/` file is deleted
-12. **Test SessionEnd flows** - Add test flow with SessionEnd actions and verify execution
-13. **Update tests** - Fix `test_session_end.rs` to actually test SessionEnd events
+        // Dispatch SessionEnd event (ignore failures to preserve PostResponse result)
+        let _ = handlers::handle_session_end(session_end_event);  // ❌ Discards errors!
+    }
 
-## Key Insight: Turn End vs Session End
+    Ok(response)
+}
+```
 
-The current `handle_session_end()` function (acp.rs:1522) fires on `stopReason: end_turn`, which means:
+**Fixed code:**
+```rust
+AikiEvent::PostResponse(e) => {
+    // Extract fields we'll need for SessionEnd before consuming the event
+    let session = e.session.clone();
+    let cwd = e.cwd.clone();
 
-- ✅ It correctly handles autoreplies after agent responses
-- ✅ It correctly fires PostResponse events
-- ❌ And session cleanup never happens because there's no actual session-end detection
+    // Handle PostResponse and check for autoreply
+    let mut response = handlers::handle_post_response(e)?;
 
+    // If PostResponse didn't produce an autoreply, the session is done
+    // Automatically fire SessionEnd event for cleanup
+    // Check if context is empty string OR None (both mean no autoreply)
+    let has_autoreply = response.context
+        .as_ref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    
+    if !has_autoreply {
+        if std::env::var("AIKI_DEBUG").is_ok() {
+            eprintln!("[aiki] No autoreply generated - ending session automatically");
+        }
 
-## Related Files
+        let session_end_event = crate::events::AikiSessionEndEvent {
+            session,
+            cwd,
+            timestamp: chrono::Utc::now(),
+        };
 
-- `cli/src/events.rs` - Define event types
-- `cli/src/handlers.rs` - Add SessionEnd handler
-- `cli/src/event_bus.rs` - Route SessionEnd events
-- `cli/src/commands/acp.rs` - Emit SessionEnd on disconnect, rename `handle_session_end`
-- `cli/src/vendors/cursor.rs` - Change Stop hook to SessionEnd
-- `cli/src/vendors/claude_code.rs` - Change Stop hook to SessionEnd
-- `cli/src/flows/core/flow.yaml` - Define SessionEnd flow section
-- `cli/src/session.rs` - `end_session()` cleanup function (already exists)
-- `cli/tests/test_session_end.rs` - Update tests to actually test SessionEnd
+        // Dispatch SessionEnd through event bus to execute flows
+        // Graceful degradation: SessionEnd errors should not block PostResponse
+        match dispatch(AikiEvent::SessionEnd(session_end_event)) {
+            Ok(session_end_response) => {
+                // Merge SessionEnd failures into PostResponse response
+                response.failures.extend(session_end_response.failures);
+                
+                // If SessionEnd blocks, propagate that decision
+                if session_end_response.decision == Decision::Block {
+                    response.decision = Decision::Block;
+                }
+            }
+            Err(e) => {
+                // Log SessionEnd dispatch error but don't fail PostResponse
+                eprintln!("Warning: SessionEnd dispatch failed: {}", e);
+                eprintln!("PostResponse will continue (graceful degradation)");
+                // Session file may not be cleaned up, but agent can continue
+            }
+        }
+    }
 
-## References
+    Ok(response)
+}
+```
 
-- Milestone document: `ops/current/milestone-1.2-session-end.md` (shows this was planned but incomplete)
-- Test file: `cli/tests/test_session_end.rs` (tests PostResponse, not SessionEnd)
-- Test flow: `cli/tests/test_flow_yaml.yaml` (has SessionEnd section that's never executed)
+**Why this works:**
+- ✅ Uses `has_context()` helper for clean, self-documenting check
+- ✅ Dispatches SessionEnd through event bus (executes flows)
+- ✅ Merges failures (user can see SessionEnd problems)
+- ✅ Respects blocking decisions (SessionEnd can block)
+- ✅ **Graceful degradation**: SessionEnd errors don't break PostResponse
+
+### Fix 2: HookResponse Context Semantics
+
+**File:** `cli/src/handlers.rs` (struct definition)
+
+**Current implementation:** `context: Option<String>` with `build_context()` always returning `Some(String)`
+
+**Option A: Keep current structure, fix usage**
+
+No changes to `HookResponse` struct. Just fix how we check for empty autoreply (done in Fix 1).
+
+**Rationale:**
+- ✅ Minimal change (no struct modifications)
+- ✅ `Some("")` vs `None` is semantic distinction without practical difference
+- ✅ Event bus already checks properly with Fix 1
+- ✅ Avoids cascading changes to all handlers
+
+**This is the recommended approach.**
+
+**Option B: Add helper method (if we want cleaner semantics)** ✅ **CHOSEN**
+
+```rust
+impl HookResponse {
+    /// Check if this response has non-empty context (e.g., autoreply text)
+    pub fn has_context(&self) -> bool {
+        self.context
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
+}
+```
+
+Then in event bus:
+```rust
+if !response.has_context() {
+    // Fire SessionEnd (no autoreply to continue session)
+}
+```
+
+**Rationale:**
+- ✅ Cleaner semantics
+- ✅ Self-documenting code
+- ✅ Encapsulates the "what is an autoreply" logic in one place
+- ✅ Simpler name: `has_context` is more general and accurate
+
+**Decision: Use Option B with `has_context()` naming.**
+
+### Fix 3: Integration Tests
+
+**File:** `cli/tests/test_session_end.rs` (replace entire file)
+
+**New test suite:**
+
+```rust
+/// Integration tests for SessionEnd event and session file lifecycle
+use aiki::events::{AikiEvent, AikiPostResponseEvent};
+use aiki::flows::{AikiState, Flow};
+use aiki::provenance::{AgentType, DetectionMethod};
+use aiki::session::AikiSession;
+use aiki::{event_bus, session_tracking};
+use chrono::Utc;
+use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+/// Set up a test repository with Aiki initialized
+fn setup_test_repo() -> TempDir {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_path = temp_dir.path();
+    
+    // Create .aiki directory structure
+    fs::create_dir_all(repo_path.join(".aiki/flows")).unwrap();
+    fs::create_dir_all(repo_path.join(".aiki/sessions")).unwrap();
+    
+    // Write minimal core flow
+    let core_flow = r#"
+SessionEnd:
+  - Log: { message: "Session ended: {event.session.uuid}" }
+"#;
+    fs::write(repo_path.join(".aiki/flows/core.yaml"), core_flow).unwrap();
+    
+    temp_dir
+}
+
+/// Write a custom flow to the test repo
+fn write_flow(repo_path: &std::path::Path, content: &str) {
+    fs::write(repo_path.join(".aiki/flows/core.yaml"), content).unwrap();
+}
+
+#[test]
+fn test_session_file_removed_without_autoreply() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create session
+    let session = AikiSession::new(
+        AgentType::Cursor,
+        "test-session-123".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record session (creates session file)
+    session_tracking::record_session_start(
+        repo_path,
+        AgentType::Cursor,
+        "test-session-123",
+        None,
+    )
+    .unwrap();
+    
+    // Verify session file exists
+    let session_file = repo_path
+        .join(".aiki/sessions")
+        .join(session.uuid_filename());
+    assert!(session_file.exists(), "Session file should exist after recording");
+    
+    // Fire PostResponse with no autoreply (empty flow)
+    write_flow(repo_path, "PostResponse: []");
+    
+    let event = AikiPostResponseEvent {
+        session: session.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Task completed.".to_string(),
+        modified_files: vec![],
+    };
+    
+    let response = event_bus::dispatch(AikiEvent::PostResponse(event)).unwrap();
+    
+    // Verify no autoreply
+    assert!(
+        response.context.is_none() || response.context.as_ref().unwrap().is_empty(),
+        "Should have no autoreply"
+    );
+    
+    // Verify session file was removed (SessionEnd fired)
+    assert!(
+        !session_file.exists(),
+        "Session file should be removed after SessionEnd"
+    );
+}
+
+#[test]
+fn test_session_file_kept_with_autoreply() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create session
+    let session = AikiSession::new(
+        AgentType::Cursor,
+        "test-session-456".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record session
+    session_tracking::record_session_start(
+        repo_path,
+        AgentType::Cursor,
+        "test-session-456",
+        None,
+    )
+    .unwrap();
+    
+    // Verify session file exists
+    let session_file = repo_path
+        .join(".aiki/sessions")
+        .join(session.uuid_filename());
+    assert!(session_file.exists());
+    
+    // Fire PostResponse with autoreply
+    let flow_with_autoreply = r#"
+PostResponse:
+  - Autoreply: { message: "Continue working on this task?" }
+"#;
+    write_flow(repo_path, flow_with_autoreply);
+    
+    let event = AikiPostResponseEvent {
+        session: session.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Task completed.".to_string(),
+        modified_files: vec![],
+    };
+    
+    let response = event_bus::dispatch(AikiEvent::PostResponse(event)).unwrap();
+    
+    // Verify autoreply present
+    assert!(
+        response.context.is_some() && !response.context.as_ref().unwrap().is_empty(),
+        "Should have autoreply"
+    );
+    
+    // Verify session file still exists (SessionEnd NOT fired)
+    assert!(
+        session_file.exists(),
+        "Session file should remain when autoreply present"
+    );
+}
+
+#[test]
+fn test_session_end_flows_execute() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create session
+    let session = AikiSession::new(
+        AgentType::Claude,
+        "test-session-789".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record session
+    session_tracking::record_session_start(
+        repo_path,
+        AgentType::Claude,
+        "test-session-789",
+        None,
+    )
+    .unwrap();
+    
+    // Create flow that writes a marker file on SessionEnd
+    let marker_path = repo_path.join("session_end_marker.txt");
+    let flow_with_sessionend = format!(
+        r#"
+PostResponse: []
+SessionEnd:
+  - Bash:
+      command: "echo 'Session ended' > {}"
+"#,
+        marker_path.display()
+    );
+    write_flow(repo_path, &flow_with_sessionend);
+    
+    // Fire PostResponse (should trigger SessionEnd)
+    let event = AikiPostResponseEvent {
+        session: session.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Done.".to_string(),
+        modified_files: vec![],
+    };
+    
+    event_bus::dispatch(AikiEvent::PostResponse(event)).unwrap();
+    
+    // Verify SessionEnd flow executed (marker file created)
+    assert!(
+        marker_path.exists(),
+        "SessionEnd flow should have created marker file"
+    );
+    
+    let content = fs::read_to_string(&marker_path).unwrap();
+    assert!(
+        content.contains("Session ended"),
+        "Marker file should contain expected content"
+    );
+}
+
+#[test]
+fn test_session_end_failures_propagate() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create session
+    let session = AikiSession::new(
+        AgentType::Cursor,
+        "test-session-fail".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record session
+    session_tracking::record_session_start(
+        repo_path,
+        AgentType::Cursor,
+        "test-session-fail",
+        None,
+    )
+    .unwrap();
+    
+    // Create flow with failing SessionEnd action
+    let flow_with_failure = r#"
+PostResponse: []
+SessionEnd:
+  - Bash:
+      command: "exit 1"
+      on_failure: "continue"
+"#;
+    write_flow(repo_path, flow_with_failure);
+    
+    // Fire PostResponse
+    let event = AikiPostResponseEvent {
+        session: session.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Done.".to_string(),
+        modified_files: vec![],
+    };
+    
+    let response = event_bus::dispatch(AikiEvent::PostResponse(event)).unwrap();
+    
+    // Verify failure was captured
+    assert!(
+        !response.failures.is_empty(),
+        "SessionEnd failure should propagate to PostResponse"
+    );
+}
+
+#[test]
+fn test_multiple_sessions_independent_cleanup() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create two sessions
+    let session1 = AikiSession::new(
+        AgentType::Cursor,
+        "session-1".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    let session2 = AikiSession::new(
+        AgentType::Cursor,
+        "session-2".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record both sessions
+    session_tracking::record_session_start(repo_path, AgentType::Cursor, "session-1", None)
+        .unwrap();
+    session_tracking::record_session_start(repo_path, AgentType::Cursor, "session-2", None)
+        .unwrap();
+    
+    let session1_file = repo_path.join(".aiki/sessions").join(session1.uuid_filename());
+    let session2_file = repo_path.join(".aiki/sessions").join(session2.uuid_filename());
+    
+    assert!(session1_file.exists());
+    assert!(session2_file.exists());
+    
+    // End session 1 (no autoreply)
+    write_flow(repo_path, "PostResponse: []");
+    
+    let event1 = AikiPostResponseEvent {
+        session: session1.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Done.".to_string(),
+        modified_files: vec![],
+    };
+    
+    event_bus::dispatch(AikiEvent::PostResponse(event1)).unwrap();
+    
+    // Session 1 cleaned up, session 2 still active
+    assert!(!session1_file.exists(), "Session 1 should be cleaned up");
+    assert!(session2_file.exists(), "Session 2 should remain active");
+    
+    // End session 2
+    let event2 = AikiPostResponseEvent {
+        session: session2.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Done.".to_string(),
+        modified_files: vec![],
+    };
+    
+    event_bus::dispatch(AikiEvent::PostResponse(event2)).unwrap();
+    
+    // Both cleaned up
+    assert!(!session1_file.exists());
+    assert!(!session2_file.exists());
+}
+
+#[test]
+fn test_graceful_degradation_sessionend_dispatch_error() {
+    let temp_dir = setup_test_repo();
+    let repo_path = temp_dir.path();
+    
+    // Create session
+    let session = AikiSession::new(
+        AgentType::Cursor,
+        "test-session-graceful".to_string(),
+        None::<&str>,
+        DetectionMethod::Hook,
+    )
+    .unwrap();
+    
+    // Record session
+    session_tracking::record_session_start(
+        repo_path,
+        AgentType::Cursor,
+        "test-session-graceful",
+        None,
+    )
+    .unwrap();
+    
+    // Write a malformed flow that will cause SessionEnd to fail
+    let bad_flow = r#"
+PostResponse: []
+SessionEnd:
+  - InvalidAction: { this: "will cause parse error" }
+"#;
+    write_flow(repo_path, bad_flow);
+    
+    // Fire PostResponse (no autoreply)
+    let event = AikiPostResponseEvent {
+        session: session.clone(),
+        cwd: repo_path.to_path_buf(),
+        timestamp: Utc::now(),
+        response: "Done.".to_string(),
+        modified_files: vec![],
+    };
+    
+    // Should succeed despite SessionEnd dispatch error (graceful degradation)
+    let result = event_bus::dispatch(AikiEvent::PostResponse(event));
+    assert!(
+        result.is_ok(),
+        "PostResponse should succeed even if SessionEnd fails (graceful degradation)"
+    );
+    
+    // Session file might remain (acceptable trade-off for graceful degradation)
+    let session_file = repo_path
+        .join(".aiki/sessions")
+        .join(session.uuid_filename());
+    // We don't assert on file existence - it may or may not be cleaned up
+    // The important part is that PostResponse didn't fail
+}
+```
+
+**Test coverage:**
+- ✅ Session file removed without autoreply
+- ✅ Session file kept with autoreply
+- ✅ SessionEnd flows execute
+- ✅ SessionEnd failures propagate
+- ✅ Multiple sessions clean up independently
+- ✅ **Graceful degradation**: PostResponse succeeds even if SessionEnd fails
+
+### Fix 4: Vendor Behavior (No Changes Needed)
+
+**Decision:** Vendors should continue emitting `PostResponse` events only. The event bus handles the PostResponse → SessionEnd transition.
+
+**Rationale:**
+- ✅ Clean separation: Vendors focus on event translation, event bus handles lifecycle
+- ✅ No vendor changes needed (reduces risk)
+- ✅ Consistent pattern: All lifecycle logic in one place (event_bus.rs)
+
+**Non-changes:**
+- `cli/src/commands/acp.rs` - Keep building PostResponse
+- `cli/src/vendors/cursor.rs` - Keep building PostResponse
+- `cli/src/vendors/claude_code.rs` - Keep building PostResponse
+
+## Implementation Checklist
+
+### Phase 1: Core Fixes
+- [ ] Update `cli/src/event_bus.rs`
+  - [ ] Fix autoreply detection logic (check for empty string)
+  - [ ] Dispatch SessionEnd through event bus (not direct call)
+  - [ ] Merge SessionEnd failures into PostResponse
+  - [ ] Respect SessionEnd blocking decisions
+- [ ] Run existing unit tests
+  - [ ] Verify no regressions in other events
+  - [ ] Verify event bus routing still works
+
+### Phase 2: Integration Tests
+- [ ] Replace `cli/tests/test_session_end.rs`
+  - [ ] Test session file removed without autoreply
+  - [ ] Test session file kept with autoreply
+  - [ ] Test SessionEnd flows execute
+  - [ ] Test SessionEnd failures propagate
+  - [ ] Test multiple sessions clean up independently
+- [ ] Run new test suite
+  - [ ] All tests pass
+  - [ ] No flaky behavior
+
+### Phase 3: Validation
+- [ ] Manual testing with Cursor
+  - [ ] Session file created on first prompt
+  - [ ] Session file removed after response (no autoreply)
+  - [ ] Session file kept after response (with autoreply)
+  - [ ] SessionEnd Log action visible in debug output
+- [ ] Manual testing with Claude Code (if available)
+  - [ ] Same lifecycle as Cursor
+- [ ] Edge case testing
+  - [ ] SessionEnd flow failure doesn't break PostResponse
+  - [ ] Session file deletion failure logs warning
+  - [ ] Missing .aiki/sessions/ directory handled gracefully
+
+### Phase 4: Documentation
+- [ ] Update `ops/current/session-tracking.md`
+  - [ ] Document that vendors emit PostResponse only
+  - [ ] Document event bus handles SessionEnd transition
+  - [ ] Update flow diagram
+- [ ] Add comments to `cli/src/event_bus.rs`
+  - [ ] Explain autoreply detection logic
+  - [ ] Explain why we dispatch SessionEnd (not direct call)
+- [ ] Update CLAUDE.md if needed
+  - [ ] Document SessionEnd event lifecycle
+  - [ ] Document autoreply semantics
+
+## Risk Assessment
+
+### Low Risk
+- ✅ Fix 1 (context check) - Simple boolean logic change
+- ✅ Fix 3 (tests) - New tests, no production code changes
+- ✅ Fix 4 (no vendor changes) - No changes = no risk
+
+### Medium Risk
+- ⚠️ Fix 1 (dispatching SessionEnd) - Recursive dispatch could cause issues
+  - Mitigation: SessionEnd never triggers PostResponse (no cycles)
+  - Mitigation: Extensive testing of event flow
+
+### Potential Issues
+
+**Issue 1: Recursive dispatch**
+- Could SessionEnd trigger PostResponse which triggers SessionEnd?
+- **No:** SessionEnd handler doesn't emit any events, just cleans up
+- **Verified by:** `cli/src/handlers.rs:387-425` - no event emission
+
+**Issue 2: Session file already deleted**
+- What if SessionEnd flow takes time and file already deleted?
+- **Handled by:** `session.end()` is idempotent (file.remove() returns Ok if missing)
+- **Verified by:** Standard filesystem semantics
+
+**Issue 3: Performance**
+- Does extra dispatch add latency?
+- **No:** SessionEnd is lightweight (flow execution + file delete)
+- **Acceptable:** Session end is infrequent, latency not critical
+
+## Testing Strategy
+
+### Unit Tests (Existing)
+- Run all existing tests
+- Should pass without changes (no breaking changes)
+
+### Integration Tests (New)
+- Comprehensive session lifecycle tests
+- Cover all scenarios from plan
+- Use real filesystem operations
+
+### Manual Testing
+- Test with real Cursor integration
+- Verify AIKI_DEBUG output shows SessionEnd
+- Verify session files cleaned up
+
+### Regression Testing
+- Test other events still work (SessionStart, PrePrompt, etc.)
+- Test event bus routing unchanged for non-PostResponse events
+
+## Success Criteria
+
+1. ✅ Session files are removed when PostResponse has no autoreply
+2. ✅ Session files persist when PostResponse has autoreply
+3. ✅ SessionEnd flows execute exactly once per session
+4. ✅ SessionEnd failures propagate to PostResponse response
+5. ✅ SessionEnd blocking decisions are respected
+6. ✅ All integration tests pass
+7. ✅ No regressions in other event handling
+8. ✅ Manual testing confirms correct behavior
+
+## Timeline Estimate
+
+- **Phase 1 (Core Fixes):** 30 minutes
+  - Update event_bus.rs: 15 minutes
+  - Test existing suite: 15 minutes
+
+- **Phase 2 (Integration Tests):** 45 minutes
+  - Write new test suite: 30 minutes
+  - Debug test failures: 15 minutes
+
+- **Phase 3 (Validation):** 30 minutes
+  - Manual testing: 20 minutes
+  - Edge case testing: 10 minutes
+
+- **Phase 4 (Documentation):** 15 minutes
+  - Update docs: 10 minutes
+  - Add comments: 5 minutes
+
+**Total: ~2 hours**
+
+## Future Improvements (Out of Scope)
+
+These are deferred until users request them:
+
+1. **SessionEnd metrics** - Track how often sessions end vs continue
+2. **SessionEnd flow timeout** - Prevent hanging on cleanup
+3. **Session file corruption handling** - Detect/fix malformed session files
+4. **SessionEnd retry logic** - Retry session file cleanup on transient failures
+
+## Conclusion
+
+All four bugs have clear, low-risk fixes:
+
+1. **Fix autoreply detection** - Check for empty string, not None
+2. **Fix error propagation** - Dispatch through event bus, merge failures
+3. **No vendor changes** - Keep current behavior (low risk)
+4. **Add integration tests** - Prevent future regressions
+
+The fixes are minimal, targeted, and maintain backward compatibility. The new test suite ensures the intended behavior works correctly.
+
+**Recommendation:** Proceed with implementation following the checklist above.

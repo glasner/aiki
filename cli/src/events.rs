@@ -94,6 +94,14 @@ pub struct AikiPostResponseEvent {
     pub modified_files: Vec<PathBuf>,
 }
 
+/// Session end event (when agent session ends/disconnects)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiSessionEndEvent {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Core event types in the Aiki system
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -108,6 +116,8 @@ pub enum AikiEvent {
     PostFileChange(AikiPostFileChangeEvent),
     /// Post-response (after agent response, allows validation and autoreply)
     PostResponse(AikiPostResponseEvent),
+    /// Session end (when agent session ends/disconnects)
+    SessionEnd(AikiSessionEndEvent),
     /// Prepare commit message (Git's prepare-commit-msg hook)
     PrepareCommitMessage(AikiPrepareCommitMessageEvent),
     /// Unsupported event (unknown events or non-file tools that don't require processing)
@@ -124,6 +134,7 @@ impl AikiEvent {
             Self::PreFileChange(e) => &e.cwd,
             Self::PostFileChange(e) => &e.cwd,
             Self::PostResponse(e) => &e.cwd,
+            Self::SessionEnd(e) => &e.cwd,
             Self::PrepareCommitMessage(e) => &e.cwd,
             Self::Unsupported => Path::new("."),
         }
@@ -138,6 +149,7 @@ impl AikiEvent {
             Self::PreFileChange(e) => e.session.agent_type(),
             Self::PostFileChange(e) => e.session.agent_type(),
             Self::PostResponse(e) => e.session.agent_type(),
+            Self::SessionEnd(e) => e.session.agent_type(),
             Self::PrepareCommitMessage(e) => e.agent_type,
             Self::Unsupported => AgentType::Unknown,
         }
@@ -178,5 +190,11 @@ impl From<AikiPrepareCommitMessageEvent> for AikiEvent {
 impl From<AikiPostResponseEvent> for AikiEvent {
     fn from(event: AikiPostResponseEvent) -> Self {
         AikiEvent::PostResponse(event)
+    }
+}
+
+impl From<AikiSessionEndEvent> for AikiEvent {
+    fn from(event: AikiSessionEndEvent) -> Self {
+        AikiEvent::SessionEnd(event)
     }
 }
