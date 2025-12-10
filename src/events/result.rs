@@ -144,7 +144,7 @@ impl HookResult {
     ///
     /// # Examples
     /// ```
-    /// # use aiki::events::response::HookResult;
+    /// # use aiki::events::result::HookResult;
     /// let resp1 = HookResult::success_with_context("autoreply text");
     /// assert!(resp1.has_context());
     ///

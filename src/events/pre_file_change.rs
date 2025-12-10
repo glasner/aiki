@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResult};
+use super::result::{Decision, HookResult};
 
 /// Pre-file-change event (before file modification begins)
 #[derive(Debug, Clone, Serialize, Deserialize)]

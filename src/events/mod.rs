@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // ============================================================================
-// Response Types Module (contains HookResult, Decision, Failure)
+// Result Types Module (contains HookResult, Decision, Failure)
 // ============================================================================
 
-pub mod response;
+pub mod result;
 
 // ============================================================================
 // Main Event Enum

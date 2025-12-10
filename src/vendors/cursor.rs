@@ -4,7 +4,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::event_bus;
-use crate::events::response::{Decision, HookResult};
+use crate::events::result::{Decision, HookResult};
 use crate::events::{
     AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
 };

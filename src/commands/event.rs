@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event_bus;
-use crate::events::response::{Decision, Failure, HookResult};
+use crate::events::result::{Decision, Failure, HookResult};
 use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
 use crate::provenance::AgentType;
 use chrono::Utc;

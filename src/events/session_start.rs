@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::response::{Decision, HookResult};
+use super::result::{Decision, HookResult};
 
 /// Session start event
 #[derive(Debug, Clone, Serialize, Deserialize)]
