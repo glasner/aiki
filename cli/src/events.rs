@@ -1,4 +1,5 @@
 use crate::provenance::AgentType;
+use crate::session::AikiSession;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -33,8 +34,7 @@ impl EditDetail {
 /// Session start event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiStartEvent {
-    pub agent_type: AgentType,
-    pub session_id: Option<String>,
+    pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
@@ -42,8 +42,7 @@ pub struct AikiStartEvent {
 /// Pre-file-change event (before file modification begins)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPreFileChangeEvent {
-    pub agent_type: AgentType,
-    pub session_id: String,
+    pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
@@ -51,16 +50,11 @@ pub struct AikiPreFileChangeEvent {
 /// Post-file-change event (after file modification)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPostFileChangeEvent {
-    pub agent_type: AgentType,
-    pub client_name: Option<String>, // IDE name (e.g., "zed", "neovim") from ACP InitializeRequest
-    pub client_version: Option<String>, // IDE version (e.g., "0.213.3") from ACP InitializeRequest
-    pub agent_version: Option<String>, // Agent version (e.g., "0.10.6") from ACP InitializeResponse
-    pub session_id: String,          // Required for PostFileChange events
-    pub tool_name: String,           // Tool that made the change (e.g., "Edit", "Write")
-    pub file_paths: Vec<String>,     // Files that were modified (batch support)
+    pub session: AikiSession,
+    pub tool_name: String, // Tool that made the change (e.g., "Edit", "Write")
+    pub file_paths: Vec<String>, // Files that were modified (batch support)
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
-    pub detection_method: crate::provenance::DetectionMethod, // How the change was detected (ACP, Hook, etc.)
     /// Detailed edit operations (old_string -> new_string pairs) for user edit detection
     /// Only populated when the agent/IDE provides this information (ACP Edit tool, hooks)
     #[serde(default)]
@@ -70,8 +64,7 @@ pub struct AikiPostFileChangeEvent {
 /// Pre-prompt event (before agent sees the user's prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPrePromptEvent {
-    pub agent_type: AgentType,
-    pub session_id: Option<String>,
+    pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
     /// The prompt text from the user (immutable)
@@ -91,8 +84,7 @@ pub struct AikiPrepareCommitMessageEvent {
 /// Post-response event (after agent response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiPostResponseEvent {
-    pub agent_type: AgentType,
-    pub session_id: Option<String>,
+    pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
     /// The agent's original response text (immutable)
@@ -141,11 +133,11 @@ impl AikiEvent {
     #[must_use]
     pub fn agent_type(&self) -> AgentType {
         match self {
-            Self::SessionStart(e) => e.agent_type,
-            Self::PrePrompt(e) => e.agent_type,
-            Self::PreFileChange(e) => e.agent_type,
-            Self::PostFileChange(e) => e.agent_type,
-            Self::PostResponse(e) => e.agent_type,
+            Self::SessionStart(e) => e.session.agent_type(),
+            Self::PrePrompt(e) => e.session.agent_type(),
+            Self::PreFileChange(e) => e.session.agent_type(),
+            Self::PostFileChange(e) => e.session.agent_type(),
+            Self::PostResponse(e) => e.session.agent_type(),
             Self::PrepareCommitMessage(e) => e.agent_type,
             Self::Unsupported => AgentType::Unknown,
         }

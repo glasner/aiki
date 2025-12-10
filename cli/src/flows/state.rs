@@ -194,18 +194,21 @@ mod tests {
     fn test_execution_context_with_event() {
         use crate::events::{AikiEvent, AikiPostFileChangeEvent};
         use crate::provenance::AgentType;
+        use crate::session::AikiSession;
 
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test-session".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        )
+        .unwrap();
         let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            client_name: None,
-            client_version: None,
-            agent_version: None,
-            session_id: "test-session".to_string(),
+            session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/test/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/test"),
             timestamp: chrono::Utc::now(),
-            detection_method: crate::provenance::DetectionMethod::Hook,
             edit_details: vec![],
         });
         let ctx = AikiState::new(event);

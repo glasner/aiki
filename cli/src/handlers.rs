@@ -151,7 +151,7 @@ impl HookResponse {
 /// Future: Session logging, environment validation, user-defined startup hooks.
 pub fn handle_start(event: AikiStartEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Session started by {:?}", event.agent_type);
+        eprintln!("[aiki] Session started by {:?}", event.session.agent_type());
     }
 
     // Load core flow
@@ -196,7 +196,7 @@ pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResponse> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PrePrompt event from {:?}, prompt length: {}",
-            event.agent_type,
+            event.session.agent_type(),
             event.prompt.len()
         );
     }
@@ -259,7 +259,8 @@ pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookRespo
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PreFileChange event from {:?}, session: {}",
-            event.agent_type, event.session_id
+            event.session.agent_type(),
+            event.session.external_id()
         );
     }
 
@@ -297,7 +298,9 @@ pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookRes
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Recording change by {:?}, session: {}, tool: {}",
-            event.agent_type, event.session_id, event.tool_name
+            event.session.agent_type(),
+            event.session.external_id(),
+            event.tool_name
         );
     }
 
@@ -335,7 +338,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PostResponse event from {:?}, response length: {}",
-            event.agent_type,
+            event.session.agent_type(),
             event.response.len()
         );
     }
@@ -351,7 +354,7 @@ pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResponse
 
     // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
     let (_flow_result, _timing) =
-        match FlowEngine::execute_statements(&core_flow.session_end, &mut state) {
+        match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
             Ok(result) => result,
             Err(e) => {
                 // Flow execution failed - log warning and skip autoreply

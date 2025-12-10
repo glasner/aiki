@@ -12,6 +12,7 @@ mod ide_config;
 mod jj;
 mod provenance;
 mod repo;
+mod session;
 mod sign_setup_wizard;
 mod signing;
 mod utils;

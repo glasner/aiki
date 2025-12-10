@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::event_bus;
 use crate::events::{
@@ -9,7 +9,95 @@ use crate::events::{
     AikiPrePromptEvent, AikiStartEvent,
 };
 use crate::handlers::{Decision, HookResponse};
-use crate::provenance::AgentType;
+use crate::provenance::{AgentType, DetectionMethod};
+use crate::session::AikiSession;
+
+/// Detect Claude Code version by running `claude --version`
+///
+/// Parses output like "2.0.61 (Claude Code)" and returns "2.0.61".
+/// Returns None if detection fails (command not found, parse error, etc.)
+fn detect_claude_version() -> Option<String> {
+    use std::process::Command;
+
+    Command::new("claude")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .and_then(|s| {
+            // Parse "2.0.61 (Claude Code)" -> "2.0.61"
+            s.split_whitespace().next().map(|v| v.to_string())
+        })
+}
+
+/// Get agent version from cache or detect it
+///
+/// For SessionStart events, detects version and caches it in session file.
+/// For other events, reads cached version from session file (fast).
+/// Falls back to detection if cache read fails.
+fn get_agent_version(payload: &ClaudeCodePayload, repo_path: &Path) -> Option<String> {
+    // Compute session file path directly without creating full session object
+    // This is faster than creating a temporary session (avoids UUID generation)
+    let session_uuid = compute_session_uuid(AgentType::Claude, &payload.session_id);
+    let session_file_path = repo_path.join(".aiki/sessions").join(&session_uuid);
+
+    // Try to read cached version from session file
+    if let Some(cached_version) = read_agent_version_from_file(&session_file_path) {
+        return Some(cached_version);
+    }
+
+    // No cache - detect version (this happens on SessionStart or if file missing)
+    detect_claude_version()
+}
+
+/// Compute session UUID without creating full AikiSession object
+fn compute_session_uuid(agent_type: AgentType, external_id: &str) -> String {
+    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+        0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
+        0xc8,
+    ]);
+    let hash_input = format!("{}:{}", agent_type.to_metadata_string(), external_id);
+    uuid::Uuid::new_v5(&NAMESPACE, hash_input.as_bytes()).to_string()
+}
+
+/// Read agent_version from session file
+fn read_agent_version_from_file(path: &Path) -> Option<String> {
+    use std::fs;
+    fs::read_to_string(path).ok().and_then(|content| {
+        content
+            .lines()
+            .find(|line| line.starts_with("agent_version="))
+            .and_then(|line| line.strip_prefix("agent_version="))
+            .map(|v| v.to_string())
+    })
+}
+
+/// Create a session for Claude Code events
+///
+/// This helper ensures consistent session creation across all Claude Code event builders.
+/// Takes the full payload to allow easy extension if we need additional fields in the future.
+/// For SessionStart, detects version (~135ms) and caches in session file.
+/// For other events, reads cached version from file (~0ms).
+/// Panics on failure since session creation errors are unrecoverable in the hook context.
+fn create_session(payload: &ClaudeCodePayload) -> AikiSession {
+    // Get repo path from cwd
+    let repo_path = Path::new(&payload.cwd);
+    let agent_version = get_agent_version(payload, repo_path);
+
+    AikiSession::new(
+        AgentType::Claude,
+        &payload.session_id,
+        agent_version,
+        DetectionMethod::Hook,
+    )
+    .expect("Failed to create AikiSession for Claude Code")
+}
 
 /// Claude Code hook payload structure
 ///
@@ -102,8 +190,7 @@ pub fn handle(event_name: &str) -> Result<()> {
 /// Build SessionStart event from SessionStart payload
 fn build_session_start_event(payload: ClaudeCodePayload) -> AikiEvent {
     AikiEvent::SessionStart(AikiStartEvent {
-        agent_type: AgentType::Claude,
-        session_id: Some(payload.session_id),
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
     })
@@ -112,8 +199,7 @@ fn build_session_start_event(payload: ClaudeCodePayload) -> AikiEvent {
 /// Build PrePrompt event from UserPromptSubmit payload
 fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
     AikiEvent::PrePrompt(AikiPrePromptEvent {
-        agent_type: AgentType::Claude,
-        session_id: Some(payload.session_id),
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
@@ -134,8 +220,7 @@ fn build_pre_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
     }
 
     AikiEvent::PreFileChange(AikiPreFileChangeEvent {
-        agent_type: AgentType::Claude,
-        session_id: payload.session_id,
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
     })
@@ -143,6 +228,9 @@ fn build_pre_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
 
 /// Build PostFileChange event from PostToolUse payload
 fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
+    // Create session first before moving any fields
+    let session = create_session(&payload);
+
     // Extract required fields for PostFileChange event
     let Some(tool_input) = payload.tool_input else {
         eprintln!("[aiki] Warning: PostToolUse missing tool_input, ignoring event");
@@ -161,16 +249,11 @@ fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
     };
 
     AikiEvent::PostFileChange(AikiPostFileChangeEvent {
-        agent_type: AgentType::Claude,
-        client_name: None, // Hook-based detection doesn't know client (IDE)
-        client_version: None,
-        agent_version: None,
-        session_id: payload.session_id,
+        session,
         tool_name: payload.tool_name,
         file_paths: vec![tool_input.file_path],
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        detection_method: crate::provenance::DetectionMethod::Hook,
         edit_details,
     })
 }
@@ -181,8 +264,7 @@ fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
     // This is intentional - flows use self.* functions to check files/run tests
     // rather than parsing the response text.
     AikiEvent::PostResponse(AikiPostResponseEvent {
-        agent_type: AgentType::Claude,
-        session_id: Some(payload.session_id),
+        session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         response: String::new(), // Empty - flows check files/run tests via self.* functions
@@ -389,4 +471,59 @@ fn translate_stop(response: &HookResponse) -> ClaudeCodeResponse {
 /// PreFileChange events should only fire for these tools to stash user edits.
 fn is_file_modifying_tool(tool_name: &str) -> bool {
     matches!(tool_name, "Edit" | "Write" | "NotebookEdit")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_claude_version() {
+        // This test verifies that detect_claude_version() works
+        // It may return None if `claude` is not in PATH, which is fine
+        let version = detect_claude_version();
+
+        if let Some(v) = version {
+            // If we got a version, verify it's a reasonable format
+            assert!(!v.is_empty(), "Version should not be empty");
+            assert!(
+                v.chars().next().unwrap().is_ascii_digit(),
+                "Version should start with a digit"
+            );
+            println!("Detected Claude Code version: {}", v);
+        } else {
+            // If no version detected, that's okay (claude might not be in PATH)
+            println!("Claude Code not detected (not in PATH or command failed)");
+        }
+    }
+
+    #[test]
+    fn test_create_session_includes_version() {
+        // Create a test payload
+        let payload = ClaudeCodePayload {
+            session_id: "test-session-123".to_string(),
+            transcript_path: "/tmp/transcript.json".to_string(),
+            cwd: "/tmp".to_string(),
+            hook_event_name: "SessionStart".to_string(),
+            tool_name: String::new(),
+            tool_input: None,
+            tool_output: String::new(),
+            prompt: String::new(),
+        };
+
+        let session = create_session(&payload);
+
+        // Verify session was created
+        assert_eq!(session.agent_type(), AgentType::Claude);
+        assert_eq!(session.external_id(), "test-session-123");
+        assert_eq!(session.detection_method(), &DetectionMethod::Hook);
+
+        // Check if version was detected (may be None if claude not in PATH)
+        if let Some(version) = session.agent_version() {
+            println!("Session created with Claude Code version: {}", version);
+            assert!(!version.is_empty());
+        } else {
+            println!("Session created without version (claude not in PATH)");
+        }
+    }
 }

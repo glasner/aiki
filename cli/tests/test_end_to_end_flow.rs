@@ -6,6 +6,7 @@ use aiki::flows::types::{
 };
 use aiki::flows::{AikiState, FlowEngine, FlowResult};
 use aiki::provenance::{AgentType, DetectionMethod};
+use aiki::session::AikiSession;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -88,12 +89,10 @@ SessionEnd:
 
     // Test PostFileChange with switch statement
     {
+        let session =
+            AikiSession::new(AgentType::Claude, "test-123".to_string(), None::<&str>).unwrap();
         let event = AikiPostFileChangeEvent {
-            agent_type: AgentType::Claude,
-            agent_version: None,
-            client_name: None,
-            client_version: None,
-            session_id: "test-123".to_string(),
+            session,
             cwd: PathBuf::from("/tmp"),
             timestamp: Utc::now(),
             tool_name: "Edit".to_string(),

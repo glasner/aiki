@@ -71,6 +71,10 @@ PostFileChange:
   # Create a new change for the next edit
   - jj: new
 
+# PostResponse: Handle actions after agent response (e.g., autoreplies)
+PostResponse:
+  # Empty by default - can be customized in user flows
+
 # PrepareCommitMessage: Modify commit message via Git's prepare-commit-msg hook
 PrepareCommitMessage:
   # Generate co-author lines from staged changes
