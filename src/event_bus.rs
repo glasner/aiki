@@ -1,6 +1,5 @@
 use crate::error::Result;
-use crate::events::AikiEvent;
-use crate::handlers::{self, HookResponse};
+use crate::events::{self, AikiEvent, HookResponse};
 
 /// Dispatch an event to the appropriate handler
 ///
@@ -34,17 +33,17 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
 
     // Route to appropriate handler
     let result = match event {
-        AikiEvent::SessionStart(e) => handlers::handle_start(e),
-        AikiEvent::PrePrompt(e) => handlers::handle_pre_prompt(e),
-        AikiEvent::PreFileChange(e) => handlers::handle_pre_file_change(e),
-        AikiEvent::PostFileChange(e) => handlers::handle_post_file_change(e),
+        AikiEvent::SessionStart(e) => events::handle_start(e),
+        AikiEvent::PrePrompt(e) => events::handle_pre_prompt(e),
+        AikiEvent::PreFileChange(e) => events::handle_pre_file_change(e),
+        AikiEvent::PostFileChange(e) => events::handle_post_file_change(e),
         AikiEvent::PostResponse(e) => {
             // Extract fields we'll need for SessionEnd before consuming the event
             let session = e.session.clone();
             let cwd = e.cwd.clone();
 
             // Handle PostResponse and check for autoreply
-            let mut response = handlers::handle_post_response(e)?;
+            let mut response = events::handle_post_response(e)?;
 
             // If PostResponse didn't produce an autoreply, the session is done
             // Automatically fire SessionEnd event for cleanup
@@ -74,7 +73,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
                     Err(e) => {
                         // SessionEnd failed entirely - log but don't fail PostResponse
                         eprintln!("Warning: SessionEnd dispatch failed: {}", e);
-                        response.failures.push(handlers::Failure(format!(
+                        response.failures.push(crate::events::Failure(format!(
                             "SessionEnd cleanup failed: {}",
                             e
                         )));
@@ -84,8 +83,8 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
 
             Ok(response)
         }
-        AikiEvent::SessionEnd(e) => handlers::handle_session_end(e),
-        AikiEvent::PrepareCommitMessage(e) => handlers::handle_prepare_commit_message(e),
+        AikiEvent::SessionEnd(e) => events::handle_session_end(e),
+        AikiEvent::PrepareCommitMessage(e) => events::handle_prepare_commit_message(e),
         AikiEvent::Unsupported => return Ok(HookResponse::success()),
     };
 
