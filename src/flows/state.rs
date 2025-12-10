@@ -130,12 +130,18 @@ impl AikiState {
 
     /// Build the final context from accumulated chunks
     /// Works for PrePrompt (builds prompt) and PostResponse (builds autoreply)
-    /// Returns None if this event doesn't have a context assembler
+    /// Returns None if:
+    /// - This event doesn't have a context assembler, OR
+    /// - The assembler is empty (no Context actions were executed)
     #[must_use]
     pub fn build_context(&self) -> Option<String> {
-        self.context_assembler
-            .as_ref()
-            .map(|assembler| assembler.build())
+        self.context_assembler.as_ref().and_then(|assembler| {
+            if assembler.is_empty() {
+                None
+            } else {
+                Some(assembler.build())
+            }
+        })
     }
 
     /// Add a failure to the failures list

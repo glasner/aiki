@@ -143,6 +143,28 @@ impl HookResponse {
             (false, false) => None,
         }
     }
+
+    /// Check if this response has meaningful context
+    ///
+    /// Returns true if the context field contains a non-empty string.
+    /// Used by the dispatcher to determine if PostResponse generated an autoreply.
+    ///
+    /// # Examples
+    /// ```
+    /// # use aiki::handlers::HookResponse;
+    /// let resp1 = HookResponse::success_with_context("autoreply text");
+    /// assert!(resp1.has_context());
+    ///
+    /// let resp2 = HookResponse::success_with_context("");
+    /// assert!(!resp2.has_context());
+    ///
+    /// let resp3 = HookResponse::success();
+    /// assert!(!resp3.has_context());
+    /// ```
+    #[must_use]
+    pub fn has_context(&self) -> bool {
+        self.context.as_ref().map_or(false, |s| !s.is_empty())
+    }
 }
 
 /// Handle session start event
