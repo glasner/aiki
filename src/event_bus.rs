@@ -1,6 +1,8 @@
 use crate::error::Result;
 use crate::events::response::HookResponse;
-use crate::events::{self, AikiEvent};
+use crate::events::{self, AikiEvent, AikiSessionEndEvent};
+use crate::session::AikiSession;
+use std::path::PathBuf;
 
 /// Dispatch an event to the appropriate handler
 ///
@@ -46,24 +48,13 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             // Handle PostResponse and check for autoreply
             let response = events::handle_post_response(e)?;
 
-            // If PostResponse didn't produce an autoreply, the session is done
-            // Automatically fire SessionEnd event for cleanup and return its response
-            if !response.has_context() {
-                if std::env::var("AIKI_DEBUG").is_ok() {
-                    eprintln!("[aiki] No autoreply generated - ending session automatically");
-                }
-
-                let session_end_event = crate::events::AikiSessionEndEvent {
-                    session,
-                    cwd,
-                    timestamp: chrono::Utc::now(),
-                };
-
-                // Return SessionEnd response directly (which includes any failures from both events)
-                return dispatch(AikiEvent::SessionEnd(session_end_event));
+            // If PostResponse produced an autoreply, return it (session continues)
+            if response.has_context() {
+                return Ok(response);
             }
 
-            Ok(response)
+            // No autoreply - session is done, trigger SessionEnd event
+            trigger_session_end(session, cwd)
         }
         AikiEvent::SessionEnd(e) => events::handle_session_end(e),
         AikiEvent::PrepareCommitMessage(e) => events::handle_prepare_commit_message(e),
@@ -78,4 +69,21 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResponse> {
             Ok(HookResponse::failure(format!("Aiki handler failed: {}", e)))
         }
     }
+}
+
+/// Trigger a SessionEnd event
+///
+/// Called automatically when PostResponse doesn't generate an autoreply.
+fn trigger_session_end(session: AikiSession, cwd: PathBuf) -> Result<HookResponse> {
+    if std::env::var("AIKI_DEBUG").is_ok() {
+        eprintln!("[aiki] No autoreply generated - ending session automatically");
+    }
+
+    let session_end_event = AikiSessionEndEvent {
+        session,
+        cwd,
+        timestamp: chrono::Utc::now(),
+    };
+
+    dispatch(AikiEvent::SessionEnd(session_end_event))
 }
