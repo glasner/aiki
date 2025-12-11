@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Session start event
+/// Session start event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiStartEvent {
+pub struct AikiSessionStartPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -19,16 +19,19 @@ pub struct AikiStartEvent {
 ///
 /// Currently runs `aiki init --quiet` to ensure repository is initialized.
 /// Future: Session logging, environment validation, user-defined startup hooks.
-pub fn handle_start(event: AikiStartEvent) -> Result<HookResult> {
+pub fn handle_start(payload: AikiSessionStartPayload) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Session started by {:?}", event.session.agent_type());
+        eprintln!(
+            "[aiki] Session started by {:?}",
+            payload.session.agent_type()
+        );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

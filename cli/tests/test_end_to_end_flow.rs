@@ -1,5 +1,5 @@
 /// End-to-end test for the complete flow control refactoring
-use aiki::events::{AikiEvent, AikiPostFileChangeEvent};
+use aiki::events::{AikiEvent, AikiPostFileChangePayload};
 use aiki::flows::types::{
     Action, Flow, FlowStatement, IfStatement, LogAction, OnFailure, OnFailureShortcut, ShellAction,
     SwitchStatement,
@@ -96,7 +96,7 @@ SessionEnd:
             DetectionMethod::Hook,
         )
         .unwrap();
-        let event = AikiPostFileChangeEvent {
+        let event = AikiPostFileChangePayload {
             session,
             cwd: PathBuf::from("/tmp"),
             timestamp: Utc::now(),

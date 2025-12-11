@@ -34,9 +34,9 @@ impl EditDetail {
     }
 }
 
-/// Post-file-change event (after file modification)
+/// Post-file-change event payload (after file modification)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPostFileChangeEvent {
+pub struct AikiPostFileChangePayload {
     pub session: AikiSession,
     pub tool_name: String, // Tool that made the change (e.g., "Edit", "Write")
     pub file_paths: Vec<String>, // Files that were modified (batch support)
@@ -52,23 +52,23 @@ pub struct AikiPostFileChangeEvent {
 ///
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
-pub fn handle_post_file_change(event: AikiPostFileChangeEvent) -> Result<HookResult> {
+pub fn handle_post_file_change(payload: AikiPostFileChangePayload) -> Result<HookResult> {
     // No validation needed - all required fields are guaranteed by type system
 
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] Recording change by {:?}, session: {}, tool: {}",
-            event.session.agent_type(),
-            event.session.external_id(),
-            event.tool_name
+            payload.session.agent_type(),
+            payload.session.external_id(),
+            payload.tool_name
         );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event (clone for error message)
-    let mut state = AikiState::new(event.clone());
+    // Build execution state from payload (clone for error message)
+    let mut state = AikiState::new(payload.clone());
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

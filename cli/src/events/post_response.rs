@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Post-response event (after agent response)
+/// Post-response event payload (after agent response)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPostResponseEvent {
+pub struct AikiPostResponsePayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -26,20 +26,20 @@ pub struct AikiPostResponseEvent {
 /// allowing flows to validate output, detect errors, and optionally send an autoreply to the agent.
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_post_response(event: AikiPostResponseEvent) -> Result<HookResult> {
+pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PostResponse event from {:?}, response length: {}",
-            event.session.agent_type(),
-            event.response.len()
+            payload.session.agent_type(),
+            payload.response.len()
         );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

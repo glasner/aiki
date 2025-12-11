@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiEvent, AikiPostFileChangeEvent};
+        use crate::events::{AikiEvent, AikiPostFileChangePayload};
         use crate::provenance::AgentType;
         use crate::session::AikiSession;
 
@@ -209,7 +209,7 @@ mod tests {
             crate::provenance::DetectionMethod::Hook,
         )
         .unwrap();
-        let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+        let event = AikiEvent::PostFileChange(AikiPostFileChangePayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/test/file.rs".to_string()],

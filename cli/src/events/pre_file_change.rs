@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Pre-file-change event (before file modification begins)
+/// Pre-file-change event payload (before file modification begins)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPreFileChangeEvent {
+pub struct AikiPreFileChangePayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -20,20 +20,20 @@ pub struct AikiPreFileChangeEvent {
 /// This event fires when the agent requests permission to modify files.
 /// It allows flows to stash user edits before the AI starts making changes,
 /// ensuring clean separation between human and AI work.
-pub fn handle_pre_file_change(event: AikiPreFileChangeEvent) -> Result<HookResult> {
+pub fn handle_pre_file_change(payload: AikiPreFileChangePayload) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PreFileChange event from {:?}, session: {}",
-            event.session.agent_type(),
-            event.session.external_id()
+            payload.session.agent_type(),
+            payload.session.external_id()
         );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event.clone());
+    // Build execution state from payload
+    let mut state = AikiState::new(payload.clone());
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

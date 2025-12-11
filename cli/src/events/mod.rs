@@ -17,19 +17,19 @@ pub mod result;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AikiEvent {
     /// Session initialization (maps to SessionStart, beforeSubmitPrompt)
-    SessionStart(AikiStartEvent),
+    SessionStart(AikiSessionStartPayload),
     /// Before agent sees the user's prompt (allows context injection)
-    PrePrompt(AikiPrePromptEvent),
+    PrePrompt(AikiPrePromptPayload),
     /// Before file modification begins (fired when agent requests permission for file-modifying tools)
-    PreFileChange(AikiPreFileChangeEvent),
+    PreFileChange(AikiPreFileChangePayload),
     /// After file modification (maps to PostToolUse, afterFileEdit)
-    PostFileChange(AikiPostFileChangeEvent),
+    PostFileChange(AikiPostFileChangePayload),
     /// Post-response (after agent response, allows validation and autoreply)
-    PostResponse(AikiPostResponseEvent),
+    PostResponse(AikiPostResponsePayload),
     /// Session end (when agent session ends/disconnects)
-    SessionEnd(AikiSessionEndEvent),
+    SessionEnd(AikiSessionEndPayload),
     /// Prepare commit message (Git's prepare-commit-msg hook)
-    PrepareCommitMessage(AikiPrepareCommitMessageEvent),
+    PrepareCommitMessage(AikiPrepareCommitMessagePayload),
     /// Unsupported event (unknown events or non-file tools that don't require processing)
     Unsupported,
 }
@@ -94,44 +94,44 @@ pub use session_start::*;
 // From Trait Implementations (enables vendor .into() pattern)
 // ============================================================================
 
-impl From<AikiStartEvent> for AikiEvent {
-    fn from(event: AikiStartEvent) -> Self {
-        AikiEvent::SessionStart(event)
+impl From<AikiSessionStartPayload> for AikiEvent {
+    fn from(payload: AikiSessionStartPayload) -> Self {
+        AikiEvent::SessionStart(payload)
     }
 }
 
-impl From<AikiPrePromptEvent> for AikiEvent {
-    fn from(event: AikiPrePromptEvent) -> Self {
-        AikiEvent::PrePrompt(event)
+impl From<AikiPrePromptPayload> for AikiEvent {
+    fn from(payload: AikiPrePromptPayload) -> Self {
+        AikiEvent::PrePrompt(payload)
     }
 }
 
-impl From<AikiPreFileChangeEvent> for AikiEvent {
-    fn from(event: AikiPreFileChangeEvent) -> Self {
-        AikiEvent::PreFileChange(event)
+impl From<AikiPreFileChangePayload> for AikiEvent {
+    fn from(payload: AikiPreFileChangePayload) -> Self {
+        AikiEvent::PreFileChange(payload)
     }
 }
 
-impl From<AikiPostFileChangeEvent> for AikiEvent {
-    fn from(event: AikiPostFileChangeEvent) -> Self {
-        AikiEvent::PostFileChange(event)
+impl From<AikiPostFileChangePayload> for AikiEvent {
+    fn from(payload: AikiPostFileChangePayload) -> Self {
+        AikiEvent::PostFileChange(payload)
     }
 }
 
-impl From<AikiPrepareCommitMessageEvent> for AikiEvent {
-    fn from(event: AikiPrepareCommitMessageEvent) -> Self {
-        AikiEvent::PrepareCommitMessage(event)
+impl From<AikiPrepareCommitMessagePayload> for AikiEvent {
+    fn from(payload: AikiPrepareCommitMessagePayload) -> Self {
+        AikiEvent::PrepareCommitMessage(payload)
     }
 }
 
-impl From<AikiPostResponseEvent> for AikiEvent {
-    fn from(event: AikiPostResponseEvent) -> Self {
-        AikiEvent::PostResponse(event)
+impl From<AikiPostResponsePayload> for AikiEvent {
+    fn from(payload: AikiPostResponsePayload) -> Self {
+        AikiEvent::PostResponse(payload)
     }
 }
 
-impl From<AikiSessionEndEvent> for AikiEvent {
-    fn from(event: AikiSessionEndEvent) -> Self {
-        AikiEvent::SessionEnd(event)
+impl From<AikiSessionEndPayload> for AikiEvent {
+    fn from(payload: AikiSessionEndPayload) -> Self {
+        AikiEvent::SessionEnd(payload)
     }
 }

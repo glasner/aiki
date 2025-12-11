@@ -120,7 +120,8 @@ use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiPostFileChangeEvent, AikiPostResponseEvent, AikiPrePromptEvent, AikiStartEvent,
+    AikiEvent, AikiPostFileChangePayload, AikiPostResponsePayload, AikiPrePromptPayload,
+    AikiSessionStartPayload,
 };
 use crate::provenance::AgentType;
 use crate::session::AikiSession;
@@ -1284,7 +1285,7 @@ fn record_post_change_events(
         );
 
     // Create and dispatch a single event for all affected files
-    let event = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+    let event = AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session,
         tool_name: tool_name.clone(),
         file_paths,
@@ -1412,7 +1413,7 @@ fn handle_session_prompt(
 
     // Fire PrePrompt event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PrePrompt(AikiPrePromptEvent {
+    let event = AikiEvent::PrePrompt(AikiPrePromptPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1537,7 +1538,7 @@ fn handle_session_end(
 
     // Fire PostResponse event with accumulated response text
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PostResponse(AikiPostResponseEvent {
+    let event = AikiEvent::PostResponse(AikiPostResponsePayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1665,7 +1666,7 @@ fn fire_session_start_event(
 
     // Create and dispatch SessionStart event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::SessionStart(AikiStartEvent {
+    let event = AikiEvent::SessionStart(AikiSessionStartPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1694,7 +1695,7 @@ fn fire_pre_file_change_event(
 
     // Create and dispatch PreFileChange event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PreFileChange(crate::events::AikiPreFileChangeEvent {
+    let event = AikiEvent::PreFileChange(crate::events::AikiPreFileChangePayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),

@@ -1,7 +1,7 @@
 // Test to verify event construction works properly
 #![cfg(test)]
 
-use crate::events::{AikiEvent, AikiPostFileChangeEvent, AikiStartEvent};
+use crate::events::{AikiEvent, AikiPostFileChangePayload, AikiSessionStartPayload};
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ fn test_must_use_warning_compilation() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event = AikiEvent::SessionStart(AikiStartEvent {
+    let _event = AikiEvent::SessionStart(AikiSessionStartPayload {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -35,7 +35,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event1 = AikiEvent::SessionStart(AikiStartEvent {
+    let _event1 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session1,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -49,7 +49,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event2 = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+    let _event2 = AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session: session2,
         tool_name: "Edit".to_string(),
         file_paths: vec!["/tmp/file.rs".to_string()],
@@ -67,7 +67,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event3 = AikiEvent::SessionStart(AikiStartEvent {
+    let _event3 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session3,
         cwd: PathBuf::from(&s),
         timestamp: chrono::Utc::now(),
@@ -81,7 +81,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event4 = AikiEvent::SessionStart(AikiStartEvent {
+    let _event4 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session4,
         cwd: PathBuf::from("/tmp"),
         timestamp: chrono::Utc::now(),
@@ -96,7 +96,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event5 = AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+    let _event5 = AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session: session5,
         tool_name: "Write".to_string(),
         file_paths: vec!["/tmp/file.rs".to_string()],
@@ -113,7 +113,7 @@ fn test_impl_asref_path_ergonomics() {
         DetectionMethod::Hook,
     )
     .unwrap();
-    let _event6 = AikiEvent::SessionStart(AikiStartEvent {
+    let _event6 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session6,
         cwd: pb.as_path().to_path_buf(),
         timestamp: chrono::Utc::now(),
