@@ -454,26 +454,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_claude_version() {
-        // This test verifies that npm::get_version() works for Claude Code
-        // It may return None if `claude` is not in PATH, which is fine
-        let version = crate::npm::get_version("@anthropic-ai/claude-code", "claude");
-
-        if let Some(v) = version {
-            // If we got a version, verify it's a reasonable format
-            assert!(!v.is_empty(), "Version should not be empty");
-            assert!(
-                v.chars().next().unwrap().is_ascii_digit(),
-                "Version should start with a digit"
-            );
-            println!("Detected Claude Code version: {}", v);
-        } else {
-            // If no version detected, that's okay (claude might not be in PATH)
-            println!("Claude Code not detected (not in PATH or command failed)");
-        }
-    }
-
-    #[test]
     fn test_create_session_includes_version() {
         // Create a test payload
         let payload = ClaudeCodePayload {

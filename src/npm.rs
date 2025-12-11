@@ -324,11 +324,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_version_detection() {
-        // Only run if Claude is installed
-        if let Some(version) = get_version("@anthropic-ai/claude-code", "claude") {
-            assert!(version.split('.').count() >= 2, "Expected semver format");
-            println!("Detected Claude Code version: {}", version);
+    fn test_version_detection_claude_code() {
+        // Test full end-to-end detection with Claude Code as example
+        // This verifies that get_version() works for real packages
+        // It may return None if Claude is not installed, which is fine
+        let version = get_version("@anthropic-ai/claude-code", "claude");
+
+        if let Some(v) = version {
+            // If we got a version, verify it's a reasonable format
+            assert!(!v.is_empty(), "Version should not be empty");
+            assert!(
+                v.chars().next().unwrap().is_ascii_digit(),
+                "Version should start with a digit"
+            );
+            assert!(v.split('.').count() >= 2, "Expected semver format");
+            println!("Detected Claude Code version: {}", v);
+        } else {
+            // If no version detected, that's okay (claude might not be installed)
+            println!("Claude Code not detected (not installed or not in PATH)");
         }
     }
 
