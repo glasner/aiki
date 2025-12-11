@@ -12,28 +12,13 @@ use crate::events::{
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 
-/// Detect Claude Code version by running `claude --version`
+/// Detect Claude Code version by reading package.json directly.
 ///
-/// Parses output like "2.0.61 (Claude Code)" and returns "2.0.61".
-/// Returns None if detection fails (command not found, parse error, etc.)
+/// This is significantly faster than running `claude --version` (~120ms overhead).
+/// Uses the npm module to find the global installation without spawning Node.js.
+/// Falls back to `which` resolution if npm detection fails.
 fn detect_claude_version() -> Option<String> {
-    use std::process::Command;
-
-    Command::new("claude")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|output| {
-            if output.status.success() {
-                String::from_utf8(output.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .and_then(|s| {
-            // Parse "2.0.61 (Claude Code)" -> "2.0.61"
-            s.split_whitespace().next().map(|v| v.to_string())
-        })
+    crate::npm::get_claude_version()
 }
 
 /// Get agent version from cache or detect it

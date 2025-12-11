@@ -9,6 +9,7 @@ mod events;
 mod flows;
 mod ide_config;
 mod jj;
+mod npm;
 mod provenance;
 mod repo;
 mod session;
