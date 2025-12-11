@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::events::result::HookResult;
-use crate::events::{self, AikiEvent, AikiSessionEndEvent};
+use crate::events::{self, AikiEvent, AikiSessionEndPayload};
 use crate::session::AikiSession;
 use std::path::PathBuf;
 
@@ -79,11 +79,11 @@ fn trigger_session_end(session: AikiSession, cwd: PathBuf) -> Result<HookResult>
         eprintln!("[aiki] No autoreply generated - ending session automatically");
     }
 
-    let session_end_event = AikiSessionEndEvent {
+    let session_end_payload = AikiSessionEndPayload {
         session,
         cwd,
         timestamp: chrono::Utc::now(),
     };
 
-    dispatch(AikiEvent::SessionEnd(session_end_event))
+    dispatch(AikiEvent::SessionEnd(session_end_payload))
 }

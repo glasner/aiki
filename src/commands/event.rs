@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::result::{Decision, Failure, HookResult};
-use crate::events::{AikiEvent, AikiPrepareCommitMessageEvent};
+use crate::events::{AikiEvent, AikiPrepareCommitMessagePayload};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;
@@ -37,7 +37,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
     // Get commit message file path from environment (set by Git hook)
     let commit_msg_file = env::var("AIKI_COMMIT_MSG_FILE").ok().map(PathBuf::from);
 
-    let event = AikiPrepareCommitMessageEvent {
+    let event = AikiPrepareCommitMessagePayload {
         agent_type: AgentType::Claude, // Default agent for git hooks
         cwd,
         timestamp: Utc::now(),

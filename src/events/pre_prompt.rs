@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Pre-prompt event (before agent sees the user's prompt)
+/// Pre-prompt event payload (before agent sees the user's prompt)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPrePromptEvent {
+pub struct AikiPrePromptPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -23,20 +23,20 @@ pub struct AikiPrePromptEvent {
 /// to inject additional context (e.g., project conventions, active files, etc.).
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_pre_prompt(event: AikiPrePromptEvent) -> Result<HookResult> {
+pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
             "[aiki] PrePrompt event from {:?}, prompt length: {}",
-            event.session.agent_type(),
-            event.prompt.len()
+            payload.session.agent_type(),
+            payload.prompt.len()
         );
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

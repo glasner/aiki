@@ -6,7 +6,7 @@ use aiki::events::result::HookResult;
 /// 2. AikiState::build_context() returns None when no Context actions executed
 /// 3. Event dispatcher properly triggers SessionEnd when no autoreply
 /// 4. SessionEnd errors propagate through to PostResponse
-use aiki::events::{AikiPostResponseEvent, AikiSessionEndEvent};
+use aiki::events::{AikiPostResponsePayload, AikiSessionEndPayload};
 use aiki::flows::context::ContextAssembler;
 use aiki::flows::types::{Action, ContextAction, ContextContent, FlowStatement};
 use aiki::flows::{AikiState, FlowEngine};
@@ -58,7 +58,7 @@ fn test_build_context_returns_none_when_empty() {
     )
     .unwrap();
 
-    let event = AikiPostResponseEvent {
+    let event = AikiPostResponsePayload {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),
@@ -86,7 +86,7 @@ fn test_build_context_returns_some_with_chunks() {
     )
     .unwrap();
 
-    let event = AikiPostResponseEvent {
+    let event = AikiPostResponsePayload {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),
@@ -169,7 +169,7 @@ fn test_session_end_triggered_without_autoreply() {
     .unwrap();
 
     // Create a simple PostResponse event
-    let event = AikiPostResponseEvent {
+    let event = AikiPostResponsePayload {
         session: session.clone(),
         cwd: PathBuf::from("/tmp/test"),
         timestamp: Utc::now(),
@@ -230,7 +230,7 @@ fn test_documented_behavior() {
     )
     .unwrap();
 
-    let event = AikiPostResponseEvent {
+    let event = AikiPostResponsePayload {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),

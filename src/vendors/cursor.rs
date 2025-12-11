@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use crate::event_bus;
 use crate::events::result::{Decision, HookResult};
 use crate::events::{
-    AikiEvent, AikiPostFileChangeEvent, AikiPreFileChangeEvent, AikiPrePromptEvent, AikiStartEvent,
+    AikiEvent, AikiPostFileChangePayload, AikiPreFileChangePayload, AikiPrePromptPayload,
+    AikiSessionStartPayload,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -140,7 +141,7 @@ pub fn handle(event_name: &str) -> Result<()> {
 /// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
 /// The modifiedPrompt field is not supported - only blocking via user_message.
 fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
-    AikiEvent::PrePrompt(AikiPrePromptEvent {
+    AikiEvent::PrePrompt(AikiPrePromptPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
@@ -161,7 +162,7 @@ fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
         return AikiEvent::Unsupported;
     }
 
-    AikiEvent::PreFileChange(AikiPreFileChangeEvent {
+    AikiEvent::PreFileChange(AikiPreFileChangePayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
@@ -191,7 +192,7 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
         eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
     }
 
-    AikiEvent::PostFileChange(AikiPostFileChangeEvent {
+    AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session,
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         file_paths: vec![file_path],
@@ -203,7 +204,7 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
 
 /// Build PostResponse event from stop payload
 fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
-    AikiEvent::PostResponse(crate::events::AikiPostResponseEvent {
+    AikiEvent::PostResponse(crate::events::AikiPostResponsePayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),

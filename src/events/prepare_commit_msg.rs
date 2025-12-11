@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Prepare commit message event (Git's prepare-commit-msg hook)
+/// Prepare commit message event payload (Git's prepare-commit-msg hook)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPrepareCommitMessageEvent {
+pub struct AikiPrepareCommitMessagePayload {
     pub agent_type: AgentType,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -22,7 +22,9 @@ pub struct AikiPrepareCommitMessageEvent {
 /// Executes the PrepareCommitMessage flow section to modify the commit message.
 /// Typically used for adding co-author attributions, but can add any content.
 /// Called from Git's prepare-commit-msg hook via `aiki event prepare-commit-msg`.
-pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Result<HookResult> {
+pub fn handle_prepare_commit_message(
+    payload: AikiPrepareCommitMessagePayload,
+) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!("[aiki] Preparing commit message");
     }
@@ -30,8 +32,8 @@ pub fn handle_prepare_commit_message(event: AikiPrepareCommitMessageEvent) -> Re
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event);
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

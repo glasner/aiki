@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Session end event (when agent session ends/disconnects)
+/// Session end event payload (when agent session ends/disconnects)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiSessionEndEvent {
+pub struct AikiSessionEndPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -20,16 +20,16 @@ pub struct AikiSessionEndEvent {
 /// Executes the SessionEnd flow section for user-defined cleanup actions,
 /// then cleans up the session file. This event fires when the agent session
 /// ends, either explicitly or when PostResponse doesn't generate an autoreply.
-pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResult> {
+pub fn handle_session_end(payload: AikiSessionEndPayload) -> Result<HookResult> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Session ended by {:?}", event.session.agent_type());
+        eprintln!("[aiki] Session ended by {:?}", payload.session.agent_type());
     }
 
     // Load core flow
     let core_flow = crate::flows::load_core_flow()?;
 
-    // Build execution state from event
-    let mut state = AikiState::new(event.clone());
+    // Build execution state from payload
+    let mut state = AikiState::new(payload.clone());
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
@@ -39,7 +39,7 @@ pub fn handle_session_end(event: AikiSessionEndEvent) -> Result<HookResult> {
         FlowEngine::execute_statements(&core_flow.session_end, &mut state)?;
 
     // Clean up session file (always happens, regardless of flow result)
-    event.session.end(&event.cwd)?;
+    payload.session.end(&payload.cwd)?;
 
     // Extract failures from state
     let failures = state.take_failures();
