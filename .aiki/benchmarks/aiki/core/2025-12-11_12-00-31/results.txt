@@ -1,0 +1,41 @@
+Aiki End-to-End Benchmark Results
+Date: 2025-12-11 12:00:31.515981 -05:00
+=====================================
+
+Configuration:
+  Number of edits: 10
+
+Phase Timing:
+  Initialization: 0.191s
+  Initial commit: 0.073s
+  Hot path (total): 1.242s
+  Blame query: 0.011s
+  Authors query: 0.017s
+  Final commit: 0.221s
+
+Event Timing:
+  SessionStart (1 occurrences):
+    Median: 159.0ms
+    Range: 159.0ms - 159.0ms
+  PostFileChange (10 occurrences):
+    Median: 125.2ms
+    Range: 113.9ms - 133.7ms
+
+Total: 1.755s
+
+Comparison to Previous Run:
+=====================================
+  Total time:
+    Previous: 1.718s
+    Current:  1.755s
+    Change:   +0.037s (+2.1%)
+
+  Event-level comparison:
+    SessionStart:
+      Previous: 90.6ms (median)
+      Current:  159.0ms (median)
+      Change:   +68.4ms (+75.5%)
+    PostFileChange:
+      Previous: 125.7ms (median)
+      Current:  125.2ms (median)
+      Change:   -0.5ms (-0.4%)

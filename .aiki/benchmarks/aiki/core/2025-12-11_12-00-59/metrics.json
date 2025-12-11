@@ -1,0 +1,30 @@
+{
+  "config": {
+    "num_edits": 10
+  },
+  "date": "2025-12-11T12:00:59.615292-05:00",
+  "events": {
+    "PostFileChange": {
+      "count": 10,
+      "max": 0.129829083,
+      "median": 0.125037667,
+      "min": 0.115058042
+    },
+    "SessionStart": {
+      "count": 1,
+      "max": 0.083841667,
+      "median": 0.083841667,
+      "min": 0.083841667
+    }
+  },
+  "phases": {
+    "authors_query": 0.016466167,
+    "blame_query": 0.010026125,
+    "final_commit": 0.220422125,
+    "hot_path": 1.224542625,
+    "initial_commit": 0.076324834,
+    "initialization": 0.106918417
+  },
+  "timestamp": "2025-12-11_12-00-59",
+  "total": 1.6547002929999999
+}
