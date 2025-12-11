@@ -5,26 +5,41 @@
 
 use std::path::PathBuf;
 
-const CLAUDE_PACKAGE_NAME: &str = "@anthropic-ai/claude-code";
+/// Get the version of a globally installed npm package by reading package.json directly.
+/// Avoids ~120ms Node.js startup overhead from spawning the binary with --version.
+///
+/// # Arguments
+/// * `package_name` - The npm package name (e.g., "@anthropic-ai/claude-code")
+/// * `binary_name` - The binary name for fallback resolution via `which` (e.g., "claude")
+///
+/// # Example
+/// ```
+/// let version = aiki::npm::get_version("@anthropic-ai/claude-code", "claude");
+/// ```
+pub fn get_version(
+    package_name: impl Into<String>,
+    binary_name: impl Into<String>,
+) -> Option<String> {
+    let package_name = package_name.into();
+    let binary_name = binary_name.into();
 
-/// Get Claude Code version by reading package.json directly.
-/// Avoids ~120ms Node.js startup overhead from `claude --version`.
-/// Logs detection failures when AIKI_DEBUG is set.
-pub fn get_claude_version() -> Option<String> {
-    let result = get_claude_version_impl();
+    let result = get_version_impl(&package_name, &binary_name);
 
     // Log failures in debug mode
     if result.is_none() && std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Could not detect Claude Code version - falling back to None");
+        eprintln!(
+            "[aiki] Could not detect version for package '{}' - falling back to None",
+            package_name
+        );
     }
 
     result
 }
 
-fn get_claude_version_impl() -> Option<String> {
+fn get_version_impl(package_name: &str, binary_name: &str) -> Option<String> {
     // Try npm global root detection first
     if let Some(npm_root) = find_npm_global_root() {
-        let package_json = npm_root.join(CLAUDE_PACKAGE_NAME).join("package.json");
+        let package_json = npm_root.join(package_name).join("package.json");
 
         if std::env::var("AIKI_DEBUG").is_ok() {
             eprintln!("[aiki] Checking package.json at: {:?}", package_json);
@@ -36,7 +51,7 @@ fn get_claude_version_impl() -> Option<String> {
     }
 
     // Fallback: resolve via `which` (adds ~10ms but handles edge cases)
-    resolve_via_which()
+    resolve_via_which(binary_name)
 }
 
 /// Find npm global node_modules directory without spawning a process.
@@ -271,13 +286,16 @@ fn read_version_from_package_json(path: &PathBuf) -> Option<String> {
     json["version"].as_str().map(String::from)
 }
 
-fn resolve_via_which() -> Option<String> {
+fn resolve_via_which(binary_name: &str) -> Option<String> {
     if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Falling back to `which` resolution");
+        eprintln!(
+            "[aiki] Falling back to `which` resolution for binary '{}'",
+            binary_name
+        );
     }
 
     let output = std::process::Command::new("which")
-        .arg("claude")
+        .arg(binary_name)
         .output()
         .ok()?;
 
@@ -308,7 +326,7 @@ mod tests {
     #[test]
     fn test_version_detection() {
         // Only run if Claude is installed
-        if let Some(version) = get_claude_version() {
+        if let Some(version) = get_version("@anthropic-ai/claude-code", "claude") {
             assert!(version.split('.').count() >= 2, "Expected semver format");
             println!("Detected Claude Code version: {}", version);
         }
@@ -397,7 +415,7 @@ mod tests {
     fn test_fallback_to_which() {
         // This test verifies the which fallback works
         // Only runs if claude is in PATH but not in standard locations
-        if let Some(version) = resolve_via_which() {
+        if let Some(version) = resolve_via_which("claude") {
             assert!(version.split('.').count() >= 2, "Expected semver format");
             println!("Detected via which fallback: {}", version);
         }
