@@ -18,7 +18,7 @@ use crate::session::AikiSession;
 /// Uses the npm module to find the global installation without spawning Node.js.
 /// Falls back to `which` resolution if npm detection fails.
 fn detect_claude_version() -> Option<String> {
-    crate::npm::get_claude_version()
+    crate::npm::get_version("@anthropic-ai/claude-code", "claude")
 }
 
 /// Get agent version from cache or detect it
