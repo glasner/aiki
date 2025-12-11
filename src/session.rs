@@ -222,7 +222,10 @@ impl AikiSession {
     ///
     /// Creates a UUID v5 by hashing: "{agent_type}:{external_session_id}"
     /// This ensures the same agent and external session always produce the same UUID.
-    fn generate_uuid(agent_type: AgentType, external_id: &str) -> String {
+    ///
+    /// This is useful when you need to compute a session UUID without creating
+    /// a full AikiSession object (e.g., for cache lookups).
+    pub fn generate_uuid(agent_type: AgentType, external_id: &str) -> String {
         // Create deterministic hash input: "agent_type:external_session_id"
         let hash_input = format!("{}:{}", agent_type.to_metadata_string(), external_id);
 

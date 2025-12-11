@@ -19,8 +19,7 @@ use crate::session::AikiSession;
 /// Falls back to detection if cache read fails.
 fn get_agent_version(payload: &ClaudeCodePayload, repo_path: &Path) -> Option<String> {
     // Compute session file path directly without creating full session object
-    // This is faster than creating a temporary session (avoids UUID generation)
-    let session_uuid = compute_session_uuid(AgentType::Claude, &payload.session_id);
+    let session_uuid = AikiSession::generate_uuid(AgentType::Claude, &payload.session_id);
     let session_file_path = repo_path.join(".aiki/sessions").join(&session_uuid);
 
     // Try to read cached version from session file
@@ -30,16 +29,6 @@ fn get_agent_version(payload: &ClaudeCodePayload, repo_path: &Path) -> Option<St
 
     // No cache - detect version (this happens on SessionStart or if file missing)
     crate::npm::get_version("@anthropic-ai/claude-code", "claude")
-}
-
-/// Compute session UUID without creating full AikiSession object
-fn compute_session_uuid(agent_type: AgentType, external_id: &str) -> String {
-    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
-        0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
-        0xc8,
-    ]);
-    let hash_input = format!("{}:{}", agent_type.to_metadata_string(), external_id);
-    uuid::Uuid::new_v5(&NAMESPACE, hash_input.as_bytes()).to_string()
 }
 
 /// Read agent_version from session file
