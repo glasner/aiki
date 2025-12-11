@@ -6,6 +6,7 @@ pub mod event_bus;
 pub mod events;
 pub mod flows;
 pub mod jj;
+pub mod npm;
 pub mod provenance;
 pub mod session;
 pub mod utils;
