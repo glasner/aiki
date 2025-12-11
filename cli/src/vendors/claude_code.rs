@@ -12,15 +12,6 @@ use crate::events::{
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 
-/// Detect Claude Code version by reading package.json directly.
-///
-/// This is significantly faster than running `claude --version` (~120ms overhead).
-/// Uses the npm module to find the global installation without spawning Node.js.
-/// Falls back to `which` resolution if npm detection fails.
-fn detect_claude_version() -> Option<String> {
-    crate::npm::get_version("@anthropic-ai/claude-code", "claude")
-}
-
 /// Get agent version from cache or detect it
 ///
 /// For SessionStart events, detects version and caches it in session file.
@@ -38,7 +29,7 @@ fn get_agent_version(payload: &ClaudeCodePayload, repo_path: &Path) -> Option<St
     }
 
     // No cache - detect version (this happens on SessionStart or if file missing)
-    detect_claude_version()
+    crate::npm::get_version("@anthropic-ai/claude-code", "claude")
 }
 
 /// Compute session UUID without creating full AikiSession object
@@ -464,9 +455,9 @@ mod tests {
 
     #[test]
     fn test_detect_claude_version() {
-        // This test verifies that detect_claude_version() works
+        // This test verifies that npm::get_version() works for Claude Code
         // It may return None if `claude` is not in PATH, which is fine
-        let version = detect_claude_version();
+        let version = crate::npm::get_version("@anthropic-ai/claude-code", "claude");
 
         if let Some(v) = version {
             // If we got a version, verify it's a reasonable format
