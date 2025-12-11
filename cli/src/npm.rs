@@ -59,7 +59,7 @@ fn get_version_impl(package_name: &str, binary_name: &str) -> Option<String> {
 fn find_npm_global_root() -> Option<PathBuf> {
     // 1. Check env vars (free)
     if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
-        return Some(PathBuf::from(prefix).join("lib/node_modules"));
+        return Some(npm_prefix_to_node_modules(&prefix));
     }
 
     // 2. Check .npmrc files for prefix setting
@@ -71,7 +71,7 @@ fn find_npm_global_root() -> Option<PathBuf> {
 
     for path in npmrc_paths.into_iter().flatten() {
         if let Some(prefix) = parse_npmrc_prefix(&path) {
-            return Some(PathBuf::from(prefix).join("lib/node_modules"));
+            return Some(npm_prefix_to_node_modules(&prefix));
         }
     }
 
@@ -126,14 +126,38 @@ fn parse_npmrc_prefix(path: &str) -> Option<String> {
     None
 }
 
+/// Convert npm prefix to node_modules path, accounting for platform differences.
+/// Unix: prefix → prefix/lib/node_modules
+/// Windows: prefix → prefix/node_modules
+fn npm_prefix_to_node_modules(prefix: &str) -> PathBuf {
+    let prefix_path = PathBuf::from(prefix);
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows npm prefix already points at the npm directory
+        // e.g., C:\Users\User\AppData\Roaming\npm
+        prefix_path.join("node_modules")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Unix npm prefix needs lib/ subdirectory
+        // e.g., /usr/local → /usr/local/lib/node_modules
+        prefix_path.join("lib/node_modules")
+    }
+}
+
 /// Find node_modules directory for NVM installations.
 /// Checks NODE_PATH env var first, then resolves NVM default alias.
 fn find_nvm_node_modules() -> Option<PathBuf> {
     // Fast path: Check NODE_PATH env var (set by NVM)
+    // NODE_PATH can contain multiple entries separated by : (Unix) or ; (Windows)
     if let Ok(node_path) = std::env::var("NODE_PATH") {
-        let path = PathBuf::from(node_path);
-        if path.exists() {
-            return Some(path);
+        // Use std::env::split_paths for cross-platform path splitting
+        for path in std::env::split_paths(&node_path) {
+            if path.exists() {
+                return Some(path);
+            }
         }
     }
 
@@ -289,21 +313,14 @@ fn read_version_from_package_json(path: &PathBuf) -> Option<String> {
 fn resolve_via_which(binary_name: &str) -> Option<String> {
     if std::env::var("AIKI_DEBUG").is_ok() {
         eprintln!(
-            "[aiki] Falling back to `which` resolution for binary '{}'",
+            "[aiki] Falling back to binary resolution for '{}'",
             binary_name
         );
     }
 
-    let output = std::process::Command::new("which")
-        .arg(binary_name)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let bin_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    // Use the `which` crate (already in dependencies) for cross-platform resolution
+    // Handles PATH search, PATHEXT on Windows, symlinks, and permissions
+    let bin_path = which::which(binary_name).ok()?;
     let resolved = std::fs::canonicalize(&bin_path).ok()?;
 
     // Walk up directory tree to find package.json
@@ -432,5 +449,64 @@ mod tests {
             assert!(version.split('.').count() >= 2, "Expected semver format");
             println!("Detected via which fallback: {}", version);
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_windows_prefix_path() {
+        let prefix = r"C:\Users\Test\AppData\Roaming\npm";
+        let result = npm_prefix_to_node_modules(prefix);
+        assert_eq!(
+            result,
+            PathBuf::from(r"C:\Users\Test\AppData\Roaming\npm\node_modules")
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn test_unix_prefix_path() {
+        let prefix = "/usr/local";
+        let result = npm_prefix_to_node_modules(prefix);
+        assert_eq!(result, PathBuf::from("/usr/local/lib/node_modules"));
+    }
+
+    #[test]
+    fn test_node_path_multiple_entries() {
+        use std::sync::Mutex;
+        static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+        // Serialize env var access to avoid race conditions
+        let _guard = TEST_MUTEX.lock().unwrap();
+
+        // Save original NODE_PATH
+        let original_node_path = std::env::var("NODE_PATH").ok();
+
+        // Set up multi-entry NODE_PATH with temp directories
+        let temp_dir = std::env::temp_dir();
+        let node_test1 = temp_dir.join("node_test_multi1");
+        let node_test2 = temp_dir.join("node_test_multi2");
+        std::fs::create_dir_all(&node_test1).unwrap();
+        std::fs::create_dir_all(&node_test2).unwrap();
+
+        // Build multi-entry NODE_PATH: nonexistent path first, then real path
+        let paths = vec![
+            PathBuf::from("/nonexistent_path_for_test"),
+            node_test1.clone(),
+        ];
+        let node_path = std::env::join_paths(&paths).unwrap();
+        std::env::set_var("NODE_PATH", &node_path);
+
+        // Should find the first existing path (node_test1), skipping nonexistent
+        let result = find_nvm_node_modules();
+        assert_eq!(result, Some(node_test1.clone()));
+
+        // Cleanup
+        if let Some(original) = original_node_path {
+            std::env::set_var("NODE_PATH", original);
+        } else {
+            std::env::remove_var("NODE_PATH");
+        }
+        std::fs::remove_dir_all(node_test1).ok();
+        std::fs::remove_dir_all(node_test2).ok();
     }
 }
