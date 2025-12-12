@@ -25,3 +25,5 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+# Nimbalyst local data (not checked into version control)
+nimbalyst-local/
