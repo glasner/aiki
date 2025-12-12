@@ -48,6 +48,16 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // Handle PostResponse and check for autoreply
             let response = events::handle_post_response(e)?;
 
+            // Allow benchmark to force autoreply behavior (skip SessionEnd)
+            // Preserve actual failures/decisions but override context
+            if std::env::var("AIKI_BENCHMARK_FORCE_AUTOREPLY").is_ok() {
+                return Ok(HookResult {
+                    context: Some("benchmark-autoreply".to_string()),
+                    decision: response.decision,
+                    failures: response.failures,
+                });
+            }
+
             // If PostResponse produced an autoreply, return it (session continues)
             if response.has_context() {
                 return Ok(response);
