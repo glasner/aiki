@@ -125,9 +125,9 @@ pub fn handle(event_name: &str) -> Result<()> {
         _ => AikiEvent::Unsupported,
     };
 
-    // Dispatch event and exit with translated response
+    // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let hook_output = translate_response(aiki_response, event_name);
+    let hook_output = build_command_output(aiki_response, event_name);
 
     hook_output.print_and_exit();
 }
@@ -212,17 +212,17 @@ fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
     })
 }
 
-/// Translate HookResult to Claude Code JSON format
+/// Build HookCommandOutput from HookResult for Claude Code
 ///
 /// Claude Code expects different JSON structures depending on the event type.
-/// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutput {
+/// This function dispatches to event-specific builders that handle the details.
+fn build_command_output(response: HookResult, event_type: &str) -> HookCommandOutput {
     match event_type {
-        "SessionStart" => translate_session_start(&response),
-        "UserPromptSubmit" => translate_user_prompt_submit(&response),
-        "PreToolUse" => translate_pre_tool_use(&response),
-        "PostToolUse" | "PostFileChange" => translate_post_tool_use(&response),
-        "Stop" => translate_stop(&response),
+        "SessionStart" => build_session_start_output(&response),
+        "UserPromptSubmit" => build_user_prompt_submit_output(&response),
+        "PreToolUse" => build_pre_tool_use_output(&response),
+        "PostToolUse" | "PostFileChange" => build_post_tool_use_output(&response),
+        "Stop" => build_stop_output(&response),
         _ => {
             eprintln!("Warning: Unknown Claude Code event type: {}", event_type);
             HookCommandOutput::new(None, 0)
@@ -230,8 +230,8 @@ fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutp
     }
 }
 
-/// Translate SessionStart event to Claude Code JSON format
-fn translate_session_start(response: &HookResult) -> HookCommandOutput {
+/// Build SessionStart command output for Claude Code
+fn build_session_start_output(response: &HookResult) -> HookCommandOutput {
     let combined = response.combined_output();
 
     let json_value = if let Some(ctx) = combined {
@@ -251,8 +251,8 @@ fn translate_session_start(response: &HookResult) -> HookCommandOutput {
     HookCommandOutput::new(Some(json_value), 0)
 }
 
-/// Translate UserPromptSubmit event to Claude Code JSON format
-fn translate_user_prompt_submit(response: &HookResult) -> HookCommandOutput {
+/// Build UserPromptSubmit command output for Claude Code
+fn build_user_prompt_submit_output(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         // Block the prompt
         let reason = response.format_messages();
@@ -286,8 +286,8 @@ fn translate_user_prompt_submit(response: &HookResult) -> HookCommandOutput {
     }
 }
 
-/// Translate PreToolUse event to Claude Code JSON format
-fn translate_pre_tool_use(response: &HookResult) -> HookCommandOutput {
+/// Build PreToolUse command output for Claude Code
+fn build_pre_tool_use_output(response: &HookResult) -> HookCommandOutput {
     let formatted_messages = response.format_messages();
 
     // Determine permission decision from response
@@ -320,8 +320,8 @@ fn translate_pre_tool_use(response: &HookResult) -> HookCommandOutput {
     HookCommandOutput::new(Some(json_value), 0)
 }
 
-/// Translate PostToolUse event to Claude Code JSON format
-fn translate_post_tool_use(response: &HookResult) -> HookCommandOutput {
+/// Build PostToolUse command output for Claude Code
+fn build_post_tool_use_output(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         // Block (autoreply with reason)
         let reason = response.format_messages();
@@ -362,8 +362,8 @@ fn translate_post_tool_use(response: &HookResult) -> HookCommandOutput {
     }
 }
 
-/// Translate Stop event to Claude Code JSON format
-fn translate_stop(response: &HookResult) -> HookCommandOutput {
+/// Build Stop command output for Claude Code
+fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     // The context field contains the autoreply text from the flow
     let json_value = if let Some(ref autoreply_text) = response.context {
         // Force continuation with autoreply via additionalContext
