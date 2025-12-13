@@ -22,17 +22,19 @@ pub struct AikiPreFileChangePayload {
 /// It allows flows to stash user edits before the AI starts making changes,
 /// ensuring clean separation between human and AI work.
 pub fn handle_pre_file_change(payload: AikiPreFileChangePayload) -> Result<HookResult> {
-    debug_log(|| format!(
-        "PreFileChange event from {:?}, session: {}",
-        payload.session.agent_type(),
-        payload.session.external_id()
-    ));
+    debug_log(|| {
+        format!(
+            "PreFileChange event from {:?}, session: {}",
+            payload.session.agent_type(),
+            payload.session.external_id()
+        )
+    });
 
     // Load core flow (cached)
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
-    let mut state = AikiState::new(payload.clone());
+    let mut state = AikiState::new(payload);
 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());

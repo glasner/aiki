@@ -22,15 +22,12 @@ pub struct AikiSessionEndPayload {
 /// then cleans up the session file. This event fires when the agent session
 /// ends, either explicitly or when PostResponse doesn't generate an autoreply.
 pub fn handle_session_end(payload: AikiSessionEndPayload) -> Result<HookResult> {
-    debug_log(|| format!(
-        "Session ended by {:?}",
-        payload.session.agent_type()
-    ));
+    debug_log(|| format!("Session ended by {:?}", payload.session.agent_type()));
 
     // Load core flow (cached)
     let core_flow = crate::flows::load_core_flow();
 
-    // Build execution state from payload
+    // Build execution state from payload (clone needed for session.end() call below)
     let mut state = AikiState::new(payload.clone());
 
     // Set flow name for self.* function resolution
