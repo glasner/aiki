@@ -198,6 +198,7 @@ impl AikiSession {
     /// );
     /// assert_eq!(session.uuid(), session2.uuid());
     /// ```
+    #[must_use]
     pub fn new(
         agent_type: AgentType,
         external_id: impl Into<String>,
@@ -225,6 +226,7 @@ impl AikiSession {
     ///
     /// This is useful when you need to compute a session UUID without creating
     /// a full AikiSession object (e.g., for cache lookups).
+    #[must_use]
     pub fn generate_uuid(agent_type: AgentType, external_id: &str) -> String {
         // Create deterministic hash input: "agent_type:external_session_id"
         let hash_input = format!("{}:{}", agent_type.to_metadata_string(), external_id);
