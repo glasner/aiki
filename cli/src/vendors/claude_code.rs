@@ -116,20 +116,25 @@ pub fn handle(event_name: &str) -> Result<()> {
     }
 
     // Build event from payload
-    let aiki_event = match event_name {
-        "SessionStart" => build_session_start_event(payload),
-        "UserPromptSubmit" => build_pre_prompt_event(payload),
-        "PreToolUse" => build_pre_file_change_event(payload),
-        "PostToolUse" => build_post_file_change_event(payload),
-        "Stop" => build_post_response_event(payload),
-        _ => AikiEvent::Unsupported,
-    };
+    let aiki_event = build_aiki_event(payload, event_name);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
     let hook_output = build_command_output(aiki_response, event_name);
 
     hook_output.print_and_exit();
+}
+
+/// Build AikiEvent from Claude Code payload
+fn build_aiki_event(payload: ClaudeCodePayload, event_name: &str) -> AikiEvent {
+    match event_name {
+        "SessionStart" => build_session_start_event(payload),
+        "UserPromptSubmit" => build_pre_prompt_event(payload),
+        "PreToolUse" => build_pre_file_change_event(payload),
+        "PostToolUse" => build_post_file_change_event(payload),
+        "Stop" => build_post_response_event(payload),
+        _ => AikiEvent::Unsupported,
+    }
 }
 
 /// Build SessionStart event from SessionStart payload
