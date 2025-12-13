@@ -100,34 +100,34 @@ struct ToolInput {
 /// Dispatches to event-specific handlers based on event name.
 ///
 /// # Arguments
-/// * `event_name` - Vendor event name from CLI flag (e.g., "SessionStart", "PostToolUse")
-pub fn handle(event_name: &str) -> Result<()> {
+/// * `claude_event_name` - Vendor event name from CLI flag (e.g., "SessionStart", "PostToolUse")
+pub fn handle(claude_event_name: &str) -> Result<()> {
     // Read Claude Code-specific JSON from stdin
     let payload: ClaudeCodePayload = super::read_stdin_json()?;
 
     // Validate event name matches JSON (optional but good practice)
-    if payload.hook_event_name != event_name {
+    if payload.hook_event_name != claude_event_name {
         debug_log(|| {
             format!(
                 "Warning: Event name mismatch. CLI: {}, JSON: {}",
-                event_name, payload.hook_event_name
+                claude_event_name, payload.hook_event_name
             )
         });
     }
 
     // Build event from payload
-    let aiki_event = build_aiki_event(payload, event_name);
+    let aiki_event = build_aiki_event(payload, claude_event_name);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let hook_output = build_command_output(aiki_response, event_name);
+    let hook_output = build_command_output(aiki_response, claude_event_name);
 
     hook_output.print_and_exit();
 }
 
 /// Build AikiEvent from Claude Code payload
-fn build_aiki_event(payload: ClaudeCodePayload, event_name: &str) -> AikiEvent {
-    match event_name {
+fn build_aiki_event(payload: ClaudeCodePayload, claude_event_name: &str) -> AikiEvent {
+    match claude_event_name {
         "SessionStart" => build_session_start_event(payload),
         "UserPromptSubmit" => build_pre_prompt_event(payload),
         "PreToolUse" => build_pre_file_change_event(payload),
