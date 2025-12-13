@@ -103,9 +103,9 @@ pub fn handle(event_name: &str) -> Result<()> {
         _ => AikiEvent::Unsupported,
     };
 
-    // Dispatch event and exit with translated response
+    // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let hook_output = translate_response(aiki_response, event_name);
+    let hook_output = build_command_output(aiki_response, event_name);
 
     hook_output.print_and_exit();
 }
@@ -192,20 +192,20 @@ fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
     })
 }
 
-/// Translate HookResult to Cursor JSON format
+/// Build HookCommandOutput from HookResult for Cursor
 ///
 /// Cursor expects different JSON structures depending on the event type.
-/// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutput {
+/// This function dispatches to event-specific builders that handle the details.
+fn build_command_output(response: HookResult, event_type: &str) -> HookCommandOutput {
     match event_type {
         "beforeSubmitPrompt" => {
             // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
             // For now, treat it as SessionStart/PrePrompt (both have same format)
-            translate_before_submit_prompt(&response)
+            build_before_submit_prompt_output(&response)
         }
-        "beforeMCPExecution" | "beforeShellExecution" => translate_pre_file_change(&response),
-        "afterFileEdit" => translate_post_file_change(&response),
-        "stop" => translate_post_response(&response),
+        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_output(&response),
+        "afterFileEdit" => build_post_file_change_output(&response),
+        "stop" => build_post_response_output(&response),
         _ => {
             eprintln!("Warning: Unknown Cursor event type: {}", event_type);
             HookCommandOutput::new(None, 0)
@@ -213,7 +213,7 @@ fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutp
     }
 }
 
-/// Translate beforeSubmitPrompt event to Cursor JSON format
+/// Build beforeSubmitPrompt command output for Cursor
 ///
 /// Maps PrePrompt event responses to Cursor's beforeSubmitPrompt format.
 ///
@@ -229,7 +229,7 @@ fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutp
 /// NOT supported:
 /// - Context injection (prepending/appending content to prompts)
 /// - Prompt rewriting
-fn translate_before_submit_prompt(response: &HookResult) -> HookCommandOutput {
+fn build_before_submit_prompt_output(response: &HookResult) -> HookCommandOutput {
     // Blocking - combine messages and context for user
     if response.decision.is_block() {
         let combined = response.combined_output();
@@ -255,8 +255,8 @@ fn translate_before_submit_prompt(response: &HookResult) -> HookCommandOutput {
     )
 }
 
-/// Translate beforeMCPExecution/beforeShellExecution to Cursor JSON format
-fn translate_pre_file_change(response: &HookResult) -> HookCommandOutput {
+/// Build beforeMCPExecution/beforeShellExecution command output for Cursor
+fn build_pre_file_change_output(response: &HookResult) -> HookCommandOutput {
     // Blocking - prevent tool execution (combine messages and context)
     if response.decision.is_block() {
         let combined = response.combined_output();
@@ -281,20 +281,20 @@ fn translate_pre_file_change(response: &HookResult) -> HookCommandOutput {
     )
 }
 
-/// Translate afterFileEdit to Cursor JSON format
+/// Build afterFileEdit command output for Cursor
 ///
 /// Per translator-requirements.md, Cursor's afterFileEdit hook does NOT
 /// accept JSON responses - it's notification-only.
-fn translate_post_file_change(_response: &HookResult) -> HookCommandOutput {
+fn build_post_file_change_output(_response: &HookResult) -> HookCommandOutput {
     // Cursor doesn't accept responses from afterFileEdit
     // Return no JSON, always exit 0
     HookCommandOutput::new(None, 0)
 }
 
-/// Translate stop event to Cursor JSON format
+/// Build stop command output for Cursor
 ///
 /// Combines messages and context into followup_message for the agent.
-fn translate_post_response(response: &HookResult) -> HookCommandOutput {
+fn build_post_response_output(response: &HookResult) -> HookCommandOutput {
     // Combine messages + context for followup_message
     let combined = response.combined_output();
 
