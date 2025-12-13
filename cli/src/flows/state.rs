@@ -207,8 +207,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         let event = AikiEvent::PostFileChange(AikiPostFileChangePayload {
             session,
             tool_name: "Edit".to_string(),

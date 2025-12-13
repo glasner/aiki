@@ -1,0 +1,94 @@
+{
+  "version": 2,
+  "timestamp": "2025-12-13T07:43:38.115590-05:00",
+  "config": {
+    "edits": 50,
+    "warmup": 3,
+    "runs": 3
+  },
+  "vendors": {
+    "claude-code": {
+      "PrePrompt": {
+        "p50": 3.9990829999999997,
+        "p95": 4.448875,
+        "max": 4.448875,
+        "samples": 3
+      },
+      "SessionStart": {
+        "p50": 132.7995,
+        "p95": 136.430292,
+        "max": 136.430292,
+        "samples": 3
+      },
+      "PreFileChange": {
+        "p50": 14.295125,
+        "p95": 17.517000000000003,
+        "max": 18.341041,
+        "samples": 150
+      },
+      "PostFileChange": {
+        "p50": 154.064959,
+        "p95": 166.862667,
+        "max": 181.417625,
+        "samples": 150
+      },
+      "PostResponse": {
+        "p50": 4.6714590000000005,
+        "p95": 4.869417,
+        "max": 4.869417,
+        "samples": 3
+      },
+      "PostResponse+Autoreply": {
+        "p50": 3.674125,
+        "p95": 4.276166,
+        "max": 4.276166,
+        "samples": 3
+      }
+    },
+    "cursor": {
+      "PostResponse": {
+        "p50": 4.121917,
+        "p95": 5.247208,
+        "max": 5.247208,
+        "samples": 3
+      },
+      "PostFileChange": {
+        "p50": 160.898125,
+        "p95": 177.83075000000002,
+        "max": 185.90300000000002,
+        "samples": 150
+      },
+      "PrePrompt": {
+        "p50": 4.094958,
+        "p95": 4.347541,
+        "max": 4.347541,
+        "samples": 3
+      },
+      "PreFileChange": {
+        "p50": 15.716458,
+        "p95": 18.394791,
+        "max": 206.677042,
+        "samples": 150
+      },
+      "PostResponse+Autoreply": {
+        "p50": 3.4855,
+        "p95": 3.8422500000000004,
+        "max": 3.8422500000000004,
+        "samples": 3
+      }
+    }
+  },
+  "shared": {
+    "PrepareCommitMessage": {
+      "p50": 12.131667,
+      "p95": 12.882209,
+      "max": 12.882209,
+      "samples": 3
+    }
+  },
+  "queries": {
+    "blame_ms": 16.913334,
+    "authors_ms": 14.2535
+  },
+  "total_ms": 52682.876209
+}

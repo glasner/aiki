@@ -4,6 +4,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use crate::cache::debug_log;
+use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
@@ -17,7 +18,6 @@ use crate::session::AikiSession;
 /// This helper ensures consistent session creation across all Cursor event builders.
 /// Takes the full payload to allow easy extension if we need additional fields in the future.
 /// Extracts `cursor_version` from the payload to populate `agent_version`.
-/// Panics on failure since session creation errors are unrecoverable in the hook context.
 fn create_session(payload: &CursorPayload) -> AikiSession {
     AikiSession::new(
         AgentType::Cursor,
@@ -25,7 +25,6 @@ fn create_session(payload: &CursorPayload) -> AikiSession {
         payload.cursor_version.as_deref(),
         DetectionMethod::Hook,
     )
-    .expect("Failed to create AikiSession for Cursor")
 }
 
 /// Cursor hook payload structure
@@ -74,27 +73,6 @@ struct CursorEdit {
     new_string: String,
 }
 
-/// Response structure for Cursor hooks
-struct CursorResponse {
-    json_value: Option<serde_json::Value>,
-    exit_code: i32,
-}
-
-impl CursorResponse {
-    /// Print JSON to stdout if present
-    fn print_json(&self) {
-        let Some(ref value) = self.json_value else {
-            return;
-        };
-
-        let Ok(json_string) = serde_json::to_string(value) else {
-            return;
-        };
-
-        println!("{}", json_string);
-    }
-}
-
 /// Handle a Cursor event
 ///
 /// This is the vendor-specific handler for Cursor hooks.
@@ -108,10 +86,12 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Validate event name matches JSON (optional but good practice)
     if payload.event_name != event_name {
-        debug_log(|| format!(
-            "Warning: Event name mismatch. CLI: {}, JSON: {}",
-            event_name, payload.event_name
-        ));
+        debug_log(|| {
+            format!(
+                "Warning: Event name mismatch. CLI: {}, JSON: {}",
+                event_name, payload.event_name
+            )
+        });
     }
 
     // Build event from payload
@@ -125,10 +105,9 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Dispatch event and exit with translated response
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let cursor_response = translate_response(aiki_response, event_name);
+    let hook_output = translate_response(aiki_response, event_name);
 
-    cursor_response.print_json();
-    std::process::exit(cursor_response.exit_code);
+    hook_output.print_and_exit();
 }
 
 /// Build PrePrompt event from beforeSubmitPrompt payload
@@ -153,10 +132,12 @@ fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
 fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
     // Fire PreFileChange only for file-modifying MCP tools
     if !is_file_modifying_tool(&payload.tool_name) {
-        debug_log(|| format!(
-            "beforeMCPExecution: Ignoring non-file tool: {}",
-            payload.tool_name
-        ));
+        debug_log(|| {
+            format!(
+                "beforeMCPExecution: Ignoring non-file tool: {}",
+                payload.tool_name
+            )
+        });
         return AikiEvent::Unsupported;
     }
 
@@ -215,7 +196,7 @@ fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
 ///
 /// Cursor expects different JSON structures depending on the event type.
 /// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResult, event_type: &str) -> CursorResponse {
+fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutput {
     match event_type {
         "beforeSubmitPrompt" => {
             // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
@@ -227,10 +208,7 @@ fn translate_response(response: HookResult, event_type: &str) -> CursorResponse 
         "stop" => translate_post_response(&response),
         _ => {
             eprintln!("Warning: Unknown Cursor event type: {}", event_type);
-            CursorResponse {
-                json_value: None,
-                exit_code: 0,
-            }
+            HookCommandOutput::new(None, 0)
         }
     }
 }
@@ -251,92 +229,86 @@ fn translate_response(response: HookResult, event_type: &str) -> CursorResponse 
 /// NOT supported:
 /// - Context injection (prepending/appending content to prompts)
 /// - Prompt rewriting
-fn translate_before_submit_prompt(response: &HookResult) -> CursorResponse {
+fn translate_before_submit_prompt(response: &HookResult) -> HookCommandOutput {
     // Blocking - combine messages and context for user
     if response.decision.is_block() {
         let combined = response.combined_output();
         let user_message = combined.unwrap_or_default();
 
-        return CursorResponse {
-            json_value: Some(json!({
+        return HookCommandOutput::new(
+            Some(json!({
                 "continue": false,
                 "user_message": user_message
             })),
-            exit_code: 2,
-        };
+            2,
+        );
     }
 
     // Success - allow prompt to continue
     // Note: Cursor doesn't accept additional fields on success
     // Note: Any modified_prompt in response.context is IGNORED (not supported by Cursor)
-    CursorResponse {
-        json_value: Some(json!({
+    HookCommandOutput::new(
+        Some(json!({
             "continue": true
         })),
-        exit_code: 0,
-    }
+        0,
+    )
 }
 
 /// Translate beforeMCPExecution/beforeShellExecution to Cursor JSON format
-fn translate_pre_file_change(response: &HookResult) -> CursorResponse {
+fn translate_pre_file_change(response: &HookResult) -> HookCommandOutput {
     // Blocking - prevent tool execution (combine messages and context)
     if response.decision.is_block() {
         let combined = response.combined_output();
         let agent_message = combined.unwrap_or_default();
 
-        return CursorResponse {
-            json_value: Some(json!({
+        return HookCommandOutput::new(
+            Some(json!({
                 "continue": false,
                 "agent_message": agent_message
             })),
-            exit_code: 2,
-        };
+            2,
+        );
     }
 
     // Success - allow tool execution
     // Note: Cursor doesn't accept additional fields on success
-    CursorResponse {
-        json_value: Some(json!({
+    HookCommandOutput::new(
+        Some(json!({
             "continue": true
         })),
-        exit_code: 0,
-    }
+        0,
+    )
 }
 
 /// Translate afterFileEdit to Cursor JSON format
 ///
 /// Per translator-requirements.md, Cursor's afterFileEdit hook does NOT
 /// accept JSON responses - it's notification-only.
-fn translate_post_file_change(_response: &HookResult) -> CursorResponse {
+fn translate_post_file_change(_response: &HookResult) -> HookCommandOutput {
     // Cursor doesn't accept responses from afterFileEdit
     // Return no JSON, always exit 0
-    CursorResponse {
-        json_value: None,
-        exit_code: 0,
-    }
+    HookCommandOutput::new(None, 0)
 }
 
 /// Translate stop event to Cursor JSON format
 ///
 /// Combines messages and context into followup_message for the agent.
-fn translate_post_response(response: &HookResult) -> CursorResponse {
+fn translate_post_response(response: &HookResult) -> HookCommandOutput {
     // Combine messages + context for followup_message
     let combined = response.combined_output();
 
     if let Some(followup_text) = combined {
-        return CursorResponse {
-            json_value: Some(json!({
+        return HookCommandOutput::new(
+            Some(json!({
                 "followup_message": followup_text
             })),
-            exit_code: 0,
-        };
+            0,
+        );
     }
 
     // No followup - return empty object
-    CursorResponse {
-        json_value: Some(json!({})),
-        exit_code: 0,
-    }
+    HookCommandOutput::new(Some(json!({})), 0)
 }
 
 /// Check if a tool modifies files
