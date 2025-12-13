@@ -1689,8 +1689,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         AikiEvent::PostFileChange(AikiPostFileChangePayload {
             session,
             tool_name: "Edit".to_string(),
@@ -1708,8 +1707,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         AikiEvent::PostFileChange(AikiPostFileChangePayload {
             session,
             tool_name: "Edit".to_string(),
@@ -2904,8 +2902,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         let event = AikiEvent::PrePrompt(AikiPrePromptPayload {
             session,
             prompt: "test".to_string(),

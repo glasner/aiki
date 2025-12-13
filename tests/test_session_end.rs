@@ -55,8 +55,7 @@ fn test_build_context_returns_none_when_empty() {
         "test-session",
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
 
     let event = AikiPostResponsePayload {
         session,
@@ -83,8 +82,7 @@ fn test_build_context_returns_some_with_chunks() {
         "test-session",
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
 
     let event = AikiPostResponsePayload {
         session,
@@ -165,8 +163,7 @@ fn test_session_end_triggered_without_autoreply() {
         "test-no-autoreply",
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
 
     // Create a simple PostResponse event
     let event = AikiPostResponsePayload {
@@ -227,8 +224,7 @@ fn test_documented_behavior() {
         "doc-test",
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
 
     let event = AikiPostResponsePayload {
         session,

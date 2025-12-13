@@ -179,7 +179,7 @@ impl AikiSession {
     ///     "claude-session-abc123",
     ///     None::<&str>,
     ///     DetectionMethod::Hook
-    /// ).unwrap();
+    /// );
     ///
     /// // ACP-based (with agent version)
     /// let session = AikiSession::new(
@@ -187,7 +187,7 @@ impl AikiSession {
     ///     "claude-session-abc123",
     ///     Some("0.10.6"),
     ///     DetectionMethod::ACP
-    /// ).unwrap();
+    /// );
     ///
     /// // Same inputs produce same UUID (deterministic)
     /// let session2 = AikiSession::new(
@@ -195,7 +195,7 @@ impl AikiSession {
     ///     "claude-session-abc123",
     ///     None::<&str>,
     ///     DetectionMethod::Hook
-    /// ).unwrap();
+    /// );
     /// assert_eq!(session.uuid(), session2.uuid());
     /// ```
     pub fn new(
@@ -203,11 +203,11 @@ impl AikiSession {
         external_id: impl Into<String>,
         agent_version: Option<impl Into<String>>,
         detection_method: DetectionMethod,
-    ) -> Result<Self> {
+    ) -> Self {
         let external_id = external_id.into();
         let uuid = Self::generate_uuid(agent_type, &external_id);
 
-        Ok(Self {
+        Self {
             uuid,
             agent_type,
             external_id,
@@ -215,7 +215,7 @@ impl AikiSession {
             client_version: None,
             agent_version: agent_version.map(|v| v.into()),
             detection_method,
-        })
+        }
     }
 
     /// Generate a deterministic UUID v5 for a session
@@ -249,7 +249,6 @@ impl AikiSession {
     ///     None::<&str>,
     ///     DetectionMethod::ACP
     /// )
-    /// .unwrap()
     /// .with_client_info(Some("zed"), Some("0.213.3"));
     /// ```
     #[must_use]
@@ -337,7 +336,7 @@ pub fn record_session_start(
         &external_session_id,
         None::<&str>,
         detection_method,
-    )?;
+    );
 
     // Try to create session file atomically (O_EXCL handles race conditions)
     // Returns true if created, false if already exists - both cases are success
@@ -375,7 +374,7 @@ pub fn end_session(
         external_session_id,
         None::<&str>,
         detection_method,
-    )?;
+    );
     session.file(&repo_path).delete()?;
     Ok(())
 }
@@ -485,8 +484,7 @@ mod tests {
             "claude-session-1",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         assert!(repo_path
             .join(".aiki/sessions")
             .join(session.uuid())
@@ -496,8 +494,7 @@ mod tests {
             "cursor-session-2",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         assert!(repo_path
             .join(".aiki/sessions")
             .join(session.uuid())
@@ -515,15 +512,13 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         let session2 = AikiSession::new(
             AgentType::Claude,
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
 
         assert_eq!(session1.uuid(), session2.uuid());
         assert_eq!(session1.uuid(), session2.uuid());
@@ -534,8 +529,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         assert_ne!(session1.uuid(), session3.uuid());
     }
 
@@ -560,8 +554,7 @@ mod tests {
             "claude-session-end-test",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
         assert!(repo_path
             .join(".aiki/sessions")
             .join(session.uuid())
@@ -649,8 +642,7 @@ mod tests {
             "test-session-with-version",
             Some("2.0.61"),
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
 
         // Write session file
         let session_file = session.file(repo_path);
@@ -679,8 +671,7 @@ mod tests {
             "test-session-no-version",
             None::<&str>,
             DetectionMethod::Hook,
-        )
-        .unwrap();
+        );
 
         // Write session file
         let session_file = session.file(repo_path);

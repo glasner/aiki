@@ -174,7 +174,9 @@ impl BenchmarkResults {
     }
 
     fn vendor_mut(&mut self, vendor: Vendor) -> &mut VendorResults {
-        self.vendors.entry(vendor).or_insert_with(VendorResults::new)
+        self.vendors
+            .entry(vendor)
+            .or_insert_with(VendorResults::new)
     }
 }
 
@@ -188,7 +190,6 @@ impl BenchmarkResults {
 ///
 /// Results are saved to .aiki/benchmarks/aiki-core/YYYY-MM-DD_HH-MM-SS/
 pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
-
     println!();
     println!("Aiki Benchmark");
     println!("==============");
@@ -218,10 +219,7 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
     println!();
 
     // Warmup phase
-    println!(
-        "Warmup: {} iterations... ",
-        WARMUP_ITERATIONS
-    );
+    println!("Warmup: {} iterations... ", WARMUP_ITERATIONS);
     std::io::stdout().flush()?;
     run_warmup(&repo_path, &aiki_exe, num_edits)?;
     println!("done");
@@ -240,13 +238,7 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
             reset_repository_state(&repo_path, num_edits)?;
 
             // Run full lifecycle for this vendor
-            run_vendor_lifecycle(
-                &repo_path,
-                &aiki_exe,
-                *vendor,
-                num_edits,
-                &mut results,
-            )?;
+            run_vendor_lifecycle(&repo_path, &aiki_exe, *vendor, num_edits, &mut results)?;
 
             // Progress indicator
             let progress = (run_idx + 1) * 100 / MEASUREMENT_RUNS;
@@ -263,7 +255,9 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
     println!("------------------------");
     for _ in 0..MEASUREMENT_RUNS {
         let duration = simulate_prepare_commit_msg(&repo_path, &aiki_exe)?;
-        results.shared.add_sample(EventType::PrepareCommitMessage, duration);
+        results
+            .shared
+            .add_sample(EventType::PrepareCommitMessage, duration);
     }
     if let Some(stats) = results.shared.get_stats(EventType::PrepareCommitMessage) {
         println!(
@@ -279,7 +273,11 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
     println!("Phase 4: Query Operations");
     println!("-------------------------");
     let blame_start = Instant::now();
-    let _ = run_command(&repo_path, aiki_exe.to_str().unwrap(), &["blame", "src/file_1.rs"]);
+    let _ = run_command(
+        &repo_path,
+        aiki_exe.to_str().unwrap(),
+        &["blame", "src/file_1.rs"],
+    );
     results.query_blame_ms = blame_start.elapsed().as_secs_f64() * 1000.0;
 
     let authors_start = Instant::now();
@@ -323,7 +321,11 @@ fn setup_repository(repo_path: &PathBuf, aiki_exe: &PathBuf, num_edits: usize) -
     // Git init
     run_command(repo_path, "git", &["init"])?;
     run_command(repo_path, "git", &["config", "user.name", "Benchmark"])?;
-    run_command(repo_path, "git", &["config", "user.email", "bench@test.com"])?;
+    run_command(
+        repo_path,
+        "git",
+        &["config", "user.email", "bench@test.com"],
+    )?;
     println!("  Git init: done");
 
     // Aiki init
@@ -471,7 +473,13 @@ fn simulate_pre_prompt(
                 "cwd": repo_path.to_str().unwrap(),
                 "transcript_path": "/dev/null"
             });
-            invoke_hook(repo_path, aiki_exe, "claude-code", "UserPromptSubmit", &payload)?;
+            invoke_hook(
+                repo_path,
+                aiki_exe,
+                "claude-code",
+                "UserPromptSubmit",
+                &payload,
+            )?;
         }
         Vendor::Cursor => {
             let payload = serde_json::json!({
@@ -482,7 +490,13 @@ fn simulate_pre_prompt(
                 "conversation_id": "benchmark-conv-id",
                 "workspace_roots": [repo_path.to_str().unwrap()]
             });
-            invoke_hook(repo_path, aiki_exe, "cursor", "beforeSubmitPrompt", &payload)?;
+            invoke_hook(
+                repo_path,
+                aiki_exe,
+                "cursor",
+                "beforeSubmitPrompt",
+                &payload,
+            )?;
         }
     }
 
@@ -521,7 +535,13 @@ fn simulate_pre_file_change(
                 "conversation_id": "benchmark-conv-id",
                 "workspace_roots": [repo_path.to_str().unwrap()]
             });
-            invoke_hook(repo_path, aiki_exe, "cursor", "beforeShellExecution", &payload)?;
+            invoke_hook(
+                repo_path,
+                aiki_exe,
+                "cursor",
+                "beforeShellExecution",
+                &payload,
+            )?;
         }
     }
 
@@ -761,7 +781,7 @@ fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Re
         session_id,
         Some(version),
         DetectionMethod::Hook,
-    )?;
+    );
 
     session.file(repo_path).create(repo_path)?;
     Ok(())
@@ -880,7 +900,11 @@ struct QueryMetrics {
     authors_ms: f64,
 }
 
-fn save_results(benchmark_dir: &PathBuf, results: &BenchmarkResults, num_edits: usize) -> Result<()> {
+fn save_results(
+    benchmark_dir: &PathBuf,
+    results: &BenchmarkResults,
+    num_edits: usize,
+) -> Result<()> {
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let results_dir = benchmark_dir.join(timestamp.to_string());
     fs::create_dir_all(&results_dir)?;

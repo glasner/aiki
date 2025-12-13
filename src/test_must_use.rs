@@ -14,8 +14,7 @@ fn test_must_use_warning_compilation() {
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event = AikiEvent::SessionStart(AikiSessionStartPayload {
         session,
         cwd: PathBuf::from("/tmp"),
@@ -33,8 +32,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-1".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event1 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session1,
         cwd: PathBuf::from("/tmp"),
@@ -47,8 +45,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event2 = AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session: session2,
         tool_name: "Edit".to_string(),
@@ -65,8 +62,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-2".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event3 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session3,
         cwd: PathBuf::from(&s),
@@ -79,8 +75,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-3".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event4 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session4,
         cwd: PathBuf::from("/tmp"),
@@ -94,8 +89,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event5 = AikiEvent::PostFileChange(AikiPostFileChangePayload {
         session: session5,
         tool_name: "Write".to_string(),
@@ -111,8 +105,7 @@ fn test_impl_asref_path_ergonomics() {
         "session-4".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
-    )
-    .unwrap();
+    );
     let _event6 = AikiEvent::SessionStart(AikiSessionStartPayload {
         session: session6,
         cwd: pb.as_path().to_path_buf(),

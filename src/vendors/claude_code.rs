@@ -4,6 +4,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::cache::debug_log;
+use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
@@ -50,7 +51,6 @@ fn read_agent_version_from_file(path: &Path) -> Option<String> {
 /// Takes the full payload to allow easy extension if we need additional fields in the future.
 /// For SessionStart, detects version (~135ms) and caches in session file.
 /// For other events, reads cached version from file (~0ms).
-/// Panics on failure since session creation errors are unrecoverable in the hook context.
 fn create_session(payload: &ClaudeCodePayload) -> AikiSession {
     // Get repo path from cwd
     let repo_path = Path::new(&payload.cwd);
@@ -62,7 +62,6 @@ fn create_session(payload: &ClaudeCodePayload) -> AikiSession {
         agent_version,
         DetectionMethod::Hook,
     )
-    .expect("Failed to create AikiSession for Claude Code")
 }
 
 /// Claude Code hook payload structure
@@ -95,27 +94,6 @@ struct ToolInput {
     new_string: String,
 }
 
-/// Response structure for Claude Code hooks
-struct ClaudeCodeResponse {
-    json_value: Option<serde_json::Value>,
-    exit_code: i32,
-}
-
-impl ClaudeCodeResponse {
-    /// Print JSON to stdout if present
-    fn print_json(&self) {
-        let Some(ref value) = self.json_value else {
-            return;
-        };
-
-        let Ok(json_string) = serde_json::to_string(value) else {
-            return;
-        };
-
-        println!("{}", json_string);
-    }
-}
-
 /// Handle a Claude Code event
 ///
 /// This is the vendor-specific handler for Claude Code hooks.
@@ -129,10 +107,12 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Validate event name matches JSON (optional but good practice)
     if payload.hook_event_name != event_name {
-        debug_log(|| format!(
-            "Warning: Event name mismatch. CLI: {}, JSON: {}",
-            event_name, payload.hook_event_name
-        ));
+        debug_log(|| {
+            format!(
+                "Warning: Event name mismatch. CLI: {}, JSON: {}",
+                event_name, payload.hook_event_name
+            )
+        });
     }
 
     // Build event from payload
@@ -147,10 +127,9 @@ pub fn handle(event_name: &str) -> Result<()> {
 
     // Dispatch event and exit with translated response
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let claude_response = translate_response(aiki_response, event_name);
+    let hook_output = translate_response(aiki_response, event_name);
 
-    claude_response.print_json();
-    std::process::exit(claude_response.exit_code);
+    hook_output.print_and_exit();
 }
 
 /// Build SessionStart event from SessionStart payload
@@ -176,10 +155,7 @@ fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
 fn build_pre_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
     // Fire PreFileChange only for file-modifying tools
     if !is_file_modifying_tool(&payload.tool_name) {
-        debug_log(|| format!(
-            "PreToolUse: Ignoring non-file tool: {}",
-            payload.tool_name
-        ));
+        debug_log(|| format!("PreToolUse: Ignoring non-file tool: {}", payload.tool_name));
         return AikiEvent::Unsupported;
     }
 
@@ -240,7 +216,7 @@ fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
 ///
 /// Claude Code expects different JSON structures depending on the event type.
 /// This function dispatches to event-specific translators that handle the details.
-fn translate_response(response: HookResult, event_type: &str) -> ClaudeCodeResponse {
+fn translate_response(response: HookResult, event_type: &str) -> HookCommandOutput {
     match event_type {
         "SessionStart" => translate_session_start(&response),
         "UserPromptSubmit" => translate_user_prompt_submit(&response),
@@ -249,16 +225,13 @@ fn translate_response(response: HookResult, event_type: &str) -> ClaudeCodeRespo
         "Stop" => translate_stop(&response),
         _ => {
             eprintln!("Warning: Unknown Claude Code event type: {}", event_type);
-            ClaudeCodeResponse {
-                json_value: None,
-                exit_code: 0,
-            }
+            HookCommandOutput::new(None, 0)
         }
     }
 }
 
 /// Translate SessionStart event to Claude Code JSON format
-fn translate_session_start(response: &HookResult) -> ClaudeCodeResponse {
+fn translate_session_start(response: &HookResult) -> HookCommandOutput {
     let combined = response.combined_output();
 
     let json_value = if let Some(ctx) = combined {
@@ -275,14 +248,11 @@ fn translate_session_start(response: &HookResult) -> ClaudeCodeResponse {
         json!({})
     };
 
-    ClaudeCodeResponse {
-        json_value: Some(json_value),
-        exit_code: 0,
-    }
+    HookCommandOutput::new(Some(json_value), 0)
 }
 
 /// Translate UserPromptSubmit event to Claude Code JSON format
-fn translate_user_prompt_submit(response: &HookResult) -> ClaudeCodeResponse {
+fn translate_user_prompt_submit(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         // Block the prompt
         let reason = response.format_messages();
@@ -299,10 +269,7 @@ fn translate_user_prompt_submit(response: &HookResult) -> ClaudeCodeResponse {
             });
         }
 
-        ClaudeCodeResponse {
-            json_value: Some(json_value),
-            exit_code: 0,
-        }
+        HookCommandOutput::new(Some(json_value), 0)
     } else {
         // Allow with optional modified prompt
         // The context field contains the modified prompt text from the flow
@@ -315,15 +282,12 @@ fn translate_user_prompt_submit(response: &HookResult) -> ClaudeCodeResponse {
             json_value["modifiedPrompt"] = json!(modified_prompt);
         }
 
-        ClaudeCodeResponse {
-            json_value: Some(json_value),
-            exit_code: 0,
-        }
+        HookCommandOutput::new(Some(json_value), 0)
     }
 }
 
 /// Translate PreToolUse event to Claude Code JSON format
-fn translate_pre_tool_use(response: &HookResult) -> ClaudeCodeResponse {
+fn translate_pre_tool_use(response: &HookResult) -> HookCommandOutput {
     let formatted_messages = response.format_messages();
 
     // Determine permission decision from response
@@ -353,14 +317,11 @@ fn translate_pre_tool_use(response: &HookResult) -> ClaudeCodeResponse {
         json_value["hookSpecificOutput"]["permissionDecisionReason"] = json!(reason_text);
     }
 
-    ClaudeCodeResponse {
-        json_value: Some(json_value),
-        exit_code: 0,
-    }
+    HookCommandOutput::new(Some(json_value), 0)
 }
 
 /// Translate PostToolUse event to Claude Code JSON format
-fn translate_post_tool_use(response: &HookResult) -> ClaudeCodeResponse {
+fn translate_post_tool_use(response: &HookResult) -> HookCommandOutput {
     if response.decision.is_block() {
         // Block (autoreply with reason)
         let reason = response.format_messages();
@@ -383,10 +344,7 @@ fn translate_post_tool_use(response: &HookResult) -> ClaudeCodeResponse {
             });
         }
 
-        ClaudeCodeResponse {
-            json_value: Some(json_value),
-            exit_code: 0,
-        }
+        HookCommandOutput::new(Some(json_value), 0)
     } else {
         // Allow with optional context
         let combined = response.combined_output();
@@ -400,15 +358,12 @@ fn translate_post_tool_use(response: &HookResult) -> ClaudeCodeResponse {
         } else {
             json!({})
         };
-        ClaudeCodeResponse {
-            json_value: Some(json_value),
-            exit_code: 0,
-        }
+        HookCommandOutput::new(Some(json_value), 0)
     }
 }
 
 /// Translate Stop event to Claude Code JSON format
-fn translate_stop(response: &HookResult) -> ClaudeCodeResponse {
+fn translate_stop(response: &HookResult) -> HookCommandOutput {
     // The context field contains the autoreply text from the flow
     let json_value = if let Some(ref autoreply_text) = response.context {
         // Force continuation with autoreply via additionalContext
@@ -423,10 +378,7 @@ fn translate_stop(response: &HookResult) -> ClaudeCodeResponse {
         })
     };
 
-    ClaudeCodeResponse {
-        json_value: Some(json_value),
-        exit_code: 0,
-    }
+    HookCommandOutput::new(Some(json_value), 0)
 }
 
 /// Check if a tool modifies files

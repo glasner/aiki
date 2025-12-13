@@ -6,6 +6,35 @@ use anyhow::Context;
 use std::io::{BufRead, Write};
 use sysinfo::{ProcessesToUpdate, System};
 
+/// Response for vendor hook commands (JSON output + exit code)
+///
+/// This is the vendor protocol format, distinct from our internal `HookResult`.
+/// - `HookResult`: Aiki's internal result (Decision, context, failures)
+/// - `HookCommandOutput`: Vendor protocol (JSON value, exit code)
+pub struct HookCommandOutput {
+    pub json_value: Option<serde_json::Value>,
+    pub exit_code: i32,
+}
+
+impl HookCommandOutput {
+    #[must_use]
+    pub fn new(json_value: Option<serde_json::Value>, exit_code: i32) -> Self {
+        Self {
+            json_value,
+            exit_code,
+        }
+    }
+
+    pub fn print_and_exit(self) -> ! {
+        if let Some(value) = &self.json_value {
+            if let Ok(json) = serde_json::to_string(value) {
+                println!("{}", json);
+            }
+        }
+        std::process::exit(self.exit_code);
+    }
+}
+
 pub fn run_install() -> Result<()> {
     if !cfg!(target_os = "macos") && !cfg!(target_os = "linux") && !cfg!(target_os = "windows") {
         eprintln!("Warning: Unsupported platform for automatic hook installation");
