@@ -20,7 +20,7 @@ fn test_simple_action_statement() {
     }))];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 }
@@ -38,7 +38,7 @@ fn test_if_statement_true_branch() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 }
@@ -59,7 +59,7 @@ fn test_if_statement_false_branch() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 }
@@ -83,7 +83,7 @@ fn test_switch_statement() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 }
@@ -111,7 +111,7 @@ fn test_nested_if_in_switch() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 }
@@ -130,7 +130,7 @@ fn test_action_with_on_failure() {
     }))];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     // Should return FailedContinue because on_failure handled the error
     assert!(matches!(result, FlowResult::FailedContinue));
@@ -153,7 +153,7 @@ fn test_action_continue_on_failure() {
     ];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
     // Should be FailedContinue because first action failed but continued
     assert!(matches!(result, FlowResult::FailedContinue));

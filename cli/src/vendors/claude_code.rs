@@ -3,8 +3,9 @@ use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+use crate::cache::debug_log;
 use crate::event_bus;
-use crate::events::result::{Decision, HookResult};
+use crate::events::result::HookResult;
 use crate::events::{
     AikiEvent, AikiPostFileChangePayload, AikiPostResponsePayload, AikiPreFileChangePayload,
     AikiPrePromptPayload, AikiSessionStartPayload,
@@ -127,11 +128,11 @@ pub fn handle(event_name: &str) -> Result<()> {
     let payload: ClaudeCodePayload = super::read_stdin_json()?;
 
     // Validate event name matches JSON (optional but good practice)
-    if std::env::var("AIKI_DEBUG").is_ok() && payload.hook_event_name != event_name {
-        eprintln!(
-            "[aiki] Warning: Event name mismatch. CLI: {}, JSON: {}",
+    if payload.hook_event_name != event_name {
+        debug_log(|| format!(
+            "Warning: Event name mismatch. CLI: {}, JSON: {}",
             event_name, payload.hook_event_name
-        );
+        ));
     }
 
     // Build event from payload
@@ -175,12 +176,10 @@ fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
 fn build_pre_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
     // Fire PreFileChange only for file-modifying tools
     if !is_file_modifying_tool(&payload.tool_name) {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[aiki] PreToolUse: Ignoring non-file tool: {}",
-                payload.tool_name
-            );
-        }
+        debug_log(|| format!(
+            "PreToolUse: Ignoring non-file tool: {}",
+            payload.tool_name
+        ));
         return AikiEvent::Unsupported;
     }
 

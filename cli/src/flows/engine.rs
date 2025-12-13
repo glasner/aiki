@@ -2,6 +2,8 @@ use anyhow::Context;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::cache::debug_log;
+
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
@@ -186,16 +188,56 @@ impl FlowEngine {
         // Add cwd using helper method
         resolver.add_var("cwd", state.cwd().to_string_lossy().to_string());
 
-        // Fetch environment variables on-demand
-        let env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
-        resolver.add_env_vars(&env_vars);
+        // Set up lazy per-key env var lookup instead of collecting all env vars
+        // This ensures runtime set_var/remove_var mutations are immediately visible
+        resolver.set_env_lookup(|name| std::env::var(name).ok());
 
         resolver
     }
-    /// Execute a list of statements sequentially
+    /// Execute a list of statements sequentially (production hot path, no timing overhead)
     ///
-    /// Returns both the flow result and timing information
+    /// Returns the flow result without timing information.
+    /// Use `execute_statements_with_timing` for benchmarks/tests that need timing data.
     pub fn execute_statements(
+        statements: &[FlowStatement],
+        state: &mut AikiState,
+    ) -> Result<FlowResult> {
+        let mut had_continue_failure = false;
+
+        for statement in statements {
+            let result = Self::execute_statement(statement, state)?;
+
+            // Handle flow control results
+            match result {
+                FlowResult::Success => {
+                    // Continue to next statement
+                }
+                FlowResult::FailedContinue => {
+                    had_continue_failure = true;
+                    // Continue to next statement
+                }
+                FlowResult::FailedStop => {
+                    return Ok(FlowResult::FailedStop);
+                }
+                FlowResult::FailedBlock => {
+                    return Ok(FlowResult::FailedBlock);
+                }
+            }
+        }
+
+        // All actions completed
+        if had_continue_failure {
+            Ok(FlowResult::FailedContinue)
+        } else {
+            Ok(FlowResult::Success)
+        }
+    }
+
+    /// Execute a list of statements sequentially with timing collection (for benchmarks/tests)
+    ///
+    /// Returns both the flow result and timing information.
+    /// For production code, prefer `execute_statements` which skips timing overhead.
+    pub fn execute_statements_with_timing(
         statements: &[FlowStatement],
         state: &mut AikiState,
     ) -> Result<(FlowResult, FlowTiming)> {
@@ -207,7 +249,8 @@ impl FlowEngine {
 
         for statement in statements {
             let stmt_start = Instant::now();
-            let (result, nested_timings) = Self::execute_statement_with_timing(statement, state)?;
+            let (result, nested_timings) =
+                Self::execute_statement_with_timing(statement, state)?;
             let stmt_duration = stmt_start.elapsed().as_secs_f64();
 
             // Record timing for this statement
@@ -257,7 +300,29 @@ impl FlowEngine {
         }
     }
 
-    /// Execute a single statement with timing
+    /// Execute a single statement (no timing, production path)
+    fn execute_statement(statement: &FlowStatement, state: &mut AikiState) -> Result<FlowResult> {
+        match statement {
+            FlowStatement::If(if_stmt) => Self::execute_if(if_stmt, state),
+            FlowStatement::Switch(switch_stmt) => Self::execute_switch(switch_stmt, state),
+            FlowStatement::Action(action) => {
+                // Execute the action
+                let result = Self::execute_action(action, state)?;
+
+                // Store action results for reference by subsequent actions
+                Self::store_action_result(action, &result, state);
+
+                // Handle action failures with on_failure behavior
+                if !result.success {
+                    Self::handle_action_failure_simple(action, &result, state)
+                } else {
+                    Ok(FlowResult::Success)
+                }
+            }
+        }
+    }
+
+    /// Execute a single statement with timing (for benchmarks/tests)
     fn execute_statement_with_timing(
         statement: &FlowStatement,
         state: &mut AikiState,
@@ -334,8 +399,88 @@ impl FlowEngine {
         }
     }
 
-    /// Handle action failure based on on_failure behavior
-    /// Returns both the FlowResult and any nested timings from on_failure handlers
+    /// Handle action failure (no timing, production path)
+    fn handle_action_failure_simple(
+        action: &Action,
+        result: &ActionResult,
+        state: &mut AikiState,
+    ) -> Result<FlowResult> {
+        let on_failure_behavior = match action {
+            Action::Shell(shell_action) => &shell_action.on_failure,
+            Action::Jj(jj_action) => &jj_action.on_failure,
+            Action::Let(let_action) => &let_action.on_failure,
+            Action::Self_(self_action) => &self_action.on_failure,
+            Action::Context(context_action) => &context_action.on_failure,
+            Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
+            Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
+            Action::Log(_) => return Ok(FlowResult::Success),
+            Action::Continue(_) => return Ok(FlowResult::FailedContinue),
+            Action::Stop(_) => return Ok(FlowResult::FailedStop),
+            Action::Block(_) => return Ok(FlowResult::FailedBlock),
+        };
+
+        let failure_text = if !result.stderr.is_empty() {
+            result.stderr.clone()
+        } else {
+            "Action failed".to_string()
+        };
+
+        match on_failure_behavior {
+            OnFailure::Shortcut(shortcut) => match shortcut {
+                OnFailureShortcut::Continue => {
+                    eprintln!("[aiki] Action failed but continuing: {}", failure_text);
+                    state.add_failure(crate::events::result::Failure(failure_text));
+                    Ok(FlowResult::FailedContinue)
+                }
+                OnFailureShortcut::Stop => {
+                    state.add_failure(crate::events::result::Failure(failure_text));
+                    Ok(FlowResult::FailedStop)
+                }
+                OnFailureShortcut::Block => {
+                    state.add_failure(crate::events::result::Failure(failure_text));
+                    Ok(FlowResult::FailedBlock)
+                }
+            },
+            OnFailure::Statements(on_failure_statements) => {
+                if on_failure_statements.is_empty() {
+                    eprintln!(
+                        "[aiki] Action failed with empty on_failure list, continuing: {}",
+                        failure_text
+                    );
+                    state.add_failure(crate::events::result::Failure(failure_text));
+                    return Ok(FlowResult::FailedContinue);
+                }
+
+                let failures_before = state.failures().len();
+
+                // Store failure context for on_failure handlers
+                if let Some(exit_code) = result.exit_code {
+                    state.set_variable("EXIT_CODE".to_string(), exit_code.to_string());
+                } else {
+                    state.set_variable("EXIT_CODE".to_string(), String::new());
+                }
+                state.set_variable("STDOUT".to_string(), result.stdout.clone());
+                state.set_variable("STDERR".to_string(), result.stderr.clone());
+
+                // Execute on_failure statements (no timing)
+                let callback_result = Self::execute_statements(on_failure_statements, state)?;
+
+                // Add default failure record if on_failure handlers didn't add any
+                let failures_after = state.failures().len();
+                if failures_after == failures_before {
+                    state.add_failure(crate::events::result::Failure(failure_text));
+                }
+
+                // Translate Success to FailedContinue since we had a failure but handled it
+                Ok(match callback_result {
+                    FlowResult::Success => FlowResult::FailedContinue,
+                    other => other,
+                })
+            }
+        }
+    }
+
+    /// Handle action failure with timing (for benchmarks/tests)
     fn handle_action_failure(
         action: &Action,
         result: &ActionResult,
@@ -349,22 +494,10 @@ impl FlowEngine {
             Action::Context(context_action) => &context_action.on_failure,
             Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
-            Action::Log(_) => {
-                // Log action doesn't fail
-                return Ok((FlowResult::Success, Vec::new()));
-            }
-            Action::Continue(_) => {
-                // Continue action "failed" - return FailedContinue
-                return Ok((FlowResult::FailedContinue, Vec::new()));
-            }
-            Action::Stop(_) => {
-                // Stop action failed - return FailedStop
-                return Ok((FlowResult::FailedStop, Vec::new()));
-            }
-            Action::Block(_) => {
-                // Block action failed - return FailedBlock
-                return Ok((FlowResult::FailedBlock, Vec::new()));
-            }
+            Action::Log(_) => return Ok((FlowResult::Success, Vec::new())),
+            Action::Continue(_) => return Ok((FlowResult::FailedContinue, Vec::new())),
+            Action::Stop(_) => return Ok((FlowResult::FailedStop, Vec::new())),
+            Action::Block(_) => return Ok((FlowResult::FailedBlock, Vec::new())),
         };
 
         let failure_text = if !result.stderr.is_empty() {
@@ -399,40 +532,33 @@ impl FlowEngine {
                     return Ok((FlowResult::FailedContinue, Vec::new()));
                 }
 
-                // Record current failure count to detect if on_failure handlers add their own failures
                 let failures_before = state.failures().len();
 
-                // Store EXIT_CODE and other failure context for on_failure handlers
-                // Always set or clear these variables to prevent stale data from previous failures
+                // Store failure context for on_failure handlers
                 if let Some(exit_code) = result.exit_code {
                     state.set_variable("EXIT_CODE".to_string(), exit_code.to_string());
                 } else {
                     state.set_variable("EXIT_CODE".to_string(), String::new());
                 }
-
-                // Always set stdout/stderr, even if empty, to clear previous failure data
                 state.set_variable("STDOUT".to_string(), result.stdout.clone());
                 state.set_variable("STDERR".to_string(), result.stderr.clone());
 
-                // Execute on_failure statements and capture their timing
+                // Execute on_failure statements with timing
                 let (callback_result, callback_timing) =
-                    Self::execute_statements(on_failure_statements, state)?;
+                    Self::execute_statements_with_timing(on_failure_statements, state)?;
 
-                // Add default failure record if on_failure handlers didn't add any failures
-                // This ensures custom handlers (like simple logging) don't silently drop provenance
+                // Add default failure record if on_failure handlers didn't add any
                 let failures_after = state.failures().len();
                 if failures_after == failures_before {
                     state.add_failure(crate::events::result::Failure(failure_text));
                 }
 
-                // If the on_failure handler succeeded (returned Success),
-                // translate it to FailedContinue since we had a failure but handled it
+                // Translate Success to FailedContinue since we had a failure but handled it
                 let flow_result = match callback_result {
                     FlowResult::Success => FlowResult::FailedContinue,
                     other => other,
                 };
 
-                // Return both the result and the timing from the on_failure handler
                 Ok((flow_result, callback_timing.statement_timings))
             }
         }
@@ -495,9 +621,7 @@ impl FlowEngine {
         // Resolve variables in command
         let command = resolver.resolve(&action.shell);
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Executing shell: {}", command);
-        }
+        debug_log(|| format!("[flows] Executing shell: {}", command));
 
         // Execute command
         let output = if let Some(timeout_str) = &action.timeout {
@@ -583,9 +707,7 @@ impl FlowEngine {
         // Resolve variables in command
         let jj_args = resolver.resolve(&action.jj);
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Executing jj: {}", jj_args);
-        }
+        debug_log(|| format!("[flows] Executing jj: {}", jj_args));
 
         // Parse arguments using proper shell word splitting (handles quoted args)
         let args = shell_words::split(&jj_args)
@@ -610,10 +732,8 @@ impl FlowEngine {
             (None, None)
         };
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            if let (Some(ref user), Some(ref email)) = (&jj_user, &jj_email) {
-                eprintln!("[flows] Setting JJ_USER={}, JJ_EMAIL={}", user, email);
-            }
+        if let (Some(ref user), Some(ref email)) = (&jj_user, &jj_email) {
+            debug_log(|| format!("[flows] Setting JJ_USER={}, JJ_EMAIL={}", user, email));
         }
 
         // Execute JJ command (using direct argv, no shell invocation)
@@ -1070,88 +1190,136 @@ impl FlowEngine {
     /// Supports two modes:
     /// 1. Function call: `let metadata = aiki/core.build_metadata`
     /// 2. Variable aliasing: `let desc = $description`
-    /// Execute a conditional if/then/else statement with timing
+
+    /// Execute a conditional if/then/else statement (no timing, production path)
+    fn execute_if(stmt: &IfStatement, state: &mut AikiState) -> Result<FlowResult> {
+        let condition_result = Self::evaluate_condition(&stmt.condition, state)?;
+
+        debug_log(|| {
+            format!(
+                "[flows] If condition '{}' evaluated to: {}",
+                stmt.condition, condition_result
+            )
+        });
+
+        let statements_to_execute = if condition_result {
+            debug_log(|| "[flows] Executing 'then' branch");
+            &stmt.then
+        } else if let Some(else_statements) = &stmt.else_ {
+            debug_log(|| "[flows] Executing 'else' branch");
+            else_statements
+        } else {
+            debug_log(|| "[flows] No else branch, condition false - no-op");
+            return Ok(FlowResult::Success);
+        };
+
+        Self::execute_statements(statements_to_execute, state)
+    }
+
+    /// Execute a switch/case statement (no timing, production path)
+    fn execute_switch(stmt: &SwitchStatement, state: &mut AikiState) -> Result<FlowResult> {
+        let mut resolver = Self::create_resolver(state);
+        let switch_value = resolver.resolve(&stmt.expression);
+
+        debug_log(|| {
+            format!(
+                "[flows] Switch expression '{}' evaluated to: {}",
+                stmt.expression, switch_value
+            )
+        });
+
+        let statements_to_execute = if let Some(case_statements) = stmt.cases.get(&switch_value) {
+            debug_log(|| format!("[flows] Switch matched case: {}", switch_value));
+            case_statements
+        } else if let Some(default_statements) = &stmt.default {
+            debug_log(|| {
+                format!(
+                    "[flows] Switch using default case (no match for '{}')",
+                    switch_value
+                )
+            });
+            default_statements
+        } else {
+            debug_log(|| {
+                format!(
+                    "[flows] Switch: no match for '{}' and no default case",
+                    switch_value
+                )
+            });
+            return Ok(FlowResult::Success);
+        };
+
+        Self::execute_statements(statements_to_execute, state)
+    }
+
+    /// Execute a conditional if/then/else statement with timing (for benchmarks/tests)
     fn execute_if_with_timing(
         stmt: &IfStatement,
         state: &mut AikiState,
     ) -> Result<(FlowResult, Vec<StatementTiming>)> {
-        // Evaluate the condition
         let condition_result = Self::evaluate_condition(&stmt.condition, state)?;
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
+        debug_log(|| {
+            format!(
                 "[flows] If condition '{}' evaluated to: {}",
                 stmt.condition, condition_result
-            );
-        }
+            )
+        });
 
-        // Execute the appropriate branch
         let statements_to_execute = if condition_result {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Executing 'then' branch");
-            }
+            debug_log(|| "[flows] Executing 'then' branch");
             &stmt.then
         } else if let Some(else_statements) = &stmt.else_ {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Executing 'else' branch");
-            }
+            debug_log(|| "[flows] Executing 'else' branch");
             else_statements
         } else {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] No else branch, condition false - no-op");
-            }
-            // No else branch and condition is false - treat as success (no-op)
+            debug_log(|| "[flows] No else branch, condition false - no-op");
             return Ok((FlowResult::Success, Vec::new()));
         };
 
-        // Execute the branch statements and return the result with timings
-        let (flow_result, timing) = Self::execute_statements(statements_to_execute, state)?;
+        let (flow_result, timing) =
+            Self::execute_statements_with_timing(statements_to_execute, state)?;
         Ok((flow_result, timing.statement_timings))
     }
 
-    /// Execute a switch/case statement with timing
+    /// Execute a switch/case statement with timing (for benchmarks/tests)
     fn execute_switch_with_timing(
         stmt: &SwitchStatement,
         state: &mut AikiState,
     ) -> Result<(FlowResult, Vec<StatementTiming>)> {
-        // Evaluate the switch expression
         let mut resolver = Self::create_resolver(state);
         let switch_value = resolver.resolve(&stmt.expression);
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
+        debug_log(|| {
+            format!(
                 "[flows] Switch expression '{}' evaluated to: {}",
                 stmt.expression, switch_value
-            );
-        }
+            )
+        });
 
-        // Find matching case
         let statements_to_execute = if let Some(case_statements) = stmt.cases.get(&switch_value) {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows] Switch matched case: {}", switch_value);
-            }
+            debug_log(|| format!("[flows] Switch matched case: {}", switch_value));
             case_statements
         } else if let Some(default_statements) = &stmt.default {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
+            debug_log(|| {
+                format!(
                     "[flows] Switch using default case (no match for '{}')",
                     switch_value
-                );
-            }
+                )
+            });
             default_statements
         } else {
-            // No match and no default - treat as success (no-op)
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
+            debug_log(|| {
+                format!(
                     "[flows] Switch: no match for '{}' and no default case",
                     switch_value
-                );
-            }
+                )
+            });
             return Ok((FlowResult::Success, Vec::new()));
         };
 
-        // Execute the matched case statements and return the result with timings
-        let (flow_result, timing) = Self::execute_statements(statements_to_execute, state)?;
+        let (flow_result, timing) =
+            Self::execute_statements_with_timing(statements_to_execute, state)?;
         Ok((flow_result, timing.statement_timings))
     }
 
@@ -1344,9 +1512,7 @@ impl FlowEngine {
             return Err(AikiError::InvalidVariableName(variable_name.to_string()));
         }
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Let binding: {} = {}", variable_name, expression);
-        }
+        debug_log(|| format!("[flows] Let binding: {} = {}", variable_name, expression));
 
         // Check if this is variable aliasing (starts with $) or a function call
         if expression.starts_with('$') {
@@ -1391,9 +1557,7 @@ impl FlowEngine {
         // Resolve the variable reference
         let value = resolver.resolve(expression);
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Variable alias: {} = {}", variable_name, value);
-        }
+        debug_log(|| format!("[flows] Variable alias: {} = {}", variable_name, value));
 
         // Return the value as stdout
         Ok(ActionResult {
@@ -1411,12 +1575,10 @@ impl FlowEngine {
         function_path: &str,
         state: &AikiState,
     ) -> Result<ActionResult> {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[flows] Function call: {} = {}",
-                variable_name, function_path
-            );
-        }
+        debug_log(|| format!(
+            "[flows] Function call: {} = {}",
+            variable_name, function_path
+        ));
 
         // Handle self.function syntax
         let resolved_path = if function_path.starts_with("self.") {
@@ -1563,9 +1725,7 @@ impl FlowEngine {
     fn execute_self(action: &SelfAction, state: &mut AikiState) -> Result<ActionResult> {
         let function_path = &action.self_;
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows] Self function call: {}", function_path);
-        }
+        debug_log(|| format!("[flows] Self function call: {}", function_path));
 
         // Handle self.function syntax
         let resolved_path = if function_path.starts_with("self.") {
@@ -1903,7 +2063,7 @@ mod tests {
             .iter()
             .map(|action| FlowStatement::Action(action.clone()))
             .collect();
-        FlowEngine::execute_statements(&statements, state)
+        FlowEngine::execute_statements_with_timing(&statements, state)
     }
 
     #[test]
@@ -2552,7 +2712,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2584,7 +2744,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2611,7 +2771,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // result should not be set since neither branch executed
@@ -2663,7 +2823,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2795,7 +2955,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2833,7 +2993,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         assert_eq!(
@@ -2868,7 +3028,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         // No match and no default = success (no-op)
         assert!(matches!(result, FlowResult::Success));
@@ -2910,7 +3070,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         assert!(matches!(result, FlowResult::Success));
         // Note: Variable resolver will parse the JSON and extract the field
@@ -2943,7 +3103,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let _result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         // Should execute the then branch because changed_files is non-empty
         assert_eq!(
@@ -2977,7 +3137,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (_result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let _result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         // Should execute the else branch because changed_files is empty
         assert_eq!(state.get_variable("result").unwrap(), "No changes detected");
@@ -3366,7 +3526,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Nested if on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
@@ -3415,7 +3575,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Nested switch on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
@@ -3467,7 +3627,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Deeply nested on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
@@ -3501,7 +3661,7 @@ mod tests {
         })];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("If branch with failing shell result: {:?}", result);
 
@@ -3537,7 +3697,7 @@ mod tests {
         })];
 
         let mut state = AikiState::new(create_test_event());
-        let (result, _timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Switch branch with failing shell result: {:?}", result);
 

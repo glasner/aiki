@@ -1,3 +1,4 @@
+use crate::cache::debug_log;
 use crate::error::Result;
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 use crate::session::AikiSession;
@@ -24,16 +25,14 @@ pub struct AikiPrePromptPayload {
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] PrePrompt event from {:?}, prompt length: {}",
-            payload.session.agent_type(),
-            payload.prompt.len()
-        );
-    }
+    debug_log(|| format!(
+        "PrePrompt event from {:?}, prompt length: {}",
+        payload.session.agent_type(),
+        payload.prompt.len()
+    ));
 
-    // Load core flow
-    let core_flow = crate::flows::load_core_flow()?;
+    // Load core flow (cached)
+    let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
@@ -42,21 +41,20 @@ pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PrePrompt statements from the core flow (catch errors for graceful degradation)
-    let (flow_result, _timing) =
-        match FlowEngine::execute_statements(&core_flow.pre_prompt, &mut state) {
-            Ok(result) => result,
-            Err(e) => {
-                // Flow execution failed - log warning and use original prompt
-                eprintln!("⚠️ PrePrompt flow failed: {}", e);
-                eprintln!("Continuing with original prompt...\n");
-                // Return built context (already initialized with original prompt)
-                return Ok(HookResult {
-                    context: state.build_context(),
-                    decision: Decision::Allow,
-                    failures: state.take_failures(),
-                });
-            }
-        };
+    let flow_result = match FlowEngine::execute_statements(&core_flow.pre_prompt, &mut state) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flow execution failed - log warning and use original prompt
+            eprintln!("⚠️ PrePrompt flow failed: {}", e);
+            eprintln!("Continuing with original prompt...\n");
+            // Return built context (already initialized with original prompt)
+            return Ok(HookResult {
+                context: state.build_context(),
+                decision: Decision::Allow,
+                failures: state.take_failures(),
+            });
+        }
+    };
 
     // Extract failures from state
     let failures = state.take_failures();

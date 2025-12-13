@@ -1,3 +1,4 @@
+use crate::cache::{debug_log, DEBUG_ENABLED};
 use crate::error::Result;
 use crate::events::result::HookResult;
 use crate::events::{self, AikiEvent, AikiSessionEndPayload};
@@ -15,8 +16,8 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
         return Ok(HookResult::success());
     }
 
-    // Log event for debugging (can be controlled by verbosity flag in future)
-    if std::env::var("AIKI_DEBUG").is_ok() {
+    // Log event for debugging (uses cached debug flag)
+    if *DEBUG_ENABLED {
         let event_type_name = match &event {
             AikiEvent::SessionStart(_) => "SessionStart",
             AikiEvent::PrePrompt(_) => "PrePrompt",
@@ -27,11 +28,11 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
             AikiEvent::Unsupported => "Unsupported",
         };
-        eprintln!(
-            "[aiki] Dispatching event: {} from agent: {:?}",
+        debug_log(|| format!(
+            "Dispatching event: {} from agent: {:?}",
             event_type_name,
             event.agent_type()
-        );
+        ));
     }
 
     // Route to appropriate handler
@@ -85,9 +86,7 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
 ///
 /// Called automatically when PostResponse doesn't generate an autoreply.
 fn trigger_session_end(session: AikiSession, cwd: PathBuf) -> Result<HookResult> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] No autoreply generated - ending session automatically");
-    }
+    debug_log(|| "No autoreply generated - ending session automatically");
 
     let session_end_payload = AikiSessionEndPayload {
         session,

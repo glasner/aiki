@@ -1,3 +1,4 @@
+use crate::cache::debug_log;
 use crate::error::Result;
 use crate::flows::{AikiState, FlowEngine, FlowResult};
 use crate::provenance::AgentType;
@@ -25,12 +26,10 @@ pub struct AikiPrepareCommitMessagePayload {
 pub fn handle_prepare_commit_message(
     payload: AikiPrepareCommitMessagePayload,
 ) -> Result<HookResult> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[aiki] Preparing commit message");
-    }
+    debug_log(|| "Preparing commit message");
 
-    // Load core flow
-    let core_flow = crate::flows::load_core_flow()?;
+    // Load core flow (cached)
+    let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
@@ -39,8 +38,7 @@ pub fn handle_prepare_commit_message(
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PrepareCommitMessage actions from the core flow
-    let (flow_result, _timing) =
-        FlowEngine::execute_statements(&core_flow.prepare_commit_message, &mut state)?;
+    let flow_result = FlowEngine::execute_statements(&core_flow.prepare_commit_message, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();

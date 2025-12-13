@@ -3,11 +3,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
 
+use crate::cache::debug_log;
 use crate::event_bus;
-use crate::events::result::{Decision, HookResult};
+use crate::events::result::HookResult;
 use crate::events::{
     AikiEvent, AikiPostFileChangePayload, AikiPreFileChangePayload, AikiPrePromptPayload,
-    AikiSessionStartPayload,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -107,11 +107,11 @@ pub fn handle(event_name: &str) -> Result<()> {
     let payload: CursorPayload = super::read_stdin_json()?;
 
     // Validate event name matches JSON (optional but good practice)
-    if std::env::var("AIKI_DEBUG").is_ok() && payload.event_name != event_name {
-        eprintln!(
-            "[aiki] Warning: Event name mismatch. CLI: {}, JSON: {}",
+    if payload.event_name != event_name {
+        debug_log(|| format!(
+            "Warning: Event name mismatch. CLI: {}, JSON: {}",
             event_name, payload.event_name
-        );
+        ));
     }
 
     // Build event from payload
@@ -153,12 +153,10 @@ fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
 fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
     // Fire PreFileChange only for file-modifying MCP tools
     if !is_file_modifying_tool(&payload.tool_name) {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[aiki] beforeMCPExecution: Ignoring non-file tool: {}",
-                payload.tool_name
-            );
-        }
+        debug_log(|| format!(
+            "beforeMCPExecution: Ignoring non-file tool: {}",
+            payload.tool_name
+        ));
         return AikiEvent::Unsupported;
     }
 
@@ -188,8 +186,8 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
         })
         .collect();
 
-    if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
-        eprintln!("[aiki] Cursor provided {} edits", edit_details.len());
+    if !edit_details.is_empty() {
+        debug_log(|| format!("Cursor provided {} edits", edit_details.len()));
     }
 
     AikiEvent::PostFileChange(AikiPostFileChangePayload {

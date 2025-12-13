@@ -140,195 +140,28 @@ impl FlowEngine {
 - `cli/src/events/*.rs` — update to use new signature (returns `Result<FlowResult>`)
 - `cli/tests/*.rs` — update to use new signature (tests don't need timing data, only benchmarks do)
 
-### 2b: Optimize variable resolver (Perf #5)
-
-**⚠️ Constraint:** Cannot cache a single resolver for the entire execution. The resolver snapshot must stay in sync with `state.let_vars` — if we freeze it at the start, `let` bindings from earlier statements won't be visible to later statements, breaking virtually every flow.
-
-**Correct approach:** Cache only the *immutable* event data, not `let_vars`:
-
-```rust
-impl AikiState {
-    /// Cached event variables (computed once, immutable during flow)
-    event_vars: Option<HashMap<String, String>>,
-
-    pub fn get_event_vars(&mut self) -> &HashMap<String, String> {
-        self.event_vars.get_or_insert_with(|| {
-            self.build_event_vars()  // $event.*, $cwd, $event.agent_type
-        })
-    }
-}
-
-impl FlowEngine {
-    fn create_resolver(state: &mut AikiState) -> VariableResolver {
-        let mut resolver = VariableResolver::new();
-
-        // Immutable event vars — cached (clone to release borrow)
-        let event_vars = state.get_event_vars().clone();
-        for (k, v) in &event_vars {
-            resolver.add_var(k.clone(), v.clone());
-        }
-
-        // Mutable let vars — always fresh from state
-        for (k, v) in state.iter_variables() {
-            resolver.add_var(k.clone(), v.clone());
-        }
-
-        // Env vars — lazy per-key lookup (not bulk cached)
-        resolver.set_env_lookup(|name| std::env::var(name).ok());
-
-        resolver
-    }
-}
-```
-
-This caches expensive event-field joins (file_paths, modified_files) while keeping `let_vars` fresh per action.
-
-**Files:**
-- `cli/src/flows/state.rs` — add `event_vars` cache field + `get_event_vars()`
-- `cli/src/flows/engine.rs` — refactor `create_resolver` to use cached event vars
-- `cli/src/flows/variables.rs` — add `set_env_lookup()` for lazy env resolution
-
 ---
 
-## Fix 3: Extract Flow Execution Helper + Remove Payload Cloning
+## Fix 3: Remove Unnecessary Payload Cloning
 
-**Addresses:** CodeQuality #3, Perf #3
+**Addresses:** Perf #3
 
-**Note:** This combines the original Fix 3 and Fix 4 since the helper pattern automatically eliminates payload cloning.
-
-Create helper in `cli/src/events/mod.rs`:
+Remove unnecessary `.clone()` calls in 3 event handlers:
 
 ```rust
-use crate::cache;
-use crate::flows::{AikiState, FlowEngine, FlowResult};
-use crate::flows::types::{Flow, FlowStatement};
-use super::result::Failure;
+// Before
+let mut state = AikiState::new(payload.clone());
 
-/// Result of flow execution with all state needed for HookResult
-pub struct FlowOutput {
-    pub result: FlowResult,
-    pub failures: Vec<Failure>,
-    pub context: Option<String>,  // From state.build_context()
-}
-
-impl FlowOutput {
-    /// Convert FlowResult to Decision (FailedBlock → Block, all else → Allow)
-    pub fn decision(&self) -> Decision {
-        match self.result {
-            FlowResult::FailedBlock => Decision::Block,
-            _ => Decision::Allow,
-        }
-    }
-}
-
-/// Execute a flow section with graceful error handling (default)
-///
-/// On error: logs warning, returns FailedContinue to allow editor operation to proceed.
-/// **All hooks should use this** to avoid crashing the editor on flow errors.
-///
-/// Returns context for events that need it (PostResponse, PrePrompt, PrepareCommitMessage).
-/// Events that don't need context can ignore `output.context`.
-pub fn execute_flow<P, F>(
-    payload: P,
-    section_fn: F,
-    event_name: &str,
-) -> FlowOutput
-where
-    P: Into<AikiEvent>,
-    F: FnOnce(&Flow) -> &[FlowStatement],
-{
-    let core_flow = cache::get_core_flow();
-    let event: AikiEvent = payload.into();
-    let mut state = AikiState::new(event);
-    state.flow_name = Some("aiki/core".to_string());
-
-    match FlowEngine::execute_statements(section_fn(core_flow), &mut state) {
-        Ok(result) => FlowOutput {
-            result,
-            failures: state.take_failures(),
-            context: state.build_context(),
-        },
-        Err(e) => {
-            // Graceful degradation: log warning, continue with FailedContinue
-            eprintln!("\n⚠️ {} flow failed: {}", event_name, e);
-            eprintln!("Continuing without Aiki processing.\n");
-            FlowOutput {
-                result: FlowResult::FailedContinue,
-                failures: state.take_failures(),
-                context: state.build_context(),  // Preserve any partial context
-            }
-        }
-    }
-}
+// After
+let mut state = AikiState::new(payload);
 ```
 
-Then all event handlers use the same simple pattern:
-
-```rust
-// Simple handler (ignores context, allows all operations)
-pub fn handle_pre_file_change(payload: AikiPreFileChangePayload) -> Result<HookResult> {
-    let output = execute_flow(payload, |f| &f.pre_file_change, "PreFileChange");
-
-    Ok(HookResult {
-        context: None,
-        decision: Decision::Allow,
-        failures: output.failures,
-    })
-}
-
-// Handler that returns context (autoreplies)
-pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResult> {
-    let output = execute_flow(payload, |f| &f.post_response, "PostResponse");
-
-    Ok(HookResult {
-        context: output.context,  // Autoreplies (or None on error)
-        decision: Decision::Allow,
-        failures: output.failures,
-    })
-}
-
-// Handler that can block operations
-pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
-    let output = execute_flow(payload, |f| &f.pre_prompt, "PrePrompt");
-
-    Ok(HookResult {
-        context: output.context,
-        decision: output.decision(),  // FailedBlock → Block
-        failures: output.failures,
-    })
-}
-
-// SessionStart can also block
-pub fn handle_session_start(payload: AikiSessionStartPayload) -> Result<HookResult> {
-    let output = execute_flow(payload, |f| &f.session_start, "SessionStart");
-
-    Ok(HookResult {
-        context: None,
-        decision: output.decision(),  // FailedBlock → Block
-        failures: output.failures,
-    })
-}
-
-// PrepareCommitMessage blocks to abort commits on failure
-pub fn handle_prepare_commit_message(payload: AikiPrepareCommitMessagePayload) -> Result<HookResult> {
-    let output = execute_flow(payload, |f| &f.prepare_commit_message, "PrepareCommitMessage");
-
-    Ok(HookResult {
-        context: None,
-        decision: output.decision(),  // FailedBlock → Block (abort commit)
-        failures: output.failures,
-    })
-}
-```
+The clones were only there for error messages that no longer exist. The payload is consumed by `AikiState::new()` which takes ownership — no clone needed.
 
 **Files:**
-- `cli/src/events/mod.rs` — add helper
-- `cli/src/events/session_start.rs`
-- `cli/src/events/pre_file_change.rs`
-- `cli/src/events/post_file_change.rs`
-- `cli/src/events/post_response.rs`
-- `cli/src/events/session_end.rs`
-- `cli/src/events/prepare_commit_msg.rs`
+- `cli/src/events/post_file_change.rs:70` — remove `.clone()`
+- `cli/src/events/pre_file_change.rs:35` — remove `.clone()`
+- `cli/src/events/session_end.rs:34` — remove `.clone()`
 
 ---
 
@@ -386,21 +219,8 @@ use crate::commands::hooks::HookCommandResponse;
 
 **Saves:** ~30 lines of duplicate code, clearer intent, struct lives with hook command logic
 
-### 4b: Extract shared `is_file_modifying_tool`
 
-Add to `cli/src/vendors/mod.rs`:
-
-```rust
-/// Check if a tool modifies files (case-insensitive)
-pub fn is_file_modifying_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name.to_ascii_lowercase().as_str(),
-        "edit" | "write" | "notebookedit" | "file_edit"
-    )
-}
-```
-
-### 4c: Remove unnecessary `expect()` calls
+### 4b: Remove unnecessary `expect()` calls
 
 **Current issue:** Both vendors use `.expect("Failed to create AikiSession")` but `AikiSession::new()` is infallible (always returns `Ok`).
 
@@ -564,10 +384,9 @@ fn test_full_cursor_session_lifecycle() { ... }
 |-------|-------|--------------|----------|
 | 1 | Fix 1 (caching: debug, binary path, core flow) | None | ~80 |
 | 2 | Fix 4 (vendors) | None | ~80 |
-| 3 | Fix 2 (flow engine: timing, resolver, env lookup) | Fix 1 | ~180 |
-| 4 | Fix 3 (helpers + no payload cloning) | Fix 1, 2 | ~200 |
-| 5 | Fix 5, 6 (small opts, must_use) | None | ~30 |
-| 6 | Fix 7 (tests) | Fixes 1-5 | ~200 |
+| 3 | Fix 2 (flow engine: timing, resolver) | Fix 1 | ~120 |
+| 4 | Fix 3, 5, 6 (remove clone, small opts, must_use) | None | ~10 |
+| 5 | Fix 7 (tests) | Fixes 1-4 | ~200 |
 
 
 ---
@@ -578,7 +397,7 @@ fn test_full_cursor_session_lifecycle() { ... }
 |-------------|-----|
 | Perf #1 (cache flow) | Fix 1 |
 | Perf #2 (disable timing) | Fix 2a |
-| Perf #3 (avoid cloning) | Fix 3 (merged with helpers) |
+| Perf #3 (avoid cloning) | Fix 3 |
 | Perf #5 (reuse resolvers) | Fix 2b |
 | Perf #7 (cache env vars) | Fix 2b (lazy lookup, not bulk cache) |
 | Perf #8 (cache debug flag) | Fix 1 |
@@ -586,7 +405,7 @@ fn test_full_cursor_session_lifecycle() { ... }
 | Perf #10 (process scan) | Fix 5a |
 | CodeQuality #1 (duplicate fn) | Fix 4b |
 | CodeQuality #2 (duplicate structs) | Fix 4a |
-| CodeQuality #3 (boilerplate) | Fix 3 |
+| CodeQuality #3 (boilerplate) | ~~Skipped~~ (code is clear as-is) |
 | CodeQuality #4 (expect→Result) | Fix 4c |
 | CodeQuality #5 (must_use) | Fix 6 |
 | CodeQuality #6 (unused timing) | Fix 2a |

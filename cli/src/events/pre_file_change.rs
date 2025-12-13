@@ -1,3 +1,4 @@
+use crate::cache::debug_log;
 use crate::error::Result;
 use crate::flows::{AikiState, FlowEngine};
 use crate::session::AikiSession;
@@ -21,16 +22,14 @@ pub struct AikiPreFileChangePayload {
 /// It allows flows to stash user edits before the AI starts making changes,
 /// ensuring clean separation between human and AI work.
 pub fn handle_pre_file_change(payload: AikiPreFileChangePayload) -> Result<HookResult> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] PreFileChange event from {:?}, session: {}",
-            payload.session.agent_type(),
-            payload.session.external_id()
-        );
-    }
+    debug_log(|| format!(
+        "PreFileChange event from {:?}, session: {}",
+        payload.session.agent_type(),
+        payload.session.external_id()
+    ));
 
-    // Load core flow
-    let core_flow = crate::flows::load_core_flow()?;
+    // Load core flow (cached)
+    let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload.clone());
@@ -39,8 +38,7 @@ pub fn handle_pre_file_change(payload: AikiPreFileChangePayload) -> Result<HookR
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PreFileChange actions from the core flow
-    let (_flow_result, _timing) =
-        FlowEngine::execute_statements(&core_flow.pre_file_change, &mut state)?;
+    let _flow_result = FlowEngine::execute_statements(&core_flow.pre_file_change, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();

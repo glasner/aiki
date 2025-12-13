@@ -46,38 +46,14 @@ pub fn save_previous_hooks_path(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Get the absolute path to the aiki binary
-pub fn get_aiki_binary_path() -> Result<String> {
-    let output = Command::new("which")
-        .arg("aiki")
-        .output()
-        .context("Failed to run 'which aiki'")?;
-
-    if output.status.success() {
-        let path = String::from_utf8(output.stdout)
-            .context("Invalid UTF-8 in aiki path")?
-            .trim()
-            .to_string();
-        return Ok(path);
-    }
-
-    // Fallback: try to get the current executable path
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(path_str) = current_exe.to_str() {
-            eprintln!(
-                "Note: Using current executable path (aiki not in PATH): {}",
-                path_str
-            );
-            return Ok(path_str.to_string());
-        }
-    }
-
-    anyhow::bail!(
-        "Could not find 'aiki' binary in PATH.\n\
-         Please install aiki or ensure it's in your PATH:\n\
-         • cargo install --path .\n\
-         • Or add the target directory to PATH"
-    );
+/// Get the absolute path to the aiki binary (cached).
+///
+/// Uses the cached `AIKI_BINARY_PATH` from the cache module.
+/// The path is resolved once per process using `which aiki` or
+/// falling back to `std::env::current_exe()`.
+#[must_use]
+pub fn get_aiki_binary_path() -> String {
+    (*crate::cache::AIKI_BINARY_PATH).clone()
 }
 
 /// Install global Git hooks in ~/.aiki/githooks/
@@ -118,7 +94,7 @@ pub fn install_global_git_hooks() -> Result<()> {
 pub fn install_claude_code_hooks_global() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let settings_path = home_dir.join(".claude/settings.json");
-    let aiki_path = get_aiki_binary_path()?;
+    let aiki_path = get_aiki_binary_path();
 
     // Create ~/.claude if it doesn't exist
     if let Some(parent) = settings_path.parent() {
@@ -178,7 +154,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
 pub fn install_cursor_hooks_global() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let hooks_path = home_dir.join(".cursor/hooks.json");
-    let aiki_path = get_aiki_binary_path()?;
+    let aiki_path = get_aiki_binary_path();
 
     // Create ~/.cursor if it doesn't exist
     if let Some(parent) = hooks_path.parent() {
