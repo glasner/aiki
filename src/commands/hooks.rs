@@ -116,20 +116,29 @@ fn get_running_editors() -> (bool, bool) {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
-    // Scan all processes once and check for both editors
+    let (mut claude, mut cursor) = (false, false);
+
+    // Scan processes with early exit when both editors found
     // Claude Code process names vary by platform:
     // - macOS: "Claude Code" or "claude-code"
     // - Linux: "claude-code" or "claude"
     // - Windows: "Claude Code.exe" or "claude-code.exe"
-    sys.processes()
-        .values()
-        .fold((false, false), |(claude, cursor), process| {
-            let name = process.name().to_string_lossy().to_lowercase();
-            (
-                claude || (name.contains("claude") && (name.contains("code") || name == "claude")),
-                cursor || name.contains("cursor"),
-            )
-        })
+    for process in sys.processes().values() {
+        if claude && cursor {
+            break; // Early exit - both editors found
+        }
+
+        let name = process.name().to_string_lossy().to_lowercase();
+
+        if !claude && name.contains("claude") && (name.contains("code") || name == "claude") {
+            claude = true;
+        }
+        if !cursor && name.contains("cursor") {
+            cursor = true;
+        }
+    }
+
+    (claude, cursor)
 }
 
 /// Restart Claude Code application
