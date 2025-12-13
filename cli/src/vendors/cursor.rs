@@ -79,34 +79,34 @@ struct CursorEdit {
 /// Dispatches to event-specific handlers based on event name.
 ///
 /// # Arguments
-/// * `event_name` - Vendor event name from CLI flag (e.g., "beforeSubmitPrompt", "afterFileEdit")
-pub fn handle(event_name: &str) -> Result<()> {
+/// * `cursor_event_name` - Vendor event name from CLI flag (e.g., "beforeSubmitPrompt", "afterFileEdit")
+pub fn handle(cursor_event_name: &str) -> Result<()> {
     // Read Cursor-specific JSON from stdin
     let payload: CursorPayload = super::read_stdin_json()?;
 
     // Validate event name matches JSON (optional but good practice)
-    if payload.event_name != event_name {
+    if payload.event_name != cursor_event_name {
         debug_log(|| {
             format!(
                 "Warning: Event name mismatch. CLI: {}, JSON: {}",
-                event_name, payload.event_name
+                cursor_event_name, payload.event_name
             )
         });
     }
 
     // Build event from payload
-    let aiki_event = build_aiki_event(payload, event_name);
+    let aiki_event = build_aiki_event(payload, cursor_event_name);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
-    let hook_output = build_command_output(aiki_response, event_name);
+    let hook_output = build_command_output(aiki_response, cursor_event_name);
 
     hook_output.print_and_exit();
 }
 
 /// Build AikiEvent from Cursor payload
-fn build_aiki_event(payload: CursorPayload, event_name: &str) -> AikiEvent {
-    match event_name {
+fn build_aiki_event(payload: CursorPayload, cursor_event_name: &str) -> AikiEvent {
+    match cursor_event_name {
         "beforeSubmitPrompt" => build_pre_prompt_event(payload),
         "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
         "afterFileEdit" => build_post_file_change_event(payload),
