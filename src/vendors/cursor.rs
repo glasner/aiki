@@ -95,19 +95,24 @@ pub fn handle(event_name: &str) -> Result<()> {
     }
 
     // Build event from payload
-    let aiki_event = match event_name {
-        "beforeSubmitPrompt" => build_pre_prompt_event(payload),
-        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
-        "afterFileEdit" => build_post_file_change_event(payload),
-        "stop" => build_post_response_event(payload),
-        _ => AikiEvent::Unsupported,
-    };
+    let aiki_event = build_aiki_event(payload, event_name);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
     let hook_output = build_command_output(aiki_response, event_name);
 
     hook_output.print_and_exit();
+}
+
+/// Build AikiEvent from Cursor payload
+fn build_aiki_event(payload: CursorPayload, event_name: &str) -> AikiEvent {
+    match event_name {
+        "beforeSubmitPrompt" => build_pre_prompt_event(payload),
+        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
+        "afterFileEdit" => build_post_file_change_event(payload),
+        "stop" => build_post_response_event(payload),
+        _ => AikiEvent::Unsupported,
+    }
 }
 
 /// Build PrePrompt event from beforeSubmitPrompt payload
