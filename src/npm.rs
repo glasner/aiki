@@ -3,6 +3,7 @@
 // This module provides fast detection of globally installed Node.js packages
 // without spawning Node.js processes (which add ~100-120ms overhead).
 
+use crate::cache::debug_log;
 use std::path::PathBuf;
 
 /// Get the version of a globally installed npm package by reading package.json directly.
@@ -26,11 +27,11 @@ pub fn get_version(
     let result = get_version_impl(&package_name, &binary_name);
 
     // Log failures in debug mode
-    if result.is_none() && std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] Could not detect version for package '{}' - falling back to None",
+    if result.is_none() {
+        debug_log(|| format!(
+            "Could not detect version for package '{}' - falling back to None",
             package_name
-        );
+        ));
     }
 
     result
@@ -41,9 +42,7 @@ fn get_version_impl(package_name: &str, binary_name: &str) -> Option<String> {
     if let Some(npm_root) = find_npm_global_root() {
         let package_json = npm_root.join(package_name).join("package.json");
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[aiki] Checking package.json at: {:?}", package_json);
-        }
+        debug_log(|| format!("Checking package.json at: {:?}", package_json));
 
         if let Some(version) = read_version_from_package_json(&package_json) {
             return Some(version);
@@ -311,12 +310,10 @@ fn read_version_from_package_json(path: &PathBuf) -> Option<String> {
 }
 
 fn resolve_via_which(binary_name: &str) -> Option<String> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] Falling back to binary resolution for '{}'",
-            binary_name
-        );
-    }
+    debug_log(|| format!(
+        "Falling back to binary resolution for '{}'",
+        binary_name
+    ));
 
     // Use the `which` crate (already in dependencies) for cross-platform resolution
     // Handles PATH search, PATHEXT on Windows, symlinks, and permissions

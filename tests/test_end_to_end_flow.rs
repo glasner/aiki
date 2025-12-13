@@ -79,7 +79,7 @@ SessionEnd:
         let event = AikiEvent::Unsupported;
         let mut state = AikiState::new(event);
 
-        let (result, timing) = FlowEngine::execute_statements(&flow.session_start, &mut state)
+        let (result, timing) = FlowEngine::execute_statements_with_timing(&flow.session_start, &mut state)
             .expect("Failed to execute SessionStart");
 
         assert!(matches!(result, FlowResult::Success));
@@ -107,7 +107,7 @@ SessionEnd:
 
         let mut state = AikiState::new(AikiEvent::PostFileChange(event));
 
-        let (result, timing) = FlowEngine::execute_statements(&flow.post_file_change, &mut state)
+        let (result, timing) = FlowEngine::execute_statements_with_timing(&flow.post_file_change, &mut state)
             .expect("Failed to execute PostFileChange");
 
         // The shell command will fail but on_failure handles it
@@ -157,7 +157,7 @@ fn test_nested_control_flow_with_timing() {
     })];
 
     let mut state = AikiState::new(AikiEvent::Unsupported);
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state)
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state)
         .expect("Failed to execute nested flow");
 
     assert!(matches!(result, FlowResult::Success));
@@ -210,7 +210,7 @@ fn test_on_failure_with_statements() {
     ];
 
     let mut state = AikiState::new(AikiEvent::Unsupported);
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state)
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state)
         .expect("Failed to execute on_failure test");
 
     // Should return FailedContinue because on_failure handled the error and continued
@@ -241,7 +241,7 @@ fn test_backwards_compatibility_shortcuts() {
     ];
 
     let mut state = AikiState::new(AikiEvent::Unsupported);
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state)
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state)
         .expect("Failed to execute shortcuts test");
 
     // Should stop at the second shell command

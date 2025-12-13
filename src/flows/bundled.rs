@@ -3,12 +3,28 @@ use anyhow::Result;
 use super::parser::FlowParser;
 use super::types::Flow;
 
-/// Load the core system flow
+/// Load the core system flow (uncached).
 ///
-/// The core flow is embedded in the binary and handles both Start and PostFileChange events.
-pub fn load_core_flow() -> Result<Flow> {
+/// The core flow is embedded in the binary and handles all event types.
+/// This function parses the YAML on every call. For cached access, use
+/// `crate::cache::get_core_flow()` instead.
+///
+/// # Note
+///
+/// This is the uncached version used internally by the cache module.
+/// Most code should use `load_core_flow()` which returns a cached reference.
+pub fn load_core_flow_uncached() -> Result<Flow> {
     let core_yaml = include_str!("core/flow.yaml");
     FlowParser::parse_str(core_yaml)
+}
+
+/// Load the core system flow (cached).
+///
+/// Returns a reference to the cached core flow that is parsed once per process.
+/// This is the preferred entry point for accessing the core flow.
+#[must_use]
+pub fn load_core_flow() -> &'static Flow {
+    crate::cache::get_core_flow()
 }
 
 #[cfg(test)]
@@ -17,14 +33,22 @@ mod tests {
     use crate::flows::types::FlowStatement;
 
     #[test]
-    fn test_load_core_flow() {
-        let core = load_core_flow().unwrap();
+    fn test_load_core_flow_uncached() {
+        // Test the uncached version directly
+        let core = load_core_flow_uncached().unwrap();
+        assert_eq!(core.name, "Aiki Core");
+    }
+
+    #[test]
+    fn test_load_core_flow_cached() {
+        // Test the cached version
+        let core = load_core_flow();
         assert_eq!(core.name, "Aiki Core");
     }
 
     #[test]
     fn test_core_flow_has_start() {
-        let core = load_core_flow().unwrap();
+        let core = load_core_flow();
 
         // Should have Start handler
         assert!(!core.session_start.is_empty());
@@ -32,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_core_flow_has_post_file_change() {
-        let core = load_core_flow().unwrap();
+        let core = load_core_flow();
 
         // Should have PostFileChange handler
         assert!(!core.post_file_change.is_empty());
@@ -40,7 +64,7 @@ mod tests {
 
     #[test]
     fn test_core_flow_has_pre_file_change() {
-        let core = load_core_flow().unwrap();
+        let core = load_core_flow();
 
         // Should have PreFileChange handler
         assert!(!core.pre_file_change.is_empty());
@@ -48,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_core_flow_metadata() {
-        let core = load_core_flow().unwrap();
+        let core = load_core_flow();
 
         assert_eq!(core.name, "Aiki Core");
         assert_eq!(core.version, "1");
@@ -58,7 +82,7 @@ mod tests {
     fn test_core_flow_uses_let_syntax() {
         use super::super::types::Action;
 
-        let core = load_core_flow().unwrap();
+        let core = load_core_flow();
 
         // Should have PostFileChange handler
         assert!(!core.post_file_change.is_empty());

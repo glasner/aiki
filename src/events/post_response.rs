@@ -1,3 +1,4 @@
+use crate::cache::debug_log;
 use crate::error::Result;
 use crate::flows::{AikiState, FlowEngine};
 use crate::session::AikiSession;
@@ -27,16 +28,14 @@ pub struct AikiPostResponsePayload {
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResult> {
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[aiki] PostResponse event from {:?}, response length: {}",
-            payload.session.agent_type(),
-            payload.response.len()
-        );
-    }
+    debug_log(|| format!(
+        "PostResponse event from {:?}, response length: {}",
+        payload.session.agent_type(),
+        payload.response.len()
+    ));
 
-    // Load core flow
-    let core_flow = crate::flows::load_core_flow()?;
+    // Load core flow (cached)
+    let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
@@ -45,20 +44,19 @@ pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResu
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
-    let (_flow_result, _timing) =
-        match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
-            Ok(result) => result,
-            Err(e) => {
-                // Flow execution failed - log warning and skip autoreply
-                eprintln!("\n⚠️ PostResponse flow failed: {}", e);
-                eprintln!("No autoreply generated.\n");
-                return Ok(HookResult {
-                    context: state.build_context(),
-                    decision: Decision::Allow,
-                    failures: state.take_failures(),
-                });
-            }
-        };
+    let _flow_result = match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flow execution failed - log warning and skip autoreply
+            eprintln!("\n⚠️ PostResponse flow failed: {}", e);
+            eprintln!("No autoreply generated.\n");
+            return Ok(HookResult {
+                context: state.build_context(),
+                decision: Decision::Allow,
+                failures: state.take_failures(),
+            });
+        }
+    };
 
     // Extract failures from state
     let failures = state.take_failures();

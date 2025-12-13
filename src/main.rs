@@ -1,6 +1,7 @@
 mod acp;
 mod authors;
 mod blame;
+mod cache;
 mod commands;
 mod config;
 mod error;

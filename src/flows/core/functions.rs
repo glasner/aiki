@@ -25,6 +25,7 @@
 //! - [`get_git_user`] - Get the git user (name + email) from git config
 
 use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
+use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
     AikiPostFileChangePayload, AikiPreFileChangePayload, AikiPrepareCommitMessagePayload,
@@ -163,13 +164,11 @@ pub fn build_metadata(
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Generated metadata - author: {}, message length: {}",
-            author,
-            message.len()
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Generated metadata - author: {}, message length: {}",
+        author,
+        message.len()
+    ));
 
     // Return JSON output for structured data
     let json = serde_json::json!({
@@ -235,12 +234,10 @@ fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<Ac
 
     let message = format!("{}\n[/aiki]", lines.join("\n"));
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Generated human metadata - author: {}",
-            git_user
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Generated human metadata - author: {}",
+        git_user
+    ));
 
     let json = serde_json::json!({
         "author": git_user,
@@ -329,9 +326,7 @@ pub enum EditClassification {
 pub fn classify_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult> {
     // If no edit details, we can't classify - treat as exact match (AI-only)
     if event.edit_details.is_empty() {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows/core] No edit details available - assuming AI-only changes");
-        }
+        debug_log(|| "[flows/core] No edit details available - assuming AI-only changes");
 
         return Ok(ActionResult {
             success: true,
@@ -397,13 +392,11 @@ pub fn classify_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult>
         "Unknown"
     };
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Classification: type={}, extra_files={}",
-            classification_type,
-            extra_files.len()
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Classification: type={}, extra_files={}",
+        classification_type,
+        extra_files.len()
+    ));
 
     Ok(ActionResult {
         success: true,
@@ -529,9 +522,7 @@ fn read_file_safe(path: &Path) -> Result<String> {
 pub fn prepare_separation(event: &AikiPostFileChangePayload) -> Result<ActionResult> {
     // If no edit details, return early
     if event.edit_details.is_empty() {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows/core] No edit details available, skipping preparation");
-        }
+        debug_log(|| "[flows/core] No edit details available, skipping preparation");
         return Ok(ActionResult {
             success: true,
             exit_code: Some(0),
@@ -564,13 +555,11 @@ pub fn prepare_separation(event: &AikiPostFileChangePayload) -> Result<ActionRes
         .cloned()
         .collect();
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Preparing separation for {} files with edits, {} AI-only files",
-            files_with_edits.len(),
-            ai_only_files.len()
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Preparing separation for {} files with edits, {} AI-only files",
+        files_with_edits.len(),
+        ai_only_files.len()
+    ));
 
     // Reconstruct AI-only content for files with edits
     let mut files_data = serde_json::Map::new();
@@ -688,12 +677,10 @@ pub fn write_ai_files(
             ))
         })?;
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[flows/core] Wrote AI-only content to '{}'",
-                full_path.display()
-            );
-        }
+        debug_log(|| format!(
+            "[flows/core] Wrote AI-only content to '{}'",
+            full_path.display()
+        ));
     }
 
     Ok(ActionResult {
@@ -766,12 +753,10 @@ pub fn restore_original_files(
             ))
         })?;
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!(
-                "[flows/core] Restored original content to '{}'",
-                full_path.display()
-            );
-        }
+        debug_log(|| format!(
+            "[flows/core] Restored original content to '{}'",
+            full_path.display()
+        ));
     }
 
     Ok(ActionResult {
@@ -826,9 +811,7 @@ pub fn separate_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult>
     // This allows graceful degradation for hook-based detection where
     // edit details might not be available
     if event.edit_details.is_empty() {
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("[flows/core] No edit details available, skipping separation");
-        }
+        debug_log(|| "[flows/core] No edit details available, skipping separation");
         return Ok(ActionResult {
             success: true,
             exit_code: Some(0),
@@ -861,13 +844,11 @@ pub fn separate_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult>
         .cloned()
         .collect();
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Separating {} files with edits, {} AI-only files",
-            files_with_edits.len(),
-            ai_only_files.len()
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Separating {} files with edits, {} AI-only files",
+        files_with_edits.len(),
+        ai_only_files.len()
+    ));
 
     // Step 1: Reconstruct AI-only content for files with edits
     let mut original_contents: HashMap<String, String> = HashMap::new();
@@ -918,9 +899,7 @@ pub fn separate_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult>
         Ok(output) => output,
         Err(e) => {
             // Cleanup: Restore original content before returning error
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("[flows/core] jj split failed, restoring original content");
-            }
+            debug_log(|| "[flows/core] jj split failed, restoring original content");
             for (file_path, content) in &original_contents {
                 let full_path = event.cwd.join(file_path);
                 // Best-effort cleanup - ignore errors since we're already in error path
@@ -942,12 +921,10 @@ pub fn separate_edits(event: &AikiPostFileChangePayload) -> Result<ActionResult>
         })?;
     }
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Successfully separated edits: {}",
-            split_result
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Successfully separated edits: {}",
+        split_result
+    ));
 
     // Parse jj split output to extract change IDs
     // Output format: "First part: qpvuntsm 12345678 AI changes
@@ -1048,9 +1025,7 @@ fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Re
         cmd.arg(file);
     }
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[flows/core] Running: {:?}", cmd);
-    }
+    debug_log(|| format!("[flows/core] Running: {:?}", cmd));
 
     let output = cmd
         .output()
@@ -1074,12 +1049,10 @@ fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Re
     metaedit_cmd.arg("--author").arg(author);
     metaedit_cmd.arg("--no-edit"); // Don't open editor
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[flows/core] Setting author on AI change: {:?}",
-            metaedit_cmd
-        );
-    }
+    debug_log(|| format!(
+        "[flows/core] Setting author on AI change: {:?}",
+        metaedit_cmd
+    ));
 
     let metaedit_output = metaedit_cmd
         .output()

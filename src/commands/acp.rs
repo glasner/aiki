@@ -115,6 +115,7 @@ use crate::acp::protocol::{
     AgentInfo, ClientInfo, InitializeRequest, InitializeResponse, JsonRpcMessage,
     SessionNotification,
 };
+use crate::cache::debug_log;
 use crate::commands::zed_detection;
 use crate::error::{AikiError, Result};
 use crate::event_bus;
@@ -384,22 +385,16 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             break;
                         }
                     }
-                    if std::env::var("AIKI_DEBUG").is_ok() {
-                        eprintln!("[acp] Sent autoreply to agent: {} bytes", json.len());
-                    }
+                    debug_log(|| format!("[acp] Sent autoreply to agent: {} bytes", json.len()));
                 }
                 AutoreplyMessage::Shutdown => {
-                    if std::env::var("AIKI_DEBUG").is_ok() {
-                        eprintln!("ACP Proxy: Autoreply thread received shutdown signal");
-                    }
+                    debug_log(|| "ACP Proxy: Autoreply thread received shutdown signal");
                     break;
                 }
             }
         }
 
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("ACP Proxy: Autoreply forwarder thread exiting");
-        }
+        debug_log(|| "ACP Proxy: Autoreply forwarder thread exiting");
         Ok(())
     });
 
@@ -463,12 +458,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let _ = metadata_tx_clone
                                         .send(StateMessage::SetWorkingDirectory(path));
 
-                                    if std::env::var("AIKI_DEBUG").is_ok() {
-                                        eprintln!(
-                                            "ACP Proxy: Set working directory to: {}",
-                                            cwd_str
-                                        );
-                                    }
+                                    debug_log(|| format!(
+                                        "ACP Proxy: Set working directory to: {}",
+                                        cwd_str
+                                    ));
                                 }
                             }
 
@@ -492,12 +485,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let _ = metadata_tx_clone
                                         .send(StateMessage::SetWorkingDirectory(path));
 
-                                    if std::env::var("AIKI_DEBUG").is_ok() {
-                                        eprintln!(
-                                            "ACP Proxy: Set working directory to: {}",
-                                            cwd_str
-                                        );
-                                    }
+                                    debug_log(|| format!(
+                                        "ACP Proxy: Set working directory to: {}",
+                                        cwd_str
+                                    ));
                                 }
                             }
                         }
@@ -566,9 +557,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         }
                         "authenticate" => {
                             // Just observe and forward - let the agent handle authentication
-                            if std::env::var("AIKI_DEBUG").is_ok() {
-                                eprintln!("ACP Proxy: Forwarding authenticate request to agent");
-                            }
+                            debug_log(|| "ACP Proxy: Forwarding authenticate request to agent");
                         }
                         _ => {}
                     }
@@ -591,9 +580,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                 stdin.flush()?;
             }
         }
-        if std::env::var("AIKI_DEBUG").is_ok() {
-            eprintln!("ACP Proxy: IDE stdin closed, stopping IDE → Agent thread");
-        }
+        debug_log(|| "ACP Proxy: IDE stdin closed, stopping IDE → Agent thread");
         Ok(())
     });
 
@@ -655,9 +642,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // This allows each turn to use up to MAX_AUTOREPLIES, preventing
                         // permanent blocking after the session accumulates 5 total autoreplies
                         reset_autoreply_counter(&mut autoreply_counters, &session_id);
-                        if std::env::var("AIKI_DEBUG").is_ok() {
-                            eprintln!("[acp] Reset autoreply counter for session: {}", session_id);
-                        }
+                        debug_log(|| format!("[acp] Reset autoreply counter for session: {}", session_id));
                     }
                     StateMessage::TrackNewSession { request_id } => {
                         // Track session/new request to match with response
@@ -665,9 +650,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                     }
                     StateMessage::Shutdown => {
                         // Explicit shutdown signal - exit the loop
-                        if std::env::var("AIKI_DEBUG").is_ok() {
-                            eprintln!("ACP Proxy: Agent→IDE thread received shutdown signal");
-                        }
+                        debug_log(|| "ACP Proxy: Agent→IDE thread received shutdown signal");
                         break;
                     }
                 }
@@ -757,18 +740,16 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         // Clean up accumulated response but don't fire SessionEnd
                                         response_accumulator.remove(&session_id);
 
-                                        if std::env::var("AIKI_DEBUG").is_ok() {
-                                            eprintln!(
-                                                "[acp] Turn ended with stopReason '{}', cleaned up session {}",
-                                                stop_reason, session_id
-                                            );
-                                        }
+                                        debug_log(|| format!(
+                                            "[acp] Turn ended with stopReason '{}', cleaned up session {}",
+                                            stop_reason, session_id
+                                        ));
                                     }
-                                } else if std::env::var("AIKI_DEBUG").is_ok() {
-                                    eprintln!(
+                                } else {
+                                    debug_log(|| format!(
                                         "[acp] Detected stopReason '{}' but no matching request_id: {:?}",
                                         stop_reason, response_id
-                                    );
+                                    ));
                                 }
                             }
                         }
@@ -784,12 +765,10 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             if let Some(session_id) = prompt_requests.remove(&request_id) {
                                 response_accumulator.remove(&session_id);
 
-                                if std::env::var("AIKI_DEBUG").is_ok() {
-                                    eprintln!(
-                                        "[acp] JSON-RPC error response for request {:?}, cleaned up session {}",
-                                        response_id, session_id
-                                    );
-                                }
+                                debug_log(|| format!(
+                                    "[acp] JSON-RPC error response for request {:?}, cleaned up session {}",
+                                    response_id, session_id
+                                ));
                             }
                         }
                     }
@@ -877,9 +856,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         eprintln!("ACP Proxy: Error in Agent → IDE forwarding: {}", e);
     }
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("ACP Proxy: Agent stdout closed, stopping Agent → IDE thread");
-    }
+    debug_log(|| "ACP Proxy: Agent stdout closed, stopping Agent → IDE thread");
 
     // ALWAYS wait for agent process to exit, even if there was an error
     let status_result = agent.wait();
@@ -907,9 +884,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // 2. Autoreply forwarder thread (drains final messages)
     match ide_to_agent_thread.join() {
         Ok(Ok(())) => {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("ACP Proxy: IDE → Agent thread exited cleanly");
-            }
+            debug_log(|| "ACP Proxy: IDE → Agent thread exited cleanly");
         }
         Ok(Err(e)) => {
             eprintln!("Warning: IDE → Agent thread returned error: {}", e);
@@ -922,9 +897,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // ALWAYS join the autoreply forwarder thread to ensure clean shutdown
     match autoreply_thread.join() {
         Ok(Ok(())) => {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!("ACP Proxy: Autoreply forwarder thread exited cleanly");
-            }
+            debug_log(|| "ACP Proxy: Autoreply forwarder thread exited cleanly");
         }
         Ok(Err(e)) => {
             eprintln!("Warning: Autoreply forwarder thread returned error: {}", e);
@@ -939,9 +912,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
     // Exit with agent's exit code, or 1 if we couldn't get it
     let exit_code = status_result.ok().and_then(|s| s.code()).unwrap_or(1);
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("ACP Proxy: Exiting with code {}", exit_code);
-    }
+    debug_log(|| format!("ACP Proxy: Exiting with code {}", exit_code));
     std::process::exit(exit_code);
 }
 
@@ -1329,11 +1300,11 @@ fn extract_edit_details(context: &ToolCallContext) -> Vec<crate::events::EditDet
         }
     }
 
-    if std::env::var("AIKI_DEBUG").is_ok() && !edit_details.is_empty() {
-        eprintln!(
+    if !edit_details.is_empty() {
+        debug_log(|| format!(
             "[acp] Extracted {} edit details from tool call content",
             edit_details.len()
-        );
+        ));
     }
 
     edit_details
@@ -1350,12 +1321,10 @@ fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
         // The params should contain toolCallId and potentially tool details
         // We need to check the tool kind from the request
         if let Some(tool_call_id) = params.get("toolCallId") {
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
-                    "[acp] Found permission request for tool_call_id: {:?}",
-                    tool_call_id
-                );
-            }
+            debug_log(|| format!(
+                "[acp] Found permission request for tool_call_id: {:?}",
+                tool_call_id
+            ));
         }
 
         // Try to extract the kind from the permission request
@@ -1504,13 +1473,11 @@ fn handle_session_prompt(
         stdin.flush()?;
     }
 
-    if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
-            "[acp] Fired PrePrompt event for session: {}, modified: {}",
-            session_id,
-            final_prompt != original_text
-        );
-    }
+    debug_log(|| format!(
+        "[acp] Fired PrePrompt event for session: {}, modified: {}",
+        session_id,
+        final_prompt != original_text
+    ));
 
     Ok(())
 }
@@ -1591,24 +1558,18 @@ fn handle_session_end(
             // Increment counter for this session
             let new_count = increment_autoreply_counter(autoreply_counters, session_id);
 
-            if std::env::var("AIKI_DEBUG").is_ok() {
-                eprintln!(
-                    "[acp] PostResponse autoreply #{} for session {}: {} chars",
-                    new_count,
-                    session_id,
-                    autoreply_text.len()
-                );
-            }
+            debug_log(|| format!(
+                "[acp] PostResponse autoreply #{} for session {}: {} chars",
+                new_count,
+                session_id,
+                autoreply_text.len()
+            ));
 
             // Create autoreply message (JSON generated on-demand when sent)
             let autoreply_msg = Autoreply::new(session_id, autoreply_text, new_count);
 
             // Extract debug info before moving
-            let debug_request_id = if std::env::var("AIKI_DEBUG").is_ok() {
-                Some(autoreply_msg.raw_request_id_display().to_string())
-            } else {
-                None
-            };
+            let debug_request_id = Some(autoreply_msg.raw_request_id_display().to_string());
 
             // ✅ FIX for Issue #2: Insert into HashMap BEFORE sending to channel
             // This prevents a race condition where the agent responds before we've
@@ -1628,10 +1589,10 @@ fn handle_session_end(
                 })?;
 
             if let Some(request_id) = debug_request_id {
-                eprintln!(
+                debug_log(|| format!(
                     "[acp] Queued autoreply #{} for session: {} with request_id: {}",
                     new_count, session_id, request_id
-                );
+                ));
             }
         } else if current_count >= max_autoreplies {
             eprintln!(
@@ -1639,11 +1600,11 @@ fn handle_session_end(
                 max_autoreplies, session_id
             );
         }
-    } else if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
+    } else {
+        debug_log(|| format!(
             "[acp] Fired PostResponse event for session: {}, no autoreply",
             session_id
-        );
+        ));
     }
 
     Ok(())
@@ -1675,8 +1636,8 @@ fn fire_session_start_event(
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
         eprintln!("Warning: SessionStart event bus dispatch failed: {}", e);
-    } else if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!("[acp] Fired SessionStart event for session: {}", session_id);
+    } else {
+        debug_log(|| format!("[acp] Fired SessionStart event for session: {}", session_id));
     }
 
     Ok(())
@@ -1704,11 +1665,11 @@ fn fire_pre_file_change_event(
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
         eprintln!("Warning: PreFileChange event bus dispatch failed: {}", e);
-    } else if std::env::var("AIKI_DEBUG").is_ok() {
-        eprintln!(
+    } else {
+        debug_log(|| format!(
             "[acp] Fired PreFileChange event for session: {}",
             session_id
-        );
+        ));
     }
 
     Ok(())

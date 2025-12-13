@@ -21,7 +21,7 @@ fn test_timing_simple_statements() {
     ];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
     assert_eq!(timing.statement_timings.len(), 2);
@@ -42,7 +42,7 @@ fn test_timing_if_statement() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
     assert_eq!(timing.statement_timings.len(), 1);
@@ -68,7 +68,7 @@ fn test_timing_nested_control_flow() {
     })];
 
     let mut state = AikiState::new(create_test_event());
-    let (result, timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let (result, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state).unwrap();
 
     assert!(matches!(result, FlowResult::Success));
 
@@ -95,7 +95,7 @@ fn test_timing_preserves_durations() {
     }))];
 
     let mut state = AikiState::new(create_test_event());
-    let (_, timing) = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let (_, timing) = FlowEngine::execute_statements_with_timing(&statements, &mut state).unwrap();
 
     // All durations should be non-negative
     assert!(timing.duration_secs >= 0.0);

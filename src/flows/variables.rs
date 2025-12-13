@@ -9,6 +9,9 @@ pub struct VariableResolver {
     cache_valid: bool,
     // Track which variables contain JSON for field access
     json_variables: HashMap<String, serde_json::Value>,
+    // Lazy environment variable lookup function
+    // Called on-demand when a $VAR is not found in variables
+    env_lookup: Option<Box<dyn Fn(&str) -> Option<String>>>,
 }
 
 impl VariableResolver {
@@ -20,7 +23,27 @@ impl VariableResolver {
             cached_patterns: Vec::new(),
             cache_valid: false,
             json_variables: HashMap::new(),
+            env_lookup: None,
         }
+    }
+
+    /// Set the environment variable lookup function
+    ///
+    /// This enables lazy per-key lookup of environment variables instead of
+    /// eagerly collecting all env vars into a HashMap. This ensures that
+    /// runtime `std::env::set_var` / `remove_var` mutations are immediately
+    /// visible during flow execution.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// resolver.set_env_lookup(|name| std::env::var(name).ok());
+    /// ```
+    pub fn set_env_lookup<F>(&mut self, lookup: F)
+    where
+        F: Fn(&str) -> Option<String> + 'static,
+    {
+        self.env_lookup = Some(Box::new(lookup));
     }
 
     /// Add a variable
@@ -99,8 +122,11 @@ impl VariableResolver {
         // Ensure cache is built (amortized cost)
         self.rebuild_cache();
 
-        // Fast path: no variables configured
-        if self.cached_patterns.is_empty() && self.json_variables.is_empty() {
+        // Fast path: no variables configured and no env lookup
+        if self.cached_patterns.is_empty()
+            && self.json_variables.is_empty()
+            && self.env_lookup.is_none()
+        {
             return result;
         }
 
@@ -119,6 +145,69 @@ impl VariableResolver {
             if result.contains(pattern.as_str()) {
                 result = result.replace(pattern, value);
             }
+        }
+
+        // Lazy env var lookup: resolve remaining $VAR patterns via env_lookup
+        if let Some(ref lookup) = self.env_lookup {
+            result = self.resolve_env_vars_lazy(&result, lookup);
+        }
+
+        result
+    }
+
+    /// Resolve environment variables lazily using the lookup function
+    ///
+    /// Finds $VAR patterns not already resolved and looks them up on-demand.
+    /// This ensures runtime env var mutations are immediately visible.
+    fn resolve_env_vars_lazy(
+        &self,
+        input: &str,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> String {
+        let mut result = input.to_string();
+        let mut pos = 0;
+
+        while let Some(dollar_pos) = result[pos..].find('$') {
+            let abs_pos = pos + dollar_pos;
+
+            // Extract variable name (alphanumeric + underscore)
+            let name_start = abs_pos + 1;
+            if name_start >= result.len() {
+                break;
+            }
+
+            let name_end = result[name_start..]
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|i| name_start + i)
+                .unwrap_or(result.len());
+
+            if name_end > name_start {
+                let var_name = &result[name_start..name_end];
+
+                // Skip if it looks like field access ($var.field) - already handled
+                if result[name_end..].starts_with('.') {
+                    pos = name_end;
+                    continue;
+                }
+
+                // Skip if this is a known variable (already in cache)
+                if self.variables.contains_key(var_name) {
+                    pos = name_end;
+                    continue;
+                }
+
+                // Try lazy env lookup
+                if let Some(value) = lookup(var_name) {
+                    // Replace the exact occurrence we scanned (abs_pos..name_end)
+                    // Using replace_range instead of replacen to avoid corrupting
+                    // overlapping variable names (e.g., $VAR inside $VAR1)
+                    result.replace_range(abs_pos..name_end, &value);
+                    // Don't advance pos - string changed, continue from same position
+                    continue;
+                }
+            }
+
+            pos = abs_pos + 1;
         }
 
         result
@@ -360,5 +449,98 @@ mod tests {
         // Should not treat as JSON
         let result = resolver.resolve("$regular.field");
         assert_eq!(result, "$regular.field");
+    }
+
+    #[test]
+    fn test_lazy_env_lookup() {
+        let mut resolver = VariableResolver::new();
+
+        // Set up lazy lookup that returns a fixed value for TEST_VAR
+        resolver.set_env_lookup(|name| {
+            if name == "TEST_VAR" {
+                Some("lazy_value".to_string())
+            } else {
+                None
+            }
+        });
+
+        // Should resolve via lazy lookup
+        assert_eq!(resolver.resolve("Value: $TEST_VAR"), "Value: lazy_value");
+
+        // Unknown vars should remain unchanged
+        assert_eq!(resolver.resolve("Value: $UNKNOWN"), "Value: $UNKNOWN");
+    }
+
+    #[test]
+    fn test_lazy_env_lookup_priority() {
+        let mut resolver = VariableResolver::new();
+
+        // Add a regular variable
+        resolver.add_var("MY_VAR", "regular_value");
+
+        // Set up lazy lookup that would return different value
+        resolver.set_env_lookup(|name| {
+            if name == "MY_VAR" {
+                Some("env_value".to_string())
+            } else {
+                None
+            }
+        });
+
+        // Regular variable should take priority over env lookup
+        assert_eq!(resolver.resolve("Value: $MY_VAR"), "Value: regular_value");
+    }
+
+    #[test]
+    fn test_lazy_env_lookup_overlapping_prefix() {
+        // Regression test: $VAR should not corrupt $VAR1 when VAR is defined but VAR1 is not
+        let mut resolver = VariableResolver::new();
+        resolver.set_env_lookup(|name| {
+            if name == "VAR" {
+                Some("value".to_string())
+            } else {
+                None
+            }
+        });
+
+        // $VAR1 should remain unchanged, $VAR should be replaced
+        assert_eq!(
+            resolver.resolve("$VAR1 $VAR"),
+            "$VAR1 value"
+        );
+
+        // Order shouldn't matter
+        assert_eq!(
+            resolver.resolve("$VAR $VAR1"),
+            "value $VAR1"
+        );
+    }
+
+    #[test]
+    fn test_lazy_env_lookup_with_real_env() {
+        use std::env;
+
+        let mut resolver = VariableResolver::new();
+        resolver.set_env_lookup(|name| env::var(name).ok());
+
+        // Set a test env var
+        env::set_var("AIKI_TEST_LAZY_VAR", "test_value_123");
+
+        // Should resolve
+        assert_eq!(
+            resolver.resolve("Value: $AIKI_TEST_LAZY_VAR"),
+            "Value: test_value_123"
+        );
+
+        // Clean up
+        env::remove_var("AIKI_TEST_LAZY_VAR");
+
+        // After removal, should not resolve (lazy lookup sees the change)
+        let mut resolver2 = VariableResolver::new();
+        resolver2.set_env_lookup(|name| env::var(name).ok());
+        assert_eq!(
+            resolver2.resolve("Value: $AIKI_TEST_LAZY_VAR"),
+            "Value: $AIKI_TEST_LAZY_VAR"
+        );
     }
 }
