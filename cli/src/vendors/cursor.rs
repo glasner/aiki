@@ -8,61 +8,191 @@ use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiChangeDonePayload, AikiChangePermissionAskedPayload, AikiPromptSubmittedPayload,
+    AikiChangeDonePayload, AikiChangePermissionAskedPayload, AikiEvent, AikiMcpDonePayload,
+    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellDonePayload,
+    AikiShellPermissionAskedPayload,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 
-/// Create a session for Cursor events
-///
-/// This helper ensures consistent session creation across all Cursor event builders.
-/// Takes the full payload to allow easy extension if we need additional fields in the future.
-/// Extracts `cursor_version` from the payload to populate `agent_version`.
-fn create_session(payload: &CursorPayload) -> AikiSession {
-    AikiSession::new(
-        AgentType::Cursor,
-        &payload.session_id,
-        payload.cursor_version.as_deref(),
-        DetectionMethod::Hook,
-    )
+// ============================================================================
+// Hook Payload Structures (matches Cursor API)
+// See: https://cursor.com/docs/agent/hooks
+// ============================================================================
+
+/// Cursor hook event - discriminated by eventName
+#[derive(Deserialize, Debug)]
+#[serde(tag = "eventName")]
+enum CursorEvent {
+    #[serde(rename = "beforeSubmitPrompt")]
+    BeforeSubmitPrompt {
+        #[serde(flatten)]
+        payload: CursorBeforeSubmitPromptPayload,
+    },
+    #[serde(rename = "stop")]
+    Stop {
+        #[serde(flatten)]
+        payload: CursorStopPayload,
+    },
+    #[serde(rename = "beforeShellExecution")]
+    BeforeShellExecution {
+        #[serde(flatten)]
+        payload: CursorBeforeShellExecutionPayload,
+    },
+    #[serde(rename = "afterShellExecution")]
+    AfterShellExecution {
+        #[serde(flatten)]
+        payload: CursorAfterShellExecutionPayload,
+    },
+    #[serde(rename = "beforeMCPExecution")]
+    BeforeMcpExecution {
+        #[serde(flatten)]
+        payload: CursorBeforeMcpExecutionPayload,
+    },
+    #[serde(rename = "afterMCPExecution")]
+    AfterMcpExecution {
+        #[serde(flatten)]
+        payload: CursorAfterMcpExecutionPayload,
+    },
+    #[serde(rename = "afterFileEdit")]
+    AfterFileEdit {
+        #[serde(flatten)]
+        payload: CursorAfterFileEditPayload,
+    },
 }
 
-/// Cursor hook payload structure
-///
-/// This matches the JSON that Cursor sends to its hooks.
-/// Note: Cursor uses snake_case for afterFileEdit hook.
-/// See: https://cursor.com/docs/agent/hooks#afterfileedit
+/// beforeSubmitPrompt hook payload
 #[derive(Deserialize, Debug)]
-struct CursorPayload {
-    #[serde(rename = "sessionId")]
-    session_id: String,
-    #[serde(rename = "workingDirectory")]
-    working_directory: String,
-    #[serde(rename = "eventName")]
-    event_name: String,
-    // Common fields across all hooks
-    #[serde(rename = "cursor_version", default)]
-    cursor_version: Option<String>,
-    #[serde(rename = "conversation_id", default)]
+struct CursorBeforeSubmitPromptPayload {
+    #[serde(rename = "conversationId")]
     conversation_id: String,
-    #[serde(rename = "generation_id", default)]
-    generation_id: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(rename = "workspace_roots", default)]
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
     workspace_roots: Vec<String>,
-    #[serde(rename = "user_email", default)]
+    #[serde(rename = "userEmail")]
     user_email: Option<String>,
-    // beforeSubmitPrompt fields
     #[serde(default)]
     prompt: String,
-    // beforeMCPExecution fields (TBD - exact structure not yet documented)
-    #[serde(rename = "toolName", default)]
+}
+
+/// stop hook payload
+#[derive(Deserialize, Debug)]
+struct CursorStopPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    status: String,
+    loop_count: u32,
+}
+
+/// beforeShellExecution hook payload
+#[derive(Deserialize, Debug)]
+struct CursorBeforeShellExecutionPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    command: String,
+    cwd: String,
+}
+
+/// afterShellExecution hook payload
+#[derive(Deserialize, Debug)]
+struct CursorAfterShellExecutionPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    command: String,
+    output: String,
+    duration: u64,
+}
+
+/// beforeMCPExecution hook payload
+#[derive(Deserialize, Debug)]
+struct CursorBeforeMcpExecutionPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    #[serde(rename = "toolName")]
     tool_name: String,
-    // afterFileEdit fields
-    #[serde(default)]
+    #[serde(rename = "toolInput")]
+    tool_input: String,
+}
+
+/// afterMCPExecution hook payload
+#[derive(Deserialize, Debug)]
+struct CursorAfterMcpExecutionPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    #[serde(rename = "toolName")]
+    tool_name: String,
+    #[serde(rename = "toolInput")]
+    tool_input: String,
+    #[serde(rename = "resultJson")]
+    result_json: String,
+    duration: u64,
+}
+
+/// afterFileEdit hook payload
+#[derive(Deserialize, Debug)]
+struct CursorAfterFileEditPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "generationId")]
+    generation_id: String,
+    model: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    #[serde(rename = "userEmail")]
+    user_email: Option<String>,
+    #[serde(rename = "filePath")]
     file_path: String,
-    #[serde(default)]
     edits: Vec<CursorEdit>,
 }
 
@@ -73,29 +203,60 @@ struct CursorEdit {
     new_string: String,
 }
 
+/// Create a session from payload fields
+fn create_session(conversation_id: &str, cursor_version: &str) -> AikiSession {
+    AikiSession::new(
+        AgentType::Cursor,
+        conversation_id,
+        Some(cursor_version),
+        DetectionMethod::Hook,
+    )
+}
+
+/// Get working directory from workspace roots
+/// Takes the first workspace root, or current directory as fallback
+fn get_cwd(workspace_roots: &[String]) -> PathBuf {
+    workspace_roots
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Tool type classification for event routing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolType {
+    /// File-modifying tools
+    FileChange,
+    /// MCP tools (non-file)
+    Mcp,
+}
+
+/// Classify a Cursor MCP tool by name into its type
+///
+/// Note: Cursor's tool names may differ from Claude Code's.
+/// This covers known file-modifying tools and treats everything else as MCP.
+fn classify_mcp_tool(tool_name: &str) -> ToolType {
+    match tool_name {
+        // File-modifying tools (various naming conventions)
+        "Edit" | "Write" | "NotebookEdit" | "edit" | "write" | "file_edit" => ToolType::FileChange,
+        // Everything else is treated as MCP tool
+        _ => ToolType::Mcp,
+    }
+}
+
 /// Handle a Cursor event
 ///
 /// This is the vendor-specific handler for Cursor hooks.
-/// Dispatches to event-specific handlers based on event name.
+/// Parses the payload once and dispatches to event-specific handlers.
 ///
 /// # Arguments
-/// * `cursor_event_name` - Vendor event name from CLI flag (e.g., "beforeSubmitPrompt", "afterFileEdit")
+/// * `cursor_event_name` - Vendor event name from CLI flag (used for output formatting)
 pub fn handle(cursor_event_name: &str) -> Result<()> {
-    // Read Cursor-specific JSON from stdin
-    let payload: CursorPayload = super::read_stdin_json()?;
+    // Parse event - serde discriminates by eventName
+    let cursor_event: CursorEvent = super::read_stdin_json()?;
 
-    // Validate event name matches JSON (optional but good practice)
-    if payload.event_name != cursor_event_name {
-        debug_log(|| {
-            format!(
-                "Warning: Event name mismatch. CLI: {}, JSON: {}",
-                cursor_event_name, payload.event_name
-            )
-        });
-    }
-
-    // Build event from payload
-    let aiki_event = build_aiki_event(payload, cursor_event_name);
+    // Build Aiki event from Cursor event
+    let aiki_event = build_aiki_event(cursor_event);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
@@ -104,14 +265,28 @@ pub fn handle(cursor_event_name: &str) -> Result<()> {
     hook_output.print_and_exit();
 }
 
-/// Build AikiEvent from Cursor payload
-fn build_aiki_event(payload: CursorPayload, cursor_event_name: &str) -> AikiEvent {
-    match cursor_event_name {
-        "beforeSubmitPrompt" => build_prompt_submitted_event(payload),
-        "beforeMCPExecution" | "beforeShellExecution" => build_change_permission_asked_event(payload),
-        "afterFileEdit" => build_change_done_event(payload),
-        "stop" => build_response_received_event(payload),
-        _ => AikiEvent::Unsupported,
+/// Build AikiEvent from Cursor event
+fn build_aiki_event(event: CursorEvent) -> AikiEvent {
+    match event {
+        CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
+        CursorEvent::Stop { payload } => build_response_received_event(payload),
+        CursorEvent::BeforeShellExecution { payload } => {
+            build_shell_permission_asked_event(payload)
+        }
+        CursorEvent::AfterShellExecution { payload } => build_shell_done_event(payload),
+        CursorEvent::BeforeMcpExecution { payload } => build_mcp_or_change_event(payload),
+        CursorEvent::AfterMcpExecution { payload } => build_mcp_done_event(payload),
+        CursorEvent::AfterFileEdit { payload } => build_change_done_event(payload),
+    }
+}
+
+/// Build appropriate event for beforeMCPExecution based on tool type
+fn build_mcp_or_change_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
+    let tool_type = classify_mcp_tool(&payload.tool_name);
+
+    match tool_type {
+        ToolType::FileChange => build_change_permission_asked_event(payload),
+        ToolType::Mcp => build_mcp_permission_asked_event(payload),
     }
 }
 
@@ -124,39 +299,84 @@ fn build_aiki_event(payload: CursorPayload, cursor_event_name: &str) -> AikiEven
 ///
 /// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
 /// The modifiedPrompt field is not supported - only blocking via user_message.
-fn build_prompt_submitted_event(payload: CursorPayload) -> AikiEvent {
+fn build_prompt_submitted_event(payload: CursorBeforeSubmitPromptPayload) -> AikiEvent {
     AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
-        session: create_session(&payload),
-        cwd: PathBuf::from(&payload.working_directory),
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
     })
 }
 
-/// Build change.permission_asked event from beforeMCPExecution/beforeShellExecution payload
-fn build_change_permission_asked_event(payload: CursorPayload) -> AikiEvent {
-    // Fire change.permission_asked only for file-modifying MCP tools
-    if !is_file_modifying_tool(&payload.tool_name) {
-        debug_log(|| {
-            format!(
-                "beforeMCPExecution: Ignoring non-file tool: {}",
-                payload.tool_name
-            )
-        });
-        return AikiEvent::Unsupported;
-    }
-
+/// Build change.permission_asked event from beforeMCPExecution payload (file tools only)
+fn build_change_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
     AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
-        session: create_session(&payload),
-        cwd: PathBuf::from(&payload.working_directory),
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
     })
 }
 
+/// Build shell.permission_asked event from beforeShellExecution payload
+fn build_shell_permission_asked_event(payload: CursorBeforeShellExecutionPayload) -> AikiEvent {
+    AikiEvent::ShellPermissionAsked(AikiShellPermissionAskedPayload {
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        command: payload.command,
+    })
+}
+
+/// Build shell.done event from afterShellExecution payload
+fn build_shell_done_event(payload: CursorAfterShellExecutionPayload) -> AikiEvent {
+    AikiEvent::ShellDone(AikiShellDonePayload {
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
+        timestamp: chrono::Utc::now(),
+        command: payload.command,
+        // Cursor doesn't provide exit code - assume success (0)
+        // TODO: Parse exit code from output if available
+        exit_code: 0,
+        stdout: payload.output,
+        stderr: String::new(), // Cursor combines stdout/stderr in output field
+    })
+}
+
+/// Build mcp.permission_asked event from beforeMCPExecution payload (non-file tools)
+fn build_mcp_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
+    // Parse tool_input as JSON if possible
+    let parameters = serde_json::from_str(&payload.tool_input).unwrap_or(serde_json::Value::Null);
+
+    AikiEvent::McpPermissionAsked(AikiMcpPermissionAskedPayload {
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        parameters,
+    })
+}
+
+/// Build mcp.done event from afterMCPExecution payload
+fn build_mcp_done_event(payload: CursorAfterMcpExecutionPayload) -> AikiEvent {
+    AikiEvent::McpDone(AikiMcpDonePayload {
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        success: true, // Cursor doesn't indicate failure in hook payload
+        result: if payload.result_json.is_empty() {
+            None
+        } else {
+            Some(payload.result_json)
+        },
+    })
+}
+
 /// Build change.done event from afterFileEdit payload
-fn build_change_done_event(payload: CursorPayload) -> AikiEvent {
+fn build_change_done_event(payload: CursorAfterFileEditPayload) -> AikiEvent {
     // Create session first before moving any fields
-    let session = create_session(&payload);
+    let session = create_session(&payload.conversation_id, &payload.cursor_version);
+    let cwd = get_cwd(&payload.workspace_roots);
     let file_path = payload.file_path;
 
     // Extract edit details from Cursor's edits array for user edit detection
@@ -180,17 +400,17 @@ fn build_change_done_event(payload: CursorPayload) -> AikiEvent {
         session,
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         file_paths: vec![file_path],
-        cwd: PathBuf::from(&payload.working_directory),
+        cwd,
         timestamp: chrono::Utc::now(),
         edit_details,
     })
 }
 
 /// Build response.received event from stop payload
-fn build_response_received_event(payload: CursorPayload) -> AikiEvent {
+fn build_response_received_event(payload: CursorStopPayload) -> AikiEvent {
     AikiEvent::ResponseReceived(crate::events::AikiResponseReceivedPayload {
-        session: create_session(&payload),
-        cwd: PathBuf::from(&payload.working_directory),
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
@@ -203,14 +423,19 @@ fn build_response_received_event(payload: CursorPayload) -> AikiEvent {
 /// This function dispatches to event-specific builders that handle the details.
 fn build_command_output(response: HookResult, event_type: &str) -> HookCommandOutput {
     match event_type {
+        // User interaction
         "beforeSubmitPrompt" => {
             // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
             // For now, treat it as SessionStart/PrePrompt (both have same format)
             build_before_submit_prompt_output(&response)
         }
-        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_output(&response),
-        "afterFileEdit" => build_post_file_change_output(&response),
         "stop" => build_post_response_output(&response),
+        // Before hooks (gateable)
+        "beforeMCPExecution" | "beforeShellExecution" => build_pre_tool_output(&response),
+        // After hooks (notification-only, no response accepted)
+        "afterFileEdit" | "afterShellExecution" | "afterMCPExecution" => {
+            build_after_hook_output(&response)
+        }
         _ => {
             eprintln!("Warning: Unknown Cursor event type: {}", event_type);
             HookCommandOutput::new(None, 0)
@@ -261,7 +486,7 @@ fn build_before_submit_prompt_output(response: &HookResult) -> HookCommandOutput
 }
 
 /// Build beforeMCPExecution/beforeShellExecution command output for Cursor
-fn build_pre_file_change_output(response: &HookResult) -> HookCommandOutput {
+fn build_pre_tool_output(response: &HookResult) -> HookCommandOutput {
     // Blocking - prevent tool execution (combine messages and context)
     if response.decision.is_block() {
         let combined = response.combined_output();
@@ -286,12 +511,12 @@ fn build_pre_file_change_output(response: &HookResult) -> HookCommandOutput {
     )
 }
 
-/// Build afterFileEdit command output for Cursor
+/// Build after-hook command output for Cursor
 ///
-/// Per translator-requirements.md, Cursor's afterFileEdit hook does NOT
-/// accept JSON responses - it's notification-only.
-fn build_post_file_change_output(_response: &HookResult) -> HookCommandOutput {
-    // Cursor doesn't accept responses from afterFileEdit
+/// Cursor's after-hooks (afterFileEdit, afterShellExecution, afterMCPExecution)
+/// are notification-only and do NOT accept JSON responses.
+fn build_after_hook_output(_response: &HookResult) -> HookCommandOutput {
+    // Cursor doesn't accept responses from after-hooks
     // Return no JSON, always exit 0
     HookCommandOutput::new(None, 0)
 }
@@ -314,18 +539,4 @@ fn build_post_response_output(response: &HookResult) -> HookCommandOutput {
 
     // No followup - return empty object
     HookCommandOutput::new(Some(json!({})), 0)
-}
-
-/// Check if a tool modifies files
-///
-/// Returns true for tools that create, modify, or delete files.
-/// PreFileChange events should only fire for these tools to stash user edits.
-///
-/// Note: Cursor's tool names may differ from Claude Code's. This will need
-/// to be updated once we know the actual tool names used by Cursor's MCP system.
-fn is_file_modifying_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        "Edit" | "Write" | "NotebookEdit" | "edit" | "write" | "file_edit"
-    )
 }
