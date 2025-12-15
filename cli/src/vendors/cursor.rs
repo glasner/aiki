@@ -8,7 +8,7 @@ use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiPostFileChangePayload, AikiPreFileChangePayload, AikiPrePromptPayload,
+    AikiEvent, AikiChangeDonePayload, AikiChangePermissionAskedPayload, AikiPromptSubmittedPayload,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -107,25 +107,25 @@ pub fn handle(cursor_event_name: &str) -> Result<()> {
 /// Build AikiEvent from Cursor payload
 fn build_aiki_event(payload: CursorPayload, cursor_event_name: &str) -> AikiEvent {
     match cursor_event_name {
-        "beforeSubmitPrompt" => build_pre_prompt_event(payload),
-        "beforeMCPExecution" | "beforeShellExecution" => build_pre_file_change_event(payload),
-        "afterFileEdit" => build_post_file_change_event(payload),
-        "stop" => build_post_response_event(payload),
+        "beforeSubmitPrompt" => build_prompt_submitted_event(payload),
+        "beforeMCPExecution" | "beforeShellExecution" => build_change_permission_asked_event(payload),
+        "afterFileEdit" => build_change_done_event(payload),
+        "stop" => build_response_received_event(payload),
         _ => AikiEvent::Unsupported,
     }
 }
 
-/// Build PrePrompt event from beforeSubmitPrompt payload
+/// Build prompt.submitted event from beforeSubmitPrompt payload
 ///
 /// Note: Cursor's beforeSubmitPrompt fires on EVERY prompt submission.
-/// Ideally we should track conversation_id changes to fire SessionStart only
+/// Ideally we should track conversation_id changes to fire session.started only
 /// on new conversations, but that requires stateful tracking across invocations.
-/// For now, we fire PrePrompt on every call, which enables validation workflows.
+/// For now, we fire prompt.submitted on every call, which enables validation workflows.
 ///
 /// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
 /// The modifiedPrompt field is not supported - only blocking via user_message.
-fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
-    AikiEvent::PrePrompt(AikiPrePromptPayload {
+fn build_prompt_submitted_event(payload: CursorPayload) -> AikiEvent {
+    AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
@@ -133,9 +133,9 @@ fn build_pre_prompt_event(payload: CursorPayload) -> AikiEvent {
     })
 }
 
-/// Build PreFileChange event from beforeMCPExecution/beforeShellExecution payload
-fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
-    // Fire PreFileChange only for file-modifying MCP tools
+/// Build change.permission_asked event from beforeMCPExecution/beforeShellExecution payload
+fn build_change_permission_asked_event(payload: CursorPayload) -> AikiEvent {
+    // Fire change.permission_asked only for file-modifying MCP tools
     if !is_file_modifying_tool(&payload.tool_name) {
         debug_log(|| {
             format!(
@@ -146,15 +146,15 @@ fn build_pre_file_change_event(payload: CursorPayload) -> AikiEvent {
         return AikiEvent::Unsupported;
     }
 
-    AikiEvent::PreFileChange(AikiPreFileChangePayload {
+    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),
     })
 }
 
-/// Build PostFileChange event from afterFileEdit payload
-fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
+/// Build change.done event from afterFileEdit payload
+fn build_change_done_event(payload: CursorPayload) -> AikiEvent {
     // Create session first before moving any fields
     let session = create_session(&payload);
     let file_path = payload.file_path;
@@ -176,7 +176,7 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
         debug_log(|| format!("Cursor provided {} edits", edit_details.len()));
     }
 
-    AikiEvent::PostFileChange(AikiPostFileChangePayload {
+    AikiEvent::ChangeDone(AikiChangeDonePayload {
         session,
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         file_paths: vec![file_path],
@@ -186,9 +186,9 @@ fn build_post_file_change_event(payload: CursorPayload) -> AikiEvent {
     })
 }
 
-/// Build PostResponse event from stop payload
-fn build_post_response_event(payload: CursorPayload) -> AikiEvent {
-    AikiEvent::PostResponse(crate::events::AikiPostResponsePayload {
+/// Build response.received event from stop payload
+fn build_response_received_event(payload: CursorPayload) -> AikiEvent {
+    AikiEvent::ResponseReceived(crate::events::AikiResponseReceivedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.working_directory),
         timestamp: chrono::Utc::now(),

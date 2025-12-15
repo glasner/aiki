@@ -87,35 +87,35 @@ pub struct Flow {
     #[serde(default = "default_version")]
     pub version: String,
 
-    /// SessionStart event handler
-    #[serde(rename = "SessionStart", default)]
-    pub session_start: Vec<FlowStatement>,
+    /// session.started event handler
+    #[serde(rename = "session.started", default)]
+    pub session_started: Vec<FlowStatement>,
 
-    /// PrePrompt event handler (before agent sees the user's prompt)
-    #[serde(rename = "PrePrompt", default)]
-    pub pre_prompt: Vec<FlowStatement>,
+    /// prompt.submitted event handler (user submitted a prompt to the agent)
+    #[serde(rename = "prompt.submitted", default)]
+    pub prompt_submitted: Vec<FlowStatement>,
 
-    /// PreFileChange event handler (before file modification begins)
-    #[serde(rename = "PreFileChange", default)]
-    pub pre_file_change: Vec<FlowStatement>,
+    /// change.permission_asked event handler (agent is about to modify a file)
+    #[serde(rename = "change.permission_asked", default)]
+    pub change_permission_asked: Vec<FlowStatement>,
 
-    /// PostFileChange event handler
-    #[serde(rename = "PostFileChange", default)]
-    pub post_file_change: Vec<FlowStatement>,
+    /// change.done event handler (agent finished modifying a file)
+    #[serde(rename = "change.done", default)]
+    pub change_done: Vec<FlowStatement>,
 
-    /// PostResponse event handler (after agent response)
-    #[serde(rename = "PostResponse", default)]
-    pub post_response: Vec<FlowStatement>,
+    /// response.received event handler (agent finished responding)
+    #[serde(rename = "response.received", default)]
+    pub response_received: Vec<FlowStatement>,
 
-    /// SessionEnd event handler (after agent session ends)
-    #[serde(rename = "SessionEnd", default)]
-    pub session_end: Vec<FlowStatement>,
+    /// session.ended event handler (agent session terminated)
+    #[serde(rename = "session.ended", default)]
+    pub session_ended: Vec<FlowStatement>,
 
-    /// PrepareCommitMessage event handler (Git's prepare-commit-msg hook)
-    #[serde(rename = "PrepareCommitMessage", default)]
-    pub prepare_commit_message: Vec<FlowStatement>,
+    /// git.prepare_commit_message event handler (Git's prepare-commit-msg hook)
+    #[serde(rename = "git.prepare_commit_message", default)]
+    pub git_prepare_commit_message: Vec<FlowStatement>,
 
-    /// Stop event handler
+    /// Stop event handler (legacy - kept for compatibility)
     #[serde(rename = "Stop", default)]
     pub stop: Vec<FlowStatement>,
 }

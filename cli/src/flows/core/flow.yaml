@@ -2,8 +2,8 @@ name: "Aiki Core"
 description: "Core flow that handles initialization and provenance tracking with user edit detection"
 version: "1"
 
-# SessionStart: Initialize and verify repository setup when a session begins
-SessionStart:
+# session.started: Initialize and verify repository setup when a session begins
+session.started:
   # Ensure we're on a fresh change before starting session
   # This preserves any existing uncommitted work and prevents attributing
   # pre-existing changes to the new editor session
@@ -24,8 +24,8 @@ SessionStart:
         jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession=$event.session_id\n[/aiki]"
       - jj: new
 
-# PreFileChange: Stash any user changes before AI starts editing
-PreFileChange:
+# change.permission_asked: Stash any user changes before AI starts editing
+change.permission_asked:
   # Check if working copy has any changes
   - jj: diff -r @ --name-only
     alias: changed_files
@@ -38,9 +38,9 @@ PreFileChange:
 
       - jj: new # Give AI a clean working copy
 
-# PostFileChange: Record provenance metadata after every AI edit
+# change.done: Record provenance metadata after every AI edit
 # With user edit detection: separates AI changes from user modifications
-PostFileChange:
+change.done:
   # Classify edits to detect user modifications
   # This compares AI's intended edits with actual file state
   # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
@@ -71,18 +71,18 @@ PostFileChange:
   # Create a new change for the next edit
   - jj: new
 
-# PostResponse: Handle actions after agent response (e.g., autoreplies)
-PostResponse:
+# response.received: Handle actions after agent response (e.g., autoreplies)
+response.received:
   # Empty by default - can be customized in user flows
 
-# SessionEnd: Handle actions when agent session ends
+# session.ended: Handle actions when agent session ends
 # Session file cleanup is handled automatically by the event handler
 # This section is for user-defined cleanup actions
-SessionEnd:
+session.ended:
   # Empty by default - can be customized in user flows
 
-# PrepareCommitMessage: Modify commit message via Git's prepare-commit-msg hook
-PrepareCommitMessage:
+# git.prepare_commit_message: Modify commit message via Git's prepare-commit-msg hook
+git.prepare_commit_message:
   # Generate co-author lines from staged changes
   - let: coauthors = self.generate_coauthors
     on_failure:

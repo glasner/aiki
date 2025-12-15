@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Pre-prompt event payload (before agent sees the user's prompt)
+/// prompt.submitted event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPrePromptPayload {
+pub struct AikiPromptSubmittedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -18,15 +18,15 @@ pub struct AikiPrePromptPayload {
     pub prompt: String,
 }
 
-/// Handle pre-prompt event (before agent sees the user's prompt)
+/// Handle prompt.submitted event
 ///
-/// This event fires before the agent receives the user's prompt, allowing flows
+/// This event fires when the user submits a prompt, allowing flows
 /// to inject additional context (e.g., project conventions, active files, etc.).
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
+pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<HookResult> {
     debug_log(|| format!(
-        "PrePrompt event from {:?}, prompt length: {}",
+        "prompt.submitted event from {:?}, prompt length: {}",
         payload.session.agent_type(),
         payload.prompt.len()
     ));
@@ -40,12 +40,12 @@ pub fn handle_pre_prompt(payload: AikiPrePromptPayload) -> Result<HookResult> {
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PrePrompt statements from the core flow (catch errors for graceful degradation)
-    let flow_result = match FlowEngine::execute_statements(&core_flow.pre_prompt, &mut state) {
+    // Execute prompt.submitted statements from the core flow (catch errors for graceful degradation)
+    let flow_result = match FlowEngine::execute_statements(&core_flow.prompt_submitted, &mut state) {
         Ok(result) => result,
         Err(e) => {
             // Flow execution failed - log warning and use original prompt
-            eprintln!("⚠️ PrePrompt flow failed: {}", e);
+            eprintln!("⚠️ prompt.submitted flow failed: {}", e);
             eprintln!("Continuing with original prompt...\n");
             // Return built context (already initialized with original prompt)
             return Ok(HookResult {

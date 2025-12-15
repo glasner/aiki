@@ -1,7 +1,7 @@
 use crate::cache::{debug_log, DEBUG_ENABLED};
 use crate::error::Result;
 use crate::events::result::HookResult;
-use crate::events::{self, AikiEvent, AikiSessionEndPayload};
+use crate::events::{self, AikiEvent, AikiSessionEndedPayload};
 use crate::session::AikiSession;
 use std::path::PathBuf;
 
@@ -19,14 +19,14 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
     // Log event for debugging (uses cached debug flag)
     if *DEBUG_ENABLED {
         let event_type_name = match &event {
-            AikiEvent::SessionStart(_) => "SessionStart",
-            AikiEvent::PrePrompt(_) => "PrePrompt",
-            AikiEvent::PreFileChange(_) => "PreFileChange",
-            AikiEvent::PostFileChange(_) => "PostFileChange",
-            AikiEvent::PostResponse(_) => "PostResponse",
-            AikiEvent::SessionEnd(_) => "SessionEnd",
-            AikiEvent::PrepareCommitMessage(_) => "PrepareCommitMessage",
-            AikiEvent::Unsupported => "Unsupported",
+            AikiEvent::SessionStarted(_) => "session.started",
+            AikiEvent::PromptSubmitted(_) => "prompt.submitted",
+            AikiEvent::ChangePermissionAsked(_) => "change.permission_asked",
+            AikiEvent::ChangeDone(_) => "change.done",
+            AikiEvent::ResponseReceived(_) => "response.received",
+            AikiEvent::SessionEnded(_) => "session.ended",
+            AikiEvent::GitPrepareCommitMessage(_) => "git.prepare_commit_message",
+            AikiEvent::Unsupported => "unsupported",
         };
         debug_log(|| format!(
             "Dispatching event: {} from agent: {:?}",
@@ -37,19 +37,19 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
 
     // Route to appropriate handler
     let result = match event {
-        AikiEvent::SessionStart(e) => events::handle_start(e),
-        AikiEvent::PrePrompt(e) => events::handle_pre_prompt(e),
-        AikiEvent::PreFileChange(e) => events::handle_pre_file_change(e),
-        AikiEvent::PostFileChange(e) => events::handle_post_file_change(e),
-        AikiEvent::PostResponse(e) => {
-            // Extract fields we'll need for SessionEnd before consuming the event
+        AikiEvent::SessionStarted(e) => events::handle_session_started(e),
+        AikiEvent::PromptSubmitted(e) => events::handle_prompt_submitted(e),
+        AikiEvent::ChangePermissionAsked(e) => events::handle_change_permission_asked(e),
+        AikiEvent::ChangeDone(e) => events::handle_change_done(e),
+        AikiEvent::ResponseReceived(e) => {
+            // Extract fields we'll need for session.ended before consuming the event
             let session = e.session.clone();
             let cwd = e.cwd.clone();
 
-            // Handle PostResponse and check for autoreply
-            let response = events::handle_post_response(e)?;
+            // Handle response.received and check for autoreply
+            let response = events::handle_response_received(e)?;
 
-            // Allow benchmark to force autoreply behavior (skip SessionEnd)
+            // Allow benchmark to force autoreply behavior (skip session.ended)
             // Preserve actual failures/decisions but override context
             if std::env::var("AIKI_BENCHMARK_FORCE_AUTOREPLY").is_ok() {
                 return Ok(HookResult {
@@ -59,16 +59,16 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
                 });
             }
 
-            // If PostResponse produced an autoreply, return it (session continues)
+            // If response.received produced an autoreply, return it (session continues)
             if response.has_context() {
                 return Ok(response);
             }
 
-            // No autoreply - session is done, trigger SessionEnd event
-            trigger_session_end(session, cwd)
+            // No autoreply - session is done, trigger session.ended event
+            trigger_session_ended(session, cwd)
         }
-        AikiEvent::SessionEnd(e) => events::handle_session_end(e),
-        AikiEvent::PrepareCommitMessage(e) => events::handle_prepare_commit_message(e),
+        AikiEvent::SessionEnded(e) => events::handle_session_ended(e),
+        AikiEvent::GitPrepareCommitMessage(e) => events::handle_git_prepare_commit_message(e),
         AikiEvent::Unsupported => return Ok(HookResult::success()),
     };
 
@@ -82,17 +82,17 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
     }
 }
 
-/// Trigger a SessionEnd event
+/// Trigger a session.ended event
 ///
-/// Called automatically when PostResponse doesn't generate an autoreply.
-fn trigger_session_end(session: AikiSession, cwd: PathBuf) -> Result<HookResult> {
+/// Called automatically when response.received doesn't generate an autoreply.
+fn trigger_session_ended(session: AikiSession, cwd: PathBuf) -> Result<HookResult> {
     debug_log(|| "No autoreply generated - ending session automatically");
 
-    let session_end_payload = AikiSessionEndPayload {
+    let session_ended_payload = AikiSessionEndedPayload {
         session,
         cwd,
         timestamp: chrono::Utc::now(),
     };
 
-    dispatch(AikiEvent::SessionEnd(session_end_payload))
+    dispatch(AikiEvent::SessionEnded(session_ended_payload))
 }

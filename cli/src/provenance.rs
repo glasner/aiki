@@ -114,12 +114,12 @@ pub struct ProvenanceRecord {
 }
 
 impl ProvenanceRecord {
-    /// Create a ProvenanceRecord from a PostFileChange event
+    /// Create a ProvenanceRecord from a change.done event
     ///
     /// This constructor extracts all necessary fields from the event and creates
     /// a provenance record with default confidence (High) and the detection
     /// method from the session.
-    pub fn from_post_file_change_event(event: &crate::events::AikiPostFileChangePayload) -> Self {
+    pub fn from_change_done_event(event: &crate::events::AikiChangeDonePayload) -> Self {
         Self {
             agent: AgentInfo {
                 agent_type: event.session.agent_type(),

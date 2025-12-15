@@ -49,7 +49,7 @@ impl FlowEngine {
 
         // Add event-specific variables based on event type
         match &state.event {
-            crate::events::AikiEvent::PostFileChange(e) => {
+            crate::events::AikiEvent::ChangeDone(e) => {
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
                 resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
                 resolver.add_var(
@@ -61,26 +61,26 @@ impl FlowEngine {
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::PrePrompt(e) => {
+            crate::events::AikiEvent::PromptSubmitted(e) => {
                 resolver.add_var("event.prompt".to_string(), e.prompt.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::PreFileChange(e) => {
+            crate::events::AikiEvent::ChangePermissionAsked(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::SessionStart(e) => {
+            crate::events::AikiEvent::SessionStarted(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::PostResponse(e) => {
+            crate::events::AikiEvent::ResponseReceived(e) => {
                 resolver.add_var("event.response".to_string(), e.response.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
@@ -95,13 +95,13 @@ impl FlowEngine {
                         .join(" "),
                 );
             }
-            crate::events::AikiEvent::SessionEnd(e) => {
+            crate::events::AikiEvent::SessionEnded(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::PrepareCommitMessage(e) => {
+            crate::events::AikiEvent::GitPrepareCommitMessage(e) => {
                 // Add commit message file path if available
                 if let Some(ref path) = e.commit_msg_file {
                     resolver.add_var(
@@ -612,17 +612,17 @@ impl FlowEngine {
     /// Execute a context action
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
-    /// Works for PrePrompt and PostResponse events.
+    /// Works for PrePrompt and response.received events.
     fn execute_context(action: &ContextAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
         // Verify this is a PrePrompt or PostResponse event
         if !matches!(
             &state.event,
-            AikiEvent::PrePrompt(_) | AikiEvent::PostResponse(_)
+            AikiEvent::PromptSubmitted(_) | AikiEvent::ResponseReceived(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "context action can only be used in PrePrompt or PostResponse events"
+                "context action can only be used in PrePrompt or response.received events"
             )));
         }
 
@@ -664,15 +664,15 @@ impl FlowEngine {
 
     /// Execute an autoreply action
     ///
-    /// This action adds content to the autoreply assembler for PostResponse events.
-    /// Only works for PostResponse events that have an autoreply_assembler.
+    /// This action adds content to the autoreply assembler for response.received events.
+    /// Only works for response.received events that have an autoreply_assembler.
     fn execute_autoreply(action: &AutoreplyAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
         // Verify this is a PostResponse event
-        if !matches!(&state.event, AikiEvent::PostResponse(_)) {
+        if !matches!(&state.event, AikiEvent::ResponseReceived(_)) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "autoreply action can only be used in PostResponse events"
+                "autoreply action can only be used in response.received events"
             )));
         }
 
@@ -713,7 +713,7 @@ impl FlowEngine {
     /// Execute a commit_message action
     ///
     /// This action modifies the commit message file in place.
-    /// Only works for PrepareCommitMessage events that have a commit_msg_file.
+    /// Only works for git.prepare_commit_message events that have a commit_msg_file.
     fn execute_commit_message(
         action: &CommitMessageAction,
         state: &mut AikiState,
@@ -723,13 +723,13 @@ impl FlowEngine {
 
         // Get commit message file from event
         let commit_msg_file = match &state.event {
-            AikiEvent::PrepareCommitMessage(e) => e
+            AikiEvent::GitPrepareCommitMessage(e) => e
                 .commit_msg_file
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("No commit message file in event"))?,
             _ => {
                 return Err(AikiError::Other(anyhow::anyhow!(
-                    "commit_message can only be used in PrepareCommitMessage events"
+                    "commit_message can only be used in git.prepare_commit_message events"
                 )))
             }
         };
@@ -1295,30 +1295,30 @@ impl FlowEngine {
         match (module, function) {
             ("core", "build_metadata") => {
                 // build_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_metadata can only be called for PostFileChange events"
+                        "build_metadata can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::build_metadata(event, Some(state))
             }
             ("core", "build_human_metadata") => {
-                // build_human_metadata works with PreFileChange or PostFileChange events
+                // build_human_metadata works with PreFileChange or change.done events
                 match &state.event {
-                    crate::events::AikiEvent::PreFileChange(event) => {
+                    crate::events::AikiEvent::ChangePermissionAsked(event) => {
                         crate::flows::core::build_human_metadata(event, Some(state))
                     }
-                    crate::events::AikiEvent::PostFileChange(event) => {
+                    crate::events::AikiEvent::ChangeDone(event) => {
                         crate::flows::core::build_human_metadata_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_human_metadata can only be called for PreFileChange or PostFileChange events"
+                        "build_human_metadata can only be called for PreFileChange or change.done events"
                     ))),
                 }
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "get_git_user currently requires PostFileChange event"
                     )));
@@ -1327,54 +1327,54 @@ impl FlowEngine {
             }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "classify_edits can only be called for PostFileChange events"
+                        "classify_edits can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::classify_edits(event)
             }
             ("core", "separate_edits") => {
                 // separate_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "separate_edits can only be called for PostFileChange events"
+                        "separate_edits can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::separate_edits(event)
             }
             ("core", "prepare_separation") => {
                 // prepare_separation requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "prepare_separation can only be called for PostFileChange events"
+                        "prepare_separation can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::prepare_separation(event)
             }
             ("core", "write_ai_files") => {
                 // write_ai_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "write_ai_files can only be called for PostFileChange events"
+                        "write_ai_files can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::write_ai_files(event, Some(state))
             }
             ("core", "restore_original_files") => {
                 // restore_original_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "restore_original_files can only be called for PostFileChange events"
+                        "restore_original_files can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::restore_original_files(event, Some(state))
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
-                let crate::events::AikiEvent::PrepareCommitMessage(event) = &state.event else {
+                let crate::events::AikiEvent::GitPrepareCommitMessage(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "generate_coauthors can only be called for PrepareCommitMessage events"
+                        "generate_coauthors can only be called for git.prepare_commit_message events"
                     )));
                 };
                 crate::flows::core::generate_coauthors(event)
@@ -1442,30 +1442,30 @@ impl FlowEngine {
         match (module, function) {
             ("core", "build_metadata") => {
                 // build_metadata requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "build_metadata can only be called for PostFileChange events"
+                        "build_metadata can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::build_metadata(event, Some(state))
             }
             ("core", "build_human_metadata") => {
-                // build_human_metadata works with PreFileChange or PostFileChange events
+                // build_human_metadata works with PreFileChange or change.done events
                 match &state.event {
-                    crate::events::AikiEvent::PreFileChange(event) => {
+                    crate::events::AikiEvent::ChangePermissionAsked(event) => {
                         crate::flows::core::build_human_metadata(event, Some(state))
                     }
-                    crate::events::AikiEvent::PostFileChange(event) => {
+                    crate::events::AikiEvent::ChangeDone(event) => {
                         crate::flows::core::build_human_metadata_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_human_metadata can only be called for PreFileChange or PostFileChange events"
+                        "build_human_metadata can only be called for PreFileChange or change.done events"
                     ))),
                 }
             }
             ("core", "get_git_user") => {
                 // get_git_user works with any event type
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
                         "get_git_user currently requires PostFileChange event"
                     )));
@@ -1474,54 +1474,54 @@ impl FlowEngine {
             }
             ("core", "classify_edits") => {
                 // classify_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "classify_edits can only be called for PostFileChange events"
+                        "classify_edits can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::classify_edits(event)
             }
             ("core", "separate_edits") => {
                 // separate_edits requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "separate_edits can only be called for PostFileChange events"
+                        "separate_edits can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::separate_edits(event)
             }
             ("core", "prepare_separation") => {
                 // prepare_separation requires PostFileChange event
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "prepare_separation can only be called for PostFileChange events"
+                        "prepare_separation can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::prepare_separation(event)
             }
             ("core", "write_ai_files") => {
                 // write_ai_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "write_ai_files can only be called for PostFileChange events"
+                        "write_ai_files can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::write_ai_files(event, Some(state))
             }
             ("core", "restore_original_files") => {
                 // restore_original_files requires PostFileChange event and context
-                let crate::events::AikiEvent::PostFileChange(event) = &state.event else {
+                let crate::events::AikiEvent::ChangeDone(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "restore_original_files can only be called for PostFileChange events"
+                        "restore_original_files can only be called for change.done events"
                     )));
                 };
                 crate::flows::core::restore_original_files(event, Some(state))
             }
             ("core", "generate_coauthors") => {
                 // generate_coauthors requires PrepareCommitMessage event
-                let crate::events::AikiEvent::PrepareCommitMessage(event) = &state.event else {
+                let crate::events::AikiEvent::GitPrepareCommitMessage(event) = &state.event else {
                     return Err(AikiError::Other(anyhow::anyhow!(
-                        "generate_coauthors can only be called for PrepareCommitMessage events"
+                        "generate_coauthors can only be called for git.prepare_commit_message events"
                     )));
                 };
                 crate::flows::core::generate_coauthors(event)
@@ -1678,7 +1678,7 @@ fn execute_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{AikiEvent, AikiPostFileChangePayload};
+    use crate::events::{AikiEvent, AikiChangeDonePayload};
     use crate::provenance::AgentType;
     use crate::session::AikiSession;
 
@@ -1690,7 +1690,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiEvent::PostFileChange(AikiPostFileChangePayload {
+        AikiEvent::ChangeDone(AikiChangeDonePayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
@@ -1708,7 +1708,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiEvent::PostFileChange(AikiPostFileChangePayload {
+        AikiEvent::ChangeDone(AikiChangeDonePayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec![file_path.to_string()],
@@ -2071,7 +2071,7 @@ mod tests {
     #[test]
     fn test_let_with_context_vars() {
         // This test verifies that build_metadata works with typed events.
-        // The type system now guarantees that PostFileChange events have all required fields.
+        // The type system now guarantees that change.done events have all required fields.
         let action = LetAction {
             let_: "metadata = aiki/core.build_metadata".to_string(),
             on_failure: OnFailure::default(),
@@ -2894,7 +2894,7 @@ mod tests {
 
     #[test]
     fn test_self_function_error_propagation() {
-        use crate::events::{AikiEvent, AikiPrePromptPayload};
+        use crate::events::{AikiEvent, AikiPromptSubmittedPayload};
 
         // Create PrePrompt event
         let session = AikiSession::new(
@@ -2903,7 +2903,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiEvent::PrePrompt(AikiPrePromptPayload {
+        let event = AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
             session,
             prompt: "test".to_string(),
             timestamp: chrono::Utc::now(),

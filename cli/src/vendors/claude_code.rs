@@ -8,8 +8,8 @@ use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiPostFileChangePayload, AikiPostResponsePayload, AikiPreFileChangePayload,
-    AikiPrePromptPayload, AikiSessionStartPayload,
+    AikiEvent, AikiChangeDonePayload, AikiChangePermissionAskedPayload,
+    AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -128,27 +128,27 @@ pub fn handle(claude_event_name: &str) -> Result<()> {
 /// Build AikiEvent from Claude Code payload
 fn build_aiki_event(payload: ClaudeCodePayload, claude_event_name: &str) -> AikiEvent {
     match claude_event_name {
-        "SessionStart" => build_session_start_event(payload),
-        "UserPromptSubmit" => build_pre_prompt_event(payload),
-        "PreToolUse" => build_pre_file_change_event(payload),
-        "PostToolUse" => build_post_file_change_event(payload),
-        "Stop" => build_post_response_event(payload),
+        "SessionStart" => build_session_started_event(payload),
+        "UserPromptSubmit" => build_prompt_submitted_event(payload),
+        "PreToolUse" => build_change_permission_asked_event(payload),
+        "PostToolUse" => build_change_done_event(payload),
+        "Stop" => build_response_received_event(payload),
         _ => AikiEvent::Unsupported,
     }
 }
 
-/// Build SessionStart event from SessionStart payload
-fn build_session_start_event(payload: ClaudeCodePayload) -> AikiEvent {
-    AikiEvent::SessionStart(AikiSessionStartPayload {
+/// Build session.started event from SessionStart payload
+fn build_session_started_event(payload: ClaudeCodePayload) -> AikiEvent {
+    AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
     })
 }
 
-/// Build PrePrompt event from UserPromptSubmit payload
-fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
-    AikiEvent::PrePrompt(AikiPrePromptPayload {
+/// Build prompt.submitted event from UserPromptSubmit payload
+fn build_prompt_submitted_event(payload: ClaudeCodePayload) -> AikiEvent {
+    AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
@@ -156,27 +156,27 @@ fn build_pre_prompt_event(payload: ClaudeCodePayload) -> AikiEvent {
     })
 }
 
-/// Build PreFileChange event from PreToolUse payload
-fn build_pre_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
-    // Fire PreFileChange only for file-modifying tools
+/// Build change.permission_asked event from PreToolUse payload
+fn build_change_permission_asked_event(payload: ClaudeCodePayload) -> AikiEvent {
+    // Fire change.permission_asked only for file-modifying tools
     if !is_file_modifying_tool(&payload.tool_name) {
         debug_log(|| format!("PreToolUse: Ignoring non-file tool: {}", payload.tool_name));
         return AikiEvent::Unsupported;
     }
 
-    AikiEvent::PreFileChange(AikiPreFileChangePayload {
+    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
     })
 }
 
-/// Build PostFileChange event from PostToolUse payload
-fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
+/// Build change.done event from PostToolUse payload
+fn build_change_done_event(payload: ClaudeCodePayload) -> AikiEvent {
     // Create session first before moving any fields
     let session = create_session(&payload);
 
-    // Extract required fields for PostFileChange event
+    // Extract required fields for change.done event
     let Some(tool_input) = payload.tool_input else {
         eprintln!("[aiki] Warning: PostToolUse missing tool_input, ignoring event");
         return AikiEvent::Unsupported;
@@ -193,7 +193,7 @@ fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
         Vec::new()
     };
 
-    AikiEvent::PostFileChange(AikiPostFileChangePayload {
+    AikiEvent::ChangeDone(AikiChangeDonePayload {
         session,
         tool_name: payload.tool_name,
         file_paths: vec![tool_input.file_path],
@@ -203,12 +203,12 @@ fn build_post_file_change_event(payload: ClaudeCodePayload) -> AikiEvent {
     })
 }
 
-/// Build PostResponse event from Stop payload
-fn build_post_response_event(payload: ClaudeCodePayload) -> AikiEvent {
+/// Build response.received event from Stop payload
+fn build_response_received_event(payload: ClaudeCodePayload) -> AikiEvent {
     // Note: Claude Code's Stop hook doesn't include the response text in the payload.
     // This is intentional - flows use self.* functions to check files/run tests
     // rather than parsing the response text.
-    AikiEvent::PostResponse(AikiPostResponsePayload {
+    AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
         session: create_session(&payload),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),

@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
 
-/// Post-response event payload (after agent response)
+/// response.received event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPostResponsePayload {
+pub struct AikiResponseReceivedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
@@ -21,15 +21,15 @@ pub struct AikiPostResponsePayload {
     pub modified_files: Vec<PathBuf>,
 }
 
-/// Handle post-response event (after agent generates response)
+/// Handle response.received event
 ///
 /// This event fires when the agent finishes generating its response,
 /// allowing flows to validate output, detect errors, and optionally send an autoreply to the agent.
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
-pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResult> {
+pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<HookResult> {
     debug_log(|| format!(
-        "PostResponse event from {:?}, response length: {}",
+        "response.received event from {:?}, response length: {}",
         payload.session.agent_type(),
         payload.response.len()
     ));
@@ -43,12 +43,12 @@ pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResu
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PostResponse actions from the core flow (catch errors for graceful degradation)
-    let _flow_result = match FlowEngine::execute_statements(&core_flow.post_response, &mut state) {
+    // Execute response.received actions from the core flow (catch errors for graceful degradation)
+    let _flow_result = match FlowEngine::execute_statements(&core_flow.response_received, &mut state) {
         Ok(result) => result,
         Err(e) => {
             // Flow execution failed - log warning and skip autoreply
-            eprintln!("\n⚠️ PostResponse flow failed: {}", e);
+            eprintln!("\n⚠️ response.received flow failed: {}", e);
             eprintln!("No autoreply generated.\n");
             return Ok(HookResult {
                 context: state.build_context(),
@@ -61,7 +61,7 @@ pub fn handle_post_response(payload: AikiPostResponsePayload) -> Result<HookResu
     // Extract failures from state
     let failures = state.take_failures();
 
-    // PostResponse never blocks - always allow
+    // response.received never blocks - always allow
     Ok(HookResult {
         context: state.build_context(),
         decision: Decision::Allow,

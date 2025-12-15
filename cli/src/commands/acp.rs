@@ -15,9 +15,9 @@
 //! │  │ IDE → Agent Thread   │   StateMessage     │ Agent → IDE Thread   │  │
 //! │  │                      │  ─────────────────▶│                      │  │
 //! │  │ - Parse IDE requests │   mpsc::channel    │ - OWNS all state     │  │
-//! │  │ - Fire PrePrompt     │                    │ - Parse agent msgs   │  │
-//! │  │ - Fire PreFileChange │                    │ - Fire PostResponse  │  │
-//! │  │ - Forward to agent   │                    │ - Fire PostFileChange│  │
+//! │  │ - Fire prompt.submitted                   │ - Parse agent msgs   │  │
+//! │  │ - Fire change.permission_asked            │ - Fire response.received  │
+//! │  │ - Forward to agent   │                    │ - Fire change.done   │  │
 //! │  │                      │                    │ - Track tool calls   │  │
 //! │  │                      │  AutoreplyChannel  │ - Accumulate text    │  │
 //! │  │                      │  ◀─────────────────│                      │  │
@@ -47,7 +47,7 @@
 //! - Reads JSON-RPC messages from IDE (stdin)
 //! - Extracts metadata (client info, session IDs, working directory)
 //! - Sends metadata updates via `StateMessage` channel to Agent→IDE thread
-//! - Fires `PrePrompt` events (allows flows to inject context)
+//! - Fires `prompt.submitted` events (allows flows to inject context)
 //! - Forwards messages to agent stdin
 //!
 //! ## Agent → IDE Thread (State Owner)
@@ -55,7 +55,7 @@
 //! - **Owns all proxy state** (client info, agent info, cwd, tool call contexts)
 //! - Receives metadata updates from IDE→Agent thread via channel
 //! - Reads JSON-RPC messages from agent (stdout)
-//! - Fires `SessionStart`, `SessionEnd`, `PostFileChange` events
+//! - Fires `session.started`, `session.ended`, `change.done` events
 //! - Tracks response text accumulation per session
 //! - Detects autoreplies from flows and queues them via autoreply channel
 //! - Forwards messages to IDE (stdout)
@@ -92,21 +92,21 @@
 //!
 //! # Events Fired
 //!
-//! - **SessionStart**: When `session/new` response is received with `sessionId`
-//! - **PrePrompt**: Before `session/prompt` is forwarded to agent (allows context injection)
-//! - **PreFileChange**: Before `session/request_permission` for file-modifying tools
-//! - **PostFileChange**: When tool calls complete (from `session/update` notifications)
-//! - **SessionEnd**: When agent completes a turn (`stopReason: end_turn`)
+//! - **session.started**: When `session/new` response is received with `sessionId`
+//! - **prompt.submitted**: Before `session/prompt` is forwarded to agent (allows context injection)
+//! - **change.permission_asked**: Before `session/request_permission` for file-modifying tools
+//! - **change.done**: When tool calls complete (from `session/update` notifications)
+//! - **session.ended**: When agent completes a turn (`stopReason: end_turn`)
 //!
 //! # Example Flow
 //!
 //! 1. IDE sends `initialize` request → IDE→Agent thread extracts client info
 //! 2. Agent responds with `initialize` response → Agent→IDE thread extracts agent info
 //! 3. IDE sends `session/new` → IDE→Agent thread tracks request ID
-//! 4. Agent responds with `sessionId` → Agent→IDE thread fires `SessionStart` event
-//! 5. IDE sends `session/prompt` → IDE→Agent thread fires `PrePrompt` event
+//! 4. Agent responds with `sessionId` → Agent→IDE thread fires `session.started` event
+//! 5. IDE sends `session/prompt` → IDE→Agent thread fires `prompt.submitted` event
 //! 6. Agent sends `session/update` chunks → Agent→IDE thread accumulates response text
-//! 7. Agent completes turn → Agent→IDE thread fires `SessionEnd` event
+//! 7. Agent completes turn → Agent→IDE thread fires `session.ended` event
 //! 8. Flow returns autoreply → Agent→IDE thread queues it via autoreply channel
 //! 9. Autoreply forwarder sends it to agent stdin
 //! 10. Process repeats
@@ -121,7 +121,7 @@ use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiPostFileChangePayload, AikiPostResponsePayload, AikiPrePromptPayload,
+    AikiEvent, AikiChangeDonePayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
     AikiSessionStartPayload,
 };
 use crate::provenance::AgentType;
@@ -180,7 +180,7 @@ enum StateMessage {
     SetClientInfo(ClientInfo),
     /// Update working directory from session/new or session/load
     SetWorkingDirectory(PathBuf),
-    /// Track session/prompt request for SessionEnd event matching
+    /// Track session/prompt request for session.ended event matching
     TrackPrompt {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
         session_id: SessionId,
@@ -189,7 +189,7 @@ enum StateMessage {
     ClearAccumulator { session_id: SessionId },
     /// Reset autoreply counter for a session (on new user prompt)
     ResetAutoreplyCounter { session_id: SessionId },
-    /// Track session/new request ID to match with response for SessionStart event
+    /// Track session/new request ID to match with response for session.started event
     TrackNewSession {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
     },
@@ -315,7 +315,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let (metadata_tx, metadata_rx) = mpsc::channel::<StateMessage>();
 
     // Create channel for autoreplies
-    // Agent→IDE thread detects SessionEnd and sends autoreply requests
+    // Agent→IDE thread detects session.ended and sends autoreply requests
     // IDE→Agent thread receives and forwards them to agent
     let (autoreply_tx, autoreply_rx) = mpsc::channel::<AutoreplyMessage>();
 
@@ -407,7 +407,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         let stdin = io::stdin();
         eprintln!("ACP Proxy: IDE → Agent thread started");
 
-        // Track cwd in this thread for PrePrompt events
+        // Track cwd in this thread for prompt.submitted events
         // This mirrors the `cwd` in Agent→IDE thread, both updated via StateMessage::SetWorkingDirectory
         let mut cwd: Option<PathBuf> = None;
 
@@ -464,7 +464,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 }
                             }
 
-                            // Track session/new request for SessionStart event
+                            // Track session/new request for session.started event
                             if let Some(request_id) = &msg.id {
                                 let _ = metadata_tx_clone.send(StateMessage::TrackNewSession {
                                     request_id: request_id.clone(),
@@ -491,7 +491,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             }
                         }
                         "session/prompt" => {
-                            // PrePrompt event: intercept and potentially modify prompt
+                            // prompt.submitted event: intercept and potentially modify prompt
                             if let Some(params) = &msg.params {
                                 // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
                                 let session_id_str = params
@@ -503,7 +503,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let session_id = session_id(session_id_str);
 
                                     // Track this prompt request BEFORE any fallible work
-                                    // This ensures SessionEnd fires even if PrePrompt processing fails (graceful degradation)
+                                    // This ensures session.ended fires even if prompt.submitted processing fails (graceful degradation)
                                     if let Some(request_id) = &msg.id {
                                         let _ = metadata_tx_clone.send(StateMessage::TrackPrompt {
                                             request_id: request_id.clone(),
@@ -534,7 +534,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 ) {
                                     eprintln!("Warning: Failed to handle session/prompt: {}", e);
                                     // On error, forward original message
-                                    // SessionEnd will still fire because we tracked the request above
+                                    // session.ended will still fire because we tracked the request above
                                     let data = format!("{}\n", line).into_bytes();
                                     {
                                         // ✅ FIX for Issue #5: Handle mutex poisoning gracefully
@@ -589,11 +589,11 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let mut cwd: Option<PathBuf> = None;
     let mut tool_call_contexts: HashMap<ToolCallId, ToolCallContext> = HashMap::new();
 
-    // Track prompt requests for SessionEnd event
+    // Track prompt requests for session.ended event
     // Key is JsonRpcId (normalized request_id), value is session_id
     let mut prompt_requests: HashMap<JsonRpcId, SessionId> = HashMap::new();
 
-    // Track session/new requests for SessionStart event
+    // Track session/new requests for session.started event
     // Key is JsonRpcId (normalized request_id), value is boolean (true = pending)
     let mut session_new_requests: HashMap<JsonRpcId, bool> = HashMap::new();
 
@@ -677,7 +677,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             }
                         }
 
-                        // Check for session/new response (SessionStart event)
+                        // Check for session/new response (session.started event)
                         if let Some(response_id) = &msg.id {
                             let request_id = JsonRpcId::from_value(response_id);
                             if session_new_requests.remove(&request_id).is_some() {
@@ -685,14 +685,14 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 if let Some(session_id) =
                                     result.get("sessionId").and_then(|v| v.as_str())
                                 {
-                                    // Fire SessionStart event
+                                    // Fire session.started event
                                     if let Err(e) = fire_session_start_event(
                                         session_id,
                                         &validated_agent_type,
                                         &cwd,
                                     ) {
                                         eprintln!(
-                                            "Warning: Failed to fire SessionStart event: {}",
+                                            "Warning: Failed to fire session.started event: {}",
                                             e
                                         );
                                     }
@@ -712,14 +712,14 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 
                                 // Always remove the prompt tracking entry to prevent memory leaks
                                 if let Some(session_id) = prompt_requests.remove(&request_id) {
-                                    // Fire SessionEnd event only for successful end_turn
+                                    // Fire session.ended event only for successful end_turn
                                     if stop_reason == "end_turn" {
                                         // Get accumulated response text for this session
                                         let response_text = response_accumulator
                                             .remove(&session_id)
                                             .unwrap_or_default();
 
-                                        // Fire SessionEnd event
+                                        // Fire session.ended event
                                         if let Err(e) = handle_session_end(
                                             &session_id,
                                             &validated_agent_type,
@@ -731,13 +731,13 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                             &mut prompt_requests,
                                         ) {
                                             eprintln!(
-                                                "Warning: Failed to handle SessionEnd: {}",
+                                                "Warning: Failed to handle session.ended: {}",
                                                 e
                                             );
                                         }
                                     } else {
                                         // Non-end_turn stopReason (max_tokens, refusal, cancelled, etc.)
-                                        // Clean up accumulated response but don't fire SessionEnd
+                                        // Clean up accumulated response but don't fire session.ended
                                         response_accumulator.remove(&session_id);
 
                                         debug_log(|| {
@@ -781,7 +781,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                 }
 
                 if let Some(method) = &msg.method {
-                    // Handle session/request_permission - fire PreFileChange for file-modifying tools
+                    // Handle session/request_permission - fire change.permission_asked for file-modifying tools
                     if method == "session/request_permission" {
                         if is_file_modifying_permission_request(&msg) {
                             // Extract session_id from params
@@ -789,14 +789,14 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                 if let Some(session_id) =
                                     params.get("sessionId").and_then(|v| v.as_str())
                                 {
-                                    // Fire PreFileChange event BEFORE forwarding permission request to IDE
+                                    // Fire change.permission_asked event BEFORE forwarding permission request to IDE
                                     if let Err(e) = fire_pre_file_change_event(
                                         session_id,
                                         &validated_agent_type,
                                         &cwd,
                                     ) {
                                         eprintln!(
-                                            "Warning: Failed to fire PreFileChange event: {}",
+                                            "Warning: Failed to fire change.permission_asked event: {}",
                                             e
                                         );
                                     }
@@ -1261,7 +1261,7 @@ fn record_post_change_events(
         );
 
     // Create and dispatch a single event for all affected files
-    let event = AikiEvent::PostFileChange(AikiPostFileChangePayload {
+    let event = AikiEvent::ChangeDone(AikiChangeDonePayload {
         session,
         tool_name: tool_name.clone(),
         file_paths,
@@ -1350,14 +1350,14 @@ fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
     false
 }
 
-/// Handle session/prompt request and fire PrePrompt event
+/// Handle session/prompt request and fire prompt.submitted event
 ///
-/// This intercepts the user's prompt, fires a PrePrompt event, and potentially
+/// This intercepts the user's prompt, fires a prompt.submitted event, and potentially
 /// modifies the prompt before forwarding to the agent. Implements graceful
 /// degradation - on any error, forwards the original message.
 ///
 /// Note: Request tracking (TrackPrompt) is done by the caller before this function
-/// to ensure PostResponse fires even if PrePrompt processing fails.
+/// to ensure response.received fires even if prompt.submitted processing fails.
 fn handle_session_prompt(
     agent_stdin: &Arc<Mutex<std::process::ChildStdin>>,
     msg: &JsonRpcMessage,
@@ -1389,9 +1389,9 @@ fn handle_session_prompt(
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-    // Fire PrePrompt event
+    // Fire prompt.submitted event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PrePrompt(AikiPrePromptPayload {
+    let event = AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1410,7 +1410,7 @@ fn handle_session_prompt(
     // Check if blocked
     if response.is_blocking() {
         return Err(AikiError::Other(anyhow::anyhow!(
-            "PrePrompt validation blocked prompt"
+            "prompt.submitted validation blocked prompt"
         )));
     }
 
@@ -1458,7 +1458,7 @@ fn handle_session_prompt(
     }
 
     // Note: Request tracking is now done in the caller (before this function is called)
-    // to ensure PostResponse fires even if PrePrompt processing fails (graceful degradation)
+    // to ensure response.received fires even if prompt.submitted processing fails (graceful degradation)
 
     // Forward modified message to agent
     let modified_line = serde_json::to_string(&modified_msg).map_err(|e| {
@@ -1484,7 +1484,7 @@ fn handle_session_prompt(
 
     debug_log(|| {
         format!(
-            "[acp] Fired PrePrompt event for session: {}, modified: {}",
+            "[acp] Fired prompt.submitted event for session: {}, modified: {}",
             session_id,
             final_prompt != original_text
         )
@@ -1493,10 +1493,10 @@ fn handle_session_prompt(
     Ok(())
 }
 
-/// Handle SessionEnd event and autoreply
+/// Handle session.ended event and autoreply
 ///
 /// Fires when the agent completes a turn (stopReason: end_turn).
-/// Dispatches SessionEnd event to flows, and if they return an autoreply,
+/// Dispatches session.ended event to flows, and if they return an autoreply,
 /// sends it back to the agent (up to MAX_AUTOREPLIES times per session).
 fn handle_session_end(
     session_id: &SessionId,
@@ -1514,14 +1514,14 @@ fn handle_session_end(
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-    // Fire PostResponse event with accumulated response text
+    // Fire response.received event with accumulated response text
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PostResponse(AikiPostResponsePayload {
+    let event = AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         response: response_text.to_string(),
-        modified_files: Vec::new(), // Files tracked separately via PostFileChange events
+        modified_files: Vec::new(), // Files tracked separately via change.done events
     });
 
     let response = event_bus::dispatch(event)?;
@@ -1571,7 +1571,7 @@ fn handle_session_end(
 
             debug_log(|| {
                 format!(
-                    "[acp] PostResponse autoreply #{} for session {}: {} chars",
+                    "[acp] response.received autoreply #{} for session {}: {} chars",
                     new_count,
                     session_id,
                     autoreply_text.len()
@@ -1586,7 +1586,7 @@ fn handle_session_end(
 
             // ✅ FIX for Issue #2: Insert into HashMap BEFORE sending to channel
             // This prevents a race condition where the agent responds before we've
-            // registered the request ID, causing the PostResponse event to be lost.
+            // registered the request ID, causing the response.received event to be lost.
             // The correct order is: prepare state first, then trigger the action.
             prompt_requests.insert(
                 autoreply_msg.normalized_request_id().clone(),
@@ -1618,7 +1618,7 @@ fn handle_session_end(
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired PostResponse event for session: {}, no autoreply",
+                "[acp] Fired response.received event for session: {}, no autoreply",
                 session_id
             )
         });
@@ -1626,7 +1626,7 @@ fn handle_session_end(
 
     Ok(())
 }
-/// Fire PreFileChange event before file-modifying tool executes
+/// Fire change.permission_asked event before file-modifying tool executes
 ///
 /// This is called when we intercept a session/request_permission for
 /// file-modifying tools (Edit, Delete, Move). It allows flows to stash
@@ -1642,9 +1642,9 @@ fn fire_session_start_event(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Create and dispatch SessionStart event
+    // Create and dispatch session.started event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::SessionStart(AikiSessionStartPayload {
+    let event = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1652,9 +1652,9 @@ fn fire_session_start_event(
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
-        eprintln!("Warning: SessionStart event bus dispatch failed: {}", e);
+        eprintln!("Warning: session.started event bus dispatch failed: {}", e);
     } else {
-        debug_log(|| format!("[acp] Fired SessionStart event for session: {}", session_id));
+        debug_log(|| format!("[acp] Fired session.started event for session: {}", session_id));
     }
 
     Ok(())
@@ -1671,9 +1671,9 @@ fn fire_pre_file_change_event(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Create and dispatch PreFileChange event
+    // Create and dispatch change.permission_asked event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::PreFileChange(crate::events::AikiPreFileChangePayload {
+    let event = AikiEvent::ChangePermissionAsked(crate::events::AikiChangePermissionAskedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
@@ -1681,11 +1681,11 @@ fn fire_pre_file_change_event(
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
-        eprintln!("Warning: PreFileChange event bus dispatch failed: {}", e);
+        eprintln!("Warning: change.permission_asked event bus dispatch failed: {}", e);
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired PreFileChange event for session: {}",
+                "[acp] Fired change.permission_asked event for session: {}",
                 session_id
             )
         });

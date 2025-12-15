@@ -35,9 +35,9 @@ impl EditDetail {
     }
 }
 
-/// Post-file-change event payload (after file modification)
+/// change.done event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiPostFileChangePayload {
+pub struct AikiChangeDonePayload {
     pub session: AikiSession,
     pub tool_name: String, // Tool that made the change (e.g., "Edit", "Write")
     pub file_paths: Vec<String>, // Files that were modified (batch support)
@@ -49,11 +49,11 @@ pub struct AikiPostFileChangePayload {
     pub edit_details: Vec<EditDetail>,
 }
 
-/// Handle post-file-change event (after file modification)
+/// Handle change.done event
 ///
 /// This is the core provenance tracking event. Records metadata about
 /// the change in the JJ change description using the flow engine.
-pub fn handle_post_file_change(payload: AikiPostFileChangePayload) -> Result<HookResult> {
+pub fn handle_change_done(payload: AikiChangeDonePayload) -> Result<HookResult> {
     // No validation needed - all required fields are guaranteed by type system
 
     debug_log(|| {
@@ -74,13 +74,13 @@ pub fn handle_post_file_change(payload: AikiPostFileChangePayload) -> Result<Hoo
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute PostFileChange actions from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.post_file_change, &mut state)?;
+    // Execute change.done actions from the core flow
+    let _flow_result = FlowEngine::execute_statements(&core_flow.change_done, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
-    // PostFileChange never blocks - always allow
+    // change.done never blocks - always allow
     Ok(HookResult {
         context: None,
         decision: Decision::Allow,

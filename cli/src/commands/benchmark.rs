@@ -43,25 +43,25 @@ impl Vendor {
 /// Event types tracked in benchmarks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EventType {
-    SessionStart,
-    PrePrompt,
-    PreFileChange,
-    PostFileChange,
-    PostResponse,          // WITHOUT autoreply (includes SessionEnd)
-    PostResponseAutoreply, // WITH autoreply (PostResponse only, no SessionEnd)
-    PrepareCommitMessage,
+    SessionStarted,
+    PromptSubmitted,
+    ChangePermissionAsked,
+    ChangeDone,
+    ResponseReceived,          // WITHOUT autoreply (includes session.ended)
+    ResponseReceivedAutoreply, // WITH autoreply (response.received only, no session.ended)
+    GitPrepareCommitMessage,
 }
 
 impl EventType {
     fn name(&self) -> &'static str {
         match self {
-            EventType::SessionStart => "SessionStart",
-            EventType::PrePrompt => "PrePrompt",
-            EventType::PreFileChange => "PreFileChange",
-            EventType::PostFileChange => "PostFileChange",
-            EventType::PostResponse => "PostResponse",
-            EventType::PostResponseAutoreply => "PostResponse+Autoreply",
-            EventType::PrepareCommitMessage => "PrepareCommitMessage",
+            EventType::SessionStarted => "session.started",
+            EventType::PromptSubmitted => "prompt.submitted",
+            EventType::ChangePermissionAsked => "change.permission_asked",
+            EventType::ChangeDone => "change.done",
+            EventType::ResponseReceived => "response.received",
+            EventType::ResponseReceivedAutoreply => "response.received+autoreply",
+            EventType::GitPrepareCommitMessage => "git.prepare_commit_message",
         }
     }
 }
@@ -257,9 +257,9 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
         let duration = simulate_prepare_commit_msg(&repo_path, &aiki_exe)?;
         results
             .shared
-            .add_sample(EventType::PrepareCommitMessage, duration);
+            .add_sample(EventType::GitPrepareCommitMessage, duration);
     }
-    if let Some(stats) = results.shared.get_stats(EventType::PrepareCommitMessage) {
+    if let Some(stats) = results.shared.get_stats(EventType::GitPrepareCommitMessage) {
         println!(
             "  PrepareCommitMessage: {:.0} / {:.0} / {:.0} ms (p50/p95/max)",
             stats.p50_ms(),
@@ -395,12 +395,12 @@ fn run_vendor_lifecycle(
 
     // 1. SessionStart (only for vendors that support it)
     if let Some(duration) = simulate_session_start(repo_path, aiki_exe, vendor)? {
-        vendor_results.add_sample(EventType::SessionStart, duration);
+        vendor_results.add_sample(EventType::SessionStarted, duration);
     }
 
     // 2. PrePrompt
     let duration = simulate_pre_prompt(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::PrePrompt, duration);
+    vendor_results.add_sample(EventType::PromptSubmitted, duration);
 
     // 3. Hot path: PreFileChange + Edit + PostFileChange
     let src_dir = repo_path.join("src");
@@ -409,7 +409,7 @@ fn run_vendor_lifecycle(
 
         // PreFileChange
         let duration = simulate_pre_file_change(repo_path, aiki_exe, vendor, &file_path)?;
-        vendor_results.add_sample(EventType::PreFileChange, duration);
+        vendor_results.add_sample(EventType::ChangePermissionAsked, duration);
 
         // Actual file edit
         let mut file = fs::OpenOptions::new().append(true).open(&file_path)?;
@@ -417,16 +417,16 @@ fn run_vendor_lifecycle(
 
         // PostFileChange
         let duration = simulate_post_file_change(repo_path, aiki_exe, vendor, &file_path, i)?;
-        vendor_results.add_sample(EventType::PostFileChange, duration);
+        vendor_results.add_sample(EventType::ChangeDone, duration);
     }
 
     // 4a. PostResponse WITHOUT autoreply (includes SessionEnd)
     let duration = simulate_post_response(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::PostResponse, duration);
+    vendor_results.add_sample(EventType::ResponseReceived, duration);
 
     // 4b. PostResponse WITH autoreply (PostResponse only, no SessionEnd)
     let duration = simulate_post_response_with_autoreply(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::PostResponseAutoreply, duration);
+    vendor_results.add_sample(EventType::ResponseReceivedAutoreply, duration);
 
     Ok(())
 }
@@ -807,12 +807,12 @@ fn print_results(results: &BenchmarkResults, _num_edits: usize) {
     println!("+-----------------------+---------------------+---------------------+");
 
     let events = [
-        EventType::SessionStart,
-        EventType::PrePrompt,
-        EventType::PreFileChange,
-        EventType::PostFileChange,
-        EventType::PostResponse,
-        EventType::PostResponseAutoreply,
+        EventType::SessionStarted,
+        EventType::PromptSubmitted,
+        EventType::ChangePermissionAsked,
+        EventType::ChangeDone,
+        EventType::ResponseReceived,
+        EventType::ResponseReceivedAutoreply,
     ];
 
     for event in events {
@@ -837,11 +837,11 @@ fn print_results(results: &BenchmarkResults, _num_edits: usize) {
     }
 
     // PrepareCommitMessage (shared)
-    let pcm_stats = results.shared.get_stats(EventType::PrepareCommitMessage);
+    let pcm_stats = results.shared.get_stats(EventType::GitPrepareCommitMessage);
     let pcm_str = format_stats(pcm_stats);
     println!(
         "| {:<21} | {:>19} | {:>19} |",
-        "PrepareCommitMessage", pcm_str, "(same)"
+        "git.prepare_commit_message", pcm_str, "(same)"
     );
 
     println!("+-----------------------+---------------------+---------------------+");
@@ -935,9 +935,9 @@ fn save_results(
     }
 
     let mut shared_map: HashMap<String, EventMetrics> = HashMap::new();
-    if let Some(stats) = results.shared.get_stats(EventType::PrepareCommitMessage) {
+    if let Some(stats) = results.shared.get_stats(EventType::GitPrepareCommitMessage) {
         shared_map.insert(
-            "PrepareCommitMessage".to_string(),
+            "git.prepare_commit_message".to_string(),
             EventMetrics {
                 p50: stats.p50_ms(),
                 p95: stats.p95_ms(),
@@ -1021,8 +1021,8 @@ fn print_comparison(prev: &MetricsJson, current: &BenchmarkResults) {
 
     // Compare key events
     let events_to_compare = [
-        ("PostFileChange", EventType::PostFileChange),
-        ("PrePrompt", EventType::PrePrompt),
+        ("change.done", EventType::ChangeDone),
+        ("prompt.submitted", EventType::PromptSubmitted),
     ];
 
     for (name, event_type) in events_to_compare {

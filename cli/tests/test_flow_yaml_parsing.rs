@@ -1,5 +1,5 @@
 /// Tests for YAML parsing of new flow statement syntax
-use aiki::flows::types::{Action, Flow, FlowStatement, IfStatement, SwitchStatement};
+use aiki::flows::types::{Action, Flow, FlowStatement};
 
 #[test]
 fn test_parse_flow_with_statements() {
@@ -8,7 +8,7 @@ name: test-flow
 description: Test flow
 version: "1"
 
-SessionStart:
+session.started:
   - if: "$SESSION_ID != ''"
     then:
       - log: "Resuming session"
@@ -19,10 +19,10 @@ SessionStart:
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
     assert_eq!(flow.name, "test-flow");
-    assert_eq!(flow.session_start.len(), 1);
+    assert_eq!(flow.session_started.len(), 1);
 
     // Verify it's an if statement
-    match &flow.session_start[0] {
+    match &flow.session_started[0] {
         FlowStatement::If(if_stmt) => {
             assert_eq!(if_stmt.condition, "$SESSION_ID != ''");
             assert_eq!(if_stmt.then.len(), 1);
@@ -38,7 +38,7 @@ fn test_parse_switch_statement() {
 name: test-flow
 version: "1"
 
-PrePrompt:
+prompt.submitted:
   - switch: "$agent_type"
     cases:
       claude:
@@ -51,9 +51,9 @@ PrePrompt:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(flow.pre_prompt.len(), 1);
+    assert_eq!(flow.prompt_submitted.len(), 1);
 
-    match &flow.pre_prompt[0] {
+    match &flow.prompt_submitted[0] {
         FlowStatement::Switch(switch_stmt) => {
             assert_eq!(switch_stmt.expression, "$agent_type");
             assert_eq!(switch_stmt.cases.len(), 2);
@@ -70,7 +70,7 @@ fn test_parse_nested_statements() {
 name: test-flow
 version: "1"
 
-PostFileChange:
+change.done:
   - if: "$success"
     then:
       - switch: "$file_type"
@@ -83,7 +83,7 @@ PostFileChange:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.post_file_change[0] {
+    match &flow.change_done[0] {
         FlowStatement::If(if_stmt) => {
             assert_eq!(if_stmt.then.len(), 1);
             match &if_stmt.then[0] {
@@ -103,7 +103,7 @@ fn test_parse_action_with_on_failure_statements() {
 name: test-flow
 version: "1"
 
-SessionEnd:
+session.ended:
   - shell: "risky-command"
     on_failure:
       - if: "$EXIT_CODE == 1"
@@ -115,7 +115,7 @@ SessionEnd:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.session_end[0] {
+    match &flow.session_ended[0] {
         FlowStatement::Action(Action::Shell(shell_action)) => {
             match &shell_action.on_failure {
                 aiki::flows::types::OnFailure::Statements(stmts) => {
