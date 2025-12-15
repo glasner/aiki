@@ -32,8 +32,8 @@ pub struct AikiState {
     pub flow_name: Option<String>,
 
     /// Context assembler for events that build messages
-    /// - PrePrompt: accumulates prompt modifications and context
-    /// - PostResponse: accumulates autoreply content
+    /// - prompt.submitted: accumulates prompt modifications and context
+    /// - response.received: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
 
     /// Failure messages emitted by the flow
@@ -47,15 +47,15 @@ impl AikiState {
 
         // Initialize context assembler based on event type
         let context_assembler = match &event {
-            crate::events::AikiEvent::PrePrompt(e) => {
-                // PrePrompt: start with original prompt
+            crate::events::AikiEvent::PromptSubmitted(e) => {
+                // prompt.submitted: start with original prompt
                 Some(crate::flows::context::ContextAssembler::new(
                     Some(e.prompt.clone()),
                     "\n\n",
                 ))
             }
-            crate::events::AikiEvent::PostResponse(_) => {
-                // PostResponse: build autoreply from scratch
+            crate::events::AikiEvent::ResponseReceived(_) => {
+                // response.received: build autoreply from scratch
                 Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
             }
             _ => None,
@@ -117,19 +117,19 @@ impl AikiState {
     }
 
     /// Get mutable reference to the context assembler
-    /// Only available for PrePrompt and PostResponse events
+    /// Only available for prompt.submitted and response.received events
     pub fn get_context_assembler_mut(
         &mut self,
     ) -> crate::error::Result<&mut crate::flows::context::ContextAssembler> {
         self.context_assembler.as_mut().ok_or_else(|| {
             crate::error::AikiError::Other(anyhow::anyhow!(
-                "Context assembler not available (not a PrePrompt or PostResponse event)"
+                "Context assembler not available (not a prompt.submitted or response.received event)"
             ))
         })
     }
 
     /// Build the final context from accumulated chunks
-    /// Works for PrePrompt (builds prompt) and PostResponse (builds autoreply)
+    /// Works for prompt.submitted (builds prompt) and response.received (builds autoreply)
     /// Returns None if:
     /// - This event doesn't have a context assembler, OR
     /// - The assembler is empty (no Context actions were executed)
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiEvent, AikiPostFileChangePayload};
+        use crate::events::{AikiEvent, AikiChangeDonePayload};
         use crate::provenance::AgentType;
         use crate::session::AikiSession;
 
@@ -208,7 +208,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiEvent::PostFileChange(AikiPostFileChangePayload {
+        let event = AikiEvent::ChangeDone(AikiChangeDonePayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/test/file.rs".to_string()],
@@ -220,7 +220,7 @@ mod tests {
 
         // Verify we can access event fields through the enum
         match &ctx.event {
-            AikiEvent::PostFileChange(e) => {
+            AikiEvent::ChangeDone(e) => {
                 assert_eq!(e.file_paths, vec!["/test/file.rs".to_string()]);
             }
             _ => panic!("Expected PostFileChange event"),

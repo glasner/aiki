@@ -50,24 +50,24 @@ mod tests {
     fn test_core_flow_has_start() {
         let core = load_core_flow();
 
-        // Should have Start handler
-        assert!(!core.session_start.is_empty());
+        // Should have session.started handler
+        assert!(!core.session_started.is_empty());
     }
 
     #[test]
-    fn test_core_flow_has_post_file_change() {
+    fn test_core_flow_has_change_done() {
         let core = load_core_flow();
 
-        // Should have PostFileChange handler
-        assert!(!core.post_file_change.is_empty());
+        // Should have change.done handler
+        assert!(!core.change_done.is_empty());
     }
 
     #[test]
-    fn test_core_flow_has_pre_file_change() {
+    fn test_core_flow_has_change_permission_asked() {
         let core = load_core_flow();
 
-        // Should have PreFileChange handler
-        assert!(!core.pre_file_change.is_empty());
+        // Should have change.permission_asked handler
+        assert!(!core.change_permission_asked.is_empty());
     }
 
     #[test]
@@ -84,11 +84,11 @@ mod tests {
 
         let core = load_core_flow();
 
-        // Should have PostFileChange handler
-        assert!(!core.post_file_change.is_empty());
+        // Should have change.done handler
+        assert!(!core.change_done.is_empty());
 
         // First statement should be an If with inline function call to classify_edits
-        match &core.post_file_change[0] {
+        match &core.change_done[0] {
             FlowStatement::If(if_stmt) => {
                 // Verify uses inline self.classify_edits for condition
                 assert!(
