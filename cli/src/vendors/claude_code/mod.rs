@@ -2,8 +2,8 @@ use anyhow::Result;
 
 mod events;
 mod output;
+mod session;
 mod tools;
-mod version;
 
 use events::{build_aiki_event, ClaudeEvent};
 use output::build_command_output;

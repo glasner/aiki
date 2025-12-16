@@ -7,9 +7,9 @@ use crate::events::{
     AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
     AikiShellPermissionAskedPayload, FileOperation,
 };
-use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::AikiSession;
 use crate::tools::ToolType;
+
+use super::session::{create_session, get_cwd};
 
 // ============================================================================
 // Hook Payload Structures (matches Cursor API)
@@ -197,29 +197,6 @@ struct CursorAfterFileEditPayload {
 struct CursorEdit {
     old_string: String,
     new_string: String,
-}
-
-// ============================================================================
-// Session Creation
-// ============================================================================
-
-/// Create a session from payload fields
-fn create_session(conversation_id: &str, cursor_version: &str) -> AikiSession {
-    AikiSession::new(
-        AgentType::Cursor,
-        conversation_id,
-        Some(cursor_version),
-        DetectionMethod::Hook,
-    )
-}
-
-/// Get working directory from workspace roots
-/// Takes the first workspace root, or current directory as fallback
-fn get_cwd(workspace_roots: &[String]) -> PathBuf {
-    workspace_roots
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 // ============================================================================
