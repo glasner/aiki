@@ -219,9 +219,9 @@ fn get_cwd(workspace_roots: &[String]) -> PathBuf {
 /// Build AikiEvent from Cursor event read from stdin
 pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
     // Parse event - serde discriminates by eventName
-    let event: CursorEvent = super::super::read_stdin_json()?;
+    let cursor_event: CursorEvent = super::super::read_stdin_json()?;
 
-    let aiki_event = match event {
+    let aiki_event = match cursor_event {
         CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
         CursorEvent::Stop { payload } => build_response_received_event(payload),
         CursorEvent::BeforeShellExecution { payload } => {
