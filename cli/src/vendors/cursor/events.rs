@@ -9,7 +9,7 @@ use crate::events::{
 };
 use crate::tools::ToolType;
 
-use super::session::{create_session, get_cwd};
+use super::session::create_session;
 
 // ============================================================================
 // Hook Payload Structures (matches Cursor API)
@@ -197,6 +197,19 @@ struct CursorAfterFileEditPayload {
 struct CursorEdit {
     old_string: String,
     new_string: String,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Get working directory from workspace roots
+/// Takes the first workspace root, or current directory as fallback
+fn get_cwd(workspace_roots: &[String]) -> PathBuf {
+    workspace_roots
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 // ============================================================================
