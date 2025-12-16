@@ -19,14 +19,17 @@ pub struct AikiShellCompletedPayload {
     pub timestamp: DateTime<Utc>,
     /// The shell command that was executed
     pub command: String,
-    /// Exit code of the command
-    pub exit_code: i32,
-    /// Standard output from the command
+    /// Whether the command succeeded (exit_code == 0)
+    pub success: bool,
+    /// Exit code of the command (optional - available when vendor provides)
     #[serde(default)]
-    pub stdout: String,
-    /// Standard error from the command
+    pub exit_code: Option<i32>,
+    /// Standard output from the command (optional - available when vendor provides)
     #[serde(default)]
-    pub stderr: String,
+    pub stdout: Option<String>,
+    /// Standard error from the command (optional - available when vendor provides)
+    #[serde(default)]
+    pub stderr: Option<String>,
 }
 
 /// Handle shell.completed event
@@ -36,11 +39,11 @@ pub struct AikiShellCompletedPayload {
 pub fn handle_shell_completed(payload: AikiShellCompletedPayload) -> Result<HookResult> {
     debug_log(|| {
         format!(
-            "shell.completed from {:?}, session: {}, command: {}, exit_code: {}",
+            "shell.completed from {:?}, session: {}, command: {}, success: {}",
             payload.session.agent_type(),
             payload.session.external_id(),
             payload.command,
-            payload.exit_code
+            payload.success
         )
     });
 

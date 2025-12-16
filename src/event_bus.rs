@@ -33,12 +33,12 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // File access (unified model)
             AikiEvent::FilePermissionAsked(_) => "file.permission_asked",
             AikiEvent::FileCompleted(_) => "file.completed",
-            // File changes (deprecated)
-            AikiEvent::ChangePermissionAsked(_) => "change.permission_asked",
-            AikiEvent::ChangeCompleted(_) => "change.completed",
             // Shell commands
             AikiEvent::ShellPermissionAsked(_) => "shell.permission_asked",
             AikiEvent::ShellCompleted(_) => "shell.completed",
+            // Web access
+            AikiEvent::WebPermissionAsked(_) => "web.permission_asked",
+            AikiEvent::WebCompleted(_) => "web.completed",
             // MCP tools
             AikiEvent::McpPermissionAsked(_) => "mcp.permission_asked",
             AikiEvent::McpCompleted(_) => "mcp.completed",
@@ -96,10 +96,6 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
         AikiEvent::FilePermissionAsked(e) => events::handle_file_permission_asked(e),
         AikiEvent::FileCompleted(e) => events::handle_file_completed(e),
 
-        // File changes (deprecated - keeping for backward compatibility)
-        AikiEvent::ChangePermissionAsked(e) => events::handle_change_permission_asked(e),
-        AikiEvent::ChangeCompleted(e) => events::handle_change_completed(e),
-
         // Shell commands - transform rm/rmdir to file.* events
         AikiEvent::ShellPermissionAsked(e) => {
             let (file_op, paths) = parse_file_operation_from_shell_command(&e.command);
@@ -117,6 +113,10 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // Regular shell command (or future: mv, cp, etc.)
             events::handle_shell_completed(e)
         }
+
+        // Web access
+        AikiEvent::WebPermissionAsked(e) => events::handle_web_permission_asked(e),
+        AikiEvent::WebCompleted(e) => events::handle_web_completed(e),
 
         // MCP tools
         AikiEvent::McpPermissionAsked(e) => events::handle_mcp_permission_asked(e),
@@ -194,8 +194,7 @@ fn transform_shell_to_file_completed(
         )
     });
 
-    let success = shell_event.exit_code == 0;
-
+    // Use the success field directly from the shell event
     let file_event = AikiFileCompletedPayload {
         session: shell_event.session,
         cwd: shell_event.cwd,
@@ -203,7 +202,7 @@ fn transform_shell_to_file_completed(
         operation: FileOperation::Delete,
         tool_name: "Bash".to_string(),
         file_paths: paths,
-        success: Some(success),
+        success: Some(shell_event.success),
         edit_details: Vec::new(), // No edit details for deletions
     };
 

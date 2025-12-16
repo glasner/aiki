@@ -55,19 +55,19 @@ mod tests {
     }
 
     #[test]
-    fn test_core_flow_has_change_completed() {
+    fn test_core_flow_has_file_completed() {
         let core = load_core_flow();
 
-        // Should have change.done handler
-        assert!(!core.change_completed.is_empty());
+        // Should have file.completed handler
+        assert!(!core.file_completed.is_empty());
     }
 
     #[test]
-    fn test_core_flow_has_change_permission_asked() {
+    fn test_core_flow_has_file_permission_asked() {
         let core = load_core_flow();
 
-        // Should have change.permission_asked handler
-        assert!(!core.change_permission_asked.is_empty());
+        // Should have file.permission_asked handler
+        assert!(!core.file_permission_asked.is_empty());
     }
 
     #[test]
@@ -84,27 +84,40 @@ mod tests {
 
         let core = load_core_flow();
 
-        // Should have change.done handler
-        assert!(!core.change_completed.is_empty());
+        // Should have file.completed handler
+        assert!(!core.file_completed.is_empty());
 
-        // First statement should be an If with inline function call to classify_edits
-        match &core.change_completed[0] {
-            FlowStatement::If(if_stmt) => {
-                // Verify uses inline self.classify_edits for condition
+        // First statement is the operation check: if: $event.operation == "write"
+        match &core.file_completed[0] {
+            FlowStatement::If(outer_if) => {
+                // Outer if checks for write operation
                 assert!(
-                    if_stmt.condition.contains("self.classify_edits"),
-                    "Flow should use inline 'self.classify_edits' in condition"
+                    outer_if.condition.contains("$event.operation"),
+                    "Flow should check event.operation first"
                 );
-                // First statement in then block should be the prepare_separation let binding
-                assert!(!if_stmt.then.is_empty());
-                match &if_stmt.then[0] {
-                    FlowStatement::Action(Action::Let(let_action)) => {
-                        assert_eq!(
-                            let_action.let_, "prep = self.prepare_separation",
-                            "Flow should prepare separation when user edits are detected"
+
+                // Inside that, first statement should be the classify_edits check
+                assert!(!outer_if.then.is_empty());
+                match &outer_if.then[0] {
+                    FlowStatement::If(classify_if) => {
+                        // Verify uses inline self.classify_edits for condition
+                        assert!(
+                            classify_if.condition.contains("self.classify_edits"),
+                            "Flow should use inline 'self.classify_edits' in condition"
                         );
+                        // First statement in then block should be the prepare_separation let binding
+                        assert!(!classify_if.then.is_empty());
+                        match &classify_if.then[0] {
+                            FlowStatement::Action(Action::Let(let_action)) => {
+                                assert_eq!(
+                                    let_action.let_, "prep = self.prepare_separation",
+                                    "Flow should prepare separation when user edits are detected"
+                                );
+                            }
+                            _ => panic!("Expected Let action as first step in then block"),
+                        }
                     }
-                    _ => panic!("Expected Let action as first step in then block"),
+                    _ => panic!("Expected If statement for classify_edits"),
                 }
             }
             _ => panic!("Expected If statement as first step"),

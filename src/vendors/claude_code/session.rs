@@ -49,6 +49,7 @@ fn read_agent_version_from_file(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provenance::DetectionMethod;
 
     #[test]
     fn test_create_session_includes_version() {

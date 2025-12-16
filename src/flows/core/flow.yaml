@@ -25,7 +25,6 @@ session.started:
       - jj: new
 
 # file.permission_asked: Stash any user changes before AI starts editing files
-# Note: file.* events replace change.* events but include operation field
 file.permission_asked:
   # Only stash for write operations (not reads)
   - if: $event.operation == "write"
@@ -43,7 +42,6 @@ file.permission_asked:
           - jj: new # Give AI a clean working copy
 
 # file.completed: Record provenance metadata after every AI file operation
-# Note: file.* events replace change.* events but include operation field
 file.completed:
   # Only record provenance for write operations
   - if: $event.operation == "write"
@@ -77,55 +75,6 @@ file.completed:
 
       # Create a new change for the next edit
       - jj: new
-
-# change.permission_asked: DEPRECATED - use file.permission_asked instead
-# Stash any user changes before AI starts editing
-change.permission_asked:
-  # Check if working copy has any changes
-  - jj: diff -r @ --name-only
-    alias: changed_files
-
-  # If there are changes (non-empty string), stash them before AI starts
-  - if: $changed_files
-    then:
-      - with_author_and_message: self.build_human_metadata
-        jj: describe --message "$message"
-
-      - jj: new # Give AI a clean working copy
-
-# change.completed: DEPRECATED - use file.completed instead
-# Record provenance metadata after every AI edit
-# With user edit detection: separates AI changes from user modifications
-change.completed:
-  # Classify edits to detect user modifications
-  # This compares AI's intended edits with actual file state
-  # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
-  - if: self.classify_edits == "AdditiveUserEdits"
-    then:
-      # User added more changes - separate them into two changes
-      - let: prep = self.prepare_separation
-
-      - self: write_ai_files
-
-      - with_author: $prep.ai_author
-        jj: split --message "$prep.ai_message" $prep.file_list
-
-      - self: restore_original_files
-      # Add aiki metadata with git user as author and AI as coauthor
-      - with_author_and_message: self.build_human_metadata
-        jj: metaedit --message "$message"
-
-    else:
-      # For ExactMatch or OverlappingUserEdits, set AI metadata
-      - let: metadata = self.build_metadata
-        on_failure:
-          - stop: "Failed to build metadata"
-
-      - with_author_and_message: $metadata
-        jj: metaedit --message "$message"
-
-  # Create a new change for the next edit
-  - jj: new
 
 # response.received: Handle actions after agent response (e.g., autoreplies)
 response.received:
