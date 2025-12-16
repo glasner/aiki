@@ -101,9 +101,9 @@ struct ClaudeStopPayload {
 /// Build AikiEvent from Claude Code event read from stdin
 pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
     // Parse event - serde discriminates by hook_event_name
-    let event: ClaudeEvent = super::super::read_stdin_json()?;
+    let claude_event: ClaudeEvent = super::super::read_stdin_json()?;
 
-    let aiki_event = match event {
+    let aiki_event = match claude_event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
         ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
