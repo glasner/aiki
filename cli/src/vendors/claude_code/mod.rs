@@ -5,7 +5,7 @@ mod output;
 mod session;
 mod tools;
 
-use events::{build_aiki_event, ClaudeEvent};
+use events::build_aiki_event_from_stdin;
 use output::build_command_output;
 
 /// Handle a Claude Code event
@@ -16,11 +16,8 @@ use output::build_command_output;
 /// # Arguments
 /// * `claude_event_name` - Vendor event name from CLI flag (used for output formatting)
 pub fn handle(claude_event_name: &str) -> Result<()> {
-    // Parse event - serde discriminates by hook_event_name
-    let claude_event: ClaudeEvent = super::read_stdin_json()?;
-
-    // Build Aiki event from Claude event
-    let aiki_event = build_aiki_event(claude_event);
+    // Build Aiki event from stdin JSON
+    let aiki_event = build_aiki_event_from_stdin()?;
 
     // Dispatch event and exit with command output
     let aiki_response = crate::event_bus::dispatch(aiki_event)?;

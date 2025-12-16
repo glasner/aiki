@@ -5,7 +5,7 @@ mod output;
 mod session;
 mod tools;
 
-use events::{build_aiki_event, CursorEvent};
+use events::build_aiki_event_from_stdin;
 use output::build_command_output;
 
 /// Handle a Cursor event
@@ -16,11 +16,8 @@ use output::build_command_output;
 /// # Arguments
 /// * `cursor_event_name` - Vendor event name from CLI flag (used for output formatting)
 pub fn handle(cursor_event_name: &str) -> Result<()> {
-    // Parse event - serde discriminates by eventName
-    let cursor_event: CursorEvent = super::read_stdin_json()?;
-
-    // Build Aiki event from Cursor event
-    let aiki_event = build_aiki_event(cursor_event);
+    // Build Aiki event from stdin JSON
+    let aiki_event = build_aiki_event_from_stdin()?;
 
     // Dispatch event and exit with command output
     let aiki_response = crate::event_bus::dispatch(aiki_event)?;
