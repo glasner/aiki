@@ -220,12 +220,8 @@ fn get_cwd(workspace_roots: &[String]) -> PathBuf {
 pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
     // Parse event - serde discriminates by eventName
     let event: CursorEvent = super::super::read_stdin_json()?;
-    Ok(parse_event(event))
-}
 
-/// Parse a CursorEvent into an AikiEvent
-fn parse_event(event: CursorEvent) -> AikiEvent {
-    match event {
+    let aiki_event = match event {
         CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
         CursorEvent::Stop { payload } => build_response_received_event(payload),
         CursorEvent::BeforeShellExecution { payload } => {
@@ -235,7 +231,9 @@ fn parse_event(event: CursorEvent) -> AikiEvent {
         CursorEvent::BeforeMcpExecution { payload } => build_mcp_or_file_event(payload),
         CursorEvent::AfterMcpExecution { payload } => build_mcp_completed_event(payload),
         CursorEvent::AfterFileEdit { payload } => build_file_completed_event(payload),
-    }
+    };
+
+    Ok(aiki_event)
 }
 
 /// Build appropriate event for beforeMCPExecution based on tool type
