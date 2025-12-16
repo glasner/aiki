@@ -102,18 +102,16 @@ struct ClaudeStopPayload {
 pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
     // Parse event - serde discriminates by hook_event_name
     let event: ClaudeEvent = super::super::read_stdin_json()?;
-    Ok(parse_event(event))
-}
 
-/// Parse a ClaudeEvent into an AikiEvent
-fn parse_event(event: ClaudeEvent) -> AikiEvent {
-    match event {
+    let aiki_event = match event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
         ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
         ClaudeEvent::PostToolUse { payload } => build_completed_event_for_tool_type(payload),
         ClaudeEvent::Stop { payload } => build_response_received_event(payload),
-    }
+    };
+
+    Ok(aiki_event)
 }
 
 /// Build appropriate pre-tool event based on tool type
