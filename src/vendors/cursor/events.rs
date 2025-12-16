@@ -19,7 +19,7 @@ use super::session::create_session;
 /// Cursor hook event - discriminated by eventName
 #[derive(Deserialize, Debug)]
 #[serde(tag = "eventName")]
-pub enum CursorEvent {
+enum CursorEvent {
     #[serde(rename = "beforeSubmitPrompt")]
     BeforeSubmitPrompt {
         #[serde(flatten)]
@@ -216,8 +216,15 @@ fn get_cwd(workspace_roots: &[String]) -> PathBuf {
 // Event Building
 // ============================================================================
 
-/// Build AikiEvent from Cursor event
-pub fn build_aiki_event(event: CursorEvent) -> AikiEvent {
+/// Build AikiEvent from Cursor event read from stdin
+pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
+    // Parse event - serde discriminates by eventName
+    let event: CursorEvent = super::super::read_stdin_json()?;
+    Ok(parse_event(event))
+}
+
+/// Parse a CursorEvent into an AikiEvent
+fn parse_event(event: CursorEvent) -> AikiEvent {
     match event {
         CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
         CursorEvent::Stop { payload } => build_response_received_event(payload),

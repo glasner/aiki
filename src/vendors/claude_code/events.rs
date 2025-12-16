@@ -21,7 +21,7 @@ use super::tools::{BashToolResponse, ClaudeTool};
 /// Claude Code hook event - discriminated by hook_event_name
 #[derive(Deserialize, Debug)]
 #[serde(tag = "hook_event_name")]
-pub enum ClaudeEvent {
+enum ClaudeEvent {
     #[serde(rename = "SessionStart")]
     SessionStart {
         #[serde(flatten)]
@@ -98,8 +98,15 @@ struct ClaudeStopPayload {
 // Event Building
 // ============================================================================
 
-/// Build AikiEvent from Claude Code event
-pub fn build_aiki_event(event: ClaudeEvent) -> AikiEvent {
+/// Build AikiEvent from Claude Code event read from stdin
+pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
+    // Parse event - serde discriminates by hook_event_name
+    let event: ClaudeEvent = super::super::read_stdin_json()?;
+    Ok(parse_event(event))
+}
+
+/// Parse a ClaudeEvent into an AikiEvent
+fn parse_event(event: ClaudeEvent) -> AikiEvent {
     match event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
         ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
