@@ -19,28 +19,48 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
     // Log event for debugging (uses cached debug flag)
     if *DEBUG_ENABLED {
         let event_type_name = match &event {
+            // Session lifecycle
             AikiEvent::SessionStarted(_) => "session.started",
-            AikiEvent::PromptSubmitted(_) => "prompt.submitted",
-            AikiEvent::ChangePermissionAsked(_) => "change.permission_asked",
-            AikiEvent::ChangeDone(_) => "change.done",
-            AikiEvent::ResponseReceived(_) => "response.received",
+            AikiEvent::SessionResumed(_) => "session.resumed",
             AikiEvent::SessionEnded(_) => "session.ended",
-            AikiEvent::GitPrepareCommitMessage(_) => "git.prepare_commit_message",
+            // User / agent interaction
+            AikiEvent::PromptSubmitted(_) => "prompt.submitted",
+            AikiEvent::ResponseReceived(_) => "response.received",
+            // File access (unified model)
+            AikiEvent::FilePermissionAsked(_) => "file.permission_asked",
+            AikiEvent::FileCompleted(_) => "file.completed",
+            // File changes (deprecated)
+            AikiEvent::ChangePermissionAsked(_) => "change.permission_asked",
+            AikiEvent::ChangeCompleted(_) => "change.completed",
+            // Shell commands
+            AikiEvent::ShellPermissionAsked(_) => "shell.permission_asked",
+            AikiEvent::ShellCompleted(_) => "shell.completed",
+            // MCP tools
+            AikiEvent::McpPermissionAsked(_) => "mcp.permission_asked",
+            AikiEvent::McpCompleted(_) => "mcp.completed",
+            // Git integration
+            AikiEvent::CommitMessageStarted(_) => "commit.message_started",
+            // Fallback
             AikiEvent::Unsupported => "unsupported",
         };
-        debug_log(|| format!(
-            "Dispatching event: {} from agent: {:?}",
-            event_type_name,
-            event.agent_type()
-        ));
+        debug_log(|| {
+            format!(
+                "Dispatching event: {} from agent: {:?}",
+                event_type_name,
+                event.agent_type()
+            )
+        });
     }
 
     // Route to appropriate handler
     let result = match event {
+        // Session lifecycle
         AikiEvent::SessionStarted(e) => events::handle_session_started(e),
+        AikiEvent::SessionResumed(e) => events::handle_session_resumed(e),
+        AikiEvent::SessionEnded(e) => events::handle_session_ended(e),
+
+        // User / agent interaction
         AikiEvent::PromptSubmitted(e) => events::handle_prompt_submitted(e),
-        AikiEvent::ChangePermissionAsked(e) => events::handle_change_permission_asked(e),
-        AikiEvent::ChangeDone(e) => events::handle_change_done(e),
         AikiEvent::ResponseReceived(e) => {
             // Extract fields we'll need for session.ended before consuming the event
             let session = e.session.clone();
@@ -67,8 +87,27 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // No autoreply - session is done, trigger session.ended event
             trigger_session_ended(session, cwd)
         }
-        AikiEvent::SessionEnded(e) => events::handle_session_ended(e),
-        AikiEvent::GitPrepareCommitMessage(e) => events::handle_git_prepare_commit_message(e),
+
+        // File access (unified model)
+        AikiEvent::FilePermissionAsked(e) => events::handle_file_permission_asked(e),
+        AikiEvent::FileCompleted(e) => events::handle_file_completed(e),
+
+        // File changes (deprecated - keeping for backward compatibility)
+        AikiEvent::ChangePermissionAsked(e) => events::handle_change_permission_asked(e),
+        AikiEvent::ChangeCompleted(e) => events::handle_change_completed(e),
+
+        // Shell commands
+        AikiEvent::ShellPermissionAsked(e) => events::handle_shell_permission_asked(e),
+        AikiEvent::ShellCompleted(e) => events::handle_shell_completed(e),
+
+        // MCP tools
+        AikiEvent::McpPermissionAsked(e) => events::handle_mcp_permission_asked(e),
+        AikiEvent::McpCompleted(e) => events::handle_mcp_completed(e),
+
+        // Git integration
+        AikiEvent::CommitMessageStarted(e) => events::handle_commit_message_started(e),
+
+        // Fallback
         AikiEvent::Unsupported => return Ok(HookResult::success()),
     };
 

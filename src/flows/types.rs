@@ -87,34 +87,88 @@ pub struct Flow {
     #[serde(default = "default_version")]
     pub version: String,
 
-    /// session.started event handler
+    // ========================================================================
+    // Session Lifecycle Events
+    // ========================================================================
+    /// session.started event handler (new agent session began)
     #[serde(rename = "session.started", default)]
     pub session_started: Vec<FlowStatement>,
 
-    /// prompt.submitted event handler (user submitted a prompt to the agent)
-    #[serde(rename = "prompt.submitted", default)]
-    pub prompt_submitted: Vec<FlowStatement>,
-
-    /// change.permission_asked event handler (agent is about to modify a file)
-    #[serde(rename = "change.permission_asked", default)]
-    pub change_permission_asked: Vec<FlowStatement>,
-
-    /// change.done event handler (agent finished modifying a file)
-    #[serde(rename = "change.done", default)]
-    pub change_done: Vec<FlowStatement>,
-
-    /// response.received event handler (agent finished responding)
-    #[serde(rename = "response.received", default)]
-    pub response_received: Vec<FlowStatement>,
+    /// session.resumed event handler (continuing a previous session)
+    #[serde(rename = "session.resumed", default)]
+    pub session_resumed: Vec<FlowStatement>,
 
     /// session.ended event handler (agent session terminated)
     #[serde(rename = "session.ended", default)]
     pub session_ended: Vec<FlowStatement>,
 
-    /// git.prepare_commit_message event handler (Git's prepare-commit-msg hook)
-    #[serde(rename = "git.prepare_commit_message", default)]
-    pub git_prepare_commit_message: Vec<FlowStatement>,
+    // ========================================================================
+    // User / Agent Interaction Events
+    // ========================================================================
+    /// prompt.submitted event handler (user submitted a prompt to the agent)
+    #[serde(rename = "prompt.submitted", default)]
+    pub prompt_submitted: Vec<FlowStatement>,
 
+    /// response.received event handler (agent finished responding)
+    #[serde(rename = "response.received", default)]
+    pub response_received: Vec<FlowStatement>,
+
+    // ========================================================================
+    // File Access Events (unified model)
+    // ========================================================================
+    /// file.permission_asked event handler (agent is about to access a file)
+    /// Operations: read, write, delete
+    #[serde(rename = "file.permission_asked", default)]
+    pub file_permission_asked: Vec<FlowStatement>,
+
+    /// file.completed event handler (agent finished accessing a file)
+    #[serde(rename = "file.completed", default)]
+    pub file_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // File Change Events (deprecated - use file.* instead)
+    // ========================================================================
+    /// DEPRECATED: Use file.permission_asked with operation: write
+    #[serde(rename = "change.permission_asked", default)]
+    pub change_permission_asked: Vec<FlowStatement>,
+
+    /// DEPRECATED: Use file.completed with operation: write
+    #[serde(rename = "change.completed", default)]
+    pub change_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Shell Command Events
+    // ========================================================================
+    /// shell.permission_asked event handler (agent is about to execute a shell command)
+    /// This is the autonomous review wedge - intercept git commit, run review, provide feedback
+    #[serde(rename = "shell.permission_asked", default)]
+    pub shell_permission_asked: Vec<FlowStatement>,
+
+    /// shell.completed event handler (shell command completed)
+    #[serde(rename = "shell.completed", default)]
+    pub shell_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // MCP Tool Events
+    // ========================================================================
+    /// mcp.permission_asked event handler (agent is about to call an MCP tool)
+    #[serde(rename = "mcp.permission_asked", default)]
+    pub mcp_permission_asked: Vec<FlowStatement>,
+
+    /// mcp.completed event handler (MCP tool call completed)
+    #[serde(rename = "mcp.completed", default)]
+    pub mcp_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Commit Integration Events
+    // ========================================================================
+    /// commit.message_started event handler (Git's prepare-commit-msg hook)
+    #[serde(rename = "commit.message_started", default)]
+    pub commit_message_started: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Legacy
+    // ========================================================================
     /// Stop event handler (legacy - kept for compatibility)
     #[serde(rename = "Stop", default)]
     pub stop: Vec<FlowStatement>,

@@ -28,7 +28,7 @@ use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
-    AikiChangeDonePayload, AikiChangePermissionAskedPayload, AikiGitPrepareCommitMessagePayload,
+    AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiCommitMessageStartedPayload,
 };
 use crate::flows::state::ActionResult;
 use crate::provenance::ProvenanceRecord;
@@ -88,7 +88,7 @@ pub fn get_git_user() -> Option<String> {
 ///   jj: describe --message "User changes"
 /// ```
 pub fn get_git_user_function(
-    _event: &AikiChangeDonePayload,
+    _event: &AikiChangeCompletedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let git_user = get_git_user().ok_or_else(|| {
@@ -139,10 +139,10 @@ pub fn get_git_user_function(
 ///   - jj: metaedit -m "$metadata.message" --author "$metadata.author"
 /// ```
 pub fn build_metadata(
-    event: &AikiChangeDonePayload,
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
-    let mut provenance = ProvenanceRecord::from_change_done_event(event);
+    let mut provenance = ProvenanceRecord::from_change_completed_event(event);
 
     // Check if we have overlapping user edits and should add coauthor
     if let Some(ctx) = context {
@@ -164,11 +164,13 @@ pub fn build_metadata(
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
-    debug_log(|| format!(
-        "[flows/core] Generated metadata - author: {}, message length: {}",
-        author,
-        message.len()
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Generated metadata - author: {}, message length: {}",
+            author,
+            message.len()
+        )
+    });
 
     // Return JSON output for structured data
     let json = serde_json::json!({
@@ -234,10 +236,12 @@ fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<Ac
 
     let message = format!("{}\n[/aiki]", lines.join("\n"));
 
-    debug_log(|| format!(
-        "[flows/core] Generated human metadata - author: {}",
-        git_user
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Generated human metadata - author: {}",
+            git_user
+        )
+    });
 
     let json = serde_json::json!({
         "author": git_user,
@@ -262,7 +266,7 @@ pub fn build_human_metadata(
 
 /// Build human metadata - works with change.done events
 pub fn build_human_metadata_post(
-    event: &AikiChangeDonePayload,
+    event: &AikiChangeCompletedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     build_human_metadata_impl(&event.session)
@@ -323,7 +327,7 @@ pub enum EditClassification {
 ///     then:
 ///       - jj: metaedit -m "$metadata.message"
 /// ```
-pub fn classify_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
+pub fn classify_edits(event: &AikiChangeCompletedPayload) -> Result<ActionResult> {
     // If no edit details, we can't classify - treat as exact match (AI-only)
     if event.edit_details.is_empty() {
         debug_log(|| "[flows/core] No edit details available - assuming AI-only changes");
@@ -392,11 +396,13 @@ pub fn classify_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
         "Unknown"
     };
 
-    debug_log(|| format!(
-        "[flows/core] Classification: type={}, extra_files={}",
-        classification_type,
-        extra_files.len()
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Classification: type={}, extra_files={}",
+            classification_type,
+            extra_files.len()
+        )
+    });
 
     Ok(ActionResult {
         success: true,
@@ -407,7 +413,10 @@ pub fn classify_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
 }
 
 /// Classify edits for a single file
-fn classify_file(file_path: &str, event: &AikiChangeDonePayload) -> Result<EditClassification> {
+fn classify_file(
+    file_path: &str,
+    event: &AikiChangeCompletedPayload,
+) -> Result<EditClassification> {
     // Read current file content
     let full_path = event.cwd.join(file_path);
     let current_content = read_file_safe(&full_path)?;
@@ -519,7 +528,7 @@ fn read_file_safe(path: &Path) -> Result<String> {
 ///         - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
 ///         - self: restore_original_files
 /// ```
-pub fn prepare_separation(event: &AikiChangeDonePayload) -> Result<ActionResult> {
+pub fn prepare_separation(event: &AikiChangeCompletedPayload) -> Result<ActionResult> {
     // If no edit details, return early
     if event.edit_details.is_empty() {
         debug_log(|| "[flows/core] No edit details available, skipping preparation");
@@ -536,7 +545,7 @@ pub fn prepare_separation(event: &AikiChangeDonePayload) -> Result<ActionResult>
     }
 
     // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_change_done_event(event);
+    let provenance = ProvenanceRecord::from_change_completed_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
@@ -555,11 +564,13 @@ pub fn prepare_separation(event: &AikiChangeDonePayload) -> Result<ActionResult>
         .cloned()
         .collect();
 
-    debug_log(|| format!(
-        "[flows/core] Preparing separation for {} files with edits, {} AI-only files",
-        files_with_edits.len(),
-        ai_only_files.len()
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Preparing separation for {} files with edits, {} AI-only files",
+            files_with_edits.len(),
+            ai_only_files.len()
+        )
+    });
 
     // Reconstruct AI-only content for files with edits
     let mut files_data = serde_json::Map::new();
@@ -632,7 +643,7 @@ pub fn prepare_separation(event: &AikiChangeDonePayload) -> Result<ActionResult>
 /// - jj: split --message "$prep.ai_message" $prep.file_list
 /// ```
 pub fn write_ai_files(
-    event: &AikiChangeDonePayload,
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
@@ -677,10 +688,12 @@ pub fn write_ai_files(
             ))
         })?;
 
-        debug_log(|| format!(
-            "[flows/core] Wrote AI-only content to '{}'",
-            full_path.display()
-        ));
+        debug_log(|| {
+            format!(
+                "[flows/core] Wrote AI-only content to '{}'",
+                full_path.display()
+            )
+        });
     }
 
     Ok(ActionResult {
@@ -708,7 +721,7 @@ pub fn write_ai_files(
 /// - self: restore_original_files
 /// ```
 pub fn restore_original_files(
-    event: &AikiChangeDonePayload,
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
@@ -753,10 +766,12 @@ pub fn restore_original_files(
             ))
         })?;
 
-        debug_log(|| format!(
-            "[flows/core] Restored original content to '{}'",
-            full_path.display()
-        ));
+        debug_log(|| {
+            format!(
+                "[flows/core] Restored original content to '{}'",
+                full_path.display()
+            )
+        });
     }
 
     Ok(ActionResult {
@@ -806,7 +821,7 @@ pub fn restore_original_files(
 /// Note: This simplified version derives all needed data from the event and doesn't
 /// require function arguments. A future enhancement could add argument support to the
 /// flow executor.
-pub fn separate_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
+pub fn separate_edits(event: &AikiChangeCompletedPayload) -> Result<ActionResult> {
     // If no edit details, return success (nothing to separate)
     // This allows graceful degradation for hook-based detection where
     // edit details might not be available
@@ -825,7 +840,7 @@ pub fn separate_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
     }
 
     // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_change_done_event(event);
+    let provenance = ProvenanceRecord::from_change_completed_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
@@ -844,11 +859,13 @@ pub fn separate_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
         .cloned()
         .collect();
 
-    debug_log(|| format!(
-        "[flows/core] Separating {} files with edits, {} AI-only files",
-        files_with_edits.len(),
-        ai_only_files.len()
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Separating {} files with edits, {} AI-only files",
+            files_with_edits.len(),
+            ai_only_files.len()
+        )
+    });
 
     // Step 1: Reconstruct AI-only content for files with edits
     let mut original_contents: HashMap<String, String> = HashMap::new();
@@ -921,10 +938,12 @@ pub fn separate_edits(event: &AikiChangeDonePayload) -> Result<ActionResult> {
         })?;
     }
 
-    debug_log(|| format!(
-        "[flows/core] Successfully separated edits: {}",
-        split_result
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Successfully separated edits: {}",
+            split_result
+        )
+    });
 
     // Parse jj split output to extract change IDs
     // Output format: "First part: qpvuntsm 12345678 AI changes
@@ -982,7 +1001,7 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
 fn reconstruct_ai_only_content(
     current_content: &str,
     file_path: &str,
-    event: &AikiChangeDonePayload,
+    event: &AikiChangeCompletedPayload,
 ) -> Result<String> {
     let mut ai_content = current_content.to_string();
 
@@ -1049,10 +1068,12 @@ fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Re
     metaedit_cmd.arg("--author").arg(author);
     metaedit_cmd.arg("--no-edit"); // Don't open editor
 
-    debug_log(|| format!(
-        "[flows/core] Setting author on AI change: {:?}",
-        metaedit_cmd
-    ));
+    debug_log(|| {
+        format!(
+            "[flows/core] Setting author on AI change: {:?}",
+            metaedit_cmd
+        )
+    });
 
     let metaedit_output = metaedit_cmd
         .output()
@@ -1115,9 +1136,9 @@ fn parse_split_output(output: &str) -> Result<(String, String)> {
 
 /// Generate co-authors for Git commit from staged changes
 ///
-/// This function is called during git.prepare_commit_message events to generate Git trailer
+/// This function is called during commit.message_started events to generate Git trailer
 /// lines (Co-authored-by:) for AI agents that contributed to the staged changes.
-pub fn generate_coauthors(event: &AikiGitPrepareCommitMessagePayload) -> Result<ActionResult> {
+pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<ActionResult> {
     // Create authors command using the event's working directory
     let authors_cmd = AuthorsCommand::new(&event.cwd);
 
@@ -1158,7 +1179,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiChangeDonePayload {
+        let event = AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
@@ -1191,7 +1212,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiChangeDonePayload {
+        let event = AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
@@ -1216,14 +1237,14 @@ mod tests {
         cwd: &Path,
         file_paths: Vec<String>,
         edit_details: Vec<EditDetail>,
-    ) -> AikiChangeDonePayload {
+    ) -> AikiChangeCompletedPayload {
         let session = AikiSession::new(
             AgentType::Claude,
             "test".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiChangeDonePayload {
+        AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths,
@@ -1332,7 +1353,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiChangeDonePayload {
+        let event = AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],
@@ -1356,7 +1377,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiChangeDonePayload {
+        let event = AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],

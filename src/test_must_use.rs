@@ -1,7 +1,7 @@
 // Test to verify event construction works properly
 #![cfg(test)]
 
-use crate::events::{AikiEvent, AikiChangeDonePayload, AikiSessionStartPayload};
+use crate::events::{AikiChangeCompletedPayload, AikiEvent, AikiSessionStartPayload};
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ fn test_impl_asref_path_ergonomics() {
         None::<&str>,
         DetectionMethod::Hook,
     );
-    let _event2 = AikiEvent::ChangeDone(AikiChangeDonePayload {
+    let _event2 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session: session2,
         tool_name: "Edit".to_string(),
         file_paths: vec!["/tmp/file.rs".to_string()],
@@ -90,7 +90,7 @@ fn test_impl_asref_path_ergonomics() {
         None::<&str>,
         DetectionMethod::Hook,
     );
-    let _event5 = AikiEvent::ChangeDone(AikiChangeDonePayload {
+    let _event5 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session: session5,
         tool_name: "Write".to_string(),
         file_paths: vec!["/tmp/file.rs".to_string()],

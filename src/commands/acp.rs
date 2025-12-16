@@ -121,7 +121,7 @@ use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiChangeDonePayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
+    AikiChangeCompletedPayload, AikiEvent, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
     AikiSessionStartPayload,
 };
 use crate::provenance::AgentType;
@@ -1261,7 +1261,7 @@ fn record_post_change_events(
         );
 
     // Create and dispatch a single event for all affected files
-    let event = AikiEvent::ChangeDone(AikiChangeDonePayload {
+    let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session,
         tool_name: tool_name.clone(),
         file_paths,
@@ -1654,7 +1654,12 @@ fn fire_session_start_event(
     if let Err(e) = event_bus::dispatch(event) {
         eprintln!("Warning: session.started event bus dispatch failed: {}", e);
     } else {
-        debug_log(|| format!("[acp] Fired session.started event for session: {}", session_id));
+        debug_log(|| {
+            format!(
+                "[acp] Fired session.started event for session: {}",
+                session_id
+            )
+        });
     }
 
     Ok(())
@@ -1681,7 +1686,10 @@ fn fire_pre_file_change_event(
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
-        eprintln!("Warning: change.permission_asked event bus dispatch failed: {}", e);
+        eprintln!(
+            "Warning: change.permission_asked event bus dispatch failed: {}",
+            e
+        );
     } else {
         debug_log(|| {
             format!(

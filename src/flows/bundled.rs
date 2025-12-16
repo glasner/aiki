@@ -55,11 +55,11 @@ mod tests {
     }
 
     #[test]
-    fn test_core_flow_has_change_done() {
+    fn test_core_flow_has_change_completed() {
         let core = load_core_flow();
 
         // Should have change.done handler
-        assert!(!core.change_done.is_empty());
+        assert!(!core.change_completed.is_empty());
     }
 
     #[test]
@@ -85,10 +85,10 @@ mod tests {
         let core = load_core_flow();
 
         // Should have change.done handler
-        assert!(!core.change_done.is_empty());
+        assert!(!core.change_completed.is_empty());
 
         // First statement should be an If with inline function call to classify_edits
-        match &core.change_done[0] {
+        match &core.change_completed[0] {
             FlowStatement::If(if_stmt) => {
                 // Verify uses inline self.classify_edits for condition
                 assert!(
