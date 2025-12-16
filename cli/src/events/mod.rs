@@ -56,16 +56,6 @@ pub enum AikiEvent {
     FileCompleted(AikiFileCompletedPayload),
 
     // ========================================================================
-    // File Change Events (deprecated - use file.* instead)
-    // ========================================================================
-    /// DEPRECATED: Use FilePermissionAsked with operation: Write
-    #[serde(rename = "change.permission_asked")]
-    ChangePermissionAsked(AikiChangePermissionAskedPayload),
-    /// DEPRECATED: Use FileCompleted with operation: Write
-    #[serde(rename = "change.completed")]
-    ChangeCompleted(AikiChangeCompletedPayload),
-
-    // ========================================================================
     // Shell Command Events
     // ========================================================================
     /// Agent is about to execute a shell command (gateable - the autonomous review wedge)
@@ -74,6 +64,17 @@ pub enum AikiEvent {
     /// Shell command completed
     #[serde(rename = "shell.completed")]
     ShellCompleted(AikiShellCompletedPayload),
+
+    // ========================================================================
+    // Web Access Events
+    // ========================================================================
+    /// Agent is about to make a web request (gateable)
+    /// Operations: fetch, search
+    #[serde(rename = "web.permission_asked")]
+    WebPermissionAsked(AikiWebPermissionAskedPayload),
+    /// Web request completed
+    #[serde(rename = "web.completed")]
+    WebCompleted(AikiWebCompletedPayload),
 
     // ========================================================================
     // MCP Tool Events
@@ -115,12 +116,12 @@ impl AikiEvent {
             // File access (unified)
             Self::FilePermissionAsked(e) => &e.cwd,
             Self::FileCompleted(e) => &e.cwd,
-            // File changes (deprecated)
-            Self::ChangePermissionAsked(e) => &e.cwd,
-            Self::ChangeCompleted(e) => &e.cwd,
             // Shell commands
             Self::ShellPermissionAsked(e) => &e.cwd,
             Self::ShellCompleted(e) => &e.cwd,
+            // Web access
+            Self::WebPermissionAsked(e) => &e.cwd,
+            Self::WebCompleted(e) => &e.cwd,
             // MCP tools
             Self::McpPermissionAsked(e) => &e.cwd,
             Self::McpCompleted(e) => &e.cwd,
@@ -145,12 +146,12 @@ impl AikiEvent {
             // File access (unified)
             Self::FilePermissionAsked(e) => e.session.agent_type(),
             Self::FileCompleted(e) => e.session.agent_type(),
-            // File changes (deprecated)
-            Self::ChangePermissionAsked(e) => e.session.agent_type(),
-            Self::ChangeCompleted(e) => e.session.agent_type(),
             // Shell commands
             Self::ShellPermissionAsked(e) => e.session.agent_type(),
             Self::ShellCompleted(e) => e.session.agent_type(),
+            // Web access
+            Self::WebPermissionAsked(e) => e.session.agent_type(),
+            Self::WebCompleted(e) => e.session.agent_type(),
             // MCP tools
             Self::McpPermissionAsked(e) => e.session.agent_type(),
             Self::McpCompleted(e) => e.session.agent_type(),
@@ -179,13 +180,13 @@ mod response_received;
 mod file_completed;
 mod file_permission_asked;
 
-// File changes (deprecated - aliases to file.*)
-mod change_completed;
-mod change_permission_asked;
-
 // Shell commands
 mod shell_completed;
 mod shell_permission_asked;
+
+// Web access
+mod web_completed;
+mod web_permission_asked;
 
 // MCP tools
 mod mcp_completed;
@@ -214,13 +215,13 @@ pub use file_permission_asked::*;
 // Re-export FileOperation from tools module for convenience
 pub use crate::tools::FileOperation;
 
-// File changes (deprecated - kept for backward compatibility)
-pub use change_completed::*;
-pub use change_permission_asked::*;
-
 // Shell commands
 pub use shell_completed::*;
 pub use shell_permission_asked::*;
+
+// Web access
+pub use web_completed::*;
+pub use web_permission_asked::*;
 
 // MCP tools
 pub use mcp_completed::*;
@@ -257,20 +258,6 @@ impl From<AikiFileCompletedPayload> for AikiEvent {
     }
 }
 
-// Deprecated: Use AikiFilePermissionAskedPayload instead
-impl From<AikiChangePermissionAskedPayload> for AikiEvent {
-    fn from(payload: AikiChangePermissionAskedPayload) -> Self {
-        AikiEvent::ChangePermissionAsked(payload)
-    }
-}
-
-// Deprecated: Use AikiFileCompletedPayload instead
-impl From<AikiChangeCompletedPayload> for AikiEvent {
-    fn from(payload: AikiChangeCompletedPayload) -> Self {
-        AikiEvent::ChangeCompleted(payload)
-    }
-}
-
 impl From<AikiCommitMessageStartedPayload> for AikiEvent {
     fn from(payload: AikiCommitMessageStartedPayload) -> Self {
         AikiEvent::CommitMessageStarted(payload)
@@ -304,6 +291,18 @@ impl From<AikiShellPermissionAskedPayload> for AikiEvent {
 impl From<AikiShellCompletedPayload> for AikiEvent {
     fn from(payload: AikiShellCompletedPayload) -> Self {
         AikiEvent::ShellCompleted(payload)
+    }
+}
+
+impl From<AikiWebPermissionAskedPayload> for AikiEvent {
+    fn from(payload: AikiWebPermissionAskedPayload) -> Self {
+        AikiEvent::WebPermissionAsked(payload)
+    }
+}
+
+impl From<AikiWebCompletedPayload> for AikiEvent {
+    fn from(payload: AikiWebCompletedPayload) -> Self {
+        AikiEvent::WebCompleted(payload)
     }
 }
 

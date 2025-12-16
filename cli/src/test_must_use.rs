@@ -1,7 +1,7 @@
 // Test to verify event construction works properly
 #![cfg(test)]
 
-use crate::events::{AikiChangeCompletedPayload, AikiEvent, AikiSessionStartPayload};
+use crate::events::{AikiEvent, AikiFileCompletedPayload, AikiSessionStartPayload, FileOperation};
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
 use std::path::PathBuf;
@@ -46,12 +46,14 @@ fn test_impl_asref_path_ergonomics() {
         None::<&str>,
         DetectionMethod::Hook,
     );
-    let _event2 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+    let _event2 = AikiEvent::FileCompleted(AikiFileCompletedPayload {
         session: session2,
-        tool_name: "Edit".to_string(),
-        file_paths: vec!["/tmp/file.rs".to_string()],
         cwd: PathBuf::from(String::from("/tmp")),
         timestamp: chrono::Utc::now(),
+        operation: FileOperation::Write,
+        tool_name: "Edit".to_string(),
+        file_paths: vec!["/tmp/file.rs".to_string()],
+        success: Some(true),
         edit_details: vec![],
     });
 
@@ -90,12 +92,14 @@ fn test_impl_asref_path_ergonomics() {
         None::<&str>,
         DetectionMethod::Hook,
     );
-    let _event5 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+    let _event5 = AikiEvent::FileCompleted(AikiFileCompletedPayload {
         session: session5,
-        tool_name: "Write".to_string(),
-        file_paths: vec!["/tmp/file.rs".to_string()],
         cwd: pb.clone(),
         timestamp: chrono::Utc::now(),
+        operation: FileOperation::Write,
+        tool_name: "Write".to_string(),
+        file_paths: vec!["/tmp/file.rs".to_string()],
+        success: Some(true),
         edit_details: vec![],
     });
 

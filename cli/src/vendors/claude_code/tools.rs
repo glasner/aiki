@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use crate::events::FileOperation;
-use crate::tools::ToolType;
+use crate::tools::{ToolType, WebOperation};
 
 // ============================================================================
 // Tool Input Structures
@@ -80,6 +80,24 @@ pub struct LsToolInput {
 }
 
 // ============================================================================
+// Web Tool Input Structures
+// ============================================================================
+
+/// Tool input for WebFetch tool
+#[derive(Deserialize, Debug)]
+pub struct WebFetchToolInput {
+    pub url: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+/// Tool input for WebSearch tool
+#[derive(Deserialize, Debug)]
+pub struct WebSearchToolInput {
+    pub query: String,
+}
+
+// ============================================================================
 // Tool Response Structures (PostToolUse)
 // ============================================================================
 
@@ -118,8 +136,11 @@ pub enum ClaudeTool {
     // Shell operations
     Bash(BashToolInput),
 
+    // Web operations
+    WebFetch(WebFetchToolInput),
+    WebSearch(WebSearchToolInput),
+
     // Other tools
-    Web(String),      // WebFetch, WebSearch - store tool name
     Internal(String), // Task, TodoRead, TodoWrite - store tool name
     Mcp(String),      // MCP tools - store tool name
 
@@ -161,7 +182,8 @@ impl ClaudeTool {
             "Bash" => try_parse(ClaudeTool::Bash, input_json),
 
             // Web tools
-            "WebFetch" | "WebSearch" => Some(ClaudeTool::Web(tool_name.to_string())),
+            "WebFetch" => try_parse(ClaudeTool::WebFetch, input_json),
+            "WebSearch" => try_parse(ClaudeTool::WebSearch, input_json),
 
             // Internal tools
             "Task" | "TodoRead" | "TodoWrite" => Some(ClaudeTool::Internal(tool_name.to_string())),
@@ -184,7 +206,7 @@ impl ClaudeTool {
             | ClaudeTool::Grep(_)
             | ClaudeTool::LS(_) => ToolType::File,
             ClaudeTool::Bash(_) => ToolType::Shell,
-            ClaudeTool::Web(_) => ToolType::Web,
+            ClaudeTool::WebFetch(_) | ClaudeTool::WebSearch(_) => ToolType::Web,
             ClaudeTool::Internal(_) => ToolType::Internal,
             ClaudeTool::Mcp(_) => ToolType::Mcp,
             ClaudeTool::Unknown(_) => ToolType::Internal, // Treat as internal to skip silently
@@ -193,19 +215,40 @@ impl ClaudeTool {
 
     /// Get the FileOperation for file tools
     ///
-    /// # Panics
-    /// Panics if called on non-file tools (Bash, Web, Internal, Mcp, Unknown).
-    /// This indicates a programming error - check tool_type() first.
-    pub fn file_operation(&self) -> FileOperation {
+    /// Returns None if called on non-file tools.
+    pub fn file_operation(&self) -> Option<FileOperation> {
         match self {
             ClaudeTool::Edit(_)
             | ClaudeTool::Write(_)
             | ClaudeTool::NotebookEdit(_)
-            | ClaudeTool::MultiEdit(_) => FileOperation::Write,
+            | ClaudeTool::MultiEdit(_) => Some(FileOperation::Write),
             ClaudeTool::Read(_) | ClaudeTool::Glob(_) | ClaudeTool::Grep(_) | ClaudeTool::LS(_) => {
-                FileOperation::Read
+                Some(FileOperation::Read)
             }
-            _ => panic!("file_operation() called on non-file tool: {:?}", self),
+            _ => {
+                eprintln!(
+                    "[aiki] Warning: file_operation() called on non-file tool: {:?}",
+                    self
+                );
+                None
+            }
+        }
+    }
+
+    /// Get the WebOperation for web tools
+    ///
+    /// Returns None if called on non-web tools.
+    pub fn web_operation(&self) -> Option<WebOperation> {
+        match self {
+            ClaudeTool::WebFetch(_) => Some(WebOperation::Fetch),
+            ClaudeTool::WebSearch(_) => Some(WebOperation::Search),
+            _ => {
+                eprintln!(
+                    "[aiki] Warning: web_operation() called on non-web tool: {:?}",
+                    self
+                );
+                None
+            }
         }
     }
 }

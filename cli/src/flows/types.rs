@@ -126,17 +126,6 @@ pub struct Flow {
     pub file_completed: Vec<FlowStatement>,
 
     // ========================================================================
-    // File Change Events (deprecated - use file.* instead)
-    // ========================================================================
-    /// DEPRECATED: Use file.permission_asked with operation: write
-    #[serde(rename = "change.permission_asked", default)]
-    pub change_permission_asked: Vec<FlowStatement>,
-
-    /// DEPRECATED: Use file.completed with operation: write
-    #[serde(rename = "change.completed", default)]
-    pub change_completed: Vec<FlowStatement>,
-
-    // ========================================================================
     // Shell Command Events
     // ========================================================================
     /// shell.permission_asked event handler (agent is about to execute a shell command)
@@ -147,6 +136,18 @@ pub struct Flow {
     /// shell.completed event handler (shell command completed)
     #[serde(rename = "shell.completed", default)]
     pub shell_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Web Access Events
+    // ========================================================================
+    /// web.permission_asked event handler (agent is about to make a web request)
+    /// Operations: fetch, search
+    #[serde(rename = "web.permission_asked", default)]
+    pub web_permission_asked: Vec<FlowStatement>,
+
+    /// web.completed event handler (web request completed)
+    #[serde(rename = "web.completed", default)]
+    pub web_completed: Vec<FlowStatement>,
 
     // ========================================================================
     // MCP Tool Events

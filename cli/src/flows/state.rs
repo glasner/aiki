@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiChangeCompletedPayload, AikiEvent};
+        use crate::events::{AikiEvent, AikiFileCompletedPayload, FileOperation};
         use crate::provenance::AgentType;
         use crate::session::AikiSession;
 
@@ -208,22 +208,24 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+        let event = AikiEvent::FileCompleted(AikiFileCompletedPayload {
             session,
-            tool_name: "Edit".to_string(),
-            file_paths: vec!["/test/file.rs".to_string()],
             cwd: std::path::PathBuf::from("/test"),
             timestamp: chrono::Utc::now(),
+            operation: FileOperation::Write,
+            tool_name: "Edit".to_string(),
+            file_paths: vec!["/test/file.rs".to_string()],
+            success: Some(true),
             edit_details: vec![],
         });
         let ctx = AikiState::new(event);
 
         // Verify we can access event fields through the enum
         match &ctx.event {
-            AikiEvent::ChangeCompleted(e) => {
+            AikiEvent::FileCompleted(e) => {
                 assert_eq!(e.file_paths, vec!["/test/file.rs".to_string()]);
             }
-            _ => panic!("Expected PostFileChange event"),
+            _ => panic!("Expected FileCompleted event"),
         }
         assert_eq!(ctx.cwd(), std::path::Path::new("/test"));
     }

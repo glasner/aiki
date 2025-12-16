@@ -1,25 +1,18 @@
-# Hooks-to-Events Phases 1–2 Review
+# Unified Event Model Review
 
 ## Findings
 
+1. **`file.permission_asked` cannot gate operations**  
+   `handle_file_permission_asked` ignores the `FlowEngine` result and always returns `Decision::Allow` (`cli/src/events/file_permission_asked.rs:35-66`), so policies described in the plan (ops/current/plan.md:288-297) can never block writes/deletes.
 
+2. **`session.resumed` event never emitted**  
+   Vendors only emit `session.started`; neither Claude nor Cursor ever construct `AikiEvent::SessionResumed`, leaving flows blind to resumed sessions despite the plan’s event catalog (ops/current/plan.md:22-27).
 
-3. **~~Claude's `shell.done` always reports success~~** FIXED
-   - ~~`build_shell_done_event` hard-codes `exit_code = 0` and never attempts to distinguish stdout versus stderr (`cli/src/vendors/claude_code.rs:309-332`).~~
-   - Now parses `tool_response` from PostToolUse payload using `BashToolResponse` struct to extract actual `exitCode`, `stdout`, and `stderr` from Claude Code's Bash tool response.
+3. **MCP payloads lack `server` metadata**  
+   `AikiMcpPermissionAskedPayload` / `AikiMcpCompletedPayload` expose only `tool_name`, forcing flows to parse server names from strings, contrary to the payload schema in the plan (ops/current/plan.md:145-154).
 
-4. **Inconsistent error logging in Claude Code vendor**
-   - `build_change_done_event` uses `eprintln!` for warnings (`cli/src/vendors/claude_code.rs:279, 284`) while all other warning paths in the same file use `debug_log`.
-   - This inconsistency means these warnings always print to stderr regardless of debug mode, potentially confusing users with internal implementation details.
+4. **Unknown Claude tools silently mapped to MCP**  
+   `ClaudeTool::parse` routes any unrecognized `tool_name` to `ClaudeTool::Mcp` without warning (`cli/src/vendors/claude_code/tools.rs:168-213`), conflicting with the plan’s requirement to warn and skip so new native tools don’t hide (ops/current/plan.md:159-211).
 
-5. 
-
-6. **Duplicate `ToolType` enum definitions**
-   - Both vendors define their own `ToolType` enum (`cli/src/vendors/claude_code.rs:107-118`, `cli/src/vendors/cursor.rs:77-84`).
-   - While the variants differ slightly (Claude has `Shell` and `ReadOnly`, Cursor only has `FileChange` and `Mcp`), this duplication could lead to drift. Consider extracting common tool classification logic if the lists grow.
-
-7. **Magic strings for tool name classification**
-   - Tool names are matched via inline string literals (`cli/src/vendors/claude_code.rs:122-133`, `cli/src/vendors/cursor.rs:91-95`).
-   - No constants or static sets are defined, making it harder to audit which tools trigger which events across the codebase.
-
----
+5. **Benchmark still reports deprecated `change.*` events**  
+   `cli/src/commands/benchmark.rs` continues to record and print `change.permission_asked` / `change.done` timings (`cli/src/commands/benchmark.rs:45-66`, `cli/src/commands/benchmark.rs:1019-1035`), so the new `file.*` events aren’t measured during performance regressions (ops/current/plan.md:262-269).

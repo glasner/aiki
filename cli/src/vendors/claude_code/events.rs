@@ -8,6 +8,7 @@ use crate::events::{
     AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
     AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
     AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
+    AikiWebCompletedPayload, AikiWebPermissionAskedPayload,
 };
 use crate::tools::ToolType;
 
@@ -123,11 +124,7 @@ fn build_permission_asked_event_for_tool_type(payload: ClaudePreToolUsePayload) 
         ToolType::File => build_file_permission_asked_event(payload, tool),
         ToolType::Shell => build_shell_permission_asked_event(payload, tool),
         ToolType::Mcp => build_mcp_permission_asked_event(payload),
-        ToolType::Web => {
-            // Phase 3: Will emit web.permission_asked events
-            debug_log(|| format!("PreToolUse: Web tool {} - Phase 3", payload.tool_name));
-            AikiEvent::Unsupported
-        }
+        ToolType::Web => build_web_permission_asked_event(payload, tool),
         ToolType::Internal => AikiEvent::Unsupported,
     }
 }
@@ -140,11 +137,7 @@ fn build_completed_event_for_tool_type(payload: ClaudePostToolUsePayload) -> Aik
         ToolType::File => build_file_completed_event(payload, tool),
         ToolType::Shell => build_shell_completed_event(payload, tool),
         ToolType::Mcp => build_mcp_completed_event(payload),
-        ToolType::Web => {
-            // Phase 3: Will emit web.completed events
-            debug_log(|| format!("PostToolUse: Web tool {} - Phase 3", payload.tool_name));
-            AikiEvent::Unsupported
-        }
+        ToolType::Web => build_web_completed_event(payload, tool),
         ToolType::Internal => AikiEvent::Unsupported,
     }
 }
@@ -179,7 +172,10 @@ fn build_file_permission_asked_event(
         return AikiEvent::Unsupported;
     }
 
-    let operation = tool.file_operation();
+    let Some(operation) = tool.file_operation() else {
+        eprintln!("[aiki] Error: Failed to get file operation");
+        return AikiEvent::Unsupported;
+    };
 
     match operation {
         FileOperation::Write => build_file_write_permission_asked_event(payload, tool),
@@ -274,7 +270,10 @@ fn build_file_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeToo
         return AikiEvent::Unsupported;
     }
 
-    let operation = tool.file_operation();
+    let Some(operation) = tool.file_operation() else {
+        eprintln!("[aiki] Error: Failed to get file operation");
+        return AikiEvent::Unsupported;
+    };
 
     match operation {
         FileOperation::Write => build_file_write_completed_event(payload, tool),
@@ -440,14 +439,22 @@ fn build_shell_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTo
         }
     };
 
-    let (exit_code, stdout, stderr) = payload
+    // Claude Code provides exit_code, stdout, stderr in tool_response
+    let (success, exit_code, stdout, stderr) = payload
         .tool_response
         .as_ref()
         .and_then(|v| serde_json::from_value::<BashToolResponse>(v.clone()).ok())
-        .map(|resp| (resp.exit_code, resp.stdout, resp.stderr))
+        .map(|resp| {
+            (
+                resp.exit_code == 0,
+                Some(resp.exit_code),
+                Some(resp.stdout),
+                Some(resp.stderr),
+            )
+        })
         .unwrap_or_else(|| {
-            debug_log(|| "Warning: PostToolUse Bash missing tool_response, assuming exit_code=0");
-            (0, String::new(), String::new())
+            debug_log(|| "Warning: PostToolUse Bash missing tool_response, assuming success");
+            (true, None, None, None)
         });
 
     AikiEvent::ShellCompleted(AikiShellCompletedPayload {
@@ -455,6 +462,7 @@ fn build_shell_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTo
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         command,
+        success,
         exit_code,
         stdout,
         stderr,
@@ -489,6 +497,77 @@ fn build_mcp_completed_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
         tool_name: payload.tool_name,
         success: true,
         result,
+    })
+}
+
+/// Build web.permission_asked event (WebFetch, WebSearch)
+fn build_web_permission_asked_event(
+    payload: ClaudePreToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
+    let Some(operation) = tool.web_operation() else {
+        eprintln!("[aiki] Error: Failed to get web operation");
+        return AikiEvent::Unsupported;
+    };
+
+    let (url, query) = match tool {
+        ClaudeTool::WebFetch(input) => (Some(input.url), None),
+        ClaudeTool::WebSearch(input) => (None, Some(input.query)),
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Failed to parse web tool input for '{}'",
+                name
+            );
+            (None, None)
+        }
+        _ => {
+            eprintln!("[aiki] Warning: Unexpected tool type in web.permission_asked");
+            (None, None)
+        }
+    };
+
+    AikiEvent::WebPermissionAsked(AikiWebPermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        operation,
+        url,
+        query,
+    })
+}
+
+/// Build web.completed event (WebFetch, WebSearch)
+fn build_web_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+    let Some(operation) = tool.web_operation() else {
+        eprintln!("[aiki] Error: Failed to get web operation");
+        return AikiEvent::Unsupported;
+    };
+
+    let (url, query) = match tool {
+        ClaudeTool::WebFetch(input) => (Some(input.url), None),
+        ClaudeTool::WebSearch(input) => (None, Some(input.query)),
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Failed to parse web tool input for '{}'",
+                name
+            );
+            (None, None)
+        }
+        _ => {
+            eprintln!("[aiki] Warning: Unexpected tool type in web.completed");
+            (None, None)
+        }
+    };
+
+    // Web operations are always considered successful if we reach PostToolUse
+    AikiEvent::WebCompleted(AikiWebCompletedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        operation,
+        url,
+        query,
+        success: Some(true),
     })
 }
 

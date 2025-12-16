@@ -49,6 +49,28 @@ impl std::fmt::Display for FileOperation {
     }
 }
 
+/// Web operation type
+///
+/// Represents the type of web operation being performed.
+/// Used by flows to gate operations differently (e.g., allow search, block fetch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebOperation {
+    /// Fetch a specific URL
+    Fetch,
+    /// Web search query
+    Search,
+}
+
+impl std::fmt::Display for WebOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WebOperation::Fetch => write!(f, "fetch"),
+            WebOperation::Search => write!(f, "search"),
+        }
+    }
+}
+
 // ============================================================================
 // Shell Command Parsing
 // ============================================================================

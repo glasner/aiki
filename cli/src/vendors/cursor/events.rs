@@ -292,11 +292,12 @@ fn build_shell_completed_event(payload: CursorAfterShellExecutionPayload) -> Aik
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         command: payload.command,
-        // Cursor doesn't provide exit code - assume success (0)
-        // TODO: Parse exit code from output if available
-        exit_code: 0,
-        stdout: payload.output,
-        stderr: String::new(), // Cursor combines stdout/stderr in output field
+        // Cursor doesn't provide exit code - assume success
+        success: true,
+        exit_code: None,
+        // Cursor combines stdout/stderr in output field
+        stdout: Some(payload.output),
+        stderr: None,
     })
 }
 
