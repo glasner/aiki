@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::cache::debug_log;
+use crate::error::Result;
 use crate::events::FileOperation;
 use crate::events::{
     AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
@@ -99,7 +100,7 @@ struct ClaudeStopPayload {
 // ============================================================================
 
 /// Build AikiEvent from Claude Code event read from stdin
-pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
+pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     // Parse event - serde discriminates by hook_event_name
     let claude_event: ClaudeEvent = super::super::read_stdin_json()?;
 

@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::cache::debug_log;
+use crate::error::Result;
 use crate::events::{
     AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
     AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
@@ -217,7 +218,7 @@ fn get_cwd(workspace_roots: &[String]) -> PathBuf {
 // ============================================================================
 
 /// Build AikiEvent from Cursor event read from stdin
-pub fn build_aiki_event_from_stdin() -> anyhow::Result<AikiEvent> {
+pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     // Parse event - serde discriminates by eventName
     let cursor_event: CursorEvent = super::super::read_stdin_json()?;
 
