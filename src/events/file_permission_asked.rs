@@ -2,36 +2,12 @@ use crate::cache::debug_log;
 use crate::error::Result;
 use crate::flows::{AikiState, FlowEngine};
 use crate::session::AikiSession;
+use crate::tools::FileOperation;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::result::{Decision, HookResult};
-
-/// File operation type
-///
-/// Represents the type of file operation being performed.
-/// Used by flows to gate operations differently (e.g., allow reads, block deletes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FileOperation {
-    /// Read operations: Read, LS, Glob, Grep
-    Read,
-    /// Write operations: Edit, Write, NotebookEdit
-    Write,
-    /// Delete operations: rm, rmdir (parsed from shell commands)
-    Delete,
-}
-
-impl std::fmt::Display for FileOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FileOperation::Read => write!(f, "read"),
-            FileOperation::Write => write!(f, "write"),
-            FileOperation::Delete => write!(f, "delete"),
-        }
-    }
-}
 
 /// file.permission_asked event payload
 ///
@@ -76,7 +52,8 @@ pub fn handle_file_permission_asked(payload: AikiFilePermissionAskedPayload) -> 
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute file.permission_asked statements from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.file_permission_asked, &mut state)?;
+    let _flow_result =
+        FlowEngine::execute_statements(&core_flow.file_permission_asked, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
