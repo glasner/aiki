@@ -201,19 +201,6 @@ struct CursorEdit {
 }
 
 // ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Get working directory from workspace roots
-/// Takes the first workspace root, or current directory as fallback
-fn get_cwd(workspace_roots: &[String]) -> PathBuf {
-    workspace_roots
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-// ============================================================================
 // Event Building
 // ============================================================================
 
@@ -388,4 +375,17 @@ fn build_response_received_event(payload: CursorStopPayload) -> AikiEvent {
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
     })
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Get working directory from workspace roots
+/// Takes the first workspace root, or current directory as fallback
+fn get_cwd(workspace_roots: &[String]) -> PathBuf {
+    workspace_roots
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }

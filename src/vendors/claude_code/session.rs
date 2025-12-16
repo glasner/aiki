@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::provenance::{AgentType, DetectionMethod};
+use crate::provenance::AgentType;
 use crate::session::AikiSession;
 
 /// Create a session for Claude Code events
@@ -12,12 +12,7 @@ pub fn create_session(session_id: &str, cwd: &str) -> AikiSession {
     let repo_path = Path::new(cwd);
     let agent_version = get_agent_version(session_id, repo_path);
 
-    AikiSession::new(
-        AgentType::Claude,
-        session_id,
-        agent_version,
-        DetectionMethod::Hook,
-    )
+    AikiSession::for_hook(AgentType::Claude, session_id, agent_version)
 }
 
 /// Get agent version from cache or detect it

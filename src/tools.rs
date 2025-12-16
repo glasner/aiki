@@ -48,3 +48,134 @@ impl std::fmt::Display for FileOperation {
         }
     }
 }
+
+// ============================================================================
+// Shell Command Parsing
+// ============================================================================
+
+/// Parse a shell command to detect file operations
+///
+/// Returns `Some(FileOperation::Delete)` if the command is a file deletion (rm/rmdir),
+/// otherwise returns `None` for regular shell commands.
+///
+/// When a file operation is detected, also returns the paths being operated on.
+///
+/// # Examples
+/// ```
+/// use aiki::tools::{parse_file_operation_from_shell_command, FileOperation};
+///
+/// let (op, paths) = parse_file_operation_from_shell_command("rm file.txt");
+/// assert_eq!(op, Some(FileOperation::Delete));
+/// assert_eq!(paths, vec!["file.txt"]);
+///
+/// let (op, paths) = parse_file_operation_from_shell_command("git status");
+/// assert_eq!(op, None);
+/// assert_eq!(paths, Vec::<String>::new());
+/// ```
+pub fn parse_file_operation_from_shell_command(
+    command: &str,
+) -> (Option<FileOperation>, Vec<String>) {
+    let parts: Vec<&str> = command.trim().split_whitespace().collect();
+
+    match parts.first() {
+        Some(&"rm") | Some(&"rmdir") => {
+            // Extract file paths from command (skip options starting with -)
+            let paths: Vec<String> = parts[1..]
+                .iter()
+                .filter(|arg| !arg.starts_with('-'))
+                .map(|s| s.to_string())
+                .collect();
+
+            if paths.is_empty() {
+                // rm with no arguments - treat as regular shell command
+                (None, Vec::new())
+            } else {
+                (Some(FileOperation::Delete), paths)
+            }
+        }
+        _ => (None, Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rm_single_file() {
+        let (op, paths) = parse_file_operation_from_shell_command("rm file.txt");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["file.txt"]);
+    }
+
+    #[test]
+    fn test_rm_multiple_files() {
+        let (op, paths) =
+            parse_file_operation_from_shell_command("rm file1.txt file2.txt file3.txt");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["file1.txt", "file2.txt", "file3.txt"]);
+    }
+
+    #[test]
+    fn test_rm_with_flags() {
+        let (op, paths) = parse_file_operation_from_shell_command("rm -rf directory/");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["directory/"]);
+    }
+
+    #[test]
+    fn test_rm_with_multiple_flags_and_files() {
+        let (op, paths) = parse_file_operation_from_shell_command("rm -r -f file1.txt file2.txt");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["file1.txt", "file2.txt"]);
+    }
+
+    #[test]
+    fn test_rmdir() {
+        let (op, paths) = parse_file_operation_from_shell_command("rmdir old_directory");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["old_directory"]);
+    }
+
+    #[test]
+    fn test_rm_no_args() {
+        let (op, paths) = parse_file_operation_from_shell_command("rm");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_rm_only_flags() {
+        let (op, paths) = parse_file_operation_from_shell_command("rm -rf");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_git_command() {
+        let (op, paths) = parse_file_operation_from_shell_command("git status");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_ls_command() {
+        let (op, paths) = parse_file_operation_from_shell_command("ls -la");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_empty_command() {
+        let (op, paths) = parse_file_operation_from_shell_command("");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_whitespace_handling() {
+        let (op, paths) = parse_file_operation_from_shell_command("  rm   -rf   file.txt  ");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["file.txt"]);
+    }
+}

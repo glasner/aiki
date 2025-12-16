@@ -1,8 +1,12 @@
 use crate::cache::{debug_log, DEBUG_ENABLED};
 use crate::error::Result;
 use crate::events::result::HookResult;
-use crate::events::{self, AikiEvent, AikiSessionEndedPayload};
+use crate::events::{
+    self, AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload,
+    AikiSessionEndedPayload,
+};
 use crate::session::AikiSession;
+use crate::tools::{parse_file_operation_from_shell_command, FileOperation};
 use std::path::PathBuf;
 
 /// Dispatch an event to the appropriate handler
@@ -96,9 +100,23 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
         AikiEvent::ChangePermissionAsked(e) => events::handle_change_permission_asked(e),
         AikiEvent::ChangeCompleted(e) => events::handle_change_completed(e),
 
-        // Shell commands
-        AikiEvent::ShellPermissionAsked(e) => events::handle_shell_permission_asked(e),
-        AikiEvent::ShellCompleted(e) => events::handle_shell_completed(e),
+        // Shell commands - transform rm/rmdir to file.* events
+        AikiEvent::ShellPermissionAsked(e) => {
+            let (file_op, paths) = parse_file_operation_from_shell_command(&e.command);
+            if let Some(FileOperation::Delete) = file_op {
+                return transform_shell_to_file_permission_asked(e, paths);
+            }
+            // Regular shell command (or future: mv, cp, etc.)
+            events::handle_shell_permission_asked(e)
+        }
+        AikiEvent::ShellCompleted(e) => {
+            let (file_op, paths) = parse_file_operation_from_shell_command(&e.command);
+            if let Some(FileOperation::Delete) = file_op {
+                return transform_shell_to_file_completed(e, paths);
+            }
+            // Regular shell command (or future: mv, cp, etc.)
+            events::handle_shell_completed(e)
+        }
 
         // MCP tools
         AikiEvent::McpPermissionAsked(e) => events::handle_mcp_permission_asked(e),
@@ -134,4 +152,60 @@ fn trigger_session_ended(session: AikiSession, cwd: PathBuf) -> Result<HookResul
     };
 
     dispatch(AikiEvent::SessionEnded(session_ended_payload))
+}
+
+/// Transform shell.permission_asked to file.permission_asked for file operations
+///
+/// Called when shell command is detected as a file operation (currently rm/rmdir).
+fn transform_shell_to_file_permission_asked(
+    shell_event: crate::events::AikiShellPermissionAskedPayload,
+    paths: Vec<String>,
+) -> Result<HookResult> {
+    debug_log(|| {
+        format!(
+            "Transforming shell.permission_asked (rm/rmdir) to file.permission_asked: {:?}",
+            paths
+        )
+    });
+
+    let file_event = AikiFilePermissionAskedPayload {
+        session: shell_event.session,
+        cwd: shell_event.cwd,
+        timestamp: shell_event.timestamp,
+        operation: FileOperation::Delete,
+        path: paths.first().cloned(), // Use first path as primary
+        pattern: None,
+    };
+
+    events::handle_file_permission_asked(file_event)
+}
+
+/// Transform shell.completed to file.completed for file operations
+///
+/// Called when shell command is detected as a file operation (currently rm/rmdir).
+fn transform_shell_to_file_completed(
+    shell_event: crate::events::AikiShellCompletedPayload,
+    paths: Vec<String>,
+) -> Result<HookResult> {
+    debug_log(|| {
+        format!(
+            "Transforming shell.completed (rm/rmdir) to file.completed: {:?}",
+            paths
+        )
+    });
+
+    let success = shell_event.exit_code == 0;
+
+    let file_event = AikiFileCompletedPayload {
+        session: shell_event.session,
+        cwd: shell_event.cwd,
+        timestamp: shell_event.timestamp,
+        operation: FileOperation::Delete,
+        tool_name: "Bash".to_string(),
+        file_paths: paths,
+        success: Some(success),
+        edit_details: Vec::new(), // No edit details for deletions
+    };
+
+    events::handle_file_completed(file_event)
 }
