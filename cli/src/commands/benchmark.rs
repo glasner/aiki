@@ -49,7 +49,7 @@ enum EventType {
     ChangeDone,
     ResponseReceived,          // WITHOUT autoreply (includes session.ended)
     ResponseReceivedAutoreply, // WITH autoreply (response.received only, no session.ended)
-    GitPrepareCommitMessage,
+    CommitMessageStarted,
 }
 
 impl EventType {
@@ -61,7 +61,7 @@ impl EventType {
             EventType::ChangeDone => "change.done",
             EventType::ResponseReceived => "response.received",
             EventType::ResponseReceivedAutoreply => "response.received+autoreply",
-            EventType::GitPrepareCommitMessage => "git.prepare_commit_message",
+            EventType::CommitMessageStarted => "commit.message_started",
         }
     }
 }
@@ -257,9 +257,9 @@ pub fn run(_flow_name: String, num_edits: usize) -> Result<()> {
         let duration = simulate_prepare_commit_msg(&repo_path, &aiki_exe)?;
         results
             .shared
-            .add_sample(EventType::GitPrepareCommitMessage, duration);
+            .add_sample(EventType::CommitMessageStarted, duration);
     }
-    if let Some(stats) = results.shared.get_stats(EventType::GitPrepareCommitMessage) {
+    if let Some(stats) = results.shared.get_stats(EventType::CommitMessageStarted) {
         println!(
             "  PrepareCommitMessage: {:.0} / {:.0} / {:.0} ms (p50/p95/max)",
             stats.p50_ms(),
@@ -837,11 +837,11 @@ fn print_results(results: &BenchmarkResults, _num_edits: usize) {
     }
 
     // PrepareCommitMessage (shared)
-    let pcm_stats = results.shared.get_stats(EventType::GitPrepareCommitMessage);
+    let pcm_stats = results.shared.get_stats(EventType::CommitMessageStarted);
     let pcm_str = format_stats(pcm_stats);
     println!(
         "| {:<21} | {:>19} | {:>19} |",
-        "git.prepare_commit_message", pcm_str, "(same)"
+        "commit.message_started", pcm_str, "(same)"
     );
 
     println!("+-----------------------+---------------------+---------------------+");
@@ -935,9 +935,9 @@ fn save_results(
     }
 
     let mut shared_map: HashMap<String, EventMetrics> = HashMap::new();
-    if let Some(stats) = results.shared.get_stats(EventType::GitPrepareCommitMessage) {
+    if let Some(stats) = results.shared.get_stats(EventType::CommitMessageStarted) {
         shared_map.insert(
-            "git.prepare_commit_message".to_string(),
+            "commit.message_started".to_string(),
             EventMetrics {
                 p50: stats.p50_ms(),
                 p95: stats.p95_ms(),

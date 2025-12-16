@@ -70,7 +70,7 @@ fn test_parse_nested_statements() {
 name: test-flow
 version: "1"
 
-change.done:
+change.completed:
   - if: "$success"
     then:
       - switch: "$file_type"
@@ -83,7 +83,7 @@ change.done:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.change_done[0] {
+    match &flow.change_completed[0] {
         FlowStatement::If(if_stmt) => {
             assert_eq!(if_stmt.then.len(), 1);
             match &if_stmt.then[0] {

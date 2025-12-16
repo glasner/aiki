@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::result::{Decision, Failure, HookResult};
-use crate::events::{AikiEvent, AikiGitPrepareCommitMessagePayload};
+use crate::events::{AikiCommitMessageStartedPayload, AikiEvent};
 use crate::provenance::AgentType;
 use chrono::Utc;
 use std::env;
@@ -37,7 +37,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
     // Get commit message file path from environment (set by Git hook)
     let commit_msg_file = env::var("AIKI_COMMIT_MSG_FILE").ok().map(PathBuf::from);
 
-    let event = AikiGitPrepareCommitMessagePayload {
+    let event = AikiCommitMessageStartedPayload {
         agent_type: AgentType::Claude, // Default agent for git hooks
         cwd,
         timestamp: Utc::now(),
@@ -45,7 +45,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
     };
 
     // Get generic response from handler
-    let response = event_bus::dispatch(AikiEvent::GitPrepareCommitMessage(event))?;
+    let response = event_bus::dispatch(AikiEvent::CommitMessageStarted(event))?;
 
     // Detect editor context and translate
     let editor = detect_editor_context();

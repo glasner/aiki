@@ -8,8 +8,10 @@ use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiChangeDonePayload, AikiChangePermissionAskedPayload,
-    AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
+    AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
+    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
+    AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
+    FileOperation,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -19,9 +21,9 @@ use crate::session::AikiSession;
 /// For SessionStart events, detects version and caches it in session file.
 /// For other events, reads cached version from session file (fast).
 /// Falls back to detection if cache read fails.
-fn get_agent_version(payload: &ClaudeCodePayload, repo_path: &Path) -> Option<String> {
+fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
     // Compute session file path directly without creating full session object
-    let session_uuid = AikiSession::generate_uuid(AgentType::Claude, &payload.session_id);
+    let session_uuid = AikiSession::generate_uuid(AgentType::Claude, session_id);
     let session_file_path = repo_path.join(".aiki/sessions").join(&session_uuid);
 
     // Try to read cached version from session file
@@ -48,75 +50,188 @@ fn read_agent_version_from_file(path: &Path) -> Option<String> {
 /// Create a session for Claude Code events
 ///
 /// This helper ensures consistent session creation across all Claude Code event builders.
-/// Takes the full payload to allow easy extension if we need additional fields in the future.
 /// For SessionStart, detects version (~135ms) and caches in session file.
 /// For other events, reads cached version from file (~0ms).
-fn create_session(payload: &ClaudeCodePayload) -> AikiSession {
-    // Get repo path from cwd
-    let repo_path = Path::new(&payload.cwd);
-    let agent_version = get_agent_version(payload, repo_path);
+fn create_session(session_id: &str, cwd: &str) -> AikiSession {
+    let repo_path = Path::new(cwd);
+    let agent_version = get_agent_version(session_id, repo_path);
 
     AikiSession::new(
         AgentType::Claude,
-        &payload.session_id,
+        session_id,
         agent_version,
         DetectionMethod::Hook,
     )
 }
 
-/// Claude Code hook payload structure
-///
-/// This matches the JSON that Claude Code sends to various hooks.
-/// See: https://docs.claude.com/claude-code/hooks
+// ============================================================================
+// Hook Payload Structures (matches Claude Code API)
+// See: https://code.claude.com/docs/en/hooks
+// ============================================================================
+
+/// Claude Code hook event - discriminated by hook_event_name
 #[derive(Deserialize, Debug)]
-struct ClaudeCodePayload {
+#[serde(tag = "hook_event_name")]
+enum ClaudeEvent {
+    #[serde(rename = "SessionStart")]
+    SessionStart {
+        #[serde(flatten)]
+        payload: ClaudeSessionStartPayload,
+    },
+    #[serde(rename = "UserPromptSubmit")]
+    UserPromptSubmit {
+        #[serde(flatten)]
+        payload: ClaudeUserPromptSubmitPayload,
+    },
+    #[serde(rename = "PreToolUse")]
+    PreToolUse {
+        #[serde(flatten)]
+        payload: ClaudePreToolUsePayload,
+    },
+    #[serde(rename = "PostToolUse")]
+    PostToolUse {
+        #[serde(flatten)]
+        payload: ClaudePostToolUsePayload,
+    },
+    #[serde(rename = "Stop")]
+    Stop {
+        #[serde(flatten)]
+        payload: ClaudeStopPayload,
+    },
+}
+
+/// SessionStart hook payload
+#[derive(Deserialize, Debug)]
+struct ClaudeSessionStartPayload {
     session_id: String,
-    transcript_path: String,
     cwd: String,
-    hook_event_name: String,
-    #[serde(default)]
-    tool_name: String,
-    #[serde(default)]
-    tool_input: Option<ToolInput>,
-    #[serde(default)]
-    tool_output: String,
-    /// User prompt text (for UserPromptSubmit hook)
+}
+
+/// UserPromptSubmit hook payload
+#[derive(Deserialize, Debug)]
+struct ClaudeUserPromptSubmitPayload {
+    session_id: String,
+    cwd: String,
     #[serde(default)]
     prompt: String,
 }
 
+/// PreToolUse hook payload
 #[derive(Deserialize, Debug)]
-struct ToolInput {
+struct ClaudePreToolUsePayload {
+    session_id: String,
+    cwd: String,
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Option<serde_json::Value>,
+}
+
+/// PostToolUse hook payload
+#[derive(Deserialize, Debug)]
+struct ClaudePostToolUsePayload {
+    session_id: String,
+    cwd: String,
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Option<serde_json::Value>,
+    #[serde(default)]
+    tool_response: Option<serde_json::Value>,
+}
+
+/// Stop hook payload
+#[derive(Deserialize, Debug)]
+struct ClaudeStopPayload {
+    session_id: String,
+    cwd: String,
+}
+
+// ============================================================================
+// Tool Input Structures
+// ============================================================================
+
+/// Tool input for file operations (Edit, Write, NotebookEdit)
+/// Unified struct that handles all file-modifying tools.
+/// See: https://code.claude.com/docs/en/hooks#posttooluse-input
+#[derive(Deserialize, Debug)]
+struct FileToolInput {
     file_path: String,
+    /// Old string to replace (Edit tool)
     #[serde(default)]
     old_string: String,
+    /// New string to insert (Edit tool)
     #[serde(default)]
     new_string: String,
+    /// File content (Write tool)
+    #[serde(default)]
+    content: String,
+}
+
+/// Tool input for Bash tool
+#[derive(Deserialize, Debug)]
+struct BashToolInput {
+    #[serde(default)]
+    command: String,
+}
+
+// ============================================================================
+// Tool Response Structures (PostToolUse)
+// ============================================================================
+
+/// Response structure for Bash tool - includes exit code!
+/// This is critical for flows that need to react to command failures.
+/// See: https://code.claude.com/docs/en/hooks#posttooluse-input
+#[derive(Deserialize, Debug)]
+struct BashToolResponse {
+    #[serde(default)]
+    stdout: String,
+    #[serde(default)]
+    stderr: String,
+    #[serde(rename = "exitCode", default)]
+    exit_code: i32,
+}
+
+/// Tool type classification for event routing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolType {
+    /// File-modifying tools (Edit, Write, NotebookEdit)
+    FileChange,
+    /// Shell command execution (Bash)
+    Shell,
+    /// Read-only tools (Read, Glob, Grep) - no event needed
+    ReadOnly,
+    /// MCP server tools (anything else)
+    Mcp,
+}
+
+/// Classify a tool by name into its type
+fn classify_tool(tool_name: &str) -> ToolType {
+    match tool_name {
+        // File-modifying tools
+        "Edit" | "Write" | "NotebookEdit" => ToolType::FileChange,
+        // Shell command execution
+        "Bash" => ToolType::Shell,
+        // Read-only tools - no event needed
+        "Read" | "Glob" | "Grep" | "LS" | "Task" | "TodoRead" | "WebFetch" | "WebSearch" => {
+            ToolType::ReadOnly
+        }
+        // Everything else is treated as MCP tool
+        _ => ToolType::Mcp,
+    }
 }
 
 /// Handle a Claude Code event
 ///
 /// This is the vendor-specific handler for Claude Code hooks.
-/// Dispatches to event-specific handlers based on event name.
+/// Parses the payload once and dispatches to event-specific handlers.
 ///
 /// # Arguments
-/// * `claude_event_name` - Vendor event name from CLI flag (e.g., "SessionStart", "PostToolUse")
+/// * `claude_event_name` - Vendor event name from CLI flag (used for output formatting)
 pub fn handle(claude_event_name: &str) -> Result<()> {
-    // Read Claude Code-specific JSON from stdin
-    let payload: ClaudeCodePayload = super::read_stdin_json()?;
+    // Parse event - serde discriminates by hook_event_name
+    let claude_event: ClaudeEvent = super::read_stdin_json()?;
 
-    // Validate event name matches JSON (optional but good practice)
-    if payload.hook_event_name != claude_event_name {
-        debug_log(|| {
-            format!(
-                "Warning: Event name mismatch. CLI: {}, JSON: {}",
-                claude_event_name, payload.hook_event_name
-            )
-        });
-    }
-
-    // Build event from payload
-    let aiki_event = build_aiki_event(payload, claude_event_name);
+    // Build Aiki event from Claude event
+    let aiki_event = build_aiki_event(claude_event);
 
     // Dispatch event and exit with command output
     let aiki_response = event_bus::dispatch(aiki_event)?;
@@ -125,95 +240,218 @@ pub fn handle(claude_event_name: &str) -> Result<()> {
     hook_output.print_and_exit();
 }
 
-/// Build AikiEvent from Claude Code payload
-fn build_aiki_event(payload: ClaudeCodePayload, claude_event_name: &str) -> AikiEvent {
-    match claude_event_name {
-        "SessionStart" => build_session_started_event(payload),
-        "UserPromptSubmit" => build_prompt_submitted_event(payload),
-        "PreToolUse" => build_change_permission_asked_event(payload),
-        "PostToolUse" => build_change_done_event(payload),
-        "Stop" => build_response_received_event(payload),
-        _ => AikiEvent::Unsupported,
+/// Build AikiEvent from Claude Code event
+fn build_aiki_event(event: ClaudeEvent) -> AikiEvent {
+    match event {
+        ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
+        ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
+        ClaudeEvent::PreToolUse { payload } => build_pre_tool_event(payload),
+        ClaudeEvent::PostToolUse { payload } => build_post_tool_event(payload),
+        ClaudeEvent::Stop { payload } => build_response_received_event(payload),
     }
 }
 
-/// Build session.started event from SessionStart payload
-fn build_session_started_event(payload: ClaudeCodePayload) -> AikiEvent {
+/// Build appropriate pre-tool event based on tool type
+fn build_pre_tool_event(payload: ClaudePreToolUsePayload) -> AikiEvent {
+    let tool_type = classify_tool(&payload.tool_name);
+
+    match tool_type {
+        ToolType::FileChange => build_file_permission_asked_event(payload, FileOperation::Write),
+        ToolType::Shell => build_shell_permission_asked_event(payload),
+        ToolType::Mcp => build_mcp_permission_asked_event(payload),
+        ToolType::ReadOnly => {
+            debug_log(|| format!("PreToolUse: Ignoring read-only tool: {}", payload.tool_name));
+            AikiEvent::Unsupported
+        }
+    }
+}
+
+/// Build appropriate post-tool event based on tool type
+fn build_post_tool_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
+    let tool_type = classify_tool(&payload.tool_name);
+
+    match tool_type {
+        ToolType::FileChange => build_file_completed_event(payload, FileOperation::Write),
+        ToolType::Shell => build_shell_completed_event(payload),
+        ToolType::Mcp => build_mcp_completed_event(payload),
+        ToolType::ReadOnly => {
+            debug_log(|| {
+                format!(
+                    "PostToolUse: Ignoring read-only tool: {}",
+                    payload.tool_name
+                )
+            });
+            AikiEvent::Unsupported
+        }
+    }
+}
+
+/// Build session.started event
+fn build_session_started_event(payload: ClaudeSessionStartPayload) -> AikiEvent {
     AikiEvent::SessionStarted(AikiSessionStartPayload {
-        session: create_session(&payload),
+        session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
     })
 }
 
-/// Build prompt.submitted event from UserPromptSubmit payload
-fn build_prompt_submitted_event(payload: ClaudeCodePayload) -> AikiEvent {
+/// Build prompt.submitted event
+fn build_prompt_submitted_event(payload: ClaudeUserPromptSubmitPayload) -> AikiEvent {
     AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
-        session: create_session(&payload),
+        session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
     })
 }
 
-/// Build change.permission_asked event from PreToolUse payload
-fn build_change_permission_asked_event(payload: ClaudeCodePayload) -> AikiEvent {
-    // Fire change.permission_asked only for file-modifying tools
-    if !is_file_modifying_tool(&payload.tool_name) {
-        debug_log(|| format!("PreToolUse: Ignoring non-file tool: {}", payload.tool_name));
-        return AikiEvent::Unsupported;
-    }
+/// Build file.permission_asked event (file tools only)
+fn build_file_permission_asked_event(
+    payload: ClaudePreToolUsePayload,
+    operation: FileOperation,
+) -> AikiEvent {
+    // Extract file path from tool input
+    let path = payload
+        .tool_input
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<FileToolInput>(v.clone()).ok())
+        .map(|input| input.file_path);
 
-    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
-        session: create_session(&payload),
+    AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        operation,
+        path,
+        pattern: None,
     })
 }
 
-/// Build change.done event from PostToolUse payload
-fn build_change_done_event(payload: ClaudeCodePayload) -> AikiEvent {
-    // Create session first before moving any fields
-    let session = create_session(&payload);
+/// Build shell.permission_asked event (Bash tool)
+fn build_shell_permission_asked_event(payload: ClaudePreToolUsePayload) -> AikiEvent {
+    let command = payload
+        .tool_input
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<BashToolInput>(v.clone()).ok())
+        .map(|input| input.command)
+        .unwrap_or_default();
 
-    // Extract required fields for change.done event
-    let Some(tool_input) = payload.tool_input else {
+    AikiEvent::ShellPermissionAsked(AikiShellPermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        command,
+    })
+}
+
+/// Build mcp.permission_asked event (MCP tools)
+fn build_mcp_permission_asked_event(payload: ClaudePreToolUsePayload) -> AikiEvent {
+    let parameters = payload.tool_input.unwrap_or(serde_json::Value::Null);
+
+    AikiEvent::McpPermissionAsked(AikiMcpPermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        parameters,
+    })
+}
+
+/// Build file.completed event (file tools only)
+fn build_file_completed_event(
+    payload: ClaudePostToolUsePayload,
+    operation: FileOperation,
+) -> AikiEvent {
+    let session = create_session(&payload.session_id, &payload.cwd);
+
+    let Some(tool_input_value) = payload.tool_input else {
         eprintln!("[aiki] Warning: PostToolUse missing tool_input, ignoring event");
         return AikiEvent::Unsupported;
     };
 
-    // Extract edit details from tool_input for user edit detection
-    let edit_details = if !tool_input.old_string.is_empty() || !tool_input.new_string.is_empty() {
+    let Ok(file_input) = serde_json::from_value::<FileToolInput>(tool_input_value) else {
+        eprintln!("[aiki] Warning: PostToolUse invalid file tool_input, ignoring event");
+        return AikiEvent::Unsupported;
+    };
+
+    let edit_details = if !file_input.old_string.is_empty() || !file_input.new_string.is_empty() {
         vec![crate::events::EditDetail::new(
-            tool_input.file_path.clone(),
-            tool_input.old_string.clone(),
-            tool_input.new_string.clone(),
+            file_input.file_path.clone(),
+            file_input.old_string.clone(),
+            file_input.new_string.clone(),
         )]
     } else {
         Vec::new()
     };
 
-    AikiEvent::ChangeDone(AikiChangeDonePayload {
+    AikiEvent::FileCompleted(AikiFileCompletedPayload {
         session,
-        tool_name: payload.tool_name,
-        file_paths: vec![tool_input.file_path],
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        operation,
+        tool_name: payload.tool_name,
+        file_paths: vec![file_input.file_path],
+        success: Some(true), // PostToolUse implies success
         edit_details,
     })
 }
 
-/// Build response.received event from Stop payload
-fn build_response_received_event(payload: ClaudeCodePayload) -> AikiEvent {
-    // Note: Claude Code's Stop hook doesn't include the response text in the payload.
-    // This is intentional - flows use self.* functions to check files/run tests
-    // rather than parsing the response text.
-    AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
-        session: create_session(&payload),
+/// Build shell.completed event (Bash tool)
+fn build_shell_completed_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
+    let command = payload
+        .tool_input
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<BashToolInput>(v.clone()).ok())
+        .map(|input| input.command)
+        .unwrap_or_default();
+
+    let (exit_code, stdout, stderr) = payload
+        .tool_response
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<BashToolResponse>(v.clone()).ok())
+        .map(|resp| (resp.exit_code, resp.stdout, resp.stderr))
+        .unwrap_or_else(|| {
+            debug_log(|| "Warning: PostToolUse Bash missing tool_response, assuming exit_code=0");
+            (0, String::new(), String::new())
+        });
+
+    AikiEvent::ShellCompleted(AikiShellCompletedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        response: String::new(), // Empty - flows check files/run tests via self.* functions
-        modified_files: vec![],  // Could track from PostToolUse events if needed
+        command,
+        exit_code,
+        stdout,
+        stderr,
+    })
+}
+
+/// Build mcp.completed event (MCP tools)
+fn build_mcp_completed_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
+    let result = payload
+        .tool_response
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .filter(|s| !s.is_empty() && s != "null");
+
+    AikiEvent::McpCompleted(AikiMcpCompletedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        success: true,
+        result,
+    })
+}
+
+/// Build response.received event
+fn build_response_received_event(payload: ClaudeStopPayload) -> AikiEvent {
+    AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        response: String::new(),
+        modified_files: vec![],
     })
 }
 
@@ -386,33 +624,13 @@ fn build_stop_output(response: &HookResult) -> HookCommandOutput {
     HookCommandOutput::new(Some(json_value), 0)
 }
 
-/// Check if a tool modifies files
-///
-/// Returns true for tools that create, modify, or delete files.
-/// PreFileChange events should only fire for these tools to stash user edits.
-fn is_file_modifying_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "Edit" | "Write" | "NotebookEdit")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_create_session_includes_version() {
-        // Create a test payload
-        let payload = ClaudeCodePayload {
-            session_id: "test-session-123".to_string(),
-            transcript_path: "/tmp/transcript.json".to_string(),
-            cwd: "/tmp".to_string(),
-            hook_event_name: "SessionStart".to_string(),
-            tool_name: String::new(),
-            tool_input: None,
-            tool_output: String::new(),
-            prompt: String::new(),
-        };
-
-        let session = create_session(&payload);
+        let session = create_session("test-session-123", "/tmp");
 
         // Verify session was created
         assert_eq!(session.agent_type(), AgentType::Claude);

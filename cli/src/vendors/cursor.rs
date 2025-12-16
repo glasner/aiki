@@ -8,9 +8,9 @@ use crate::commands::hooks::HookCommandOutput;
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiChangeDonePayload, AikiChangePermissionAskedPayload, AikiEvent, AikiMcpDonePayload,
-    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellDonePayload,
-    AikiShellPermissionAskedPayload,
+    AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
+    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
+    AikiShellPermissionAskedPayload, FileOperation,
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
@@ -273,19 +273,19 @@ fn build_aiki_event(event: CursorEvent) -> AikiEvent {
         CursorEvent::BeforeShellExecution { payload } => {
             build_shell_permission_asked_event(payload)
         }
-        CursorEvent::AfterShellExecution { payload } => build_shell_done_event(payload),
-        CursorEvent::BeforeMcpExecution { payload } => build_mcp_or_change_event(payload),
-        CursorEvent::AfterMcpExecution { payload } => build_mcp_done_event(payload),
-        CursorEvent::AfterFileEdit { payload } => build_change_done_event(payload),
+        CursorEvent::AfterShellExecution { payload } => build_shell_completed_event(payload),
+        CursorEvent::BeforeMcpExecution { payload } => build_mcp_or_file_event(payload),
+        CursorEvent::AfterMcpExecution { payload } => build_mcp_completed_event(payload),
+        CursorEvent::AfterFileEdit { payload } => build_file_completed_event(payload),
     }
 }
 
 /// Build appropriate event for beforeMCPExecution based on tool type
-fn build_mcp_or_change_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
+fn build_mcp_or_file_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
     let tool_type = classify_mcp_tool(&payload.tool_name);
 
     match tool_type {
-        ToolType::FileChange => build_change_permission_asked_event(payload),
+        ToolType::FileChange => build_file_permission_asked_event(payload),
         ToolType::Mcp => build_mcp_permission_asked_event(payload),
     }
 }
@@ -308,12 +308,24 @@ fn build_prompt_submitted_event(payload: CursorBeforeSubmitPromptPayload) -> Aik
     })
 }
 
-/// Build change.permission_asked event from beforeMCPExecution payload (file tools only)
-fn build_change_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
-    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
+/// Build file.permission_asked event from beforeMCPExecution payload (file tools only)
+fn build_file_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
+    // Try to extract file path from tool_input JSON
+    let path = serde_json::from_str::<serde_json::Value>(&payload.tool_input)
+        .ok()
+        .and_then(|v| {
+            v.get("file_path")
+                .and_then(|p| p.as_str())
+                .map(String::from)
+        });
+
+    AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
+        operation: FileOperation::Write,
+        path,
+        pattern: None,
     })
 }
 
@@ -327,9 +339,9 @@ fn build_shell_permission_asked_event(payload: CursorBeforeShellExecutionPayload
     })
 }
 
-/// Build shell.done event from afterShellExecution payload
-fn build_shell_done_event(payload: CursorAfterShellExecutionPayload) -> AikiEvent {
-    AikiEvent::ShellDone(AikiShellDonePayload {
+/// Build shell.completed event from afterShellExecution payload
+fn build_shell_completed_event(payload: CursorAfterShellExecutionPayload) -> AikiEvent {
+    AikiEvent::ShellCompleted(AikiShellCompletedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
@@ -356,9 +368,9 @@ fn build_mcp_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) ->
     })
 }
 
-/// Build mcp.done event from afterMCPExecution payload
-fn build_mcp_done_event(payload: CursorAfterMcpExecutionPayload) -> AikiEvent {
-    AikiEvent::McpDone(AikiMcpDonePayload {
+/// Build mcp.completed event from afterMCPExecution payload
+fn build_mcp_completed_event(payload: CursorAfterMcpExecutionPayload) -> AikiEvent {
+    AikiEvent::McpCompleted(AikiMcpCompletedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
@@ -372,8 +384,8 @@ fn build_mcp_done_event(payload: CursorAfterMcpExecutionPayload) -> AikiEvent {
     })
 }
 
-/// Build change.done event from afterFileEdit payload
-fn build_change_done_event(payload: CursorAfterFileEditPayload) -> AikiEvent {
+/// Build file.completed event from afterFileEdit payload
+fn build_file_completed_event(payload: CursorAfterFileEditPayload) -> AikiEvent {
     // Create session first before moving any fields
     let session = create_session(&payload.conversation_id, &payload.cursor_version);
     let cwd = get_cwd(&payload.workspace_roots);
@@ -396,12 +408,14 @@ fn build_change_done_event(payload: CursorAfterFileEditPayload) -> AikiEvent {
         debug_log(|| format!("Cursor provided {} edits", edit_details.len()));
     }
 
-    AikiEvent::ChangeDone(AikiChangeDonePayload {
+    AikiEvent::FileCompleted(AikiFileCompletedPayload {
         session,
-        tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-        file_paths: vec![file_path],
         cwd,
         timestamp: chrono::Utc::now(),
+        operation: FileOperation::Write,
+        tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
+        file_paths: vec![file_path],
+        success: Some(true), // afterFileEdit implies success
         edit_details,
     })
 }

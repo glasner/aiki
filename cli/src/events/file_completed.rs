@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use super::file_permission_asked::FileOperation;
 use super::result::{Decision, HookResult};
 
 /// Details about an individual edit operation
@@ -35,33 +36,42 @@ impl EditDetail {
     }
 }
 
-/// change.done event payload
+/// file.completed event payload
+///
+/// Fires after a file operation completes.
+/// Replaces the older change.completed event with additional operation info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiChangeDonePayload {
+pub struct AikiFileCompletedPayload {
     pub session: AikiSession,
-    pub tool_name: String, // Tool that made the change (e.g., "Edit", "Write")
-    pub file_paths: Vec<String>, // Files that were modified (batch support)
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    /// The type of file operation that completed
+    pub operation: FileOperation,
+    /// Tool that made the change (e.g., "Edit", "Write", "Bash")
+    pub tool_name: String,
+    /// Files that were accessed (batch support)
+    pub file_paths: Vec<String>,
+    /// Whether the operation succeeded
+    #[serde(default)]
+    pub success: Option<bool>,
     /// Detailed edit operations (old_string -> new_string pairs) for user edit detection
     /// Only populated when the agent/IDE provides this information (ACP Edit tool, hooks)
     #[serde(default)]
     pub edit_details: Vec<EditDetail>,
 }
 
-/// Handle change.done event
+/// Handle file.completed event
 ///
 /// This is the core provenance tracking event. Records metadata about
-/// the change in the JJ change description using the flow engine.
-pub fn handle_change_done(payload: AikiChangeDonePayload) -> Result<HookResult> {
-    // No validation needed - all required fields are guaranteed by type system
-
+/// the file operation in the JJ change description using the flow engine.
+pub fn handle_file_completed(payload: AikiFileCompletedPayload) -> Result<HookResult> {
     debug_log(|| {
         format!(
-            "Recording change by {:?}, session: {}, tool: {}",
+            "Recording file.completed by {:?}, session: {}, tool: {}, operation: {}",
             payload.session.agent_type(),
             payload.session.external_id(),
-            payload.tool_name
+            payload.tool_name,
+            payload.operation
         )
     });
 
@@ -74,13 +84,13 @@ pub fn handle_change_done(payload: AikiChangeDonePayload) -> Result<HookResult> 
     // Set flow name for self.* function resolution
     state.flow_name = Some("aiki/core".to_string());
 
-    // Execute change.done actions from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.change_done, &mut state)?;
+    // Execute file.completed actions from the core flow
+    let _flow_result = FlowEngine::execute_statements(&core_flow.file_completed, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
-    // change.done never blocks - always allow
+    // file.completed never blocks - always allow (operation already completed)
     Ok(HookResult {
         context: None,
         decision: Decision::Allow,

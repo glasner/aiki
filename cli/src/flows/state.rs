@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_execution_context_with_event() {
-        use crate::events::{AikiEvent, AikiChangeDonePayload};
+        use crate::events::{AikiChangeCompletedPayload, AikiEvent};
         use crate::provenance::AgentType;
         use crate::session::AikiSession;
 
@@ -208,7 +208,7 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiEvent::ChangeDone(AikiChangeDonePayload {
+        let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/test/file.rs".to_string()],
@@ -220,7 +220,7 @@ mod tests {
 
         // Verify we can access event fields through the enum
         match &ctx.event {
-            AikiEvent::ChangeDone(e) => {
+            AikiEvent::ChangeCompleted(e) => {
                 assert_eq!(e.file_paths, vec!["/test/file.rs".to_string()]);
             }
             _ => panic!("Expected PostFileChange event"),
