@@ -1,0 +1,211 @@
+use serde::Deserialize;
+
+use crate::events::FileOperation;
+use crate::tools::ToolType;
+
+// ============================================================================
+// Tool Input Structures
+// ============================================================================
+
+/// Tool input for file operations (Edit, Write, NotebookEdit)
+/// Unified struct that handles all file-modifying tools.
+/// See: https://code.claude.com/docs/en/hooks#posttooluse-input
+#[derive(Deserialize, Debug)]
+pub struct FileToolInput {
+    pub file_path: String,
+    /// Old string to replace (Edit tool)
+    #[serde(default)]
+    pub old_string: String,
+    /// New string to insert (Edit tool)
+    #[serde(default)]
+    pub new_string: String,
+    /// File content (Write tool)
+    #[serde(default)]
+    pub content: String,
+}
+
+/// Tool input for MultiEdit tool (atomic multi-file edits)
+#[derive(Deserialize, Debug)]
+pub struct MultiEditToolInput {
+    pub edits: Vec<MultiEditEntry>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MultiEditEntry {
+    pub file_path: String,
+    #[serde(default)]
+    pub old_string: String,
+    #[serde(default)]
+    pub new_string: String,
+}
+
+/// Tool input for Bash tool
+#[derive(Deserialize, Debug)]
+pub struct BashToolInput {
+    #[serde(default)]
+    pub command: String,
+}
+
+// ============================================================================
+// Read Tool Input Structures
+// ============================================================================
+
+/// Tool input for Read tool
+#[derive(Deserialize, Debug)]
+pub struct ReadToolInput {
+    pub file_path: String,
+}
+
+/// Tool input for Glob tool
+#[derive(Deserialize, Debug)]
+pub struct GlobToolInput {
+    pub pattern: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Tool input for Grep tool
+#[derive(Deserialize, Debug)]
+pub struct GrepToolInput {
+    pub pattern: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Tool input for LS tool
+#[derive(Deserialize, Debug)]
+pub struct LsToolInput {
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+// ============================================================================
+// Tool Response Structures (PostToolUse)
+// ============================================================================
+
+/// Response structure for Bash tool - includes exit code!
+/// This is critical for flows that need to react to command failures.
+/// See: https://code.claude.com/docs/en/hooks#posttooluse-input
+#[derive(Deserialize, Debug)]
+pub struct BashToolResponse {
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(rename = "exitCode", default)]
+    pub exit_code: i32,
+}
+
+// ============================================================================
+// Tool Classification (Claude Code specific)
+// ============================================================================
+
+/// Parsed Claude Code tool with its typed input
+#[derive(Debug)]
+pub enum ClaudeTool {
+    // Write operations
+    Edit(FileToolInput),
+    Write(FileToolInput),
+    NotebookEdit(FileToolInput),
+    MultiEdit(MultiEditToolInput),
+
+    // Read operations
+    Read(ReadToolInput),
+    Glob(GlobToolInput),
+    Grep(GrepToolInput),
+    LS(LsToolInput),
+
+    // Shell operations
+    Bash(BashToolInput),
+
+    // Other tools
+    Web(String),      // WebFetch, WebSearch - store tool name
+    Internal(String), // Task, TodoRead, TodoWrite - store tool name
+    Mcp(String),      // MCP tools - store tool name
+
+    // Unknown or failed parse
+    Unknown(String), // Store tool name for error reporting
+}
+
+impl ClaudeTool {
+    /// Parse a Claude tool from tool_name and optional tool_input JSON
+    pub fn parse(tool_name: &str, input_json: Option<&serde_json::Value>) -> Self {
+        // Helper to deserialize and construct, or return None on failure
+        fn try_parse<T, F>(
+            constructor: F,
+            input_json: Option<&serde_json::Value>,
+        ) -> Option<ClaudeTool>
+        where
+            T: serde::de::DeserializeOwned,
+            F: FnOnce(T) -> ClaudeTool,
+        {
+            input_json
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .map(constructor)
+        }
+
+        match tool_name {
+            // File write tools
+            "Edit" => try_parse(ClaudeTool::Edit, input_json),
+            "Write" => try_parse(ClaudeTool::Write, input_json),
+            "NotebookEdit" => try_parse(ClaudeTool::NotebookEdit, input_json),
+            "MultiEdit" => try_parse(ClaudeTool::MultiEdit, input_json),
+
+            // File read tools
+            "Read" => try_parse(ClaudeTool::Read, input_json),
+            "Glob" => try_parse(ClaudeTool::Glob, input_json),
+            "Grep" => try_parse(ClaudeTool::Grep, input_json),
+            "LS" => try_parse(ClaudeTool::LS, input_json),
+
+            // Shell tool
+            "Bash" => try_parse(ClaudeTool::Bash, input_json),
+
+            // Web tools
+            "WebFetch" | "WebSearch" => Some(ClaudeTool::Web(tool_name.to_string())),
+
+            // Internal tools
+            "Task" | "TodoRead" | "TodoWrite" => Some(ClaudeTool::Internal(tool_name.to_string())),
+
+            // Everything else is MCP
+            _ => Some(ClaudeTool::Mcp(tool_name.to_string())),
+        }
+        .unwrap_or_else(|| ClaudeTool::Unknown(tool_name.to_string()))
+    }
+
+    /// Get the ToolType for this Claude tool
+    pub fn tool_type(&self) -> ToolType {
+        match self {
+            ClaudeTool::Edit(_)
+            | ClaudeTool::Write(_)
+            | ClaudeTool::NotebookEdit(_)
+            | ClaudeTool::MultiEdit(_)
+            | ClaudeTool::Read(_)
+            | ClaudeTool::Glob(_)
+            | ClaudeTool::Grep(_)
+            | ClaudeTool::LS(_) => ToolType::File,
+            ClaudeTool::Bash(_) => ToolType::Shell,
+            ClaudeTool::Web(_) => ToolType::Web,
+            ClaudeTool::Internal(_) => ToolType::Internal,
+            ClaudeTool::Mcp(_) => ToolType::Mcp,
+            ClaudeTool::Unknown(_) => ToolType::Internal, // Treat as internal to skip silently
+        }
+    }
+
+    /// Get the FileOperation for file tools
+    ///
+    /// # Panics
+    /// Panics if called on non-file tools (Bash, Web, Internal, Mcp, Unknown).
+    /// This indicates a programming error - check tool_type() first.
+    pub fn file_operation(&self) -> FileOperation {
+        match self {
+            ClaudeTool::Edit(_)
+            | ClaudeTool::Write(_)
+            | ClaudeTool::NotebookEdit(_)
+            | ClaudeTool::MultiEdit(_) => FileOperation::Write,
+            ClaudeTool::Read(_) | ClaudeTool::Glob(_) | ClaudeTool::Grep(_) | ClaudeTool::LS(_) => {
+                FileOperation::Read
+            }
+            _ => panic!("file_operation() called on non-file tool: {:?}", self),
+        }
+    }
+}

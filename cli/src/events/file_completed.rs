@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::file_permission_asked::FileOperation;
 use super::result::{Decision, HookResult};
+use crate::tools::FileOperation;
 
 /// Details about an individual edit operation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

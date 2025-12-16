@@ -16,6 +16,7 @@ mod repo;
 mod session;
 mod sign_setup_wizard;
 mod signing;
+mod tools;
 mod utils;
 mod vendors;
 mod verify;

@@ -10,6 +10,7 @@ pub mod jj;
 pub mod npm;
 pub mod provenance;
 pub mod session;
+pub mod tools;
 pub mod utils;
 pub mod verify;
 

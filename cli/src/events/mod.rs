@@ -211,6 +211,9 @@ pub use response_received::*;
 pub use file_completed::*;
 pub use file_permission_asked::*;
 
+// Re-export FileOperation from tools module for convenience
+pub use crate::tools::FileOperation;
+
 // File changes (deprecated - kept for backward compatibility)
 pub use change_completed::*;
 pub use change_permission_asked::*;
