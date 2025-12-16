@@ -9,8 +9,7 @@ use crate::events::{
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
-
-use super::tools::ToolType;
+use crate::tools::ToolType;
 
 // ============================================================================
 // Hook Payload Structures (matches Cursor API)
@@ -247,8 +246,10 @@ fn build_mcp_or_file_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEven
     let tool_type = super::tools::classify_mcp_tool(&payload.tool_name);
 
     match tool_type {
-        ToolType::FileChange => build_file_permission_asked_event(payload),
+        ToolType::File => build_file_permission_asked_event(payload),
         ToolType::Mcp => build_mcp_permission_asked_event(payload),
+        // Cursor only calls beforeMCPExecution for MCP tools, not Shell/Web/Internal
+        _ => build_mcp_permission_asked_event(payload),
     }
 }
 
