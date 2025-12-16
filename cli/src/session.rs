@@ -219,6 +219,35 @@ impl AikiSession {
         }
     }
 
+    /// Create a new session for hook-based detection
+    ///
+    /// Convenience constructor that automatically sets `DetectionMethod::Hook`.
+    ///
+    /// # Examples
+    /// ```
+    /// use aiki::session::AikiSession;
+    /// use aiki::provenance::AgentType;
+    ///
+    /// let session = AikiSession::for_hook(
+    ///     AgentType::Claude,
+    ///     "claude-session-abc123",
+    ///     Some("0.10.6")
+    /// );
+    /// ```
+    #[must_use]
+    pub fn for_hook(
+        agent_type: AgentType,
+        external_id: impl Into<String>,
+        agent_version: Option<impl Into<String>>,
+    ) -> Self {
+        Self::new(
+            agent_type,
+            external_id,
+            agent_version,
+            DetectionMethod::Hook,
+        )
+    }
+
     /// Generate a deterministic UUID v5 for a session
     ///
     /// Creates a UUID v5 by hashing: "{agent_type}:{external_session_id}"
