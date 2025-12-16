@@ -1,12 +1,7 @@
-use anyhow::Result;
 use serde::Deserialize;
-use serde_json::json;
 use std::path::PathBuf;
 
 use crate::cache::debug_log;
-use crate::commands::hooks::HookCommandOutput;
-use crate::event_bus;
-use crate::events::result::HookResult;
 use crate::events::{
     AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
     AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
@@ -14,6 +9,8 @@ use crate::events::{
 };
 use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
+
+use super::tools::ToolType;
 
 // ============================================================================
 // Hook Payload Structures (matches Cursor API)
@@ -23,7 +20,7 @@ use crate::session::AikiSession;
 /// Cursor hook event - discriminated by eventName
 #[derive(Deserialize, Debug)]
 #[serde(tag = "eventName")]
-enum CursorEvent {
+pub enum CursorEvent {
     #[serde(rename = "beforeSubmitPrompt")]
     BeforeSubmitPrompt {
         #[serde(flatten)]
@@ -136,22 +133,22 @@ struct CursorAfterShellExecutionPayload {
 
 /// beforeMCPExecution hook payload
 #[derive(Deserialize, Debug)]
-struct CursorBeforeMcpExecutionPayload {
+pub struct CursorBeforeMcpExecutionPayload {
     #[serde(rename = "conversationId")]
-    conversation_id: String,
+    pub conversation_id: String,
     #[serde(rename = "generationId")]
-    generation_id: String,
-    model: String,
+    pub generation_id: String,
+    pub model: String,
     #[serde(rename = "cursorVersion")]
-    cursor_version: String,
+    pub cursor_version: String,
     #[serde(rename = "workspaceRoots")]
-    workspace_roots: Vec<String>,
+    pub workspace_roots: Vec<String>,
     #[serde(rename = "userEmail")]
-    user_email: Option<String>,
+    pub user_email: Option<String>,
     #[serde(rename = "toolName")]
-    tool_name: String,
+    pub tool_name: String,
     #[serde(rename = "toolInput")]
-    tool_input: String,
+    pub tool_input: String,
 }
 
 /// afterMCPExecution hook payload
@@ -203,6 +200,10 @@ struct CursorEdit {
     new_string: String,
 }
 
+// ============================================================================
+// Session Creation
+// ============================================================================
+
 /// Create a session from payload fields
 fn create_session(conversation_id: &str, cursor_version: &str) -> AikiSession {
     AikiSession::new(
@@ -222,51 +223,12 @@ fn get_cwd(workspace_roots: &[String]) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Tool type classification for event routing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolType {
-    /// File-modifying tools
-    FileChange,
-    /// MCP tools (non-file)
-    Mcp,
-}
-
-/// Classify a Cursor MCP tool by name into its type
-///
-/// Note: Cursor's tool names may differ from Claude Code's.
-/// This covers known file-modifying tools and treats everything else as MCP.
-fn classify_mcp_tool(tool_name: &str) -> ToolType {
-    match tool_name {
-        // File-modifying tools (various naming conventions)
-        "Edit" | "Write" | "NotebookEdit" | "edit" | "write" | "file_edit" => ToolType::FileChange,
-        // Everything else is treated as MCP tool
-        _ => ToolType::Mcp,
-    }
-}
-
-/// Handle a Cursor event
-///
-/// This is the vendor-specific handler for Cursor hooks.
-/// Parses the payload once and dispatches to event-specific handlers.
-///
-/// # Arguments
-/// * `cursor_event_name` - Vendor event name from CLI flag (used for output formatting)
-pub fn handle(cursor_event_name: &str) -> Result<()> {
-    // Parse event - serde discriminates by eventName
-    let cursor_event: CursorEvent = super::read_stdin_json()?;
-
-    // Build Aiki event from Cursor event
-    let aiki_event = build_aiki_event(cursor_event);
-
-    // Dispatch event and exit with command output
-    let aiki_response = event_bus::dispatch(aiki_event)?;
-    let hook_output = build_command_output(aiki_response, cursor_event_name);
-
-    hook_output.print_and_exit();
-}
+// ============================================================================
+// Event Building
+// ============================================================================
 
 /// Build AikiEvent from Cursor event
-fn build_aiki_event(event: CursorEvent) -> AikiEvent {
+pub fn build_aiki_event(event: CursorEvent) -> AikiEvent {
     match event {
         CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
         CursorEvent::Stop { payload } => build_response_received_event(payload),
@@ -282,7 +244,7 @@ fn build_aiki_event(event: CursorEvent) -> AikiEvent {
 
 /// Build appropriate event for beforeMCPExecution based on tool type
 fn build_mcp_or_file_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
-    let tool_type = classify_mcp_tool(&payload.tool_name);
+    let tool_type = super::tools::classify_mcp_tool(&payload.tool_name);
 
     match tool_type {
         ToolType::FileChange => build_file_permission_asked_event(payload),
@@ -429,128 +391,4 @@ fn build_response_received_event(payload: CursorStopPayload) -> AikiEvent {
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
     })
-}
-
-/// Build HookCommandOutput from HookResult for Cursor
-///
-/// Cursor expects different JSON structures depending on the event type.
-/// This function dispatches to event-specific builders that handle the details.
-fn build_command_output(response: HookResult, event_type: &str) -> HookCommandOutput {
-    match event_type {
-        // User interaction
-        "beforeSubmitPrompt" => {
-            // Note: beforeSubmitPrompt serves dual purpose - SessionStart + PrePrompt
-            // For now, treat it as SessionStart/PrePrompt (both have same format)
-            build_before_submit_prompt_output(&response)
-        }
-        "stop" => build_post_response_output(&response),
-        // Before hooks (gateable)
-        "beforeMCPExecution" | "beforeShellExecution" => build_pre_tool_output(&response),
-        // After hooks (notification-only, no response accepted)
-        "afterFileEdit" | "afterShellExecution" | "afterMCPExecution" => {
-            build_after_hook_output(&response)
-        }
-        _ => {
-            eprintln!("Warning: Unknown Cursor event type: {}", event_type);
-            HookCommandOutput::new(None, 0)
-        }
-    }
-}
-
-/// Build beforeSubmitPrompt command output for Cursor
-///
-/// Maps PrePrompt event responses to Cursor's beforeSubmitPrompt format.
-///
-/// LIMITATION: Cursor's beforeSubmitPrompt can only BLOCK or ALLOW prompts.
-/// It does NOT support modifying the prompt text (no modifiedPrompt field).
-/// If the flow returns a modified_prompt in context, it will be IGNORED.
-///
-/// Supported use cases:
-/// - Validation workflows (block prompts that don't meet requirements)
-/// - Enforcement (require certain conditions before agent runs)
-/// - Warnings (show messages to user based on prompt analysis)
-///
-/// NOT supported:
-/// - Context injection (prepending/appending content to prompts)
-/// - Prompt rewriting
-fn build_before_submit_prompt_output(response: &HookResult) -> HookCommandOutput {
-    // Blocking - combine messages and context for user
-    if response.decision.is_block() {
-        let combined = response.combined_output();
-        let user_message = combined.unwrap_or_default();
-
-        return HookCommandOutput::new(
-            Some(json!({
-                "continue": false,
-                "user_message": user_message
-            })),
-            2,
-        );
-    }
-
-    // Success - allow prompt to continue
-    // Note: Cursor doesn't accept additional fields on success
-    // Note: Any modified_prompt in response.context is IGNORED (not supported by Cursor)
-    HookCommandOutput::new(
-        Some(json!({
-            "continue": true
-        })),
-        0,
-    )
-}
-
-/// Build beforeMCPExecution/beforeShellExecution command output for Cursor
-fn build_pre_tool_output(response: &HookResult) -> HookCommandOutput {
-    // Blocking - prevent tool execution (combine messages and context)
-    if response.decision.is_block() {
-        let combined = response.combined_output();
-        let agent_message = combined.unwrap_or_default();
-
-        return HookCommandOutput::new(
-            Some(json!({
-                "continue": false,
-                "agent_message": agent_message
-            })),
-            2,
-        );
-    }
-
-    // Success - allow tool execution
-    // Note: Cursor doesn't accept additional fields on success
-    HookCommandOutput::new(
-        Some(json!({
-            "continue": true
-        })),
-        0,
-    )
-}
-
-/// Build after-hook command output for Cursor
-///
-/// Cursor's after-hooks (afterFileEdit, afterShellExecution, afterMCPExecution)
-/// are notification-only and do NOT accept JSON responses.
-fn build_after_hook_output(_response: &HookResult) -> HookCommandOutput {
-    // Cursor doesn't accept responses from after-hooks
-    // Return no JSON, always exit 0
-    HookCommandOutput::new(None, 0)
-}
-
-/// Build stop command output for Cursor
-///
-/// Combines messages and context into followup_message for the agent.
-fn build_post_response_output(response: &HookResult) -> HookCommandOutput {
-    // Combine messages + context for followup_message
-    let combined = response.combined_output();
-
-    if let Some(followup_text) = combined {
-        return HookCommandOutput::new(
-            Some(json!({
-                "followup_message": followup_text
-            })),
-            0,
-        );
-    }
-
-    // No followup - return empty object
-    HookCommandOutput::new(Some(json!({})), 0)
 }
