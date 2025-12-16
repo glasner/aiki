@@ -1,14 +1,31 @@
 use std::path::Path;
 
-use crate::provenance::AgentType;
+use crate::provenance::{AgentType, DetectionMethod};
 use crate::session::AikiSession;
+
+/// Create a session for Claude Code events
+///
+/// This helper ensures consistent session creation across all Claude Code event builders.
+/// For SessionStart, detects version (~135ms) and caches in session file.
+/// For other events, reads cached version from file (~0ms).
+pub fn create_session(session_id: &str, cwd: &str) -> AikiSession {
+    let repo_path = Path::new(cwd);
+    let agent_version = get_agent_version(session_id, repo_path);
+
+    AikiSession::new(
+        AgentType::Claude,
+        session_id,
+        agent_version,
+        DetectionMethod::Hook,
+    )
+}
 
 /// Get agent version from cache or detect it
 ///
 /// For SessionStart events, detects version and caches it in session file.
 /// For other events, reads cached version from session file (fast).
 /// Falls back to detection if cache read fails.
-pub fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
+fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
     // Compute session file path directly without creating full session object
     let session_uuid = AikiSession::generate_uuid(AgentType::Claude, session_id);
     let session_file_path = repo_path.join(".aiki/sessions").join(&session_uuid);
@@ -23,7 +40,7 @@ pub fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
 }
 
 /// Read agent_version from session file
-pub fn read_agent_version_from_file(path: &Path) -> Option<String> {
+fn read_agent_version_from_file(path: &Path) -> Option<String> {
     use std::fs;
     fs::read_to_string(path).ok().and_then(|content| {
         content
@@ -37,8 +54,6 @@ pub fn read_agent_version_from_file(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provenance::{AgentType, DetectionMethod};
-    use crate::session::AikiSession;
 
     #[test]
     fn test_create_session_includes_version() {

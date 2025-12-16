@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod events;
 mod output;
+mod session;
 mod tools;
 
 use events::{build_aiki_event, CursorEvent};

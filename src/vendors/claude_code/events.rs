@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::cache::debug_log;
 use crate::events::FileOperation;
@@ -8,12 +8,10 @@ use crate::events::{
     AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
     AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
 };
-use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::AikiSession;
 use crate::tools::ToolType;
 
+use super::session::create_session;
 use super::tools::{BashToolResponse, ClaudeTool};
-use super::version::get_agent_version;
 
 // ============================================================================
 // Hook Payload Structures (matches Claude Code API)
@@ -94,27 +92,6 @@ pub struct ClaudePostToolUsePayload {
 struct ClaudeStopPayload {
     session_id: String,
     cwd: String,
-}
-
-// ============================================================================
-// Session Creation
-// ============================================================================
-
-/// Create a session for Claude Code events
-///
-/// This helper ensures consistent session creation across all Claude Code event builders.
-/// For SessionStart, detects version (~135ms) and caches in session file.
-/// For other events, reads cached version from file (~0ms).
-fn create_session(session_id: &str, cwd: &str) -> AikiSession {
-    let repo_path = Path::new(cwd);
-    let agent_version = get_agent_version(session_id, repo_path);
-
-    AikiSession::new(
-        AgentType::Claude,
-        session_id,
-        agent_version,
-        DetectionMethod::Hook,
-    )
 }
 
 // ============================================================================
