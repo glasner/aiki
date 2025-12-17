@@ -319,42 +319,10 @@ pub fn build_human_metadata_write(
 ) -> Result<ActionResult>
 ```
 
-**New function for delete operations:**
-```rust
-/// Build metadata for file deletion events
-///
-/// Creates provenance metadata marking the deletion as an AI operation.
-pub fn build_delete_metadata(
-    event: &AikiDeleteCompletedPayload,
-    context: Option<&AikiState>,
-) -> Result<ActionResult> {
-    let provenance = ProvenanceRecord {
-        agent: event.session.agent_type().to_string().to_lowercase(),
-        author_type: "agent".to_string(),
-        session: event.session.external_id().to_string(),
-        tool: Some(event.tool_name.clone()),
-        operation: Some("delete".to_string()),
-        files: Some(event.file_paths.clone()),
-        timestamp: Some(event.timestamp),
-        coauthor: None,
-    };
+**Note on delete operations:**
+Delete provenance tracking is intentionally minimal in this refactor. Full delete provenance (capturing previous authorship, file lineage, etc.) is tracked in a separate plan: `ops/current/delete-provenance.md`.
 
-    let message = provenance.to_description();
-    let author = event.session.agent_type().git_author();
-
-    let json = serde_json::json!({
-        "author": author,
-        "message": message,
-    });
-
-    Ok(ActionResult {
-        success: true,
-        exit_code: Some(0),
-        stdout: json.to_string(),
-        stderr: String::new(),
-    })
-}
-```
+For this refactor, delete operations will simply create a new change without metadata, keeping the implementation simple.
 
 ### Phase 6: Update Flow Engine
 
@@ -425,15 +393,6 @@ Update function dispatch to match on the correct event types:
     };
     crate::flows::core::build_human_metadata(event, Some(state))
 }
-
-("core", "build_delete_metadata") => {
-    let AikiEvent::DeleteCompleted(event) = &state.event else {
-        return Err(AikiError::Other(anyhow::anyhow!(
-            "build_delete_metadata can only be called for delete.completed events"
-        )));
-    };
-    crate::flows::core::build_delete_metadata(event, Some(state))
-}
 ```
 
 ### Phase 7: Update Core Flow YAML
@@ -493,13 +452,10 @@ write.completed:
         jj: metaedit --message "$message"
   - jj: new
 
-# Delete operations - record provenance
+# Delete operations - basic tracking (see delete-provenance.md for full plan)
 delete.completed:
-  - let: metadata = self.build_delete_metadata
-    on_failure:
-      - stop: "Failed to build delete metadata"
-  - with_author_and_message: $metadata
-    jj: metaedit --message "$message"
+  # For now, just create a new change to separate delete from other operations
+  # Full provenance tracking for deletes is tracked in separate plan
   - jj: new
 
 # Read operations - no provenance needed (reads don't modify repo)
@@ -510,63 +466,94 @@ read.completed:
   # Empty - reads don't need provenance tracking
 ```
 
-### Phase 8: Update Variable Resolution
+### Phase 8: Update Variable Resolution in Event Engine
 
 **File:** `src/flows/engine.rs`
 
-Add comprehensive variable resolution for new event types in `resolve_event_variable`:
+Update the existing variable resolution match statement to handle new event types. The current implementation uses `resolver.add_var()` calls in a match statement - we just need to replace the old `FilePermissionAsked` and `FileCompleted` arms with operation-specific ones.
 
+**Remove these old arms:**
 ```rust
-fn resolve_event_variable(event: &AikiEvent, field: &str) -> Option<String> {
-    match event {
-        // Write events - full field set including edit_details
-        AikiEvent::WriteCompleted(e) | AikiEvent::WritePermissionAsked(e) => match field {
-            "tool_name" => Some(e.tool_name.clone()),
-            "file_paths" => Some(e.file_paths.join(" ")),
-            "success" => e.success.map(|s| s.to_string()),
-            "session_id" => Some(e.session.external_id().to_string()),
-            "agent_type" => Some(e.session.agent_type().to_string()),
-            "timestamp" => Some(e.timestamp.to_rfc3339()),
-            "cwd" => Some(e.cwd.display().to_string()),
-            // edit_details could be serialized as JSON if needed
-            "edit_details" => {
-                serde_json::to_string(&e.edit_details)
-                    .ok()
-            }
-            _ => None,
-        },
-        
-        // Read events - similar to write but no edit_details
-        AikiEvent::ReadCompleted(e) | AikiEvent::ReadPermissionAsked(e) => match field {
-            "tool_name" => Some(e.tool_name.clone()),
-            "file_paths" => Some(e.file_paths.join(" ")),
-            "success" => e.success.map(|s| s.to_string()),
-            "session_id" => Some(e.session.external_id().to_string()),
-            "agent_type" => Some(e.session.agent_type().to_string()),
-            "timestamp" => Some(e.timestamp.to_rfc3339()),
-            "cwd" => Some(e.cwd.display().to_string()),
-            _ => None,
-        },
-        
-        // Delete events - same as read
-        AikiEvent::DeleteCompleted(e) | AikiEvent::DeletePermissionAsked(e) => match field {
-            "tool_name" => Some(e.tool_name.clone()),
-            "file_paths" => Some(e.file_paths.join(" ")),
-            "success" => e.success.map(|s| s.to_string()),
-            "session_id" => Some(e.session.external_id().to_string()),
-            "agent_type" => Some(e.session.agent_type().to_string()),
-            "timestamp" => Some(e.timestamp.to_rfc3339()),
-            "cwd" => Some(e.cwd.display().to_string()),
-            _ => None,
-        },
-        
-        // ... other event types
-        _ => None,
+crate::events::AikiEvent::FilePermissionAsked(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.operation", e.operation.to_string());  // ← Remove this
+    if let Some(ref path) = e.path {
+        resolver.add_var("event.path", path.clone());
+    }
+    if let Some(ref pattern) = e.pattern {
+        resolver.add_var("event.pattern", pattern.clone());
+    }
+}
+
+crate::events::AikiEvent::FileCompleted(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.operation", e.operation.to_string());  // ← Remove this
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+    resolver.add_var("event.file_count", e.file_paths.len().to_string());
+    if let Some(success) = e.success {
+        resolver.add_var("event.success", success.to_string());
     }
 }
 ```
 
-**Note:** The pattern matching for `WriteCompleted` and `WritePermissionAsked` may need adjustment since they have different payload types. Consider creating separate match arms or extracting common fields into a shared trait.
+**Add these new arms:**
+```rust
+crate::events::AikiEvent::ReadPermissionAsked(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+}
+
+crate::events::AikiEvent::ReadCompleted(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+    resolver.add_var("event.file_count", e.file_paths.len().to_string());
+    if let Some(success) = e.success {
+        resolver.add_var("event.success", success.to_string());
+    }
+}
+
+crate::events::AikiEvent::WritePermissionAsked(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+}
+
+crate::events::AikiEvent::WriteCompleted(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+    resolver.add_var("event.file_count", e.file_paths.len().to_string());
+    if let Some(success) = e.success {
+        resolver.add_var("event.success", success.to_string());
+    }
+    // Note: edit_details are available in the payload but not exposed as variables
+    // Flows should use self.classify_edits to analyze edits instead
+}
+
+crate::events::AikiEvent::DeletePermissionAsked(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+}
+
+crate::events::AikiEvent::DeleteCompleted(e) => {
+    resolver.add_var("event.session_id", e.session.external_id());
+    resolver.add_var("event.tool_name", e.tool_name.clone());
+    resolver.add_var("event.file_paths", e.file_paths.join(" "));
+    resolver.add_var("event.file_count", e.file_paths.len().to_string());
+    if let Some(success) = e.success {
+        resolver.add_var("event.success", success.to_string());
+    }
+}
+```
+
+**Key changes:**
+1. **No more `$event.operation` variable** - The operation type is now implicit in the event name
+2. **Consistent field set** - All operation types expose the same core variables (session_id, tool_name, file_paths, success)
+3. **Simplified permission_asked events** - No longer need to check operation type conditionally
 
 ### Phase 9: Remove Old file.* Events
 
@@ -710,11 +697,3 @@ The `FileOperation` enum stays but is no longer in event payloads:
 - **NOT in payloads:** Operation type is implicit in event name
 
 **Rationale:** The enum is useful for centralizing the "what operation is this tool?" logic, even though we don't need it in the event payload anymore.
-
-## Open Questions
-
-1. **Should `read.completed` track any metadata?** Currently empty in the flow. Could track read access for audit logs.
-
-2. **Should delete operations update file provenance?** Currently we record in JJ change description, but should we also track "last known author" before deletion?
-
-3. **Variable resolution for shared fields:** Should we create a trait for common payload fields (session, cwd, timestamp) to avoid duplication?
