@@ -21,9 +21,8 @@ pub struct AikiReadCompletedPayload {
     pub tool_name: String,
     /// Files that were read
     pub file_paths: Vec<String>,
-    /// Whether the operation succeeded
-    #[serde(default)]
-    pub success: Option<bool>,
+    /// Whether the operation succeeded (always true for completed events)
+    pub success: bool,
 }
 
 /// Handle read.completed event

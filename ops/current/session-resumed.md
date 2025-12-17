@@ -1,0 +1,2 @@
+2. **`session.resumed` event never emitted**  
+   Vendors only emit `session.started`; neither Claude nor Cursor ever construct `AikiEvent::SessionResumed`, leaving flows blind to resumed sessions despite the plan’s event catalog (ops/current/plan.md:22-27).

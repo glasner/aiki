@@ -4,11 +4,10 @@ use std::path::PathBuf;
 use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::{
-    AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
-    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
-    AikiShellPermissionAskedPayload, FileOperation,
+    parse_mcp_server, AikiEvent, AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload,
+    AikiPromptSubmittedPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
+    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
 };
-use crate::tools::ToolType;
 
 use super::session::create_session;
 
@@ -24,43 +23,43 @@ enum CursorEvent {
     #[serde(rename = "beforeSubmitPrompt")]
     BeforeSubmitPrompt {
         #[serde(flatten)]
-        payload: CursorBeforeSubmitPromptPayload,
+        payload: BeforeSubmitPromptPayload,
     },
     #[serde(rename = "stop")]
     Stop {
         #[serde(flatten)]
-        payload: CursorStopPayload,
+        payload: StopPayload,
     },
     #[serde(rename = "beforeShellExecution")]
     BeforeShellExecution {
         #[serde(flatten)]
-        payload: CursorBeforeShellExecutionPayload,
+        payload: BeforeShellExecutionPayload,
     },
     #[serde(rename = "afterShellExecution")]
     AfterShellExecution {
         #[serde(flatten)]
-        payload: CursorAfterShellExecutionPayload,
+        payload: AfterShellExecutionPayload,
     },
     #[serde(rename = "beforeMCPExecution")]
     BeforeMcpExecution {
         #[serde(flatten)]
-        payload: CursorBeforeMcpExecutionPayload,
+        payload: BeforeMcpExecutionPayload,
     },
     #[serde(rename = "afterMCPExecution")]
     AfterMcpExecution {
         #[serde(flatten)]
-        payload: CursorAfterMcpExecutionPayload,
+        payload: AfterMcpExecutionPayload,
     },
     #[serde(rename = "afterFileEdit")]
     AfterFileEdit {
         #[serde(flatten)]
-        payload: CursorAfterFileEditPayload,
+        payload: AfterFileEditPayload,
     },
 }
 
 /// beforeSubmitPrompt hook payload
 #[derive(Deserialize, Debug)]
-struct CursorBeforeSubmitPromptPayload {
+struct BeforeSubmitPromptPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -78,7 +77,7 @@ struct CursorBeforeSubmitPromptPayload {
 
 /// stop hook payload
 #[derive(Deserialize, Debug)]
-struct CursorStopPayload {
+struct StopPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -96,7 +95,7 @@ struct CursorStopPayload {
 
 /// beforeShellExecution hook payload
 #[derive(Deserialize, Debug)]
-struct CursorBeforeShellExecutionPayload {
+struct BeforeShellExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -114,7 +113,7 @@ struct CursorBeforeShellExecutionPayload {
 
 /// afterShellExecution hook payload
 #[derive(Deserialize, Debug)]
-struct CursorAfterShellExecutionPayload {
+struct AfterShellExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -133,7 +132,7 @@ struct CursorAfterShellExecutionPayload {
 
 /// beforeMCPExecution hook payload
 #[derive(Deserialize, Debug)]
-pub struct CursorBeforeMcpExecutionPayload {
+pub struct BeforeMcpExecutionPayload {
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
     #[serde(rename = "generationId")]
@@ -153,7 +152,7 @@ pub struct CursorBeforeMcpExecutionPayload {
 
 /// afterMCPExecution hook payload
 #[derive(Deserialize, Debug)]
-struct CursorAfterMcpExecutionPayload {
+struct AfterMcpExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -176,7 +175,7 @@ struct CursorAfterMcpExecutionPayload {
 
 /// afterFileEdit hook payload
 #[derive(Deserialize, Debug)]
-struct CursorAfterFileEditPayload {
+struct AfterFileEditPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
     #[serde(rename = "generationId")]
@@ -190,12 +189,12 @@ struct CursorAfterFileEditPayload {
     user_email: Option<String>,
     #[serde(rename = "filePath")]
     file_path: String,
-    edits: Vec<CursorEdit>,
+    edits: Vec<EditPayload>,
 }
 
 /// Individual edit operation in Cursor's afterFileEdit hook
 #[derive(Deserialize, Debug)]
-struct CursorEdit {
+struct EditPayload {
     old_string: String,
     new_string: String,
 }
@@ -207,33 +206,21 @@ struct CursorEdit {
 /// Build AikiEvent from Cursor event read from stdin
 pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     // Parse event - serde discriminates by eventName
-    let cursor_event: CursorEvent = super::super::read_stdin_json()?;
+    let event: CursorEvent = super::super::read_stdin_json()?;
 
-    let aiki_event = match cursor_event {
+    let aiki_event = match event {
         CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
-        CursorEvent::Stop { payload } => build_response_received_event(payload),
         CursorEvent::BeforeShellExecution { payload } => {
             build_shell_permission_asked_event(payload)
         }
         CursorEvent::AfterShellExecution { payload } => build_shell_completed_event(payload),
-        CursorEvent::BeforeMcpExecution { payload } => build_mcp_or_file_event(payload),
+        CursorEvent::BeforeMcpExecution { payload } => build_mcp_permission_asked_event(payload),
         CursorEvent::AfterMcpExecution { payload } => build_mcp_completed_event(payload),
-        CursorEvent::AfterFileEdit { payload } => build_file_completed_event(payload),
+        CursorEvent::AfterFileEdit { payload } => build_write_completed_event(payload),
+        CursorEvent::Stop { payload } => build_response_received_event(payload),
     };
 
     Ok(aiki_event)
-}
-
-/// Build appropriate event for beforeMCPExecution based on tool type
-fn build_mcp_or_file_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
-    let tool_type = super::tools::classify_mcp_tool(&payload.tool_name);
-
-    match tool_type {
-        ToolType::File => build_file_permission_asked_event(payload),
-        ToolType::Mcp => build_mcp_permission_asked_event(payload),
-        // Cursor only calls beforeMCPExecution for MCP tools, not Shell/Web/Internal
-        _ => build_mcp_permission_asked_event(payload),
-    }
 }
 
 /// Build prompt.submitted event from beforeSubmitPrompt payload
@@ -245,7 +232,7 @@ fn build_mcp_or_file_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEven
 ///
 /// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
 /// The modifiedPrompt field is not supported - only blocking via user_message.
-fn build_prompt_submitted_event(payload: CursorBeforeSubmitPromptPayload) -> AikiEvent {
+fn build_prompt_submitted_event(payload: BeforeSubmitPromptPayload) -> AikiEvent {
     AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
@@ -254,29 +241,8 @@ fn build_prompt_submitted_event(payload: CursorBeforeSubmitPromptPayload) -> Aik
     })
 }
 
-/// Build file.permission_asked event from beforeMCPExecution payload (file tools only)
-fn build_file_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
-    // Try to extract file path from tool_input JSON
-    let path = serde_json::from_str::<serde_json::Value>(&payload.tool_input)
-        .ok()
-        .and_then(|v| {
-            v.get("file_path")
-                .and_then(|p| p.as_str())
-                .map(String::from)
-        });
-
-    AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
-        session: create_session(&payload.conversation_id, &payload.cursor_version),
-        cwd: get_cwd(&payload.workspace_roots),
-        timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
-        path,
-        pattern: None,
-    })
-}
-
 /// Build shell.permission_asked event from beforeShellExecution payload
-fn build_shell_permission_asked_event(payload: CursorBeforeShellExecutionPayload) -> AikiEvent {
+fn build_shell_permission_asked_event(payload: BeforeShellExecutionPayload) -> AikiEvent {
     AikiEvent::ShellPermissionAsked(AikiShellPermissionAskedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: PathBuf::from(&payload.cwd),
@@ -286,7 +252,7 @@ fn build_shell_permission_asked_event(payload: CursorBeforeShellExecutionPayload
 }
 
 /// Build shell.completed event from afterShellExecution payload
-fn build_shell_completed_event(payload: CursorAfterShellExecutionPayload) -> AikiEvent {
+fn build_shell_completed_event(payload: AfterShellExecutionPayload) -> AikiEvent {
     AikiEvent::ShellCompleted(AikiShellCompletedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
@@ -302,25 +268,30 @@ fn build_shell_completed_event(payload: CursorAfterShellExecutionPayload) -> Aik
 }
 
 /// Build mcp.permission_asked event from beforeMCPExecution payload (non-file tools)
-fn build_mcp_permission_asked_event(payload: CursorBeforeMcpExecutionPayload) -> AikiEvent {
+fn build_mcp_permission_asked_event(payload: BeforeMcpExecutionPayload) -> AikiEvent {
     // Parse tool_input as JSON if possible
     let parameters = serde_json::from_str(&payload.tool_input).unwrap_or(serde_json::Value::Null);
+    let server = parse_mcp_server(&payload.tool_name);
 
     AikiEvent::McpPermissionAsked(AikiMcpPermissionAskedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
+        server,
         tool_name: payload.tool_name,
         parameters,
     })
 }
 
 /// Build mcp.completed event from afterMCPExecution payload
-fn build_mcp_completed_event(payload: CursorAfterMcpExecutionPayload) -> AikiEvent {
+fn build_mcp_completed_event(payload: AfterMcpExecutionPayload) -> AikiEvent {
+    let server = parse_mcp_server(&payload.tool_name);
+
     AikiEvent::McpCompleted(AikiMcpCompletedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
+        server,
         tool_name: payload.tool_name,
         success: true, // Cursor doesn't indicate failure in hook payload
         result: if payload.result_json.is_empty() {
@@ -331,8 +302,8 @@ fn build_mcp_completed_event(payload: CursorAfterMcpExecutionPayload) -> AikiEve
     })
 }
 
-/// Build file.completed event from afterFileEdit payload
-fn build_file_completed_event(payload: CursorAfterFileEditPayload) -> AikiEvent {
+/// Build write.completed event from afterFileEdit payload
+fn build_write_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
     // Create session first before moving any fields
     let session = create_session(&payload.conversation_id, &payload.cursor_version);
     let cwd = get_cwd(&payload.workspace_roots);
@@ -355,20 +326,19 @@ fn build_file_completed_event(payload: CursorAfterFileEditPayload) -> AikiEvent 
         debug_log(|| format!("Cursor provided {} edits", edit_details.len()));
     }
 
-    AikiEvent::FileCompleted(AikiFileCompletedPayload {
+    AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
         session,
         cwd,
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         file_paths: vec![file_path],
-        success: Some(true), // afterFileEdit implies success
+        success: true, // afterFileEdit implies success
         edit_details,
     })
 }
 
 /// Build response.received event from stop payload
-fn build_response_received_event(payload: CursorStopPayload) -> AikiEvent {
+fn build_response_received_event(payload: StopPayload) -> AikiEvent {
     AikiEvent::ResponseReceived(crate::events::AikiResponseReceivedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),

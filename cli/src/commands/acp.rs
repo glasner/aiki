@@ -121,8 +121,8 @@ use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiPromptSubmittedPayload,
-    AikiResponseReceivedPayload, AikiSessionStartPayload, FileOperation,
+    AikiEvent, AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
+    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
 };
 use crate::provenance::AgentType;
 use crate::session::AikiSession;
@@ -1261,14 +1261,13 @@ fn record_post_change_events(
         );
 
     // Create and dispatch a single event for all affected files
-    let event = AikiEvent::FileCompleted(AikiFileCompletedPayload {
+    let event = AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
         session,
         cwd: working_dir.clone(),
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
         tool_name: tool_name.clone(),
         file_paths,
-        success: Some(true),
+        success: true,
         edit_details,
     });
 
@@ -1678,27 +1677,26 @@ fn fire_pre_file_change_event(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Create and dispatch file.permission_asked event
+    // Create and dispatch write.permission_asked event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
+    let event = AikiEvent::WritePermissionAsked(AikiWritePermissionAskedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
-        path: None,
-        pattern: None,
+        tool_name: "acp".to_string(),
+        file_paths: vec![],
     });
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
         eprintln!(
-            "Warning: file.permission_asked event bus dispatch failed: {}",
+            "Warning: write.permission_asked event bus dispatch failed: {}",
             e
         );
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired file.permission_asked event for session: {}",
+                "[acp] Fired write.permission_asked event for session: {}",
                 session_id
             )
         });

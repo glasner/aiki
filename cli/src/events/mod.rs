@@ -45,19 +45,6 @@ pub enum AikiEvent {
     ResponseReceived(AikiResponseReceivedPayload),
 
     // ========================================================================
-    // File Access Events (unified model) - DEPRECATED, use operation-specific events
-    // ========================================================================
-    /// Agent is about to access a file (gateable - can approve/deny)
-    /// Operations: read, write, delete
-    /// DEPRECATED: Use ReadPermissionAsked, WritePermissionAsked, DeletePermissionAsked
-    #[serde(rename = "file.permission_asked")]
-    FilePermissionAsked(AikiFilePermissionAskedPayload),
-    /// Agent finished accessing a file
-    /// DEPRECATED: Use ReadCompleted, WriteCompleted, DeleteCompleted
-    #[serde(rename = "file.completed")]
-    FileCompleted(AikiFileCompletedPayload),
-
-    // ========================================================================
     // Read Operation Events
     // ========================================================================
     /// Agent is about to read a file (gateable - can block sensitive file reads)
@@ -145,9 +132,6 @@ impl AikiEvent {
             // User / agent interaction
             Self::PromptSubmitted(e) => &e.cwd,
             Self::ResponseReceived(e) => &e.cwd,
-            // File access (unified) - DEPRECATED
-            Self::FilePermissionAsked(e) => &e.cwd,
-            Self::FileCompleted(e) => &e.cwd,
             // Read operations
             Self::ReadPermissionAsked(e) => &e.cwd,
             Self::ReadCompleted(e) => &e.cwd,
@@ -184,9 +168,6 @@ impl AikiEvent {
             // User / agent interaction
             Self::PromptSubmitted(e) => e.session.agent_type(),
             Self::ResponseReceived(e) => e.session.agent_type(),
-            // File access (unified) - DEPRECATED
-            Self::FilePermissionAsked(e) => e.session.agent_type(),
-            Self::FileCompleted(e) => e.session.agent_type(),
             // Read operations
             Self::ReadPermissionAsked(e) => e.session.agent_type(),
             Self::ReadCompleted(e) => e.session.agent_type(),
@@ -225,10 +206,6 @@ mod session_started;
 // User / agent interaction
 mod prompt_submitted;
 mod response_received;
-
-// File access (unified model) - DEPRECATED
-mod file_completed;
-mod file_permission_asked;
 
 // Read operations
 mod read_completed;
@@ -269,10 +246,6 @@ pub use session_started::*;
 // User / agent interaction
 pub use prompt_submitted::*;
 pub use response_received::*;
-
-// File access (unified model) - DEPRECATED
-pub use file_completed::*;
-pub use file_permission_asked::*;
 
 // Read operations
 pub use read_completed::*;
@@ -317,18 +290,6 @@ impl From<AikiSessionStartPayload> for AikiEvent {
 impl From<AikiPromptSubmittedPayload> for AikiEvent {
     fn from(payload: AikiPromptSubmittedPayload) -> Self {
         AikiEvent::PromptSubmitted(payload)
-    }
-}
-
-impl From<AikiFilePermissionAskedPayload> for AikiEvent {
-    fn from(payload: AikiFilePermissionAskedPayload) -> Self {
-        AikiEvent::FilePermissionAsked(payload)
-    }
-}
-
-impl From<AikiFileCompletedPayload> for AikiEvent {
-    fn from(payload: AikiFileCompletedPayload) -> Self {
-        AikiEvent::FileCompleted(payload)
     }
 }
 

@@ -26,9 +26,8 @@ pub struct AikiWebCompletedPayload {
     /// Search query that was used (for search operations)
     #[serde(default)]
     pub query: Option<String>,
-    /// Whether the operation succeeded
-    #[serde(default)]
-    pub success: Option<bool>,
+    /// Whether the operation succeeded (always true for completed events)
+    pub success: bool,
 }
 
 /// Handle web.completed event

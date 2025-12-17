@@ -17,6 +17,9 @@ pub struct AikiMcpCompletedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    /// MCP server name (parsed from tool_name format: mcp__<server>__<tool>)
+    #[serde(default)]
+    pub server: Option<String>,
     /// Name of the MCP tool that was called
     pub tool_name: String,
     /// Whether the tool call succeeded

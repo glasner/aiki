@@ -24,57 +24,81 @@ session.started:
         jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession=$event.session_id\n[/aiki]"
       - jj: new
 
-# file.permission_asked: Stash any user changes before AI starts editing files
-file.permission_asked:
-  # Only stash for write operations (not reads)
-  - if: $event.operation == "write"
+# ==============================================================================
+# Write Operation Events (new, preferred)
+# ==============================================================================
+
+# write.permission_asked: Stash any user changes before AI starts editing files
+write.permission_asked:
+  # Check if working copy has any changes
+  - jj: diff -r @ --name-only
+    alias: changed_files
+
+  # If there are changes (non-empty string), stash them before AI starts
+  - if: $changed_files
     then:
-      # Check if working copy has any changes
-      - jj: diff -r @ --name-only
-        alias: changed_files
+      - with_author_and_message: self.build_human_metadata
+        jj: describe --message "$message"
 
-      # If there are changes (non-empty string), stash them before AI starts
-      - if: $changed_files
-        then:
-          - with_author_and_message: self.build_human_metadata
-            jj: describe --message "$message"
+      - jj: new # Give AI a clean working copy
 
-          - jj: new # Give AI a clean working copy
-
-# file.completed: Record provenance metadata after every AI file operation
-file.completed:
-  # Only record provenance for write operations
-  - if: $event.operation == "write"
+# write.completed: Record provenance metadata after AI file writes
+write.completed:
+  # Classify edits to detect user modifications
+  # This compares AI's intended edits with actual file state
+  # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
+  - if: self.classify_edits == "AdditiveUserEdits"
     then:
-      # Classify edits to detect user modifications
-      # This compares AI's intended edits with actual file state
-      # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
-      - if: self.classify_edits == "AdditiveUserEdits"
-        then:
-          # User added more changes - separate them into two changes
-          - let: prep = self.prepare_separation
+      # User added more changes - separate them into two changes
+      - let: prep = self.prepare_separation
 
-          - self: write_ai_files
+      - self: write_ai_files
 
-          - with_author: $prep.ai_author
-            jj: split --message "$prep.ai_message" $prep.file_list
+      - with_author: $prep.ai_author
+        jj: split --message "$prep.ai_message" $prep.file_list
 
-          - self: restore_original_files
-          # Add aiki metadata with git user as author and AI as coauthor
-          - with_author_and_message: self.build_human_metadata
-            jj: metaedit --message "$message"
+      - self: restore_original_files
+      # Add aiki metadata with git user as author and AI as coauthor
+      - with_author_and_message: self.build_human_metadata
+        jj: metaedit --message "$message"
 
-        else:
-          # For ExactMatch or OverlappingUserEdits, set AI metadata
-          - let: metadata = self.build_metadata
-            on_failure:
-              - stop: "Failed to build metadata"
+    else:
+      # For ExactMatch or OverlappingUserEdits, set AI metadata
+      - let: metadata = self.build_metadata
+        on_failure:
+          - stop: "Failed to build metadata"
 
-          - with_author_and_message: $metadata
-            jj: metaedit --message "$message"
+      - with_author_and_message: $metadata
+        jj: metaedit --message "$message"
 
-      # Create a new change for the next edit
-      - jj: new
+  # Create a new change for the next edit
+  - jj: new
+
+# ==============================================================================
+# Read Operation Events
+# ==============================================================================
+
+# read.permission_asked: Gate sensitive file reads (e.g., secrets, .env)
+read.permission_asked:
+  # Empty by default - can be customized in user flows
+
+# read.completed: Handle actions after file reads
+read.completed:
+  # Empty by default - no provenance needed for reads
+
+# ==============================================================================
+# Delete Operation Events
+# ==============================================================================
+
+# delete.permission_asked: Gate deletion of important files
+delete.permission_asked:
+  # Empty by default - can be customized in user flows
+
+# delete.completed: Handle actions after file deletes
+delete.completed:
+  # For now, just create a new change to separate delete from other operations
+  # Full provenance tracking for deletes is tracked in separate plan
+  - jj: new
 
 # response.received: Handle actions after agent response (e.g., autoreplies)
 response.received:
