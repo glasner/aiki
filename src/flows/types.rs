@@ -114,16 +114,50 @@ pub struct Flow {
     pub response_received: Vec<FlowStatement>,
 
     // ========================================================================
-    // File Access Events (unified model)
+    // File Access Events (unified model) - DEPRECATED
     // ========================================================================
     /// file.permission_asked event handler (agent is about to access a file)
-    /// Operations: read, write, delete
+    /// DEPRECATED: Use read.permission_asked, write.permission_asked, delete.permission_asked
     #[serde(rename = "file.permission_asked", default)]
     pub file_permission_asked: Vec<FlowStatement>,
 
     /// file.completed event handler (agent finished accessing a file)
+    /// DEPRECATED: Use read.completed, write.completed, delete.completed
     #[serde(rename = "file.completed", default)]
     pub file_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Read Operation Events
+    // ========================================================================
+    /// read.permission_asked event handler (agent is about to read a file)
+    #[serde(rename = "read.permission_asked", default)]
+    pub read_permission_asked: Vec<FlowStatement>,
+
+    /// read.completed event handler (agent finished reading a file)
+    #[serde(rename = "read.completed", default)]
+    pub read_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Write Operation Events
+    // ========================================================================
+    /// write.permission_asked event handler (agent is about to write a file)
+    #[serde(rename = "write.permission_asked", default)]
+    pub write_permission_asked: Vec<FlowStatement>,
+
+    /// write.completed event handler (agent finished writing a file)
+    #[serde(rename = "write.completed", default)]
+    pub write_completed: Vec<FlowStatement>,
+
+    // ========================================================================
+    // Delete Operation Events
+    // ========================================================================
+    /// delete.permission_asked event handler (agent is about to delete a file)
+    #[serde(rename = "delete.permission_asked", default)]
+    pub delete_permission_asked: Vec<FlowStatement>,
+
+    /// delete.completed event handler (agent finished deleting a file)
+    #[serde(rename = "delete.completed", default)]
+    pub delete_completed: Vec<FlowStatement>,
 
     // ========================================================================
     // Shell Command Events

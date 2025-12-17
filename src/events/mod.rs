@@ -45,15 +45,47 @@ pub enum AikiEvent {
     ResponseReceived(AikiResponseReceivedPayload),
 
     // ========================================================================
-    // File Access Events (unified model)
+    // File Access Events (unified model) - DEPRECATED, use operation-specific events
     // ========================================================================
     /// Agent is about to access a file (gateable - can approve/deny)
     /// Operations: read, write, delete
+    /// DEPRECATED: Use ReadPermissionAsked, WritePermissionAsked, DeletePermissionAsked
     #[serde(rename = "file.permission_asked")]
     FilePermissionAsked(AikiFilePermissionAskedPayload),
     /// Agent finished accessing a file
+    /// DEPRECATED: Use ReadCompleted, WriteCompleted, DeleteCompleted
     #[serde(rename = "file.completed")]
     FileCompleted(AikiFileCompletedPayload),
+
+    // ========================================================================
+    // Read Operation Events
+    // ========================================================================
+    /// Agent is about to read a file (gateable - can block sensitive file reads)
+    #[serde(rename = "read.permission_asked")]
+    ReadPermissionAsked(AikiReadPermissionAskedPayload),
+    /// Agent finished reading a file
+    #[serde(rename = "read.completed")]
+    ReadCompleted(AikiReadCompletedPayload),
+
+    // ========================================================================
+    // Write Operation Events
+    // ========================================================================
+    /// Agent is about to write a file (gateable - stash user changes before AI edits)
+    #[serde(rename = "write.permission_asked")]
+    WritePermissionAsked(AikiWritePermissionAskedPayload),
+    /// Agent finished writing a file (core provenance tracking event)
+    #[serde(rename = "write.completed")]
+    WriteCompleted(AikiWriteCompletedPayload),
+
+    // ========================================================================
+    // Delete Operation Events
+    // ========================================================================
+    /// Agent is about to delete a file (gateable - can block deletion of important files)
+    #[serde(rename = "delete.permission_asked")]
+    DeletePermissionAsked(AikiDeletePermissionAskedPayload),
+    /// Agent finished deleting a file
+    #[serde(rename = "delete.completed")]
+    DeleteCompleted(AikiDeleteCompletedPayload),
 
     // ========================================================================
     // Shell Command Events
@@ -113,9 +145,18 @@ impl AikiEvent {
             // User / agent interaction
             Self::PromptSubmitted(e) => &e.cwd,
             Self::ResponseReceived(e) => &e.cwd,
-            // File access (unified)
+            // File access (unified) - DEPRECATED
             Self::FilePermissionAsked(e) => &e.cwd,
             Self::FileCompleted(e) => &e.cwd,
+            // Read operations
+            Self::ReadPermissionAsked(e) => &e.cwd,
+            Self::ReadCompleted(e) => &e.cwd,
+            // Write operations
+            Self::WritePermissionAsked(e) => &e.cwd,
+            Self::WriteCompleted(e) => &e.cwd,
+            // Delete operations
+            Self::DeletePermissionAsked(e) => &e.cwd,
+            Self::DeleteCompleted(e) => &e.cwd,
             // Shell commands
             Self::ShellPermissionAsked(e) => &e.cwd,
             Self::ShellCompleted(e) => &e.cwd,
@@ -143,9 +184,18 @@ impl AikiEvent {
             // User / agent interaction
             Self::PromptSubmitted(e) => e.session.agent_type(),
             Self::ResponseReceived(e) => e.session.agent_type(),
-            // File access (unified)
+            // File access (unified) - DEPRECATED
             Self::FilePermissionAsked(e) => e.session.agent_type(),
             Self::FileCompleted(e) => e.session.agent_type(),
+            // Read operations
+            Self::ReadPermissionAsked(e) => e.session.agent_type(),
+            Self::ReadCompleted(e) => e.session.agent_type(),
+            // Write operations
+            Self::WritePermissionAsked(e) => e.session.agent_type(),
+            Self::WriteCompleted(e) => e.session.agent_type(),
+            // Delete operations
+            Self::DeletePermissionAsked(e) => e.session.agent_type(),
+            Self::DeleteCompleted(e) => e.session.agent_type(),
             // Shell commands
             Self::ShellPermissionAsked(e) => e.session.agent_type(),
             Self::ShellCompleted(e) => e.session.agent_type(),
@@ -176,9 +226,21 @@ mod session_started;
 mod prompt_submitted;
 mod response_received;
 
-// File access (unified model)
+// File access (unified model) - DEPRECATED
 mod file_completed;
 mod file_permission_asked;
+
+// Read operations
+mod read_completed;
+mod read_permission_asked;
+
+// Write operations
+mod write_completed;
+mod write_permission_asked;
+
+// Delete operations
+mod delete_completed;
+mod delete_permission_asked;
 
 // Shell commands
 mod shell_completed;
@@ -208,9 +270,21 @@ pub use session_started::*;
 pub use prompt_submitted::*;
 pub use response_received::*;
 
-// File access (unified model)
+// File access (unified model) - DEPRECATED
 pub use file_completed::*;
 pub use file_permission_asked::*;
+
+// Read operations
+pub use read_completed::*;
+pub use read_permission_asked::*;
+
+// Write operations
+pub use write_completed::*;
+pub use write_permission_asked::*;
+
+// Delete operations
+pub use delete_completed::*;
+pub use delete_permission_asked::*;
 
 // Re-export FileOperation from tools module for convenience
 pub use crate::tools::FileOperation;
@@ -255,6 +329,45 @@ impl From<AikiFilePermissionAskedPayload> for AikiEvent {
 impl From<AikiFileCompletedPayload> for AikiEvent {
     fn from(payload: AikiFileCompletedPayload) -> Self {
         AikiEvent::FileCompleted(payload)
+    }
+}
+
+// Read operations
+impl From<AikiReadPermissionAskedPayload> for AikiEvent {
+    fn from(payload: AikiReadPermissionAskedPayload) -> Self {
+        AikiEvent::ReadPermissionAsked(payload)
+    }
+}
+
+impl From<AikiReadCompletedPayload> for AikiEvent {
+    fn from(payload: AikiReadCompletedPayload) -> Self {
+        AikiEvent::ReadCompleted(payload)
+    }
+}
+
+// Write operations
+impl From<AikiWritePermissionAskedPayload> for AikiEvent {
+    fn from(payload: AikiWritePermissionAskedPayload) -> Self {
+        AikiEvent::WritePermissionAsked(payload)
+    }
+}
+
+impl From<AikiWriteCompletedPayload> for AikiEvent {
+    fn from(payload: AikiWriteCompletedPayload) -> Self {
+        AikiEvent::WriteCompleted(payload)
+    }
+}
+
+// Delete operations
+impl From<AikiDeletePermissionAskedPayload> for AikiEvent {
+    fn from(payload: AikiDeletePermissionAskedPayload) -> Self {
+        AikiEvent::DeletePermissionAsked(payload)
+    }
+}
+
+impl From<AikiDeleteCompletedPayload> for AikiEvent {
+    fn from(payload: AikiDeleteCompletedPayload) -> Self {
+        AikiEvent::DeleteCompleted(payload)
     }
 }
 
