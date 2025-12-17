@@ -48,9 +48,8 @@ pub struct AikiWriteCompletedPayload {
     pub tool_name: String,
     /// Files that were written
     pub file_paths: Vec<String>,
-    /// Whether the operation succeeded
-    #[serde(default)]
-    pub success: Option<bool>,
+    /// Whether the operation succeeded (always true for completed events)
+    pub success: bool,
     /// Detailed edit operations (old_string -> new_string pairs) for user edit detection
     /// Only populated for Edit/MultiEdit tools that have old/new string info.
     /// Write tool and NotebookEdit don't have meaningful edit_details.

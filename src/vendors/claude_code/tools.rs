@@ -188,8 +188,20 @@ impl ClaudeTool {
             // Internal tools
             "Task" | "TodoRead" | "TodoWrite" => Some(ClaudeTool::Internal(tool_name.to_string())),
 
-            // Everything else is MCP
-            _ => Some(ClaudeTool::Mcp(tool_name.to_string())),
+            // MCP tools follow naming convention: mcp__<server>__<tool>
+            _ if tool_name.starts_with("mcp__") => Some(ClaudeTool::Mcp(tool_name.to_string())),
+
+            // Unknown tool - warn and treat as internal to skip silently
+            // This helps detect when Claude Code adds new native tools
+            _ => {
+                eprintln!(
+                    "[aiki] Warning: Unknown Claude tool '{}'. \
+                     This may be a new native tool - please report at \
+                     https://github.com/anthropics/claude-code/issues",
+                    tool_name
+                );
+                Some(ClaudeTool::Unknown(tool_name.to_string()))
+            }
         }
         .unwrap_or_else(|| ClaudeTool::Unknown(tool_name.to_string()))
     }

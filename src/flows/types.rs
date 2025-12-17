@@ -114,19 +114,6 @@ pub struct Flow {
     pub response_received: Vec<FlowStatement>,
 
     // ========================================================================
-    // File Access Events (unified model) - DEPRECATED
-    // ========================================================================
-    /// file.permission_asked event handler (agent is about to access a file)
-    /// DEPRECATED: Use read.permission_asked, write.permission_asked, delete.permission_asked
-    #[serde(rename = "file.permission_asked", default)]
-    pub file_permission_asked: Vec<FlowStatement>,
-
-    /// file.completed event handler (agent finished accessing a file)
-    /// DEPRECATED: Use read.completed, write.completed, delete.completed
-    #[serde(rename = "file.completed", default)]
-    pub file_completed: Vec<FlowStatement>,
-
-    // ========================================================================
     // Read Operation Events
     // ========================================================================
     /// read.permission_asked event handler (agent is about to read a file)

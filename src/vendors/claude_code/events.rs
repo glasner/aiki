@@ -5,10 +5,11 @@ use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::FileOperation;
 use crate::events::{
-    AikiEvent, AikiFileCompletedPayload, AikiFilePermissionAskedPayload, AikiMcpCompletedPayload,
-    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiResponseReceivedPayload,
-    AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
-    AikiWebCompletedPayload, AikiWebPermissionAskedPayload,
+    parse_mcp_server, AikiEvent, AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload,
+    AikiPromptSubmittedPayload, AikiReadCompletedPayload, AikiReadPermissionAskedPayload,
+    AikiResponseReceivedPayload, AikiSessionStartPayload, AikiShellCompletedPayload,
+    AikiShellPermissionAskedPayload, AikiWebCompletedPayload, AikiWebPermissionAskedPayload,
+    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
 };
 use crate::tools::ToolType;
 
@@ -27,40 +28,40 @@ enum ClaudeEvent {
     #[serde(rename = "SessionStart")]
     SessionStart {
         #[serde(flatten)]
-        payload: ClaudeSessionStartPayload,
+        payload: SessionStartPayload,
     },
     #[serde(rename = "UserPromptSubmit")]
     UserPromptSubmit {
         #[serde(flatten)]
-        payload: ClaudeUserPromptSubmitPayload,
+        payload: UserPromptSubmitPayload,
     },
     #[serde(rename = "PreToolUse")]
     PreToolUse {
         #[serde(flatten)]
-        payload: ClaudePreToolUsePayload,
+        payload: PreToolUsePayload,
     },
     #[serde(rename = "PostToolUse")]
     PostToolUse {
         #[serde(flatten)]
-        payload: ClaudePostToolUsePayload,
+        payload: PostToolUsePayload,
     },
     #[serde(rename = "Stop")]
     Stop {
         #[serde(flatten)]
-        payload: ClaudeStopPayload,
+        payload: StopPayload,
     },
 }
 
 /// SessionStart hook payload
 #[derive(Deserialize, Debug)]
-struct ClaudeSessionStartPayload {
+struct SessionStartPayload {
     session_id: String,
     cwd: String,
 }
 
 /// UserPromptSubmit hook payload
 #[derive(Deserialize, Debug)]
-struct ClaudeUserPromptSubmitPayload {
+struct UserPromptSubmitPayload {
     session_id: String,
     cwd: String,
     #[serde(default)]
@@ -69,7 +70,7 @@ struct ClaudeUserPromptSubmitPayload {
 
 /// PreToolUse hook payload
 #[derive(Deserialize, Debug)]
-pub struct ClaudePreToolUsePayload {
+pub struct PreToolUsePayload {
     pub session_id: String,
     pub cwd: String,
     pub tool_name: String,
@@ -79,7 +80,7 @@ pub struct ClaudePreToolUsePayload {
 
 /// PostToolUse hook payload
 #[derive(Deserialize, Debug)]
-pub struct ClaudePostToolUsePayload {
+pub struct PostToolUsePayload {
     pub session_id: String,
     pub cwd: String,
     pub tool_name: String,
@@ -91,7 +92,7 @@ pub struct ClaudePostToolUsePayload {
 
 /// Stop hook payload
 #[derive(Deserialize, Debug)]
-struct ClaudeStopPayload {
+struct StopPayload {
     session_id: String,
     cwd: String,
 }
@@ -103,9 +104,9 @@ struct ClaudeStopPayload {
 /// Build AikiEvent from Claude Code event read from stdin
 pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     // Parse event - serde discriminates by hook_event_name
-    let claude_event: ClaudeEvent = super::super::read_stdin_json()?;
+    let event: ClaudeEvent = super::super::read_stdin_json()?;
 
-    let aiki_event = match claude_event {
+    let aiki_event = match event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
         ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
@@ -117,7 +118,7 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
 }
 
 /// Build appropriate pre-tool event based on tool type
-fn build_permission_asked_event_for_tool_type(payload: ClaudePreToolUsePayload) -> AikiEvent {
+fn build_permission_asked_event_for_tool_type(payload: PreToolUsePayload) -> AikiEvent {
     let tool = ClaudeTool::parse(&payload.tool_name, payload.tool_input.as_ref());
 
     match tool.tool_type() {
@@ -130,7 +131,7 @@ fn build_permission_asked_event_for_tool_type(payload: ClaudePreToolUsePayload) 
 }
 
 /// Build appropriate post-tool event based on tool type
-fn build_completed_event_for_tool_type(payload: ClaudePostToolUsePayload) -> AikiEvent {
+fn build_completed_event_for_tool_type(payload: PostToolUsePayload) -> AikiEvent {
     let tool = ClaudeTool::parse(&payload.tool_name, payload.tool_input.as_ref());
 
     match tool.tool_type() {
@@ -143,7 +144,7 @@ fn build_completed_event_for_tool_type(payload: ClaudePostToolUsePayload) -> Aik
 }
 
 /// Build session.started event
-fn build_session_started_event(payload: ClaudeSessionStartPayload) -> AikiEvent {
+fn build_session_started_event(payload: SessionStartPayload) -> AikiEvent {
     AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
@@ -152,7 +153,7 @@ fn build_session_started_event(payload: ClaudeSessionStartPayload) -> AikiEvent 
 }
 
 /// Build prompt.submitted event
-fn build_prompt_submitted_event(payload: ClaudeUserPromptSubmitPayload) -> AikiEvent {
+fn build_prompt_submitted_event(payload: UserPromptSubmitPayload) -> AikiEvent {
     AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
@@ -162,10 +163,7 @@ fn build_prompt_submitted_event(payload: ClaudeUserPromptSubmitPayload) -> AikiE
 }
 
 /// Build file.permission_asked event for all file tools
-fn build_file_permission_asked_event(
-    payload: ClaudePreToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+fn build_file_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     // Extra safety check - should never happen due to tool_type() dispatch
     if !matches!(tool.tool_type(), ToolType::File) {
         eprintln!("[aiki] Error: build_file_permission_asked_event called on non-file tool");
@@ -178,8 +176,8 @@ fn build_file_permission_asked_event(
     };
 
     match operation {
-        FileOperation::Write => build_file_write_permission_asked_event(payload, tool),
-        FileOperation::Read => build_file_read_permission_asked_event(payload, tool),
+        FileOperation::Write => build_write_permission_asked_event(payload, tool),
+        FileOperation::Read => build_read_permission_asked_event(payload, tool),
         FileOperation::Delete => {
             eprintln!("[aiki] Warning: Delete operation not yet supported in PreToolUse");
             AikiEvent::Unsupported
@@ -187,83 +185,76 @@ fn build_file_permission_asked_event(
     }
 }
 
-/// Build file.permission_asked event for write operations (Edit, Write, NotebookEdit, MultiEdit)
-fn build_file_write_permission_asked_event(
-    payload: ClaudePreToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
-    let path = match tool {
+/// Build write.permission_asked event for write operations (Edit, Write, NotebookEdit, MultiEdit)
+fn build_write_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+    let file_paths = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
-            Some(input.file_path)
+            vec![input.file_path]
         }
         ClaudeTool::MultiEdit(input) => {
-            // MultiEdit affects multiple files - use first file or None if empty
-            input.edits.first().map(|e| e.file_path.clone())
+            // MultiEdit affects multiple files
+            input.edits.iter().map(|e| e.file_path.clone()).collect()
         }
         ClaudeTool::Unknown(name) => {
             eprintln!("[aiki] Warning: Failed to parse tool input for '{}'", name);
-            None
+            Vec::new()
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in file.write.permission_asked");
-            None
+            eprintln!("[aiki] Warning: Unexpected tool type in write.permission_asked");
+            Vec::new()
         }
     };
 
-    AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
+    AikiEvent::WritePermissionAsked(AikiWritePermissionAskedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
-        path,
-        pattern: None,
+        tool_name: payload.tool_name,
+        file_paths,
     })
 }
 
-/// Build file.permission_asked event for read operations (Read, LS, Glob, Grep)
-fn build_file_read_permission_asked_event(
-    payload: ClaudePreToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
-    let (path, pattern) = match tool {
-        ClaudeTool::Read(input) => (Some(input.file_path), None),
+/// Build read.permission_asked event for read operations (Read, LS, Glob, Grep)
+fn build_read_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+    let (file_paths, pattern) = match tool {
+        ClaudeTool::Read(input) => (vec![input.file_path], None),
         ClaudeTool::Glob(input) => {
             // Glob with no path means search from current directory
-            let path = input.path.or_else(|| Some(".".to_string()));
-            (path, Some(input.pattern))
+            let path = input.path.unwrap_or_else(|| payload.cwd.clone());
+            (vec![path], Some(input.pattern))
         }
         ClaudeTool::Grep(input) => {
             // Grep with no path means search from current directory
-            let path = input.path.or_else(|| Some(".".to_string()));
-            (path, Some(input.pattern))
+            let path = input.path.unwrap_or_else(|| payload.cwd.clone());
+            (vec![path], Some(input.pattern))
         }
         ClaudeTool::LS(input) => {
             // LS with no path means list current directory
-            let path = input.path.or_else(|| Some(".".to_string()));
-            (path, None)
+            let path = input.path.unwrap_or_else(|| payload.cwd.clone());
+            (vec![path], None)
         }
         ClaudeTool::Unknown(name) => {
             eprintln!("[aiki] Warning: Failed to parse tool input for '{}'", name);
-            (None, None)
+            (Vec::new(), None)
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in file.read.permission_asked");
-            (None, None)
+            eprintln!("[aiki] Warning: Unexpected tool type in read.permission_asked");
+            (Vec::new(), None)
         }
     };
 
-    AikiEvent::FilePermissionAsked(AikiFilePermissionAskedPayload {
+    AikiEvent::ReadPermissionAsked(AikiReadPermissionAskedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Read,
-        path,
+        tool_name: payload.tool_name,
+        file_paths,
         pattern,
     })
 }
 
 /// Build file.completed event for all file tools
-fn build_file_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+fn build_file_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     // Extra safety check - should never happen due to tool_type() dispatch
     if !matches!(tool.tool_type(), ToolType::File) {
         eprintln!("[aiki] Error: build_file_completed_event called on non-file tool");
@@ -276,8 +267,8 @@ fn build_file_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeToo
     };
 
     match operation {
-        FileOperation::Write => build_file_write_completed_event(payload, tool),
-        FileOperation::Read => build_file_read_completed_event(payload, tool),
+        FileOperation::Write => build_write_completed_event(payload, tool),
+        FileOperation::Read => build_read_completed_event(payload, tool),
         FileOperation::Delete => {
             eprintln!("[aiki] Warning: Delete operation not yet supported in PostToolUse");
             AikiEvent::Unsupported
@@ -285,11 +276,8 @@ fn build_file_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeToo
     }
 }
 
-/// Build file.completed event for write operations (Edit, Write, NotebookEdit, MultiEdit)
-fn build_file_write_completed_event(
-    payload: ClaudePostToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+/// Build write.completed event for write operations (Edit, Write, NotebookEdit, MultiEdit)
+fn build_write_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let (file_paths, edit_details) = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::NotebookEdit(input) => {
             // Edit/NotebookEdit use old_string/new_string for replacements
@@ -333,78 +321,60 @@ fn build_file_write_completed_event(
             return AikiEvent::Unsupported;
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in file.write.completed");
+            eprintln!("[aiki] Warning: Unexpected tool type in write.completed");
             return AikiEvent::Unsupported;
         }
     };
 
-    AikiEvent::FileCompleted(AikiFileCompletedPayload {
+    AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Write,
         tool_name: payload.tool_name,
         file_paths,
-        success: Some(true),
+        success: true,
         edit_details,
     })
 }
 
-/// Build file.completed event for read operations (Read, LS, Glob, Grep)
-fn build_file_read_completed_event(
-    payload: ClaudePostToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+/// Build read.completed event for read operations (Read, LS, Glob, Grep)
+fn build_read_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let file_paths = match tool {
         ClaudeTool::Read(input) => vec![input.file_path],
         ClaudeTool::Glob(input) => {
             // Glob with no path means search from current directory
-            input
-                .path
-                .map(|p| vec![p])
-                .unwrap_or_else(|| vec![".".to_string()])
+            vec![input.path.unwrap_or_else(|| payload.cwd.clone())]
         }
         ClaudeTool::Grep(input) => {
             // Grep with no path means search from current directory
-            input
-                .path
-                .map(|p| vec![p])
-                .unwrap_or_else(|| vec![".".to_string()])
+            vec![input.path.unwrap_or_else(|| payload.cwd.clone())]
         }
         ClaudeTool::LS(input) => {
             // LS with no path means list current directory
-            input
-                .path
-                .map(|p| vec![p])
-                .unwrap_or_else(|| vec![".".to_string()])
+            vec![input.path.unwrap_or_else(|| payload.cwd.clone())]
         }
         ClaudeTool::Unknown(name) => {
             eprintln!("[aiki] Warning: Failed to parse tool input for '{}'", name);
             return AikiEvent::Unsupported;
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in file.read.completed");
+            eprintln!("[aiki] Warning: Unexpected tool type in read.completed");
             return AikiEvent::Unsupported;
         }
     };
 
-    AikiEvent::FileCompleted(AikiFileCompletedPayload {
+    AikiEvent::ReadCompleted(AikiReadCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        operation: FileOperation::Read,
         tool_name: payload.tool_name,
         file_paths,
-        success: Some(true),
-        edit_details: Vec::new(),
+        success: true,
     })
 }
 
 /// Build shell.permission_asked event (Bash tool)
-fn build_shell_permission_asked_event(
-    payload: ClaudePreToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+fn build_shell_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let command = match tool {
         ClaudeTool::Bash(input) => input.command,
         ClaudeTool::Unknown(_) => {
@@ -426,7 +396,7 @@ fn build_shell_permission_asked_event(
 }
 
 /// Build shell.completed event (Bash tool)
-fn build_shell_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+fn build_shell_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let command = match tool {
         ClaudeTool::Bash(input) => input.command,
         ClaudeTool::Unknown(_) => {
@@ -470,30 +440,34 @@ fn build_shell_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTo
 }
 
 /// Build mcp.permission_asked event (MCP tools)
-fn build_mcp_permission_asked_event(payload: ClaudePreToolUsePayload) -> AikiEvent {
+fn build_mcp_permission_asked_event(payload: PreToolUsePayload) -> AikiEvent {
     let parameters = payload.tool_input.unwrap_or(serde_json::Value::Null);
+    let server = parse_mcp_server(&payload.tool_name);
 
     AikiEvent::McpPermissionAsked(AikiMcpPermissionAskedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        server,
         tool_name: payload.tool_name,
         parameters,
     })
 }
 
 /// Build mcp.completed event (MCP tools)
-fn build_mcp_completed_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
+fn build_mcp_completed_event(payload: PostToolUsePayload) -> AikiEvent {
     let result = payload
         .tool_response
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .filter(|s| !s.is_empty() && s != "null");
+    let server = parse_mcp_server(&payload.tool_name);
 
     AikiEvent::McpCompleted(AikiMcpCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        server,
         tool_name: payload.tool_name,
         success: true,
         result,
@@ -501,10 +475,7 @@ fn build_mcp_completed_event(payload: ClaudePostToolUsePayload) -> AikiEvent {
 }
 
 /// Build web.permission_asked event (WebFetch, WebSearch)
-fn build_web_permission_asked_event(
-    payload: ClaudePreToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+fn build_web_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let Some(operation) = tool.web_operation() else {
         eprintln!("[aiki] Error: Failed to get web operation");
         return AikiEvent::Unsupported;
@@ -537,7 +508,7 @@ fn build_web_permission_asked_event(
 }
 
 /// Build web.completed event (WebFetch, WebSearch)
-fn build_web_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+fn build_web_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let Some(operation) = tool.web_operation() else {
         eprintln!("[aiki] Error: Failed to get web operation");
         return AikiEvent::Unsupported;
@@ -567,12 +538,12 @@ fn build_web_completed_event(payload: ClaudePostToolUsePayload, tool: ClaudeTool
         operation,
         url,
         query,
-        success: Some(true),
+        success: true,
     })
 }
 
 /// Build response.received event
-fn build_response_received_event(payload: ClaudeStopPayload) -> AikiEvent {
+fn build_response_received_event(payload: StopPayload) -> AikiEvent {
     AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),

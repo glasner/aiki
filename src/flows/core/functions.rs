@@ -28,7 +28,7 @@ use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
-    AikiCommitMessageStartedPayload, AikiFileCompletedPayload, AikiFilePermissionAskedPayload,
+    AikiCommitMessageStartedPayload, AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
 };
 use crate::flows::state::ActionResult;
 use crate::provenance::ProvenanceRecord;
@@ -88,7 +88,7 @@ pub fn get_git_user() -> Option<String> {
 ///   jj: describe --message "User changes"
 /// ```
 pub fn get_git_user_function(
-    _event: &AikiFileCompletedPayload,
+    _event: &AikiWriteCompletedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let git_user = get_git_user().ok_or_else(|| {
@@ -139,10 +139,10 @@ pub fn get_git_user_function(
 ///   - jj: metaedit -m "$metadata.message" --author "$metadata.author"
 /// ```
 pub fn build_metadata(
-    event: &AikiFileCompletedPayload,
+    event: &AikiWriteCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
-    let mut provenance = ProvenanceRecord::from_file_completed_event(event);
+    let mut provenance = ProvenanceRecord::from_write_completed_event(event);
 
     // Check if we have overlapping user edits and should add coauthor
     if let Some(ctx) = context {
@@ -258,7 +258,7 @@ fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<Ac
 
 /// Build human metadata - works with change.permission_asked events
 pub fn build_human_metadata(
-    event: &AikiFilePermissionAskedPayload,
+    event: &AikiWritePermissionAskedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     build_human_metadata_impl(&event.session)
@@ -266,7 +266,7 @@ pub fn build_human_metadata(
 
 /// Build human metadata - works with change.done events
 pub fn build_human_metadata_post(
-    event: &AikiFileCompletedPayload,
+    event: &AikiWriteCompletedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     build_human_metadata_impl(&event.session)
@@ -327,7 +327,7 @@ pub enum EditClassification {
 ///     then:
 ///       - jj: metaedit -m "$metadata.message"
 /// ```
-pub fn classify_edits(event: &AikiFileCompletedPayload) -> Result<ActionResult> {
+pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
     // If no edit details, we can't classify - treat as exact match (AI-only)
     if event.edit_details.is_empty() {
         debug_log(|| "[flows/core] No edit details available - assuming AI-only changes");
@@ -413,10 +413,7 @@ pub fn classify_edits(event: &AikiFileCompletedPayload) -> Result<ActionResult> 
 }
 
 /// Classify edits for a single file
-fn classify_file(
-    file_path: &str,
-    event: &AikiFileCompletedPayload,
-) -> Result<EditClassification> {
+fn classify_file(file_path: &str, event: &AikiWriteCompletedPayload) -> Result<EditClassification> {
     // Read current file content
     let full_path = event.cwd.join(file_path);
     let current_content = read_file_safe(&full_path)?;
@@ -528,7 +525,7 @@ fn read_file_safe(path: &Path) -> Result<String> {
 ///         - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
 ///         - self: restore_original_files
 /// ```
-pub fn prepare_separation(event: &AikiFileCompletedPayload) -> Result<ActionResult> {
+pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
     // If no edit details, return early
     if event.edit_details.is_empty() {
         debug_log(|| "[flows/core] No edit details available, skipping preparation");
@@ -545,7 +542,7 @@ pub fn prepare_separation(event: &AikiFileCompletedPayload) -> Result<ActionResu
     }
 
     // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_file_completed_event(event);
+    let provenance = ProvenanceRecord::from_write_completed_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
@@ -643,7 +640,7 @@ pub fn prepare_separation(event: &AikiFileCompletedPayload) -> Result<ActionResu
 /// - jj: split --message "$prep.ai_message" $prep.file_list
 /// ```
 pub fn write_ai_files(
-    event: &AikiFileCompletedPayload,
+    event: &AikiWriteCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
@@ -721,7 +718,7 @@ pub fn write_ai_files(
 /// - self: restore_original_files
 /// ```
 pub fn restore_original_files(
-    event: &AikiFileCompletedPayload,
+    event: &AikiWriteCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
@@ -821,7 +818,7 @@ pub fn restore_original_files(
 /// Note: This simplified version derives all needed data from the event and doesn't
 /// require function arguments. A future enhancement could add argument support to the
 /// flow executor.
-pub fn separate_edits(event: &AikiFileCompletedPayload) -> Result<ActionResult> {
+pub fn separate_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
     // If no edit details, return success (nothing to separate)
     // This allows graceful degradation for hook-based detection where
     // edit details might not be available
@@ -840,7 +837,7 @@ pub fn separate_edits(event: &AikiFileCompletedPayload) -> Result<ActionResult> 
     }
 
     // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_file_completed_event(event);
+    let provenance = ProvenanceRecord::from_write_completed_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
@@ -1001,7 +998,7 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
 fn reconstruct_ai_only_content(
     current_content: &str,
     file_path: &str,
-    event: &AikiFileCompletedPayload,
+    event: &AikiWriteCompletedPayload,
 ) -> Result<String> {
     let mut ai_content = current_content.to_string();
 
@@ -1179,14 +1176,13 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiFileCompletedPayload {
+        let event = AikiWriteCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            operation: crate::tools::FileOperation::Write,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
-            success: Some(true),
+            success: true,
             edit_details: vec![],
         };
 
@@ -1214,14 +1210,13 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiFileCompletedPayload {
+        let event = AikiWriteCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            operation: crate::tools::FileOperation::Write,
             tool_name: "Edit".to_string(),
             file_paths: vec!["/tmp/file.rs".to_string()],
-            success: Some(true),
+            success: true,
             edit_details: vec![],
         };
 
@@ -1241,21 +1236,20 @@ mod tests {
         cwd: &Path,
         file_paths: Vec<String>,
         edit_details: Vec<EditDetail>,
-    ) -> AikiFileCompletedPayload {
+    ) -> AikiWriteCompletedPayload {
         let session = AikiSession::new(
             AgentType::Claude,
             "test".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiFileCompletedPayload {
+        AikiWriteCompletedPayload {
             session,
             cwd: cwd.to_path_buf(),
             timestamp: chrono::Utc::now(),
-            operation: crate::tools::FileOperation::Write,
             tool_name: "Edit".to_string(),
             file_paths,
-            success: Some(true),
+            success: true,
             edit_details,
         }
     }
@@ -1359,14 +1353,13 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiFileCompletedPayload {
+        let event = AikiWriteCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            operation: crate::tools::FileOperation::Write,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],
-            success: Some(true),
+            success: true,
             edit_details: vec![EditDetail::new("test.txt", "", "Hello World")],
         };
 
@@ -1385,14 +1378,13 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiFileCompletedPayload {
+        let event = AikiWriteCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
-            operation: crate::tools::FileOperation::Write,
             tool_name: "Edit".to_string(),
             file_paths: vec!["test.txt".to_string()],
-            success: Some(true),
+            success: true,
             edit_details: vec![EditDetail::new("test.txt", "Hello", "Hello World")],
         };
 

@@ -30,9 +30,6 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // User / agent interaction
             AikiEvent::PromptSubmitted(_) => "prompt.submitted",
             AikiEvent::ResponseReceived(_) => "response.received",
-            // File access (unified model) - DEPRECATED
-            AikiEvent::FilePermissionAsked(_) => "file.permission_asked",
-            AikiEvent::FileCompleted(_) => "file.completed",
             // Read operations
             AikiEvent::ReadPermissionAsked(_) => "read.permission_asked",
             AikiEvent::ReadCompleted(_) => "read.completed",
@@ -100,10 +97,6 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // No autoreply - session is done, trigger session.ended event
             trigger_session_ended(session, cwd)
         }
-
-        // File access (unified model) - DEPRECATED
-        AikiEvent::FilePermissionAsked(e) => events::handle_file_permission_asked(e),
-        AikiEvent::FileCompleted(e) => events::handle_file_completed(e),
 
         // Read operations
         AikiEvent::ReadPermissionAsked(e) => events::handle_read_permission_asked(e),
