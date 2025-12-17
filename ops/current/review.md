@@ -16,3 +16,6 @@
 
 5. **Benchmark still reports deprecated `change.*` events**  
    `cli/src/commands/benchmark.rs` continues to record and print `change.permission_asked` / `change.done` timings (`cli/src/commands/benchmark.rs:45-66`, `cli/src/commands/benchmark.rs:1019-1035`), so the new `file.*` events aren’t measured during performance regressions (ops/current/plan.md:262-269).
+
+
+# File Operation Refacxtor review

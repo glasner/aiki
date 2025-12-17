@@ -26,6 +26,20 @@ Replace `file.permission_asked` and `file.completed` with operation-specific eve
 | `file.completed` (operation: write) | `write.completed` |
 | `file.completed` (operation: delete) | `delete.completed` |
 
+## Quick Reference: Files to Create/Modify
+
+| Phase | Files to Create | Files to Modify |
+|-------|-----------------|-----------------|
+| 1 | `src/events/read_permission_asked.rs`, `src/events/read_completed.rs`, `src/events/write_permission_asked.rs`, `src/events/write_completed.rs`, `src/events/delete_permission_asked.rs`, `src/events/delete_completed.rs` | `src/events/mod.rs` |
+| 2 | - | `src/flows/types.rs` |
+| 3 | - | `src/event_bus.rs` |
+| 4 | - | `src/vendors/claude_code/events.rs`, `src/vendors/cursor/events.rs` |
+| 5 | - | `src/flows/core/functions.rs` |
+| 6 | - | `src/flows/engine.rs` |
+| 7 | - | `src/flows/core/flow.yaml` |
+| 8 | - | `src/flows/engine.rs` |
+| 9 | - | Delete: `src/events/file_permission_asked.rs`, `src/events/file_completed.rs` |
+
 ## Benefits
 
 1. **Cleaner YAML** - No conditional checks needed:
@@ -87,6 +101,45 @@ pub enum AikiEvent {
 **Payload structures:**
 
 ```rust
+// =============================================================================
+// PERMISSION_ASKED PAYLOADS (before tool execution)
+// =============================================================================
+
+// Read permission - before reading files
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiReadPermissionAskedPayload {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    pub tool_name: String,        // e.g., "Read", "Glob", "Grep"
+    pub file_paths: Vec<String>,  // Read: file paths. Glob/Grep: search directory (cwd if not specified)
+    pub pattern: Option<String>,  // Glob: glob pattern. Grep: regex pattern. Read: None
+}
+
+// Write permission - before writing files
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiWritePermissionAskedPayload {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    pub tool_name: String,        // e.g., "Edit", "Write", "NotebookEdit"
+    pub file_paths: Vec<String>,  // Files about to be written
+}
+
+// Delete permission - before deleting files
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiDeletePermissionAskedPayload {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    pub tool_name: String,        // Always "Bash" for shell-based deletes
+    pub file_paths: Vec<String>,  // Files about to be deleted
+}
+
+// =============================================================================
+// COMPLETED PAYLOADS (after tool execution)
+// =============================================================================
+
 // Write events get all the edit tracking fields
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AikiWriteCompletedPayload {
@@ -96,6 +149,9 @@ pub struct AikiWriteCompletedPayload {
     pub tool_name: String,
     pub file_paths: Vec<String>,
     pub success: Option<bool>,
+    // Optional: Only present for Edit/MultiEdit tools that have old/new strings
+    // Write tool and NotebookEdit don't have meaningful edit_details
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edit_details: Vec<EditDetail>,
 }
 
@@ -116,11 +172,16 @@ pub struct AikiDeleteCompletedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
-    pub tool_name: String,
+    pub tool_name: String,        // Always "Bash" for shell-based deletes
     pub file_paths: Vec<String>,
     pub success: Option<bool>,
 }
 ```
+
+**Note on `tool_name` values:**
+- File tools use their tool name: `"Read"`, `"Edit"`, `"Write"`, `"Glob"`, `"Grep"`, etc.
+- Shell-based file operations (like `rm`, `rmdir`) always use `"Bash"` as the tool name
+- The specific shell command is not preserved in the event (it's available in the raw vendor event if needed)
 
 **Keep `FileOperation` enum for internal use:**
 ```rust
@@ -260,6 +321,32 @@ match tool.file_operation() {
 
 This keeps the tool knowledge centralized while vendors just use it to pick the right event variant.
 
+**Shell-based delete detection flow:**
+
+For Bash tool calls that contain file deletion commands (`rm`, `rmdir`), the flow is:
+
+1. Vendor receives `Bash` tool call with command string
+2. `parse_file_operation_from_shell_command()` analyzes the command:
+   - Detects `rm`/`rmdir` patterns → returns `Some(FileOperation::Delete)`
+   - Extracts file paths from command arguments
+3. Vendor constructs `DeleteCompleted` event:
+   ```rust
+   // In vendor event construction for Bash tools
+   if let ClaudeTool::Bash(bash) = &tool {
+       if let Some(FileOperation::Delete) = parse_file_operation_from_shell_command(&bash.command) {
+           let paths = extract_paths_from_delete_command(&bash.command);
+           return Ok(Some(AikiEvent::DeleteCompleted(AikiDeleteCompletedPayload {
+               session: session.clone(),
+               cwd: cwd.clone(),
+               timestamp: Utc::now(),
+               tool_name: "Bash".to_string(),  // Always "Bash" for shell commands
+               file_paths: paths,
+               success: Some(true),
+           })));
+       }
+   }
+   ```
+
 ### Phase 5: Update Core Functions
 
 **File:** `src/flows/core/functions.rs`
@@ -304,20 +391,21 @@ pub fn separate_edits(
 ) -> Result<ActionResult>
 ```
 
-**Functions for permission_asked (both read and write):**
+**Functions for permission_asked:**
 ```rust
-// These accept the permission_asked payloads
+// build_human_metadata is only called from write.permission_asked
+// (to capture user's uncommitted changes before AI overwrites them)
+// There's no equivalent for read.permission_asked or delete.permission_asked
 pub fn build_human_metadata(
-    event: &AikiWritePermissionAskedPayload,  // For write.permission_asked
-    context: Option<&AikiState>,
-) -> Result<ActionResult>
-
-// Or create a version that works with both:
-pub fn build_human_metadata_write(
     event: &AikiWritePermissionAskedPayload,
     context: Option<&AikiState>,
 ) -> Result<ActionResult>
 ```
+
+**Note:** `build_human_metadata` only makes sense for write operations because:
+- It captures the human's uncommitted changes before an AI write overwrites them
+- Read operations don't modify files, so there's nothing to capture
+- Delete operations could theoretically capture "who owned this file", but that's deferred to `delete-provenance.md`
 
 **Note on delete operations:**
 Delete provenance tracking is intentionally minimal in this refactor. Full delete provenance (capturing previous authorship, file lineage, etc.) is tracked in a separate plan: `ops/current/delete-provenance.md`.
@@ -503,6 +591,9 @@ crate::events::AikiEvent::ReadPermissionAsked(e) => {
     resolver.add_var("event.session_id", e.session.external_id());
     resolver.add_var("event.tool_name", e.tool_name.clone());
     resolver.add_var("event.file_paths", e.file_paths.join(" "));
+    if let Some(ref pattern) = e.pattern {
+        resolver.add_var("event.pattern", pattern.clone());
+    }
 }
 
 crate::events::AikiEvent::ReadCompleted(e) => {
@@ -555,9 +646,15 @@ crate::events::AikiEvent::DeleteCompleted(e) => {
 2. **Consistent field set** - All operation types expose the same core variables (session_id, tool_name, file_paths, success)
 3. **Simplified permission_asked events** - No longer need to check operation type conditionally
 
-### Phase 9: Remove Old file.* Events
+### Phase 9: Remove Old file.* Events (After All Tests Pass)
 
-Once the new events are working:
+**PREREQUISITE:** Only proceed with Phase 9 after:
+- [ ] All unit tests from the Testing Checklist pass
+- [ ] All integration tests pass
+- [ ] All vendor tests pass
+- [ ] Manual end-to-end testing confirms the new events work correctly
+
+Once the new events are verified working:
 
 1. **Remove event variants from `AikiEvent` enum:**
    - Remove `FilePermissionAsked` variant

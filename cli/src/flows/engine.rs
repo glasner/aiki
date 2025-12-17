@@ -86,6 +86,83 @@ impl FlowEngine {
                     resolver.add_var("event.success".to_string(), success.to_string());
                 }
             }
+            // Read operations
+            crate::events::AikiEvent::ReadPermissionAsked(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+                if let Some(ref pattern) = e.pattern {
+                    resolver.add_var("event.pattern".to_string(), pattern.clone());
+                }
+            }
+            crate::events::AikiEvent::ReadCompleted(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+                resolver.add_var(
+                    "event.file_count".to_string(),
+                    e.file_paths.len().to_string(),
+                );
+                if let Some(success) = e.success {
+                    resolver.add_var("event.success".to_string(), success.to_string());
+                }
+            }
+            // Write operations
+            crate::events::AikiEvent::WritePermissionAsked(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+            }
+            crate::events::AikiEvent::WriteCompleted(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+                resolver.add_var(
+                    "event.file_count".to_string(),
+                    e.file_paths.len().to_string(),
+                );
+                if let Some(success) = e.success {
+                    resolver.add_var("event.success".to_string(), success.to_string());
+                }
+                // Note: edit_details are available in the payload but not exposed as variables
+                // Flows should use self.classify_edits to analyze edits instead
+            }
+            // Delete operations
+            crate::events::AikiEvent::DeletePermissionAsked(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+            }
+            crate::events::AikiEvent::DeleteCompleted(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
+                resolver.add_var(
+                    "event.file_count".to_string(),
+                    e.file_paths.len().to_string(),
+                );
+                if let Some(success) = e.success {
+                    resolver.add_var("event.success".to_string(), success.to_string());
+                }
+            }
             crate::events::AikiEvent::SessionStarted(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),

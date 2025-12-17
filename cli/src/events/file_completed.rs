@@ -9,32 +9,9 @@ use std::path::PathBuf;
 use super::result::{Decision, HookResult};
 use crate::tools::FileOperation;
 
-/// Details about an individual edit operation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EditDetail {
-    /// File path that was edited
-    pub file_path: String,
-    /// The old string that was replaced (empty if this is an insertion)
-    pub old_string: String,
-    /// The new string that replaced it (empty if this is a deletion)
-    pub new_string: String,
-}
-
-impl EditDetail {
-    /// Create a new EditDetail
-    #[must_use]
-    pub fn new(
-        file_path: impl Into<String>,
-        old_string: impl Into<String>,
-        new_string: impl Into<String>,
-    ) -> Self {
-        Self {
-            file_path: file_path.into(),
-            old_string: old_string.into(),
-            new_string: new_string.into(),
-        }
-    }
-}
+// Re-export EditDetail from write_completed (canonical location)
+// DEPRECATED: This module is deprecated, use write_completed directly
+pub use super::write_completed::EditDetail;
 
 /// file.completed event payload
 ///
