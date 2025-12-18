@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::commands::hooks::HookCommandOutput;
+use crate::editors::HookCommandOutput;
 use crate::events::result::HookResult;
 
 /// Build HookCommandOutput from HookResult for Cursor

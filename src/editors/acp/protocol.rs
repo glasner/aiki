@@ -1,8 +1,41 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 // Re-export official ACP types
 pub use agent_client_protocol::SessionNotification;
+
+/// Normalized JSON-RPC ID for consistent HashMap key usage
+///
+/// JSON-RPC IDs can be strings or numbers. To use them as HashMap keys,
+/// we normalize to string format:
+/// - String ID "abc" → `JsonRpcId("\"abc\"")`  (with quotes)
+/// - Number ID 123 → `JsonRpcId("123")`        (no quotes)
+/// - Null ID → `JsonRpcId("null")`
+///
+/// This matches the behavior of `serde_json::Value::to_string()`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct JsonRpcId(pub String);
+
+impl JsonRpcId {
+    /// Normalize a JSON-RPC ID from a serde_json::Value
+    pub fn from_value(id: &serde_json::Value) -> Self {
+        Self(id.to_string())
+    }
+}
+
+/// Session ID type using Arc<str> for cheap cloning
+///
+/// Instead of cloning full strings (~32 bytes + allocation), we use Arc<str>
+/// which is just a pointer copy. This eliminates ~20+ allocations per message
+/// when session IDs are used in HashMap operations.
+pub type SessionId = Arc<str>;
+
+/// Helper to create a SessionId from a string slice
+#[must_use]
+pub fn session_id(s: &str) -> SessionId {
+    Arc::from(s)
+}
 
 /// JSON-RPC message structure
 ///

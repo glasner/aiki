@@ -1,23 +1,20 @@
-mod acp;
 mod authors;
 mod blame;
 mod cache;
 mod commands;
 mod config;
+mod editors;
 mod error;
 mod event_bus;
 mod events;
 mod flows;
-mod ide_config;
 mod jj;
-mod npm;
 mod provenance;
 mod repo;
 mod session;
 mod signing;
 mod tools;
 mod utils;
-mod vendors;
 mod verify;
 
 use clap::{Parser, Subcommand};

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 ///
 /// # Example
 /// ```
-/// let version = aiki::npm::get_version("@anthropic-ai/claude-code", "claude");
+/// let version = aiki::editors::npm::get_version("@anthropic-ai/claude-code", "claude");
 /// ```
 pub fn get_version(
     package_name: impl Into<String>,
