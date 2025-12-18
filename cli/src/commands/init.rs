@@ -1,6 +1,6 @@
 use crate::config;
+use crate::editors::zed as ide_config;
 use crate::error::Result;
-use crate::ide_config;
 use crate::jj;
 use crate::repo::RepoDetector;
 use crate::signing;

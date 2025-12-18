@@ -116,9 +116,11 @@ cli/src/
 
 1. Move `cli/src/acp/protocol.rs` → `cli/src/editors/acp/protocol.rs`
 
-2. Delete `cli/src/acp/` directory (now empty)
+2. Delete `cli/src/acp/mod.rs` (contains only `pub mod protocol;`, no longer needed)
 
-3. Create `cli/src/editors/acp/mod.rs` with module declarations:
+3. Delete `cli/src/acp/` directory (now empty)
+
+4. Create `cli/src/editors/acp/mod.rs` with module declarations:
    ```rust
    pub mod proxy;
    pub mod protocol;
@@ -126,12 +128,12 @@ cli/src/
    pub mod handlers;
    ```
 
-4. Create empty files:
+5. Create empty files:
    - `cli/src/editors/acp/proxy.rs`
    - `cli/src/editors/acp/state.rs`
    - `cli/src/editors/acp/handlers.rs`
 
-5. Update `cli/src/editors/mod.rs` to include:
+6. Update `cli/src/editors/mod.rs` to include:
    ```rust
    pub mod acp;
    pub mod zed;
@@ -140,10 +142,10 @@ cli/src/
    pub mod cursor;
    ```
 
-6. Update import in `commands/acp.rs`:
+7. Update import in `commands/acp.rs`:
    - `use crate::acp::protocol::` → `use crate::editors::acp::protocol::`
 
-7. Remove `mod acp;` from `main.rs` (no longer needed)
+8. Remove `mod acp;` from `main.rs` (no longer needed)
 
 ### Phase 2: Extract protocol types and state enums
 
@@ -214,7 +216,41 @@ These are all relatively pure functions that take parameters and fire events via
 
 **Goal:** Move the 3-thread proxy architecture to `editors/acp/proxy.rs`.
 
-This is the most complex step. Given the file size (~2400 lines in thread closures), break into sub-phases:
+This is the most complex step. Given the file size (~2400 lines in thread closures), break into sub-phases.
+
+**Design decision: ProxyConfig struct**
+
+The thread functions will need multiple parameters (channels, agent type, etc.). To avoid parameter explosion, introduce a `ProxyConfig` struct in `editors/acp/proxy.rs`:
+
+```rust
+/// Configuration passed to proxy threads.
+/// Groups immutable config that threads need but don't modify.
+pub struct ProxyConfig {
+    pub agent_type: AgentType,
+    // Add other immutable config as needed during extraction
+}
+```
+
+This keeps function signatures clean:
+```rust
+fn run_ide_to_agent_thread(
+    stdin: ChildStdin,
+    state_tx: Sender<StateMessage>,
+    config: &ProxyConfig,
+) -> Result<()>
+```
+
+Rather than:
+```rust
+fn run_ide_to_agent_thread(
+    stdin: ChildStdin,
+    state_tx: Sender<StateMessage>,
+    agent_type: AgentType,
+    // ... 5 more parameters
+) -> Result<()>
+```
+
+Note: `ProxyConfig` is for *immutable configuration*, not mutable state. Mutable state (autoreply counters, tool call contexts) stays in `state.rs` as function parameters per Phase 3's recommendation.
 
 #### Phase 5a: Extract IDE→Agent thread logic
 

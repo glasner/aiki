@@ -31,7 +31,7 @@ fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
     }
 
     // No cache - detect version (this happens on SessionStart or if file missing)
-    crate::npm::get_version("@anthropic-ai/claude-code", "claude")
+    crate::editors::npm::get_version("@anthropic-ai/claude-code", "claude")
 }
 
 /// Read agent_version from session file

@@ -1,39 +1,13 @@
 use crate::config;
+use crate::editors;
 use crate::error::Result;
 use crate::provenance;
-use crate::vendors;
 use anyhow::Context;
 use std::io::{BufRead, Write};
 use sysinfo::{ProcessesToUpdate, System};
 
-/// Response for vendor hook commands (JSON output + exit code)
-///
-/// This is the vendor protocol format, distinct from our internal `HookResult`.
-/// - `HookResult`: Aiki's internal result (Decision, context, failures)
-/// - `HookCommandOutput`: Vendor protocol (JSON value, exit code)
-pub struct HookCommandOutput {
-    pub json_value: Option<serde_json::Value>,
-    pub exit_code: i32,
-}
-
-impl HookCommandOutput {
-    #[must_use]
-    pub fn new(json_value: Option<serde_json::Value>, exit_code: i32) -> Self {
-        Self {
-            json_value,
-            exit_code,
-        }
-    }
-
-    pub fn print_and_exit(self) -> ! {
-        if let Some(value) = &self.json_value {
-            if let Ok(json) = serde_json::to_string(value) {
-                println!("{}", json);
-            }
-        }
-        std::process::exit(self.exit_code);
-    }
-}
+// Re-export HookCommandOutput for backwards compatibility
+pub use crate::editors::HookCommandOutput;
 
 pub fn run_install() -> Result<()> {
     if !cfg!(target_os = "macos") && !cfg!(target_os = "linux") && !cfg!(target_os = "windows") {
@@ -204,14 +178,14 @@ fn parse_agent_type(agent: &str) -> Result<provenance::AgentType> {
     }
 }
 
-/// Handle vendor event (called by hooks)
+/// Handle editor event (called by hooks)
 fn handle_event(agent: provenance::AgentType, event: &str) -> Result<()> {
     use crate::error::AikiError;
     use provenance::AgentType;
 
     match agent {
-        AgentType::Claude => Ok(vendors::claude_code::handle(event)?),
-        AgentType::Cursor => Ok(vendors::cursor::handle(event)?),
+        AgentType::Claude => Ok(editors::claude_code::handle(event)?),
+        AgentType::Cursor => Ok(editors::cursor::handle(event)?),
         _ => Err(AikiError::UnsupportedAgentType(format!("{:?}", agent))),
     }
 }
