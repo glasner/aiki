@@ -1,12 +1,4 @@
-use crate::cache::debug_log;
-use crate::error::Result;
-use crate::flows::{AikiState, FlowEngine, FlowResult};
-use crate::session::AikiSession;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-use super::result::{Decision, HookResult};
+use super::prelude::*;
 
 /// prompt.submitted event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,11 +17,13 @@ pub struct AikiPromptSubmittedPayload {
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<HookResult> {
-    debug_log(|| format!(
-        "prompt.submitted event from {:?}, prompt length: {}",
-        payload.session.agent_type(),
-        payload.prompt.len()
-    ));
+    debug_log(|| {
+        format!(
+            "prompt.submitted event from {:?}, prompt length: {}",
+            payload.session.agent_type(),
+            payload.prompt.len()
+        )
+    });
 
     // Load core flow (cached)
     let core_flow = crate::flows::load_core_flow();
@@ -41,7 +35,8 @@ pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<Ho
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute prompt.submitted statements from the core flow (catch errors for graceful degradation)
-    let flow_result = match FlowEngine::execute_statements(&core_flow.prompt_submitted, &mut state) {
+    let flow_result = match FlowEngine::execute_statements(&core_flow.prompt_submitted, &mut state)
+    {
         Ok(result) => result,
         Err(e) => {
             // Flow execution failed - log warning and use original prompt

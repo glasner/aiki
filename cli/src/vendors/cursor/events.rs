@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::{
-    parse_mcp_server, AikiEvent, AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload,
-    AikiPromptSubmittedPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
-    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
+    parse_mcp_server, AikiChangeCompletedPayload, AikiEvent, AikiMcpCompletedPayload,
+    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
+    AikiShellPermissionAskedPayload, ChangeOperation, WriteOperation,
 };
 
 use super::session::create_session;
@@ -216,7 +216,7 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
         CursorEvent::AfterShellExecution { payload } => build_shell_completed_event(payload),
         CursorEvent::BeforeMcpExecution { payload } => build_mcp_permission_asked_event(payload),
         CursorEvent::AfterMcpExecution { payload } => build_mcp_completed_event(payload),
-        CursorEvent::AfterFileEdit { payload } => build_write_completed_event(payload),
+        CursorEvent::AfterFileEdit { payload } => build_change_completed_event(payload),
         CursorEvent::Stop { payload } => build_response_received_event(payload),
     };
 
@@ -302,8 +302,8 @@ fn build_mcp_completed_event(payload: AfterMcpExecutionPayload) -> AikiEvent {
     })
 }
 
-/// Build write.completed event from afterFileEdit payload
-fn build_write_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
+/// Build change.completed event from afterFileEdit payload
+fn build_change_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
     // Create session first before moving any fields
     let session = create_session(&payload.conversation_id, &payload.cursor_version);
     let cwd = get_cwd(&payload.workspace_roots);
@@ -326,14 +326,16 @@ fn build_write_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
         debug_log(|| format!("Cursor provided {} edits", edit_details.len()));
     }
 
-    AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
+    AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session,
         cwd,
         timestamp: chrono::Utc::now(),
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
-        file_paths: vec![file_path],
         success: true, // afterFileEdit implies success
-        edit_details,
+        operation: ChangeOperation::Write(WriteOperation {
+            file_paths: vec![file_path],
+            edit_details,
+        }),
     })
 }
 

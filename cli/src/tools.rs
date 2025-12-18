@@ -37,6 +37,8 @@ pub enum FileOperation {
     Write,
     /// Delete operations: rm, rmdir (parsed from shell commands)
     Delete,
+    /// Move/rename operations: mv (parsed from shell commands)
+    Move,
 }
 
 impl std::fmt::Display for FileOperation {
@@ -45,6 +47,7 @@ impl std::fmt::Display for FileOperation {
             FileOperation::Read => write!(f, "read"),
             FileOperation::Write => write!(f, "write"),
             FileOperation::Delete => write!(f, "delete"),
+            FileOperation::Move => write!(f, "move"),
         }
     }
 }
@@ -78,9 +81,11 @@ impl std::fmt::Display for WebOperation {
 /// Parse a shell command to detect file operations
 ///
 /// Returns `Some(FileOperation::Delete)` if the command is a file deletion (rm/rmdir),
+/// `Some(FileOperation::Move)` if the command is a move/rename (mv),
 /// otherwise returns `None` for regular shell commands.
 ///
 /// When a file operation is detected, also returns the paths being operated on.
+/// For move operations, paths are [source..., destination].
 ///
 /// This function handles:
 /// - Common shell prefixes like `sudo`, `env`, `nice`, etc.
@@ -98,6 +103,10 @@ impl std::fmt::Display for WebOperation {
 /// let (op, paths) = parse_file_operation_from_shell_command("sudo rm -rf /tmp/test");
 /// assert_eq!(op, Some(FileOperation::Delete));
 /// assert_eq!(paths, vec!["/tmp/test"]);
+///
+/// let (op, paths) = parse_file_operation_from_shell_command("mv old.txt new.txt");
+/// assert_eq!(op, Some(FileOperation::Move));
+/// assert_eq!(paths, vec!["old.txt", "new.txt"]);
 ///
 /// let (op, paths) = parse_file_operation_from_shell_command("git status");
 /// assert_eq!(op, None);
@@ -119,12 +128,8 @@ pub fn parse_file_operation_from_shell_command(
 
     match cmd {
         "rm" | "rmdir" => {
-            // Extract file paths from command (skip options starting with -)
-            let paths: Vec<String> = tokens[(cmd_idx + 1)..]
-                .iter()
-                .filter(|arg| !arg.starts_with('-'))
-                .cloned()
-                .collect();
+            // Extract file paths from command, respecting -- end-of-options marker
+            let paths = extract_paths_from_args(&tokens[(cmd_idx + 1)..]);
 
             if paths.is_empty() {
                 // rm with no arguments - treat as regular shell command
@@ -133,8 +138,133 @@ pub fn parse_file_operation_from_shell_command(
                 (Some(FileOperation::Delete), paths)
             }
         }
+        "mv" => {
+            // Extract file paths from command, respecting -- end-of-options marker
+            // and handling -t/--target-directory which puts destination before sources
+            // For mv: paths are [source..., destination]
+            let paths = extract_mv_paths_from_args(&tokens[(cmd_idx + 1)..]);
+
+            if paths.len() < 2 {
+                // mv needs at least source and destination
+                (None, Vec::new())
+            } else {
+                (Some(FileOperation::Move), paths)
+            }
+        }
         _ => (None, Vec::new()),
     }
+}
+
+/// Extract file paths from command arguments, respecting the `--` end-of-options marker.
+///
+/// Before `--`: filters out arguments starting with `-` (which are options)
+/// After `--`: treats all remaining arguments as file paths (even if they start with `-`)
+///
+/// This correctly handles files with dash-prefixed names like `-important`:
+/// - `rm -- -important` → ["-important"]
+/// - `rm -rf -- -foo -bar` → ["-foo", "-bar"]
+fn extract_paths_from_args(args: &[String]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut after_double_dash = false;
+
+    for arg in args {
+        if arg == "--" {
+            // End of options marker - everything after this is a path
+            after_double_dash = true;
+            continue;
+        }
+
+        if after_double_dash {
+            // After --, treat everything as a path (even if it starts with -)
+            paths.push(arg.clone());
+        } else if !arg.starts_with('-') {
+            // Before --, only include non-option arguments
+            paths.push(arg.clone());
+        }
+        // Skip options (arguments starting with -) before --
+    }
+
+    paths
+}
+
+/// Extract file paths from mv command arguments, handling `-t/--target-directory`.
+///
+/// GNU/BSD `mv` supports `-t DIRECTORY` or `--target-directory=DIRECTORY` to specify
+/// the destination before the sources: `mv -t dest src1 src2` is equivalent to
+/// `mv src1 src2 dest`.
+///
+/// This function normalizes the paths to always return [sources..., destination],
+/// regardless of whether -t was used.
+///
+/// Examples:
+/// - Normal mv: `["src", "dest"]` → `["src", "dest"]`
+/// - With -t: `["-t", "dest", "src"]` → `["src", "dest"]`
+/// - With --target-directory=: `["--target-directory=dest", "src"]` → `["src", "dest"]`
+fn extract_mv_paths_from_args(args: &[String]) -> Vec<String> {
+    let mut sources = Vec::new();
+    let mut target_directory: Option<String> = None;
+    let mut after_double_dash = false;
+    let mut skip_next = false;
+
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        if arg == "--" {
+            // End of options marker - everything after this is a path (source)
+            after_double_dash = true;
+            continue;
+        }
+
+        if after_double_dash {
+            // After --, treat everything as a source path
+            sources.push(arg.clone());
+            continue;
+        }
+
+        // Handle -t DIRECTORY (separate argument)
+        if arg == "-t" || arg == "--target-directory" {
+            if let Some(next) = args.get(i + 1) {
+                target_directory = Some(next.clone());
+                skip_next = true;
+            }
+            continue;
+        }
+
+        // Handle --target-directory=DIRECTORY (combined argument)
+        if let Some(dir) = arg.strip_prefix("--target-directory=") {
+            target_directory = Some(dir.to_string());
+            continue;
+        }
+
+        // Handle -tDIRECTORY (combined short form, less common but valid)
+        if arg.starts_with("-t") && arg.len() > 2 && !arg.starts_with("--") {
+            target_directory = Some(arg[2..].to_string());
+            continue;
+        }
+
+        // Skip other options
+        if arg.starts_with('-') {
+            // Check for options that consume the next argument
+            // -S/--suffix and -b/--backup don't affect paths
+            continue;
+        }
+
+        // Non-option argument - this is a file path
+        sources.push(arg.clone());
+    }
+
+    // If -t was used, the destination was extracted separately
+    // Otherwise, the last source is actually the destination
+    if let Some(dest) = target_directory {
+        // -t was used: sources are correct, append destination at end
+        sources.push(dest);
+    }
+    // If no -t, paths are already in [sources..., destination] order
+
+    sources
 }
 
 /// Common shell prefixes that wrap other commands
@@ -538,5 +668,152 @@ mod tests {
         let (op, paths) = parse_file_operation_from_shell_command("doas -u root rm file.txt");
         assert_eq!(op, Some(FileOperation::Delete));
         assert_eq!(paths, vec!["file.txt"]);
+    }
+
+    // ========================================================================
+    // Dash-prefixed file tests (end-of-options marker --)
+    // ========================================================================
+
+    #[test]
+    fn test_rm_dash_prefixed_file_with_double_dash() {
+        // rm -- -important should correctly identify -important as a file
+        let (op, paths) = parse_file_operation_from_shell_command("rm -- -important");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["-important"]);
+    }
+
+    #[test]
+    fn test_rm_multiple_dash_prefixed_files() {
+        // rm -- -foo -bar -baz
+        let (op, paths) = parse_file_operation_from_shell_command("rm -- -foo -bar -baz");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["-foo", "-bar", "-baz"]);
+    }
+
+    #[test]
+    fn test_rm_flags_then_double_dash_then_dash_file() {
+        // rm -rf -- -important
+        let (op, paths) = parse_file_operation_from_shell_command("rm -rf -- -important");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["-important"]);
+    }
+
+    #[test]
+    fn test_rm_mixed_files_with_double_dash() {
+        // rm -f normal.txt -- -dash-file.txt
+        let (op, paths) =
+            parse_file_operation_from_shell_command("rm -f normal.txt -- -dash-file.txt");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["normal.txt", "-dash-file.txt"]);
+    }
+
+    #[test]
+    fn test_sudo_rm_dash_prefixed_file() {
+        // sudo rm -- -important
+        let (op, paths) = parse_file_operation_from_shell_command("sudo rm -- -important");
+        assert_eq!(op, Some(FileOperation::Delete));
+        assert_eq!(paths, vec!["-important"]);
+    }
+
+    #[test]
+    fn test_mv_dash_prefixed_files() {
+        // mv -- -source -dest
+        let (op, paths) = parse_file_operation_from_shell_command("mv -- -source -dest");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["-source", "-dest"]);
+    }
+
+    #[test]
+    fn test_mv_dash_file_to_directory() {
+        // mv -- -weirdname target_dir/
+        let (op, paths) = parse_file_operation_from_shell_command("mv -- -weirdname target_dir/");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["-weirdname", "target_dir/"]);
+    }
+
+    #[test]
+    fn test_rm_double_dash_no_files() {
+        // rm -- with nothing after should be treated as no-op
+        let (op, paths) = parse_file_operation_from_shell_command("rm --");
+        assert_eq!(op, None);
+        assert!(paths.is_empty());
+    }
+
+    // ========================================================================
+    // mv -t/--target-directory tests
+    // ========================================================================
+
+    #[test]
+    fn test_mv_with_t_flag() {
+        // mv -t dest src1 src2 → paths should be [src1, src2, dest]
+        let (op, paths) = parse_file_operation_from_shell_command("mv -t dest src1 src2");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src1", "src2", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_with_t_flag_single_source() {
+        // mv -t dest src → paths should be [src, dest]
+        let (op, paths) = parse_file_operation_from_shell_command("mv -t dest src");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_with_target_directory_equals() {
+        // mv --target-directory=dest src1 src2
+        let (op, paths) =
+            parse_file_operation_from_shell_command("mv --target-directory=dest src1 src2");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src1", "src2", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_with_target_directory_separate() {
+        // mv --target-directory dest src
+        let (op, paths) =
+            parse_file_operation_from_shell_command("mv --target-directory dest src");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_with_t_combined() {
+        // mv -tdest src (combined form, less common)
+        let (op, paths) = parse_file_operation_from_shell_command("mv -tdest src");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_t_with_other_flags() {
+        // mv -v -t dest src (verbose + target-directory)
+        let (op, paths) = parse_file_operation_from_shell_command("mv -v -t dest src");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_sudo_mv_t() {
+        // sudo mv -t dest src
+        let (op, paths) = parse_file_operation_from_shell_command("sudo mv -t dest src1 src2");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src1", "src2", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_normal_still_works() {
+        // Verify normal mv without -t still works: mv src dest
+        let (op, paths) = parse_file_operation_from_shell_command("mv src dest");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src", "dest"]);
+    }
+
+    #[test]
+    fn test_mv_normal_multi_source() {
+        // mv src1 src2 dest (normal multi-source)
+        let (op, paths) = parse_file_operation_from_shell_command("mv src1 src2 dest");
+        assert_eq!(op, Some(FileOperation::Move));
+        assert_eq!(paths, vec!["src1", "src2", "dest"]);
     }
 }

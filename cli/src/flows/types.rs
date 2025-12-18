@@ -125,26 +125,19 @@ pub struct Flow {
     pub read_completed: Vec<FlowStatement>,
 
     // ========================================================================
-    // Write Operation Events
+    // Change Operation Events (Unified mutations: write, delete, move)
     // ========================================================================
-    /// write.permission_asked event handler (agent is about to write a file)
-    #[serde(rename = "write.permission_asked", default)]
-    pub write_permission_asked: Vec<FlowStatement>,
+    /// change.permission_asked event handler (agent is about to mutate files)
+    /// Unified handler for write, delete, and move operations.
+    /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
+    #[serde(rename = "change.permission_asked", default)]
+    pub change_permission_asked: Vec<FlowStatement>,
 
-    /// write.completed event handler (agent finished writing a file)
-    #[serde(rename = "write.completed", default)]
-    pub write_completed: Vec<FlowStatement>,
-
-    // ========================================================================
-    // Delete Operation Events
-    // ========================================================================
-    /// delete.permission_asked event handler (agent is about to delete a file)
-    #[serde(rename = "delete.permission_asked", default)]
-    pub delete_permission_asked: Vec<FlowStatement>,
-
-    /// delete.completed event handler (agent finished deleting a file)
-    #[serde(rename = "delete.completed", default)]
-    pub delete_completed: Vec<FlowStatement>,
+    /// change.completed event handler (agent finished mutating files)
+    /// Unified handler for write, delete, and move operations.
+    /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
+    #[serde(rename = "change.completed", default)]
+    pub change_completed: Vec<FlowStatement>,
 
     // ========================================================================
     // Shell Command Events

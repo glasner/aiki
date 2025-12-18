@@ -121,8 +121,9 @@ use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
-    AikiEvent, AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
-    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
+    AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
+    AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
+    ChangeOperation, DeleteOperation, MoveOperation, WriteOperation,
 };
 use crate::provenance::AgentType;
 use crate::session::AikiSession;
@@ -783,7 +784,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                 if let Some(method) = &msg.method {
                     // Handle session/request_permission - fire change.permission_asked for file-modifying tools
                     if method == "session/request_permission" {
-                        if is_file_modifying_permission_request(&msg) {
+                        if let Some(perm_context) = parse_permission_request(&msg) {
                             // Extract session_id from params
                             if let Some(params) = &msg.params {
                                 if let Some(session_id) =
@@ -794,6 +795,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         session_id,
                                         &validated_agent_type,
                                         &cwd,
+                                        perm_context.kind,
+                                        perm_context.paths,
                                     ) {
                                         eprintln!(
                                             "Warning: Failed to fire change.permission_asked event: {}",
@@ -1240,7 +1243,7 @@ fn record_post_change_events(
         .clone();
 
     // Get tool name from kind
-    let tool_name = format!("{:?}", context.kind); // Convert ToolKind enum to string (Edit, Delete, Move)
+    let tool_name = tool_kind_to_name(context.kind);
 
     // Convert all paths to strings
     let file_paths: Vec<String> = context
@@ -1248,9 +1251,6 @@ fn record_post_change_events(
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
-
-    // Extract edit details from tool call parameters (if available)
-    let edit_details = extract_edit_details(&context);
 
     // Create session with agent version and client info
     let agent_version = agent_info.as_ref().and_then(|a| a.version.as_deref());
@@ -1260,15 +1260,39 @@ fn record_post_change_events(
             client_info.as_ref().and_then(|c| c.version.as_deref()),
         );
 
-    // Create and dispatch a single event for all affected files
-    let event = AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
+    // Build operation based on tool kind
+    let operation = match context.kind {
+        ToolKind::Edit => {
+            let edit_details = extract_edit_details(&context);
+            ChangeOperation::Write(WriteOperation {
+                file_paths,
+                edit_details,
+            })
+        }
+        ToolKind::Delete => ChangeOperation::Delete(DeleteOperation { file_paths }),
+        ToolKind::Move => {
+            // Use MoveOperation::from_move_paths to properly expand directory moves
+            if file_paths.len() >= 2 {
+                ChangeOperation::Move(MoveOperation::from_move_paths(file_paths))
+            } else {
+                // Single path - treat as write
+                ChangeOperation::Write(WriteOperation {
+                    file_paths,
+                    edit_details: vec![],
+                })
+            }
+        }
+        _ => return Ok(()), // Should not reach here due to earlier check
+    };
+
+    // Create and dispatch the change.completed event
+    let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session,
-        cwd: working_dir.clone(),
+        cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        tool_name: tool_name.clone(),
-        file_paths,
+        tool_name: tool_name.to_string(),
         success: true,
-        edit_details,
+        operation,
     });
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
@@ -1277,6 +1301,22 @@ fn record_post_change_events(
     }
 
     Ok(())
+}
+
+/// Convert ToolKind to canonical tool name string
+fn tool_kind_to_name(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Read => "Read",
+        ToolKind::Edit => "Edit",
+        ToolKind::Delete => "Delete",
+        ToolKind::Move => "Move",
+        ToolKind::Search => "Search",
+        ToolKind::Execute => "Execute",
+        ToolKind::Think => "Think",
+        ToolKind::Fetch => "Fetch",
+        ToolKind::SwitchMode => "SwitchMode",
+        ToolKind::Other => "Other",
+    }
 }
 
 /// Extract edit details from ACP tool call context
@@ -1320,35 +1360,73 @@ fn extract_edit_details(context: &ToolCallContext) -> Vec<crate::events::EditDet
 
 /// Check if a permission request is for a file-modifying tool
 ///
-/// Parses session/request_permission params to determine if the tool
-/// will modify files (Edit, Delete, Move). Returns true only for these
-/// file-modifying operations, not for read-only tools like Read, Bash, etc.
-fn is_file_modifying_permission_request(msg: &JsonRpcMessage) -> bool {
-    // Parse the params to extract tool kind
-    if let Some(params) = &msg.params {
-        // The params should contain toolCallId and potentially tool details
-        // We need to check the tool kind from the request
-        if let Some(tool_call_id) = params.get("toolCallId") {
-            debug_log(|| {
-                format!(
-                    "[acp] Found permission request for tool_call_id: {:?}",
-                    tool_call_id
-                )
-            });
-        }
+/// Permission request context extracted from session/request_permission
+struct PermissionRequestContext {
+    kind: ToolKind,
+    paths: Vec<String>,
+}
 
-        // Try to extract the kind from the permission request
-        // The ACP spec shows options array, but we need to check the actual tool details
-        // For now, we'll return true if we see certain patterns in the request
-        // This may need refinement based on actual ACP permission request structure
-        if let Some(kind_val) = params.get("kind").or_else(|| params.get("toolKind")) {
-            if let Some(kind_str) = kind_val.as_str() {
-                return matches!(kind_str, "edit" | "delete" | "move");
+/// Parses session/request_permission params to extract tool kind and file paths.
+/// Returns None for non-file-modifying operations (Read, Bash, etc.).
+fn parse_permission_request(msg: &JsonRpcMessage) -> Option<PermissionRequestContext> {
+    let params = msg.params.as_ref()?;
+
+    // Log tool_call_id for debugging
+    if let Some(tool_call_id) = params.get("toolCallId") {
+        debug_log(|| {
+            format!(
+                "[acp] Found permission request for tool_call_id: {:?}",
+                tool_call_id
+            )
+        });
+    }
+
+    // Extract tool kind
+    let kind_val = params.get("kind").or_else(|| params.get("toolKind"))?;
+    let kind_str = kind_val.as_str()?;
+
+    let kind = match kind_str {
+        "edit" => ToolKind::Edit,
+        "delete" => ToolKind::Delete,
+        "move" => ToolKind::Move,
+        _ => return None, // Not a file-modifying operation
+    };
+
+    // Extract file paths from various possible locations in the params
+    let mut paths = Vec::new();
+
+    // Try "paths" array
+    if let Some(paths_array) = params.get("paths").and_then(|v| v.as_array()) {
+        for path_val in paths_array {
+            if let Some(path_str) = path_val.as_str() {
+                paths.push(path_str.to_string());
             }
         }
     }
 
-    false
+    // Try "filePath" or "file_path" single value
+    if paths.is_empty() {
+        if let Some(file_path) = params
+            .get("filePath")
+            .or_else(|| params.get("file_path"))
+            .and_then(|v| v.as_str())
+        {
+            paths.push(file_path.to_string());
+        }
+    }
+
+    // Try "locations" array (ACP tool call format)
+    if paths.is_empty() {
+        if let Some(locations) = params.get("locations").and_then(|v| v.as_array()) {
+            for loc in locations {
+                if let Some(path) = loc.get("path").and_then(|v| v.as_str()) {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+    }
+
+    Some(PermissionRequestContext { kind, paths })
 }
 
 /// Handle session/prompt request and fire prompt.submitted event
@@ -1670,6 +1748,8 @@ fn fire_pre_file_change_event(
     session_id: &str,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
+    kind: ToolKind,
+    file_paths: Vec<String>,
 ) -> Result<()> {
     // Get working directory (required)
     let working_dir = cwd
@@ -1677,27 +1757,58 @@ fn fire_pre_file_change_event(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Create and dispatch write.permission_asked event
+    // Get tool name from kind
+    let tool_name = tool_kind_to_name(kind);
+
+    // Build operation based on tool kind (matching record_post_change_events logic)
+    let operation = match kind {
+        ToolKind::Edit => ChangeOperation::Write(WriteOperation {
+            file_paths,
+            edit_details: vec![], // Edit details not available at permission time
+        }),
+        ToolKind::Delete => ChangeOperation::Delete(DeleteOperation { file_paths }),
+        ToolKind::Move => {
+            // Use MoveOperation::from_move_paths to properly expand directory moves
+            if file_paths.len() >= 2 {
+                ChangeOperation::Move(MoveOperation::from_move_paths(file_paths))
+            } else {
+                // Single path - treat as write (destination only)
+                ChangeOperation::Write(WriteOperation {
+                    file_paths,
+                    edit_details: vec![],
+                })
+            }
+        }
+        _ => {
+            // Shouldn't reach here since we filter in parse_permission_request
+            ChangeOperation::Write(WriteOperation {
+                file_paths,
+                edit_details: vec![],
+            })
+        }
+    };
+
+    // Create and dispatch change.permission_asked event
     let session = create_session(*agent_type, session_id.to_string(), None::<&str>);
-    let event = AikiEvent::WritePermissionAsked(AikiWritePermissionAskedPayload {
+    let event = AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        tool_name: "acp".to_string(),
-        file_paths: vec![],
+        tool_name: tool_name.to_string(),
+        operation,
     });
 
     // Dispatch to event bus (non-blocking - errors are logged but don't fail the proxy)
     if let Err(e) = event_bus::dispatch(event) {
         eprintln!(
-            "Warning: write.permission_asked event bus dispatch failed: {}",
+            "Warning: change.permission_asked event bus dispatch failed: {}",
             e
         );
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired write.permission_asked event for session: {}",
-                session_id
+                "[acp] Fired change.permission_asked ({}) event for session: {}",
+                tool_name, session_id
             )
         });
     }

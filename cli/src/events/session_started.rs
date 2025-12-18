@@ -1,12 +1,4 @@
-use crate::cache::debug_log;
-use crate::error::Result;
-use crate::flows::{AikiState, FlowEngine, FlowResult};
-use crate::session::AikiSession;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-use super::result::{Decision, HookResult};
+use super::prelude::*;
 
 /// session.started event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,10 +13,7 @@ pub struct AikiSessionStartPayload {
 /// Currently runs `aiki init --quiet` to ensure repository is initialized.
 /// Future: Session logging, environment validation, user-defined startup hooks.
 pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookResult> {
-    debug_log(|| format!(
-        "Session started by {:?}",
-        payload.session.agent_type()
-    ));
+    debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
     // Load core flow (cached)
     let core_flow = crate::flows::load_core_flow();

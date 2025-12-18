@@ -114,12 +114,11 @@ pub struct ProvenanceRecord {
 }
 
 impl ProvenanceRecord {
-    /// Create a ProvenanceRecord from a write.completed event
+    /// Create a ProvenanceRecord from a change.completed event
     ///
-    /// This constructor extracts all necessary fields from the event and creates
-    /// a provenance record with default confidence (High) and the detection
-    /// method from the session.
-    pub fn from_write_completed_event(event: &crate::events::AikiWriteCompletedPayload) -> Self {
+    /// This constructor extracts all necessary fields from the unified change event
+    /// and creates a provenance record. Works with Write, Delete, and Move operations.
+    pub fn from_change_completed_event(event: &crate::events::AikiChangeCompletedPayload) -> Self {
         Self {
             agent: AgentInfo {
                 agent_type: event.session.agent_type(),

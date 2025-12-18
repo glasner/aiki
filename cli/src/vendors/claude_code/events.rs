@@ -5,11 +5,12 @@ use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::FileOperation;
 use crate::events::{
-    parse_mcp_server, AikiEvent, AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload,
-    AikiPromptSubmittedPayload, AikiReadCompletedPayload, AikiReadPermissionAskedPayload,
-    AikiResponseReceivedPayload, AikiSessionStartPayload, AikiShellCompletedPayload,
-    AikiShellPermissionAskedPayload, AikiWebCompletedPayload, AikiWebPermissionAskedPayload,
-    AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
+    parse_mcp_server, AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
+    AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload,
+    AikiReadCompletedPayload, AikiReadPermissionAskedPayload, AikiResponseReceivedPayload,
+    AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
+    AikiWebCompletedPayload, AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation,
+    MoveOperation, WriteOperation,
 };
 use crate::tools::ToolType;
 
@@ -176,17 +177,18 @@ fn build_file_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeToo
     };
 
     match operation {
-        FileOperation::Write => build_write_permission_asked_event(payload, tool),
+        FileOperation::Write => build_change_permission_asked_event_write(payload, tool),
         FileOperation::Read => build_read_permission_asked_event(payload, tool),
-        FileOperation::Delete => {
-            eprintln!("[aiki] Warning: Delete operation not yet supported in PreToolUse");
-            AikiEvent::Unsupported
-        }
+        FileOperation::Delete => build_change_permission_asked_event_delete(payload, tool),
+        FileOperation::Move => build_change_permission_asked_event_move(payload, tool),
     }
 }
 
-/// Build write.permission_asked event for write operations (Edit, Write, NotebookEdit, MultiEdit)
-fn build_write_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+/// Build change.permission_asked event for write operations (Edit, Write, NotebookEdit, MultiEdit)
+fn build_change_permission_asked_event_write(
+    payload: PreToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
     let file_paths = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
             vec![input.file_path]
@@ -200,17 +202,101 @@ fn build_write_permission_asked_event(payload: PreToolUsePayload, tool: ClaudeTo
             Vec::new()
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in write.permission_asked");
+            eprintln!(
+                "[aiki] Warning: Unexpected tool type in change.permission_asked (write)"
+            );
             Vec::new()
         }
     };
 
-    AikiEvent::WritePermissionAsked(AikiWritePermissionAskedPayload {
+    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         tool_name: payload.tool_name,
-        file_paths,
+        operation: ChangeOperation::Write(WriteOperation {
+            file_paths,
+            edit_details: vec![], // Edit details not available at permission time
+        }),
+    })
+}
+
+/// Build change.permission_asked event for delete operations
+///
+/// Claude Code doesn't currently have a dedicated delete file tool (deletes come
+/// through shell commands like rm/rmdir), but we implement this handler properly
+/// for future compatibility and to ensure the event pipeline doesn't drop operations.
+fn build_change_permission_asked_event_delete(
+    payload: PreToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
+    // Extract file paths from tool - if no paths available, use empty list
+    let file_paths = match tool {
+        ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
+            vec![input.file_path]
+        }
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Delete permission with unknown tool '{}', no paths available",
+                name
+            );
+            Vec::new()
+        }
+        _ => {
+            // For other tool types, we can't extract paths
+            debug_log(|| "[aiki] Delete permission with no extractable paths");
+            Vec::new()
+        }
+    };
+
+    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        operation: ChangeOperation::Delete(DeleteOperation { file_paths }),
+    })
+}
+
+/// Build change.permission_asked event for move operations
+///
+/// Claude Code doesn't currently have a dedicated move/rename tool (moves come
+/// through shell commands like mv), but we implement this handler properly
+/// for future compatibility and to ensure the event pipeline doesn't drop operations.
+fn build_change_permission_asked_event_move(
+    payload: PreToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
+    // Extract source/destination paths from tool - if no paths available, use empty lists
+    let (source_paths, destination_paths) = match tool {
+        ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
+            // Single file tool can only represent source
+            (vec![input.file_path], Vec::new())
+        }
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Move permission with unknown tool '{}', no paths available",
+                name
+            );
+            (Vec::new(), Vec::new())
+        }
+        _ => {
+            // For other tool types, we can't extract paths
+            debug_log(|| "[aiki] Move permission with no extractable paths");
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    AikiEvent::ChangePermissionAsked(AikiChangePermissionAskedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        operation: ChangeOperation::Move(MoveOperation {
+            file_paths: destination_paths.clone(),
+            source_paths,
+            destination_paths,
+        }),
     })
 }
 
@@ -267,17 +353,15 @@ fn build_file_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> 
     };
 
     match operation {
-        FileOperation::Write => build_write_completed_event(payload, tool),
+        FileOperation::Write => build_change_completed_event_write(payload, tool),
         FileOperation::Read => build_read_completed_event(payload, tool),
-        FileOperation::Delete => {
-            eprintln!("[aiki] Warning: Delete operation not yet supported in PostToolUse");
-            AikiEvent::Unsupported
-        }
+        FileOperation::Delete => build_change_completed_event_delete(payload, tool),
+        FileOperation::Move => build_change_completed_event_move(payload, tool),
     }
 }
 
-/// Build write.completed event for write operations (Edit, Write, NotebookEdit, MultiEdit)
-fn build_write_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
+/// Build change.completed event for write operations (Edit, Write, NotebookEdit, MultiEdit)
+fn build_change_completed_event_write(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     let (file_paths, edit_details) = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::NotebookEdit(input) => {
             // Edit/NotebookEdit use old_string/new_string for replacements
@@ -321,19 +405,102 @@ fn build_write_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) ->
             return AikiEvent::Unsupported;
         }
         _ => {
-            eprintln!("[aiki] Warning: Unexpected tool type in write.completed");
+            eprintln!("[aiki] Warning: Unexpected tool type in change.completed (write)");
             return AikiEvent::Unsupported;
         }
     };
 
-    AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
+    AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         tool_name: payload.tool_name,
-        file_paths,
         success: true,
-        edit_details,
+        operation: ChangeOperation::Write(WriteOperation {
+            file_paths,
+            edit_details,
+        }),
+    })
+}
+
+/// Build change.completed event for delete operations
+///
+/// Claude Code doesn't currently have a dedicated delete file tool (deletes come
+/// through shell commands like rm/rmdir), but we implement this handler properly
+/// for future compatibility and to ensure the event pipeline doesn't drop operations.
+fn build_change_completed_event_delete(
+    payload: PostToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
+    // Extract file paths from tool - if no paths available, use empty list
+    let file_paths = match tool {
+        ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
+            vec![input.file_path]
+        }
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Delete operation with unknown tool '{}', no paths available",
+                name
+            );
+            Vec::new()
+        }
+        _ => {
+            // For other tool types, we can't extract paths
+            debug_log(|| "[aiki] Delete operation with no extractable paths");
+            Vec::new()
+        }
+    };
+
+    AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        success: true,
+        operation: ChangeOperation::Delete(DeleteOperation { file_paths }),
+    })
+}
+
+/// Build change.completed event for move operations
+///
+/// Claude Code doesn't currently have a dedicated move/rename tool (moves come
+/// through shell commands like mv), but we implement this handler properly
+/// for future compatibility and to ensure the event pipeline doesn't drop operations.
+fn build_change_completed_event_move(
+    payload: PostToolUsePayload,
+    tool: ClaudeTool,
+) -> AikiEvent {
+    // Extract source/destination paths from tool - if no paths available, use empty lists
+    let (source_paths, destination_paths) = match tool {
+        ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
+            // Single file tool can only represent source
+            (vec![input.file_path], Vec::new())
+        }
+        ClaudeTool::Unknown(name) => {
+            eprintln!(
+                "[aiki] Warning: Move operation with unknown tool '{}', no paths available",
+                name
+            );
+            (Vec::new(), Vec::new())
+        }
+        _ => {
+            // For other tool types, we can't extract paths
+            debug_log(|| "[aiki] Move operation with no extractable paths");
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        tool_name: payload.tool_name,
+        success: true,
+        operation: ChangeOperation::Move(MoveOperation {
+            file_paths: destination_paths.clone(),
+            source_paths,
+            destination_paths,
+        }),
     })
 }
 

@@ -55,24 +55,16 @@ pub enum AikiEvent {
     ReadCompleted(AikiReadCompletedPayload),
 
     // ========================================================================
-    // Write Operation Events
+    // Change Operation Events (Unified mutations: write, delete, move)
     // ========================================================================
-    /// Agent is about to write a file (gateable - stash user changes before AI edits)
-    #[serde(rename = "write.permission_asked")]
-    WritePermissionAsked(AikiWritePermissionAskedPayload),
-    /// Agent finished writing a file (core provenance tracking event)
-    #[serde(rename = "write.completed")]
-    WriteCompleted(AikiWriteCompletedPayload),
-
-    // ========================================================================
-    // Delete Operation Events
-    // ========================================================================
-    /// Agent is about to delete a file (gateable - can block deletion of important files)
-    #[serde(rename = "delete.permission_asked")]
-    DeletePermissionAsked(AikiDeletePermissionAskedPayload),
-    /// Agent finished deleting a file
-    #[serde(rename = "delete.completed")]
-    DeleteCompleted(AikiDeleteCompletedPayload),
+    /// Agent is about to perform a file mutation (write, delete, or move)
+    /// Gateable - stash user changes, gate destructive operations
+    #[serde(rename = "change.permission_asked")]
+    ChangePermissionAsked(AikiChangePermissionAskedPayload),
+    /// Agent finished performing a file mutation (write, delete, or move)
+    /// Core provenance tracking event for all file mutations
+    #[serde(rename = "change.completed")]
+    ChangeCompleted(AikiChangeCompletedPayload),
 
     // ========================================================================
     // Shell Command Events
@@ -135,12 +127,9 @@ impl AikiEvent {
             // Read operations
             Self::ReadPermissionAsked(e) => &e.cwd,
             Self::ReadCompleted(e) => &e.cwd,
-            // Write operations
-            Self::WritePermissionAsked(e) => &e.cwd,
-            Self::WriteCompleted(e) => &e.cwd,
-            // Delete operations
-            Self::DeletePermissionAsked(e) => &e.cwd,
-            Self::DeleteCompleted(e) => &e.cwd,
+            // Change operations (unified mutations: write, delete, move)
+            Self::ChangePermissionAsked(e) => &e.cwd,
+            Self::ChangeCompleted(e) => &e.cwd,
             // Shell commands
             Self::ShellPermissionAsked(e) => &e.cwd,
             Self::ShellCompleted(e) => &e.cwd,
@@ -171,12 +160,9 @@ impl AikiEvent {
             // Read operations
             Self::ReadPermissionAsked(e) => e.session.agent_type(),
             Self::ReadCompleted(e) => e.session.agent_type(),
-            // Write operations
-            Self::WritePermissionAsked(e) => e.session.agent_type(),
-            Self::WriteCompleted(e) => e.session.agent_type(),
-            // Delete operations
-            Self::DeletePermissionAsked(e) => e.session.agent_type(),
-            Self::DeleteCompleted(e) => e.session.agent_type(),
+            // Change operations (unified mutations: write, delete, move)
+            Self::ChangePermissionAsked(e) => e.session.agent_type(),
+            Self::ChangeCompleted(e) => e.session.agent_type(),
             // Shell commands
             Self::ShellPermissionAsked(e) => e.session.agent_type(),
             Self::ShellCompleted(e) => e.session.agent_type(),
@@ -211,13 +197,10 @@ mod response_received;
 mod read_completed;
 mod read_permission_asked;
 
-// Write operations
-mod write_completed;
-mod write_permission_asked;
-
-// Delete operations
-mod delete_completed;
-mod delete_permission_asked;
+// Change operations (unified mutations: write, delete, move)
+mod change_completed;
+mod change_permission_asked;
+mod prelude;
 
 // Shell commands
 mod shell_completed;
@@ -251,13 +234,12 @@ pub use response_received::*;
 pub use read_completed::*;
 pub use read_permission_asked::*;
 
-// Write operations
-pub use write_completed::*;
-pub use write_permission_asked::*;
+// Change operations (unified mutations: write, delete, move)
+pub use change_completed::*;
+pub use change_permission_asked::*;
 
-// Delete operations
-pub use delete_completed::*;
-pub use delete_permission_asked::*;
+// Shared types
+pub use change_completed::EditDetail;
 
 // Re-export FileOperation from tools module for convenience
 pub use crate::tools::FileOperation;
@@ -306,29 +288,16 @@ impl From<AikiReadCompletedPayload> for AikiEvent {
     }
 }
 
-// Write operations
-impl From<AikiWritePermissionAskedPayload> for AikiEvent {
-    fn from(payload: AikiWritePermissionAskedPayload) -> Self {
-        AikiEvent::WritePermissionAsked(payload)
+// Change operations (unified mutations: write, delete, move)
+impl From<AikiChangePermissionAskedPayload> for AikiEvent {
+    fn from(payload: AikiChangePermissionAskedPayload) -> Self {
+        AikiEvent::ChangePermissionAsked(payload)
     }
 }
 
-impl From<AikiWriteCompletedPayload> for AikiEvent {
-    fn from(payload: AikiWriteCompletedPayload) -> Self {
-        AikiEvent::WriteCompleted(payload)
-    }
-}
-
-// Delete operations
-impl From<AikiDeletePermissionAskedPayload> for AikiEvent {
-    fn from(payload: AikiDeletePermissionAskedPayload) -> Self {
-        AikiEvent::DeletePermissionAsked(payload)
-    }
-}
-
-impl From<AikiDeleteCompletedPayload> for AikiEvent {
-    fn from(payload: AikiDeleteCompletedPayload) -> Self {
-        AikiEvent::DeleteCompleted(payload)
+impl From<AikiChangeCompletedPayload> for AikiEvent {
+    fn from(payload: AikiChangeCompletedPayload) -> Self {
+        AikiEvent::ChangeCompleted(payload)
     }
 }
 

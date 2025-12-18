@@ -55,19 +55,19 @@ mod tests {
     }
 
     #[test]
-    fn test_core_flow_has_write_completed() {
+    fn test_core_flow_has_change_completed() {
         let core = load_core_flow();
 
-        // Should have write.completed handler
-        assert!(!core.write_completed.is_empty());
+        // Should have change.completed handler
+        assert!(!core.change_completed.is_empty());
     }
 
     #[test]
-    fn test_core_flow_has_write_permission_asked() {
+    fn test_core_flow_has_change_permission_asked() {
         let core = load_core_flow();
 
-        // Should have write.permission_asked handler
-        assert!(!core.write_permission_asked.is_empty());
+        // Should have change.permission_asked handler
+        assert!(!core.change_permission_asked.is_empty());
     }
 
     #[test]
@@ -84,30 +84,31 @@ mod tests {
 
         let core = load_core_flow();
 
-        // Should have write.completed handler
-        assert!(!core.write_completed.is_empty());
+        // Should have change.completed handler
+        assert!(!core.change_completed.is_empty());
 
-        // First statement is the classify_edits check (write.completed is already write-specific)
-        match &core.write_completed[0] {
-            FlowStatement::If(classify_if) => {
-                // Verify uses inline self.classify_edits for condition
+        // First statement is the write operation check (change.completed handles all operations)
+        match &core.change_completed[0] {
+            FlowStatement::If(write_if) => {
+                // Verify checks for write operation
                 assert!(
-                    classify_if.condition.contains("self.classify_edits"),
-                    "Flow should use inline 'self.classify_edits' in condition"
+                    write_if.condition.contains("$event.write"),
+                    "Flow should check for write operation"
                 );
-                // First statement in then block should be the prepare_separation let binding
-                assert!(!classify_if.then.is_empty());
-                match &classify_if.then[0] {
-                    FlowStatement::Action(Action::Let(let_action)) => {
-                        assert_eq!(
-                            let_action.let_, "prep = self.prepare_separation",
-                            "Flow should prepare separation when user edits are detected"
+                // First statement in then block should be the classify_edits check
+                assert!(!write_if.then.is_empty());
+                match &write_if.then[0] {
+                    FlowStatement::If(classify_if) => {
+                        // Verify uses inline self.classify_edits_change for condition
+                        assert!(
+                            classify_if.condition.contains("self.classify_edits_change"),
+                            "Flow should use inline 'self.classify_edits_change' in condition"
                         );
                     }
-                    _ => panic!("Expected Let action as first step in then block"),
+                    _ => panic!("Expected If statement for classify_edits_change"),
                 }
             }
-            _ => panic!("Expected If statement for classify_edits"),
+            _ => panic!("Expected If statement for write operation check"),
         }
     }
 }

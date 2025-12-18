@@ -207,6 +207,7 @@ With `#[serde(flatten)]`, the operation data is merged into the parent struct:
   "tool_name": "Bash",
   "success": true,
   "operation": "move",
+  "file_paths": ["new_location.txt"],
   "source_paths": ["old_location.txt"],
   "destination_paths": ["new_location.txt"]
 }
