@@ -2,7 +2,6 @@ use crate::commands::zed_detection;
 use crate::error::Result;
 use crate::ide_config;
 use crate::repo::RepoDetector;
-use crate::sign_setup_wizard;
 use crate::signing;
 use anyhow::Context;
 use std::env;
@@ -233,7 +232,7 @@ pub fn run(fix: bool) -> Result<()> {
                     let setup = prompt_yes_no("Set up signing", true)?;
 
                     if setup {
-                        let wizard = sign_setup_wizard::SignSetupWizard::new(current_dir.clone());
+                        let wizard = signing::SignSetupWizard::new(current_dir.clone());
                         wizard.run(None)?;
                     } else {
                         println!("Skipping signing setup.");
