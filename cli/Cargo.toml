@@ -28,6 +28,7 @@ shell-words = "1.1"
 agent-client-protocol = "0.7"
 which = "6.0"
 uuid = { version = "1.0", features = ["v5"] }
+globset = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2.0"

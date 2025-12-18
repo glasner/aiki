@@ -8,22 +8,7 @@ use crate::events::{
 };
 use crate::session::AikiSession;
 use crate::tools::{parse_file_operation_from_shell_command, FileOperation};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// Cache for move operation directory detection results.
-///
-/// When shell.permission_asked fires for an `mv` command, we detect whether the destination
-/// is a directory using the pre-move filesystem state. We cache this result so that when
-/// shell.completed fires for the same command, we can use the correct detection instead
-/// of relying on syntactic-only detection (which misses `mv file existing_dir` without
-/// trailing slash).
-///
-/// Key: (session_id, command_string)
-/// Value: dest_is_directory (bool)
-static MOVE_DIR_CACHE: std::sync::LazyLock<Mutex<HashMap<(String, String), bool>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Dispatch an event to the appropriate handler
 ///
@@ -217,15 +202,43 @@ fn transform_shell_delete_to_change_permission_asked(
 
 /// Transform shell.completed to change.completed for rm/rmdir commands
 ///
-/// Called when shell command is detected as a delete operation.
+/// First tries to use JJ for accurate path resolution. If JJ is unavailable
+/// or returns no matching paths, falls back to syntactic detection from
+/// command arguments (preserves existing behavior for Git-only repos).
 fn transform_shell_delete_to_change_completed(
     shell_event: crate::events::AikiShellCompletedPayload,
-    paths: Vec<String>,
+    command_args: Vec<String>,
 ) -> AikiChangeCompletedPayload {
+    // Try to get actual deleted paths from JJ, filtered by command arguments
+    let deleted_paths =
+        match crate::jj::diff::get_deleted_paths(&shell_event.cwd, &command_args) {
+            Ok(paths) if !paths.is_empty() => {
+                debug_log(|| format!("Using JJ-detected deleted paths: {:?}", paths));
+                paths
+            }
+            Ok(_) => {
+                // No deletions detected by JJ (or filtered out) - fall back to syntactic
+                debug_log(|| {
+                    "JJ detected no matching deletions, falling back to syntactic detection"
+                });
+                command_args
+            }
+            Err(e) => {
+                // JJ not available or error - fall back to syntactic detection
+                debug_log(|| {
+                    format!(
+                        "JJ error ({}), falling back to syntactic detection",
+                        e
+                    )
+                });
+                command_args
+            }
+        };
+
     debug_log(|| {
         format!(
-            "Transforming shell.completed (rm/rmdir) to change.completed: {:?}",
-            paths
+            "Transforming shell.completed (rm/rmdir) to change.completed with {} paths",
+            deleted_paths.len()
         )
     });
 
@@ -235,7 +248,9 @@ fn transform_shell_delete_to_change_completed(
         timestamp: shell_event.timestamp,
         tool_name: "Bash".to_string(),
         success: shell_event.success,
-        operation: ChangeOperation::Delete(DeleteOperation { file_paths: paths }),
+        operation: ChangeOperation::Delete(DeleteOperation {
+            file_paths: deleted_paths,
+        }),
     }
 }
 
@@ -244,12 +259,15 @@ fn transform_shell_delete_to_change_completed(
 /// Called when shell command is detected as a move operation.
 /// The paths vector should contain source path(s) followed by destination path.
 ///
-/// Uses filesystem-based directory detection since we're in the pre-move state.
-/// Caches the detection result for use by the corresponding completed event.
+/// Uses filesystem-based directory detection to accurately expand paths like
+/// `mv foo existing_dir` into `existing_dir/foo`. This is safe for permission_asked
+/// because the filesystem reflects the pre-move state.
+///
+/// The completed event uses JJ for accurate post-move paths.
 fn transform_shell_move_to_change_permission_asked(
     shell_event: crate::events::AikiShellPermissionAskedPayload,
     paths: Vec<String>,
-    command: &str,
+    _command: &str, // No longer needed for cache key
 ) -> AikiChangePermissionAskedPayload {
     debug_log(|| {
         format!(
@@ -258,38 +276,9 @@ fn transform_shell_move_to_change_permission_asked(
         )
     });
 
-    // Check if destination is a directory using pre-move filesystem state
-    let dest_is_directory = if paths.len() >= 2 {
-        let dest = &paths[paths.len() - 1];
-        let dest_path = if std::path::Path::new(dest).is_absolute() {
-            std::path::PathBuf::from(dest)
-        } else {
-            shell_event.cwd.join(dest)
-        };
-        dest_path.is_dir()
-    } else {
-        false
-    };
-
-    // Cache the detection result for the completed event
-    let cache_key = (
-        shell_event.session.external_id().to_string(),
-        command.to_string(),
-    );
-    if let Ok(mut cache) = MOVE_DIR_CACHE.lock() {
-        cache.insert(cache_key, dest_is_directory);
-        // Limit cache size to prevent unbounded growth (keep last 100 entries)
-        if cache.len() > 100 {
-            // Remove oldest entries (HashMap doesn't preserve order, so just clear half)
-            let keys_to_remove: Vec<_> = cache.keys().take(50).cloned().collect();
-            for key in keys_to_remove {
-                cache.remove(&key);
-            }
-        }
-    }
-
-    // Use the detection result to build the move operation
-    let move_op = MoveOperation::from_move_paths_with_hint(paths, Some(dest_is_directory));
+    // Use filesystem-based detection for pre-event (destination still exists)
+    // This correctly expands `mv foo existing_dir` to `existing_dir/foo`
+    let move_op = MoveOperation::from_move_paths_with_cwd(paths, &shell_event.cwd);
 
     AikiChangePermissionAskedPayload {
         session: shell_event.session,
@@ -302,52 +291,48 @@ fn transform_shell_move_to_change_permission_asked(
 
 /// Transform shell.completed to change.completed for mv commands
 ///
-/// Called when shell command is detected as a move operation.
-/// The paths vector should contain source path(s) followed by destination path.
-///
-/// Uses cached directory detection from the permission_asked phase if available.
-/// Falls back to syntactic-only detection if no cache entry exists (e.g., if
-/// permission_asked was never fired for this command).
+/// First tries to use JJ for accurate path resolution. If JJ is unavailable
+/// or returns no matching paths, falls back to syntactic detection from
+/// command arguments (preserves existing behavior for Git-only repos).
 fn transform_shell_move_to_change_completed(
     shell_event: crate::events::AikiShellCompletedPayload,
-    paths: Vec<String>,
-    command: &str,
+    command_args: Vec<String>,
+    _command: &str, // No longer needed for cache key
 ) -> AikiChangeCompletedPayload {
-    debug_log(|| {
-        format!(
-            "Transforming shell.completed (mv) to change.completed: {:?}",
-            paths
-        )
-    });
+    // Try to get actual move operations from JJ, filtered by command arguments
+    let move_op = match crate::jj::diff::get_move_operations(&shell_event.cwd, &command_args) {
+        Ok(ops) if !ops.is_empty() => {
+            debug_log(|| format!("Using JJ-detected move operations: {:?}", ops));
+            // Extract sources and destinations from JJ
+            let sources: Vec<String> = ops.iter().map(|(s, _)| s.clone()).collect();
+            let destinations: Vec<String> = ops.iter().map(|(_, d)| d.clone()).collect();
 
-    // Try to get cached directory detection from permission_asked phase
-    let cache_key = (
-        shell_event.session.external_id().to_string(),
-        command.to_string(),
-    );
-    let cached_dest_is_dir = MOVE_DIR_CACHE
-        .lock()
-        .ok()
-        .and_then(|mut cache| cache.remove(&cache_key));
-
-    // Use cached detection if available, otherwise fall back to syntactic-only
-    let move_op = match cached_dest_is_dir {
-        Some(is_dir) => {
-            debug_log(|| {
-                format!(
-                    "Using cached directory detection for mv: dest_is_directory={}",
-                    is_dir
-                )
-            });
-            MoveOperation::from_move_paths_with_hint(paths, Some(is_dir))
+            MoveOperation {
+                file_paths: destinations.clone(),
+                source_paths: sources,
+                destination_paths: destinations,
+            }
         }
-        None => {
-            debug_log(|| {
-                "No cached directory detection for mv, using syntactic-only detection".to_string()
-            });
-            MoveOperation::from_move_paths(paths)
+        Ok(_) => {
+            // No moves detected by JJ (or filtered out) - fall back to syntactic
+            debug_log(|| "JJ detected no matching moves, falling back to syntactic detection");
+            // Use syntactic detection from command args (existing behavior)
+            MoveOperation::from_move_paths(command_args)
+        }
+        Err(e) => {
+            // JJ not available or error - fall back to syntactic detection
+            debug_log(|| format!("JJ error ({}), falling back to syntactic detection", e));
+            // Use syntactic detection from command args (existing behavior)
+            MoveOperation::from_move_paths(command_args)
         }
     };
+
+    debug_log(|| {
+        format!(
+            "Transforming shell.completed (mv) to change.completed with {} move operations",
+            move_op.file_paths.len()
+        )
+    });
 
     AikiChangeCompletedPayload {
         session: shell_event.session,

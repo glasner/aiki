@@ -129,7 +129,7 @@ pub fn parse_file_operation_from_shell_command(
     match cmd {
         "rm" | "rmdir" => {
             // Extract file paths from command, respecting -- end-of-options marker
-            let paths = extract_paths_from_args(&tokens[(cmd_idx + 1)..]);
+            let paths = parse_rm_paths_from_args(&tokens[(cmd_idx + 1)..]);
 
             if paths.is_empty() {
                 // rm with no arguments - treat as regular shell command
@@ -142,7 +142,7 @@ pub fn parse_file_operation_from_shell_command(
             // Extract file paths from command, respecting -- end-of-options marker
             // and handling -t/--target-directory which puts destination before sources
             // For mv: paths are [source..., destination]
-            let paths = extract_mv_paths_from_args(&tokens[(cmd_idx + 1)..]);
+            let paths = parse_mv_paths_from_args(&tokens[(cmd_idx + 1)..]);
 
             if paths.len() < 2 {
                 // mv needs at least source and destination
@@ -163,7 +163,7 @@ pub fn parse_file_operation_from_shell_command(
 /// This correctly handles files with dash-prefixed names like `-important`:
 /// - `rm -- -important` → ["-important"]
 /// - `rm -rf -- -foo -bar` → ["-foo", "-bar"]
-fn extract_paths_from_args(args: &[String]) -> Vec<String> {
+fn parse_rm_paths_from_args(args: &[String]) -> Vec<String> {
     let mut paths = Vec::new();
     let mut after_double_dash = false;
 
@@ -187,7 +187,7 @@ fn extract_paths_from_args(args: &[String]) -> Vec<String> {
     paths
 }
 
-/// Extract file paths from mv command arguments, handling `-t/--target-directory`.
+/// Parse file paths from mv command arguments, handling `-t/--target-directory`.
 ///
 /// GNU/BSD `mv` supports `-t DIRECTORY` or `--target-directory=DIRECTORY` to specify
 /// the destination before the sources: `mv -t dest src1 src2` is equivalent to
@@ -200,7 +200,7 @@ fn extract_paths_from_args(args: &[String]) -> Vec<String> {
 /// - Normal mv: `["src", "dest"]` → `["src", "dest"]`
 /// - With -t: `["-t", "dest", "src"]` → `["src", "dest"]`
 /// - With --target-directory=: `["--target-directory=dest", "src"]` → `["src", "dest"]`
-fn extract_mv_paths_from_args(args: &[String]) -> Vec<String> {
+fn parse_mv_paths_from_args(args: &[String]) -> Vec<String> {
     let mut sources = Vec::new();
     let mut target_directory: Option<String> = None;
     let mut after_double_dash = false;
@@ -771,8 +771,7 @@ mod tests {
     #[test]
     fn test_mv_with_target_directory_separate() {
         // mv --target-directory dest src
-        let (op, paths) =
-            parse_file_operation_from_shell_command("mv --target-directory dest src");
+        let (op, paths) = parse_file_operation_from_shell_command("mv --target-directory dest src");
         assert_eq!(op, Some(FileOperation::Move));
         assert_eq!(paths, vec!["src", "dest"]);
     }

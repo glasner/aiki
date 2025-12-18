@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config;
-use crate::signing::{self, SigningBackend, SigningConfig};
+use crate::signing::config::{self as signing_config, SigningBackend, SigningConfig};
 
 pub struct SignSetupWizard {
     repo_path: PathBuf,
@@ -185,7 +185,7 @@ impl SignSetupWizard {
         println!();
 
         // Create allowed-signers file
-        signing::create_ssh_allowed_signers(
+        signing_config::create_ssh_allowed_signers(
             &self.repo_path,
             &email,
             pub_key_path.to_str().unwrap(),
@@ -248,7 +248,7 @@ impl SignSetupWizard {
                     .map(|s| s.trim().to_string())
                     .unwrap_or_else(|| prompt_string("Email for allowed-signers", None).unwrap());
 
-                signing::create_ssh_allowed_signers(
+                signing_config::create_ssh_allowed_signers(
                     &self.repo_path,
                     &email,
                     expanded_path.to_str().unwrap(),
@@ -269,7 +269,7 @@ impl SignSetupWizard {
 
     /// Verify the key is accessible
     fn verify_key(&self, config: &SigningConfig) -> Result<()> {
-        signing::verify_key_accessible(config)?;
+        signing_config::verify_key_accessible(config)?;
         Ok(())
     }
 

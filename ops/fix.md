@@ -144,12 +144,23 @@ pub fn get_move_operations(shell_cwd: &Path, command_args: &[String]) -> Result<
             }
         })
         .collect();
-    
-    // Filter to only include moves where source matches command arguments
-    // Both move sources (from JJ) and normalized_args are now workspace-relative
+
+    // Filter by DESTINATION, not source (handles chained renames correctly)
+    // JJ tracks from baseline, so after `mv foo bar` then `mv bar dir/`,
+    // JJ shows `R {foo => dir/bar}` - source "foo" won't match "bar" in args.
+    // But destination "dir/bar" matches the dest arg "dir/" via prefix matching.
+    //
+    // For mv, the last argument is always the destination.
+    let dest_arg = normalized_args.last().cloned().unwrap_or_default();
+
     let filtered_moves: Vec<(String, String)> = all_moves
         .into_iter()
-        .filter(|(source, _dest)| path_matches_command(source, &normalized_args))
+        .filter(|(_source, dest)| {
+            // Match if destination equals dest_arg or is under dest_arg directory
+            let dest_path = Path::new(dest);
+            let arg_path = Path::new(dest_arg.trim_end_matches('/').trim_end_matches('\\'));
+            dest_path == arg_path || dest_path.starts_with(arg_path)
+        })
         .collect();
     
     // Rebase both source and destination to be relative to shell_cwd
@@ -764,6 +775,87 @@ mod tests {
         let filtered = filter_paths_by_command(&paths, &literal_args);
         assert_eq!(filtered, vec!["a.txt"]);
     }
+
+    #[test]
+    fn test_move_filter_by_destination() {
+        // Simple rename: mv foo bar
+        let moves = vec![("foo".to_string(), "bar".to_string())];
+        let dest_arg = "bar";
+
+        let filtered: Vec<_> = moves.iter()
+            .filter(|(_src, dest)| {
+                let dest_path = Path::new(dest);
+                let arg_path = Path::new(dest_arg);
+                dest_path == arg_path || dest_path.starts_with(arg_path)
+            })
+            .collect();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0], &("foo".to_string(), "bar".to_string()));
+    }
+
+    #[test]
+    fn test_move_chained_rename() {
+        // After `mv foo bar`, then `mv bar baz`
+        // JJ shows: R {foo => baz} (tracks from baseline)
+        let moves = vec![("foo".to_string(), "baz".to_string())];
+        let dest_arg = "baz";
+
+        let filtered: Vec<_> = moves.iter()
+            .filter(|(_src, dest)| {
+                let dest_path = Path::new(dest);
+                let arg_path = Path::new(dest_arg);
+                dest_path == arg_path || dest_path.starts_with(arg_path)
+            })
+            .collect();
+
+        // Should match by destination, even though source "foo" != command arg "bar"
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1, "baz");
+    }
+
+    #[test]
+    fn test_move_to_directory() {
+        // mv bar existing_dir/ (after previous mv foo bar)
+        // JJ shows: R {foo => existing_dir/bar}
+        let moves = vec![("foo".to_string(), "existing_dir/bar".to_string())];
+        let dest_arg = "existing_dir/";
+
+        let filtered: Vec<_> = moves.iter()
+            .filter(|(_src, dest)| {
+                let dest_path = Path::new(dest);
+                let arg_path = Path::new(dest_arg.trim_end_matches('/'));
+                dest_path == arg_path || dest_path.starts_with(arg_path)
+            })
+            .collect();
+
+        // Should match: "existing_dir/bar" starts with "existing_dir"
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1, "existing_dir/bar");
+    }
+
+    #[test]
+    fn test_move_multiple_sources_chained() {
+        // After `mv x a`, run `mv a b c dir/`
+        // JJ shows all three moves, one with different baseline source
+        let moves = vec![
+            ("x".to_string(), "dir/a".to_string()),   // x was renamed to a, now in dir/
+            ("b".to_string(), "dir/b".to_string()),
+            ("c".to_string(), "dir/c".to_string()),
+        ];
+        let dest_arg = "dir/";
+
+        let filtered: Vec<_> = moves.iter()
+            .filter(|(_src, dest)| {
+                let dest_path = Path::new(dest);
+                let arg_path = Path::new(dest_arg.trim_end_matches('/'));
+                dest_path == arg_path || dest_path.starts_with(arg_path)
+            })
+            .collect();
+
+        // All three should match - destinations all under dir/
+        assert_eq!(filtered.len(), 3);
+    }
 }
 ```
 
@@ -1374,6 +1466,10 @@ If shell command parsing says "this is a move" but JJ shows no moves:
 - [x] Test `normalize_paths_to_workspace_root()` with multiple paths
 - [x] Test normalization filters out paths outside workspace (not error)
 - [x] Test normalization handles deleted files (canonicalization fails gracefully)
+- [x] Test move filter by destination (simple rename)
+- [x] Test move chained rename (baseline tracking)
+- [x] Test move to directory (destination prefix matching)
+- [x] Test move multiple sources with chained rename
 - [ ] Test JJ error handling (JJ not found)
 - [ ] Test JJ error handling (not a JJ repo)
 
@@ -1388,6 +1484,7 @@ If shell command parsing says "this is a move" but JJ shows no moves:
 - [ ] Shell `mv file.txt renamed.txt` → JJ shows `R file.txt => renamed.txt` → emits `change.completed(Move)` with correct paths
 - [ ] Shell `mv file.txt existing_dir/` → JJ shows `R file.txt => existing_dir/file.txt` → emits `change.completed(Move)` with correct destination
 - [ ] Shell `mv a b c dir/` (multiple files) → JJ shows multiple R lines → emits `change.completed(Move)` with all moves
+- [ ] Chained rename: `mv foo bar` then `mv bar dir/` → JJ shows `R {foo => dir/bar}` → correct destination detected
 - [ ] Shell command that fails → JJ shows no changes → emits normal `shell.completed`
 - [ ] Multiple deletes in same working copy change → only emit paths matching current command
 - [ ] Command from subdirectory → JJ runs from workspace root → paths resolved correctly
@@ -1433,6 +1530,18 @@ AIKI_DEBUG=1 aiki acp &
 mv file.txt ../new/
 # Should see: "JJ detected move: src/old/file.txt => src/new/file.txt"
 # (both paths normalized to workspace root)
+
+# Test chained rename (baseline tracking)
+cd /tmp/test-aiki
+echo "test" > foo.txt && jj new
+mv foo.txt bar.txt
+# JJ now shows: R {foo.txt => bar.txt}
+mkdir dir
+AIKI_DEBUG=1 aiki acp &
+mv bar.txt dir/
+# JJ shows: R {foo.txt => dir/bar.txt} (tracks from baseline!)
+# Should see: "JJ detected move: foo.txt => dir/bar.txt"
+# Even though command was `mv bar.txt dir/`, we filter by destination
 ```
 
 ---
@@ -1567,3 +1676,76 @@ path.starts_with(arg_path)
 **Added tests:**
 - `test_path_matches_command_windows_separators()` - Verifies backslash handling
 - Tests exact matches and directory prefix matches with Windows paths
+
+### Finding 4: Chained renames break source-based filtering ✅ FIXED
+
+**Problem:** JJ tracks renames from the **baseline** (last commit), not incrementally between commands. When a file is renamed twice before committing, the source path in JJ's output doesn't match the current command's arguments.
+
+**Example:**
+```
+mv foo bar          # JJ shows: R {foo => bar}
+mv bar existing_dir # JJ shows: R {foo => existing_dir/bar}  ← source is "foo", not "bar"!
+                    # Command args: ["bar", "existing_dir"]
+                    # Filter by source: "foo" doesn't match "bar" → fallback to syntactic
+```
+
+**Solution:** Filter by **destination** instead of source for move operations.
+
+For move commands, the destination is what matters for provenance. The last argument to `mv` is always the destination. We filter JJ moves where the destination matches or is under the command's destination directory.
+
+**Why this works:**
+```
+mv foo bar          # Dest arg: "bar", JJ dest: "bar" → matches!
+mv bar existing_dir # Dest arg: "existing_dir", JJ dest: "existing_dir/bar" → matches (prefix)!
+mv bar baz          # Dest arg: "baz", JJ dest: "baz" → matches!
+```
+
+**Changed implementation in `get_move_operations()`:**
+```rust
+// Old (source-based filtering - breaks on chained renames):
+let filtered_moves: Vec<(String, String)> = all_moves
+    .into_iter()
+    .filter(|(source, _dest)| path_matches_command(source, &normalized_args))
+    .collect();
+
+// New (destination-based filtering - works with chained renames):
+// Extract destination from command args (last argument for mv)
+let dest_arg = normalized_args.last().cloned().unwrap_or_default();
+
+let filtered_moves: Vec<(String, String)> = all_moves
+    .into_iter()
+    .filter(|(_source, dest)| {
+        // Match if destination equals dest_arg or is under dest_arg directory
+        let dest_path = Path::new(dest);
+        let arg_path = Path::new(dest_arg.trim_end_matches('/').trim_end_matches('\\'));
+        dest_path == arg_path || dest_path.starts_with(arg_path)
+    })
+    .collect();
+```
+
+**Edge cases handled:**
+
+1. **Simple rename:** `mv foo bar`
+   - Dest arg: `bar`, JJ dest: `bar` → exact match ✓
+
+2. **Move to directory:** `mv bar existing_dir/`
+   - Dest arg: `existing_dir/`, JJ dest: `existing_dir/bar` → prefix match ✓
+
+3. **Chained rename then move:** `mv foo bar` then `mv bar dir/`
+   - JJ shows: `R {foo => dir/bar}`
+   - Dest arg: `dir/`, JJ dest: `dir/bar` → prefix match ✓
+
+4. **Multiple sources:** `mv a b c dir/`
+   - Dest arg: `dir/`
+   - JJ shows: `R {a => dir/a}`, `R {b => dir/b}`, `R {c => dir/c}`
+   - All destinations start with `dir/` → all match ✓
+
+5. **Chained rename with multiple sources:** After `mv x a`, run `mv a b c dir/`
+   - JJ shows: `R {x => dir/a}`, `R {b => dir/b}`, `R {c => dir/c}`
+   - All destinations start with `dir/` → all match ✓
+
+**Added tests:**
+- `test_move_filter_by_destination()` - Basic destination filtering
+- `test_move_chained_rename()` - Chained renames filter correctly
+- `test_move_to_directory()` - Directory destination prefix matching
+- `test_move_multiple_sources_chained()` - Multiple sources with prior renames

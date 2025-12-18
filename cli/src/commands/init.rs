@@ -3,7 +3,6 @@ use crate::error::Result;
 use crate::ide_config;
 use crate::jj;
 use crate::repo::RepoDetector;
-use crate::sign_setup_wizard;
 use crate::signing;
 use anyhow::Context;
 use std::env;
@@ -148,7 +147,7 @@ pub fn run(quiet: bool) -> Result<()> {
                     match choice {
                         1 => {
                             // Launch wizard in generate mode
-                            let wizard = sign_setup_wizard::SignSetupWizard::new(repo_root.clone());
+                            let wizard = signing::SignSetupWizard::new(repo_root.clone());
                             wizard.run(None)?;
                         }
                         2 => {
@@ -179,9 +178,8 @@ pub fn run(quiet: bool) -> Result<()> {
                                 None,
                             )?;
 
-                            let wizard = sign_setup_wizard::SignSetupWizard::new(repo_root.clone());
-                            wizard
-                                .run(Some(sign_setup_wizard::SetupMode::Manual { backend, key }))?;
+                            let wizard = signing::SignSetupWizard::new(repo_root.clone());
+                            wizard.run(Some(signing::SetupMode::Manual { backend, key }))?;
                         }
                         3 => {
                             println!();
