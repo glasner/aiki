@@ -1,0 +1,647 @@
+use super::prelude::*;
+// ============================================================================
+// EditDetail Type (shared by write operations)
+// ============================================================================
+
+/// Details of an edit operation (old_string -> new_string replacement)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditDetail {
+    /// The file path being edited
+    pub file_path: String,
+    /// The original text being replaced
+    pub old_string: String,
+    /// The new text that replaces old_string
+    pub new_string: String,
+}
+
+impl EditDetail {
+    /// Create a new edit detail
+    #[must_use]
+    pub fn new(
+        file_path: impl Into<String>,
+        old_string: impl Into<String>,
+        new_string: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_path: file_path.into(),
+            old_string: old_string.into(),
+            new_string: new_string.into(),
+        }
+    }
+}
+
+// ============================================================================
+// ChangeOperation Enum (Tagged Union)
+// ============================================================================
+
+/// The type of file mutation - each variant contains operation-specific data
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "operation", rename_all = "lowercase")]
+pub enum ChangeOperation {
+    /// File content created or modified
+    Write(WriteOperation),
+    /// File removed
+    Delete(DeleteOperation),
+    /// File relocated (source deleted, destination created)
+    Move(MoveOperation),
+}
+
+/// Write operation data - file content created or modified
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WriteOperation {
+    /// Files that were created or modified
+    pub file_paths: Vec<String>,
+    /// Edit details (old_string -> new_string) for permission_asked and completed events
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edit_details: Vec<EditDetail>,
+}
+
+/// Delete operation data - file removed
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteOperation {
+    /// Files that were removed
+    pub file_paths: Vec<String>,
+}
+
+/// Move operation data - file relocated
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MoveOperation {
+    /// Files affected by the move (same as destination_paths for consistency with Write/Delete)
+    pub file_paths: Vec<String>,
+    /// Original file paths before the move
+    pub source_paths: Vec<String>,
+    /// New file paths after the move (duplicates file_paths for move-specific access)
+    pub destination_paths: Vec<String>,
+}
+
+impl MoveOperation {
+    /// Create a MoveOperation from raw move command paths.
+    ///
+    /// Takes paths in the order they appear in a move command (sources followed by destination).
+    /// When the destination is a directory target, expands each source to its final path
+    /// within that directory.
+    ///
+    /// This is a convenience wrapper around `from_move_paths_with_hint` that uses
+    /// syntactic-only detection. Use `from_move_paths_with_hint` when you have
+    /// filesystem access to determine if the destination is a directory.
+    ///
+    /// # Examples
+    ///
+    /// Simple rename: `mv foo bar` → sources: ["foo"], destinations: ["bar"]
+    /// Move to directory: `mv foo bar dir/` → sources: ["foo", "bar"], destinations: ["dir/foo", "dir/bar"]
+    /// Multi-source: `mv foo bar dest` → sources: ["foo", "bar"], destinations: ["dest/foo", "dest/bar"]
+    #[must_use]
+    pub fn from_move_paths(paths: Vec<String>) -> Self {
+        Self::from_move_paths_with_hint(paths, None)
+    }
+
+    /// Create a MoveOperation from raw move command paths with a directory hint.
+    ///
+    /// Takes paths in the order they appear in a move command (sources followed by destination).
+    /// When the destination is a directory target, expands each source to its final path
+    /// within that directory.
+    ///
+    /// # Directory detection
+    ///
+    /// The `dest_is_directory` hint allows callers to provide filesystem-based detection:
+    /// - `Some(true)`: Destination is known to be a directory (checked via filesystem)
+    /// - `Some(false)`: Destination is known to NOT be a directory
+    /// - `None`: Use syntactic-only detection (trailing slash or multiple sources)
+    ///
+    /// For `change.permission_asked` events (before the move), callers can safely check
+    /// the filesystem. For `change.completed` events (after the move), syntactic-only
+    /// detection should be used because the filesystem state has changed.
+    ///
+    /// Example problem with post-move filesystem checks:
+    /// `mv docs docs-old` renames a directory. After the move, `docs-old` IS a directory,
+    /// but we should NOT expand to `docs-old/docs`.
+    ///
+    /// # Syntactic indicators (when hint is None)
+    ///
+    /// 1. Trailing slash: `mv foo dir/` → destination is explicitly a directory
+    /// 2. Multiple sources: `mv foo bar dest` → destination MUST be a directory
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aiki::events::MoveOperation;
+    ///
+    /// // With filesystem hint: single source to existing directory
+    /// let op = MoveOperation::from_move_paths_with_hint(
+    ///     vec!["file.txt".into(), "existing_dir".into()],
+    ///     Some(true),  // We checked: existing_dir is a directory
+    /// );
+    /// assert_eq!(op.destination_paths, vec!["existing_dir/file.txt"]);
+    ///
+    /// // Without hint (syntactic only): same command treated as rename
+    /// let op = MoveOperation::from_move_paths_with_hint(
+    ///     vec!["file.txt".into(), "existing_dir".into()],
+    ///     None,  // No hint, syntactic only
+    /// );
+    /// assert_eq!(op.destination_paths, vec!["existing_dir"]);
+    /// ```
+    #[must_use]
+    pub fn from_move_paths_with_hint(paths: Vec<String>, dest_is_directory: Option<bool>) -> Self {
+        if paths.len() < 2 {
+            // Not a valid move command, return as-is
+            return Self {
+                file_paths: vec![],
+                source_paths: paths,
+                destination_paths: vec![],
+            };
+        }
+
+        let (sources, dest_slice) = paths.split_at(paths.len() - 1);
+        let dest = &dest_slice[0];
+        let source_paths: Vec<String> = sources.to_vec();
+
+        // Determine if destination is a directory:
+        // 1. Use the hint if provided (from filesystem check)
+        // 2. Otherwise, use syntactic indicators:
+        //    a. Trailing path separator indicates explicit directory target
+        //    b. Multiple sources requires a directory destination
+        let dest_is_dir = dest_is_directory.unwrap_or_else(|| {
+            dest.ends_with('/') || dest.ends_with(std::path::MAIN_SEPARATOR) || sources.len() > 1
+        });
+
+        let destination_paths = if dest_is_dir {
+            // Expand each source to its path within the destination directory
+            source_paths
+                .iter()
+                .map(|src| {
+                    // Extract the filename from the source path
+                    let src_path = std::path::Path::new(src);
+                    let filename = src_path.file_name().and_then(|f| f.to_str()).unwrap_or(src);
+
+                    // Construct destination path
+                    let dest_path = std::path::Path::new(dest);
+                    dest_path.join(filename).to_string_lossy().to_string()
+                })
+                .collect()
+        } else {
+            // Simple rename: single source to single destination
+            vec![dest.clone()]
+        };
+
+        // file_paths duplicates destination_paths for consistency with Write/Delete
+        Self {
+            file_paths: destination_paths.clone(),
+            source_paths,
+            destination_paths,
+        }
+    }
+
+    /// Create a MoveOperation with filesystem-based directory detection.
+    ///
+    /// This method checks the filesystem to determine if the destination is a directory.
+    /// Use this for `change.permission_asked` events where the filesystem state reflects
+    /// the pre-move state.
+    ///
+    /// For `change.completed` events, use `from_move_paths()` with syntactic-only detection
+    /// to avoid incorrect expansion (e.g., `mv docs docs-old` would incorrectly expand
+    /// if we checked `docs-old.is_dir()` after the move).
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - All paths from the move command (sources + destination)
+    /// * `cwd` - Current working directory for resolving relative paths
+    #[must_use]
+    pub fn from_move_paths_with_cwd(paths: Vec<String>, cwd: &std::path::Path) -> Self {
+        if paths.len() < 2 {
+            return Self::from_move_paths(paths);
+        }
+
+        // Get the destination (last path)
+        let dest = &paths[paths.len() - 1];
+
+        // Check if destination is a directory on the filesystem
+        let dest_path = if std::path::Path::new(dest).is_absolute() {
+            std::path::PathBuf::from(dest)
+        } else {
+            cwd.join(dest)
+        };
+
+        let dest_is_directory = dest_path.is_dir();
+
+        Self::from_move_paths_with_hint(paths, Some(dest_is_directory))
+    }
+}
+
+impl ChangeOperation {
+    /// Get the operation name as a string
+    #[must_use]
+    pub fn operation_name(&self) -> &str {
+        match self {
+            Self::Write(_) => "write",
+            Self::Delete(_) => "delete",
+            Self::Move(_) => "move",
+        }
+    }
+
+    /// Computed property: returns "true" if this is a Write operation, "" otherwise
+    /// Enables truthiness check via `$event.write` in flow conditions
+    #[must_use]
+    pub fn is_write(&self) -> &str {
+        match self {
+            Self::Write(_) => "true",
+            _ => "",
+        }
+    }
+
+    /// Computed property: returns "true" if this is a Delete operation, "" otherwise
+    /// Enables truthiness check via `$event.delete` in flow conditions
+    #[must_use]
+    pub fn is_delete(&self) -> &str {
+        match self {
+            Self::Delete(_) => "true",
+            _ => "",
+        }
+    }
+
+    /// Computed property: returns "true" if this is a Move operation, "" otherwise
+    /// Enables truthiness check via `$event.move` in flow conditions
+    #[must_use]
+    pub fn is_move(&self) -> &str {
+        match self {
+            Self::Move(_) => "true",
+            _ => "",
+        }
+    }
+
+    /// Get all file paths affected by this operation (for unified access)
+    /// - Write: files that were created/modified
+    /// - Delete: files that were removed
+    /// - Move: files at their new locations (destinations)
+    #[must_use]
+    pub fn file_paths(&self) -> Vec<String> {
+        match self {
+            Self::Write(op) => op.file_paths.clone(),
+            Self::Delete(op) => op.file_paths.clone(),
+            Self::Move(op) => op.destination_paths.clone(),
+        }
+    }
+
+    /// Get edit details if this is a Write operation
+    #[must_use]
+    pub fn edit_details(&self) -> &[EditDetail] {
+        match self {
+            Self::Write(op) => &op.edit_details,
+            _ => &[],
+        }
+    }
+
+    /// Get source paths if this is a Move operation
+    #[must_use]
+    pub fn source_paths(&self) -> &[String] {
+        match self {
+            Self::Move(op) => &op.source_paths,
+            _ => &[],
+        }
+    }
+
+    /// Get destination paths if this is a Move operation
+    #[must_use]
+    pub fn destination_paths(&self) -> &[String] {
+        match self {
+            Self::Move(op) => &op.destination_paths,
+            _ => &[],
+        }
+    }
+}
+
+// ============================================================================
+// AikiChangeCompletedPayload
+// ============================================================================
+
+/// change.completed event payload
+///
+/// Fires after a file mutation operation completes (write, delete, or move).
+/// This is the core provenance tracking event for all file mutations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiChangeCompletedPayload {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    /// Tool that made the change (e.g., "Edit", "Write", "Delete", "Move", "Bash")
+    pub tool_name: String,
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// The specific operation that occurred (contains operation-specific fields)
+    #[serde(flatten)]
+    pub operation: ChangeOperation,
+}
+
+/// Handle change.completed event
+///
+/// This is the core provenance tracking event for file mutations.
+/// Records metadata about the file changes in the JJ change description.
+pub fn handle_change_completed(payload: AikiChangeCompletedPayload) -> Result<HookResult> {
+    debug_log(|| {
+        format!(
+            "change.completed ({}) event from {:?}, session: {}, tool: {}",
+            payload.operation.operation_name(),
+            payload.session.agent_type(),
+            payload.session.external_id(),
+            payload.tool_name
+        )
+    });
+
+    // Load core flow (cached)
+    let core_flow = crate::flows::load_core_flow();
+
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
+
+    // Set flow name for self.* function resolution
+    state.flow_name = Some("aiki/core".to_string());
+
+    // Execute change.completed actions from the core flow
+    let _flow_result = FlowEngine::execute_statements(&core_flow.change_completed, &mut state)?;
+
+    // Extract failures from state
+    let failures = state.take_failures();
+
+    // change.completed never blocks - always allow (operation already completed)
+    Ok(HookResult {
+        context: None,
+        decision: Decision::Allow,
+        failures,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_change_operation_write_serialization() {
+        let op = ChangeOperation::Write(WriteOperation {
+            file_paths: vec!["src/main.rs".to_string()],
+            edit_details: vec![EditDetail::new("src/main.rs", "foo", "bar")],
+        });
+
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains(r#""operation":"write""#));
+        assert!(json.contains(r#""file_paths":["src/main.rs"]"#));
+    }
+
+    #[test]
+    fn test_change_operation_delete_serialization() {
+        let op = ChangeOperation::Delete(DeleteOperation {
+            file_paths: vec!["old_file.txt".to_string()],
+        });
+
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains(r#""operation":"delete""#));
+        assert!(json.contains(r#""file_paths":["old_file.txt"]"#));
+    }
+
+    #[test]
+    fn test_change_operation_move_serialization() {
+        let op = ChangeOperation::Move(MoveOperation {
+            file_paths: vec!["new/file.txt".to_string()],
+            source_paths: vec!["old/file.txt".to_string()],
+            destination_paths: vec!["new/file.txt".to_string()],
+        });
+
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains(r#""operation":"move""#));
+        assert!(json.contains(r#""file_paths":["new/file.txt"]"#));
+        assert!(json.contains(r#""source_paths":["old/file.txt"]"#));
+        assert!(json.contains(r#""destination_paths":["new/file.txt"]"#));
+    }
+
+    #[test]
+    fn test_change_operation_computed_properties() {
+        let write_op = ChangeOperation::Write(WriteOperation {
+            file_paths: vec![],
+            edit_details: vec![],
+        });
+        let delete_op = ChangeOperation::Delete(DeleteOperation { file_paths: vec![] });
+        let move_op = ChangeOperation::Move(MoveOperation {
+            file_paths: vec![],
+            source_paths: vec![],
+            destination_paths: vec![],
+        });
+
+        // is_write
+        assert_eq!(write_op.is_write(), "true");
+        assert_eq!(delete_op.is_write(), "");
+        assert_eq!(move_op.is_write(), "");
+
+        // is_delete
+        assert_eq!(write_op.is_delete(), "");
+        assert_eq!(delete_op.is_delete(), "true");
+        assert_eq!(move_op.is_delete(), "");
+
+        // is_move
+        assert_eq!(write_op.is_move(), "");
+        assert_eq!(delete_op.is_move(), "");
+        assert_eq!(move_op.is_move(), "true");
+    }
+
+    #[test]
+    fn test_change_operation_file_paths() {
+        let write_op = ChangeOperation::Write(WriteOperation {
+            file_paths: vec!["a.txt".to_string()],
+            edit_details: vec![],
+        });
+        let delete_op = ChangeOperation::Delete(DeleteOperation {
+            file_paths: vec!["b.txt".to_string()],
+        });
+        let move_op = ChangeOperation::Move(MoveOperation {
+            file_paths: vec!["new.txt".to_string()],
+            source_paths: vec!["old.txt".to_string()],
+            destination_paths: vec!["new.txt".to_string()],
+        });
+
+        // file_paths returns destinations for Move
+        assert_eq!(write_op.file_paths(), vec!["a.txt"]);
+        assert_eq!(delete_op.file_paths(), vec!["b.txt"]);
+        assert_eq!(move_op.file_paths(), vec!["new.txt"]);
+    }
+
+    #[test]
+    fn test_move_operation_simple_rename() {
+        // mv foo bar -> simple rename
+        let paths = vec!["foo".to_string(), "bar".to_string()];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, vec!["bar"]);
+        assert_eq!(op.source_paths, vec!["foo"]);
+        assert_eq!(op.destination_paths, vec!["bar"]);
+    }
+
+    #[test]
+    fn test_move_operation_directory_rename() {
+        // mv docs docs-old -> directory rename (single source, no trailing slash)
+        // This should NOT expand to docs-old/docs
+        let paths = vec!["docs".to_string(), "docs-old".to_string()];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, vec!["docs-old"]);
+        assert_eq!(op.source_paths, vec!["docs"]);
+        assert_eq!(op.destination_paths, vec!["docs-old"]);
+    }
+
+    #[test]
+    fn test_move_operation_multi_file_to_directory_trailing_slash() {
+        // mv foo bar dir/ -> multiple files into directory (trailing slash)
+        let paths = vec![
+            "foo".to_string(),
+            "bar".to_string(),
+            "target_dir/".to_string(),
+        ];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, vec!["target_dir/foo", "target_dir/bar"]);
+        assert_eq!(op.source_paths, vec!["foo", "bar"]);
+        assert_eq!(
+            op.destination_paths,
+            vec!["target_dir/foo", "target_dir/bar"]
+        );
+    }
+
+    #[test]
+    fn test_move_operation_multi_file_to_directory_no_slash() {
+        // mv foo bar dir -> multiple sources implies directory destination
+        let paths = vec![
+            "foo".to_string(),
+            "bar".to_string(),
+            "target_dir".to_string(),
+        ];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, vec!["target_dir/foo", "target_dir/bar"]);
+        assert_eq!(op.source_paths, vec!["foo", "bar"]);
+        assert_eq!(
+            op.destination_paths,
+            vec!["target_dir/foo", "target_dir/bar"]
+        );
+    }
+
+    #[test]
+    fn test_move_operation_preserves_nested_paths() {
+        // mv src/foo.rs lib/bar.rs dest/ -> should preserve filenames
+        let paths = vec![
+            "src/foo.rs".to_string(),
+            "lib/bar.rs".to_string(),
+            "dest/".to_string(),
+        ];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, vec!["dest/foo.rs", "dest/bar.rs"]);
+        assert_eq!(op.source_paths, vec!["src/foo.rs", "lib/bar.rs"]);
+        assert_eq!(op.destination_paths, vec!["dest/foo.rs", "dest/bar.rs"]);
+    }
+
+    #[test]
+    fn test_move_operation_single_path_invalid() {
+        // Single path is not a valid move command
+        let paths = vec!["foo".to_string()];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert_eq!(op.file_paths, Vec::<String>::new());
+        assert_eq!(op.source_paths, vec!["foo"]);
+        assert_eq!(op.destination_paths, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_move_operation_empty_paths() {
+        // Empty paths
+        let paths: Vec<String> = vec![];
+        let op = MoveOperation::from_move_paths(paths);
+
+        assert!(op.file_paths.is_empty());
+        assert!(op.source_paths.is_empty());
+        assert!(op.destination_paths.is_empty());
+    }
+
+    // =========================================================================
+    // Directory hint tests
+    // =========================================================================
+
+    #[test]
+    fn test_move_operation_with_directory_hint_true() {
+        // With hint: destination IS a directory
+        // mv file.txt existing_dir -> should expand to existing_dir/file.txt
+        let paths = vec!["file.txt".to_string(), "existing_dir".to_string()];
+        let op = MoveOperation::from_move_paths_with_hint(paths, Some(true));
+
+        assert_eq!(op.file_paths, vec!["existing_dir/file.txt"]);
+        assert_eq!(op.source_paths, vec!["file.txt"]);
+        assert_eq!(op.destination_paths, vec!["existing_dir/file.txt"]);
+    }
+
+    #[test]
+    fn test_move_operation_with_directory_hint_false() {
+        // With hint: destination is NOT a directory
+        // mv docs docs-old -> simple rename, no expansion
+        let paths = vec!["docs".to_string(), "docs-old".to_string()];
+        let op = MoveOperation::from_move_paths_with_hint(paths, Some(false));
+
+        assert_eq!(op.file_paths, vec!["docs-old"]);
+        assert_eq!(op.source_paths, vec!["docs"]);
+        assert_eq!(op.destination_paths, vec!["docs-old"]);
+    }
+
+    #[test]
+    fn test_move_operation_hint_overrides_trailing_slash() {
+        // Hint should override trailing slash indicator
+        // Even with trailing slash, if hint says "not a dir", don't expand
+        let paths = vec!["file.txt".to_string(), "dest/".to_string()];
+        let op = MoveOperation::from_move_paths_with_hint(paths, Some(false));
+
+        // With hint=false, should NOT expand despite trailing slash
+        assert_eq!(op.file_paths, vec!["dest/"]);
+        assert_eq!(op.destination_paths, vec!["dest/"]);
+    }
+
+    #[test]
+    fn test_move_operation_hint_overrides_multi_source() {
+        // With explicit hint=false, don't expand even with multiple sources
+        // This is an unusual case but tests that hint takes precedence
+        let paths = vec![
+            "file1.txt".to_string(),
+            "file2.txt".to_string(),
+            "dest".to_string(),
+        ];
+        let op = MoveOperation::from_move_paths_with_hint(paths, Some(false));
+
+        // Even with multiple sources, hint overrides
+        assert_eq!(op.file_paths, vec!["dest"]);
+        assert_eq!(op.destination_paths, vec!["dest"]);
+    }
+
+    #[test]
+    fn test_move_operation_with_cwd_directory_exists() {
+        use tempfile::TempDir;
+
+        // Create a temp directory with a subdirectory
+        let temp_dir = TempDir::new().unwrap();
+        let existing_dir = temp_dir.path().join("existing_dir");
+        std::fs::create_dir(&existing_dir).unwrap();
+
+        // mv file.txt existing_dir -> should detect existing_dir is a directory
+        let paths = vec!["file.txt".to_string(), "existing_dir".to_string()];
+        let op = MoveOperation::from_move_paths_with_cwd(paths, temp_dir.path());
+
+        assert_eq!(op.file_paths, vec!["existing_dir/file.txt"]);
+        assert_eq!(op.destination_paths, vec!["existing_dir/file.txt"]);
+    }
+
+    #[test]
+    fn test_move_operation_with_cwd_destination_not_directory() {
+        use tempfile::TempDir;
+
+        // Create a temp directory with no subdirectory named "new_name"
+        let temp_dir = TempDir::new().unwrap();
+
+        // mv file.txt new_name -> new_name doesn't exist, so it's a rename
+        let paths = vec!["file.txt".to_string(), "new_name".to_string()];
+        let op = MoveOperation::from_move_paths_with_cwd(paths, temp_dir.path());
+
+        assert_eq!(op.file_paths, vec!["new_name"]);
+        assert_eq!(op.destination_paths, vec!["new_name"]);
+    }
+}

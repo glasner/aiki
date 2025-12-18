@@ -5,18 +5,20 @@
 //!
 //! # Functions
 //!
-//! ## Metadata Generation
-//! - [`build_metadata`] - Build complete provenance metadata (message + author) from event context
-//! - [`build_user_metadata`] - Build metadata for human changes during an AI edit session
+//! ## Metadata Generation (for change.* events)
+//! - [`build_write_metadata`] - Build metadata for write operations
+//! - [`build_delete_metadata`] - Build metadata for delete operations
+//! - [`build_move_metadata`] - Build metadata for move operations
+//! - [`build_human_metadata_change_pre`] - Build metadata for human changes (pre-permission)
+//! - [`build_human_metadata_change_post`] - Build metadata for human changes (post-completion)
 //!
 //! ## Edit Analysis
-//! - [`classify_edits`] - Classify edits to detect user modifications
+//! - [`classify_edits_change`] - Classify edits to detect user modifications
 //!
 //! ## Edit Separation
-//! - [`prepare_separation`] - Prepare files for separation by reconstructing AI-only content
-//! - [`write_ai_files`] - Write AI-only content to working copy
-//! - [`restore_original_files`] - Restore original content after jj split
-//! - [`separate_edits`] - Separate AI changes from user edits using jj split
+//! - [`prepare_separation_change`] - Prepare files for separation by reconstructing AI-only content
+//! - [`write_ai_files_change`] - Write AI-only content to working copy
+//! - [`restore_original_files_change`] - Restore original content after jj split
 //!
 //! ## Git Integration
 //! - [`generate_coauthors`] - Generate co-authors for Git commit from staged changes
@@ -28,12 +30,13 @@ use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
-    AikiCommitMessageStartedPayload, AikiWriteCompletedPayload, AikiWritePermissionAskedPayload,
+    AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiCommitMessageStartedPayload,
+    ChangeOperation,
 };
 use crate::flows::state::ActionResult;
 use crate::provenance::ProvenanceRecord;
 use anyhow::Context;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -75,85 +78,49 @@ pub fn get_git_user() -> Option<String> {
     Some(format!("{} <{}>", name, email))
 }
 
-/// Get git user as a flow-callable function
-///
-/// Returns the git user in "Name <email>" format from git config.
-///
-/// # Returns
-/// An ActionResult with the git user in stdout, or an error if git is not configured.
-///
-/// # Example Flow Usage
-/// ```yaml
-/// - with_author: self.get_git_user
-///   jj: describe --message "User changes"
-/// ```
-pub fn get_git_user_function(
-    _event: &AikiWriteCompletedPayload,
-    _context: Option<&crate::flows::state::AikiState>,
-) -> Result<ActionResult> {
-    let git_user = get_git_user().ok_or_else(|| {
-        AikiError::Other(anyhow::anyhow!(
-            "Git user not configured. Run 'git config user.name' and 'git config user.email'"
-        ))
-    })?;
-
-    Ok(ActionResult {
-        success: true,
-        exit_code: Some(0),
-        stdout: git_user,
-        stderr: String::new(),
-    })
-}
-
 // =============================================================================
 // Metadata Generation Functions
 // =============================================================================
 
-/// Build complete metadata (message + author) from event context
+/// Build metadata for Write operations (change.completed with operation=write)
 ///
-/// This function returns both the commit message and author in a single call,
-/// avoiding duplicate event field access. The output is JSON for easy parsing
-/// with native field access syntax.
-///
-/// # Context-Aware Behavior
-/// If the flow context contains `$detection.classification_type == "OverlappingUserEdits"`,
-/// this function will add a coauthor field to the provenance record using the git user.
-///
-/// # Required Event Variables
-/// - `$event.agent_type` - Agent type
-/// - `$event.session_id` - Session identifier
-/// - `$event.tool_name` - Tool name
-///
-/// # Optional Context Variables
-/// - `$detection.classification_type` - Edit classification type
+/// This function validates that the event contains a Write operation and generates
+/// provenance metadata with write-specific fields (edit_details, file_paths).
 ///
 /// # Returns
-/// An ActionResult with JSON output: `{"author": "...", "message": "..."}`
-///
-/// # Example Flow Usage
-/// ```yaml
-/// change.done:
-///   - let: detection = self.classify_edits
-///   - let: metadata = self.build_metadata
-///     on_failure: stop
-///   - jj: metaedit -m "$metadata.message" --author "$metadata.author"
+/// JSON with author and message fields:
+/// ```json
+/// {
+///   "author": "Claude <noreply@anthropic.com>",
+///   "message": "[aiki]\nauthor=claude\n...[/aiki]"
+/// }
 /// ```
-pub fn build_metadata(
-    event: &AikiWriteCompletedPayload,
+pub fn build_write_metadata(
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
-    let mut provenance = ProvenanceRecord::from_write_completed_event(event);
+    // Validate operation is Write
+    let _write_op = match &event.operation {
+        ChangeOperation::Write(op) => op,
+        _ => {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "build_write_metadata called on non-Write operation: {:?}",
+                event.operation.operation_name()
+            )))
+        }
+    };
+
+    // Create provenance record from change event
+    let mut provenance = ProvenanceRecord::from_change_completed_event(event);
 
     // Check if we have overlapping user edits and should add coauthor
     if let Some(ctx) = context {
         if let Some(detection) = ctx.get_variable("detection") {
-            // Try to parse the detection JSON to check classification_type
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(detection) {
                 if let Some(classification_type) =
                     json.get("classification_type").and_then(|v| v.as_str())
                 {
                     if classification_type == "OverlappingUserEdits" {
-                        // Add coauthor from git config
                         provenance.coauthor = get_git_user();
                     }
                 }
@@ -166,13 +133,106 @@ pub fn build_metadata(
 
     debug_log(|| {
         format!(
-            "[flows/core] Generated metadata - author: {}, message length: {}",
+            "[flows/core] Generated write metadata - author: {}, message length: {}",
             author,
             message.len()
         )
     });
 
-    // Return JSON output for structured data
+    let json = serde_json::json!({
+        "author": author,
+        "message": message,
+    });
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: json.to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Build metadata for Delete operations (change.completed with operation=delete)
+///
+/// This function validates that the event contains a Delete operation and generates
+/// provenance metadata with delete-specific fields (file_paths only, no edits).
+///
+/// # Returns
+/// JSON with author and message fields
+pub fn build_delete_metadata(
+    event: &AikiChangeCompletedPayload,
+    _context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    // Validate operation is Delete
+    let _delete_op = match &event.operation {
+        ChangeOperation::Delete(op) => op,
+        _ => {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "build_delete_metadata called on non-Delete operation: {:?}",
+                event.operation.operation_name()
+            )))
+        }
+    };
+
+    let provenance = ProvenanceRecord::from_change_completed_event(event);
+    let message = provenance.to_description();
+    let author = event.session.agent_type().git_author();
+
+    debug_log(|| {
+        format!(
+            "[flows/core] Generated delete metadata - author: {}, message length: {}",
+            author,
+            message.len()
+        )
+    });
+
+    let json = serde_json::json!({
+        "author": author,
+        "message": message,
+    });
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: json.to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Build metadata for Move operations (change.completed with operation=move)
+///
+/// This function validates that the event contains a Move operation and generates
+/// provenance metadata with move-specific fields (source_paths, destination_paths).
+///
+/// # Returns
+/// JSON with author and message fields
+pub fn build_move_metadata(
+    event: &AikiChangeCompletedPayload,
+    _context: Option<&crate::flows::state::AikiState>,
+) -> Result<ActionResult> {
+    // Validate operation is Move
+    let _move_op = match &event.operation {
+        ChangeOperation::Move(op) => op,
+        _ => {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "build_move_metadata called on non-Move operation: {:?}",
+                event.operation.operation_name()
+            )))
+        }
+    };
+
+    let provenance = ProvenanceRecord::from_change_completed_event(event);
+    let message = provenance.to_description();
+    let author = event.session.agent_type().git_author();
+
+    debug_log(|| {
+        format!(
+            "[flows/core] Generated move metadata - author: {}, message length: {}",
+            author,
+            message.len()
+        )
+    });
+
     let json = serde_json::json!({
         "author": author,
         "message": message,
@@ -257,16 +317,16 @@ fn build_human_metadata_impl(session: &crate::session::AikiSession) -> Result<Ac
 }
 
 /// Build human metadata - works with change.permission_asked events
-pub fn build_human_metadata(
-    event: &AikiWritePermissionAskedPayload,
+pub fn build_human_metadata_change_pre(
+    event: &AikiChangePermissionAskedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     build_human_metadata_impl(&event.session)
 }
 
-/// Build human metadata - works with change.done events
-pub fn build_human_metadata_post(
-    event: &AikiWriteCompletedPayload,
+/// Build human metadata - works with change.completed events (new unified event)
+pub fn build_human_metadata_change_post(
+    event: &AikiChangeCompletedPayload,
     _context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     build_human_metadata_impl(&event.session)
@@ -287,51 +347,25 @@ pub enum EditClassification {
     OverlappingUserEdits,
 }
 
-/// Classify edits to detect user modifications
+/// Classify edits from a change.completed event (Write operation only)
 ///
-/// Compares the AI's intended edits (from edit_details) with the actual file
-/// state to determine if the user made additional or conflicting changes.
-///
-/// # Algorithm
-/// For each file with edit details:
-/// 1. Read current file content
-/// 2. For each edit: check if new_string is present in current content
-/// 3. Classify based on presence:
-///    - All new_strings present → ExactMatch
-///    - Some new_strings present, old_strings absent → AdditiveUserEdits
-///    - Missing new_strings or lingering old_strings → OverlappingEdits
-///
-/// Files without edit details are treated as "unknown" (assumed AI-only for now).
-/// Extra files (modified but not in edit_details) are flagged separately.
-///
-/// # Returns
-/// JSON with classification results:
-/// ```json
-/// {
-///   "all_exact_match": true/false,
-///   "has_additive_edits": true/false,
-///   "has_overlapping_edits": true/false,
-///   "extra_files": ["file1.rs", "file2.rs"],
-///   "details": {
-///     "file.rs": "ExactMatch" | "AdditiveUserEdits" | "OverlappingEdits"
-///   }
-/// }
-/// ```
-///
-/// # Example Flow Usage
-/// ```yaml
-/// change.done:
-///   - let: detection = self.classify_edits
-///     on_failure: continue
-///   - if: $detection.all_exact_match == true
-///     then:
-///       - jj: metaedit -m "$metadata.message"
-/// ```
-pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
-    // If no edit details, we can't classify - treat as exact match (AI-only)
-    if event.edit_details.is_empty() {
-        debug_log(|| "[flows/core] No edit details available - assuming AI-only changes");
+/// This variant accepts the unified change event type. It validates that the
+/// operation is Write and extracts the edit details for classification.
+pub fn classify_edits_change(event: &AikiChangeCompletedPayload) -> Result<ActionResult> {
+    // Validate operation is Write
+    let write_op = match &event.operation {
+        ChangeOperation::Write(op) => op,
+        _ => {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "classify_edits_change called on non-Write operation: {:?}",
+                event.operation.operation_name()
+            )))
+        }
+    };
 
+    // If no edit details, we can't classify - treat as exact match (AI-only)
+    if write_op.edit_details.is_empty() {
+        debug_log(|| "[flows/core] No edit details available - assuming AI-only changes");
         return Ok(ActionResult {
             success: true,
             exit_code: Some(0),
@@ -344,7 +378,7 @@ pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult>
     let mut files_with_edits: HashSet<String> = HashSet::new();
     let mut details = serde_json::Map::new();
 
-    for edit_detail in &event.edit_details {
+    for edit_detail in &write_op.edit_details {
         files_with_edits.insert(edit_detail.file_path.clone());
     }
 
@@ -354,7 +388,7 @@ pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult>
     let mut has_overlapping = false;
 
     for file_path in &files_with_edits {
-        let classification = classify_file(file_path, event)?;
+        let classification = classify_file_change(file_path, event, write_op)?;
 
         let class_str = match classification {
             EditClassification::ExactMatch => "ExactMatch",
@@ -374,7 +408,7 @@ pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult>
     }
 
     // Check for extra files (in file_paths but not in edit_details)
-    let extra_files: Vec<String> = event
+    let extra_files: Vec<String> = write_op
         .file_paths
         .iter()
         .filter(|p| !files_with_edits.contains(*p))
@@ -412,21 +446,24 @@ pub fn classify_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult>
     })
 }
 
-/// Classify edits for a single file
-fn classify_file(file_path: &str, event: &AikiWriteCompletedPayload) -> Result<EditClassification> {
+/// Classify edits for a single file (change event variant)
+fn classify_file_change(
+    file_path: &str,
+    event: &AikiChangeCompletedPayload,
+    write_op: &crate::events::WriteOperation,
+) -> Result<EditClassification> {
     // Read current file content
     let full_path = event.cwd.join(file_path);
     let current_content = read_file_safe(&full_path)?;
 
     // Get all edits for this file
-    let file_edits: Vec<_> = event
+    let file_edits: Vec<_> = write_op
         .edit_details
         .iter()
         .filter(|e| e.file_path == file_path)
         .collect();
 
     if file_edits.is_empty() {
-        // No edits for this file - shouldn't happen, but treat as exact match
         return Ok(EditClassification::ExactMatch);
     }
 
@@ -435,42 +472,29 @@ fn classify_file(file_path: &str, event: &AikiWriteCompletedPayload) -> Result<E
     let mut any_old_present = false;
 
     for edit in &file_edits {
-        // Check if new_string is present in current content
         if !edit.new_string.is_empty() && !current_content.contains(&edit.new_string) {
             all_new_present = false;
         }
 
-        // Check if old_string is still present independently (not as substring of new_string)
-        // Strategy: If the edit was applied, old_string should have been replaced by new_string
         if !edit.old_string.is_empty() {
             let old_present = current_content.contains(&edit.old_string);
             let new_present = current_content.contains(&edit.new_string);
 
             if old_present && new_present {
-                // Both present - check if old is a substring of new
-                // If old is substring of new, it's not really "still present" - it was replaced
                 if !edit.new_string.contains(&edit.old_string) {
-                    // Old and new are both present but don't overlap - problematic
                     any_old_present = true;
                 }
-                // If old is a substring of new, consider it as "replaced" (not still present)
             } else if old_present {
-                // Only old present (new not present) - edit wasn't applied
                 any_old_present = true;
             }
         }
     }
 
-    // Classify based on presence checks
     if all_new_present && !any_old_present {
-        // All new strings present, old strings gone → ExactMatch
         Ok(EditClassification::ExactMatch)
     } else if any_old_present {
-        // Old strings still present → OverlappingUserEdits (edit wasn't fully applied)
         Ok(EditClassification::OverlappingUserEdits)
     } else {
-        // New strings missing but old strings also missing → AdditiveUserEdits
-        // (user likely modified AI's changes)
         Ok(EditClassification::AdditiveUserEdits)
     }
 }
@@ -490,44 +514,23 @@ fn read_file_safe(path: &Path) -> Result<String> {
 // Edit Separation Functions
 // =============================================================================
 
-/// Prepare files for separation by reconstructing AI-only content
+/// Prepare files for separation (change.completed event variant)
 ///
-/// This function analyzes the files that need separation and reconstructs what
-/// the AI-only version should look like. It returns all the information needed
-/// for the separation workflow.
-///
-/// # Returns
-/// JSON with preparation data:
-/// ```json
-/// {
-///   "ai_message": "[aiki]\nagent=claude\n...",
-///   "ai_author": "Claude <noreply@anthropic.com>",
-///   "file_list": "file1.rs file2.rs",
-///   "files": {
-///     "file1.rs": {
-///       "ai_only_content": "...",
-///       "original_content": "..."
-///     }
-///   }
-/// }
-/// ```
-///
-/// # Example Flow Usage
-/// ```yaml
-/// change.done:
-///   - let: detection = self.classify_edits
-///   - switch: $detection.classification_type
-///     cases:
-///       AdditiveUserEdits:
-///         - let: prep = self.prepare_separation
-///         - self: write_ai_files
-///         - jj: split --message "$prep.ai_message" $prep.file_list
-///         - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
-///         - self: restore_original_files
-/// ```
-pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
-    // If no edit details, return early
-    if event.edit_details.is_empty() {
+/// This variant accepts the unified change event type. It validates that the
+/// operation is Write and extracts the necessary data for separation.
+pub fn prepare_separation_change(event: &AikiChangeCompletedPayload) -> Result<ActionResult> {
+    // Validate operation is Write
+    let write_op = match &event.operation {
+        ChangeOperation::Write(op) => op,
+        _ => {
+            return Err(AikiError::Other(anyhow::anyhow!(
+                "prepare_separation_change called on non-Write operation: {:?}",
+                event.operation.operation_name()
+            )))
+        }
+    };
+
+    if write_op.edit_details.is_empty() {
         debug_log(|| "[flows/core] No edit details available, skipping preparation");
         return Ok(ActionResult {
             success: true,
@@ -541,20 +544,17 @@ pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionRes
         });
     }
 
-    // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_write_completed_event(event);
+    let provenance = ProvenanceRecord::from_change_completed_event(event);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
-    // Files that will be separated (have edit details)
-    let files_with_edits: HashSet<String> = event
+    let files_with_edits: HashSet<String> = write_op
         .edit_details
         .iter()
         .map(|e| e.file_path.clone())
         .collect();
 
-    // Extra files are those in file_paths but not in edit_details (AI-only, no separation)
-    let ai_only_files: Vec<String> = event
+    let ai_only_files: Vec<String> = write_op
         .file_paths
         .iter()
         .filter(|p| !files_with_edits.contains(*p))
@@ -569,13 +569,11 @@ pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionRes
         )
     });
 
-    // Reconstruct AI-only content for files with edits
     let mut files_data = serde_json::Map::new();
 
     for file_path in &files_with_edits {
         let full_path = event.cwd.join(file_path);
 
-        // Read current content (AI + user changes)
         let current_content = fs::read_to_string(&full_path).map_err(|e| {
             AikiError::Other(anyhow::anyhow!(
                 "Failed to read file '{}': {}",
@@ -584,11 +582,11 @@ pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionRes
             ))
         })?;
 
-        // Reconstruct AI-only content
-        let ai_only_content = reconstruct_ai_only_content(&current_content, file_path, event)?;
+        let ai_only_content =
+            reconstruct_ai_only_content_change(&current_content, file_path, write_op)?;
 
         files_data.insert(
-            file_path.clone(),
+            file_path.to_string(),
             serde_json::json!({
                 "ai_only_content": ai_only_content,
                 "original_content": current_content,
@@ -596,7 +594,6 @@ pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionRes
         );
     }
 
-    // Build file list for jj split (space-separated, normalized paths)
     let mut all_ai_files: Vec<String> = files_with_edits
         .iter()
         .map(|p| normalize_path_for_jj(p, &event.cwd))
@@ -623,39 +620,48 @@ pub fn prepare_separation(event: &AikiWriteCompletedPayload) -> Result<ActionRes
     })
 }
 
-/// Write AI-only content to files in preparation for jj split
-///
-/// This function reads the preparation data from context (the $prep variable
-/// set by prepare_separation) and writes the AI-only content to the working copy.
-///
-/// After this step, the flow should run `jj split` to separate the AI changes.
-///
-/// # Context Variables Required
-/// - `$prep.files` - File data from prepare_separation
-///
-/// # Example Flow Usage
-/// ```yaml
-/// - let: prep = self.prepare_separation
-/// - self: write_ai_files
-/// - jj: split --message "$prep.ai_message" $prep.file_list
-/// ```
-pub fn write_ai_files(
-    event: &AikiWriteCompletedPayload,
+/// Reconstruct AI-only content (change event variant)
+fn reconstruct_ai_only_content_change(
+    current_content: &str,
+    file_path: &str,
+    write_op: &crate::events::WriteOperation,
+) -> Result<String> {
+    let mut ai_content = current_content.to_string();
+
+    let file_edits: Vec<_> = write_op
+        .edit_details
+        .iter()
+        .filter(|e| e.file_path == file_path)
+        .collect();
+
+    for edit in &file_edits {
+        if !edit.new_string.is_empty() && ai_content.contains(&edit.new_string) {
+            continue;
+        } else if !edit.old_string.is_empty() && ai_content.contains(&edit.old_string) {
+            ai_content = ai_content.replace(&edit.old_string, &edit.new_string);
+        }
+    }
+
+    Ok(ai_content)
+}
+
+/// Write AI-only content to files (change.completed event variant)
+pub fn write_ai_files_change(
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "write_ai_files requires context with $prep variable"
+            "write_ai_files_change requires context with $prep variable"
         ))
     })?;
 
     let prep = ctx.get_variable("prep").ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "write_ai_files requires $prep variable from prepare_separation"
+            "write_ai_files_change requires $prep variable from prepare_separation"
         ))
     })?;
 
-    // Parse the prep JSON
     let prep_json: serde_json::Value = serde_json::from_str(prep)
         .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
 
@@ -664,7 +670,6 @@ pub fn write_ai_files(
         .and_then(|f| f.as_object())
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
 
-    // Write AI-only content to each file
     for (file_path, file_data) in files {
         let ai_only_content = file_data
             .get("ai_only_content")
@@ -701,39 +706,23 @@ pub fn write_ai_files(
     })
 }
 
-/// Restore original content after jj split
-///
-/// This function reads the preparation data from context and restores the
-/// original file content (AI + user changes) to the working copy. This should
-/// be called after `jj split` to ensure the user's changes end up in the
-/// remaining change.
-///
-/// # Context Variables Required
-/// - `$prep.files` - File data from prepare_separation
-///
-/// # Example Flow Usage
-/// ```yaml
-/// - jj: split --message "$prep.ai_message" $prep.file_list
-/// - jj: metaedit -r @- --author "$prep.ai_author" --no-edit
-/// - self: restore_original_files
-/// ```
-pub fn restore_original_files(
-    event: &AikiWriteCompletedPayload,
+/// Restore original content after jj split (change.completed event variant)
+pub fn restore_original_files_change(
+    event: &AikiChangeCompletedPayload,
     context: Option<&crate::flows::state::AikiState>,
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "restore_original_files requires context with $prep variable"
+            "restore_original_files_change requires context with $prep variable"
         ))
     })?;
 
     let prep = ctx.get_variable("prep").ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "restore_original_files requires $prep variable from prepare_separation"
+            "restore_original_files_change requires $prep variable from prepare_separation"
         ))
     })?;
 
-    // Parse the prep JSON
     let prep_json: serde_json::Value = serde_json::from_str(prep)
         .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
 
@@ -742,7 +731,6 @@ pub fn restore_original_files(
         .and_then(|f| f.as_object())
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
 
-    // Restore original content to each file
     for (file_path, file_data) in files {
         let original_content = file_data
             .get("original_content")
@@ -779,190 +767,6 @@ pub fn restore_original_files(
     })
 }
 
-/// Separate AI changes from user edits using jj split
-///
-/// This function reads metadata and classification from the context (previous let bindings)
-/// and uses them to separate changes. It expects:
-/// - `metadata` variable with `author` and `message` fields (from build_metadata)
-/// - `detection` variable with classification info (from classify_edits)
-///
-/// # Algorithm
-/// 1. For each file with edit details:
-///    - Read current file content (has both AI + user changes)
-///    - Reconstruct AI-only content by applying AI's edits in reverse
-///    - Write AI-only content to file
-/// 2. Run `jj split` to create AI change
-/// 3. Restore current content (user changes will be in remaining change)
-///
-/// # Returns
-/// JSON with separation results:
-/// ```json
-/// {
-///   "success": true,
-///   "ai_change_id": "abc123...",
-///   "user_change_id": "def456...",
-///   "separated_files": ["file1.rs", "file2.rs"]
-/// }
-/// ```
-///
-/// # Example Flow Usage
-/// ```yaml
-/// change.done:
-///   - let: metadata = self.build_metadata
-///   - let: detection = self.classify_edits
-///   - let: sep = self.separate_edits
-///     on_failure:
-///       - log: "Failed to separate edits, recording as single change"
-/// ```
-///
-/// Note: This simplified version derives all needed data from the event and doesn't
-/// require function arguments. A future enhancement could add argument support to the
-/// flow executor.
-pub fn separate_edits(event: &AikiWriteCompletedPayload) -> Result<ActionResult> {
-    // If no edit details, return success (nothing to separate)
-    // This allows graceful degradation for hook-based detection where
-    // edit details might not be available
-    if event.edit_details.is_empty() {
-        debug_log(|| "[flows/core] No edit details available, skipping separation");
-        return Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: serde_json::json!({
-                "skipped": true,
-                "reason": "no_edit_details"
-            })
-            .to_string(),
-            stderr: String::new(),
-        });
-    }
-
-    // Generate metadata for AI change
-    let provenance = ProvenanceRecord::from_write_completed_event(event);
-    let ai_message = provenance.to_description();
-    let ai_author = event.session.agent_type().git_author();
-
-    // Files that will be separated (have edit details)
-    let files_with_edits: HashSet<String> = event
-        .edit_details
-        .iter()
-        .map(|e| e.file_path.clone())
-        .collect();
-
-    // Extra files are those in file_paths but not in edit_details (AI-only, no separation)
-    let ai_only_files: Vec<String> = event
-        .file_paths
-        .iter()
-        .filter(|p| !files_with_edits.contains(*p))
-        .cloned()
-        .collect();
-
-    debug_log(|| {
-        format!(
-            "[flows/core] Separating {} files with edits, {} AI-only files",
-            files_with_edits.len(),
-            ai_only_files.len()
-        )
-    });
-
-    // Step 1: Reconstruct AI-only content for files with edits
-    let mut original_contents: HashMap<String, String> = HashMap::new();
-
-    for file_path in &files_with_edits {
-        let full_path = event.cwd.join(file_path);
-
-        // Save current content (AI + user changes)
-        let current_content = fs::read_to_string(&full_path).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!(
-                "Failed to read file '{}': {}",
-                full_path.display(),
-                e
-            ))
-        })?;
-        original_contents.insert(file_path.clone(), current_content.clone());
-
-        // Reconstruct AI-only content
-        let ai_only_content = reconstruct_ai_only_content(&current_content, file_path, event)?;
-
-        // Write AI-only content temporarily
-        fs::write(&full_path, ai_only_content).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!(
-                "Failed to write AI-only content to '{}': {}",
-                full_path.display(),
-                e
-            ))
-        })?;
-    }
-
-    // Step 2: Run jj split to create AI change
-    // Include both files with edits AND AI-only files in the split
-    // IMPORTANT: Convert absolute paths to relative paths for jj split
-    let mut all_ai_files: Vec<String> = files_with_edits
-        .iter()
-        .map(|p| normalize_path_for_jj(p, &event.cwd))
-        .collect();
-    all_ai_files.extend(
-        ai_only_files
-            .iter()
-            .map(|p| normalize_path_for_jj(p, &event.cwd)),
-    );
-
-    // Step 2: Run jj split to create AI change
-    // IMPORTANT: If this fails, we must restore original content to avoid leaving
-    // working copy in an inconsistent state (with AI-only content)
-    let split_result = match run_jj_split(&event.cwd, &ai_message, &ai_author, &all_ai_files) {
-        Ok(output) => output,
-        Err(e) => {
-            // Cleanup: Restore original content before returning error
-            debug_log(|| "[flows/core] jj split failed, restoring original content");
-            for (file_path, content) in &original_contents {
-                let full_path = event.cwd.join(file_path);
-                // Best-effort cleanup - ignore errors since we're already in error path
-                let _ = fs::write(&full_path, content);
-            }
-            return Err(e);
-        }
-    };
-
-    // Step 3: Restore original content (user changes will be in remaining change)
-    for (file_path, content) in &original_contents {
-        let full_path = event.cwd.join(file_path);
-        fs::write(&full_path, content).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!(
-                "Failed to restore content to '{}': {}",
-                full_path.display(),
-                e
-            ))
-        })?;
-    }
-
-    debug_log(|| {
-        format!(
-            "[flows/core] Successfully separated edits: {}",
-            split_result
-        )
-    });
-
-    // Parse jj split output to extract change IDs
-    // Output format: "First part: qpvuntsm 12345678 AI changes
-    //  Second part: rlvkpnrz 87654321 (no description set)"
-    //
-    // The format is: "First part: <change_hash_short> <change_hash_long> <description>"
-    // We want the long hash (position 3 in split_whitespace)
-    let (ai_change_id, user_change_id) = parse_split_output(&split_result)?;
-
-    let json = serde_json::json!({
-        "ai_change_id": ai_change_id,
-        "user_change_id": user_change_id,
-        "separated_files": files_with_edits.iter().collect::<Vec<_>>(),
-    });
-
-    Ok(ActionResult {
-        success: true,
-        exit_code: Some(0),
-        stdout: json.to_string(),
-        stderr: String::new(),
-    })
-}
 
 /// Normalize a file path for use with jj commands
 ///
@@ -985,46 +789,6 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
         // Path is absolute but not under cwd - return as-is
         file_path.to_string()
     }
-}
-
-/// Reconstruct AI-only content by applying AI's edits to the base content
-///
-/// This is a simplified implementation that assumes:
-/// 1. AI's edits were applied sequentially
-/// 2. User didn't change the portions AI edited
-///
-/// For overlapping edits, this may not produce perfect results, but it's
-/// better than not separating at all.
-fn reconstruct_ai_only_content(
-    current_content: &str,
-    file_path: &str,
-    event: &AikiWriteCompletedPayload,
-) -> Result<String> {
-    let mut ai_content = current_content.to_string();
-
-    // Get all edits for this file
-    let file_edits: Vec<_> = event
-        .edit_details
-        .iter()
-        .filter(|e| e.file_path == file_path)
-        .collect();
-
-    // Apply edits in reverse to reconstruct AI-only state
-    // Strategy: For each edit, if new_string is present, we keep it
-    // If new_string is NOT present but old_string is, user likely reverted it
-    for edit in &file_edits {
-        if !edit.new_string.is_empty() && ai_content.contains(&edit.new_string) {
-            // AI's change is present - keep it
-            continue;
-        } else if !edit.old_string.is_empty() && ai_content.contains(&edit.old_string) {
-            // Old string still present - apply AI's intended change
-            ai_content = ai_content.replace(&edit.old_string, &edit.new_string);
-        }
-        // If neither is present, user made different changes - we can't reconstruct perfectly
-        // In this case, we'll just keep what's there
-    }
-
-    Ok(ai_content)
 }
 
 /// Run jj split to create AI change and user change
@@ -1159,34 +923,64 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::EditDetail;
+    use crate::events::{ChangeOperation, EditDetail, WriteOperation};
     use crate::provenance::AgentType;
     use crate::session::AikiSession;
     use tempfile::TempDir;
+
+    // =========================================================================
+    // Helper Functions
+    // =========================================================================
+
+    fn create_write_change_event(
+        cwd: &Path,
+        file_paths: Vec<String>,
+        edit_details: Vec<EditDetail>,
+    ) -> AikiChangeCompletedPayload {
+        let session = AikiSession::new(
+            AgentType::Claude,
+            "test".to_string(),
+            None::<&str>,
+            crate::provenance::DetectionMethod::Hook,
+        );
+        AikiChangeCompletedPayload {
+            session,
+            cwd: cwd.to_path_buf(),
+            timestamp: chrono::Utc::now(),
+            tool_name: "Edit".to_string(),
+            success: true,
+            operation: ChangeOperation::Write(WriteOperation {
+                file_paths,
+                edit_details,
+            }),
+        }
+    }
 
     // =========================================================================
     // Metadata Generation Tests
     // =========================================================================
 
     #[test]
-    fn test_build_metadata_with_claude() {
+    fn test_build_write_metadata_with_claude() {
         let session = AikiSession::new(
             AgentType::Claude,
             "test-session-123".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiWriteCompletedPayload {
+        let event = AikiChangeCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
-            file_paths: vec!["/tmp/file.rs".to_string()],
             success: true,
-            edit_details: vec![],
+            operation: ChangeOperation::Write(WriteOperation {
+                file_paths: vec!["/tmp/file.rs".to_string()],
+                edit_details: vec![],
+            }),
         };
 
-        let result = build_metadata(&event, None).unwrap();
+        let result = build_write_metadata(&event, None).unwrap();
 
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -1203,24 +997,26 @@ mod tests {
     }
 
     #[test]
-    fn test_build_metadata_with_cursor() {
+    fn test_build_write_metadata_with_cursor() {
         let session = AikiSession::new(
             AgentType::Cursor,
             "cursor-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiWriteCompletedPayload {
+        let event = AikiChangeCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
-            file_paths: vec!["/tmp/file.rs".to_string()],
             success: true,
-            edit_details: vec![],
+            operation: ChangeOperation::Write(WriteOperation {
+                file_paths: vec!["/tmp/file.rs".to_string()],
+                edit_details: vec![],
+            }),
         };
 
-        let result = build_metadata(&event, None).unwrap();
+        let result = build_write_metadata(&event, None).unwrap();
 
         assert!(result.success);
         let json: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
@@ -1229,88 +1025,66 @@ mod tests {
     }
 
     // =========================================================================
-    // Edit Classification Tests
+    // Edit Classification Tests (using change events)
     // =========================================================================
 
-    fn create_test_event(
-        cwd: &Path,
-        file_paths: Vec<String>,
-        edit_details: Vec<EditDetail>,
-    ) -> AikiWriteCompletedPayload {
-        let session = AikiSession::new(
-            AgentType::Claude,
-            "test".to_string(),
-            None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
-        );
-        AikiWriteCompletedPayload {
-            session,
-            cwd: cwd.to_path_buf(),
-            timestamp: chrono::Utc::now(),
-            tool_name: "Edit".to_string(),
-            file_paths,
-            success: true,
-            edit_details,
-        }
-    }
-
     #[test]
-    fn test_classify_exact_match() {
+    fn test_classify_edits_change_exact_match() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
 
         // Create file with AI's changes applied
         fs::write(&file_path, "Hello World").unwrap();
 
-        let event = create_test_event(
+        let event = create_write_change_event(
             temp_dir.path(),
             vec!["test.txt".to_string()],
             vec![EditDetail::new("test.txt", "Hello", "Hello World")],
         );
 
-        let result = classify_edits(&event).unwrap();
+        let result = classify_edits_change(&event).unwrap();
         assert_eq!(result.stdout, "ExactMatch");
     }
 
     #[test]
-    fn test_classify_additive() {
+    fn test_classify_edits_change_additive() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
 
         // User added extra content after AI's edit
         fs::write(&file_path, "Hello World\nExtra line by user").unwrap();
 
-        let event = create_test_event(
+        let event = create_write_change_event(
             temp_dir.path(),
             vec!["test.txt".to_string()],
             vec![EditDetail::new("test.txt", "", "Hello World")],
         );
 
-        let result = classify_edits(&event).unwrap();
-        // AI's edit is present but file has extra content → ExactMatch (just AI edits applied)
+        let result = classify_edits_change(&event).unwrap();
+        // AI's edit is present but file has extra content → ExactMatch
         assert_eq!(result.stdout, "ExactMatch");
     }
 
     #[test]
-    fn test_classify_overlapping() {
+    fn test_classify_edits_change_overlapping() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
 
         // Old string still present (edit not applied)
         fs::write(&file_path, "Hello").unwrap();
 
-        let event = create_test_event(
+        let event = create_write_change_event(
             temp_dir.path(),
             vec!["test.txt".to_string()],
             vec![EditDetail::new("test.txt", "Hello", "Hello World")],
         );
 
-        let result = classify_edits(&event).unwrap();
+        let result = classify_edits_change(&event).unwrap();
         assert_eq!(result.stdout, "OverlappingUserEdits");
     }
 
     #[test]
-    fn test_classify_extra_files() {
+    fn test_classify_edits_change_extra_files() {
         let temp_dir = TempDir::new().unwrap();
         let file1 = temp_dir.path().join("test1.txt");
         let file2 = temp_dir.path().join("test2.txt");
@@ -1318,81 +1092,31 @@ mod tests {
         fs::write(&file1, "Content 1").unwrap();
         fs::write(&file2, "Content 2").unwrap();
 
-        let event = create_test_event(
+        let event = create_write_change_event(
             temp_dir.path(),
             vec!["test1.txt".to_string(), "test2.txt".to_string()],
             vec![EditDetail::new("test1.txt", "", "Content 1")],
         );
 
-        let result = classify_edits(&event).unwrap();
+        let result = classify_edits_change(&event).unwrap();
         // Extra files detected → AdditiveUserEdits
         assert_eq!(result.stdout, "AdditiveUserEdits");
     }
 
     #[test]
-    fn test_classify_no_edit_details() {
+    fn test_classify_edits_change_no_edit_details() {
         let temp_dir = TempDir::new().unwrap();
 
-        let event = create_test_event(temp_dir.path(), vec!["test.txt".to_string()], vec![]);
+        let event = create_write_change_event(temp_dir.path(), vec!["test.txt".to_string()], vec![]);
 
-        let result = classify_edits(&event).unwrap();
+        let result = classify_edits_change(&event).unwrap();
         // No edit details → assume AI-only
         assert_eq!(result.stdout, "ExactMatch");
     }
 
     // =========================================================================
-    // Edit Separation Tests
+    // Helper Function Tests
     // =========================================================================
-
-    #[test]
-    fn test_reconstruct_ai_only_simple() {
-        let current_content = "Hello World\nExtra user line";
-        let session = AikiSession::new(
-            AgentType::Claude,
-            "test".to_string(),
-            None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
-        );
-        let event = AikiWriteCompletedPayload {
-            session,
-            cwd: std::path::PathBuf::from("/tmp"),
-            timestamp: chrono::Utc::now(),
-            tool_name: "Edit".to_string(),
-            file_paths: vec!["test.txt".to_string()],
-            success: true,
-            edit_details: vec![EditDetail::new("test.txt", "", "Hello World")],
-        };
-
-        let ai_only = reconstruct_ai_only_content(current_content, "test.txt", &event).unwrap();
-
-        // AI's edit is present, so content should be unchanged for reconstruction purposes
-        assert!(ai_only.contains("Hello World"));
-    }
-
-    #[test]
-    fn test_reconstruct_ai_only_revert() {
-        let current_content = "Hello"; // User reverted AI's change
-        let session = AikiSession::new(
-            AgentType::Claude,
-            "test".to_string(),
-            None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
-        );
-        let event = AikiWriteCompletedPayload {
-            session,
-            cwd: std::path::PathBuf::from("/tmp"),
-            timestamp: chrono::Utc::now(),
-            tool_name: "Edit".to_string(),
-            file_paths: vec!["test.txt".to_string()],
-            success: true,
-            edit_details: vec![EditDetail::new("test.txt", "Hello", "Hello World")],
-        };
-
-        let ai_only = reconstruct_ai_only_content(current_content, "test.txt", &event).unwrap();
-
-        // Should reconstruct AI's intended change
-        assert_eq!(ai_only, "Hello World");
-    }
 
     #[test]
     fn test_parse_split_output() {

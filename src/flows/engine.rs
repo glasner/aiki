@@ -83,54 +83,6 @@ impl FlowEngine {
                 );
                 resolver.add_var("event.success".to_string(), e.success.to_string());
             }
-            // Write operations
-            crate::events::AikiEvent::WritePermissionAsked(e) => {
-                resolver.add_var(
-                    "event.session_id".to_string(),
-                    e.session.external_id().to_string(),
-                );
-                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
-                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
-            }
-            crate::events::AikiEvent::WriteCompleted(e) => {
-                resolver.add_var(
-                    "event.session_id".to_string(),
-                    e.session.external_id().to_string(),
-                );
-                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
-                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
-                resolver.add_var(
-                    "event.file_count".to_string(),
-                    e.file_paths.len().to_string(),
-                );
-                resolver.add_var("event.success".to_string(), e.success.to_string());
-                // Note: edit_details are available in the payload but not exposed as variables
-                // Flows should use self.classify_edits to analyze edits instead
-            }
-            // Delete operations
-            crate::events::AikiEvent::DeletePermissionAsked(e) => {
-                resolver.add_var(
-                    "event.session_id".to_string(),
-                    e.session.external_id().to_string(),
-                );
-                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
-                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
-            }
-            crate::events::AikiEvent::DeleteCompleted(e) => {
-                resolver.add_var(
-                    "event.session_id".to_string(),
-                    e.session.external_id().to_string(),
-                );
-                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
-                resolver.add_var("event.file_paths".to_string(), e.file_paths.join(" "));
-                resolver.add_var(
-                    "event.file_count".to_string(),
-                    e.file_paths.len().to_string(),
-                );
-                if let Some(success) = e.success {
-                    resolver.add_var("event.success".to_string(), success.to_string());
-                }
-            }
             crate::events::AikiEvent::SessionStarted(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),
@@ -244,6 +196,128 @@ impl FlowEngine {
                     );
                 }
             }
+
+            // Change operations (unified mutations: write, delete, move)
+            crate::events::AikiEvent::ChangePermissionAsked(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var(
+                    "event.operation".to_string(),
+                    e.operation.operation_name().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+
+                // Computed properties for operation type checks (return "true" or "")
+                resolver.add_var("event.write".to_string(), e.operation.is_write().to_string());
+                resolver.add_var(
+                    "event.delete".to_string(),
+                    e.operation.is_delete().to_string(),
+                );
+                resolver.add_var("event.move".to_string(), e.operation.is_move().to_string());
+
+                // Operation-specific variables
+                match &e.operation {
+                    crate::events::ChangeOperation::Write(op) => {
+                        resolver.add_var("event.file_paths".to_string(), op.file_paths.join(" "));
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.file_paths.len().to_string(),
+                        );
+                        if !op.edit_details.is_empty() {
+                            resolver.add_var(
+                                "event.edit_details".to_string(),
+                                serde_json::to_string(&op.edit_details).unwrap_or_default(),
+                            );
+                        }
+                    }
+                    crate::events::ChangeOperation::Delete(op) => {
+                        resolver.add_var("event.file_paths".to_string(), op.file_paths.join(" "));
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.file_paths.len().to_string(),
+                        );
+                    }
+                    crate::events::ChangeOperation::Move(op) => {
+                        resolver.add_var(
+                            "event.file_paths".to_string(),
+                            op.destination_paths.join(" "),
+                        );
+                        resolver
+                            .add_var("event.source_paths".to_string(), op.source_paths.join(" "));
+                        resolver.add_var(
+                            "event.destination_paths".to_string(),
+                            op.destination_paths.join(" "),
+                        );
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.destination_paths.len().to_string(),
+                        );
+                    }
+                }
+            }
+            crate::events::AikiEvent::ChangeCompleted(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var(
+                    "event.operation".to_string(),
+                    e.operation.operation_name().to_string(),
+                );
+                resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
+                resolver.add_var("event.success".to_string(), e.success.to_string());
+
+                // Computed properties for operation type checks (return "true" or "")
+                resolver.add_var("event.write".to_string(), e.operation.is_write().to_string());
+                resolver.add_var(
+                    "event.delete".to_string(),
+                    e.operation.is_delete().to_string(),
+                );
+                resolver.add_var("event.move".to_string(), e.operation.is_move().to_string());
+
+                // Operation-specific variables
+                match &e.operation {
+                    crate::events::ChangeOperation::Write(op) => {
+                        resolver.add_var("event.file_paths".to_string(), op.file_paths.join(" "));
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.file_paths.len().to_string(),
+                        );
+                        if !op.edit_details.is_empty() {
+                            resolver.add_var(
+                                "event.edit_details".to_string(),
+                                serde_json::to_string(&op.edit_details).unwrap_or_default(),
+                            );
+                        }
+                    }
+                    crate::events::ChangeOperation::Delete(op) => {
+                        resolver.add_var("event.file_paths".to_string(), op.file_paths.join(" "));
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.file_paths.len().to_string(),
+                        );
+                    }
+                    crate::events::ChangeOperation::Move(op) => {
+                        resolver.add_var(
+                            "event.file_paths".to_string(),
+                            op.destination_paths.join(" "),
+                        );
+                        resolver
+                            .add_var("event.source_paths".to_string(), op.source_paths.join(" "));
+                        resolver.add_var(
+                            "event.destination_paths".to_string(),
+                            op.destination_paths.join(" "),
+                        );
+                        resolver.add_var(
+                            "event.file_count".to_string(),
+                            op.destination_paths.len().to_string(),
+                        );
+                    }
+                }
+            }
+
             crate::events::AikiEvent::Unsupported => {
                 // No event-specific variables for unsupported events
             }
@@ -1215,6 +1289,21 @@ impl FlowEngine {
     fn resolve_condition_value(expr: &str, state: &mut AikiState) -> Result<String> {
         let expr = expr.trim();
 
+        // Check for ? suffix truthiness operator
+        // $event.write? returns "true" if $event.write is truthy, "false" otherwise
+        if expr.ends_with('?') {
+            let base_expr = &expr[..expr.len() - 1];
+            let value = Self::resolve_condition_value(base_expr, state)?;
+            // Truthy: non-empty string that's not "false", "null", "0", "[]", "{}"
+            let is_truthy = !value.is_empty()
+                && value != "false"
+                && value != "null"
+                && value != "0"
+                && value != "[]"
+                && value != "{}";
+            return Ok(is_truthy.to_string());
+        }
+
         // Remove quotes if present
         if (expr.starts_with('"') && expr.ends_with('"'))
             || (expr.starts_with('\'') && expr.ends_with('\''))
@@ -1427,94 +1516,105 @@ impl FlowEngine {
 
         // Route to appropriate function
         match (module, function) {
-            ("core", "build_metadata") => {
-                // build_metadata requires write.completed event
+            // ========================================================================
+            // Change event functions (unified mutations: write, delete, move)
+            // ========================================================================
+            ("core", "build_write_metadata") => {
+                // build_write_metadata requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::build_metadata(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_write_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_metadata can only be called for write.completed events"
+                        "build_write_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "build_human_metadata") => {
-                // build_human_metadata works with write.* events
+            ("core", "build_delete_metadata") => {
+                // build_delete_metadata requires change.completed event with Delete operation
                 match &state.event {
-                    AikiEvent::WritePermissionAsked(event) => {
-                        crate::flows::core::build_human_metadata(event, Some(state))
-                    }
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::build_human_metadata_post(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_delete_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_human_metadata can only be called for write.* events"
+                        "build_delete_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "get_git_user") => {
-                // get_git_user works with write.completed events
+            ("core", "build_move_metadata") => {
+                // build_move_metadata requires change.completed event with Move operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::get_git_user_function(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_move_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "get_git_user can only be called for write.completed events"
+                        "build_move_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "classify_edits") => {
-                // classify_edits requires write.completed event
+            ("core", "build_human_metadata_change_pre") => {
+                // build_human_metadata_change_pre requires change.permission_asked event
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::classify_edits(event)
+                    AikiEvent::ChangePermissionAsked(event) => {
+                        crate::flows::core::build_human_metadata_change_pre(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "classify_edits can only be called for write.completed events"
+                        "build_human_metadata_change_pre can only be called for change.permission_asked events"
                     ))),
                 }
             }
-            ("core", "separate_edits") => {
-                // separate_edits requires write.completed event
+            ("core", "build_human_metadata_change_post") => {
+                // build_human_metadata_change_post requires change.completed event
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::separate_edits(event)
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_human_metadata_change_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "separate_edits can only be called for write.completed events"
+                        "build_human_metadata_change_post can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "prepare_separation") => {
-                // prepare_separation requires write.completed event
+            ("core", "classify_edits_change") => {
+                // classify_edits_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::prepare_separation(event)
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::classify_edits_change(event)
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "prepare_separation can only be called for write.completed events"
+                        "classify_edits_change can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "write_ai_files") => {
-                // write_ai_files requires write.completed event
+            ("core", "prepare_separation_change") => {
+                // prepare_separation_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::write_ai_files(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::prepare_separation_change(event)
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "write_ai_files can only be called for write.completed events"
+                        "prepare_separation_change can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "restore_original_files") => {
-                // restore_original_files requires write.completed event
+            ("core", "write_ai_files_change") => {
+                // write_ai_files_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::restore_original_files(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::write_ai_files_change(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "restore_original_files can only be called for write.completed events"
+                        "write_ai_files_change can only be called for change.completed events"
+                    ))),
+                }
+            }
+            ("core", "restore_original_files_change") => {
+                // restore_original_files_change requires change.completed event with Write operation
+                match &state.event {
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::restore_original_files_change(event, Some(state))
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "restore_original_files_change can only be called for change.completed events"
                     ))),
                 }
             }
@@ -1588,94 +1688,105 @@ impl FlowEngine {
 
         // Route to appropriate function (same routing as execute_let_function)
         match (module, function) {
-            ("core", "build_metadata") => {
-                // build_metadata requires write.completed event
+            // ========================================================================
+            // Change event functions (unified mutations: write, delete, move)
+            // ========================================================================
+            ("core", "build_write_metadata") => {
+                // build_write_metadata requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::build_metadata(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_write_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_metadata can only be called for write.completed events"
+                        "build_write_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "build_human_metadata") => {
-                // build_human_metadata works with write.* events
+            ("core", "build_delete_metadata") => {
+                // build_delete_metadata requires change.completed event with Delete operation
                 match &state.event {
-                    AikiEvent::WritePermissionAsked(event) => {
-                        crate::flows::core::build_human_metadata(event, Some(state))
-                    }
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::build_human_metadata_post(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_delete_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "build_human_metadata can only be called for write.* events"
+                        "build_delete_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "get_git_user") => {
-                // get_git_user works with write.completed events
+            ("core", "build_move_metadata") => {
+                // build_move_metadata requires change.completed event with Move operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::get_git_user_function(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_move_metadata(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "get_git_user can only be called for write.completed events"
+                        "build_move_metadata can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "classify_edits") => {
-                // classify_edits requires write.completed event
+            ("core", "build_human_metadata_change_pre") => {
+                // build_human_metadata_change_pre requires change.permission_asked event
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::classify_edits(event)
+                    AikiEvent::ChangePermissionAsked(event) => {
+                        crate::flows::core::build_human_metadata_change_pre(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "classify_edits can only be called for write.completed events"
+                        "build_human_metadata_change_pre can only be called for change.permission_asked events"
                     ))),
                 }
             }
-            ("core", "separate_edits") => {
-                // separate_edits requires write.completed event
+            ("core", "build_human_metadata_change_post") => {
+                // build_human_metadata_change_post requires change.completed event
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::separate_edits(event)
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::build_human_metadata_change_post(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "separate_edits can only be called for write.completed events"
+                        "build_human_metadata_change_post can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "prepare_separation") => {
-                // prepare_separation requires write.completed event
+            ("core", "classify_edits_change") => {
+                // classify_edits_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::prepare_separation(event)
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::classify_edits_change(event)
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "prepare_separation can only be called for write.completed events"
+                        "classify_edits_change can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "write_ai_files") => {
-                // write_ai_files requires write.completed event
+            ("core", "prepare_separation_change") => {
+                // prepare_separation_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::write_ai_files(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::prepare_separation_change(event)
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "write_ai_files can only be called for write.completed events"
+                        "prepare_separation_change can only be called for change.completed events"
                     ))),
                 }
             }
-            ("core", "restore_original_files") => {
-                // restore_original_files requires write.completed event
+            ("core", "write_ai_files_change") => {
+                // write_ai_files_change requires change.completed event with Write operation
                 match &state.event {
-                    AikiEvent::WriteCompleted(event) => {
-                        crate::flows::core::restore_original_files(event, Some(state))
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::write_ai_files_change(event, Some(state))
                     }
                     _ => Err(AikiError::Other(anyhow::anyhow!(
-                        "restore_original_files can only be called for write.completed events"
+                        "write_ai_files_change can only be called for change.completed events"
+                    ))),
+                }
+            }
+            ("core", "restore_original_files_change") => {
+                // restore_original_files_change requires change.completed event with Write operation
+                match &state.event {
+                    AikiEvent::ChangeCompleted(event) => {
+                        crate::flows::core::restore_original_files_change(event, Some(state))
+                    }
+                    _ => Err(AikiError::Other(anyhow::anyhow!(
+                        "restore_original_files_change can only be called for change.completed events"
                     ))),
                 }
             }
@@ -1840,7 +1951,7 @@ fn execute_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::AikiWriteCompletedPayload;
+    use crate::events::{AikiChangeCompletedPayload, ChangeOperation, WriteOperation};
     use crate::provenance::AgentType;
     use crate::session::AikiSession;
 
@@ -1852,14 +1963,16 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
+        AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
-            file_paths: vec!["/tmp/file.rs".to_string()],
             success: true,
-            edit_details: vec![],
+            operation: ChangeOperation::Write(WriteOperation {
+                file_paths: vec!["/tmp/file.rs".to_string()],
+                edit_details: vec![],
+            }),
         })
     }
 
@@ -1871,14 +1984,16 @@ mod tests {
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        AikiEvent::WriteCompleted(AikiWriteCompletedPayload {
+        AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
             cwd: std::path::PathBuf::from("/tmp"),
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
-            file_paths: vec![file_path.to_string()],
             success: true,
-            edit_details: vec![],
+            operation: ChangeOperation::Write(WriteOperation {
+                file_paths: vec![file_path.to_string()],
+                edit_details: vec![],
+            }),
         })
     }
 
@@ -2234,10 +2349,10 @@ mod tests {
 
     #[test]
     fn test_let_with_context_vars() {
-        // This test verifies that build_metadata works with typed events.
-        // The type system now guarantees that change.done events have all required fields.
+        // This test verifies that build_write_metadata works with typed events.
+        // The type system now guarantees that change.completed events have all required fields.
         let action = LetAction {
-            let_: "metadata = aiki/core.build_metadata".to_string(),
+            let_: "metadata = aiki/core.build_write_metadata".to_string(),
             on_failure: OnFailure::default(),
         };
 
@@ -2245,7 +2360,7 @@ mod tests {
         let mut state = AikiState::new(event);
         state.flow_name = Some("aiki/core".to_string());
 
-        // This should succeed because PostFileChangeEvent has session_id and tool_name
+        // This should succeed because ChangeCompletedPayload has session and tool_name
         let result = FlowEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
@@ -2347,7 +2462,7 @@ mod tests {
     #[test]
     fn test_let_self_reference() {
         let action = LetAction {
-            let_: "metadata = self.build_metadata".to_string(),
+            let_: "metadata = self.build_write_metadata".to_string(),
             on_failure: OnFailure::default(),
         };
 
@@ -2364,7 +2479,7 @@ mod tests {
     #[test]
     fn test_let_self_reference_without_flow_context() {
         let action = LetAction {
-            let_: "metadata = self.build_metadata".to_string(),
+            let_: "metadata = self.build_write_metadata".to_string(),
             on_failure: OnFailure::default(),
         };
 
@@ -2607,10 +2722,10 @@ mod tests {
         let actions = vec![
             // Create JSON variable
             Action::Let(LetAction {
-                let_: "detection = aiki/core.classify_edits".to_string(),
+                let_: "detection = aiki/core.classify_edits_change".to_string(),
                 on_failure: OnFailure::default(),
             }),
-            // Check JSON field (will fail in test since classify_edits returns error)
+            // Check JSON field (will fail in test since classify_edits_change returns error)
         ];
 
         let mut state = AikiState::new(create_test_event());

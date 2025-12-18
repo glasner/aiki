@@ -1,12 +1,4 @@
-use crate::cache::debug_log;
-use crate::error::Result;
-use crate::flows::{AikiState, FlowEngine, FlowResult};
-use crate::session::AikiSession;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-use super::result::{Decision, HookResult};
+use super::prelude::*;
 
 /// mcp.permission_asked event payload
 ///
@@ -74,8 +66,7 @@ pub fn handle_mcp_permission_asked(payload: AikiMcpPermissionAskedPayload) -> Re
     state.flow_name = Some("aiki/core".to_string());
 
     // Execute mcp.permission_asked statements from the core flow
-    let flow_result =
-        FlowEngine::execute_statements(&core_flow.mcp_permission_asked, &mut state)?;
+    let flow_result = FlowEngine::execute_statements(&core_flow.mcp_permission_asked, &mut state)?;
 
     // Extract failures from state
     let failures = state.take_failures();

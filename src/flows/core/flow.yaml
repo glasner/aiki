@@ -25,54 +25,84 @@ session.started:
       - jj: new
 
 # ==============================================================================
-# Write Operation Events (new, preferred)
+# Change Operation Events (unified mutations: write, delete, move)
 # ==============================================================================
 
-# write.permission_asked: Stash any user changes before AI starts editing files
-write.permission_asked:
-  # Check if working copy has any changes
-  - jj: diff -r @ --name-only
-    alias: changed_files
-
-  # If there are changes (non-empty string), stash them before AI starts
-  - if: $changed_files
+# change.permission_asked: Stash any user changes before AI starts editing files
+change.permission_asked:
+  # Only stash for write operations - delete/move don't need pre-stashing
+  - if: $event.write
     then:
-      - with_author_and_message: self.build_human_metadata
-        jj: describe --message "$message"
+      # Check if working copy has any changes
+      - jj: diff -r @ --name-only
+        alias: changed_files
 
-      - jj: new # Give AI a clean working copy
+      # If there are changes (non-empty string), stash them before AI starts
+      - if: $changed_files
+        then:
+          - with_author_and_message: self.build_human_metadata_change_pre
+            jj: describe --message "$message"
 
-# write.completed: Record provenance metadata after AI file writes
-write.completed:
-  # Classify edits to detect user modifications
-  # This compares AI's intended edits with actual file state
-  # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
-  - if: self.classify_edits == "AdditiveUserEdits"
+          - jj: new # Give AI a clean working copy
+
+# change.completed: Record provenance metadata after file mutations (write, delete, move)
+change.completed:
+  # Write operations: full provenance tracking with user edit detection
+  - if: $event.write
     then:
-      # User added more changes - separate them into two changes
-      - let: prep = self.prepare_separation
+      # Classify edits to detect user modifications
+      # This compares AI's intended edits with actual file state
+      # Result: "ExactMatch", "AdditiveUserEdits", or "OverlappingUserEdits"
+      - if: self.classify_edits_change == "AdditiveUserEdits"
+        then:
+          # User added more changes - separate them into two changes
+          - let: prep = self.prepare_separation_change
 
-      - self: write_ai_files
+          - self: write_ai_files_change
 
-      - with_author: $prep.ai_author
-        jj: split --message "$prep.ai_message" $prep.file_list
+          - with_author: $prep.ai_author
+            jj: split --message "$prep.ai_message" $prep.file_list
 
-      - self: restore_original_files
-      # Add aiki metadata with git user as author and AI as coauthor
-      - with_author_and_message: self.build_human_metadata
-        jj: metaedit --message "$message"
+          - self: restore_original_files_change
+          # Add aiki metadata with git user as author and AI as coauthor
+          - with_author_and_message: self.build_human_metadata_change_post
+            jj: metaedit --message "$message"
 
-    else:
-      # For ExactMatch or OverlappingUserEdits, set AI metadata
-      - let: metadata = self.build_metadata
+        else:
+          # For ExactMatch or OverlappingUserEdits, set AI metadata
+          - let: metadata = self.build_write_metadata
+            on_failure:
+              - stop: "Failed to build metadata"
+
+          - with_author_and_message: $metadata
+            jj: metaedit --message "$message"
+
+      # Create a new change for the next edit
+      - jj: new
+
+  # Delete operations: record provenance and separate from other operations
+  - if: $event.delete
+    then:
+      - let: metadata = self.build_delete_metadata
         on_failure:
-          - stop: "Failed to build metadata"
+          - stop: "Failed to build delete metadata"
 
       - with_author_and_message: $metadata
         jj: metaedit --message "$message"
 
-  # Create a new change for the next edit
-  - jj: new
+      - jj: new
+
+  # Move operations: record provenance and separate from other operations
+  - if: $event.move
+    then:
+      - let: metadata = self.build_move_metadata
+        on_failure:
+          - stop: "Failed to build move metadata"
+
+      - with_author_and_message: $metadata
+        jj: metaedit --message "$message"
+
+      - jj: new
 
 # ==============================================================================
 # Read Operation Events
@@ -85,20 +115,6 @@ read.permission_asked:
 # read.completed: Handle actions after file reads
 read.completed:
   # Empty by default - no provenance needed for reads
-
-# ==============================================================================
-# Delete Operation Events
-# ==============================================================================
-
-# delete.permission_asked: Gate deletion of important files
-delete.permission_asked:
-  # Empty by default - can be customized in user flows
-
-# delete.completed: Handle actions after file deletes
-delete.completed:
-  # For now, just create a new change to separate delete from other operations
-  # Full provenance tracking for deletes is tracked in separate plan
-  - jj: new
 
 # response.received: Handle actions after agent response (e.g., autoreplies)
 response.received:

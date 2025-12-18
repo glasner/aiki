@@ -45,8 +45,8 @@ impl Vendor {
 enum EventType {
     SessionStarted,
     PromptSubmitted,
-    WritePermissionAsked,
-    WriteCompleted,
+    ChangePermissionAsked,
+    ChangeCompleted,
     ResponseReceived,          // WITHOUT autoreply (includes session.ended)
     ResponseReceivedAutoreply, // WITH autoreply (response.received only, no session.ended)
     CommitMessageStarted,
@@ -57,8 +57,8 @@ impl EventType {
         match self {
             EventType::SessionStarted => "session.started",
             EventType::PromptSubmitted => "prompt.submitted",
-            EventType::WritePermissionAsked => "write.permission_asked",
-            EventType::WriteCompleted => "write.completed",
+            EventType::ChangePermissionAsked => "change.permission_asked",
+            EventType::ChangeCompleted => "change.completed",
             EventType::ResponseReceived => "response.received",
             EventType::ResponseReceivedAutoreply => "response.received+autoreply",
             EventType::CommitMessageStarted => "commit.message_started",
@@ -409,7 +409,7 @@ fn run_vendor_lifecycle(
 
         // PreFileChange (write.permission_asked)
         let duration = simulate_pre_file_change(repo_path, aiki_exe, vendor, &file_path)?;
-        vendor_results.add_sample(EventType::WritePermissionAsked, duration);
+        vendor_results.add_sample(EventType::ChangePermissionAsked, duration);
 
         // Actual file edit
         let mut file = fs::OpenOptions::new().append(true).open(&file_path)?;
@@ -417,7 +417,7 @@ fn run_vendor_lifecycle(
 
         // PostFileChange (write.completed)
         let duration = simulate_post_file_change(repo_path, aiki_exe, vendor, &file_path, i)?;
-        vendor_results.add_sample(EventType::WriteCompleted, duration);
+        vendor_results.add_sample(EventType::ChangeCompleted, duration);
     }
 
     // 4a. PostResponse WITHOUT autoreply (includes SessionEnd)
@@ -809,8 +809,8 @@ fn print_results(results: &BenchmarkResults, _num_edits: usize) {
     let events = [
         EventType::SessionStarted,
         EventType::PromptSubmitted,
-        EventType::WritePermissionAsked,
-        EventType::WriteCompleted,
+        EventType::ChangePermissionAsked,
+        EventType::ChangeCompleted,
         EventType::ResponseReceived,
         EventType::ResponseReceivedAutoreply,
     ];
@@ -1019,9 +1019,9 @@ fn load_previous_benchmark(benchmark_dir: &PathBuf) -> Result<Option<MetricsJson
 fn print_comparison(prev: &MetricsJson, current: &BenchmarkResults) {
     println!("vs Previous Run:");
 
-    // Compare key events (hot path write.completed and prompt.submitted)
+    // Compare key events (hot path change.completed and prompt.submitted)
     let events_to_compare = [
-        ("write.completed", EventType::WriteCompleted),
+        ("change.completed", EventType::ChangeCompleted),
         ("prompt.submitted", EventType::PromptSubmitted),
     ];
 

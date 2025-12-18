@@ -1,12 +1,4 @@
-use crate::cache::debug_log;
-use crate::error::Result;
-use crate::flows::{AikiState, FlowEngine, FlowResult};
-use crate::session::AikiSession;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-use super::result::{Decision, HookResult};
+use super::prelude::*;
 
 /// shell.permission_asked event payload
 ///
@@ -26,7 +18,9 @@ pub struct AikiShellPermissionAskedPayload {
 ///
 /// This is the autonomous review wedge - intercept shell commands like `git commit`,
 /// run review checks, and provide feedback for self-correction.
-pub fn handle_shell_permission_asked(payload: AikiShellPermissionAskedPayload) -> Result<HookResult> {
+pub fn handle_shell_permission_asked(
+    payload: AikiShellPermissionAskedPayload,
+) -> Result<HookResult> {
     debug_log(|| {
         format!(
             "shell.permission_asked from {:?}, session: {}, command: {}",

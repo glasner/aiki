@@ -6,7 +6,10 @@
 mod functions;
 
 pub use functions::{
-    build_human_metadata, build_human_metadata_post, build_metadata, classify_edits,
-    generate_coauthors, get_git_user_function, prepare_separation, restore_original_files,
-    separate_edits, write_ai_files,
+    // Commit integration
+    generate_coauthors,
+    // Change event functions (unified mutations: write, delete, move)
+    build_delete_metadata, build_human_metadata_change_post, build_human_metadata_change_pre,
+    build_move_metadata, build_write_metadata, classify_edits_change, prepare_separation_change,
+    restore_original_files_change, write_ai_files_change,
 };
