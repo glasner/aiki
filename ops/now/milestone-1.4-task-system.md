@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Task System provides structured, event-sourced task management for AI agent workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically. Tasks support dependencies, hierarchical organization, assignment, and code review workflows.
+The Task System provides structured, event-sourced task management for AI agent workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically. Tasks support dependencies, hierarchical organization, and assignment. Reviews are handled separately via the [Review System](#review-system).
 
 **Key Architecture:** Event-sourced task log stored on JJ `aiki/tasks` branch. Tasks reconstructed from immutable event stream. Dependencies stored as data within events, not JJ DAG structure.
 
@@ -31,13 +31,14 @@ Both fire the same Aiki events, so flows work identically regardless of editor. 
 2. [Phase 2: Performance & Extended Features](#phase-2-performance--extended-features)
 3. [Phase 3: Code Provenance](#phase-3-code-provenance)
 4. [Phase 4: Multi-Agent Coordination](#phase-4-multi-agent-coordination)
-5. [Agent Adoption: Native Integration](#agent-adoption-native-integration) ← **KEY DESIGN**
+5. [Review System](#review-system) ← **SEPARATE FROM TASKS**
+6. [Agent Adoption: Native Integration](#agent-adoption-native-integration)
 
 ---
 
 ## Phase 1: Core Task System
 
-**Goal**: Full-featured task system with dependencies, assignments, reviews, and hierarchical organization.
+**Goal**: Full-featured task system with dependencies, assignments, and hierarchical organization.
 
 **Depends on:** Milestone 1.2 (PostResponse event)
 
@@ -64,14 +65,6 @@ PostResponse:
     then:
       autoreply: "Run `aiki task ready --json` to see what needs fixing"
 
-# Auto-request review when fixed
-PostToolUse:
-  - if: $task.is_fixed && !$task.pending_review
-    then:
-      task.request_review:
-        id: $task.id
-        from: human
-        context: "Fixed: $task.objective"
 ```
 
 ```bash
@@ -95,14 +88,14 @@ $ aiki task ready --json
 $ aiki task start err-a1b2c3d4
 Started: err-a1b2c3d4
 
-# Agent makes changes, task is fixed...
+# Agent fixes the error...
 
-$ aiki task request-review err-a1b2c3d4 --from human --context "Fixed null check"
-Review requested from human
+$ aiki task close err-a1b2c3d4 --fixed
+Closed: err-a1b2c3d4
 
-# Human reviews...
-$ aiki task approve err-a1b2c3d4 --feedback "Looks good"
-Approved and closed: err-a1b2c3d4
+# Request review of the changes (separate from task)
+$ aiki review request @ --from human --context "Fixed null check in auth"
+Review requested: rev-xyz123
 ```
 
 ### Core Architecture
@@ -130,9 +123,8 @@ Approved and closed: err-a1b2c3d4
 │  ├── change-001: [created err-a1b2]                             │
 │  ├── change-002: [created err-c3d4, blocked_by: err-a1b2]       │
 │  ├── change-003: [started err-a1b2]                             │
-│  ├── change-004: [review_requested err-a1b2]                    │
-│  ├── change-005: [review_completed err-a1b2, approved]          │
-│  └── change-006: [closed err-a1b2]                              │
+│  ├── change-004: [closed err-a1b2, fixed: true]                 │
+│  └── change-005: [closed err-c3d4, fixed: true]                 │
 │                                                                  │
 │  Dependencies stored IN events, not as JJ DAG structure         │
 └─────────────────────────────────────────────────────────────────┘
@@ -262,18 +254,6 @@ pub enum EventType {
     DependencyRemoved {
         blocked_by: String,
     },
-
-    // Review workflow
-    ReviewRequested {
-        from: AgentType,
-        by: AgentType,
-        context: Option<String>,
-        change_id: Option<String>,
-    },
-    ReviewCompleted {
-        by: AgentType,
-        outcome: ReviewOutcome,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,22 +263,6 @@ pub enum DependencyType {
     ParentChild,     // Hierarchy - affects ready
     DiscoveredFrom,  // Soft - informational only
     Related,         // Soft - informational only
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ReviewOutcome {
-    Approved {
-        feedback: Option<String>,
-    },
-    Rejected {
-        feedback: String,  // Required
-        blocking_issues: Vec<String>,
-    },
-    ApprovedWithSuggestions {
-        feedback: String,
-        suggestions: Vec<String>,
-    },
 }
 ```
 
@@ -313,10 +277,8 @@ pub struct Task {
     pub assignee: Option<AgentType>,
     pub attempts: Vec<Attempt>,
     pub created_at: DateTime<Utc>,
-
-    // Review state (derived from events)
-    pub pending_review: Option<PendingReview>,
-    pub review_history: Vec<ReviewRecord>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub fixed: Option<bool>,  // Set when closed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,24 +286,6 @@ pub enum TaskStatus {
     Open,
     InProgress,
     Closed,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingReview {
-    pub requested_from: AgentType,
-    pub requested_by: AgentType,
-    pub context: Option<String>,
-    pub change_id: Option<String>,
-    pub requested_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReviewRecord {
-    pub requested_by: AgentType,
-    pub requested_at: DateTime<Utc>,
-    pub completed_by: Option<AgentType>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub outcome: Option<ReviewOutcome>,
 }
 ```
 
@@ -461,7 +405,6 @@ aiki task list --blocked [--json]
 
 # Show task details
 aiki task show <task-id> [--json]
-aiki task show <task-id> --reviews [--json]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CREATING TASKS
@@ -524,35 +467,6 @@ aiki task assign <task-id> --to claude-code
 aiki task unassign <task-id>
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# REVIEWS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Request review
-aiki task request-review <task-id> --from human
-aiki task request-review <task-id> --from human --context "Please verify the fix"
-aiki task request-review <task-id> --from cursor --change xyz123
-
-# Cancel pending review
-aiki task cancel-review <task-id>
-
-# Complete review
-aiki task approve <task-id>
-aiki task approve <task-id> --feedback "Looks good"
-aiki task approve <task-id> --with-suggestions \
-    --feedback "Works but could be cleaner" \
-    --suggestion "Extract to helper function"
-
-aiki task reject <task-id> --feedback "Missing edge case"
-aiki task reject <task-id> \
-    --feedback "Several issues found" \
-    --issue "Null check missing on line 42" \
-    --issue "Error message not user-friendly"
-
-# Query pending reviews
-aiki task list --pending-review [--json]
-aiki task list --pending-review --from human [--json]
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # DEPENDENCIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -589,32 +503,12 @@ $ aiki task ready --json
       "assignee": null,
       "blocked_by": [],
       "scope": {"files": [{"path": "src/auth.ts", "lines": [42]}]},
-      "evidence": [{"source": "typescript", "message": "Object is possibly 'null'", "code": "TS2531"}],
-      "pending_review": null
+      "evidence": [{"source": "typescript", "message": "Object is possibly 'null'", "code": "TS2531"}]
     }
   ]
 }
 
-$ aiki task list --pending-review --from human --json
-{
-  "tasks": [
-    {
-      "id": "err-c3d4",
-      "objective": "Fix missing import in utils.ts",
-      "type": "error",
-      "status": "in_progress",
-      "assignee": "human",
-      "pending_review": {
-        "requested_by": "claude-code",
-        "requested_at": "2025-01-15T10:00:00Z",
-        "context": "Fixed the import, please verify",
-        "change_id": "xyz123"
-      }
-    }
-  ]
-}
-
-$ aiki task show err-a1b2 --reviews
+$ aiki task show err-a1b2
 Task: err-a1b2
 Objective: Fix null check in auth.ts:42
 Type: error
@@ -624,23 +518,7 @@ Assignee: human
 
 Blocked by: (none)
 Discovered from: (none)
-
-Review History:
-  ┌─ Review #1 ──────────────────────────────────────────────────
-  │ Requested: 2025-01-15 10:00 by claude-code
-  │ Context: "Fixed the null check, please verify"
-  │ Completed: 2025-01-15 11:00 by human
-  │ Outcome: REJECTED
-  │ Feedback: "Missing edge case for empty string"
-  │ Issues:
-  │   • Line 42: doesn't handle empty string
-  └──────────────────────────────────────────────────────────────
-
-  ┌─ Review #2 (PENDING) ────────────────────────────────────────
-  │ Requested: 2025-01-15 12:00 by claude-code
-  │ Context: "Addressed feedback, added empty string check"
-  │ Awaiting: human
-  └──────────────────────────────────────────────────────────────
+Attempts: 1
 ```
 
 ### Flow Integration
@@ -671,64 +549,18 @@ PostResponse:
         There are $ready_count tasks ready. Run `aiki task ready --json` to see details.
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PostToolUse: Auto-request review when fixed
-# ═══════════════════════════════════════════════════════════════════════════════
-PostToolUse:
-  - let: current_task = self.current_task
-  - if: $current_task != null && $current_task.is_fixed && !$current_task.pending_review
-    then:
-      task.request_review:
-        id: $current_task.id
-        from: human
-        context: "Fixed: $current_task.objective"
-        change_id: $current_change_id
-      autoreply.append: |
-        ✓ Requested human review for $current_task.id
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SessionStart: Notify of pending reviews
+# SessionStart: Notify of ready tasks
 # ═══════════════════════════════════════════════════════════════════════════════
 SessionStart:
-  - let: my_reviews = self.pending_reviews_for($agent_type)
-  - if: $my_reviews | length > 0
+  - let: ready_count = self.ready_tasks | length
+  - if: $ready_count > 0
     then:
       autoreply: |
-        You have $my_reviews.length pending review(s):
-        $for review in $my_reviews:
-          • $review.task_id: $review.context
-
-        Run `aiki task list --pending-review --from $agent_type` for details.
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PostReviewCompleted: Handle review outcomes
-# ═══════════════════════════════════════════════════════════════════════════════
-PostReviewCompleted:
-  - if: $review.outcome.type == "rejected"
-    then:
-      task.update:
-        id: $task.id
-        status: in_progress
-        assignee: $review.requested_by  # Back to original agent
-      autoreply: |
-        Review rejected for $task.id:
-        $review.outcome.feedback
-
-        Issues to address:
-        $for issue in $review.outcome.blocking_issues:
-          • $issue
-
-  - if: $review.outcome.type == "approved" || $review.outcome.type == "approved_with_suggestions"
-    then:
-      task.close:
-        id: $task.id
-        fixed: true
-      autoreply: |
-        ✓ $task.id approved and closed.
-        $if $review.outcome.suggestions:
-          Suggestions for future:
-          $for s in $review.outcome.suggestions:
-            • $s
+        You have $ready_count task(s) ready to work on.
+        Run `aiki task ready --json` for details.
 ```
+
+**Note:** Review-related flows are in the [Review System](#review-system) section.
 
 ### aiki task sync
 
@@ -777,54 +609,45 @@ pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
 - Event serialization/deserialization
 - Task state reconstruction from events
 - Ready queue filtering (respects dependencies)
-- Review state reconstruction
 
 **Integration tests:**
 - Create task → verify event appended
 - Create subtask → verify hierarchical ID
 - Add dependency → verify blocks ready queue
-- Request review → verify pending state
-- Approve review → verify task closes
-- Reject review → verify task reopens
+- Start/close lifecycle
 - Sync → verify push to remote
 
 **E2E tests:**
 - Flow creates tasks from TypeScript errors
 - Agent queries ready tasks (filtered by dependencies)
-- Agent completes task, requests review
-- Human approves, task closes
+- Agent completes task and closes it
 - Multi-level hierarchy (epic → task → subtask)
 
 ### Phase 1 Deliverables
 
 1. **Core library** (`cli/src/tasks/`)
    - `manager.rs` - TaskManager with JJ operations
-   - `types.rs` - Task, TaskDefinition, EventType, ReviewOutcome
+   - `types.rs` - Task, TaskDefinition, EventType
    - `queries.rs` - Ready queue, dependency filtering
-   - `reviews.rs` - Review workflow logic
 
 2. **CLI commands** (`aiki task ...`)
    - `ready`, `list`, `show`
    - `create` (with subtasks, dependencies)
    - `start`, `fail`, `close`
    - `assign`, `unassign`
-   - `request-review`, `cancel-review`, `approve`, `reject`
    - `dep add`, `dep remove`, `dep tree`
    - `sync`
 
 3. **Flow actions** (`task:` in YAML)
-   - `create`, `close`, `fail`
-   - `assign`, `request_review`
+   - `create`, `close`, `fail`, `assign`
 
 4. **Tests**
    - Unit tests for all components
    - Integration tests with real JJ repo
-   - E2E tests for review workflow
 
 5. **Documentation**
    - CLI reference
    - Flow DSL reference
-   - Review workflow guide
 
 ---
 
@@ -934,7 +757,6 @@ CREATE TABLE tasks (
     status TEXT NOT NULL,
     assignee TEXT,
     blocked_by_json TEXT,
-    pending_review_json TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -952,7 +774,7 @@ CREATE INDEX idx_tasks_assignee ON tasks(assignee);
 - Compaction events and CLI (`aiki task compact`)
 - External refs support
 - SQLite cache (only if performance requires it)
-- Review statistics (`aiki task stats --reviews`)
+- Task statistics (`aiki task stats`)
 
 ---
 
@@ -1005,6 +827,266 @@ Event sourcing already handles this well:
 - Multi-agent integration tests
 - Event ordering verification
 - Documentation: "Multi-Agent Task System Guide"
+
+---
+
+## Review System
+
+**Key Insight:** Reviews are about **code changes**, not task completion. Reviews target JJ revsets, allowing review of single changes, ranges, or any revision set expression.
+
+### Why Revsets?
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TASK-CENTRIC REVIEWS (Previous design)                         │
+│                                                                 │
+│  Task ──→ ReviewRequested ──→ ReviewCompleted                   │
+│  Problems:                                                       │
+│    - What if no task exists?                                    │
+│    - What about multi-task changes?                             │
+│    - What about ad-hoc "review my code" requests?               │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  REVSET-CENTRIC REVIEWS (New design)                            │
+│                                                                 │
+│  Revset ──→ ReviewRequested ──→ ReviewCompleted                 │
+│  Benefits:                                                       │
+│    - Review any changes, task or not                            │
+│    - Review ranges: "trunk()..@"                                │
+│    - Review branches: "feature-auth::"                          │
+│    - Uses JJ's native query language                            │
+│    - Decouples concerns: tasks track work, reviews verify code  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Data Model
+
+```rust
+// Stored on aiki/reviews branch (event-sourced like tasks)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewEvent {
+    pub review_id: String,           // Content-addressed ID
+    pub revset: String,              // JJ revset expression (e.g., "trunk()..@")
+    pub resolved_changes: Vec<String>, // Snapshot of change_ids at request time
+    pub event: ReviewEventType,
+    pub timestamp: DateTime<Utc>,
+    pub agent_type: AgentType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewEventType {
+    Requested {
+        from: AgentType,
+        by: AgentType,
+        context: Option<String>,
+    },
+    Completed {
+        by: AgentType,
+        outcome: ReviewOutcome,
+    },
+    Cancelled {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Approved {
+        feedback: Option<String>,
+    },
+    Rejected {
+        feedback: String,
+        blocking_issues: Vec<String>,
+    },
+    ApprovedWithSuggestions {
+        feedback: String,
+        suggestions: Vec<String>,
+    },
+}
+```
+
+**Why store both `revset` and `resolved_changes`?**
+- `revset`: Human-readable, shows intent ("trunk()..@", "feature-auth::")
+- `resolved_changes`: Audit trail of exactly which changes were reviewed
+
+### CLI
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# REQUEST REVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Review current working copy change
+aiki review request @
+
+# Review all changes since trunk
+aiki review request 'trunk()..@'
+
+# Review specific change by ID
+aiki review request xyz123
+
+# Review with context
+aiki review request 'trunk()..@' --from human --context "Ready for merge"
+
+# Review from specific agent
+aiki review request @ --from cursor --context "Check error handling"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LIST & QUERY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# List pending reviews
+aiki review list --pending
+
+# List reviews awaiting specific agent
+aiki review list --for human
+aiki review list --for claude-code
+
+# Show review details
+aiki review show <review-id>
+
+# Show reviews for changes in a revset
+aiki review history 'trunk()..@'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPLETE REVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Approve
+aiki review approve <review-id>
+aiki review approve <review-id> --feedback "Looks good"
+
+# Approve with suggestions
+aiki review approve <review-id> --with-suggestions \
+    --feedback "Works but could be cleaner" \
+    --suggestion "Consider extracting to helper"
+
+# Reject
+aiki review reject <review-id> --feedback "Missing error handling"
+aiki review reject <review-id> \
+    --feedback "Several issues" \
+    --issue "Null check missing on line 42" \
+    --issue "Error message not user-friendly"
+
+# Cancel pending review
+aiki review cancel <review-id> --reason "Changes superseded"
+```
+
+### Example Output
+
+```bash
+$ aiki review list --pending --json
+{
+  "reviews": [
+    {
+      "id": "rev-abc123",
+      "revset": "trunk()..@",
+      "resolved_changes": ["xyz789", "xyz790", "xyz791"],
+      "requested_by": "claude-code",
+      "requested_from": "human",
+      "context": "Auth refactor complete, ready for review",
+      "requested_at": "2025-01-15T10:00:00Z"
+    }
+  ]
+}
+
+$ aiki review history @
+Change: xyz791 (current)
+Reviews:
+  ┌─ Review rev-abc123 ────────────────────────────────────────────
+  │ Revset: trunk()..@
+  │ Requested: 2025-01-15 10:00 by claude-code
+  │ Awaiting: human
+  │ Context: "Auth refactor complete, ready for review"
+  └────────────────────────────────────────────────────────────────
+```
+
+### Flow Integration
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# change.completed: Auto-request review when significant work done
+# ═══════════════════════════════════════════════════════════════════════════════
+change.completed:
+  - if: self.should_request_review($change)
+    then:
+      review.request:
+        revset: "@"
+        from: human
+        context: "Completed: $change.description"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.ended: Batch review for session's work
+# ═══════════════════════════════════════════════════════════════════════════════
+session.ended:
+  - let: session_range = self.session_revset  # e.g., "xyz123::@"
+  - let: change_count = self.resolve_revset($session_range) | length
+
+  - if: $change_count > 0 && !self.has_pending_review($session_range)
+    then:
+      review.request:
+        revset: $session_range
+        from: human
+        context: "Session complete - $change_count change(s)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.started: Notify of pending reviews
+# ═══════════════════════════════════════════════════════════════════════════════
+session.started:
+  - let: my_reviews = self.pending_reviews_for($agent_type)
+  - if: $my_reviews | length > 0
+    then:
+      autoreply:
+        append: |
+          # Pending Reviews
+
+          You have $my_reviews.length review(s) awaiting your feedback:
+          $for review in $my_reviews:
+            • $review.id: $review.context ($review.revset)
+
+          Run `aiki review list --for $agent_type` for details.
+```
+
+### Relationship to Tasks
+
+Tasks and reviews are orthogonal:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TASKS                          │  REVIEWS                      │
+│  Track work to be done          │  Verify code quality          │
+│  "Fix the auth bug"             │  "Review changes xyz..@"      │
+│  Has status, dependencies       │  Has outcome (approve/reject) │
+│  Stored on aiki/tasks branch    │  Stored on aiki/reviews branch│
+└─────────────────────────────────────────────────────────────────┘
+
+Connections:
+- Task close event CAN reference a change_id (what fixed it)
+- Review CAN cover changes that fixed multiple tasks
+- Neither requires the other
+```
+
+### Deliverables
+
+1. **Core library** (`cli/src/reviews/`)
+   - `types.rs` - ReviewEvent, ReviewOutcome
+   - `manager.rs` - ReviewManager with JJ operations
+   - `queries.rs` - Pending reviews, history lookup
+
+2. **CLI commands** (`aiki review ...`)
+   - `request`, `list`, `show`, `history`
+   - `approve`, `reject`, `cancel`
+
+3. **Flow actions** (`review:` in YAML)
+   - `request`, `approve`, `reject`
+
+4. **Tests**
+   - Revset resolution
+   - Review lifecycle
+   - Multi-change reviews
 
 ---
 
@@ -1095,27 +1177,28 @@ The task system integrates into the existing `cli/src/flows/core/flow.yaml`:
 session.started:
   # ... existing initialization (jj new, aiki init --quiet) ...
 
-  # Task context injection (only if task system is enabled)
+  # Task context injection
   - if: self.has_task_system
     then:
       - let: ready_count = self.task_ready_count
-      - let: pending_reviews = self.task_pending_reviews_for_agent
-
-      - if: $ready_count > 0 || $pending_reviews > 0
+      - if: $ready_count > 0
         then:
           autoreply:
             append: |
-              # Aiki Task System
+              # Tasks
+              📋 $ready_count task(s) ready. Run `aiki task ready --json` for details.
 
-              $if $pending_reviews > 0:
-                ⚠️ You have $pending_reviews pending review(s).
-                Run `aiki task list --pending-review` to see them.
-
-              $if $ready_count > 0:
-                📋 There are $ready_count tasks ready to work on.
-                Run `aiki task ready --json` for details.
-
-              **Commands:** `aiki task ready`, `aiki task start <id>`, `aiki task close <id> --fixed`
+  # Review context injection
+  - if: self.has_review_system
+    then:
+      - let: pending_reviews = self.pending_reviews_for($agent_type)
+      - if: $pending_reviews | length > 0
+        then:
+          autoreply:
+            append: |
+              # Pending Reviews
+              ⚠️ $pending_reviews.length review(s) awaiting your feedback.
+              Run `aiki review list --for $agent_type` for details.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # session.ended: Auto-sync tasks before session ends
@@ -1164,50 +1247,49 @@ response.received:
               Run `aiki task ready --json` to see the queue.
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# change.completed: Auto-close tasks when errors are fixed
+# change.completed: Auto-close tasks and request review
 # ═══════════════════════════════════════════════════════════════════════════════
 change.completed:
   # ... existing provenance tracking ...
 
+  # Auto-close tasks when errors are fixed
   - if: self.has_task_system && $event.write
     then:
-      # Check if any open tasks are now fixed (error no longer in file)
       - let: fixed_tasks = self.task_check_fixed($modified_files)
-
       - for: task in $fixed_tasks
         then:
-          # Request review instead of auto-closing
-          task.request_review:
+          task.close:
             id: $task.id
-            from: human
-            context: "Error appears to be fixed"
-            change_id: $current_change_id
+            fixed: true
+
+  # Request review of the change (separate from tasks)
+  - if: self.has_review_system && self.should_request_review($change)
+    then:
+      review.request:
+        revset: "@"
+        from: human
+        context: "Change completed: $change.description"
 ```
 
-### Task System self.* Functions
+### self.* Functions
 
-New functions available in flows for task operations:
+Functions available in flows:
 
 ```rust
-// cli/src/flows/core/functions.rs
-
-/// Check if task system is enabled for this repo
+// Task system functions
 fn has_task_system(state: &AikiState) -> Result<bool>;
-
-/// Count of ready (unblocked) tasks
 fn task_ready_count(state: &AikiState) -> Result<u32>;
-
-/// Pending reviews for the current agent type
-fn task_pending_reviews_for_agent(state: &AikiState) -> Result<Vec<PendingReview>>;
-
-/// Tasks left in "in_progress" status (orphaned)
 fn task_orphaned_in_progress(state: &AikiState) -> Result<Vec<String>>;
-
-/// Parse response text for TypeScript/build errors
 fn parse_response_errors(state: &AikiState, response: &str) -> Result<Vec<ParsedError>>;
-
-/// Check if tasks are fixed based on modified files
 fn task_check_fixed(state: &AikiState, files: Vec<PathBuf>) -> Result<Vec<Task>>;
+
+// Review system functions
+fn has_review_system(state: &AikiState) -> Result<bool>;
+fn pending_reviews_for(state: &AikiState, agent: AgentType) -> Result<Vec<Review>>;
+fn should_request_review(state: &AikiState, change: &Change) -> Result<bool>;
+fn has_pending_review(state: &AikiState, revset: &str) -> Result<bool>;
+fn resolve_revset(state: &AikiState, revset: &str) -> Result<Vec<String>>;
+fn session_revset(state: &AikiState) -> Result<String>;  // e.g., "xyz123::@"
 ```
 
 ### User Flow Composition
@@ -1238,10 +1320,10 @@ response.received:
 shell.permission_asked:
   - if: $command | starts_with("git push") || $command | starts_with("gh pr create")
     then:
-      - let: unreviewed = self.task_unreviewed_closed
-      - if: $unreviewed | length > 0
+      - let: unreviewed_changes = self.changes_without_review('trunk()..@')
+      - if: $unreviewed_changes | length > 0
         then:
-          block: "Cannot push: $unreviewed.length task(s) closed without review"
+          block: "Cannot push: $unreviewed_changes.length change(s) not reviewed"
 ```
 
 ### No Separate Commands Needed
@@ -1259,15 +1341,21 @@ Because everything is integrated via flows:
 
 ### Agent Experience
 
-From the agent's perspective, tasks "just work":
+From the agent's perspective, tasks and reviews "just work":
 
-1. **Session starts** → Agent sees task count and pending reviews
+**Tasks:**
+1. **Session starts** → Agent sees ready task count
 2. **Errors appear** → Tasks are auto-created
-3. **Errors fixed** → Review is auto-requested
-4. **Human approves** → Task auto-closes
-5. **Session ends** → Tasks auto-sync
+3. **Errors fixed** → Tasks auto-close
+4. **Session ends** → Tasks auto-sync
 
-No manual commands needed for the happy path. CLI commands (`aiki task ...`) are available for manual control when needed.
+**Reviews:**
+1. **Session starts** → Agent sees pending reviews
+2. **Changes made** → Review auto-requested (if configured)
+3. **Human reviews** → Agent notified of outcome
+4. **Session ends** → Reviews auto-sync
+
+No manual commands needed for the happy path. CLI commands (`aiki task ...`, `aiki review ...`) are available for manual control.
 
 ### Implementation Phases
 
@@ -1275,8 +1363,9 @@ No manual commands needed for the happy path. CLI commands (`aiki task ...`) are
 |-----------|-------|-------|
 | Core flow additions (`session.started`, `session.ended`) | Phase 1 | Required for native integration |
 | `self.*` task functions | Phase 1 | Enable flow-based task operations |
+| `self.*` review functions | Phase 1 | Enable flow-based review operations |
 | `response.received` error parsing | Phase 1 | Auto-create tasks from errors |
-| `change.completed` fix detection | Phase 1 | Auto-request review when fixed |
+| `change.completed` fix detection | Phase 1 | Auto-close tasks, auto-request review |
 | User flow composition | Phase 1 | `.aiki/flows/*.yaml` support |
 | `prompt.submitted` context refresh | Phase 2 | Survive context compaction |
 
@@ -1284,12 +1373,13 @@ No manual commands needed for the happy path. CLI commands (`aiki task ...`) are
 
 ## Summary Table
 
-| Phase | Delivers | When to Build |
-|-------|----------|---------------|
-| **Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, reviews, sync, **native flow integration** | **Now** |
-| **Phase 2** | Compaction, external refs, SQLite cache (if needed), review stats | When sessions are long or need integrations |
-| **Phase 3** | Code provenance (task ↔ change links) | When need to track what fixed what |
-| **Phase 4** | Multi-agent coordination | When testing concurrent agents |
+| Component | Delivers | When to Build |
+|-----------|----------|---------------|
+| **Task System Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, sync | **Now** |
+| **Review System** | Revset-based reviews, approve/reject workflow | **Now** |
+| **Task System Phase 2** | Compaction, external refs, SQLite cache (if needed) | When sessions are long or need integrations |
+| **Task System Phase 3** | Code provenance (task ↔ change links) | When need to track what fixed what |
+| **Task System Phase 4** | Multi-agent coordination | When testing concurrent agents |
 
 ---
 
@@ -1298,6 +1388,6 @@ No manual commands needed for the happy path. CLI commands (`aiki task ...`) are
 1. Review this updated plan
 2. Create implementation tickets
 3. Start with TaskManager core + dependencies
-4. Add review workflow
-5. Add sync command
-6. Ship Phase 1
+4. Add ReviewManager with revset support
+5. Add sync commands for both
+6. Ship Phase 1 + Review System
