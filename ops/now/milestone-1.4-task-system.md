@@ -17,6 +17,12 @@ The Task System provides structured, event-sourced task management for AI agent 
 - `discovered-from` links for work found during other work
 - Compaction for long-running sessions
 
+**Key Difference from Beads:** Aiki's task system integrates through the existing flow system via two mechanisms:
+- **ACP Proxy** (for Zed): Transparent proxy intercepts all protocol messages
+- **Editor Hooks** (for Claude Code, Cursor): Registers with each editor's native hook system
+
+Both fire the same Aiki events, so flows work identically regardless of editor. Task context injection, auto-creation, and auto-sync happen automatically through flows.
+
 ---
 
 ## Table of Contents
@@ -25,6 +31,7 @@ The Task System provides structured, event-sourced task management for AI agent 
 2. [Phase 2: Performance & Extended Features](#phase-2-performance--extended-features)
 3. [Phase 3: Code Provenance](#phase-3-code-provenance)
 4. [Phase 4: Multi-Agent Coordination](#phase-4-multi-agent-coordination)
+5. [Agent Adoption: Native Integration](#agent-adoption-native-integration) ← **KEY DESIGN**
 
 ---
 
@@ -1001,11 +1008,285 @@ Event sourcing already handles this well:
 
 ---
 
+## Agent Adoption: Native Integration
+
+**The Key Insight:** Aiki integrates with agents through two mechanisms, both using the same flow system:
+
+1. **ACP Proxy** (for Zed, future editors): Aiki runs as transparent proxy, intercepting ALL protocol messages
+2. **Editor Hooks** (for Claude Code, Cursor): Aiki registers as hook consumer with the editor's native hook system
+
+Both approaches fire the same Aiki events and run the same flows. The difference is architecture:
+
+### Integration Architectures
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ACP PROXY MODE (Zed, ACP-compatible editors)                   │
+│                                                                 │
+│  IDE ←→ Aiki ACP Proxy ←→ Agent Process                         │
+│              ↑                                                   │
+│    - Aiki IS the intermediary                                   │
+│    - Intercepts all protocol messages                           │
+│    - Fires events from intercepted traffic                      │
+│    - Full visibility into agent communication                   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  EDITOR HOOKS MODE (Claude Code, Cursor)                        │
+│                                                                 │
+│  Agent ←→ [Editor's Hook System] ←→ aiki hooks handle           │
+│                   ↑                                              │
+│    - Editor calls Aiki as hook consumer                         │
+│    - Installed via `aiki hooks install`                         │
+│    - Editor controls when hooks fire                            │
+│    - Converts editor events → Aiki events                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Module Structure
+
+```
+cli/src/editors/
+├── acp/           # ACP proxy implementation
+│   ├── handlers.rs    # Fires Aiki events from ACP messages
+│   ├── protocol.rs    # ACP protocol types
+│   └── state.rs       # Session/autoreply state
+├── claude_code/   # Claude Code hook integration
+│   ├── events.rs      # Claude events → Aiki events
+│   └── output.rs      # Aiki results → Claude hook format
+├── cursor/        # Cursor hook integration
+│   ├── events.rs      # Cursor events → Aiki events
+│   └── output.rs      # Aiki results → Cursor hook format
+└── mod.rs         # Shared utilities
+```
+
+### Why Both Approaches Use the Same Flows
+
+| Aspect | ACP Proxy | Editor Hooks |
+|--------|-----------|--------------|
+| Setup | `aiki acp claude-code` | `aiki hooks install` |
+| Event source | Intercept ACP protocol | Editor calls hooks |
+| Aiki events | Same (`session.started`, `response.received`, etc.) | Same |
+| Flow execution | Same flow engine | Same flow engine |
+| Task context injection | `session.started` flow | `session.started` flow |
+| Auto-sync on end | `session.ended` flow | `session.ended` flow |
+
+**Key benefit:** Write flows once, work with all editors.
+
+### Comparison with Beads
+
+| Aspect | Beads | Aiki |
+|--------|-------|------|
+| Setup | `bd setup claude` + `bd hooks install` | `aiki init` (installs hooks) OR `aiki acp` (starts proxy) |
+| Context injection | Manual `bd prime` | Automatic via `session.started` flow |
+| Session end sync | User remembers `bd sync` | Automatic via `session.ended` flow |
+| Task creation | Manual `bd create` | Auto from `response.received` flow |
+| Task auto-close | Manual `bd close` | Auto from `change.completed` flow |
+| Compaction survival | PreCompact hook | `prompt.submitted` flow |
+
+### Core Flow Additions
+
+The task system integrates into the existing `cli/src/flows/core/flow.yaml`:
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.started: Inject task context when session begins
+# ═══════════════════════════════════════════════════════════════════════════════
+session.started:
+  # ... existing initialization (jj new, aiki init --quiet) ...
+
+  # Task context injection (only if task system is enabled)
+  - if: self.has_task_system
+    then:
+      - let: ready_count = self.task_ready_count
+      - let: pending_reviews = self.task_pending_reviews_for_agent
+
+      - if: $ready_count > 0 || $pending_reviews > 0
+        then:
+          autoreply:
+            append: |
+              # Aiki Task System
+
+              $if $pending_reviews > 0:
+                ⚠️ You have $pending_reviews pending review(s).
+                Run `aiki task list --pending-review` to see them.
+
+              $if $ready_count > 0:
+                📋 There are $ready_count tasks ready to work on.
+                Run `aiki task ready --json` for details.
+
+              **Commands:** `aiki task ready`, `aiki task start <id>`, `aiki task close <id> --fixed`
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.ended: Auto-sync tasks before session ends
+# ═══════════════════════════════════════════════════════════════════════════════
+session.ended:
+  # Sync tasks to remote (if configured)
+  - if: self.has_task_system
+    then:
+      - shell: aiki task sync --quiet
+        on_failure: continue
+
+      # Warn about orphaned in-progress tasks
+      - let: orphaned = self.task_orphaned_in_progress
+      - if: $orphaned | length > 0
+        then:
+          - log: "Warning: $orphaned.length task(s) left in progress: $orphaned"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# response.received: Create tasks from errors, remind about task queue
+# ═══════════════════════════════════════════════════════════════════════════════
+response.received:
+  - if: self.has_task_system
+    then:
+      # Parse response for TypeScript/build errors
+      - let: errors = self.parse_response_errors($response)
+
+      # Create tasks for new errors (deduped by content hash)
+      - for: error in $errors
+        then:
+          task.create:
+            objective: "Fix: $error.message"
+            type: error
+            file: $error.file
+            line: $error.line
+            evidence:
+              - source: $error.source
+                message: $error.message
+                code: $error.code
+
+      # Remind about task queue if errors were created
+      - if: $errors | length > 0
+        then:
+          autoreply:
+            append: |
+              Created $errors.length task(s) for errors above.
+              Run `aiki task ready --json` to see the queue.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# change.completed: Auto-close tasks when errors are fixed
+# ═══════════════════════════════════════════════════════════════════════════════
+change.completed:
+  # ... existing provenance tracking ...
+
+  - if: self.has_task_system && $event.write
+    then:
+      # Check if any open tasks are now fixed (error no longer in file)
+      - let: fixed_tasks = self.task_check_fixed($modified_files)
+
+      - for: task in $fixed_tasks
+        then:
+          # Request review instead of auto-closing
+          task.request_review:
+            id: $task.id
+            from: human
+            context: "Error appears to be fixed"
+            change_id: $current_change_id
+```
+
+### Task System self.* Functions
+
+New functions available in flows for task operations:
+
+```rust
+// cli/src/flows/core/functions.rs
+
+/// Check if task system is enabled for this repo
+fn has_task_system(state: &AikiState) -> Result<bool>;
+
+/// Count of ready (unblocked) tasks
+fn task_ready_count(state: &AikiState) -> Result<u32>;
+
+/// Pending reviews for the current agent type
+fn task_pending_reviews_for_agent(state: &AikiState) -> Result<Vec<PendingReview>>;
+
+/// Tasks left in "in_progress" status (orphaned)
+fn task_orphaned_in_progress(state: &AikiState) -> Result<Vec<String>>;
+
+/// Parse response text for TypeScript/build errors
+fn parse_response_errors(state: &AikiState, response: &str) -> Result<Vec<ParsedError>>;
+
+/// Check if tasks are fixed based on modified files
+fn task_check_fixed(state: &AikiState, files: Vec<PathBuf>) -> Result<Vec<Task>>;
+```
+
+### User Flow Composition
+
+Users can extend task behavior in `.aiki/flows/tasks.yaml`:
+
+```yaml
+name: "Project Tasks"
+description: "Custom task workflows for this project"
+version: "1"
+
+# Add project-specific error parsing
+response.received:
+  - let: rust_errors = self.parse_rust_errors($response)
+  - for: error in $rust_errors
+    then:
+      task.create:
+        objective: "Fix: $error.message"
+        type: error
+        file: $error.file
+        line: $error.line
+        evidence:
+          - source: rustc
+            message: $error.message
+            code: $error.code
+
+# Custom review workflow - require review before any PR
+shell.permission_asked:
+  - if: $command | starts_with("git push") || $command | starts_with("gh pr create")
+    then:
+      - let: unreviewed = self.task_unreviewed_closed
+      - if: $unreviewed | length > 0
+        then:
+          block: "Cannot push: $unreviewed.length task(s) closed without review"
+```
+
+### No Separate Commands Needed
+
+Because everything is integrated via flows:
+
+| Beads Command | Aiki Equivalent |
+|---------------|-----------------|
+| `bd setup claude` | Not needed - ACP proxy handles it |
+| `bd prime` | Not needed - `session.started` flow injects context |
+| `bd sync` (manual) | Not needed - `session.ended` flow auto-syncs |
+| `bd ready` | `aiki task ready` (CLI still available) |
+| `bd create` | Auto via `response.received` flow, or `aiki task create` |
+| `bd close` | Auto via `change.completed` flow, or `aiki task close` |
+
+### Agent Experience
+
+From the agent's perspective, tasks "just work":
+
+1. **Session starts** → Agent sees task count and pending reviews
+2. **Errors appear** → Tasks are auto-created
+3. **Errors fixed** → Review is auto-requested
+4. **Human approves** → Task auto-closes
+5. **Session ends** → Tasks auto-sync
+
+No manual commands needed for the happy path. CLI commands (`aiki task ...`) are available for manual control when needed.
+
+### Implementation Phases
+
+| Component | Phase | Notes |
+|-----------|-------|-------|
+| Core flow additions (`session.started`, `session.ended`) | Phase 1 | Required for native integration |
+| `self.*` task functions | Phase 1 | Enable flow-based task operations |
+| `response.received` error parsing | Phase 1 | Auto-create tasks from errors |
+| `change.completed` fix detection | Phase 1 | Auto-request review when fixed |
+| User flow composition | Phase 1 | `.aiki/flows/*.yaml` support |
+| `prompt.submitted` context refresh | Phase 2 | Survive context compaction |
+
+---
+
 ## Summary Table
 
 | Phase | Delivers | When to Build |
 |-------|----------|---------------|
-| **Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, reviews, sync | **Now** |
+| **Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, reviews, sync, **native flow integration** | **Now** |
 | **Phase 2** | Compaction, external refs, SQLite cache (if needed), review stats | When sessions are long or need integrations |
 | **Phase 3** | Code provenance (task ↔ change links) | When need to track what fixed what |
 | **Phase 4** | Multi-agent coordination | When testing concurrent agents |
