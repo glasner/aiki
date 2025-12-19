@@ -1,33 +1,44 @@
-# Milestone 1.4: Task System (Optional)
+# Milestone 1.4: Task System
 
-**Status**: 🔴 Not Started  
-**Priority**: Low (optional enhancement to PostResponse)  
-**Complexity**: High  
-**Timeline**: 2-3 weeks (Phase 1), expandable to 6-8 weeks (all phases)
+**Status**: 🔴 Not Started
+**Priority**: Medium (enables structured agent workflows)
+**Complexity**: High
 
 ## Overview
 
-The Task System provides structured, event-sourced task management for PostResponse workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically.
+The Task System provides structured, event-sourced task management for AI agent workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically. Tasks support dependencies, hierarchical organization, and assignment. Reviews are handled separately via the [Review System](#review-system).
 
-**Key Architecture:** Event-sourced task log stored on JJ `aiki/tasks` branch. Tasks reconstructed from immutable event stream.
+**Key Architecture:** Event-sourced task log stored on JJ `aiki/tasks` branch. Tasks reconstructed from immutable event stream. Dependencies stored as data within events, not JJ DAG structure.
 
-**This is optional:** Milestone 1.2 (PostResponse) works fine with text autoreplies. The task system adds structure for complex multi-error scenarios. **Recommend completing Milestones 1.0-1.3 first and evaluating whether task system is needed.**
+**Inspiration:** [Beads](https://github.com/steveyegge/beads) - Steve Yegge's distributed, git-backed issue tracker for AI agents. Key insights adopted:
+- Dependencies make "ready" meaningful (only unblocked tasks)
+- Content-addressed IDs prevent collisions
+- Hierarchical IDs for epics/subtasks
+- `discovered-from` links for work found during other work
+- Compaction for long-running sessions
+
+**Key Difference from Beads:** Aiki's task system integrates through the existing flow system via two mechanisms:
+- **ACP Proxy** (for Zed): Transparent proxy intercepts all protocol messages
+- **Editor Hooks** (for Claude Code, Cursor): Registers with each editor's native hook system
+
+Both fire the same Aiki events, so flows work identically regardless of editor. Task context injection, auto-creation, and auto-sync happen automatically through flows.
 
 ---
 
 ## Table of Contents
 
-1. [Phase 1: PostResponse Integration (2-3 weeks)](#phase-1-postresponse-integration-2-3-weeks) ← **START HERE**
-2. [Phase 2: Performance & Scale (1 week)](#phase-2-performance--scale-1-week)
-3. [Phase 3: Code Provenance (1 week)](#phase-3-code-provenance-1-week)
-4. [Phase 4: Multi-Agent Coordination (1 week)](#phase-4-multi-agent-coordination-1-week)
-5. [Phase 5: Enterprise Features (1-2 weeks)](#phase-5-enterprise-features-1-2-weeks)
+1. [Phase 1: Core Task System](#phase-1-core-task-system) ← **START HERE**
+2. [Phase 2: Performance & Extended Features](#phase-2-performance--extended-features)
+3. [Phase 3: Code Provenance](#phase-3-code-provenance)
+4. [Phase 4: Multi-Agent Coordination](#phase-4-multi-agent-coordination)
+5. [Review System](#review-system) ← **SEPARATE FROM TASKS**
+6. [Agent Adoption: Native Integration](#agent-adoption-native-integration)
 
 ---
 
-## Phase 1: PostResponse Integration (2-3 weeks)
+## Phase 1: Core Task System
 
-**Goal**: Enable PostResponse flows to create, query, and close tasks. Agent gets structured work queue instead of text autoreplies.
+**Goal**: Full-featured task system with dependencies, assignments, and hierarchical organization.
 
 **Depends on:** Milestone 1.2 (PostResponse event)
 
@@ -36,7 +47,7 @@ The Task System provides structured, event-sourced task management for PostRespo
 ```yaml
 # PostResponse flow creates tasks from errors
 PostResponse:
-  - let: ts_errors = self.count_typescript_errors
+  - let: ts_errors = self.typescript_errors
   - for: error in $ts_errors
     then:
       task.create:
@@ -48,193 +59,137 @@ PostResponse:
           - source: typescript
             message: $error.message
             code: $error.code
-  
+
   # Point agent to task queue
   - if: self.ready_tasks | length > 0
     then:
       autoreply: "Run `aiki task ready --json` to see what needs fixing"
+
 ```
 
 ```bash
 # Agent workflow
 $ aiki task ready --json
 {
-  "ready": [
+  "tasks": [
     {
-      "id": "ts-a1b2c3d4",
+      "id": "err-a1b2c3d4",
       "objective": "Fix: Type 'null' is not assignable to type 'User'",
+      "type": "error",
+      "status": "open",
+      "blocked_by": [],
+      "assignee": null,
       "scope": {"files": [{"path": "src/auth.ts", "lines": [42]}]},
-      "evidence": [{"source": "typescript", "message": "...", "code": "TS2322"}],
-      "attempts": 0
+      "evidence": [{"source": "typescript", "message": "...", "code": "TS2322"}]
     }
   ]
 }
 
-$ aiki task start ts-a1b2c3d4
-Started: ts-a1b2c3d4
+$ aiki task start err-a1b2c3d4
+Started: err-a1b2c3d4
 
-# Agent makes changes...
+# Agent fixes the error...
 
-# PostToolUse detects fix and auto-closes
+$ aiki task close err-a1b2c3d4 --fixed
+Closed: err-a1b2c3d4
+
+# Request review of the changes (separate from task)
+$ aiki review request @ --from human --context "Fixed null check in auth"
+Review requested: rev-xyz123
 ```
 
-### Core Architecture (Minimal)
+### Core Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Agent CLI                              │
-│  aiki task ready  |  aiki task create  |  aiki task close│
-└──────────────────────┬──────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                  TaskManager                            │
-│  - Manages aiki/tasks branch                            │
-│  - Creates/updates JJ changes                           │
-│  - NO SQLite cache yet (scan JJ directly)               │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│              JJ Repository                              │
-│                                                         │
-│  Branch: aiki/tasks (orphan branch)                     │
-│  ├── change xyz1: Task { "Fix null in auth.ts" }       │
-│  ├── change xyz2: Task { "Missing import" }            │
-│  └── change xyz3: Task { "Add error handling" }        │
-│                                                         │
-│  Each task = JJ change with metadata in description     │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        Agent CLI                                 │
+│  aiki task ready | create | start | close | assign | approve    │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       TaskManager                                │
+│  - Manages aiki/tasks branch (orphan, append-only)              │
+│  - Appends events as JJ changes                                  │
+│  - Reconstructs task state from event replay                     │
+│  - NO SQLite cache (scan JJ directly)                           │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     JJ Repository                                │
+│                                                                  │
+│  Branch: aiki/tasks (orphan, linear event log)                  │
+│  ├── change-001: [created err-a1b2]                             │
+│  ├── change-002: [created err-c3d4, blocked_by: err-a1b2]       │
+│  ├── change-003: [started err-a1b2]                             │
+│  ├── change-004: [closed err-a1b2, fixed: true]                 │
+│  └── change-005: [closed err-c3d4, fixed: true]                 │
+│                                                                  │
+│  Dependencies stored IN events, not as JJ DAG structure         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Task Data Model (Event-Sourced)
+### Data Model
 
-**Core principle**: Tasks are reconstructed from an immutable event log stored as JJ changes on the `aiki/tasks` branch.
-
-**Event types:**
-
-```yaml
-# Event 1: Task Created
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: created
-timestamp: 2025-01-15T09:00:00Z
-agent: claude-code
-task:
-  objective: "Fix: null not assignable to User"
-  type: error
-  priority: 0
-  scope:
-    files:
-      - path: src/auth.ts
-        lines: [42]
-  evidence:
-    - source: typescript
-      message: "Type 'null' is not assignable to type 'User'"
-      code: TS2322
----
-
-# Event 2: Task Started
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: started
-timestamp: 2025-01-15T09:05:00Z
-agent: claude-code
----
-
-# Event 3: Task Failed
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: failed
-timestamp: 2025-01-15T09:15:00Z
-agent: claude-code
-attempt: 1
----
-
-# Event 4: Task Started (retry)
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: started
-timestamp: 2025-01-15T09:20:00Z
-agent: claude-code
----
-
-# Event 5: Task Closed
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: closed
-timestamp: 2025-01-15T09:30:00Z
-agent: claude-code
-fixed: true
----
-```
-
-**Event log on aiki/tasks branch:**
-```
-aiki/tasks branch (append-only):
-  change-001  [created ts-001]
-  change-002  [created ts-002]
-  change-003  [started ts-001 agent=claude-code]
-  change-004  [failed ts-001 attempt=1]
-  change-005  [started ts-001 agent=claude-code]
-  change-006  [closed ts-001 fixed=true]
-  change-007  [created ts-003]
-```
-
-**Rust types:**
+#### Agent Types
 
 ```rust
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-// Event stored in JJ change description
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskEvent {
-    pub task_id: String,
-    pub event: EventType,
-    pub timestamp: DateTime<Utc>,
-    pub agent: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentType {
+    ClaudeCode,
+    Cursor,
+    Human,
+    // Future: Aider, Copilot, etc.
 }
+```
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum EventType {
-    Created {
-        task: TaskDefinition,
-    },
-    Started,
-    Failed {
-        attempt: u32,
-    },
-    Closed {
-        fixed: bool,
-    },
-}
+#### Task Definition
 
-// Task definition (embedded in Created event)
+```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDefinition {
+    // Core (required)
     pub objective: String,
     pub r#type: TaskType,
-    pub priority: u8,
+    pub priority: u8,  // 0-4 (0 = critical, 4 = backlog)
+
+    // Scope (required for errors)
     pub scope: TaskScope,
+
+    // Evidence (for errors)
     pub evidence: Vec<Evidence>,
+
+    // Context (optional, richer descriptions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,      // Why this matters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approach: Option<String>,         // How to fix it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_when: Option<String>,        // Acceptance criteria
+
+    // Dependencies
+    #[serde(default)]
+    pub blocked_by: Vec<String>,          // Task IDs that block this
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovered_from: Option<String>,  // Parent task this was found during
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,        // For hierarchical IDs (err-a1b2.1)
+
+    // Assignment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<AgentType>,
 }
 
-// Reconstructed task state (derived from events)
-#[derive(Debug, Clone)]
-pub struct Task {
-    pub id: String,
-    pub definition: TaskDefinition,
-    pub status: TaskStatus,
-    pub attempts: Vec<Attempt>,
-    pub created_at: DateTime<Utc>,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskType {
+    Error,
+    Warning,
+    Suggestion,
+    Feature,
+    Chore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,23 +208,77 @@ pub struct FileScope {
 pub struct Evidence {
     pub source: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 }
+```
 
-#[derive(Debug, Clone)]
-pub struct Attempt {
-    pub agent: String,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub outcome: Option<AttemptOutcome>,
+#### Event Types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskEvent {
+    pub task_id: String,
+    pub event: EventType,
+    pub timestamp: DateTime<Utc>,
+    pub agent_type: AgentType,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EventType {
+    // Lifecycle
+    Created {
+        task: TaskDefinition,
+    },
+    Started,
+    Failed {
+        attempt: u32,
+    },
+    Closed {
+        fixed: bool,
+    },
+
+    // Assignment
+    Assigned {
+        to: AgentType,
+        by: AgentType,
+    },
+    Unassigned,
+
+    // Dependencies
+    DependencyAdded {
+        blocked_by: String,
+        dep_type: DependencyType,
+    },
+    DependencyRemoved {
+        blocked_by: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskType {
-    Error,
-    Warning,
-    Suggestion,
+pub enum DependencyType {
+    Blocks,          // Hard dependency - affects ready
+    ParentChild,     // Hierarchy - affects ready
+    DiscoveredFrom,  // Soft - informational only
+    Related,         // Soft - informational only
+}
+```
+
+#### Reconstructed Task State
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Task {
+    pub id: String,
+    pub definition: TaskDefinition,
+    pub status: TaskStatus,
+    pub assignee: Option<AgentType>,
+    pub attempts: Vec<Attempt>,
+    pub created_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub fixed: Option<bool>,  // Set when closed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,517 +287,249 @@ pub enum TaskStatus {
     InProgress,
     Closed,
 }
-
-#[derive(Debug, Clone, Copy)]
-pub enum AttemptOutcome {
-    Fixed,
-    Failed,
-    Abandoned,
-}
 ```
 
-### JJ Operations (Event-Sourced)
+### Hierarchical Task IDs
 
-**Core operations append events to the aiki/tasks branch:**
+Tasks support hierarchical IDs for organizing epics and subtasks:
 
-```rust
-impl TaskManager {
-    pub fn new(repo_path: impl AsRef<Path>) -> Result<Self> {
-        let repo_path = repo_path.as_ref().to_path_buf();
-        let manager = Self { repo_path };
-        manager.ensure_task_branch_exists()?;
-        Ok(manager)
-    }
-    
-    fn ensure_task_branch_exists(&self) -> Result<()> {
-        // Check if aiki/tasks branch exists
-        let output = Command::new("jj")
-            .args(["log", "-r", "aiki/tasks", "-T", "change_id"])
-            .current_dir(&self.repo_path)
-            .output()?;
-        
-        if !output.status.success() {
-            // Branch doesn't exist - create orphan root
-            Command::new("jj")
-                .args(["new", "root()", "-m", "aiki/tasks: event log root"])
-                .current_dir(&self.repo_path)
-                .output()?;
-            
-            Command::new("jj")
-                .args(["branch", "create", "aiki/tasks", "-r", "@"])
-                .current_dir(&self.repo_path)
-                .output()?;
-            
-            // Return to working copy
-            Command::new("jj")
-                .args(["edit", "@-"])  // Go back to where we were
-                .current_dir(&self.repo_path)
-                .output()?;
-        }
-        
-        Ok(())
-    }
-
-    // Append event to the log
-    fn append_event(&self, event: TaskEvent) -> Result<()> {
-        let description = format!(
-            "---\n{}\n---",
-            serde_yaml::to_string(&event)?
-        );
-        
-        // Create new change on aiki/tasks branch
-        let output = Command::new("jj")
-            .args([
-                "new",
-                "aiki/tasks@",           // Parent = tip of event log
-                "-m", &description,
-                "--no-edit",             // Don't switch working copy
-            ])
-            .current_dir(&self.repo_path)
-            .output()?;
-        
-        if !output.status.success() {
-            return Err(AikiError::JjCommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string()
-            ));
-        }
-        
-        // Move branch pointer to new change
-        Command::new("jj")
-            .args(["branch", "set", "aiki/tasks", "-r", "@"])
-            .current_dir(&self.repo_path)
-            .output()?;
-        
-        Ok(())
-    }
-    
-    pub fn create_task(&self, definition: TaskDefinition, agent: &str) -> Result<String> {
-        let task_id = self.generate_task_id(&definition);
-        
-        let event = TaskEvent {
-            task_id: task_id.clone(),
-            event: EventType::Created { task: definition },
-            timestamp: Utc::now(),
-            agent: agent.to_string(),
-        };
-        
-        self.append_event(event)?;
-        Ok(task_id)
-    }
-    
-    pub fn start_task(&self, task_id: &str, agent: &str) -> Result<()> {
-        let event = TaskEvent {
-            task_id: task_id.to_string(),
-            event: EventType::Started,
-            timestamp: Utc::now(),
-            agent: agent.to_string(),
-        };
-        
-        self.append_event(event)
-    }
-    
-    pub fn fail_task(&self, task_id: &str, agent: &str, attempt: u32) -> Result<()> {
-        let event = TaskEvent {
-            task_id: task_id.to_string(),
-            event: EventType::Failed { attempt },
-            timestamp: Utc::now(),
-            agent: agent.to_string(),
-        };
-        
-        self.append_event(event)
-    }
-    
-    pub fn close_task(&self, task_id: &str, agent: &str, fixed: bool) -> Result<()> {
-        let event = TaskEvent {
-            task_id: task_id.to_string(),
-            event: EventType::Closed { fixed },
-            timestamp: Utc::now(),
-            agent: agent.to_string(),
-        };
-        
-        self.append_event(event)
-    }
-    
-    fn generate_task_id(&self, definition: &TaskDefinition) -> String {
-        // Content-addressed ID for deduplication
-        let message_hash = definition.evidence.first()
-            .map(|e| &blake3::hash(e.message.as_bytes()).to_hex()[..8])
-            .unwrap_or("");
-        
-        let content = format!(
-            "{}:{}:{}:{}:{}",
-            definition.r#type.short_prefix(),
-            definition.scope.files.first().map(|f| f.path.display()).unwrap_or(""),
-            definition.scope.files.first().and_then(|f| f.lines.first()).unwrap_or(&0),
-            definition.evidence.first().and_then(|e| e.code.as_ref()).unwrap_or(""),
-            message_hash
-        );
-        
-        let hash = blake3::hash(content.as_bytes());
-        format!("{}-{}", definition.r#type.short_prefix(), &hash.to_hex()[..8])
-    }
-}
-
-impl TaskType {
-    fn short_prefix(&self) -> &str {
-        match self {
-            TaskType::Error => "err",
-            TaskType::Warning => "warn",
-            TaskType::Suggestion => "sugg",
-        }
-    }
-}
 ```
-
-**Query Tasks (Reconstruct from Events):**
-
-```rust
-impl TaskManager {
-    pub fn query_ready(&self) -> Result<Vec<Task>> {
-        // Get all events from aiki/tasks branch
-        let events = self.get_all_events()?;
-        
-        // Group events by task_id
-        let mut tasks_by_id: HashMap<String, Vec<TaskEvent>> = HashMap::new();
-        for event in events {
-            tasks_by_id.entry(event.task_id.clone())
-                .or_insert_with(Vec::new)
-                .push(event);
-        }
-        
-        // Reconstruct each task and filter for open tasks
-        let tasks: Vec<Task> = tasks_by_id
-            .into_iter()
-            .filter_map(|(_, events)| self.reconstruct_task(&events).ok())
-            .filter(|t| t.status == TaskStatus::Open)
-            .collect();
-        
-        Ok(tasks)
-    }
-    
-    pub fn get_task(&self, task_id: &str) -> Result<Task> {
-        let events = self.get_task_events(task_id)?;
-        self.reconstruct_task(&events)
-    }
-    
-    fn get_all_events(&self) -> Result<Vec<TaskEvent>> {
-        let output = Command::new("jj")
-            .args([
-                "log",
-                "-r", "aiki/tasks::",
-                "--no-graph",
-                "--reversed",  // Chronological order
-                "-T", r#"description ++ "\n===EVENT_SEPARATOR===\n""#,
-            ])
-            .current_dir(&self.repo_path)
-            .output()?;
-        
-        let stdout = String::from_utf8(output.stdout)?;
-        
-        stdout
-            .split("\n===EVENT_SEPARATOR===\n")
-            .filter_map(|desc| self.parse_event(desc).ok())
-            .collect()
-    }
-    
-    fn get_task_events(&self, task_id: &str) -> Result<Vec<TaskEvent>> {
-        let output = Command::new("jj")
-            .args([
-                "log",
-                "-r", &format!("aiki/tasks:: & description('aiki_task_event') & description('{}')", task_id),
-                "--no-graph",
-                "--reversed",
-                "-T", r#"description ++ "\n===EVENT_SEPARATOR===\n""#,
-            ])
-            .current_dir(&self.repo_path)
-            .output()?;
-        
-        let stdout = String::from_utf8(output.stdout)?;
-        
-        stdout
-            .split("\n===EVENT_SEPARATOR===\n")
-            .filter_map(|desc| self.parse_event(desc).ok())
-            .collect()
-    }
-    
-    fn parse_event(&self, description: &str) -> Result<TaskEvent> {
-        let content = description.strip_prefix("---\n")
-            .ok_or(AikiError::InvalidTaskFormat("Missing opening ---"))?;
-        
-        let (yaml, _) = content.split_once("\n---")
-            .ok_or(AikiError::InvalidTaskFormat("Missing closing ---"))?;
-        
-        serde_yaml::from_str(yaml)
-            .map_err(|e| AikiError::InvalidTaskFormat(format!("YAML parse error: {}", e)))
-    }
-    
-    fn reconstruct_task(&self, events: &[TaskEvent]) -> Result<Task> {
-        let mut definition: Option<TaskDefinition> = None;
-        let mut status = TaskStatus::Open;
-        let mut attempts = Vec::new();
-        let mut created_at = None;
-        
-        for event in events {
-            if created_at.is_none() {
-                created_at = Some(event.timestamp);
-            }
-            
-            match &event.event {
-                EventType::Created { task } => {
-                    // If multiple agents create the same task concurrently,
-                    // multiple Created events will exist. Take the first one.
-                    if definition.is_none() {
-                        definition = Some(task.clone());
-                    }
-                }
-                EventType::Started => {
-                    status = TaskStatus::InProgress;
-                    attempts.push(Attempt {
-                        agent: event.agent.clone(),
-                        started_at: event.timestamp,
-                        ended_at: None,
-                        outcome: None,
-                    });
-                }
-                EventType::Failed { .. } => {
-                    if let Some(attempt) = attempts.last_mut() {
-                        attempt.ended_at = Some(event.timestamp);
-                        attempt.outcome = Some(AttemptOutcome::Failed);
-                    }
-                    status = TaskStatus::Open;
-                }
-                EventType::Closed { fixed } => {
-                    if let Some(attempt) = attempts.last_mut() {
-                        attempt.ended_at = Some(event.timestamp);
-                        attempt.outcome = Some(if *fixed {
-                            AttemptOutcome::Fixed
-                        } else {
-                            AttemptOutcome::Abandoned
-                        });
-                    }
-                    status = TaskStatus::Closed;
-                }
-            }
-        }
-        
-        let definition = definition.ok_or(AikiError::TaskNotFound)?;
-        let created_at = created_at.ok_or(AikiError::TaskNotFound)?;
-        
-        Ok(Task {
-            id: events.first().unwrap().task_id.clone(),
-            definition,
-            status,
-            attempts,
-            created_at,
-        })
-    }
-}
-```
-
-**Query Task History:**
-
-```rust
-impl TaskManager {
-    // Get full event history for debugging/auditing
-    pub fn get_task_history(&self, task_id: &str) -> Result<Vec<TaskEvent>> {
-        self.get_task_events(task_id)
-    }
-    
-    // Check if task is stuck (3+ failed attempts)
-    pub fn is_task_stuck(&self, task_id: &str) -> Result<bool> {
-        let task = self.get_task(task_id)?;
-        let failed_count = task.attempts.iter()
-            .filter(|a| matches!(a.outcome, Some(AttemptOutcome::Failed)))
-            .count();
-        Ok(failed_count >= 3)
-    }
-}
-```
-
-**Event Log Example:**
-
-```bash
-# View all events for a task
-$ jj log -r "aiki/tasks:: & description('task_id: ts-abc123')" --reversed
-
-# Event 1: created
-○  Change: abcd1234
-│  Timestamp: 2025-01-15 10:00:00
-│  Event: created
-
-# Event 2: started
-○  Change: efgh5678
-│  Timestamp: 2025-01-15 10:05:00
-│  Event: started (agent: claude-code)
-
-# Event 3: failed
-○  Change: ijkl9012
-│  Timestamp: 2025-01-15 10:10:00
-│  Event: failed (attempt: 1)
-
-# Event 4: closed
-○  Change: mnop3456
-│  Timestamp: 2025-01-15 10:15:00
-│  Event: closed (fixed: true)
-```
-
-### CLI Commands (Phase 1)
-
-```bash
-# Query ready work
-aiki task ready [--json]
-
-# Create task
-aiki task create <objective> \
-    --type <error|warning|suggestion> \
-    --file <path> \
-    --line <number> \
-    --evidence <source:message:code>
-
-# Start task (claim it, mark in-progress)
-aiki task start <task-id> [--agent <name>]
-
-# Fail task (record failed attempt)
-aiki task fail <task-id> [--agent <name>]
-
-# Close task
-aiki task close <task-id> [--fixed | --abandoned] [--agent <name>]
-
-# Show task details
-aiki task show <task-id>
-
-# Show task event history
-aiki task history <task-id>
+err-a1b2       (epic or standalone task)
+err-a1b2.1     (subtask of err-a1b2)
+err-a1b2.1.1   (sub-subtask)
+err-a1b2.2     (another subtask)
 ```
 
 **Implementation:**
 
 ```rust
-// cli/src/commands/task.rs
+impl TaskManager {
+    pub fn create_subtask(
+        &self,
+        parent_id: &str,
+        definition: TaskDefinition,
+        agent_type: AgentType,
+    ) -> Result<String> {
+        // Find next available subtask number
+        let existing = self.get_child_tasks(parent_id)?;
+        let next_num = existing.len() + 1;
 
-use crate::error::Result;
-use clap::{Parser, Subcommand};
+        let task_id = format!("{}.{}", parent_id, next_num);
 
-#[derive(Parser)]
-pub struct TaskCommand {
-    #[command(subcommand)]
-    command: TaskSubcommand,
-}
+        let mut def = definition;
+        def.parent_id = Some(parent_id.to_string());
 
-#[derive(Subcommand)]
-enum TaskSubcommand {
-    /// List ready tasks
-    Ready {
-        #[arg(long)]
-        json: bool,
-    },
-    
-    /// Create a new task
-    Create {
-        objective: String,
-        #[arg(long)]
-        r#type: String,
-        #[arg(long)]
-        file: Option<PathBuf>,
-        #[arg(long)]
-        line: Option<u32>,
-        #[arg(long)]
-        evidence: Option<String>,
-    },
-    
-    /// Start working on a task
-    Start {
-        task_id: String,
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    
-    /// Close a task
-    Close {
-        task_id: String,
-        #[arg(long)]
-        agent: Option<String>,
-        #[arg(long)]
-        fixed: bool,
-        #[arg(long)]
-        abandoned: bool,
-    },
-    
-    /// Show task details
-    Show {
-        task_id: String,
-    },
-}
+        // Subtasks implicitly depend on parent (parent-child relationship)
+        // But parent doesn't block subtask - subtask blocks parent closing
 
-pub fn run(cmd: TaskCommand) -> Result<()> {
-    let manager = TaskManager::new(std::env::current_dir()?)?;
-    
-    match cmd.command {
-        TaskSubcommand::Ready { json } => {
-            let tasks = manager.query_ready()?;
-            
-            if json {
-                println!("{}", serde_json::to_string_pretty(&tasks)?);
-            } else {
-                for task in tasks {
-                    println!("{}: {}", task.id, task.objective);
-                }
-            }
-        }
-        
-        TaskSubcommand::Create { objective, r#type, file, line, evidence } => {
-            let definition = TaskDefinition {
-                objective,
-                r#type: parse_task_type(&r#type)?,
-                priority: 0,
-                scope: TaskScope {
-                    files: file.map(|f| vec![FileScope { path: f, lines: line.into_iter().collect() }])
-                        .unwrap_or_default(),
-                },
-                evidence: parse_evidence(&evidence)?,
-            };
-            
-            // CLI creates use "cli-user" as agent (flows use agent from notification)
-            let task_id = manager.create_task(definition, "cli-user")?;
-            println!("Created: {}", task_id);
-        }
-        
-        TaskSubcommand::Start { task_id, agent } => {
-            let agent = agent.as_deref().unwrap_or("cli-user");
-            manager.start_task(&task_id, agent)?;
-            println!("Started: {}", task_id);
-        }
-        
-        TaskSubcommand::Close { task_id, agent, fixed, abandoned } => {
-            let agent = agent.as_deref().unwrap_or("cli-user");
-            let fixed = if abandoned { false } else { fixed };
-            
-            manager.close_task(&task_id, agent, fixed)?;
-            println!("Closed: {}", task_id);
-        }
-        
-        TaskSubcommand::Show { task_id } => {
-            let task = manager.get_task(&task_id)?;
-            println!("{}", serde_yaml::to_string(&task)?);
-        }
+        self.append_event(TaskEvent {
+            task_id: task_id.clone(),
+            event: EventType::Created { task: def },
+            timestamp: Utc::now(),
+            agent_type,
+        })?;
+
+        Ok(task_id)
     }
-    
-    Ok(())
 }
 ```
 
-### Flow Integration (Phase 1)
+### Dependencies and Ready Queue
 
-**New flow context variables:**
-- `self.ready_tasks` → `Vec<Task>` via `TaskManager::query_ready()`
-- `self.current_task` → `Option<Task>` via current in_progress task lookup
-- `self.errors_for_scope(scope)` → helper to check if task scope is clean
+**Key insight from Beads:** "Ready" means tasks with NO open blockers.
+
+```rust
+impl TaskManager {
+    /// Returns tasks that are:
+    /// - Status: Open (not InProgress or Closed)
+    /// - Not blocked by any open task
+    /// - Not a parent with open children (for hierarchical tasks)
+    pub fn query_ready(&self) -> Result<Vec<Task>> {
+        let all_tasks = self.get_all_tasks()?;
+
+        // Build set of open task IDs for quick lookup
+        let open_ids: HashSet<_> = all_tasks
+            .iter()
+            .filter(|t| t.status != TaskStatus::Closed)
+            .map(|t| t.id.as_str())
+            .collect();
+
+        all_tasks
+            .into_iter()
+            .filter(|task| {
+                // Must be open
+                if task.status != TaskStatus::Open {
+                    return false;
+                }
+
+                // All blockers must be closed
+                let all_blockers_closed = task.definition.blocked_by
+                    .iter()
+                    .all(|blocker_id| !open_ids.contains(blocker_id.as_str()));
+
+                if !all_blockers_closed {
+                    return false;
+                }
+
+                // For parent tasks: all children must be closed
+                // (Can't close epic until subtasks done)
+                let children = self.get_child_tasks(&task.id)?;
+                let all_children_closed = children
+                    .iter()
+                    .all(|c| c.status == TaskStatus::Closed);
+
+                all_children_closed
+            })
+            .collect()
+    }
+}
+```
+
+### CLI Commands
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# QUERYING TASKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Ready work (unblocked tasks)
+aiki task ready [--json]
+aiki task ready --assignee human [--json]
+aiki task ready --type error [--json]
+
+# List all tasks with filters
+aiki task list [--json]
+aiki task list --status open [--json]
+aiki task list --assignee claude-code [--json]
+aiki task list --blocked [--json]
+
+# Show task details
+aiki task show <task-id> [--json]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATING TASKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Create standalone task
+aiki task create "Fix null check in auth.ts" \
+    --type error \
+    --file src/auth.ts \
+    --line 42 \
+    --evidence "typescript:Object is possibly null:TS2531"
+
+# Create with rich context
+aiki task create "Add dark mode toggle" \
+    --type feature \
+    --description "Users requested dark mode for accessibility" \
+    --approach "Use CSS variables, store preference in localStorage" \
+    --done-when "Toggle works, persists, respects OS preference"
+
+# Create subtask (hierarchical)
+aiki task create "Fix null check" \
+    --parent err-a1b2 \
+    --type error
+
+# Create with dependencies
+aiki task create "Add error handling" \
+    --type feature \
+    --blocked-by err-a1b2 \
+    --blocked-by err-c3d4
+
+# Create discovered-from task
+aiki task create "Found: missing validation" \
+    --type error \
+    --discovered-from err-a1b2
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TASK LIFECYCLE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Start working on a task
+aiki task start <task-id>
+
+# Record failed attempt
+aiki task fail <task-id>
+
+# Close task
+aiki task close <task-id> --fixed
+aiki task close <task-id> --abandoned --reason "Not reproducible"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSIGNMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Assign task
+aiki task assign <task-id> --to human
+aiki task assign <task-id> --to cursor
+aiki task assign <task-id> --to claude-code
+
+# Unassign
+aiki task unassign <task-id>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Add dependency
+aiki task dep add <task-id> --blocked-by <blocker-id>
+aiki task dep add <task-id> --blocked-by <blocker-id> --type discovered-from
+
+# Remove dependency
+aiki task dep remove <task-id> --blocked-by <blocker-id>
+
+# Show dependency tree
+aiki task dep tree <task-id>
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SYNC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Sync tasks (push to remote, detect orphans)
+aiki task sync
+```
+
+### Example CLI Output
+
+```bash
+$ aiki task ready --json
+{
+  "tasks": [
+    {
+      "id": "err-a1b2",
+      "objective": "Fix null check in auth.ts:42",
+      "type": "error",
+      "status": "open",
+      "priority": 1,
+      "assignee": null,
+      "blocked_by": [],
+      "scope": {"files": [{"path": "src/auth.ts", "lines": [42]}]},
+      "evidence": [{"source": "typescript", "message": "Object is possibly 'null'", "code": "TS2531"}]
+    }
+  ]
+}
+
+$ aiki task show err-a1b2
+Task: err-a1b2
+Objective: Fix null check in auth.ts:42
+Type: error
+Status: in_progress
+Priority: 1
+Assignee: human
+
+Blocked by: (none)
+Discovered from: (none)
+Attempts: 1
+```
+
+### Flow Integration
 
 ```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
 # PostResponse: Create tasks from errors
+# ═══════════════════════════════════════════════════════════════════════════════
 PostResponse:
   - let: ts_errors = self.typescript_errors
-  
+
   - for: error in $ts_errors
     then:
       task.create:
@@ -800,643 +541,853 @@ PostResponse:
           - source: typescript
             message: $error.message
             code: $error.code
-  
+
   - let: ready_count = self.ready_tasks | length
   - if: $ready_count > 0
     then:
       autoreply: |
-        There are $ready_count tasks. Run `aiki task ready --json` to see details.
+        There are $ready_count tasks ready. Run `aiki task ready --json` to see details.
 
-# PostToolUse: Auto-close fixed tasks
-PostToolUse:
-  - let: current_task = self.current_task
-  - if: $current_task != null
+# ═══════════════════════════════════════════════════════════════════════════════
+# SessionStart: Notify of ready tasks
+# ═══════════════════════════════════════════════════════════════════════════════
+SessionStart:
+  - let: ready_count = self.ready_tasks | length
+  - if: $ready_count > 0
     then:
-      - let: errors = self.errors_for_scope($current_task.scope)
-      - if: $errors | length == 0
-        then:
-          task.close:
-            id: $current_task.id
-            fixed: true
-        else:
-          # Record failed attempt (for stuck detection)
-          task.fail:
-            id: $current_task.id
+      autoreply: |
+        You have $ready_count task(s) ready to work on.
+        Run `aiki task ready --json` for details.
 ```
 
-**Flow action implementation:**
+**Note:** Review-related flows are in the [Review System](#review-system) section.
+
+### aiki task sync
+
+Ensures task events are committed and pushed:
 
 ```rust
-// cli/src/flows/actions/task.rs
+pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
+    let mut report = SyncReport::default();
 
-impl FlowAction for TaskAction {
-    fn execute(&self, context: &ExecutionContext) -> Result<ActionResult> {
-        let manager = TaskManager::new(&context.cwd)?;
-        let agent = &context.agent;  // From ACP notification or hook payload
-        
-        match &self.operation {
-            TaskOperation::Create { objective, r#type, file, line, evidence } => {
-                // Build scope from optional file/line
-                let files = match (file, line) {
-                    (Some(path), Some(line_num)) => {
-                        vec![FileScope {
-                            path: path.clone(),
-                            lines: vec![*line_num],
-                        }]
-                    }
-                    (Some(path), None) => {
-                        vec![FileScope {
-                            path: path.clone(),
-                            lines: vec![],
-                        }]
-                    }
-                    (None, _) => vec![],
-                };
-                
-                let definition = TaskDefinition {
-                    objective: objective.clone(),
-                    r#type: parse_task_type(r#type)?,
-                    priority: 0,
-                    scope: TaskScope { files },
-                    evidence: vec![Evidence {
-                        source: evidence.source.clone(),
-                        message: evidence.message.clone(),
-                        code: evidence.code.clone(),
-                    }],
-                };
-                
-                let task_id = manager.create_task(definition, agent)?;
-                Ok(ActionResult::success().with_output(format!("Created: {}", task_id)))
-            }
-            
-            TaskOperation::Start { id } => {
-                manager.start_task(id, agent)?;
-                Ok(ActionResult::success())
-            }
-            
-            TaskOperation::Fail { id } => {
-                // Get current attempt number
-                let task = manager.get_task(id)?;
-                let attempt_num = task.attempts.len() as u32;
-                manager.fail_task(id, agent, attempt_num)?;
-                Ok(ActionResult::success())
-            }
-            
-            TaskOperation::Close { id, fixed } => {
-                manager.close_task(id, agent, *fixed)?;
-                Ok(ActionResult::success())
-            }
+    // 1. Verify aiki/tasks branch integrity
+    let events = get_all_events(repo_path)?;
+    report.total_events = events.len();
+
+    // 2. Find orphaned in-progress tasks
+    let tasks = reconstruct_all_tasks(&events)?;
+    for task in &tasks {
+        if task.status == TaskStatus::InProgress {
+            // Warn about tasks that were started but never closed
+            report.orphaned_in_progress.push(task.id.clone());
         }
     }
-}
-```
 
-### Stuck Detection (Phase 1)
-
-Simple attempt-based stuck detection:
-
-```rust
-impl TaskManager {
-    pub fn is_stuck(&self, task_id: &str) -> Result<bool> {
-        let task = self.get_task(task_id)?;
-        
-        // Stuck = 3+ failed attempts
-        let failed_count = task.attempts.iter()
-            .filter(|a| matches!(a.outcome, Some(AttemptOutcome::Failed)))
-            .count();
-        
-        Ok(failed_count >= 3)
+    // 3. Push to remote if configured
+    if has_git_remote(repo_path, "aiki/tasks")? {
+        push_branch(repo_path, "aiki/tasks")?;
+        report.pushed = true;
     }
+
+    // 4. Report summary
+    eprintln!("Task sync complete:");
+    eprintln!("  Total events: {}", report.total_events);
+    eprintln!("  Orphaned in-progress: {}", report.orphaned_in_progress.len());
+    if report.pushed {
+        eprintln!("  Pushed to remote: yes");
+    }
+
+    Ok(report)
 }
 ```
 
-```yaml
-# Flow checks stuck state
-PostToolUse:
-  - let: current_task = self.current_task
-  - if: $current_task.is_stuck
-    then:
-      autoreply.prepend: |
-        ⚠️ This task has failed 3 times. Consider:
-        - Reverting changes: jj undo
-        - Asking for help
-        - Breaking into smaller tasks
-```
-
-### Testing Strategy (Phase 1)
+### Testing Strategy
 
 **Unit tests:**
 - Task ID generation (content-addressed, deterministic)
-- Event serialization/deserialization (YAML frontmatter)
+- Hierarchical ID generation (err-a1b2.1, err-a1b2.2)
+- Event serialization/deserialization
 - Task state reconstruction from events
-- JJ command construction
+- Ready queue filtering (respects dependencies)
 
 **Integration tests:**
-- Create task → verify event appended to aiki/tasks
-- Start task → verify started event created
-- Fail task → verify failed event created
-- Close task → verify closed event created
-- Query tasks → verify state reconstruction and filtering
-- Task history → verify all events returned in order
+- Create task → verify event appended
+- Create subtask → verify hierarchical ID
+- Add dependency → verify blocks ready queue
+- Start/close lifecycle
+- Sync → verify push to remote
 
 **E2E tests:**
-- Flow creates tasks from TypeScript errors → events appear in JJ
-- Agent queries tasks → reconstructed state is correct
-- Agent starts task → in_progress status reconstructed
-- PostToolUse auto-closes fixed task → closed event created
-- Multiple attempts → attempt count accurate in reconstructed state
-
-### What We're NOT Building (Phase 1)
-
-❌ **SQLite cache** - Scan JJ directly (fast enough for <100 tasks)  
-❌ **JJ workspace isolation** - Use `--repository` flag for now  
-❌ **Task relationships** - No blocking, parent/child, epics  
-❌ **Code provenance links** - Tasks don't reference code changes yet  
-❌ **Multi-agent conflict resolution** - Single agent only  
-❌ **Priority queues** - Simple FIFO ordering  
-❌ **Task history queries** - Basic JJ log is enough
-
-### Phase 1 Implementation Notes
-
-**Agent Identity (Multiple Integration Paths)**
-
-Agent identity is determined based on how Aiki is invoked:
-
-**1. ACP Server Mode (Claude Code, Cursor with ACP)**
-
-The flow engine receives agent identity from ACP notification payloads:
-
-```json
-{
-  "method": "session/update",
-  "params": {
-    "agent": "claude-code",
-    "session_id": "abc123",
-    ...
-  }
-}
-```
-
-```rust
-impl FlowEngine {
-    fn execute_post_response(&self, notification: &AcpNotification) -> Result<()> {
-        let agent = &notification.params.agent;  // From ACP payload
-        
-        // Available to flow actions via context
-        context.agent = agent.clone();
-        
-        // Passed automatically to task operations
-        task_manager.create_task(task, agent)?;
-    }
-}
-```
-
-**2. Hook-Based Integrations (JJ hooks, Git hooks)**
-
-Hook payloads also include agent identity (similar to ACP):
-
-```rust
-impl FlowEngine {
-    fn execute_hook_flow(&self, hook_payload: &HookPayload) -> Result<()> {
-        let agent = &hook_payload.agent;  // From hook payload
-        
-        // Available to flow actions via context
-        context.agent = agent.clone();
-        
-        // Passed automatically to task operations
-        task_manager.create_task(task, agent)?;
-    }
-}
-```
-
-**How this works:**
-- Agent embeds metadata in the change: `[aiki] agent=claude-code`
-- JJ hook fires on `jj describe` or `jj new`
-- Hook invokes `aiki` with agent passed in the payload/environment
-- Flow engine uses the agent from the hook invocation
-
-**3. CLI Operations (Manual)**
-
-- Manual task operations use `--agent` flag: `aiki task start ts-abc123 --agent myname`
-- Defaults to `"cli-user"` if not specified
-
-**Summary:**
-- **ACP mode**: Agent from `notification.params.agent`
-- **Hook mode**: Agent from `hook_payload.agent`
-- **CLI mode**: Agent from `--agent` flag or default
-
-In both ACP and hook modes, the agent is **passed to the flow engine**, not read from disk. This ensures correctness with concurrent agents.
-
-**Concurrent Task Creation (Known Limitation)**
-
-If two PostResponse flows run simultaneously (e.g., rapid successive agent changes), both might create tasks for the same error before the content-addressed ID check completes. This results in acceptable duplicate tasks.
-
-**Why this is acceptable in Phase 1:**
-- JJ handles concurrent writes gracefully (creates separate changes)
-- Duplicates are obvious (same file/line in task list)
-- Manual cleanup is trivial: `jj abandon <duplicate-task-change-id>`
-- This happens rarely in single-agent workflows (the Phase 1 target)
-
-**Phase 4 will address this** with proper locking or transaction-based deduplication.  
-
-### Phase 1 Success Criteria
-
-✅ PostResponse creates tasks from validation errors  
-✅ Agent queries tasks via `aiki task ready --json`  
-✅ Agent starts/closes tasks  
-✅ PostToolUse auto-closes fixed tasks  
-✅ Stuck detection works (3+ failed attempts)  
-✅ Content-addressed IDs prevent duplicates  
-✅ Tasks persist across sessions (JJ changes)  
-✅ All operations work without disturbing working copy  
+- Flow creates tasks from TypeScript errors
+- Agent queries ready tasks (filtered by dependencies)
+- Agent completes task and closes it
+- Multi-level hierarchy (epic → task → subtask)
 
 ### Phase 1 Deliverables
 
 1. **Core library** (`cli/src/tasks/`)
    - `manager.rs` - TaskManager with JJ operations
-   - `types.rs` - Task, TaskScope, Evidence, etc.
-   - `cli.rs` - CLI command handlers
+   - `types.rs` - Task, TaskDefinition, EventType
+   - `queries.rs` - Ready queue, dependency filtering
 
 2. **CLI commands** (`aiki task ...`)
-   - `ready`, `create`, `start`, `close`, `show`
+   - `ready`, `list`, `show`
+   - `create` (with subtasks, dependencies)
+   - `start`, `fail`, `close`
+   - `assign`, `unassign`
+   - `dep add`, `dep remove`, `dep tree`
+   - `sync`
 
 3. **Flow actions** (`task:` in YAML)
-   - `create`, `close`, `fail`
+   - `create`, `close`, `fail`, `assign`
 
 4. **Tests**
-   - Unit tests for TaskManager
+   - Unit tests for all components
    - Integration tests with real JJ repo
-   - E2E test with TypeScript error flow
 
 5. **Documentation**
-   - Tutorial: "Using Tasks in PostResponse Flows"
    - CLI reference
-   - Flow DSL reference for `task:` action
+   - Flow DSL reference
 
 ---
 
-## Phase 2: Performance & Scale (1 week)
+## Phase 2: Performance & Extended Features
 
-**When to build**: Event reconstruction is slow (>1s query time) or you have >1000 events
+**When to build**: Event reconstruction is slow (>1s) OR need compaction/external refs
 
-### SQLite Cache (Materialized Task State)
+### Compaction
 
-**Core principle**: Event log in JJ is source of truth. SQLite materializes current task state for fast queries.
+For long-running sessions, summarize old closed tasks to reduce context:
+
+```rust
+pub enum EventType {
+    // ... existing variants
+
+    Compacted {
+        summary: String,
+        original_size: usize,
+        compaction_level: u8,  // 1 = summarized, 2 = ultra-compact
+    },
+}
+
+impl TaskManager {
+    pub fn compact_task(&self, task_id: &str) -> Result<()> {
+        let task = self.get_task(task_id)?;
+
+        // Only compact closed tasks older than 30 days
+        if task.status != TaskStatus::Closed {
+            return Err(AikiError::TaskNotEligibleForCompaction(task_id.into()));
+        }
+
+        // Generate summary (could use Claude Haiku or simple template)
+        let summary = format!(
+            "{}\n\nOutcome: {} after {} attempt(s).",
+            task.definition.objective,
+            if task.was_fixed() { "Fixed" } else { "Abandoned" },
+            task.attempts.len()
+        );
+
+        // Append compaction event (original events still in history)
+        self.append_event(TaskEvent {
+            task_id: task_id.to_string(),
+            event: EventType::Compacted {
+                summary,
+                original_size: self.calculate_task_size(&task),
+                compaction_level: 1,
+            },
+            timestamp: Utc::now(),
+            agent_type: AgentType::System,
+        })
+    }
+}
+```
+
+During reconstruction, if a `Compacted` event exists, use summary instead of full replay.
+
+### External Refs
+
+Link tasks to external systems (GitHub issues, Jira, etc.):
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDefinition {
+    // ... existing fields
+
+    #[serde(default)]
+    pub external_refs: Vec<ExternalRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalRef {
+    pub system: ExternalSystem,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalSystem {
+    GitHub,
+    GitHubPr,
+    Jira,
+    Linear,
+    JjChange,
+    Custom(String),
+}
+```
+
+```bash
+# Create task linked to GH issue
+aiki task create "Fix auth bug" --ref gh:42
+
+# Add ref to existing task
+aiki task ref add err-a1b2 --ref gh:42 --url "https://github.com/org/repo/issues/42"
+```
+
+### SQLite Cache (If Needed)
+
+Only add if event reconstruction becomes slow (>1s for typical queries):
 
 ```sql
--- Materialized current state of each task
 CREATE TABLE tasks (
     task_id TEXT PRIMARY KEY,
     objective TEXT NOT NULL,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    scope_json TEXT NOT NULL,
-    evidence_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    -- Cached attempt summary
-    attempt_count INTEGER DEFAULT 0,
-    failed_attempt_count INTEGER DEFAULT 0,
-    last_agent TEXT
+    assignee TEXT,
+    blocked_by_json TEXT,
+    created_at TEXT NOT NULL
 );
 
--- Track sync position in event log
 CREATE TABLE sync_state (
     key TEXT PRIMARY KEY,
     last_event_change_id TEXT NOT NULL
 );
 
 CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_tasks_priority ON tasks(priority, created_at);
-
-CREATE VIEW ready_tasks AS
-SELECT * FROM tasks
-WHERE status = 'open'
-ORDER BY priority ASC, created_at ASC;
+CREATE INDEX idx_tasks_assignee ON tasks(assignee);
 ```
-
-### Cache Sync (Incremental Event Replay)
-
-```rust
-impl TaskCache {
-    pub fn sync(&self) -> Result<()> {
-        // Get last synced event
-        let last_event_id = self.get_last_synced_event()?;
-        
-        // Fetch new events since last sync
-        let new_events = self.manager.get_events_since(last_event_id)?;
-        
-        if new_events.is_empty() {
-            return Ok(());  // Cache is fresh
-        }
-        
-        // Apply events to cache
-        for event in &new_events {
-            self.apply_event(event)?;
-        }
-        
-        // Update sync position
-        self.set_last_synced_event(new_events.last().unwrap().change_id)?;
-        
-        Ok(())
-    }
-    
-    fn apply_event(&self, event: &TaskEvent) -> Result<()> {
-        match &event.event {
-            EventType::Created { task } => {
-                self.insert_task(&event.task_id, task, event.timestamp)?;
-            }
-            EventType::Started => {
-                self.update_status(&event.task_id, "in_progress")?;
-                self.increment_attempts(&event.task_id)?;
-                self.set_last_agent(&event.task_id, &event.agent)?;
-            }
-            EventType::Failed { .. } => {
-                self.update_status(&event.task_id, "open")?;
-                self.increment_failed_attempts(&event.task_id)?;
-            }
-            EventType::Closed { .. } => {
-                self.update_status(&event.task_id, "closed")?;
-            }
-        }
-        Ok(())
-    }
-}
-```
-
-**Performance characteristics:**
-
-- **Phase 1 (no cache)**: O(events) to reconstruct all tasks
-  - 100 tasks × 3 events avg = 300 events → ~50ms query time
-- **Phase 2 (SQLite cache)**: O(new events) to sync, O(1) to query
-  - Incremental sync: only replay events since last check
-  - Query: SQL index lookup → <5ms for 10,000 tasks
-
-**Cache invalidation:**
-
-Cache is automatically fresh because sync happens on every query. Alternative: sync in background every 1s.
 
 ### Phase 2 Deliverables
 
-- SQLite cache schema with event replay
-- Incremental sync on query
-- Fast queries via SQLite (<10ms)
-- Benchmark: <100ms for 10,000 tasks
-- Cache rebuild command: `aiki task cache rebuild`
+- Compaction events and CLI (`aiki task compact`)
+- External refs support
+- SQLite cache (only if performance requires it)
+- Task statistics (`aiki task stats`)
 
 ---
 
-## Phase 3: Code Provenance (1 week)
+## Phase 3: Code Provenance
 
 **When to build**: Need to track which code changes attempted/fixed tasks
 
-### Bidirectional Links (Event-Based)
-
-**Task events already contain agent info**, now add code change references:
+### Bidirectional Links
 
 ```yaml
-# Event: Task Started (with code change reference)
+# Event includes code change reference
 ---
 aiki_task_event: v1
-task_id: ts-a1b2c3d4
-event: started
-timestamp: 2025-01-15T10:05:00Z
-agent: claude-code
-code_change: change-abc123  # NEW: Link to code change that started work
----
-
-# Event: Task Closed (with code change that fixed it)
----
-aiki_task_event: v1
-task_id: ts-a1b2c3d4
+task_id: err-a1b2
 event: closed
 timestamp: 2025-01-15T10:30:00Z
-agent: claude-code
+agent_type: claude-code
 fixed: true
-code_change: change-def456  # NEW: Link to code change that fixed task
+code_change: change-xyz123  # JJ change that fixed this
 ---
-```
 
-**Code change references tasks (same as before):**
-
-```yaml
-# JJ change description on main branch
+# JJ change description references tasks
 ---
 aiki_change: v1
 tasks:
-  works_on: [ts-a1b2]  # Started work on these
-  closes: [ts-c3d4]    # Fixed these
+  works_on: [err-a1b2]
+  closes: [err-c3d4]
 ---
-
-feat(auth): add null check
-```
-
-### Provenance Queries
-
-```rust
-impl TaskManager {
-    // Get all code changes that attempted this task
-    pub fn get_task_code_history(&self, task_id: &str) -> Result<Vec<CodeRef>> {
-        let events = self.get_task_events(task_id)?;
-        
-        events.iter()
-            .filter_map(|e| match &e.event {
-                EventType::Started | EventType::Closed { .. } => {
-                    e.code_change.as_ref().map(|c| CodeRef {
-                        change_id: c.clone(),
-                        event_type: e.event.clone(),
-                        timestamp: e.timestamp,
-                    })
-                }
-                _ => None
-            })
-            .collect()
-    }
-}
-
-impl ProvenanceManager {
-    // Get all tasks related to a code change
-    pub fn get_change_tasks(&self, change_id: &str) -> Result<Vec<String>> {
-        // 1. Read tasks from [aiki_change] block
-        let provenance = ProvenanceRecord::from_change(change_id)?;
-        let mut task_ids = provenance.tasks_worked_on;
-        task_ids.extend(provenance.tasks_closed);
-        
-        // 2. Also check event log for any events referencing this change
-        let events = self.task_manager.get_events_for_code_change(change_id)?;
-        task_ids.extend(events.iter().map(|e| e.task_id.clone()));
-        
-        Ok(task_ids)
-    }
-}
 ```
 
 ### Phase 3 Deliverables
 
-- Add `code_change` field to Started and Closed events
-- Flow integration: auto-populate code_change from current working copy
-- `aiki provenance <change-id> --tasks` shows related tasks
-- `aiki task show <task-id> --history` shows all code changes that touched it
-- Bidirectional navigation: code → tasks, task → code
+- `code_change` field on relevant events
+- `aiki provenance <change-id> --tasks`
+- `aiki task show <task-id> --code-history`
 
 ---
 
-## Phase 4: Multi-Agent Coordination (1 week)
+## Phase 4: Multi-Agent Coordination
 
 **When to build**: Multiple agents working on same codebase concurrently
 
-### Why Event Sourcing Makes This Simple
-
-**The problem with mutable tasks:**
-- Agent A reads task, updates status → writes description
-- Agent B reads task, adds attempt → writes description
-- One update overwins the other (data loss)
-
-**Event sourcing eliminates this:**
-- Agent A appends "started" event → new JJ change
-- Agent B appends "failed" event → new JJ change  
-- Both events are preserved in the log
-- Task reconstruction sees both events in order
-
-### Concurrent Task Operations
-
-**No conflicts possible** - each operation is an append-only event:
-
-```rust
-impl TaskManager {
-    pub fn start_task(&self, task_id: &str, agent: &str) -> Result<()> {
-        // Just append an event - never conflicts
-        self.append_event(TaskEvent {
-            task_id: task_id.to_string(),
-            event: EventType::Started,
-            timestamp: Utc::now(),
-            agent: agent.to_string(),
-        })
-    }
-}
-```
-
-**JJ handles branch updates atomically:**
-```bash
-# Agent A appends event
-jj new aiki/tasks@ -m "started event"
-jj branch set aiki/tasks -r @
-
-# Agent B appends event (concurrent)
-jj new aiki/tasks@ -m "failed event"  
-jj branch set aiki/tasks -r @
-
-# Both succeed - JJ resolves branch pointer automatically
-# Event log contains both events in temporal order
-```
-
-### Deduplication Across Agents
-
-**Content-addressed task IDs provide logical deduplication:**
-
-```rust
-// Agent A creates task for "TS2322 at auth.ts:42"
-let task_id_a = generate_task_id(&definition);  // → "err-a1b2c3d4"
-
-// Agent B creates task for same error (concurrent)
-let task_id_b = generate_task_id(&definition);  // → "err-a1b2c3d4" (same!)
-
-// Both agents append "created" events to the log
-// Both events persist (useful audit trail: shows both agents detected the error)
-```
-
-**During reconstruction, duplicates are handled gracefully:**
-
-```rust
-fn reconstruct_task(&self, events: &[TaskEvent]) -> Result<Task> {
-    let mut definition: Option<TaskDefinition> = None;
-    // ...
-    for event in events {
-        match &event.event {
-            EventType::Created { task } => {
-                // If multiple agents create the same task concurrently,
-                // multiple Created events will exist. Take the first one.
-                if definition.is_none() {
-                    definition = Some(task.clone());
-                }
-            }
-            // ...
-        }
-    }
-}
-```
-
-**Result:** Idempotent task creation with full audit trail. Multiple "created" events for the same task_id don't cause errors—they just show that multiple agents independently detected the same issue.
+Event sourcing already handles this well:
+- Append-only events = no conflicts
+- Content-addressed IDs = natural deduplication
+- Multiple agents can create/update tasks concurrently
 
 ### Phase 4 Deliverables
 
-- Multi-agent integration tests (2+ agents creating/updating tasks)
-- Verify event ordering is consistent
-- Verify no event loss under concurrent load
-- Document: "Multi-Agent Task System Guide"
+- Multi-agent integration tests
+- Event ordering verification
+- Documentation: "Multi-Agent Task System Guide"
 
 ---
 
-## Phase 5: Enterprise Features (1-2 weeks)
+## Review System
 
-**When to build**: Enterprise customers need compliance
+**Key Insight:** Reviews are about **code changes**, not task completion. Reviews target JJ revsets, allowing review of single changes, ranges, or any revision set expression.
 
-### Features
+### Why Revsets?
 
-- Task relationships (blocking, parent/child)
-- Priority queues
-- Assignee tracking
-- SLA/deadline tracking
-- Task history queries
-- Audit trail exports
-- Custom task types
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TASK-CENTRIC REVIEWS (Previous design)                         │
+│                                                                 │
+│  Task ──→ ReviewRequested ──→ ReviewCompleted                   │
+│  Problems:                                                       │
+│    - What if no task exists?                                    │
+│    - What about multi-task changes?                             │
+│    - What about ad-hoc "review my code" requests?               │
+└─────────────────────────────────────────────────────────────────┘
 
-### Phase 5 Deliverables
+┌─────────────────────────────────────────────────────────────────┐
+│  REVSET-CENTRIC REVIEWS (New design)                            │
+│                                                                 │
+│  Revset ──→ ReviewRequested ──→ ReviewCompleted                 │
+│  Benefits:                                                       │
+│    - Review any changes, task or not                            │
+│    - Review ranges: "trunk()..@"                                │
+│    - Review branches: "feature-auth::"                          │
+│    - Uses JJ's native query language                            │
+│    - Decouples concerns: tasks track work, reviews verify code  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-- Relationship support in schema
-- Priority-based ready queue
-- `aiki task history <id>` command
-- Compliance documentation
+### Data Model
+
+```rust
+// Stored on aiki/reviews branch (event-sourced like tasks)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewEvent {
+    pub review_id: String,           // Content-addressed ID
+    pub revset: String,              // JJ revset expression (e.g., "trunk()..@")
+    pub resolved_changes: Vec<String>, // Snapshot of change_ids at request time
+    pub event: ReviewEventType,
+    pub timestamp: DateTime<Utc>,
+    pub agent_type: AgentType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewEventType {
+    Requested {
+        from: AgentType,
+        by: AgentType,
+        context: Option<String>,
+    },
+    Completed {
+        by: AgentType,
+        outcome: ReviewOutcome,
+    },
+    Cancelled {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    Approved {
+        feedback: Option<String>,
+    },
+    Rejected {
+        feedback: String,
+        blocking_issues: Vec<String>,
+    },
+    ApprovedWithSuggestions {
+        feedback: String,
+        suggestions: Vec<String>,
+    },
+}
+```
+
+**Why store both `revset` and `resolved_changes`?**
+- `revset`: Human-readable, shows intent ("trunk()..@", "feature-auth::")
+- `resolved_changes`: Audit trail of exactly which changes were reviewed
+
+### CLI
+
+```bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# REQUEST REVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Review current working copy change
+aiki review request @
+
+# Review all changes since trunk
+aiki review request 'trunk()..@'
+
+# Review specific change by ID
+aiki review request xyz123
+
+# Review with context
+aiki review request 'trunk()..@' --from human --context "Ready for merge"
+
+# Review from specific agent
+aiki review request @ --from cursor --context "Check error handling"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LIST & QUERY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# List pending reviews
+aiki review list --pending
+
+# List reviews awaiting specific agent
+aiki review list --for human
+aiki review list --for claude-code
+
+# Show review details
+aiki review show <review-id>
+
+# Show reviews for changes in a revset
+aiki review history 'trunk()..@'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMPLETE REVIEW
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Approve
+aiki review approve <review-id>
+aiki review approve <review-id> --feedback "Looks good"
+
+# Approve with suggestions
+aiki review approve <review-id> --with-suggestions \
+    --feedback "Works but could be cleaner" \
+    --suggestion "Consider extracting to helper"
+
+# Reject
+aiki review reject <review-id> --feedback "Missing error handling"
+aiki review reject <review-id> \
+    --feedback "Several issues" \
+    --issue "Null check missing on line 42" \
+    --issue "Error message not user-friendly"
+
+# Cancel pending review
+aiki review cancel <review-id> --reason "Changes superseded"
+```
+
+### Example Output
+
+```bash
+$ aiki review list --pending --json
+{
+  "reviews": [
+    {
+      "id": "rev-abc123",
+      "revset": "trunk()..@",
+      "resolved_changes": ["xyz789", "xyz790", "xyz791"],
+      "requested_by": "claude-code",
+      "requested_from": "human",
+      "context": "Auth refactor complete, ready for review",
+      "requested_at": "2025-01-15T10:00:00Z"
+    }
+  ]
+}
+
+$ aiki review history @
+Change: xyz791 (current)
+Reviews:
+  ┌─ Review rev-abc123 ────────────────────────────────────────────
+  │ Revset: trunk()..@
+  │ Requested: 2025-01-15 10:00 by claude-code
+  │ Awaiting: human
+  │ Context: "Auth refactor complete, ready for review"
+  └────────────────────────────────────────────────────────────────
+```
+
+### Flow Integration
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# change.completed: Auto-request review when significant work done
+# ═══════════════════════════════════════════════════════════════════════════════
+change.completed:
+  - if: self.should_request_review($change)
+    then:
+      review.request:
+        revset: "@"
+        from: human
+        context: "Completed: $change.description"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.ended: Batch review for session's work
+# ═══════════════════════════════════════════════════════════════════════════════
+session.ended:
+  - let: session_range = self.session_revset  # e.g., "xyz123::@"
+  - let: change_count = self.resolve_revset($session_range) | length
+
+  - if: $change_count > 0 && !self.has_pending_review($session_range)
+    then:
+      review.request:
+        revset: $session_range
+        from: human
+        context: "Session complete - $change_count change(s)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.started: Notify of pending reviews
+# ═══════════════════════════════════════════════════════════════════════════════
+session.started:
+  - let: my_reviews = self.pending_reviews_for($agent_type)
+  - if: $my_reviews | length > 0
+    then:
+      autoreply:
+        append: |
+          # Pending Reviews
+
+          You have $my_reviews.length review(s) awaiting your feedback:
+          $for review in $my_reviews:
+            • $review.id: $review.context ($review.revset)
+
+          Run `aiki review list --for $agent_type` for details.
+```
+
+### Relationship to Tasks
+
+Tasks and reviews are orthogonal:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TASKS                          │  REVIEWS                      │
+│  Track work to be done          │  Verify code quality          │
+│  "Fix the auth bug"             │  "Review changes xyz..@"      │
+│  Has status, dependencies       │  Has outcome (approve/reject) │
+│  Stored on aiki/tasks branch    │  Stored on aiki/reviews branch│
+└─────────────────────────────────────────────────────────────────┘
+
+Connections:
+- Task close event CAN reference a change_id (what fixed it)
+- Review CAN cover changes that fixed multiple tasks
+- Neither requires the other
+```
+
+### Deliverables
+
+1. **Core library** (`cli/src/reviews/`)
+   - `types.rs` - ReviewEvent, ReviewOutcome
+   - `manager.rs` - ReviewManager with JJ operations
+   - `queries.rs` - Pending reviews, history lookup
+
+2. **CLI commands** (`aiki review ...`)
+   - `request`, `list`, `show`, `history`
+   - `approve`, `reject`, `cancel`
+
+3. **Flow actions** (`review:` in YAML)
+   - `request`, `approve`, `reject`
+
+4. **Tests**
+   - Revset resolution
+   - Review lifecycle
+   - Multi-change reviews
+
+---
+
+## Agent Adoption: Native Integration
+
+**The Key Insight:** Aiki integrates with agents through two mechanisms, both using the same flow system:
+
+1. **ACP Proxy** (for Zed, future editors): Aiki runs as transparent proxy, intercepting ALL protocol messages
+2. **Editor Hooks** (for Claude Code, Cursor): Aiki registers as hook consumer with the editor's native hook system
+
+Both approaches fire the same Aiki events and run the same flows. The difference is architecture:
+
+### Integration Architectures
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ACP PROXY MODE (Zed, ACP-compatible editors)                   │
+│                                                                 │
+│  IDE ←→ Aiki ACP Proxy ←→ Agent Process                         │
+│              ↑                                                   │
+│    - Aiki IS the intermediary                                   │
+│    - Intercepts all protocol messages                           │
+│    - Fires events from intercepted traffic                      │
+│    - Full visibility into agent communication                   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  EDITOR HOOKS MODE (Claude Code, Cursor)                        │
+│                                                                 │
+│  Agent ←→ [Editor's Hook System] ←→ aiki hooks handle           │
+│                   ↑                                              │
+│    - Editor calls Aiki as hook consumer                         │
+│    - Installed via `aiki hooks install`                         │
+│    - Editor controls when hooks fire                            │
+│    - Converts editor events → Aiki events                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Module Structure
+
+```
+cli/src/editors/
+├── acp/           # ACP proxy implementation
+│   ├── handlers.rs    # Fires Aiki events from ACP messages
+│   ├── protocol.rs    # ACP protocol types
+│   └── state.rs       # Session/autoreply state
+├── claude_code/   # Claude Code hook integration
+│   ├── events.rs      # Claude events → Aiki events
+│   └── output.rs      # Aiki results → Claude hook format
+├── cursor/        # Cursor hook integration
+│   ├── events.rs      # Cursor events → Aiki events
+│   └── output.rs      # Aiki results → Cursor hook format
+└── mod.rs         # Shared utilities
+```
+
+### Why Both Approaches Use the Same Flows
+
+| Aspect | ACP Proxy | Editor Hooks |
+|--------|-----------|--------------|
+| Setup | `aiki acp claude-code` | `aiki hooks install` |
+| Event source | Intercept ACP protocol | Editor calls hooks |
+| Aiki events | Same (`session.started`, `response.received`, etc.) | Same |
+| Flow execution | Same flow engine | Same flow engine |
+| Task context injection | `session.started` flow | `session.started` flow |
+| Auto-sync on end | `session.ended` flow | `session.ended` flow |
+
+**Key benefit:** Write flows once, work with all editors.
+
+### Comparison with Beads
+
+| Aspect | Beads | Aiki |
+|--------|-------|------|
+| Setup | `bd setup claude` + `bd hooks install` | `aiki init` (installs hooks) OR `aiki acp` (starts proxy) |
+| Context injection | Manual `bd prime` | Automatic via `session.started` flow |
+| Session end sync | User remembers `bd sync` | Automatic via `session.ended` flow |
+| Task creation | Manual `bd create` | Auto from `response.received` flow |
+| Task auto-close | Manual `bd close` | Auto from `change.completed` flow |
+| Compaction survival | PreCompact hook | `prompt.submitted` flow |
+
+### Core Flow Additions
+
+The task system integrates into the existing `cli/src/flows/core/flow.yaml`:
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.started: Inject task context when session begins
+# ═══════════════════════════════════════════════════════════════════════════════
+session.started:
+  # ... existing initialization (jj new, aiki init --quiet) ...
+
+  # Task context injection
+  - if: self.has_task_system
+    then:
+      - let: ready_count = self.task_ready_count
+      - if: $ready_count > 0
+        then:
+          autoreply:
+            append: |
+              # Tasks
+              📋 $ready_count task(s) ready. Run `aiki task ready --json` for details.
+
+  # Review context injection
+  - if: self.has_review_system
+    then:
+      - let: pending_reviews = self.pending_reviews_for($agent_type)
+      - if: $pending_reviews | length > 0
+        then:
+          autoreply:
+            append: |
+              # Pending Reviews
+              ⚠️ $pending_reviews.length review(s) awaiting your feedback.
+              Run `aiki review list --for $agent_type` for details.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# session.ended: Auto-sync tasks before session ends
+# ═══════════════════════════════════════════════════════════════════════════════
+session.ended:
+  # Sync tasks to remote (if configured)
+  - if: self.has_task_system
+    then:
+      - shell: aiki task sync --quiet
+        on_failure: continue
+
+      # Warn about orphaned in-progress tasks
+      - let: orphaned = self.task_orphaned_in_progress
+      - if: $orphaned | length > 0
+        then:
+          - log: "Warning: $orphaned.length task(s) left in progress: $orphaned"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# response.received: Create tasks from errors, remind about task queue
+# ═══════════════════════════════════════════════════════════════════════════════
+response.received:
+  - if: self.has_task_system
+    then:
+      # Parse response for TypeScript/build errors
+      - let: errors = self.parse_response_errors($response)
+
+      # Create tasks for new errors (deduped by content hash)
+      - for: error in $errors
+        then:
+          task.create:
+            objective: "Fix: $error.message"
+            type: error
+            file: $error.file
+            line: $error.line
+            evidence:
+              - source: $error.source
+                message: $error.message
+                code: $error.code
+
+      # Remind about task queue if errors were created
+      - if: $errors | length > 0
+        then:
+          autoreply:
+            append: |
+              Created $errors.length task(s) for errors above.
+              Run `aiki task ready --json` to see the queue.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# change.completed: Auto-close tasks and request review
+# ═══════════════════════════════════════════════════════════════════════════════
+change.completed:
+  # ... existing provenance tracking ...
+
+  # Auto-close tasks when errors are fixed
+  - if: self.has_task_system && $event.write
+    then:
+      - let: fixed_tasks = self.task_check_fixed($modified_files)
+      - for: task in $fixed_tasks
+        then:
+          task.close:
+            id: $task.id
+            fixed: true
+
+  # Request review of the change (separate from tasks)
+  - if: self.has_review_system && self.should_request_review($change)
+    then:
+      review.request:
+        revset: "@"
+        from: human
+        context: "Change completed: $change.description"
+```
+
+### self.* Functions
+
+Functions available in flows:
+
+```rust
+// Task system functions
+fn has_task_system(state: &AikiState) -> Result<bool>;
+fn task_ready_count(state: &AikiState) -> Result<u32>;
+fn task_orphaned_in_progress(state: &AikiState) -> Result<Vec<String>>;
+fn parse_response_errors(state: &AikiState, response: &str) -> Result<Vec<ParsedError>>;
+fn task_check_fixed(state: &AikiState, files: Vec<PathBuf>) -> Result<Vec<Task>>;
+
+// Review system functions
+fn has_review_system(state: &AikiState) -> Result<bool>;
+fn pending_reviews_for(state: &AikiState, agent: AgentType) -> Result<Vec<Review>>;
+fn should_request_review(state: &AikiState, change: &Change) -> Result<bool>;
+fn has_pending_review(state: &AikiState, revset: &str) -> Result<bool>;
+fn resolve_revset(state: &AikiState, revset: &str) -> Result<Vec<String>>;
+fn session_revset(state: &AikiState) -> Result<String>;  // e.g., "xyz123::@"
+```
+
+### User Flow Composition
+
+Users can extend task behavior in `.aiki/flows/tasks.yaml`:
+
+```yaml
+name: "Project Tasks"
+description: "Custom task workflows for this project"
+version: "1"
+
+# Add project-specific error parsing
+response.received:
+  - let: rust_errors = self.parse_rust_errors($response)
+  - for: error in $rust_errors
+    then:
+      task.create:
+        objective: "Fix: $error.message"
+        type: error
+        file: $error.file
+        line: $error.line
+        evidence:
+          - source: rustc
+            message: $error.message
+            code: $error.code
+
+# Custom review workflow - require review before any PR
+shell.permission_asked:
+  - if: $command | starts_with("git push") || $command | starts_with("gh pr create")
+    then:
+      - let: unreviewed_changes = self.changes_without_review('trunk()..@')
+      - if: $unreviewed_changes | length > 0
+        then:
+          block: "Cannot push: $unreviewed_changes.length change(s) not reviewed"
+```
+
+### No Separate Commands Needed
+
+Because everything is integrated via flows:
+
+| Beads Command | Aiki Equivalent |
+|---------------|-----------------|
+| `bd setup claude` | Not needed - ACP proxy handles it |
+| `bd prime` | Not needed - `session.started` flow injects context |
+| `bd sync` (manual) | Not needed - `session.ended` flow auto-syncs |
+| `bd ready` | `aiki task ready` (CLI still available) |
+| `bd create` | Auto via `response.received` flow, or `aiki task create` |
+| `bd close` | Auto via `change.completed` flow, or `aiki task close` |
+
+### Agent Experience
+
+From the agent's perspective, tasks and reviews "just work":
+
+**Tasks:**
+1. **Session starts** → Agent sees ready task count
+2. **Errors appear** → Tasks are auto-created
+3. **Errors fixed** → Tasks auto-close
+4. **Session ends** → Tasks auto-sync
+
+**Reviews:**
+1. **Session starts** → Agent sees pending reviews
+2. **Changes made** → Review auto-requested (if configured)
+3. **Human reviews** → Agent notified of outcome
+4. **Session ends** → Reviews auto-sync
+
+No manual commands needed for the happy path. CLI commands (`aiki task ...`, `aiki review ...`) are available for manual control.
+
+### Implementation Phases
+
+| Component | Phase | Notes |
+|-----------|-------|-------|
+| Core flow additions (`session.started`, `session.ended`) | Phase 1 | Required for native integration |
+| `self.*` task functions | Phase 1 | Enable flow-based task operations |
+| `self.*` review functions | Phase 1 | Enable flow-based review operations |
+| `response.received` error parsing | Phase 1 | Auto-create tasks from errors |
+| `change.completed` fix detection | Phase 1 | Auto-close tasks, auto-request review |
+| User flow composition | Phase 1 | `.aiki/flows/*.yaml` support |
+| `prompt.submitted` context refresh | Phase 2 | Survive context compaction |
 
 ---
 
 ## Summary Table
 
-| Phase | Time | Delivers | When to Build |
-|-------|------|----------|---------------|
-| **Phase 1** | 2-3 weeks | Event-sourced tasks: create, start, fail, close | **Now** (required for PostResponse) |
-| **Phase 2** | 1 week | SQLite cache with event replay | When >1000 events or >1s query time |
-| **Phase 3** | 1 week | Task ↔ Code provenance via events | When need to track what fixed what |
-| **Phase 4** | 1 week | Multi-agent (already works!) | When testing concurrent agents |
-| **Phase 5** | 1-2 weeks | Enterprise compliance features | When enterprise customers require it |
-
-**Key architectural decision:** Event sourcing in Phase 1 makes Phase 4 trivial (append-only events = no conflicts).
-
----
-
-## Decision: Start with Phase 1 Only
-
-**Rationale:**
-
-1. **Solves PostResponse immediately** - Structured tasks instead of text autoreplies
-2. **Validates the approach** - Learn if tasks are better than autoreplies
-3. **Low risk** - 2-3 weeks, can iterate based on feedback
-4. **Easy to enhance** - SQLite cache is drop-in optimization later
-5. **No premature optimization** - Don't build multi-agent until we need it
-
-**After Phase 1 ships**, evaluate:
-- Is query performance acceptable? (If no → Phase 2)
-- Do we need provenance tracking? (If yes → Phase 3)
-- Are multiple agents working? (If yes → Phase 4)
-- Do we have enterprise users? (If yes → Phase 5)
+| Component | Delivers | When to Build |
+|-----------|----------|---------------|
+| **Task System Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, sync | **Now** |
+| **Review System** | Revset-based reviews, approve/reject workflow | **Now** |
+| **Task System Phase 2** | Compaction, external refs, SQLite cache (if needed) | When sessions are long or need integrations |
+| **Task System Phase 3** | Code provenance (task ↔ change links) | When need to track what fixed what |
+| **Task System Phase 4** | Multi-agent coordination | When testing concurrent agents |
 
 ---
 
 ## Next Steps
 
-1. **Review this phased plan**
-2. **Approve Phase 1 scope**
-3. **Create GitHub issue for Phase 1**
-4. **Start implementation** with TaskManager core
-5. **Ship Phase 1** in 2-3 weeks
-6. **Gather feedback** before building Phase 2+
+1. Review this updated plan
+2. Create implementation tickets
+3. Start with TaskManager core + dependencies
+4. Add ReviewManager with revset support
+5. Add sync commands for both
+6. Ship Phase 1 + Review System
