@@ -52,33 +52,47 @@ src/auth.ts:
 
 ### `aiki why` - The Narrative
 
-Full story: the prompt that led to the change, agent's reasoning.
+Code-centric view showing **intent** (why), not raw prompts.
 
 ```bash
 $ aiki why src/auth.ts
-src/auth.ts (created 2025-01-14, 3 sessions)
 
-Session s-def456, turn 2 (2025-01-14 15:00):
-  User: "create an auth service with JWT support"
-  Agent: "Created AuthService with login(), logout(), and validateToken()"
+src/auth.ts (3 sessions, 5 changes)
+───────────────────────────────────
 
-Session s-def456, turn 7 (2025-01-14 15:22):
-  User: "add validation step before returning user"
-  Agent: "Added .validate() call per security requirements"
+Origin: 2025-01-14 by claude-code
+  └─ "JWT authentication service"
 
-Session s-abc123, turn 3 (2025-01-15 10:30):
-  User: "fix the null check in auth"
-  Agent: "Added optional chaining to prevent null pointer when user not found"
+Changes:
+  +login(), logout()     "JWT authentication service"
+  +validateToken()       "JWT authentication service"
+  +.validate() call      "add validation step"
+  +?. optional chaining  "fix null check in auth"
 
 $ aiki why src/auth.ts:42
+
+const user = await getUser(id)?.validate();
+────────────────────────────────────────────
+
+Created: 2025-01-14 by claude-code
+  └─ "JWT authentication service"
+
++.validate(): 2025-01-14
+  └─ "add validation step"
+
++?. (optional chaining): 2025-01-15
+  └─ "fix null check in auth"
+
+$ aiki why src/auth.ts:42 --verbose    # Full prompts if needed
+
 Line 42: `const user = await getUser(id)?.validate();`
 
-Session s-abc123, turn 3 (2025-01-15 10:30):
-  User: "fix the null check in auth"
+2025-01-15 s-abc123 turn 3:
+  Prompt: "fix the null check in auth, it's causing crashes in prod"
   Agent: "Added optional chaining to prevent null pointer when user not found"
 
-Session s-def456, turn 7 (2025-01-14 15:22):
-  User: "add validation step before returning user"
+2025-01-14 s-def456 turn 7:
+  Prompt: "add validation step before returning user"
   Agent: "Added .validate() call per security requirements"
 ```
 
@@ -205,9 +219,119 @@ Added JWT authentication with:
 - src/routes/login.ts: New file with login handler
 ```
 
-**Key field: `change_id`** - Links this response to the JJ change in the working copy. This enables:
-- `aiki who` to find which session/turn changed a line
-- `aiki why` to retrieve the prompt that led to the change
+**Key fields:**
+- `change_id` - Links to JJ change (enables who/why lookups)
+- `intent` - Short summary of WHY (see Intent Summaries below)
+
+---
+
+## Intent Summaries
+
+The key to making `aiki why` useful is capturing **intent** at write time, not just raw prompts.
+
+### What is Intent?
+
+Intent answers "why was this change made?" in a single line:
+
+| Raw Prompt | Intent |
+|------------|--------|
+| "fix the null check in auth, it's causing crashes in prod" | "null safety fix - production crashes" |
+| "can you add validation before returning the user object" | "add validation step" |
+| "create an auth service with JWT support for our Express app" | "JWT authentication service" |
+
+### How Intent is Captured
+
+Intent is derived from multiple sources, in priority order:
+
+```yaml
+intent_sources:
+  1. explicit_tag:      # User tags intent: "intent: security fix"
+  2. prompt_first_line: # First line of prompt (often states goal)
+  3. agent_summary:     # Agent's "I did X" from response
+  4. file_action:       # Fallback: "modified src/auth.ts"
+```
+
+**Example derivation:**
+
+```
+User prompt: "fix the null check in auth, it's causing crashes"
+
+Intent extraction:
+  - No explicit tag
+  - First line: "fix the null check in auth"  ← use this
+  - Truncate to ~50 chars
+
+Stored intent: "fix null check in auth"
+```
+
+### Response Event with Intent
+
+```yaml
+---
+aiki_prompt: v1
+event: response
+session_id: "abc123"
+turn: 3
+change_id: "xyz789"
+intent: "fix null check in auth"           # ← NEW: extracted intent
+intent_source: prompt_first_line           # ← how it was derived
+files_written: ["src/auth.ts"]
+---
+```
+
+### Per-File Intent (for multi-file changes)
+
+When a turn modifies multiple files, capture per-file intent:
+
+```yaml
+---
+aiki_prompt: v1
+event: response
+session_id: "abc123"
+turn: 2
+change_id: "xyz789"
+intent: "add JWT authentication"
+file_intents:                              # ← per-file breakdown
+  src/auth.ts: "core auth service"
+  src/routes/login.ts: "login endpoint"
+  src/middleware/auth.ts: "JWT validation middleware"
+---
+```
+
+### How `aiki why` Uses Intent
+
+```bash
+$ aiki why src/auth.ts:42
+
+const user = await getUser(id)?.validate();
+────────────────────────────────────────────
+
+Created: 2025-01-14 by claude-code
+  └─ "JWT authentication service"
+
++.validate(): 2025-01-14
+  └─ "add validation step"
+
++?. (optional chaining): 2025-01-15
+  └─ "fix null check in auth"
+```
+
+The output shows **intent**, not raw prompts. This is:
+- Shorter and scannable
+- Focused on WHY, not conversation details
+- Useful for understanding code at a glance
+
+### Explicit Intent Tags (Future)
+
+Users could explicitly tag intent in prompts:
+
+```
+User: "intent: security hardening
+
+Please add rate limiting to the auth endpoints"
+```
+
+This would be extracted and stored verbatim, overriding automatic derivation
 
 ### Why Separate Prompt and Response Events?
 
