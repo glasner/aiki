@@ -23,10 +23,10 @@ Store prompt/response history on a JJ `aiki/conversations` branch using the same
 aiki blame <file>[:line]             # Who changed this code, when, which session
 aiki why <file>[:line]               # Why does this code exist? (intent + narrative)
 
-# LOG (search the past)
-aiki log                             # Recent prompts across all sessions
-aiki log "query"                     # Search prompts
-aiki log --files <file>              # Find prompts that touched a file
+# LOG (view AI changes)
+aiki log                             # Recent AI changes
+aiki log "query"                     # Search by intent
+aiki log --files <file>              # Changes that touched a file
 aiki log --session <id>              # Filter to session
 aiki log --agent <type>              # Filter by agent
 aiki log --since "1 week"            # Time filter
@@ -97,24 +97,27 @@ Line 42: `const user = await getUser(id)?.validate();`
   Agent: "Added .validate() call per security requirements"
 ```
 
-### `aiki log` - Search the Past
+### `aiki log` - View AI Changes
 
 ```bash
 $ aiki log
-2025-01-15 10:30  s-abc123  "fix the null check in auth"
-2025-01-15 10:25  s-abc123  "now add rate limiting"
-2025-01-15 10:20  s-abc123  "help me refactor the auth module"
-2025-01-14 15:22  s-def456  "add validation step before returning user"
-2025-01-14 15:00  s-def456  "create an auth service with JWT support"
+xyz789  2025-01-15 10:30  claude-code  "fix null check in auth"
+  src/auth.ts
+abc456  2025-01-15 10:25  claude-code  "add rate limiting"
+  src/middleware/rateLimit.ts (new)
+def123  2025-01-15 10:20  claude-code  "refactor auth module"
+  src/auth.ts, src/routes/login.ts
+ghi012  2025-01-14 15:22  claude-code  "add validation step"
+  src/auth.ts
 
 $ aiki log "null check"
-2025-01-15 10:30  s-abc123  "fix the null check in auth"
-  → Edited src/auth.ts:42
+xyz789  2025-01-15 10:30  claude-code  "fix null check in auth"
+  src/auth.ts:42
 
 $ aiki log --files src/auth.ts
-2025-01-15 10:30  s-abc123  "fix the null check in auth"
-2025-01-14 15:22  s-def456  "add validation step before returning user"
-2025-01-14 15:00  s-def456  "create an auth service with JWT support"
+xyz789  2025-01-15 10:30  claude-code  "fix null check in auth"
+ghi012  2025-01-14 15:22  claude-code  "add validation step"
+def123  2025-01-14 15:00  claude-code  "JWT authentication service"
 ```
 
 ### `aiki sessions list` - Session Management
@@ -409,23 +412,23 @@ aiki blame <file>[:line] [--json]
 aiki why <file>[:line] [--json]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LOG (search the past)
+# LOG (view AI changes)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Recent prompts
+# Recent AI changes
 aiki log [--limit 20] [--json]
 
 # Filtering
-aiki log "query"                     # Search prompt text
-aiki log --files <file>              # Touched this file
+aiki log "query"                     # Search by intent
+aiki log --files <file>              # Changes that touched this file
 aiki log --session <id>              # Filter to session
 aiki log --agent <type>              # Filter by agent (claude-code, cursor)
 aiki log --since "1 week"            # After date
 aiki log --until "yesterday"         # Before date
 
 # Output options
-aiki log --stat                      # Show files changed per turn
-aiki log --verbose                   # Show full prompt/response
+aiki log --stat                      # Show files changed per change
+aiki log --verbose                   # Show full details
 aiki log --reverse                   # Oldest first
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -508,7 +511,7 @@ session.started:
    - Capture `change_id` from working copy
 
 3. **CLI commands**
-   - `aiki log` - List/search prompts
+   - `aiki log` - List/search AI changes
    - `aiki sessions list` - List sessions
 
 ### Phase 2: Code Archaeology Commands
@@ -608,7 +611,7 @@ Connections:
 
 - [ ] Prompt/response events recorded on `aiki/conversations` branch
 - [ ] Response events include `change_id` linking to JJ changes
-- [ ] `aiki log` lists and searches prompts
+- [ ] `aiki log` lists and searches AI changes
 - [ ] `aiki sessions list` works
 - [ ] `aiki blame` shows attribution (agent, session, timestamp)
 - [ ] `aiki why` shows narrative from prompt history
