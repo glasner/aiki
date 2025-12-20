@@ -1,16 +1,16 @@
 # Prompt History & Code Archaeology
 
 **Status**: 🟡 Design
-**Priority**: Medium (enables session resume, search, code archaeology)
+**Priority**: Medium (enables search, code archaeology)
 
 ## Overview
 
 Store prompt/response history on a JJ `aiki/conversations` branch using the same event-sourcing pattern as the task system. Combined with existing provenance tracking, this enables:
 
 1. **Code archaeology** - `aiki blame` / `aiki why` to understand code origins
-2. **Session resume** - Recover context when resuming sessions
-3. **Search** - Find past solutions ("what did we do about X?")
-4. **Context compaction survival** - Replay history when agent context is compacted
+2. **Search** - Find past solutions ("what did we do about X?")
+3. **Session listing** - See what sessions have occurred
+4. _(Future)_ **Session resume** - Recover context when resuming sessions
 
 **Key Architecture:** Event-sourced log on orphan `aiki/conversations` branch. Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id`.
 
@@ -33,9 +33,7 @@ aiki log --since "1 week"            # Time filter
 
 # SESSION MANAGEMENT
 aiki sessions list                    # List sessions
-aiki sessions show [id]               # Show session details (defaults to last)
-aiki sessions resume [id]             # Resume session (defaults to last)
-aiki sessions resume --agent <type>   # Resume last session for agent
+aiki sessions list --agent <type>     # Filter by agent
 ```
 
 ### `aiki blame` - Attribution
@@ -119,7 +117,7 @@ $ aiki log --files src/auth.ts
 2025-01-14 15:00  s-def456  "create an auth service with JWT support"
 ```
 
-### `aiki sessions` - Session Management
+### `aiki sessions list` - Session Management
 
 ```bash
 $ aiki sessions list
@@ -127,24 +125,9 @@ s-abc123  2025-01-15 10:30  claude-code  12 turns  "auth refactor"
 s-def456  2025-01-14 15:00  claude-code   8 turns  "security fixes"
 s-ghi789  2025-01-14 09:00  cursor        3 turns  "quick fix"
 
-$ aiki sessions show s-abc123
-Session: s-abc123
-Agent: claude-code
-Started: 2025-01-15 10:30
-Turns: 12
-
-Turn 1: "help me refactor the auth module"
-  → Read 5 files, edited 2 files
-
-Turn 2: "now add rate limiting"
-  → Edited src/middleware/rateLimit.ts (new file)
-
-Turn 3: "fix the null check in auth"
-  → Edited src/auth.ts:42
-
-$ aiki sessions resume s-abc123
-Resuming session s-abc123...
-Context injected (12 turns, 8 files touched)
+$ aiki sessions list --agent claude-code
+s-abc123  2025-01-15 10:30  claude-code  12 turns  "auth refactor"
+s-def456  2025-01-14 15:00  claude-code   8 turns  "security fixes"
 ```
 
 ---
@@ -452,23 +435,6 @@ aiki log --reverse                   # Oldest first
 # List sessions
 aiki sessions list [--limit 10] [--json]
 aiki sessions list --agent claude-code
-
-# Show session details (defaults to last session)
-aiki sessions show [session-id] [--json]
-
-# Resume session (defaults to last session)
-aiki sessions resume [session-id]
-aiki sessions resume --agent claude-code  # Last session for this agent
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAINTENANCE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Compact old sessions
-aiki sessions compact --older-than 30d
-
-# Sync to remote
-aiki sessions sync
 ```
 
 ---
@@ -544,7 +510,6 @@ session.started:
 3. **CLI commands**
    - `aiki log` - List/search prompts
    - `aiki sessions list` - List sessions
-   - `aiki sessions show` - Show session details
 
 ### Phase 2: Code Archaeology Commands
 
@@ -557,18 +522,7 @@ session.started:
    - Show intent (not raw prompts)
    - Display layered narrative of code evolution
 
-### Phase 3: Session Resume
-
-1. **Session tracking**
-   - Detect session resume (same working copy, recent session)
-   - Store resume intent
-
-2. **Context injection**
-   - Load session history
-   - Inject via PrePrompt
-   - Format for agent consumption
-
-### Phase 4: Compaction & Sync
+### Phase 3 (Future): Session Resume & Compaction
 
 1. **Compaction**
    - Summarize old sessions
@@ -622,7 +576,7 @@ jj log -r 'aiki/conversations' --limit 10
 │  Stores conversation history     │  Tracks work items                 │
 │  Event: prompt, response         │  Event: created, started, closed   │
 │  Query: aiki log                 │  Query: aiki task ready            │
-│  Resume: aiki sessions resume    │  Resume: show ready tasks          │
+│  List: aiki sessions list        │  List: aiki task list              │
 └──────────────────────────────────┴──────────────────────────────────────────┘
 
 Connections:
@@ -655,10 +609,9 @@ Connections:
 - [ ] Prompt/response events recorded on `aiki/conversations` branch
 - [ ] Response events include `change_id` linking to JJ changes
 - [ ] `aiki log` lists and searches prompts
-- [ ] `aiki sessions list/show` commands work
+- [ ] `aiki sessions list` works
 - [ ] `aiki blame` shows attribution (agent, session, timestamp)
 - [ ] `aiki why` shows narrative from prompt history
-- [ ] `aiki sessions resume` injects past context via PrePrompt
 - [ ] JJ revset queries work for searching
 - [ ] <50ms overhead for recording events
 
@@ -667,8 +620,6 @@ Connections:
 ## Next Steps
 
 1. Review this design
-2. Implement Phase 1 (core storage + session commands)
-3. Implement Phase 2 (who/why commands)
+2. Implement Phase 1 (core storage + log/sessions commands)
+3. Implement Phase 2 (blame/why commands)
 4. Test with real sessions
-5. Implement Phase 3 (session resume)
-6. Evaluate need for Phase 4 (compaction)
