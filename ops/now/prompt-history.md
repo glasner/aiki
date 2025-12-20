@@ -27,6 +27,9 @@ aiki why <file>[:line]               # Why does this code exist? (intent + narra
 aiki log                             # Recent prompts across all sessions
 aiki log "query"                     # Search prompts
 aiki log --files <file>              # Find prompts that touched a file
+aiki log --session <id>              # Filter to session
+aiki log --agent <type>              # Filter by agent
+aiki log --since "1 week"            # Time filter
 
 # SESSION MANAGEMENT
 aiki sessions list                    # List sessions
@@ -426,12 +429,20 @@ aiki why <file>[:line] [--json]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Recent prompts
-aiki log [--limit 10] [--json]
+aiki log [--limit 20] [--json]
 
-# Search prompts
-aiki log "query"
-aiki log --files <file>
-aiki log --since yesterday
+# Filtering
+aiki log "query"                     # Search prompt text
+aiki log --files <file>              # Touched this file
+aiki log --session <id>              # Filter to session
+aiki log --agent <type>              # Filter by agent (claude-code, cursor)
+aiki log --since "1 week"            # After date
+aiki log --until "yesterday"         # Before date
+
+# Output options
+aiki log --stat                      # Show files changed per turn
+aiki log --verbose                   # Show full prompt/response
+aiki log --reverse                   # Oldest first
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION MANAGEMENT
