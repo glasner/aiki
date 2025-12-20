@@ -7,7 +7,7 @@
 
 Store prompt/response history on a JJ `aiki/conversations` branch using the same event-sourcing pattern as the task system. Combined with existing provenance tracking, this enables:
 
-1. **Code archaeology** - `aiki who` / `aiki why` to understand code origins
+1. **Code archaeology** - `aiki blame` / `aiki why` to understand code origins
 2. **Session resume** - Recover context when resuming sessions
 3. **Search** - Find past solutions ("what did we do about X?")
 4. **Context compaction survival** - Replay history when agent context is compacted
@@ -20,9 +20,8 @@ Store prompt/response history on a JJ `aiki/conversations` branch using the same
 
 ```bash
 # CODE ARCHAEOLOGY
-aiki who <file>[:line]               # Who changed this code?
-aiki blame <file>[:line]             # Alias for `aiki who`
-aiki why <file>[:line]               # Why does this code exist?
+aiki blame <file>[:line]             # Who changed this code, when, which session
+aiki why <file>[:line]               # Why does this code exist? (intent + narrative)
 
 # HISTORY (search the past)
 aiki history                         # Recent prompts across all sessions
@@ -35,15 +34,15 @@ aiki session show [id]               # Show session details (--last for most rec
 aiki session resume [id]             # Resume with context injection
 ```
 
-### `aiki who` - The Facts
+### `aiki blame` - Attribution
 
-Quick attribution: who changed the code, when, which session.
+Who changed the code, when, which session.
 
 ```bash
-$ aiki who src/auth.ts:42
+$ aiki blame src/auth.ts:42
 Line 42: claude-code (session s-abc123, turn 3) 2025-01-15 10:30
 
-$ aiki who src/auth.ts
+$ aiki blame src/auth.ts
 src/auth.ts:
   L12-15: claude-code (s-abc123) 2025-01-15
   L42:    claude-code (s-abc123) 2025-01-15
@@ -417,8 +416,7 @@ Implemented authentication system over 47 turns.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Who changed this code?
-aiki who <file>[:line] [--json]
-aiki blame <file>[:line]             # Alias
+aiki blame <file>[:line] [--json]
 
 # Why does this code exist?
 aiki why <file>[:line] [--json]
@@ -538,14 +536,14 @@ session.started:
 
 ### Phase 2: Code Archaeology Commands
 
-1. **`aiki who`** (rename existing `aiki blame`)
+1. **`aiki blame`** (existing, enhanced)
    - Quick facts: agent, session, timestamp
    - Link to session/turn via change_id
 
 2. **`aiki why`** (new command)
    - Look up change_id in aiki/conversations
-   - Show prompt and response summary
-   - Display full narrative
+   - Show intent (not raw prompts)
+   - Display layered narrative of code evolution
 
 ### Phase 3: Session Resume
 
@@ -594,15 +592,15 @@ jj log -r 'aiki/conversations' --limit 10
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              CODE ARCHAEOLOGY                                │
 │                                                                             │
-│   aiki who file:line          aiki why file:line                           │
+│   aiki blame file:line        aiki why file:line                            │
 │        │                            │                                       │
 │        ▼                            ▼                                       │
-│   ┌─────────┐                 ┌─────────────┐                              │
-│   │ Facts   │                 │ Narrative   │                              │
-│   │ WHO     │───change_id────▶│ WHY         │                              │
-│   │ WHEN    │                 │ PROMPT      │                              │
-│   └─────────┘                 └─────────────┘                              │
-│   (from JJ change              (from aiki/conversations                          │
+│   ┌─────────┐                 ┌─────────────┐                               │
+│   │ Facts   │                 │ Narrative   │                               │
+│   │ WHO     │───change_id────▶│ WHY         │                               │
+│   │ WHEN    │                 │ INTENT      │                               │
+│   └─────────┘                 └─────────────┘                               │
+│   (from JJ change              (from aiki/conversations                     │
 │    descriptions)                branch)                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 
@@ -646,7 +644,7 @@ Connections:
 - [ ] Response events include `change_id` linking to JJ changes
 - [ ] `aiki history` lists and searches prompts
 - [ ] `aiki session list/show` commands work
-- [ ] `aiki who` shows attribution (replaces `aiki blame`)
+- [ ] `aiki blame` shows attribution (agent, session, timestamp)
 - [ ] `aiki why` shows narrative from prompt history
 - [ ] `aiki session resume` injects past context via PrePrompt
 - [ ] JJ revset queries work for searching
