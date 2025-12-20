@@ -5,14 +5,14 @@
 
 ## Overview
 
-Store prompt/response history on a JJ `aiki/prompts` branch using the same event-sourcing pattern as the task system. Combined with existing provenance tracking, this enables:
+Store prompt/response history on a JJ `aiki/conversations` branch using the same event-sourcing pattern as the task system. Combined with existing provenance tracking, this enables:
 
 1. **Code archaeology** - `aiki who` / `aiki why` to understand code origins
 2. **Session resume** - Recover context when resuming sessions
 3. **Search** - Find past solutions ("what did we do about X?")
 4. **Context compaction survival** - Replay history when agent context is compacted
 
-**Key Architecture:** Event-sourced log on orphan `aiki/prompts` branch. Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id`.
+**Key Architecture:** Event-sourced log on orphan `aiki/conversations` branch. Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id`.
 
 ---
 
@@ -166,11 +166,11 @@ Context injected (12 turns, 8 files touched)
 
 ### Prompt Event
 
-Stored as change description on `aiki/prompts` branch:
+Stored as change description on `aiki/conversations` branch:
 
 ```yaml
 ---
-aiki_prompt: v1
+aiki_conversation: v1
 event: prompt
 session_id: "abc123"
 timestamp: "2025-01-15T10:30:00Z"
@@ -192,7 +192,7 @@ How do I add authentication to my Express app?
 
 ```yaml
 ---
-aiki_prompt: v1
+aiki_conversation: v1
 event: response
 session_id: "abc123"
 timestamp: "2025-01-15T10:31:45Z"
@@ -268,7 +268,7 @@ Stored intent: "fix null check in auth"
 
 ```yaml
 ---
-aiki_prompt: v1
+aiki_conversation: v1
 event: response
 session_id: "abc123"
 turn: 3
@@ -285,7 +285,7 @@ When a turn modifies multiple files, capture per-file intent:
 
 ```yaml
 ---
-aiki_prompt: v1
+aiki_conversation: v1
 event: response
 session_id: "abc123"
 turn: 2
@@ -345,7 +345,7 @@ This would be extracted and stored verbatim, overriding automatic derivation
 ## Branch Structure
 
 ```
-aiki/prompts (orphan branch, linear append-only log)
+aiki/conversations (orphan branch, linear append-only log)
 ├── change-001: [prompt] session=abc, turn=1, "How do I add auth..."
 ├── change-002: [response] session=abc, turn=1, files=[auth.ts, login.ts]
 ├── change-003: [prompt] session=abc, turn=2, "Now add rate limiting"
@@ -385,7 +385,7 @@ For long-running projects, compact old sessions:
 
 ```yaml
 ---
-aiki_prompt: v1
+aiki_conversation: v1
 event: session_summary
 session_id: "abc123"
 original_turns: 47
@@ -521,7 +521,7 @@ session.started:
 ### Phase 1: Core Storage & Session Commands
 
 1. **Create branch manager** (`cli/src/sessions/manager.rs`)
-   - Initialize `aiki/prompts` orphan branch
+   - Initialize `aiki/conversations` orphan branch
    - Append prompt/response events
    - Parse events from change descriptions
    - Link responses to JJ changes via `change_id`
@@ -543,7 +543,7 @@ session.started:
    - Link to session/turn via change_id
 
 2. **`aiki why`** (new command)
-   - Look up change_id in aiki/prompts
+   - Look up change_id in aiki/conversations
    - Show prompt and response summary
    - Display full narrative
 
@@ -565,7 +565,7 @@ session.started:
    - Replace with compact event
 
 2. **Remote sync**
-   - Push `aiki/prompts` to remote
+   - Push `aiki/conversations` to remote
    - Handle multi-device scenarios
 
 ---
@@ -574,16 +574,16 @@ session.started:
 
 ```bash
 # Find all prompts in a session
-jj log -r 'aiki/prompts & description("session_id: abc123")'
+jj log -r 'aiki/conversations & description("session_id: abc123")'
 
 # Find prompts mentioning authentication
-jj log -r 'aiki/prompts & description("authentication")'
+jj log -r 'aiki/conversations & description("authentication")'
 
 # Find responses that modified a file
-jj log -r 'aiki/prompts & description("files_written:.*auth.ts")'
+jj log -r 'aiki/conversations & description("files_written:.*auth.ts")'
 
 # Get last 10 prompts
-jj log -r 'aiki/prompts' --limit 10
+jj log -r 'aiki/conversations' --limit 10
 ```
 
 ---
@@ -602,12 +602,12 @@ jj log -r 'aiki/prompts' --limit 10
 │   │ WHO     │───change_id────▶│ WHY         │                              │
 │   │ WHEN    │                 │ PROMPT      │                              │
 │   └─────────┘                 └─────────────┘                              │
-│   (from JJ change              (from aiki/prompts                          │
+│   (from JJ change              (from aiki/conversations                          │
 │    descriptions)                branch)                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  aiki/prompts                    │  aiki/tasks                              │
+│  aiki/conversations                    │  aiki/tasks                              │
 │  ──────────────                  │  ───────────                             │
 │  Stores conversation history     │  Tracks work items                       │
 │  Event: prompt, response         │  Event: created, started, closed         │
@@ -642,7 +642,7 @@ Connections:
 
 ## Success Criteria
 
-- [ ] Prompt/response events recorded on `aiki/prompts` branch
+- [ ] Prompt/response events recorded on `aiki/conversations` branch
 - [ ] Response events include `change_id` linking to JJ changes
 - [ ] `aiki history` lists and searches prompts
 - [ ] `aiki session list/show` commands work
