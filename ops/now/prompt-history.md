@@ -24,10 +24,14 @@ aiki who <file>[:line]               # Who changed this code?
 aiki blame <file>[:line]             # Alias for `aiki who`
 aiki why <file>[:line]               # Why does this code exist?
 
+# HISTORY (search the past)
+aiki history                         # Recent prompts across all sessions
+aiki history "query"                 # Search prompts
+aiki history --files <file>          # Find prompts that touched a file
+
 # SESSION MANAGEMENT
-aiki session list                    # List recent sessions
+aiki session list                    # List sessions
 aiki session show [id]               # Show session details (--last for most recent)
-aiki session search "query"          # Search across sessions
 aiki session resume [id]             # Resume with context injection
 ```
 
@@ -76,6 +80,26 @@ Session s-abc123, turn 3 (2025-01-15 10:30):
 Session s-def456, turn 7 (2025-01-14 15:22):
   User: "add validation step before returning user"
   Agent: "Added .validate() call per security requirements"
+```
+
+### `aiki history` - Search the Past
+
+```bash
+$ aiki history
+2025-01-15 10:30  s-abc123  "fix the null check in auth"
+2025-01-15 10:25  s-abc123  "now add rate limiting"
+2025-01-15 10:20  s-abc123  "help me refactor the auth module"
+2025-01-14 15:22  s-def456  "add validation step before returning user"
+2025-01-14 15:00  s-def456  "create an auth service with JWT support"
+
+$ aiki history "null check"
+2025-01-15 10:30  s-abc123  "fix the null check in auth"
+  → Edited src/auth.ts:42
+
+$ aiki history --files src/auth.ts
+2025-01-15 10:30  s-abc123  "fix the null check in auth"
+2025-01-14 15:22  s-def456  "add validation step before returning user"
+2025-01-14 15:00  s-def456  "create an auth service with JWT support"
 ```
 
 ### `aiki session` - Session Management
@@ -276,21 +300,28 @@ aiki blame <file>[:line]             # Alias
 aiki why <file>[:line] [--json]
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# HISTORY (search the past)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Recent prompts
+aiki history [--limit 10] [--json]
+
+# Search prompts
+aiki history "query"
+aiki history --files <file>
+aiki history --since yesterday
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SESSION MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # List sessions
 aiki session list [--limit 10] [--json]
 aiki session list --agent claude-code
-aiki session list --since yesterday
 
 # Show session details
 aiki session show <session-id> [--json]
 aiki session show --last
-
-# Search across sessions
-aiki session search "authentication"
-aiki session search --files "auth.ts"
 
 # Resume session (inject context via PrePrompt)
 aiki session resume [session-id]     # Defaults to --last
@@ -377,9 +408,9 @@ session.started:
    - Capture `change_id` from working copy
 
 3. **CLI commands**
-   - `aiki session list` - List recent sessions
+   - `aiki history` - List/search prompts
+   - `aiki session list` - List sessions
    - `aiki session show` - Show session details
-   - `aiki session search` - Search across sessions
 
 ### Phase 2: Code Archaeology Commands
 
@@ -489,10 +520,11 @@ Connections:
 
 - [ ] Prompt/response events recorded on `aiki/prompts` branch
 - [ ] Response events include `change_id` linking to JJ changes
-- [ ] `aiki session list/show/search` commands work
+- [ ] `aiki history` lists and searches prompts
+- [ ] `aiki session list/show` commands work
 - [ ] `aiki who` shows attribution (replaces `aiki blame`)
 - [ ] `aiki why` shows narrative from prompt history
-- [ ] Session resume injects past context via PrePrompt
+- [ ] `aiki session resume` injects past context via PrePrompt
 - [ ] JJ revset queries work for searching
 - [ ] <50ms overhead for recording events
 
