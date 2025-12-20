@@ -23,10 +23,10 @@ Store prompt/response history on a JJ `aiki/conversations` branch using the same
 aiki blame <file>[:line]             # Who changed this code, when, which session
 aiki why <file>[:line]               # Why does this code exist? (intent + narrative)
 
-# HISTORY (search the past)
-aiki history                         # Recent prompts across all sessions
-aiki history "query"                 # Search prompts
-aiki history --files <file>          # Find prompts that touched a file
+# LOG (search the past)
+aiki log                             # Recent prompts across all sessions
+aiki log "query"                     # Search prompts
+aiki log --files <file>              # Find prompts that touched a file
 
 # SESSION MANAGEMENT
 aiki sessions list                    # List sessions
@@ -95,21 +95,21 @@ Line 42: `const user = await getUser(id)?.validate();`
   Agent: "Added .validate() call per security requirements"
 ```
 
-### `aiki history` - Search the Past
+### `aiki log` - Search the Past
 
 ```bash
-$ aiki history
+$ aiki log
 2025-01-15 10:30  s-abc123  "fix the null check in auth"
 2025-01-15 10:25  s-abc123  "now add rate limiting"
 2025-01-15 10:20  s-abc123  "help me refactor the auth module"
 2025-01-14 15:22  s-def456  "add validation step before returning user"
 2025-01-14 15:00  s-def456  "create an auth service with JWT support"
 
-$ aiki history "null check"
+$ aiki log "null check"
 2025-01-15 10:30  s-abc123  "fix the null check in auth"
   → Edited src/auth.ts:42
 
-$ aiki history --files src/auth.ts
+$ aiki log --files src/auth.ts
 2025-01-15 10:30  s-abc123  "fix the null check in auth"
 2025-01-14 15:22  s-def456  "add validation step before returning user"
 2025-01-14 15:00  s-def456  "create an auth service with JWT support"
@@ -422,16 +422,16 @@ aiki blame <file>[:line] [--json]
 aiki why <file>[:line] [--json]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# HISTORY (search the past)
+# LOG (search the past)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Recent prompts
-aiki history [--limit 10] [--json]
+aiki log [--limit 10] [--json]
 
 # Search prompts
-aiki history "query"
-aiki history --files <file>
-aiki history --since yesterday
+aiki log "query"
+aiki log --files <file>
+aiki log --since yesterday
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SESSION MANAGEMENT
@@ -530,7 +530,7 @@ session.started:
    - Capture `change_id` from working copy
 
 3. **CLI commands**
-   - `aiki history` - List/search prompts
+   - `aiki log` - List/search prompts
    - `aiki sessions list` - List sessions
    - `aiki sessions show` - Show session details
 
@@ -605,12 +605,12 @@ jj log -r 'aiki/conversations' --limit 10
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  aiki/conversations                    │  aiki/tasks                              │
-│  ──────────────                  │  ───────────                             │
-│  Stores conversation history     │  Tracks work items                       │
-│  Event: prompt, response         │  Event: created, started, closed         │
-│  Query: aiki sessions search      │  Query: aiki task ready                  │
-│  Resume: aiki sessions resume     │  Resume: show ready tasks                │
+│  aiki/conversations              │  aiki/tasks                        │
+│  ───────────────────             │  ───────────                       │
+│  Stores conversation history     │  Tracks work items                 │
+│  Event: prompt, response         │  Event: created, started, closed   │
+│  Query: aiki log                 │  Query: aiki task ready            │
+│  Resume: aiki sessions resume    │  Resume: show ready tasks          │
 └──────────────────────────────────┴──────────────────────────────────────────┘
 
 Connections:
@@ -642,7 +642,7 @@ Connections:
 
 - [ ] Prompt/response events recorded on `aiki/conversations` branch
 - [ ] Response events include `change_id` linking to JJ changes
-- [ ] `aiki history` lists and searches prompts
+- [ ] `aiki log` lists and searches prompts
 - [ ] `aiki sessions list/show` commands work
 - [ ] `aiki blame` shows attribution (agent, session, timestamp)
 - [ ] `aiki why` shows narrative from prompt history
