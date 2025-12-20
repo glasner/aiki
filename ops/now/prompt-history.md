@@ -29,9 +29,9 @@ aiki history "query"                 # Search prompts
 aiki history --files <file>          # Find prompts that touched a file
 
 # SESSION MANAGEMENT
-aiki session list                    # List sessions
-aiki session show [id]               # Show session details (--last for most recent)
-aiki session resume [id]             # Resume with context injection
+aiki sessions list                    # List sessions
+aiki sessions show [id]               # Show session details (--last for most recent)
+aiki sessions resume [id]             # Resume with context injection
 ```
 
 ### `aiki blame` - Attribution
@@ -115,15 +115,15 @@ $ aiki history --files src/auth.ts
 2025-01-14 15:00  s-def456  "create an auth service with JWT support"
 ```
 
-### `aiki session` - Session Management
+### `aiki sessions` - Session Management
 
 ```bash
-$ aiki session list
+$ aiki sessions list
 s-abc123  2025-01-15 10:30  claude-code  12 turns  "auth refactor"
 s-def456  2025-01-14 15:00  claude-code   8 turns  "security fixes"
 s-ghi789  2025-01-14 09:00  cursor        3 turns  "quick fix"
 
-$ aiki session show s-abc123
+$ aiki sessions show s-abc123
 Session: s-abc123
 Agent: claude-code
 Started: 2025-01-15 10:30
@@ -138,7 +138,7 @@ Turn 2: "now add rate limiting"
 Turn 3: "fix the null check in auth"
   → Edited src/auth.ts:42
 
-$ aiki session resume s-abc123
+$ aiki sessions resume s-abc123
 Resuming session s-abc123...
 Context injected (12 turns, 8 files touched)
 ```
@@ -438,25 +438,25 @@ aiki history --since yesterday
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # List sessions
-aiki session list [--limit 10] [--json]
-aiki session list --agent claude-code
+aiki sessions list [--limit 10] [--json]
+aiki sessions list --agent claude-code
 
 # Show session details
-aiki session show <session-id> [--json]
-aiki session show --last
+aiki sessions show <session-id> [--json]
+aiki sessions show --last
 
 # Resume session (inject context via PrePrompt)
-aiki session resume [session-id]     # Defaults to --last
+aiki sessions resume [session-id]     # Defaults to --last
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAINTENANCE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Compact old sessions
-aiki session compact --older-than 30d
+aiki sessions compact --older-than 30d
 
 # Sync to remote
-aiki session sync
+aiki sessions sync
 ```
 
 ---
@@ -531,8 +531,8 @@ session.started:
 
 3. **CLI commands**
    - `aiki history` - List/search prompts
-   - `aiki session list` - List sessions
-   - `aiki session show` - Show session details
+   - `aiki sessions list` - List sessions
+   - `aiki sessions show` - Show session details
 
 ### Phase 2: Code Archaeology Commands
 
@@ -609,8 +609,8 @@ jj log -r 'aiki/conversations' --limit 10
 │  ──────────────                  │  ───────────                             │
 │  Stores conversation history     │  Tracks work items                       │
 │  Event: prompt, response         │  Event: created, started, closed         │
-│  Query: aiki session search      │  Query: aiki task ready                  │
-│  Resume: aiki session resume     │  Resume: show ready tasks                │
+│  Query: aiki sessions search      │  Query: aiki task ready                  │
+│  Resume: aiki sessions resume     │  Resume: show ready tasks                │
 └──────────────────────────────────┴──────────────────────────────────────────┘
 
 Connections:
@@ -643,10 +643,10 @@ Connections:
 - [ ] Prompt/response events recorded on `aiki/conversations` branch
 - [ ] Response events include `change_id` linking to JJ changes
 - [ ] `aiki history` lists and searches prompts
-- [ ] `aiki session list/show` commands work
+- [ ] `aiki sessions list/show` commands work
 - [ ] `aiki blame` shows attribution (agent, session, timestamp)
 - [ ] `aiki why` shows narrative from prompt history
-- [ ] `aiki session resume` injects past context via PrePrompt
+- [ ] `aiki sessions resume` injects past context via PrePrompt
 - [ ] JJ revset queries work for searching
 - [ ] <50ms overhead for recording events
 
