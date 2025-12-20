@@ -1,18 +1,95 @@
-# Prompt History Storage
+# Prompt History & Code Archaeology
 
 **Status**: 🟡 Design
-**Priority**: Medium (enables session resume, search, context survival)
+**Priority**: Medium (enables session resume, search, code archaeology)
 
 ## Overview
 
-Store prompt/response history on a JJ `aiki/prompts` branch using the same event-sourcing pattern as the task system. This enables:
+Store prompt/response history on a JJ `aiki/prompts` branch using the same event-sourcing pattern as the task system. Combined with existing provenance tracking, this enables:
 
-1. **Session resume** - Recover context when resuming sessions
-2. **Search** - Find past solutions ("what did we do about X?")
-3. **Context compaction survival** - Replay history when agent context is compacted
-4. **Audit trail** - Full record of agent interactions
+1. **Code archaeology** - `aiki who` / `aiki why` to understand code origins
+2. **Session resume** - Recover context when resuming sessions
+3. **Search** - Find past solutions ("what did we do about X?")
+4. **Context compaction survival** - Replay history when agent context is compacted
 
-**Key Architecture:** Event-sourced log on orphan `aiki/prompts` branch. Each prompt/response turn is a JJ change with structured metadata in the description.
+**Key Architecture:** Event-sourced log on orphan `aiki/prompts` branch. Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id`.
+
+---
+
+## Command Structure
+
+```bash
+# CODE ARCHAEOLOGY
+aiki who <file>[:line]               # Who changed this code?
+aiki blame <file>[:line]             # Alias for `aiki who`
+aiki why <file>[:line]               # Why does this code exist?
+
+# SESSION MANAGEMENT
+aiki session list                    # List recent sessions
+aiki session show [id]               # Show session details (--last for most recent)
+aiki session search "query"          # Search across sessions
+aiki session resume [id]             # Resume with context injection
+```
+
+### `aiki who` - The Facts
+
+Quick attribution: who changed the code, when, which session.
+
+```bash
+$ aiki who src/auth.ts:42
+Line 42: claude-code (session s-abc123, turn 3) 2025-01-15 10:30
+
+$ aiki who src/auth.ts
+src/auth.ts:
+  L12-15: claude-code (s-abc123) 2025-01-15
+  L42:    claude-code (s-abc123) 2025-01-15
+  L67-89: human 2025-01-10
+```
+
+### `aiki why` - The Narrative
+
+Full story: the prompt that led to the change, agent's reasoning.
+
+```bash
+$ aiki why src/auth.ts:42
+Line 42: `const user = await getUser(id)?.validate();`
+
+Session s-abc123, turn 3 (2025-01-15 10:30):
+  User: "fix the null check in auth"
+  Agent: "Added optional chaining to prevent null pointer when user not found"
+
+Session s-def456, turn 7 (2025-01-14 15:22):
+  User: "add validation step before returning user"
+  Agent: "Added .validate() call per security requirements"
+```
+
+### `aiki session` - Session Management
+
+```bash
+$ aiki session list
+s-abc123  2025-01-15 10:30  claude-code  12 turns  "auth refactor"
+s-def456  2025-01-14 15:00  claude-code   8 turns  "security fixes"
+s-ghi789  2025-01-14 09:00  cursor        3 turns  "quick fix"
+
+$ aiki session show s-abc123
+Session: s-abc123
+Agent: claude-code
+Started: 2025-01-15 10:30
+Turns: 12
+
+Turn 1: "help me refactor the auth module"
+  → Read 5 files, edited 2 files
+
+Turn 2: "now add rate limiting"
+  → Edited src/middleware/rateLimit.ts (new file)
+
+Turn 3: "fix the null check in auth"
+  → Edited src/auth.ts:42
+
+$ aiki session resume s-abc123
+Resuming session s-abc123...
+Context injected (12 turns, 8 files touched)
+```
 
 ---
 
@@ -68,6 +145,7 @@ session_id: "abc123"
 timestamp: "2025-01-15T10:31:45Z"
 agent_type: claude-code
 turn: 1
+change_id: "xyz789"                    # Links to JJ change (for aiki who/why)
 duration_ms: 105000
 files_read: ["src/auth.ts", "src/middleware.ts"]
 files_written: ["src/auth.ts", "src/routes/login.ts"]
@@ -87,6 +165,10 @@ Added JWT authentication with:
 - src/auth.ts: Added validateToken() function
 - src/routes/login.ts: New file with login handler
 ```
+
+**Key field: `change_id`** - Links this response to the JJ change in the working copy. This enables:
+- `aiki who` to find which session/turn changed a line
+- `aiki why` to retrieve the prompt that led to the change
 
 ### Why Separate Prompt and Response Events?
 
@@ -168,41 +250,45 @@ Implemented authentication system over 47 turns.
 
 ```bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# QUERYING HISTORY
+# CODE ARCHAEOLOGY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# List recent prompts
-aiki history [--limit 10] [--json]
+# Who changed this code?
+aiki who <file>[:line] [--json]
+aiki blame <file>[:line]             # Alias
 
-# Search prompts
-aiki history search "authentication"
-aiki history search --files "auth.ts"
-
-# Show session history
-aiki history session <session-id>
-
-# Show specific turn
-aiki history show <session-id> --turn 3
+# Why does this code exist?
+aiki why <file>[:line] [--json]
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SESSION RESUME
+# SESSION MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Resume last session (inject history into PrePrompt)
-aiki session resume
+# List sessions
+aiki session list [--limit 10] [--json]
+aiki session list --agent claude-code
+aiki session list --since yesterday
 
-# Resume specific session
-aiki session resume <session-id>
+# Show session details
+aiki session show <session-id> [--json]
+aiki session show --last
+
+# Search across sessions
+aiki session search "authentication"
+aiki session search --files "auth.ts"
+
+# Resume session (inject context via PrePrompt)
+aiki session resume [session-id]     # Defaults to --last
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAINTENANCE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Compact old sessions
-aiki history compact --older-than 30d
+aiki session compact --older-than 30d
 
 # Sync to remote
-aiki history sync
+aiki session sync
 ```
 
 ---
@@ -262,24 +348,36 @@ session.started:
 
 ## Implementation Plan
 
-### Phase 1: Core Storage
+### Phase 1: Core Storage & Session Commands
 
-1. **Create branch manager** (`cli/src/prompts/manager.rs`)
+1. **Create branch manager** (`cli/src/sessions/manager.rs`)
    - Initialize `aiki/prompts` orphan branch
    - Append prompt/response events
    - Parse events from change descriptions
+   - Link responses to JJ changes via `change_id`
 
 2. **Add event recording**
    - Hook into `prompt.submitted` event
    - Hook into `response.received` event
-   - Record metadata in change descriptions
+   - Capture `change_id` from working copy
 
 3. **CLI commands**
-   - `aiki history` - List recent
-   - `aiki history search` - Search prompts
-   - `aiki history session` - Show session
+   - `aiki session list` - List recent sessions
+   - `aiki session show` - Show session details
+   - `aiki session search` - Search across sessions
 
-### Phase 2: Session Resume
+### Phase 2: Code Archaeology Commands
+
+1. **`aiki who`** (rename existing `aiki blame`)
+   - Quick facts: agent, session, timestamp
+   - Link to session/turn via change_id
+
+2. **`aiki why`** (new command)
+   - Look up change_id in aiki/prompts
+   - Show prompt and response summary
+   - Display full narrative
+
+### Phase 3: Session Resume
 
 1. **Session tracking**
    - Detect session resume (same working copy, recent session)
@@ -290,7 +388,7 @@ session.started:
    - Inject via PrePrompt
    - Format for agent consumption
 
-### Phase 3: Compaction & Sync
+### Phase 4: Compaction & Sync
 
 1. **Compaction**
    - Summarize old sessions
@@ -323,17 +421,32 @@ jj log -r 'aiki/prompts' --limit 10
 ## Relationship to Other Systems
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  aiki/prompts                    │  aiki/tasks                  │
-│  ──────────────                  │  ───────────                 │
-│  Stores conversation history     │  Tracks work items           │
-│  Event: prompt, response         │  Event: created, started,    │
-│                                  │         closed               │
-│  Query: "what did we discuss?"   │  Query: "what's left to do?" │
-│  Resume: inject past context     │  Resume: show ready tasks    │
-└──────────────────────────────────┴──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CODE ARCHAEOLOGY                                │
+│                                                                             │
+│   aiki who file:line          aiki why file:line                           │
+│        │                            │                                       │
+│        ▼                            ▼                                       │
+│   ┌─────────┐                 ┌─────────────┐                              │
+│   │ Facts   │                 │ Narrative   │                              │
+│   │ WHO     │───change_id────▶│ WHY         │                              │
+│   │ WHEN    │                 │ PROMPT      │                              │
+│   └─────────┘                 └─────────────┘                              │
+│   (from JJ change              (from aiki/prompts                          │
+│    descriptions)                branch)                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-Connection:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  aiki/prompts                    │  aiki/tasks                              │
+│  ──────────────                  │  ───────────                             │
+│  Stores conversation history     │  Tracks work items                       │
+│  Event: prompt, response         │  Event: created, started, closed         │
+│  Query: aiki session search      │  Query: aiki task ready                  │
+│  Resume: aiki session resume     │  Resume: show ready tasks                │
+└──────────────────────────────────┴──────────────────────────────────────────┘
+
+Connections:
+- Response events include change_id → enables who/why queries
 - Response events can reference task IDs worked on
 - Task close events can reference the turn that fixed it
 - Session resume loads both history AND pending tasks
@@ -360,18 +473,21 @@ Connection:
 ## Success Criteria
 
 - [ ] Prompt/response events recorded on `aiki/prompts` branch
-- [ ] `aiki history` commands work
-- [ ] Session resume injects past context
+- [ ] Response events include `change_id` linking to JJ changes
+- [ ] `aiki session list/show/search` commands work
+- [ ] `aiki who` shows attribution (replaces `aiki blame`)
+- [ ] `aiki why` shows narrative from prompt history
+- [ ] Session resume injects past context via PrePrompt
 - [ ] JJ revset queries work for searching
 - [ ] <50ms overhead for recording events
-- [ ] Works with existing task system
 
 ---
 
 ## Next Steps
 
 1. Review this design
-2. Implement Phase 1 (core storage)
-3. Test with real sessions
-4. Implement Phase 2 (session resume)
-5. Evaluate need for Phase 3 (compaction)
+2. Implement Phase 1 (core storage + session commands)
+3. Implement Phase 2 (who/why commands)
+4. Test with real sessions
+5. Implement Phase 3 (session resume)
+6. Evaluate need for Phase 4 (compaction)
