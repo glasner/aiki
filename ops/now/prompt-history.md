@@ -51,6 +51,21 @@ src/auth.ts:
 Full story: the prompt that led to the change, agent's reasoning.
 
 ```bash
+$ aiki why src/auth.ts
+src/auth.ts (created 2025-01-14, 3 sessions)
+
+Session s-def456, turn 2 (2025-01-14 15:00):
+  User: "create an auth service with JWT support"
+  Agent: "Created AuthService with login(), logout(), and validateToken()"
+
+Session s-def456, turn 7 (2025-01-14 15:22):
+  User: "add validation step before returning user"
+  Agent: "Added .validate() call per security requirements"
+
+Session s-abc123, turn 3 (2025-01-15 10:30):
+  User: "fix the null check in auth"
+  Agent: "Added optional chaining to prevent null pointer when user not found"
+
 $ aiki why src/auth.ts:42
 Line 42: `const user = await getUser(id)?.validate();`
 
