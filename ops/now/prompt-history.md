@@ -33,8 +33,9 @@ aiki log --since "1 week"            # Time filter
 
 # SESSION MANAGEMENT
 aiki sessions list                    # List sessions
-aiki sessions show [id]               # Show session details (--last for most recent)
-aiki sessions resume [id]             # Resume with context injection
+aiki sessions show [id]               # Show session details (defaults to last)
+aiki sessions resume [id]             # Resume session (defaults to last)
+aiki sessions resume --agent <type>   # Resume last session for agent
 ```
 
 ### `aiki blame` - Attribution
@@ -452,12 +453,12 @@ aiki log --reverse                   # Oldest first
 aiki sessions list [--limit 10] [--json]
 aiki sessions list --agent claude-code
 
-# Show session details
-aiki sessions show <session-id> [--json]
-aiki sessions show --last
+# Show session details (defaults to last session)
+aiki sessions show [session-id] [--json]
 
-# Resume session (inject context via PrePrompt)
-aiki sessions resume [session-id]     # Defaults to --last
+# Resume session (defaults to last session)
+aiki sessions resume [session-id]
+aiki sessions resume --agent claude-code  # Last session for this agent
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAINTENANCE
