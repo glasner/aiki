@@ -47,7 +47,7 @@ pub fn parse_mcp_server(tool_name: &str) -> Option<String> {
 /// This event fires before an MCP tool call. Can be used to gate expensive
 /// operations, enforce rate limits, or audit tool usage.
 pub fn handle_mcp_permission_asked(payload: AikiMcpPermissionAskedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -65,7 +65,7 @@ pub fn handle_mcp_permission_asked(payload: AikiMcpPermissionAskedPayload) -> Re
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::McpPermissionAsked,
         &mut state,
         &core_flow.mcp_permission_asked,

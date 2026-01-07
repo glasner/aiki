@@ -20,7 +20,7 @@ pub struct AikiResponseReceivedPayload {
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -37,7 +37,7 @@ pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = match execute_core_flow(
+    let _flow_result = match execute_flow(
         EventType::ResponseReceived,
         &mut state,
         &core_flow.response_received,

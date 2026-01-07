@@ -130,7 +130,7 @@ impl FlowEngine {
                 );
                 resolver.add_var("event.command".to_string(), e.command.clone());
                 resolver.add_var("event.success".to_string(), e.success.to_string());
-                // Optional fields - only add if vendor provides them
+                // Optional fields - only add if agent provides them
                 if let Some(exit_code) = e.exit_code {
                     resolver.add_var("event.exit_code".to_string(), exit_code.to_string());
                 }
@@ -210,7 +210,10 @@ impl FlowEngine {
                 resolver.add_var("event.tool_name".to_string(), e.tool_name.clone());
 
                 // Computed properties for operation type checks (return "true" or "")
-                resolver.add_var("event.write".to_string(), e.operation.is_write().to_string());
+                resolver.add_var(
+                    "event.write".to_string(),
+                    e.operation.is_write().to_string(),
+                );
                 resolver.add_var(
                     "event.delete".to_string(),
                     e.operation.is_delete().to_string(),
@@ -270,7 +273,10 @@ impl FlowEngine {
                 resolver.add_var("event.success".to_string(), e.success.to_string());
 
                 // Computed properties for operation type checks (return "true" or "")
-                resolver.add_var("event.write".to_string(), e.operation.is_write().to_string());
+                resolver.add_var(
+                    "event.write".to_string(),
+                    e.operation.is_write().to_string(),
+                );
                 resolver.add_var(
                     "event.delete".to_string(),
                     e.operation.is_delete().to_string(),

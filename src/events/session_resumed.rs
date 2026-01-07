@@ -16,7 +16,7 @@ pub struct AikiSessionResumedPayload {
 /// This event fires when a session is being resumed rather than started fresh.
 /// Allows flows to load prior context, apply previous approvals, maintain audit trail continuity.
 pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -33,7 +33,7 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = execute_core_flow(
+    let _flow_result = execute_flow(
         EventType::SessionResumed,
         &mut state,
         &core_flow.session_resumed,

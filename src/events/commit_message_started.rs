@@ -20,7 +20,7 @@ pub struct AikiCommitMessageStartedPayload {
 pub fn handle_commit_message_started(
     payload: AikiCommitMessageStartedPayload,
 ) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| "Preparing commit message");
 
@@ -31,7 +31,7 @@ pub fn handle_commit_message_started(
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::CommitMessageStarted,
         &mut state,
         &core_flow.commit_message_started,

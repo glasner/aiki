@@ -13,7 +13,7 @@ pub struct AikiSessionStartPayload {
 /// Currently runs `aiki init --quiet` to ensure repository is initialized.
 /// Future: Session logging, environment validation, user-defined startup hooks.
 pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
@@ -24,7 +24,7 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::SessionStarted,
         &mut state,
         &core_flow.session_started,

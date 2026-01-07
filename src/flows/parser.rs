@@ -28,6 +28,35 @@ version: "1"
         assert_eq!(flow.version, "1");
         assert!(flow.change_completed.is_empty());
         assert!(flow.commit_message_started.is_empty());
+        assert!(flow.before.is_empty());
+        assert!(flow.after.is_empty());
+    }
+
+    #[test]
+    fn test_parse_flow_with_before_after() {
+        let yaml = r#"
+name: Composed Flow
+version: "1"
+
+before:
+  - aiki/quick-lint
+  - eslint/check
+
+after:
+  - aiki/cleanup
+
+change.completed:
+  - shell: echo "main logic"
+"#;
+
+        let flow = FlowParser::parse_str(yaml).unwrap();
+        assert_eq!(flow.name, "Composed Flow");
+        assert_eq!(flow.before.len(), 2);
+        assert_eq!(flow.before[0], "aiki/quick-lint");
+        assert_eq!(flow.before[1], "eslint/check");
+        assert_eq!(flow.after.len(), 1);
+        assert_eq!(flow.after[0], "aiki/cleanup");
+        assert_eq!(flow.change_completed.len(), 1);
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub struct AikiReadPermissionAskedPayload {
 /// This event fires when the agent requests permission to read files.
 /// It allows flows to gate reads of sensitive files (secrets, .env, etc.).
 pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -46,7 +46,7 @@ pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> 
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::ReadPermissionAsked,
         &mut state,
         &core_flow.read_permission_asked,
