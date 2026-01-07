@@ -148,12 +148,13 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 - objective, type, priority, scope, evidence
 - description, approach, done_when (hints)
 - blocked_by, discovered_from, parent_id (deps)
-- assignee (suggested)
+- assignee (routing: which agent type should work on this)
+- claimed_by (ownership: which session is actively working on it)
 
 #### Event Types
 
 **Lifecycle**: `Created`, `Started`, `CompletedWork`, `Failed`, `Closed`, `NeedsHuman`
-**Assignment**: `Assigned`, `Unassigned`
+**Ownership**: `Claimed`, `Released`, `Assigned`, `Unassigned`
 **Dependencies**: `DependencyAdded`, `DependencyRemoved`
 **Review**: `ReviewCompleted`, `FixStarted`
 
@@ -238,8 +239,11 @@ aiki task create "Found: missing validation" \
 # TASK LIFECYCLE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Start working on a task
+# Start working on a task (auto-claims with claimed_by=$SESSION_ID)
 aiki task start <task-id>
+
+# Release a task (manual override, clears claimed_by)
+aiki task release <task-id>
 
 # Record failed attempt
 aiki task fail <task-id>
@@ -315,6 +319,31 @@ Discovered from: (none)
 Attempts: 1
 ```
 
+### Ownership Model
+
+**Design Decision:** Auto-claim on work start (not explicit claim actions)
+
+Tasks have two ownership concepts:
+- **assignee** (routing): Which agent type should work on this task
+- **claimed_by** (ownership): Which specific session is actively working on it
+
+**Claiming flow:**
+1. Task created → `assignee=claude-code`, `claimed_by=null`, `status=Open`
+2. Agent runs `aiki task start <id>` → Emits `Claimed { session_id }` event
+3. Task updated → `claimed_by=$SESSION_ID`, `status=InProgress`
+4. Agent finishes → Emits `Closed` event, `claimed_by` persists (audit trail)
+
+**Why auto-claim (not explicit `task.claim` action)?**
+- Simpler flow DSL for single-agent scenarios (90% of use cases)
+- Claiming happens automatically when work begins
+- Can add explicit `task.claim`/`task.release` actions later without breaking changes
+- Events (`Claimed`, `Released`) exist from day 1 for audit trail
+
+**Multi-agent safety:**
+- `aiki task start` fails if `claimed_by` is already set to different session
+- `aiki task ready` can filter by `claimed_by=null` (unclaimed work only)
+- Manual override: `aiki task release <id>` clears `claimed_by`, emits `Released` event
+
 ### Flow Integration
 
 ```yaml
@@ -335,6 +364,9 @@ PostResponse:
           - source: typescript
             message: $error.message
             code: $error.code
+        # assignee auto-set from flow context (agent that triggered this flow)
+        # claimed_by=null (not claimed yet)
+        # status=Open
 
   - let: ready_count = self.ready_tasks | length
   - if: $ready_count > 0
@@ -427,7 +459,7 @@ pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
 2. **CLI commands** (`aiki task ...`)
    - `ready`, `list`, `show`
    - `create` (with subtasks, dependencies)
-   - `start`, `fail`, `close`
+   - `start`, `release`, `fail`, `close`
    - `assign`, `unassign`
    - `dep add`, `dep remove`, `dep tree`
    - `sync`
