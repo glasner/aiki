@@ -62,10 +62,6 @@ PostResponse:
           files:
             - path: $error.file
               lines: [$error.line]
-        evidence:
-          - source: typescript
-            message: $error.message
-            code: $error.code
 
   # Point agent to task queue
   - if: self.ready_tasks | length > 0
@@ -86,8 +82,7 @@ $ aiki task ready --json
       "status": "open",
       "blocked_by": [],
       "assignee": null,
-      "scope": {"files": [{"path": "src/auth.ts", "lines": [42]}]},
-      "evidence": [{"source": "typescript", "message": "...", "code": "TS2322"}]
+      "scope": {"files": [{"path": "src/auth.ts", "lines": [42]}]}
     }
   ]
 }
@@ -152,7 +147,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 
 #### Task Definition Fields
 
-- goal, body, type, priority, scope, evidence
+- goal, body, type, priority, scope
 - blocked_by, discovered_from, parent_id (deps)
 - assignee (routing: which agent type should work on this)
 - claimed_by (ownership: which session is actively working on it)
@@ -214,9 +209,10 @@ aiki task show <task-id> [--json]
 # Create standalone task
 aiki task create "Fix null check in auth.ts" \
     --type error \
-    --file src/auth.ts \
-    --line 42 \
-    --evidence "typescript:Object is possibly null:TS2531"
+    --body "TypeScript error: Object is possibly null
+
+File: src/auth.ts:42
+Code: TS2531"
 
 # Create with rich context (body is markdown)
 aiki task create "Add dark mode toggle" \
@@ -384,10 +380,6 @@ PostResponse:
           files:
             - path: $error.file
               lines: [$error.line]
-        evidence:
-          - source: typescript
-            message: $error.message
-            code: $error.code
         # assignee auto-set from flow context (agent that triggered this flow)
         # claimed_by=null (not claimed yet)
         # status=Open
@@ -1120,10 +1112,6 @@ response.received:
               files:
                 - path: $error.file
                   lines: [$error.line]
-            evidence:
-              - source: $error.source
-                message: $error.message
-                code: $error.code
 
       # Remind about task queue if errors were created
       - if: $errors | length > 0
@@ -1205,10 +1193,6 @@ response.received:
           files:
             - path: $error.file
               lines: [$error.line]
-        evidence:
-          - source: rustc
-            message: $error.message
-            code: $error.code
 
 # Custom review workflow - require review before any PR
 shell.permission_asked:
