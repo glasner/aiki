@@ -1031,27 +1031,23 @@ session.started:
   # ... existing initialization (jj new, aiki init --quiet) ...
 
   # Task context injection
-  - if: self.has_task_system
+  - let: ready_count = self.task_ready_count
+  - if: $ready_count > 0
     then:
-      - let: ready_count = self.task_ready_count
-      - if: $ready_count > 0
-        then:
-          autoreply:
-            append: |
-              # Tasks
-              📋 $ready_count task(s) ready. Run `aiki task ready --json` for details.
+      autoreply:
+        append: |
+          # Tasks
+          📋 $ready_count task(s) ready. Run `aiki task ready --json` for details.
 
   # Review context injection
-  - if: self.has_review_system
+  - let: pending_reviews = self.pending_reviews_for($agent_type)
+  - if: $pending_reviews | length > 0
     then:
-      - let: pending_reviews = self.pending_reviews_for($agent_type)
-      - if: $pending_reviews | length > 0
-        then:
-          autoreply:
-            append: |
-              # Pending Reviews
-              ⚠️ $pending_reviews.length review(s) awaiting your feedback.
-              Run `aiki review list --for $agent_type` for details.
+      autoreply:
+        append: |
+          # Pending Reviews
+          ⚠️ $pending_reviews.length review(s) awaiting your feedback.
+          Run `aiki review list --for $agent_type` for details.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # prompt.submitted: Re-inject task context on every prompt (survives compaction)
@@ -1059,14 +1055,12 @@ session.started:
 prompt.submitted:
   # Re-inject task context from persistent storage (aiki/tasks JJ branch)
   # This ensures task awareness even after context compaction
-  - if: self.has_task_system
+  - let: ready_count = self.task_ready_count
+  - if: $ready_count > 0
     then:
-      - let: ready_count = self.task_ready_count
-      - if: $ready_count > 0
-        then:
-          autoreply:
-            prepend: |
-              📋 $ready_count task(s) ready. Run `aiki task ready --json`.
+      autoreply:
+        prepend: |
+          📋 $ready_count task(s) ready. Run `aiki task ready --json`.
 
   # Note: This fires on EVERY prompt submit, keeping tasks visible
   # even after Claude compacts context. Tasks stored on aiki/tasks
@@ -1077,49 +1071,45 @@ prompt.submitted:
 # ═══════════════════════════════════════════════════════════════════════════════
 session.ended:
   # Sync tasks to remote (if configured)
-  - if: self.has_task_system
-    then:
-      - shell: aiki task sync --quiet
-        on_failure: continue
+  - shell: aiki task sync --quiet
+    on_failure: continue
 
-      # Warn about orphaned in-progress tasks
-      - let: orphaned = self.task_orphaned_in_progress
-      - if: $orphaned | length > 0
-        then:
-          - log: "Warning: $orphaned.length task(s) left in progress: $orphaned"
+  # Warn about orphaned in-progress tasks
+  - let: orphaned = self.task_orphaned_in_progress
+  - if: $orphaned | length > 0
+    then:
+      - log: "Warning: $orphaned.length task(s) left in progress: $orphaned"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # response.received: Create tasks from errors, remind about task queue
 # ═══════════════════════════════════════════════════════════════════════════════
 response.received:
-  - if: self.has_task_system
+  # Parse response for TypeScript/build errors
+  - let: errors = self.parse_response_errors($response)
+
+  # Create tasks for new errors (deduped by content hash)
+  - for: error in $errors
     then:
-      # Parse response for TypeScript/build errors
-      - let: errors = self.parse_response_errors($response)
+      task.create:
+        goal: "Fix: $error.message"
+        type: error
+        body: |
+          $error.source error: $error.message
+          
+          File: $error.file:$error.line
+          Code: $error.code
+        scope:
+          files:
+            - path: $error.file
+              lines: [$error.line]
 
-      # Create tasks for new errors (deduped by content hash)
-      - for: error in $errors
-        then:
-          task.create:
-            goal: "Fix: $error.message"
-            type: error
-            body: |
-              $error.source error: $error.message
-              
-              File: $error.file:$error.line
-              Code: $error.code
-            scope:
-              files:
-                - path: $error.file
-                  lines: [$error.line]
-
-      # Remind about task queue if errors were created
-      - if: $errors | length > 0
-        then:
-          autoreply:
-            append: |
-              Created $errors.length task(s) for errors above.
-              Run `aiki task ready --json` to see the queue.
+  # Remind about task queue if errors were created
+  - if: $errors | length > 0
+    then:
+      autoreply:
+        append: |
+          Created $errors.length task(s) for errors above.
+          Run `aiki task ready --json` to see the queue.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # change.completed: Auto-close tasks and request review
@@ -1128,7 +1118,7 @@ change.completed:
   # ... existing provenance tracking ...
 
   # Auto-close tasks when errors are fixed
-  - if: self.has_task_system && $event.write
+  - if: $event.write
     then:
       - let: fixed_tasks = self.task_check_fixed($modified_files)
       - for: task in $fixed_tasks
@@ -1138,7 +1128,7 @@ change.completed:
             fixed: true
 
   # Request review of the change (separate from tasks)
-  - if: self.has_review_system && self.should_request_review($change)
+  - if: self.should_request_review($change)
     then:
       review.request:
         revset: "@"
@@ -1152,19 +1142,20 @@ Functions available in flows:
 
 ```rust
 // Task system functions
-fn has_task_system(state: &AikiState) -> Result<bool>;
 fn task_ready_count(state: &AikiState) -> Result<u32>;
 fn task_orphaned_in_progress(state: &AikiState) -> Result<Vec<String>>;
 fn parse_response_errors(state: &AikiState, response: &str) -> Result<Vec<ParsedError>>;
 fn task_check_fixed(state: &AikiState, files: Vec<PathBuf>) -> Result<Vec<Task>>;
 
 // Review system functions
-fn has_review_system(state: &AikiState) -> Result<bool>;
 fn pending_reviews_for(state: &AikiState, agent: AgentType) -> Result<Vec<Review>>;
 fn should_request_review(state: &AikiState, change: &Change) -> Result<bool>;
 fn has_pending_review(state: &AikiState, revset: &str) -> Result<bool>;
 fn resolve_revset(state: &AikiState, revset: &str) -> Result<Vec<String>>;
 fn session_revset(state: &AikiState) -> Result<String>;  // e.g., "xyz123::@"
+
+// Note: All functions return empty/zero/false if system not initialized
+// No need for has_task_system or has_review_system checks
 ```
 
 ### User Flow Composition
