@@ -16,6 +16,8 @@ pub struct AikiSessionResumedPayload {
 /// This event fires when a session is being resumed rather than started fresh.
 /// Allows flows to load prior context, apply previous approvals, maintain audit trail continuity.
 pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "Session resumed by {:?}, session: {}",
@@ -24,17 +26,18 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute session.resumed statements from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.session_resumed, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let _flow_result = execute_core_flow(
+        EventType::SessionResumed,
+        &mut state,
+        &core_flow.session_resumed,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();

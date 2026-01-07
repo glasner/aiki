@@ -1,6 +1,23 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Format a call stack for display in error messages
+fn format_call_stack(stack: &[String]) -> String {
+    if stack.is_empty() {
+        return String::from("  (empty)");
+    }
+
+    let mut result = String::new();
+    for (i, path) in stack.iter().enumerate() {
+        if i == 0 {
+            result.push_str(&format!("  {}", path));
+        } else {
+            result.push_str(&format!("\n  → {} (before)", path));
+        }
+    }
+    result
+}
+
 /// Aiki-specific errors with structured error types
 #[derive(Error, Debug)]
 pub enum AikiError {
@@ -105,6 +122,31 @@ pub enum AikiError {
     #[error("Failed to write config file: {0}")]
     ConfigWriteFailed(String),
 
+    // Flow composition errors (Milestone 1.3)
+    #[error("Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}")]
+    NotInAikiProject { searched_from: PathBuf },
+
+    #[error("Invalid path: '{path}'. {reason}")]
+    InvalidPath { path: String, reason: String },
+
+    #[error("Invalid flow path: '{path}'. {reason}")]
+    InvalidFlowPath { path: String, reason: String },
+
+    #[error("Flow not found: '{path}'. Resolved to: {resolved_path}")]
+    FlowNotFound {
+        path: String,
+        resolved_path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Circular flow dependency detected: '{path}' (canonical: {canonical_path})\n\nFlow execution chain:\n{}", format_call_stack(.stack))]
+    CircularFlowDependency {
+        path: String,
+        canonical_path: String,
+        stack: Vec<String>,
+    },
+
     // ACP/Zed integration errors
     #[error(
         "ACP binary not found for agent '{agent_type}'.
@@ -181,5 +223,66 @@ mod tests {
     fn test_file_not_found() {
         let err = AikiError::FileNotFound(PathBuf::from("/tmp/test.txt"));
         assert!(err.to_string().contains("/tmp/test.txt"));
+    }
+
+    #[test]
+    fn test_not_in_aiki_project() {
+        let err = AikiError::NotInAikiProject {
+            searched_from: PathBuf::from("/home/user/project"),
+        };
+        assert!(err.to_string().contains("/home/user/project"));
+        assert!(err.to_string().contains(".aiki/"));
+    }
+
+    #[test]
+    fn test_invalid_flow_path() {
+        let err = AikiError::InvalidFlowPath {
+            path: "invalid".to_string(),
+            reason: "Must start with aiki/, vendor/, @/, ./, ../, or /".to_string(),
+        };
+        assert!(err.to_string().contains("invalid"));
+        assert!(err.to_string().contains("Must start with"));
+    }
+
+    #[test]
+    fn test_circular_flow_dependency() {
+        let err = AikiError::CircularFlowDependency {
+            path: "aiki/flow-a".to_string(),
+            canonical_path: "/project/.aiki/flows/aiki/flow-a.yml".to_string(),
+            stack: vec![
+                "my-workflow.yml".to_string(),
+                "aiki/flow-a.yml".to_string(),
+                "aiki/flow-b.yml".to_string(),
+            ],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Circular flow dependency"));
+        assert!(msg.contains("aiki/flow-a"));
+        assert!(msg.contains("my-workflow.yml"));
+        assert!(msg.contains("→"));
+    }
+
+    #[test]
+    fn test_format_call_stack_empty() {
+        let result = format_call_stack(&[]);
+        assert_eq!(result, "  (empty)");
+    }
+
+    #[test]
+    fn test_format_call_stack_single() {
+        let result = format_call_stack(&["my-flow.yml".to_string()]);
+        assert_eq!(result, "  my-flow.yml");
+    }
+
+    #[test]
+    fn test_format_call_stack_multiple() {
+        let result = format_call_stack(&[
+            "top.yml".to_string(),
+            "middle.yml".to_string(),
+            "bottom.yml".to_string(),
+        ]);
+        assert!(result.contains("top.yml"));
+        assert!(result.contains("→ middle.yml"));
+        assert!(result.contains("→ bottom.yml"));
     }
 }

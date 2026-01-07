@@ -29,6 +29,8 @@ pub struct AikiShellCompletedPayload {
 /// This event fires after a shell command completes. Can be used to
 /// log command execution, react to failures, or trigger follow-up actions.
 pub fn handle_shell_completed(payload: AikiShellCompletedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "shell.completed from {:?}, session: {}, command: {}, success: {}",
@@ -39,17 +41,18 @@ pub fn handle_shell_completed(payload: AikiShellCompletedPayload) -> Result<Hook
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute shell.completed statements from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.shell_completed, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let _flow_result = execute_core_flow(
+        EventType::ShellCompleted,
+        &mut state,
+        &core_flow.shell_completed,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();

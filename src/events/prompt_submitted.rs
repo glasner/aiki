@@ -17,6 +17,8 @@ pub struct AikiPromptSubmittedPayload {
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "prompt.submitted event from {:?}, prompt length: {}",
@@ -25,18 +27,18 @@ pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<Ho
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute prompt.submitted statements from the core flow (catch errors for graceful degradation)
-    let flow_result = match FlowEngine::execute_statements(&core_flow.prompt_submitted, &mut state)
-    {
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let flow_result = match execute_core_flow(
+        EventType::PromptSubmitted,
+        &mut state,
+        &core_flow.prompt_submitted,
+    ) {
         Ok(result) => result,
         Err(e) => {
             // Flow execution failed - log warning and use original prompt
