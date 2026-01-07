@@ -51,7 +51,7 @@ PostResponse:
   - for: error in $ts_errors
     then:
       task.create:
-        goal: "Fix: $error.message"
+        name: "Fix: $error.message"
         type: error
         body: |
           TypeScript error: $error.message
@@ -77,7 +77,7 @@ $ aiki task ready --json
   "tasks": [
     {
       "id": "err-a1b2c3d4",
-      "goal": "Fix: Type 'null' is not assignable to type 'User'",
+      "name": "Fix: Type 'null' is not assignable to type 'User'",
       "type": "error",
       "status": "open",
       "blocked_by": [],
@@ -147,7 +147,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 
 #### Task Definition Fields
 
-- goal, body, type, priority, scope
+- name, body, type, priority, scope
 - blocked_by, discovered_from, parent_id (deps)
 - assignee (routing: which agent type should work on this)
 - claimed_by (ownership: which session is actively working on it)
@@ -239,7 +239,7 @@ aiki task create "Found: missing validation" \
     --type error \
     --discovered-from err-a1b2
 
-# Note: First positional argument is the goal
+# Note: First positional argument is the task name
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TASK LIFECYCLE
@@ -314,7 +314,7 @@ $ aiki task ready --json
 
 $ aiki task show err-a1b2
 Task: err-a1b2
-Goal: Fix null check in auth.ts:42
+Name: Fix null check in auth.ts:42
 Type: error
 Status: in_progress
 Priority: 1
@@ -369,7 +369,7 @@ PostResponse:
   - for: error in $ts_errors
     then:
       task.create:
-        goal: "Fix: $error.message"
+        name: "Fix: $error.message"
         type: error
         body: |
           TypeScript error: $error.message
@@ -811,11 +811,11 @@ review-456 (type: Review, status: Open)
 └─ review-456.2 (type: Warning, status: Closed, resolved_by: fix-789.1.2)
 
 fix-789 (type: FixReview, status: Closed, works_on: [review-456.1, review-456.2])
-├─ fix-789.1 (type: Implementation, goal: "Analyze & plan")
+├─ fix-789.1 (type: Implementation, name: "Analyze & plan")
 │   ├─ fix-789.1.1 (type: Implementation, works_on: [review-456.1])
 │   └─ fix-789.1.2 (type: Implementation, works_on: [review-456.2])
-├─ fix-789.2 (type: Implementation, goal: "Implement")
-└─ fix-789.3 (type: Implementation, goal: "Verify")
+├─ fix-789.2 (type: Implementation, name: "Implement")
+└─ fix-789.3 (type: Implementation, name: "Verify")
 ```
 
 **New Event Flow:**
@@ -1079,7 +1079,7 @@ response.received:
   - for: error in $errors
     then:
       task.create:
-        goal: "Fix: $error.message"
+        name: "Fix: $error.message"
         type: error
         body: |
           $error.source error: $error.message
@@ -1161,7 +1161,7 @@ response.received:
   - for: error in $rust_errors
     then:
       task.create:
-        goal: "Fix: $error.message"
+        name: "Fix: $error.message"
         type: error
         body: |
           Rust compiler error: $error.message
