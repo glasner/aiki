@@ -25,7 +25,7 @@ pub struct AikiWebPermissionAskedPayload {
 /// This event fires before a web operation. Can be used to gate network
 /// requests, enforce rate limits, or audit web access.
 pub fn handle_web_permission_asked(payload: AikiWebPermissionAskedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -43,7 +43,7 @@ pub fn handle_web_permission_asked(payload: AikiWebPermissionAskedPayload) -> Re
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::WebPermissionAsked,
         &mut state,
         &core_flow.web_permission_asked,

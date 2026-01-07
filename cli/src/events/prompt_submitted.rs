@@ -17,7 +17,7 @@ pub struct AikiPromptSubmittedPayload {
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -34,7 +34,7 @@ pub fn handle_prompt_submitted(payload: AikiPromptSubmittedPayload) -> Result<Ho
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = match execute_core_flow(
+    let flow_result = match execute_flow(
         EventType::PromptSubmitted,
         &mut state,
         &core_flow.prompt_submitted,

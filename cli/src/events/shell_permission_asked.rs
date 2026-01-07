@@ -21,7 +21,7 @@ pub struct AikiShellPermissionAskedPayload {
 pub fn handle_shell_permission_asked(
     payload: AikiShellPermissionAskedPayload,
 ) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -39,7 +39,7 @@ pub fn handle_shell_permission_asked(
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::ShellPermissionAsked,
         &mut state,
         &core_flow.shell_permission_asked,

@@ -12,8 +12,7 @@ Flow Composition allows flows to include and reuse other flows, enabling modular
 
 **Key Capabilities:**
 - Include flows via `before:` (run before this flow) and `after:` (run after this flow) directives
-- Invoke flows inline with `flow:` action (run at specific point in action list)
-- Flow resolution (aiki/*, vendor/*, local paths)
+- Flow resolution with vendor namespacing (`{vendor}/{name}`, local paths)
 - Circular dependency detection
 - Atomic flow execution (each flow runs its own before/after internally)
 
@@ -52,46 +51,18 @@ PostResponse:
 - After flows run last, in the order listed
 - All flows share the same event context (e.g., PostResponse event)
 
-### 2. Flow Action (Inline Invocation)
+### 2. Flow Resolution
 
-Invoke flows inline at a specific point in the action list:
+Flows are resolved using vendor namespacing - all top-level directories in `.aiki/flows/` are treated as vendor namespaces:
 
-```yaml
-PostResponse:
-  - let: error_count = self.count_errors
-  
-  - if: $error_count > 0
-    then:
-      - flow: aiki/detailed-lint  # Runs NOW (not in before/after)
-  
-  - shell: echo "All checks passed"
-```
+**Vendor-namespaced flows:** `{vendor}/{name}` → Search project first, then user
+- Examples: `aiki/*`, `eslint/*`, `prettier/*`, `typescript/*`, `mycompany/*`
+- Try `{project}/.aiki/flows/{vendor}/{name}.yml` first
+- If not found, try `~/.aiki/flows/{vendor}/{name}.yml`
+- **Note:** `aiki` is just another vendor, not a special case
 
-**Key behavior:**
-- `flow:` action executes **the same event** from the referenced flow
-- Example: `flow: aiki/quick-lint` inside `PostResponse` runs `quick-lint`'s `PostResponse` actions
-- The invoked flow is atomic (runs its own before/after if it has them)
-
-**Difference from before/after:**
-- `before:` / `after:` - Always execute, fixed position
-- `flow:` action - Executes at that point in the action list, can be conditional
-
-### 3. Flow Resolution
-
-Flows are resolved using different path prefixes:
-
-1. **Built-in flows:** `aiki/*` → Search project first, then user
-   - Try `{project}/.aiki/flows/aiki/` first
-   - If not found, try `~/.aiki/flows/aiki/`
-2. **Vendor flows:** `vendor/*` → Search project first, then user
-   - Try `{project}/.aiki/flows/vendor/` first
-   - If not found, try `~/.aiki/flows/vendor/`
-3. **Project root:** `@/` → `{project}/` (for docs, configs, or flows outside .aiki/flows/)
-4. **Flow-relative:** `./` or `../` → Relative to current flow directory
-5. **Absolute paths:** `/path/to/file` → As-is
-
-**Why project-first for aiki/* and vendor/*?**
-- Projects can override built-in flows (e.g., custom `aiki/quick-lint.yml`)
+**Why project-first?**
+- Projects can override any flow (e.g., custom `aiki/quick-lint.yml`, `eslint/config.yml`)
 - Team-specific configurations in version control
 - User flows provide defaults/fallbacks
 - Standard precedence (like `.gitignore` - project overrides user)
@@ -101,42 +72,25 @@ Flows are resolved using different path prefixes:
 before:
   - aiki/quick-lint               # Searches: 1) {project}/.aiki/flows/aiki/quick-lint.yml
                                   #           2) ~/.aiki/flows/aiki/quick-lint.yml
-  - vendor/eslint                 # Searches: 1) {project}/.aiki/flows/vendor/eslint.yml
-                                  #           2) ~/.aiki/flows/vendor/eslint.yml
-  - ./helpers/lint.yml            # Flow-relative: {current_flow_dir}/helpers/lint.yml
-  - /abs/path/checks.yml          # Absolute path
-
-PrePrompt:
-  prompt:
-    prepend:
-      - @/docs/architecture.md    # Project root: {project}/docs/architecture.md
-      - @/README.md               # Project root: {project}/README.md
-      - aiki/skills/rust          # Searches project, then user
+  - eslint/check-rules            # Searches: 1) {project}/.aiki/flows/eslint/check-rules.yml
+                                  #           2) ~/.aiki/flows/eslint/check-rules.yml
+  - prettier/format               # Searches: 1) {project}/.aiki/flows/prettier/format.yml
+                                  #           2) ~/.aiki/flows/prettier/format.yml
 ```
 
-**When to use which path type?**
+**Path Format:**
 
-| Path Type | Use Case | Example |
-|-----------|----------|---------|
-| `aiki/*` | Built-in Aiki flows | `aiki/quick-lint` |
-| `vendor/*` | Third-party flows | `vendor/github/pr-checks` |
-| `./` or `../` | Flows in subdirectories | `./helpers/lint.yml` |
-| `@/` | Project files or flows outside .aiki/flows/ | `@/docs/arch.md` |
+All flow paths must use vendor namespacing: `{vendor}/{name}`
 
-**Path resolution from nested flows:**
-```yaml
-# .aiki/flows/my-workflow.yml
-before:
-  - ./helpers/lint.yml            # Flow-relative: .aiki/flows/helpers/lint.yml
-  - ./shared/base.yml             # Flow-relative: .aiki/flows/shared/base.yml
+| Vendor | Example | Description |
+|--------|---------|-------------|
+| `aiki/*` | `aiki/quick-lint` | Aiki's built-in flows |
+| `eslint/*` | `eslint/check-rules` | ESLint vendor flows |
+| `prettier/*` | `prettier/format` | Prettier vendor flows |
+| `typescript/*` | `typescript/type-check` | TypeScript vendor flows |
+| `{custom}/*` | `mycompany/policies` | Custom vendor flows |
 
-# .aiki/flows/helpers/lint.yml
-before:
-  - ../shared/base.yml            # Flow-relative: .aiki/flows/shared/base.yml
-  - @/scripts/custom-lint.sh      # Project root: {project}/scripts/custom-lint.sh
-```
-
-### 4. Circular Dependency Detection
+### 3. Circular Dependency Detection
 
 Prevent infinite loops by tracking all flow invocations at runtime:
 
@@ -144,55 +98,39 @@ Prevent infinite loops by tracking all flow invocations at runtime:
 ```yaml
 # flow-a.yml
 before:
-  - ./flow-b.yml
+  - aiki/flow-b
 
 # flow-b.yml
 before:
-  - ./flow-a.yml  # ERROR: Circular dependency detected
+  - aiki/flow-a  # ERROR: Circular dependency detected
 ```
 
-**Runtime cycles (flow: action):**
-```yaml
-# flow-a.yml
-PostResponse:
-  - flow: ./flow-b.yml
 
-# flow-b.yml
-PostResponse:
-  - flow: ./flow-a.yml  # ERROR: Circular dependency detected
-```
-
-**Self-invocation (not allowed):**
-```yaml
-# my-workflow.yml
-PostResponse:
-  - if: $counter < 10
-    then:
-      flow: ./my-workflow.yml  # ERROR: Circular dependency (self-invocation)
-```
 
 **Detection mechanism:**
 - Track flow call stack during execution (runtime checking)
-- **Use canonical paths** to detect cycles regardless of path format
-- **Canonicalization happens in FlowResolver** - all path variants (./, ../, @/, symlinks) resolve to same canonical path
+- **Use canonical paths** to detect cycles regardless of how flows reference each other
+- **Canonicalization happens in FlowResolver** - all paths resolve to canonical absolute paths
 - Error if any flow appears twice in the call stack
 - Clear error message showing full cycle path
 
 **Why canonical paths are critical:**
 ```yaml
-# flow-a.yml in .aiki/flows/
-before:
-  - ./flow-b.yml          # Relative path
+# Even if flows could reference each other differently (e.g., via symlinks),
+# canonicalization ensures cycles are detected by resolving to the same absolute path
 
-# flow-b.yml in .aiki/flows/
+# flow-a.yml in .aiki/flows/aiki/
 before:
-  - @/.aiki/flows/flow-a.yml    # Project root path
+  - aiki/flow-b
 
-# Without canonicalization: Looks like different files (different strings)
-# With canonicalization: Both resolve to /project/.aiki/flows/flow-a.yml → Cycle detected!
+# flow-b.yml in .aiki/flows/aiki/
+before:
+  - aiki/flow-a
+
+# Both resolve to canonical paths like /project/.aiki/flows/aiki/flow-a.yml → Cycle detected!
 ```
 
-### 5. Atomic Flow Execution
+### 4. Atomic Flow Execution
 
 Each flow is self-contained and runs its own before/after flows internally:
 
@@ -247,22 +185,7 @@ PostResponse:
   - shell: echo "My custom validation"
 ```
 
-### Use Case 2: Conditional Flow Invocation
-
-```yaml
-PostResponse:
-  - let: files = self.get_edited_files
-  
-  - if: $files contains ".ts"
-    then:
-      - flow: aiki/typescript-check
-  
-  - if: $files contains ".rs"
-    then:
-      - flow: aiki/rust-check
-```
-
-### Use Case 3: Before and After Flows
+### Use Case 2: Before and After Flows
 
 ```yaml
 # User's workflow with cleanup
@@ -278,32 +201,7 @@ PostResponse:
   - shell: echo "Main logic here"
 ```
 
-### Use Case 4: Multiple Path Types
-
-```yaml
-# .aiki/flows/my-workflow.yml
-PrePrompt:
-  prompt:
-    prepend:
-      - @/docs/architecture.md        # Project root: {project}/docs/architecture.md
-      - @/docs/coding-style.md        # Project root: {project}/docs/coding-style.md
-      - aiki/skills/rust              # Built-in: ~/.aiki/flows/aiki/skills/rust.yml
-
-before:
-  - ./helpers/lint.yml                # Flow-relative: .aiki/flows/helpers/lint.yml
-  - ./company/policy.yml              # Flow-relative: .aiki/flows/company/policy.yml
-
-PostResponse:
-  - shell: echo "Custom logic"
-
-# .aiki/flows/helpers/lint.yml (referenced above)
-before:
-  - ../shared/base-checks.yml         # Parent dir: .aiki/flows/shared/base-checks.yml
-  - ../shared/rust-checks.yml         # Parent dir: .aiki/flows/shared/rust-checks.yml
-  - @/scripts/custom-lint.sh          # Project root: {project}/scripts/custom-lint.sh
-```
-
-### Use Case 5: Multi-Layer Composition
+### Use Case 3: Multi-Layer Composition
 
 ```yaml
 # aiki/default.yml
@@ -318,7 +216,7 @@ PostResponse:
 # User's custom-workflow.yml
 before:
   - aiki/default           # Runs default's before flows + actions
-  - ./company-policies.yml
+  - mycompany/policies
 
 PostResponse:
   - shell: echo "Custom logic"
@@ -329,13 +227,13 @@ PostResponse:
 2. `aiki/build-check` (from aiki/default's before)
 3. `aiki/test-runner` (from aiki/default's before)
 4. `aiki/default` PostResponse actions
-5. `./company-policies.yml` (atomic execution)
+5. `mycompany/policies` (atomic execution)
 6. User's PostResponse actions
 
-### Use Case 6: Vendor-Specific Workflows
+### Use Case 5: Vendor-Specific Workflows
 
 ```yaml
-# vendor/github/pr-checks.yml
+# github/pr-checks.yml (in .aiki/flows/github/)
 name: "GitHub PR Checks"
 
 before:
@@ -347,10 +245,12 @@ PostResponse:
 
 # User includes vendor workflow
 before:
-  - vendor/github/pr-checks
+  - github/pr-checks
 ```
 
-### Use Case 7: Shared Event State Across Composed Flows
+**Note:** `github` is a vendor namespace just like `aiki`, `eslint`, or `prettier`. All top-level directories in `.aiki/flows/` are vendor namespaces.
+
+### Use Case 6: Shared Event State Across Composed Flows
 
 **Example: PrePrompt with shared prompt_assembler**
 
@@ -366,7 +266,7 @@ before:
 
 PrePrompt:
   prompt:
-    prepend: @/docs/architecture.md
+    prepend: docs/architecture.md
     append: "Remember to run tests."
 ```
 
@@ -426,8 +326,6 @@ Ticket: AUTH-123
 
 - [ ] Add `before:` and `after:` directives to flow schema
 - [ ] Parse `before` and `after` lists in `cli/src/flows/parser.rs`
-- [ ] Add `flow:` action to flow DSL
-- [ ] Parse `flow:` action in `cli/src/flows/parser.rs`
 
 ### Flow Loader
 
@@ -442,27 +340,20 @@ Ticket: AUTH-123
 - [ ] Implement `cli/src/flows/path_resolver.rs`
   - [ ] Implement `find_project_root()` - search upward for `.aiki/` directory
   - [ ] Cache project_root and home_dir in PathResolver struct
-  - [ ] Resolve `@/` paths (project root)
-  - [ ] Resolve `./` and `../` paths (relative to current directory)
-  - [ ] Resolve absolute paths
-  - [ ] Validate empty path after `@/`
-  - [ ] Error handling (not in Aiki project, invalid prefix)
+  - [ ] Error handling (not in Aiki project)
 
 ### Flow Resolver
 
 - [ ] Implement `cli/src/flows/flow_resolver.rs`
   - [ ] Use PathResolver internally
-  - [ ] Resolve `aiki/*` - try project first, then user (adds .yml)
-  - [ ] Resolve `vendor/*` - try project first, then user (adds .yml)
-  - [ ] Delegate `@/`, `./`, `../`, `/` to PathResolver
-  - [ ] Error handling (flow not found)
+  - [ ] Resolve `{vendor}/{name}` - try project first, then user (adds .yml)
+  - [ ] Error handling (flow not found, invalid format)
 
 ### Flow Composer
 
 - [ ] Implement `cli/src/flows/composer.rs`
-  - [ ] Create FlowComposer with loader, executor, and call_stack
-  - [ ] Implement `compose()` - orchestrate before/this flow/after
-  - [ ] Implement `compose_action()` - dispatch to executor or self
+  - [ ] Create FlowComposer with loader and call_stack
+  - [ ] Implement `compose_flow()` - orchestrate before/this flow/after
   - [ ] Runtime cycle detection with call stack
   - [ ] Pass event context through all flows
   - [ ] Handle errors in before/after flows gracefully
@@ -470,31 +361,22 @@ Ticket: AUTH-123
 ### Executor Integration
 
 - [ ] Update `cli/src/flows/executor.rs`
-  - [ ] Add `Action::Flow { path }` variant to action enum
-  - [ ] FlowExecutor remains unchanged (no flow: handling)
-  - [ ] FlowComposer intercepts flow: actions before delegating to executor
+  - [ ] Integrate FlowComposer for before/after flow execution
+  - [ ] FlowExecutor delegates to FlowComposer when flow has before/after directives
 
 ### Testing
 
 - [ ] Unit tests: Flow path resolution
-  - [ ] Test `aiki/*` resolution (project first, then user)
-  - [ ] Test `vendor/*` resolution (project first, then user)
-  - [ ] Test project override of built-in flows
-  - [ ] Test `@/` resolution (project root)
-  - [ ] Test `./` flow-relative resolution
-  - [ ] Test `../` parent directory resolution
-  - [ ] Test absolute path resolution
+  - [ ] Test `{vendor}/{name}` resolution (project first, then user)
+  - [ ] Test project override of vendor flows
 - [ ] Unit tests: Circular dependency detection
   - [ ] Test static cycles (before/after)
-  - [ ] Test runtime cycles (flow: action)
-  - [ ] Test self-invocation
 - [ ] Unit tests: Atomic flow execution
 - [ ] Unit tests: Before/after execution order
 - [ ] Integration tests: `before:` and `after:` directives
-- [ ] Integration tests: `flow:` action (inline invocation)
 - [ ] Integration tests: Multi-level composition (nested before/after)
 - [ ] Integration tests: Same event execution (PostResponse → PostResponse)
-- [ ] Integration tests: Mix of path types (aiki/*, @/, ./)
+- [ ] Integration tests: Multiple vendor flows
 - [ ] E2E tests: Real flows with before/after
 
 ### Documentation
@@ -509,13 +391,10 @@ Ticket: AUTH-123
 ## Success Criteria
 
 ✅ Can include flows via `before:` and `after:` directives  
-✅ Can invoke flows inline via `flow:` action  
 ✅ Flow paths resolve correctly (aiki/*, vendor/*, local)  
-✅ Circular dependencies are detected at runtime (before/after + flow: action)  
-✅ Self-invocation is detected and rejected  
+✅ Circular dependencies are detected at runtime (before/after)  
 ✅ Before flows execute before this flow's actions  
 ✅ After flows execute after this flow's actions  
-✅ Flow: action executes at the correct point in action list  
 ✅ Each flow executes atomically (runs its own before/after)  
 ✅ Flow caching prevents redundant loads  
 ✅ Clear error messages for missing flows and cycles  
@@ -597,9 +476,9 @@ impl FlowLoader {
     /// 
     /// The canonical path is used by FlowComposer for cycle detection.
     /// Caching is done by canonical path to avoid loading the same file multiple times.
-    pub fn load(&mut self, path: &str, current_flow_dir: &Path) -> Result<(Flow, PathBuf)> {
-        // Resolve to canonical path (handles ./, ../, @/, symlinks)
-        let canonical_path = self.resolver.resolve(path, current_flow_dir)?;
+    pub fn load(&mut self, path: &str) -> Result<(Flow, PathBuf)> {
+        // Resolve to canonical path
+        let canonical_path = self.resolver.resolve(path)?;
         
         // Check cache (by canonical path)
         if let Some(flow) = self.cache.get(&canonical_path) {
@@ -625,7 +504,7 @@ impl FlowLoader {
 ### Path Resolver
 
 ```rust
-/// Low-level path resolver for all file types (flows, docs, scripts, etc.)
+/// Low-level path resolver for project/user directory discovery
 pub struct PathResolver {
     project_root: PathBuf,  // Discovered once, cached
     home_dir: PathBuf,      // Cached for performance
@@ -660,39 +539,12 @@ impl PathResolver {
         }
     }
     
-    /// Resolve a generic path (does NOT add .yml extension or search flow directories)
-    /// Used for docs, configs, scripts, or any non-flow file
-    pub fn resolve(&self, path: &str, current_dir: &Path) -> Result<PathBuf> {
-        if path.is_empty() {
-            return Err(AikiError::InvalidPath {
-                path: path.to_string(),
-                reason: "Path cannot be empty".to_string(),
-            });
-        }
-        
-        let resolved = if let Some(rest) = path.strip_prefix("@/") {
-            // Project root
-            if rest.is_empty() {
-                return Err(AikiError::InvalidPath {
-                    path: path.to_string(),
-                    reason: "Path after @/ cannot be empty".to_string(),
-                });
-            }
-            self.project_root.join(rest)
-        } else if path.starts_with("./") || path.starts_with("../") {
-            // Relative to current directory
-            current_dir.join(path)
-        } else if path.starts_with('/') {
-            // Absolute path
-            PathBuf::from(path)
-        } else {
-            return Err(AikiError::InvalidPath {
-                path: path.to_string(),
-                reason: "Path must start with @/, ./, ../, or /".to_string(),
-            });
-        };
-        
-        Ok(resolved)
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+    
+    pub fn home_dir(&self) -> &Path {
+        &self.home_dir
     }
 }
 ```
@@ -713,19 +565,13 @@ impl FlowResolver {
     }
     
     /// Resolve a flow path to an absolute, canonical PathBuf
-    /// Adds .yml extension and searches aiki/vendor directories
+    /// Adds .yml extension and searches vendor directories
     /// 
     /// **IMPORTANT**: Returns canonicalized path for reliable cycle detection.
-    /// All path variants (./, ../, @/, symlinks) are resolved to the same canonical path.
     /// 
     /// # Arguments
-    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "@/docs/arch.md", "./helpers/lint.yml")
-    /// * `current_flow_dir` - Directory containing the current flow file (for ./ paths)
-    pub fn resolve(
-        &self,
-        path: &str,
-        current_flow_dir: &Path,
-    ) -> Result<PathBuf> {
+    /// * `path` - The path to resolve (e.g., "aiki/quick-lint", "eslint/check")
+    pub fn resolve(&self, path: &str) -> Result<PathBuf> {
         if path.is_empty() {
             return Err(AikiError::InvalidFlowPath {
                 path: path.to_string(),
@@ -733,44 +579,44 @@ impl FlowResolver {
             });
         }
         
-        let resolved = if let Some(rest) = path.strip_prefix("aiki/") {
-            // Built-in flows: try project first, then user
-            let project_path = self.path_resolver.project_root
-                .join(".aiki/flows/aiki")
-                .join(rest)
-                .with_extension("yml");
-            
-            if project_path.exists() {
-                project_path
-            } else {
-                self.path_resolver.home_dir
-                    .join(".aiki/flows/aiki")
-                    .join(rest)
-                    .with_extension("yml")
-            }
-        } else if let Some(rest) = path.strip_prefix("vendor/") {
-            // Vendor flows: try project first, then user
-            let project_path = self.path_resolver.project_root
-                .join(".aiki/flows/vendor")
-                .join(rest)
-                .with_extension("yml");
-            
-            if project_path.exists() {
-                project_path
-            } else {
-                self.path_resolver.home_dir
-                    .join(".aiki/flows/vendor")
-                    .join(rest)
-                    .with_extension("yml")
-            }
+        // Only support vendor-namespaced flows: {vendor}/{name}
+        if !path.contains('/') {
+            return Err(AikiError::InvalidFlowPath {
+                path: path.to_string(),
+                reason: "Flow path must be in format {vendor}/{name} (e.g., 'aiki/quick-lint', 'eslint/check')".to_string(),
+            });
+        }
+        
+        // Extract vendor and name
+        let parts: Vec<&str> = path.splitn(2, '/').collect();
+        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(AikiError::InvalidFlowPath {
+                path: path.to_string(),
+                reason: "Flow path must be in format {vendor}/{name} with non-empty vendor and name".to_string(),
+            });
+        }
+        
+        let vendor = parts[0];
+        let name = parts[1];
+        
+        // Try project first, then user
+        let project_path = self.path_resolver.project_root()
+            .join(".aiki/flows")
+            .join(vendor)
+            .join(name)
+            .with_extension("yml");
+        
+        let resolved = if project_path.exists() {
+            project_path
         } else {
-            // For generic paths (@/, ./, ../, /), delegate to PathResolver
-            self.path_resolver.resolve(path, current_flow_dir)?
+            self.path_resolver.home_dir()
+                .join(".aiki/flows")
+                .join(vendor)
+                .join(name)
+                .with_extension("yml")
         };
         
         // CRITICAL: Canonicalize path for reliable cycle detection
-        // This ensures ./foo.yml, ../flows/foo.yml, and @/flows/foo.yml
-        // all resolve to the same canonical path if they reference the same file
         resolved.canonicalize().map_err(|e| AikiError::FlowNotFound {
             path: path.to_string(),
             resolved_path: resolved.display().to_string(),
@@ -786,36 +632,20 @@ impl FlowResolver {
 let path_resolver = PathResolver::new()?;
 let flow_resolver = FlowResolver::new()?;
 
-// Built-in flow (searches project first, then user) - FlowResolver
-flow_resolver.resolve(
-    "aiki/quick-lint",
-    Path::new(".aiki/flows"),
-) // → Checks: 1) {project}/.aiki/flows/aiki/quick-lint.yml
+// Vendor-namespaced flow (searches project first, then user)
+flow_resolver.resolve("aiki/quick-lint")
+  // → Checks: 1) {project}/.aiki/flows/aiki/quick-lint.yml
   //          2) ~/.aiki/flows/aiki/quick-lint.yml
 
-// Project root (docs) - PathResolver for non-flow files
-path_resolver.resolve(
-    "@/docs/architecture.md",
-    Path::new(".aiki/flows"),
-) // → /project/docs/architecture.md
+// Another vendor's flow
+flow_resolver.resolve("eslint/check")
+  // → Checks: 1) {project}/.aiki/flows/eslint/check.yml
+  //          2) ~/.aiki/flows/eslint/check.yml
 
-// Project root (script) - PathResolver
-path_resolver.resolve(
-    "@/scripts/lint.sh",
-    Path::new(".aiki/flows"),
-) // → /project/scripts/lint.sh
-
-// Flow-relative - FlowResolver (adds .yml)
-flow_resolver.resolve(
-    "./helpers/lint.yml",
-    Path::new("/project/.aiki/flows"),
-) // → /project/.aiki/flows/helpers/lint.yml
-
-// Flow-relative with parent directory - FlowResolver
-flow_resolver.resolve(
-    "../shared/base.yml",
-    Path::new("/project/.aiki/flows/helpers"),
-) // → /project/.aiki/flows/shared/base.yml
+// Custom vendor namespace
+flow_resolver.resolve("mycompany/policies")
+  // → Checks: 1) {project}/.aiki/flows/mycompany/policies.yml
+  //          2) ~/.aiki/flows/mycompany/policies.yml
 ```
 
 ### Flow Composer
@@ -848,9 +678,9 @@ impl<'a> FlowComposer<'a> {
     /// - Recursive flow invocation
     pub fn compose_flow(&mut self, flow_path: &str, event: &mut dyn Event) -> Result<()> {
         // Load the flow (FlowLoader uses FlowResolver which returns canonical paths)
-        let (flow, canonical_path) = self.loader.load(flow_path, current_flow_dir)?;
+        let (flow, canonical_path) = self.loader.load(flow_path)?;
         
-        // Check for circular dependency (including self-invocation)
+        // Check for circular dependency
         // canonical_path is already canonicalized by FlowResolver, so this comparison is reliable
         if self.call_stack.contains(&canonical_path) {
             return Err(AikiError::CircularFlowDependency {
@@ -872,9 +702,7 @@ impl<'a> FlowComposer<'a> {
         
         // 2. Execute this flow's actions (if any for this event)
         if let Some(actions) = flow.events.get(&event.event_type()) {
-            for action in actions {
-                self.compose_action(action, event)?;
-            }
+            self.executor.execute_actions(actions, event)?;
         }
         
         // 3. Execute after flows (each atomically)
@@ -884,21 +712,6 @@ impl<'a> FlowComposer<'a> {
         
         // Pop from call stack
         self.call_stack.pop();
-        Ok(())
-    }
-    
-    /// Compose a single action (delegates to executor or recurses for flow: actions)
-    fn compose_action(&mut self, action: &Action, event: &mut dyn Event) -> Result<()> {
-        match action {
-            Action::Flow { path } => {
-                // Inline flow invocation - delegate to compose_flow() for composition
-                self.compose_flow(path, event)?;
-            }
-            _ => {
-                // All other actions - delegate to FlowExecutor
-                self.executor.execute_action(action, event)?;
-            }
-        }
         Ok(())
     }
 }
@@ -913,12 +726,11 @@ impl<'a> FlowComposer<'a> {
 - Returns `FlowResult` with timing
 
 **FlowComposer** (new for Milestone 1.3):
-- Orchestrates flow composition: `before:`, `after:`, `flow:` action
+- Orchestrates flow composition: `before:`, `after:` directives
 - Manages call stack for cycle detection
 - Provides variable isolation (each flow gets fresh variable context)
 - Shares event state across all flows (e.g., PrePromptEvent's MessageAssembler)
-- Splits action lists around `flow:` actions
-- Delegates action chunks to FlowExecutor
+- Delegates action execution to FlowExecutor
 
 **Key insight on isolation:**
 - **Variables are isolated** - Each flow gets fresh variable context
@@ -938,24 +750,17 @@ FlowComposer.compose_flow("my-workflow.yml", &mut event)
     ↓
     Executes before flows (each gets fresh variable context, shares event state)
     ↓
-    For actions in this flow (fresh variable context, shares event state):
-        - Accumulate non-flow actions in a chunk
-        - When flow: action encountered:
-            1. Execute chunk via FlowExecutor
-            2. Execute flow: recursively via FlowComposer.compose_flow()
-        - Continue accumulating
-        - Execute remaining chunk via FlowExecutor
+    Executes this flow's actions via FlowExecutor (fresh variable context, shares event state)
     ↓
     Executes after flows (each gets fresh variable context, shares event state)
     ↓
-    Returns ActionResult (like shell/jj actions)
+    Returns Result
 ```
 
 **Key insights:** 
 - FlowComposer handles *orchestration* (what flows run when, isolation)
-- FlowExecutor handles *execution* (action chunks with shared context)
+- FlowExecutor handles *execution* (individual actions with shared context)
 - FlowExecutor already has the loop and failure handling
-- FlowComposer splits around `flow:` actions for chunking
 - Event object (&mut event) passed through entire composition tree
 - Each flow gets fresh variables, but all modify the same event state
 
@@ -1034,25 +839,22 @@ Available aiki/* flows:
   - aiki/test-runner
 ```
 
-**Example 2: Project root file not found**
+**Example 2: Invalid flow path format**
 ```
-Error: Flow not found: '@/docs/architecture.md'
+Error: Invalid flow path: 'quick-lint'
 
-Searched location:
-  - /Users/you/project/docs/architecture.md
-
-Path type: project root (@/ means project root directory)
+Reason: Flow path must be in format {vendor}/{name} (e.g., 'aiki/quick-lint', 'eslint/check')
 ```
 
-**Example 4: Flow-relative path not found**
+**Example 3: Vendor flow not found**
 ```
-Error: Flow not found: './helpers/lint.yml'
+Error: Flow not found: 'mycompany/custom-checks'
 
-Searched location:
-  - /Users/you/project/.aiki/flows/helpers/lint.yml
+Searched locations:
+  - /Users/you/project/.aiki/flows/mycompany/custom-checks.yml
+  - ~/.aiki/flows/mycompany/custom-checks.yml
 
-Path type: flow-relative (./ means relative to current flow directory)
-Current flow: .aiki/flows/my-workflow.yml
+Hint: Create the flow file at one of the above locations
 ```
 
 ### Circular Dependency
@@ -1061,10 +863,10 @@ Current flow: .aiki/flows/my-workflow.yml
 Error: Circular dependency detected
 
 Flow execution chain:
-  my-workflow.yml
-  → aiki/shared.yml (before)
-  → vendor/checks.yml (before)
-  → aiki/shared.yml  ← Circular!
+  mycompany/workflow
+  → aiki/shared (before)
+  → mycompany/checks (before)
+  → aiki/shared  ← Circular!
 
 Remove the circular dependency to fix this.
 ```
@@ -1077,21 +879,32 @@ Error: Before flow failed: aiki/quick-lint
 
   Caused by: Lint errors detected
 
-Aborting execution of my-workflow.yml
+Aborting execution of mycompany/workflow
 ```
 
-If an after flow fails:
+If an after flow fails with `block`:
+```
+Error: After flow failed: aiki/security-scan
+
+  Caused by: Critical vulnerabilities detected
+
+Aborting execution of mycompany/workflow
+```
+
+If an after flow fails with `continue`:
 ```
 Warning: After flow failed: aiki/cleanup
 
   Caused by: Failed to remove temp files
 
-Main workflow completed successfully, but cleanup failed.
+Main workflow completed, but cleanup failed.
 ```
 
 **Error handling strategy:**
 - Before flow errors → abort entire workflow (fail fast)
-- After flow errors → log warning but don't fail workflow (best effort cleanup)
+- After flow errors → honor the failure mode (`block`/`stop`/`continue`)
+  - Use `on_failure: continue` for best-effort cleanup
+  - Use `block` for validation that must pass (e.g., security scans)
 
 ---
 
@@ -1107,7 +920,13 @@ Main workflow completed successfully, but cleanup failed.
 
 ## Future Enhancements
 
-### 1. Flow Parameters
+### 1. Inline Flow Actions
+
+See [inline-flow-actions.md](../later/inline-flow-actions.md) for the deferred inline `flow:` action feature that allows conditional flow invocation at specific points in the action list.
+
+This feature was removed from Milestone 1.3 to reduce scope and focus on before/after composition first.
+
+### 2. Flow Parameters
 
 Pass parameters to composed flows:
 
@@ -1119,7 +938,7 @@ before:
       auto_fix: true
 ```
 
-### 2. Conditional Composition
+### 3. Conditional Composition
 
 Conditionally compose flows based on runtime conditions:
 
@@ -1133,7 +952,7 @@ before:
       - aiki/rust-check
 ```
 
-### 3. Flow Registry
+### 4. Flow Registry
 
 Central registry of available flows:
 

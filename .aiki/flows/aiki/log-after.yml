@@ -1,0 +1,14 @@
+name: Log After Flow
+version: "1"
+
+# This flow runs after the main default.yml actions
+# Demonstrates flow composition with before/after
+
+change.completed:
+  - log: "[AFTER] Log-after flow executing after default.yml"
+
+session.started:
+  - log: "[AFTER] Session complete - log-after flow"
+
+prompt.submitted:
+  - log: "[AFTER] Prompt processing complete - log-after flow"

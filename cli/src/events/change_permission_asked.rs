@@ -27,7 +27,7 @@ pub struct AikiChangePermissionAskedPayload {
 pub fn handle_change_permission_asked(
     payload: AikiChangePermissionAskedPayload,
 ) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -46,7 +46,7 @@ pub fn handle_change_permission_asked(
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::ChangePermissionAsked,
         &mut state,
         &core_flow.change_permission_asked,

@@ -1,0 +1,24 @@
+name: Aiki Repo Default Flow
+version: "1"
+
+# This default flow runs after the bundled aiki/core for this repository
+# It demonstrates the new execution model where:
+# 1. Bundled aiki/core always runs first (immutable)
+# 2. This default.yml runs after (optional customization)
+# 3. Flow composition with before/after flows
+
+before:
+  - aiki/log-before
+
+after:
+  - aiki/log-after
+
+change.completed:
+  - log: "[MAIN] Custom flow: Running after aiki/core for change.completed"
+  - log: "[MAIN] This is from .aiki/flows/default.yml in the aiki repo"
+
+session.started:
+  - log: "[MAIN] Custom flow: Session started in aiki repo"
+
+prompt.submitted:
+  - log: "[MAIN] Custom flow: Prompt submitted"

@@ -80,8 +80,6 @@ mod tests {
 
     #[test]
     fn test_core_flow_uses_let_syntax() {
-        use super::super::types::Action;
-
         let core = load_core_flow();
 
         // Should have change.completed handler

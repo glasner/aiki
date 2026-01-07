@@ -14,7 +14,7 @@ pub struct AikiSessionEndedPayload {
 /// then cleans up the session file. This event fires when the agent session
 /// ends, either explicitly or when response.received doesn't generate an autoreply.
 pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| format!("Session ended by {:?}", payload.session.agent_type()));
 
@@ -25,7 +25,7 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
     let mut state = AikiState::new(payload.clone());
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_core_flow(
+    let flow_result = execute_flow(
         EventType::SessionEnded,
         &mut state,
         &core_flow.session_ended,

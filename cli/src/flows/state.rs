@@ -165,6 +165,15 @@ impl AikiState {
     pub fn failures_count(&self) -> usize {
         self.failures.len()
     }
+
+    /// Clear all let-bound variables and their metadata.
+    ///
+    /// Used by FlowComposer to provide variable isolation between composed flows.
+    /// Each flow starts with a fresh variable context.
+    pub fn clear_variables(&mut self) {
+        self.let_vars.clear();
+        self.variable_metadata.clear();
+    }
 }
 
 #[cfg(test)]

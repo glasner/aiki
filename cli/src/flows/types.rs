@@ -88,6 +88,19 @@ pub struct Flow {
     pub version: String,
 
     // ========================================================================
+    // Flow Composition (Milestone 1.3)
+    // ========================================================================
+    /// Flows to run before this flow's actions (in order)
+    /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
+    #[serde(default)]
+    pub before: Vec<String>,
+
+    /// Flows to run after this flow's actions (in order)
+    /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
+    #[serde(default)]
+    pub after: Vec<String>,
+
+    // ========================================================================
     // Session Lifecycle Events
     // ========================================================================
     /// session.started event handler (new agent session began)

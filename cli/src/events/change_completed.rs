@@ -336,7 +336,7 @@ pub struct AikiChangeCompletedPayload {
 /// This is the core provenance tracking event for file mutations.
 /// Records metadata about the file changes in the JJ change description.
 pub fn handle_change_completed(payload: AikiChangeCompletedPayload) -> Result<HookResult> {
-    use super::prelude::execute_core_flow;
+    use super::prelude::execute_flow;
 
     debug_log(|| {
         format!(
@@ -355,7 +355,7 @@ pub fn handle_change_completed(payload: AikiChangeCompletedPayload) -> Result<Ho
     let mut state = AikiState::new(payload);
 
     // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = execute_core_flow(
+    let _flow_result = execute_flow(
         EventType::ChangeCompleted,
         &mut state,
         &core_flow.change_completed,
