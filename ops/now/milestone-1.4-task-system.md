@@ -406,7 +406,7 @@ SessionStart:
 
 ### aiki task sync
 
-Ensures task events are committed and pushed:
+Verifies task branch integrity and reports orphaned tasks:
 
 ```rust
 pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
@@ -425,23 +425,16 @@ pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
         }
     }
 
-    // 3. Push to remote if configured
-    if has_git_remote(repo_path, "aiki/tasks")? {
-        push_branch(repo_path, "aiki/tasks")?;
-        report.pushed = true;
-    }
-
-    // 4. Report summary
+    // 3. Report summary
     eprintln!("Task sync complete:");
     eprintln!("  Total events: {}", report.total_events);
     eprintln!("  Orphaned in-progress: {}", report.orphaned_in_progress.len());
-    if report.pushed {
-        eprintln!("  Pushed to remote: yes");
-    }
 
     Ok(report)
 }
 ```
+
+**Note:** Remote push functionality deferred to Phase 2 (multi-agent coordination).
 
 ### Testing Strategy
 
@@ -457,7 +450,7 @@ pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
 - Create subtask → verify hierarchical ID
 - Add dependency → verify blocks ready queue
 - Start/close lifecycle
-- Sync → verify push to remote
+- Sync → verify integrity check
 
 **E2E tests:**
 - Flow creates tasks from TypeScript errors
@@ -980,6 +973,7 @@ cli/src/editors/
 | Task creation | Manual `bd create` | Auto from `response.received` flow |
 | Task auto-close | Manual `bd close` | Auto from `change.completed` flow |
 | Compaction survival | PreCompact hook | `prompt.submitted` flow |
+| Remote sync | `bd sync` pushes to remote | Phase 2 (multi-agent) |
 
 ### Context Injection Strategy
 
@@ -1070,15 +1064,9 @@ prompt.submitted:
 # session.ended: Auto-sync tasks before session ends
 # ═══════════════════════════════════════════════════════════════════════════════
 session.ended:
-  # Sync tasks to remote (if configured)
+  # Verify task integrity and warn about orphaned tasks
   - shell: aiki task sync --quiet
     on_failure: continue
-
-  # Warn about orphaned in-progress tasks
-  - let: orphaned = self.task_orphaned_in_progress
-  - if: $orphaned | length > 0
-    then:
-      - log: "Warning: $orphaned.length task(s) left in progress: $orphaned"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # response.received: Create tasks from errors, remind about task queue
@@ -1244,7 +1232,7 @@ No manual commands needed for the happy path. CLI commands (`aiki task ...`, `ai
 
 | Component | Delivers | When to Build |
 |-----------|----------|---------------|
-| **Task System Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, sync | **Now** |
+| **Task System Phase 1** | Core tasks, dependencies, hierarchical IDs, assignments, local sync | **Now** |
 | **Review System** | Revset-based reviews, approve/reject workflow | **Now** |
 | **Task System Phase 2** | Compaction, external refs, SQLite cache (if needed) | When sessions are long or need integrations |
 | **Task System Phase 3** | Code provenance (task ↔ change links) | When need to track what fixed what |
