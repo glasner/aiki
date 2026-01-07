@@ -6,9 +6,15 @@
 
 ## Overview
 
-The Task System provides structured, event-sourced task management for AI agent workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically. Tasks support dependencies, hierarchical organization, and assignment. Reviews are handled separately via the [Review System](#review-system).
+The Task System provides structured, event-sourced task management for AI agent workflows. Instead of text-based autoreplies, flows create queryable tasks that agents can work through systematically. Tasks support dependencies, hierarchical organization, and assignment.
 
 **Key Architecture:** Event-sourced task log stored on JJ `aiki/tasks` branch. Tasks reconstructed from immutable event stream. Dependencies stored as data within events, not JJ DAG structure.
+
+**Separation of Concerns:** Tasks (work items) and Reviews (code verification) are separate systems:
+- `aiki/tasks` branch - Work queue (errors, features, issues)
+- `aiki/reviews` branch - Code review requests/results
+- Reviews create tasks (via `discovered_from` links) but aren't tasks themselves
+- Different lifecycles: reviews are one-time verifications, tasks are ongoing work items
 
 **Inspiration:** [Beads](https://github.com/steveyegge/beads) - Steve Yegge's distributed, git-backed issue tracker for AI agents. Key insights adopted:
 - Dependencies make "ready" meaningful (only unblocked tasks)
@@ -139,7 +145,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 #### Core Enums
 
 - **AgentType**: `ClaudeCode`, `Cursor`, `Human`
-- **TaskType**: `Error`, `Warning`, `Suggestion`, `Feature`, `Chore`, `Review`, `FixReview`, `Implementation`
+- **TaskType**: `Error`, `Warning`, `Suggestion`, `Feature`, `Chore`, `Issue`
 - **TaskStatus**: `Open`, `InProgress`, `NeedsReview`, `NeedsFix`, `NeedsHuman`, `Closed`
 - **ClosureReason**: `Approved`, `Fixed`, `Abandoned`, `Completed`
 - **NeedsHumanReason**: `MaxRetriesExceeded`, `ReviewerDisagreement`, `ComplexityThreshold`
