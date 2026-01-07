@@ -51,7 +51,7 @@ PostResponse:
   - for: error in $ts_errors
     then:
       task.create:
-        objective: "Fix: $error.message"
+        goal: "Fix: $error.message"
         type: error
         file: $error.file
         line: $error.line
@@ -74,7 +74,7 @@ $ aiki task ready --json
   "tasks": [
     {
       "id": "err-a1b2c3d4",
-      "objective": "Fix: Type 'null' is not assignable to type 'User'",
+      "goal": "Fix: Type 'null' is not assignable to type 'User'",
       "type": "error",
       "status": "open",
       "blocked_by": [],
@@ -145,7 +145,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 
 #### Task Definition Fields
 
-- objective, type, priority, scope, evidence
+- goal, type, priority, scope, evidence
 - description, approach, done_when (hints)
 - blocked_by, discovered_from, parent_id (deps)
 - assignee (routing: which agent type should work on this)
@@ -235,6 +235,8 @@ aiki task create "Found: missing validation" \
     --type error \
     --discovered-from err-a1b2
 
+# Note: First positional argument is the goal
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TASK LIFECYCLE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -308,7 +310,7 @@ $ aiki task ready --json
 
 $ aiki task show err-a1b2
 Task: err-a1b2
-Objective: Fix null check in auth.ts:42
+Goal: Fix null check in auth.ts:42
 Type: error
 Status: in_progress
 Priority: 1
@@ -356,7 +358,7 @@ PostResponse:
   - for: error in $ts_errors
     then:
       task.create:
-        objective: "Fix: $error.message"
+        goal: "Fix: $error.message"
         type: error
         file: $error.file
         line: $error.line
@@ -802,11 +804,11 @@ review-456 (type: Review, status: Open)
 └─ review-456.2 (type: Warning, status: Closed, resolved_by: fix-789.1.2)
 
 fix-789 (type: FixReview, status: Closed, works_on: [review-456.1, review-456.2])
-├─ fix-789.1 (type: Implementation, objective: "Analyze & plan")
+├─ fix-789.1 (type: Implementation, goal: "Analyze & plan")
 │   ├─ fix-789.1.1 (type: Implementation, works_on: [review-456.1])
 │   └─ fix-789.1.2 (type: Implementation, works_on: [review-456.2])
-├─ fix-789.2 (type: Implementation, objective: "Implement")
-└─ fix-789.3 (type: Implementation, objective: "Verify")
+├─ fix-789.2 (type: Implementation, goal: "Implement")
+└─ fix-789.3 (type: Implementation, goal: "Verify")
 ```
 
 **New Event Flow:**
@@ -965,6 +967,44 @@ cli/src/editors/
 | Task auto-close | Manual `bd close` | Auto from `change.completed` flow |
 | Compaction survival | PreCompact hook | `prompt.submitted` flow |
 
+### Context Injection Strategy
+
+**Problem**: Claude compacts context when the conversation gets too long, losing task awareness.
+
+**Solution**: Multi-layered context injection inspired by Beads's approach.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CONTEXT COMPACTION SURVIVAL STRATEGY                           │
+└─────────────────────────────────────────────────────────────────┘
+
+1. Session Start
+   └─> session.started flow fires
+       └─> Inject task context (initial awareness)
+
+2. During Session
+   └─> prompt.submitted flow fires on EVERY prompt
+       └─> Re-inject task context from aiki/tasks branch
+       └─> Survives compaction (tasks stored in JJ, not context)
+
+3. Claude Code: PreCompact Hook (optional)
+   └─> Claude-specific: Fires before compaction
+       └─> Run: aiki task sync (persist state)
+       └─> Note: stdout NOT injected (PreCompact limitation)
+       └─> Recovery happens via prompt.submitted, not PreCompact
+
+4. Cursor/Others: beforeSubmitPrompt Hook
+   └─> Fires on prompt submit
+       └─> Maps to prompt.submitted flow event
+       └─> Injects task context via stdout
+```
+
+**Key Insight from Beads:**
+- PreCompact hook **cannot** inject context (stdout ignored by Claude Code)
+- Actual recovery happens via UserPromptSubmit/prompt.submitted
+- Tasks stored on persistent branch (aiki/tasks) survive compaction
+- Re-read from storage on every prompt = always current
+
 ### Core Flow Additions
 
 The task system integrates into the existing `cli/src/flows/core/flow.yaml`:
@@ -1000,6 +1040,25 @@ session.started:
               Run `aiki review list --for $agent_type` for details.
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# prompt.submitted: Re-inject task context on every prompt (survives compaction)
+# ═══════════════════════════════════════════════════════════════════════════════
+prompt.submitted:
+  # Re-inject task context from persistent storage (aiki/tasks JJ branch)
+  # This ensures task awareness even after context compaction
+  - if: self.has_task_system
+    then:
+      - let: ready_count = self.task_ready_count
+      - if: $ready_count > 0
+        then:
+          autoreply:
+            prepend: |
+              📋 $ready_count task(s) ready. Run `aiki task ready --json`.
+
+  # Note: This fires on EVERY prompt submit, keeping tasks visible
+  # even after Claude compacts context. Tasks stored on aiki/tasks
+  # branch survive compaction (like Beads's .beads/*.jsonl in git)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # session.ended: Auto-sync tasks before session ends
 # ═══════════════════════════════════════════════════════════════════════════════
 session.ended:
@@ -1028,7 +1087,7 @@ response.received:
       - for: error in $errors
         then:
           task.create:
-            objective: "Fix: $error.message"
+            goal: "Fix: $error.message"
             type: error
             file: $error.file
             line: $error.line
@@ -1106,7 +1165,7 @@ response.received:
   - for: error in $rust_errors
     then:
       task.create:
-        objective: "Fix: $error.message"
+        goal: "Fix: $error.message"
         type: error
         file: $error.file
         line: $error.line
