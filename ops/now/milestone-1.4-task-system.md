@@ -53,8 +53,15 @@ PostResponse:
       task.create:
         goal: "Fix: $error.message"
         type: error
-        file: $error.file
-        line: $error.line
+        body: |
+          TypeScript error: $error.message
+          
+          File: $error.file:$error.line
+          Code: $error.code
+        scope:
+          files:
+            - path: $error.file
+              lines: [$error.line]
         evidence:
           - source: typescript
             message: $error.message
@@ -145,8 +152,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 
 #### Task Definition Fields
 
-- goal, type, priority, scope, evidence
-- description, approach, done_when (hints)
+- goal, body, type, priority, scope, evidence
 - blocked_by, discovered_from, parent_id (deps)
 - assignee (routing: which agent type should work on this)
 - claimed_by (ownership: which session is actively working on it)
@@ -212,12 +218,14 @@ aiki task create "Fix null check in auth.ts" \
     --line 42 \
     --evidence "typescript:Object is possibly null:TS2531"
 
-# Create with rich context
+# Create with rich context (body is markdown)
 aiki task create "Add dark mode toggle" \
     --type feature \
-    --description "Users requested dark mode for accessibility" \
-    --approach "Use CSS variables, store preference in localStorage" \
-    --done-when "Toggle works, persists, respects OS preference"
+    --body "Users requested dark mode for accessibility.
+
+Use CSS variables, store preference in localStorage.
+
+Done when toggle works, persists, and respects OS preference."
 
 # Create subtask (hierarchical)
 aiki task create "Fix null check" \
@@ -315,6 +323,13 @@ Type: error
 Status: in_progress
 Priority: 1
 Assignee: human
+Claimed by: session-xyz
+
+Body:
+  TypeScript error: Object is possibly 'null'
+  
+  File: src/auth.ts:42
+  Code: TS2531
 
 Blocked by: (none)
 Discovered from: (none)
@@ -360,8 +375,15 @@ PostResponse:
       task.create:
         goal: "Fix: $error.message"
         type: error
-        file: $error.file
-        line: $error.line
+        body: |
+          TypeScript error: $error.message
+          
+          File: $error.file:$error.line
+          Code: $error.code
+        scope:
+          files:
+            - path: $error.file
+              lines: [$error.line]
         evidence:
           - source: typescript
             message: $error.message
@@ -1089,8 +1111,15 @@ response.received:
           task.create:
             goal: "Fix: $error.message"
             type: error
-            file: $error.file
-            line: $error.line
+            body: |
+              $error.source error: $error.message
+              
+              File: $error.file:$error.line
+              Code: $error.code
+            scope:
+              files:
+                - path: $error.file
+                  lines: [$error.line]
             evidence:
               - source: $error.source
                 message: $error.message
@@ -1167,8 +1196,15 @@ response.received:
       task.create:
         goal: "Fix: $error.message"
         type: error
-        file: $error.file
-        line: $error.line
+        body: |
+          Rust compiler error: $error.message
+          
+          File: $error.file:$error.line
+          Code: $error.code
+        scope:
+          files:
+            - path: $error.file
+              lines: [$error.line]
         evidence:
           - source: rustc
             message: $error.message
