@@ -147,7 +147,7 @@ Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Curr
 - **AgentType**: `ClaudeCode`, `Cursor`, `Human`
 - **TaskType**: `Error`, `Warning`, `Suggestion`, `Feature`, `Chore`, `Issue`
 - **TaskStatus**: `Open`, `InProgress`, `NeedsReview`, `NeedsFix`, `NeedsHuman`, `Closed`
-- **ClosureReason**: `Approved`, `Fixed`, `Abandoned`, `Completed`
+- **ClosureReason**: `Approved`, `Fixed`, `WontFix`, `Completed`
 - **NeedsHumanReason**: `MaxRetriesExceeded`, `ReviewerDisagreement`, `ComplexityThreshold`
 - **DependencyType**: `Blocks`, `ParentChild`, `DiscoveredFrom`, `Related`
 
@@ -262,7 +262,7 @@ aiki task fail <task-id>
 
 # Close task
 aiki task close <task-id> --fixed
-aiki task close <task-id> --abandoned --reason "Not reproducible"
+aiki task close <task-id> --wont-fix --reason "Not reproducible"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ASSIGNMENT
