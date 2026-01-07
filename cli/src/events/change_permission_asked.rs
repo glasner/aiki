@@ -27,6 +27,8 @@ pub struct AikiChangePermissionAskedPayload {
 pub fn handle_change_permission_asked(
     payload: AikiChangePermissionAskedPayload,
 ) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "change.permission_asked ({}) event from {:?}, session: {}, tool: {}",
@@ -37,18 +39,18 @@ pub fn handle_change_permission_asked(
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute change.permission_asked actions from the core flow
-    let flow_result =
-        FlowEngine::execute_statements(&core_flow.change_permission_asked, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let flow_result = execute_core_flow(
+        EventType::ChangePermissionAsked,
+        &mut state,
+        &core_flow.change_permission_asked,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();

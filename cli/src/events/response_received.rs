@@ -20,6 +20,8 @@ pub struct AikiResponseReceivedPayload {
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "response.received event from {:?}, response length: {}",
@@ -28,30 +30,30 @@ pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute response.received actions from the core flow (catch errors for graceful degradation)
-    let _flow_result =
-        match FlowEngine::execute_statements(&core_flow.response_received, &mut state) {
-            Ok(result) => result,
-            Err(e) => {
-                // Flow execution failed - log warning and skip autoreply
-                eprintln!("\n⚠️ response.received flow failed: {}", e);
-                eprintln!("No autoreply generated.\n");
-                return Ok(HookResult {
-                    context: state.build_context(),
-                    decision: Decision::Allow,
-                    failures: state.take_failures(),
-                });
-            }
-        };
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let _flow_result = match execute_core_flow(
+        EventType::ResponseReceived,
+        &mut state,
+        &core_flow.response_received,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flow execution failed - log warning and skip autoreply
+            eprintln!("\n⚠️ response.received flow failed: {}", e);
+            eprintln!("No autoreply generated.\n");
+            return Ok(HookResult {
+                context: state.build_context(),
+                decision: Decision::Allow,
+                failures: state.take_failures(),
+            });
+        }
+    };
 
     // Extract failures from state
     let failures = state.take_failures();

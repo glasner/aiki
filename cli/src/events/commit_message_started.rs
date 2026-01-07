@@ -20,20 +20,22 @@ pub struct AikiCommitMessageStartedPayload {
 pub fn handle_commit_message_started(
     payload: AikiCommitMessageStartedPayload,
 ) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| "Preparing commit message");
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute commit.message_started actions from the core flow
-    let flow_result =
-        FlowEngine::execute_statements(&core_flow.commit_message_started, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let flow_result = execute_core_flow(
+        EventType::CommitMessageStarted,
+        &mut state,
+        &core_flow.commit_message_started,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();

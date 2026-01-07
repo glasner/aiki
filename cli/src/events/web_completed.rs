@@ -28,6 +28,8 @@ pub struct AikiWebCompletedPayload {
 /// This event fires after a web operation completes. Can be used to
 /// log network access, react to failures, or trigger follow-up actions.
 pub fn handle_web_completed(payload: AikiWebCompletedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "web.completed from {:?}, session: {}, operation: {}, success: {:?}",
@@ -38,17 +40,18 @@ pub fn handle_web_completed(payload: AikiWebCompletedPayload) -> Result<HookResu
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute web.completed statements from the core flow
-    let _flow_result = FlowEngine::execute_statements(&core_flow.web_completed, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let _flow_result = execute_core_flow(
+        EventType::WebCompleted,
+        &mut state,
+        &core_flow.web_completed,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();

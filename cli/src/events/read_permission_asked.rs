@@ -28,6 +28,8 @@ pub struct AikiReadPermissionAskedPayload {
 /// This event fires when the agent requests permission to read files.
 /// It allows flows to gate reads of sensitive files (secrets, .env, etc.).
 pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> Result<HookResult> {
+    use super::prelude::execute_core_flow;
+
     debug_log(|| {
         format!(
             "read.permission_asked event from {:?}, session: {}, tool: {}",
@@ -37,17 +39,18 @@ pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> 
         )
     });
 
-    // Load core flow (cached)
+    // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Set flow name for self.* function resolution
-    state.flow_name = Some("aiki/core".to_string());
-
-    // Execute read.permission_asked statements from the core flow
-    let flow_result = FlowEngine::execute_statements(&core_flow.read_permission_asked, &mut state)?;
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let flow_result = execute_core_flow(
+        EventType::ReadPermissionAsked,
+        &mut state,
+        &core_flow.read_permission_asked,
+    )?;
 
     // Extract failures from state
     let failures = state.take_failures();
