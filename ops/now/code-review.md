@@ -200,6 +200,7 @@ review.completed {
     agent: String,           // Agent that performed review (e.g., "codex")
     mode: String,            // "default" or "self"
     thinking_mode: String,   // "deep" or "quick"
+    prompt: String,          // Prompt template used ("default", "security", "performance")
     issues_found: usize,     // Number of issues detected (= number of subtasks created)
     target: {
       type: String,          // "change" | "git_commit" | "git_staged" | "files"
@@ -464,6 +465,462 @@ Open → InProgress → NeedsReview → NeedsFix → InProgress → NeedsReview 
     start: <review.task_id>  # Looked up from review ID
     headless: true
     # Agent comes from task.assignee (set when issue task was created)
+```
+
+### Fix Action Lifecycle: JJ Changes and Events
+
+This section documents the complete lifecycle of a `fix:` action, showing every JJ change created and every event emitted.
+
+**Initial State:**
+```
+JJ changes from session (reviewed scope: session):
+  @ (change_id: abc123) - Add JWT token validation
+    [aiki] agent=claude-code, session=xyz, tool=Edit
+  ○ (change_id: def456) - Implement auth middleware  
+    [aiki] agent=claude-code, session=xyz, tool=Edit
+  ○ (change_id: ghi789) - Create user model
+    [aiki] agent=claude-code, session=xyz, tool=Edit
+
+Review found issues across these changes.
+
+aiki/tasks branch:
+  - review-456 (parent task, status: Open, scope: session xyz)
+    - review-456.1 (issue task, status: Open, assignee: claude-code)
+      scope: src/auth.ts:42 (in change abc123)
+    - review-456.2 (issue task, status: Open, assignee: claude-code)
+      scope: src/middleware.ts:67 (in change def456)
+```
+
+**Flow triggers fix:**
+```yaml
+- fix:
+    review: review-456
+    max_iterations: 3
+    quick: true
+```
+
+**Fix Task Created:**
+
+1. **Create Parent Fix Task with Structured Subtasks**
+   ```yaml
+   # aiki/tasks branch - new task created
+   ---
+   aiki_task_event: v1
+   task_id: fix-789
+   event: created
+   timestamp: 2025-01-15T10:35:00Z
+   agent_type: claude-code
+   task:
+     objective: "Address all issues from review-456"
+     type: fix_review
+     assignee: claude-code  # Inherited from issue tasks
+     works_on:
+       - review-456.1  # Links to all issue subtasks
+       - review-456.2
+     context:
+       review_id: review-456  # Can fetch full issue details from these tasks on demand
+       session_id: xyz  # Original session that created the reviewed changes
+     subtasks:
+       - fix-789.1:
+           objective: "Analyze context and create implementation plan"
+           description: |
+             1. Digest prompt/intent from session xyz (understand why code was written)
+             2. Digest code from reviewed changes (abc123, def456, ghi789)
+             3. Digest review findings and all issue subtasks
+             4. Create solution plan with implementation subtasks
+           status: open
+       - fix-789.2:
+           objective: "Implement solution"
+           status: open
+       - fix-789.3:
+           objective: "Verify all issues resolved"
+           status: open
+   ---
+   ```
+
+2. **Invoke Agent Headlessly to Execute Task**
+   - Agent: `claude-code` (from fix task assignee)
+   - Mode: `--quick` (first 2 iterations use quick mode)
+   - Command: "Execute task fix-789"
+   - Input: Task structure with all subtasks
+   - Agent sees the structured process and works through it sequentially
+
+**Agent Execution - Step 1: Analyze Context and Create Plan**
+
+3. **Agent Works on fix-789.1**
+   ```rust
+   task.event {
+     task_id: "fix-789.1",
+     event: Started,
+     agent: "claude-code",
+   }
+   ```
+   
+   Agent performs all analysis steps:
+   - **Digests prompt/intent**: Reads `aiki/conversations` branch, fetches session xyz history
+   - **Digests code**: Reads changes abc123, def456, ghi789 to understand current structure
+   - **Digests review**: Fetches issue tasks review-456.1 and review-456.2, reads Gerrit JSON
+   - **Creates plan**: Determines implementation approach
+   - **Dynamically creates implementation subtasks**
+   
+   ```yaml
+   # Agent creates new subtasks on aiki/tasks branch
+   ---
+   aiki_task_event: v1
+   task_id: fix-789.1.1
+   event: created
+   parent_id: fix-789
+   task:
+     objective: "Add null check before user.name access"
+     type: implementation
+     works_on: [review-456.1]  # Maps to specific review issue
+     scope:
+       files:
+         - path: src/auth.ts
+           lines: [42]
+   ---
+   
+   ---
+   aiki_task_event: v1
+   task_id: fix-789.1.2
+   event: created
+   parent_id: fix-789
+   task:
+     objective: "Add JWT token validation in middleware"
+     type: implementation
+     works_on: [review-456.2]  # Maps to specific review issue
+     scope:
+       files:
+         - path: src/middleware.ts
+           lines: [67]
+   ---
+   ```
+   
+   ```rust
+   task.event {
+     task_id: "fix-789.1",
+     event: Closed {
+       reason: Completed,
+     },
+     analysis: "User wanted JWT auth. Code has user model, middleware, token validation. Review found: null check needed in auth.ts:42, validation needed in middleware.ts:67",
+     subtasks_created: ["fix-789.1.1", "fix-789.1.2"],
+   }
+   ```
+
+**Agent Execution - Step 2: Implement Solution**
+
+4. **Agent Works on fix-789.2 (Implementation Coordinator)**
+   ```rust
+   task.event {
+     task_id: "fix-789.2",
+     event: Started,
+     agent: "claude-code",
+   }
+   ```
+   
+   Agent now implements each plan subtask:
+
+5. **Implement fix-789.1.1**
+   ```rust
+   task.event {
+     task_id: "fix-789.1.1",
+     event: Started,
+     agent: "claude-code",
+   }
+   ```
+   
+   **JJ Change Created**
+   ```
+   JJ: jj new -m "Add null check before user.name access"
+   
+   New change created:
+     change_id: jkl012
+     description: |
+       Add null check before user.name access
+       
+       [aiki]
+       agent=claude-code
+       session=xyz-new
+       tool=fix
+       review_id=review-456
+       task_id=fix-789.1.1
+       parent_task=fix-789
+       iteration=1
+       quick=true
+       [/aiki]
+   ```
+   
+   ```rust
+   change.completed {
+     change_id: "jkl012",
+     file_paths: ["src/auth.ts"],
+     tasks: {
+       works_on: ["fix-789.1.1"],
+       closes: [],
+     },
+     tool: "fix",
+   }
+   
+   task.event {
+     task_id: "fix-789.1.1",
+     event: Closed {
+       reason: Completed,
+     },
+   }
+   ```
+
+6. **Implement fix-789.1.2**
+   ```rust
+   task.event {
+     task_id: "fix-789.1.2",
+     event: Started,
+     agent: "claude-code",
+   }
+   ```
+   
+   **JJ Change Created**
+   ```
+   JJ: jj new -m "Add JWT token validation in middleware"
+   
+   New change created:
+     change_id: mno345
+     description: |
+       Add JWT token validation in middleware
+       
+       [aiki]
+       agent=claude-code
+       session=xyz-new
+       tool=fix
+       review_id=review-456
+       task_id=fix-789.1.2
+       parent_task=fix-789
+       iteration=1
+       quick=true
+       [/aiki]
+   ```
+   
+   ```rust
+   change.completed {
+     change_id: "mno345",
+     file_paths: ["src/middleware.ts"],
+     tasks: {
+       works_on: ["fix-789.1.2"],
+       closes: [],
+     },
+     tool: "fix",
+   }
+   
+   task.event {
+     task_id: "fix-789.1.2",
+     event: Closed {
+       reason: Completed,
+     },
+   }
+   ```
+
+7. **Implementation Complete**
+    ```rust
+    task.event {
+      task_id: "fix-789.2",
+      event: Closed {
+        reason: Completed,
+      },
+      implementation_tasks_completed: ["fix-789.1.1", "fix-789.1.2"],
+    }
+    ```
+
+**Agent Execution - Step 3: Verify Issues Resolved**
+
+8. **Agent Works on fix-789.3 (Verification)**
+    ```rust
+    task.event {
+      task_id: "fix-789.3",
+      event: Started,
+      agent: "claude-code",
+    }
+    ```
+    
+    - Agent triggers self-review of all changed code (--self flag)
+    - Same agent (claude-code) reviews its own fixes
+    - Checks if review-456.1 and review-456.2 are addressed
+    - **Result: Both issues resolved!** ✅
+    
+    ```rust
+    // Close review issue tasks
+    task.event {
+      task_id: "review-456.1",
+      event: Closed {
+        reason: Approved,
+      },
+      resolved_by: "fix-789.1.1",
+    }
+    
+    task.event {
+      task_id: "review-456.2",
+      event: Closed {
+        reason: Approved,
+      },
+      resolved_by: "fix-789.1.2",
+    }
+    
+    // Close verification subtask
+    task.event {
+      task_id: "fix-789.3",
+      event: Closed {
+        reason: Completed,
+      },
+      verification_result: "All review issues resolved",
+    }
+    ```
+
+9. **Fix Task Complete (Iteration 1 Success)**
+    ```rust
+    task.event {
+      task_id: "fix-789",
+      event: Closed {
+        reason: Approved,
+      },
+      iterations: 1,
+      issues_resolved: 2,
+      all_subtasks_completed: true,
+    }
+    ```
+    - All subtasks (fix-789.1, fix-789.2, fix-789.3) are closed
+    - Both review issues (review-456.1, review-456.2) are closed
+    - Fix task fix-789: `Open` → `Closed`
+
+**Alternative Scenario: Iteration 1 Fails Verification**
+
+If step 8 verification finds issues still present:
+
+```rust
+task.event {
+  task_id: "fix-789.3",
+  event: Closed {
+    reason: Failed,
+  },
+  verification_result: "review-456.2 still has validation issues",
+}
+```
+
+Then the `fix:` action **restarts the process for iteration 2**:
+- Keeps analysis step (fix-789.1) as completed - no need to re-digest context
+- Resets fix-789.2 and fix-789.3 to restart implementation and verification
+- Agent re-plans in fix-789.1 with knowledge of what failed (creates new implementation subtasks)
+- Mode switches to deep-thinking if iteration 3
+
+**Alternative Scenario: Max Iterations Exceeded**
+
+If iteration 3 verification also fails:
+
+```rust
+task.event {
+  task_id: "fix-789",
+  event: NeedsHuman {
+    reason: MaxRetriesExceeded,
+    attempts: 3,
+  },
+  agent: "claude-code",
+  unresolved_issues: ["review-456.2"],
+  completed_subtasks: ["fix-789.1"],
+  failed_subtasks: ["fix-789.2", "fix-789.3"],
+}
+```
+- Fix task status: `Open` → `NeedsHuman`
+- Issue review-456.1: `Closed` (was resolved in iteration 1)
+- Issue review-456.2: `Open` (still needs fix after 3 attempts)
+- Human can pick up fix-789 and continue from the analysis (fix-789.1 already has full context)
+
+**Final JJ State (Success Scenario - Iteration 1):**
+```
+JJ change graph:
+  @ (mno345) - Add JWT token validation in middleware
+    [aiki] task_id=fix-789.1.2, parent_task=fix-789, iteration=1
+  ○ (jkl012) - Add null check before user.name access
+    [aiki] task_id=fix-789.1.1, parent_task=fix-789, iteration=1
+  ○ (abc123) - Add JWT token validation [REVIEWED, had issues]
+  ○ (def456) - Implement auth middleware [REVIEWED, had issues]
+  ○ (ghi789) - Create user model [REVIEWED, no issues]
+
+aiki/tasks branch:
+  - review-456 (review task, status: Open)
+    - review-456.1 (issue: null check, status: Closed, resolved_by: fix-789.1.1)
+    - review-456.2 (issue: validation, status: Closed, resolved_by: fix-789.1.2)
+  - fix-789 (fix task, status: Closed, iterations: 1, issues_resolved: 2)
+    - fix-789.1 (analyze & plan, status: Closed)
+      - fix-789.1.1 (impl: null check, status: Closed)
+      - fix-789.1.2 (impl: validation, status: Closed)
+    - fix-789.2 (implement, status: Closed)
+    - fix-789.3 (verify, status: Closed)
+```
+
+**Final JJ State (Failure Scenario - Max Iterations):**
+```
+JJ change graph:
+  @ (stu901-iter3) - Add JWT token validation (iter 3, deep-thinking) [FAILED verification]
+  ○ (pqr789-iter3) - Add null check (iter 3, deep-thinking) [PASSED verification]
+  ○ (mno567-iter2) - Add JWT token validation (iter 2) [FAILED verification]
+  ○ (jkl345-iter2) - Add null check (iter 2) [PASSED verification]
+  ○ (ghi123-iter1) - Add JWT token validation (iter 1) [FAILED verification]
+  ○ (def012-iter1) - Add null check (iter 1) [PASSED verification]
+  ○ (abc123) - Add JWT token validation [REVIEWED, had issues]
+  ○ (def456) - Implement auth middleware [REVIEWED, had issues]
+  ○ (ghi789) - Create user model [REVIEWED, no issues]
+
+aiki/tasks branch:
+  - review-456 (review task, status: Open)
+    - review-456.1 (issue: null check, status: Closed, resolved_by: fix-789.1.1 in iteration 1)
+    - review-456.2 (issue: validation, status: Open, needs human)
+  - fix-789 (fix task, status: NeedsHuman, iterations: 3, unresolved: [review-456.2])
+    - fix-789.1 (analyze & plan, status: Closed, kept across iterations)
+      - fix-789.1.1 (impl: null check, status: Closed, resolved in iter 1)
+      - fix-789.1.2 (impl: validation, status: Open, failed after 3 iterations in iter 1)
+      - fix-789.1.3 (impl: validation v2, status: Open, failed in iter 2)
+      - fix-789.1.4 (impl: validation v3, status: Open, failed in iter 3)
+    - fix-789.2 (implement, last run: iteration 3, status: Closed)
+    - fix-789.3 (verify, last run: iteration 3, status: Failed)
+```
+
+**Key Observations:**
+
+1. **3-step fix workflow** - The `fix:` action creates a fix task with 3 subtasks: (1) analyze & plan, (2) implement, (3) verify
+2. **Agent executes task headlessly** - Agent is given the task structure and works through subtasks sequentially
+3. **Analysis runs once** - Step 1 (digest intent, code, review + create plan) completes once and is preserved across iterations
+4. **Dynamic implementation subtasks** - Step 1 creates implementation subtasks (fix-789.1.1, fix-789.1.2) based on the agent's plan
+5. **Each implementation subtask maps to review issues** - `works_on` field links implementation to specific review issues
+6. **Verification gates progress** - Step 3 re-reviews all changes and determines if iteration succeeded
+7. **Partial success tracked** - Individual review issues can be resolved while others remain open
+8. **Iterations retry failed implementations** - If verification fails, step 1 creates new implementation subtasks for unresolved issues
+9. **Every implementation creates a JJ change** - Each fix-789.1.x subtask creates its own change
+10. **Full provenance chain** - Changes reference `task_id=fix-789.1.1`, `parent_task=fix-789`, `review_id=review-456`
+11. **Quick/deep mode is recorded** - `iteration=1` and `iteration=2` use quick mode, `iteration=3` uses deep-thinking
+12. **Failed attempts remain in JJ history** - All implementation attempts are preserved for learning
+13. **Human can continue from analysis** - If max iterations exceeded, human picks up with full context already gathered
+14. **Clear audit trail** - Can see all implementation attempts (fix-789.1.1, fix-789.1.2, fix-789.1.3, etc.) across iterations
+
+**Querying the History:**
+
+```bash
+# Show all fix attempts for a review
+jj log -r 'description(glob:"review_id=review-456")'
+
+# Show the fix task
+aiki task show fix-789
+
+# Show all review issues
+aiki task list --parent review-456
+
+# Show which issues were resolved
+aiki task list --parent review-456 --status closed
+
+# Show unresolved issues
+aiki task list --parent review-456 --status open
+
+# Show fix tasks that need human attention
+aiki task list --type fix_review --status needs-human
+
+# Show full timeline for a fix attempt
+aiki task show fix-789 --history
 ```
 
 **Interactive Agent Mode:**
@@ -922,32 +1379,34 @@ Custom templates supported via user configuration.
 
 ### Use Case 1: Pre-Commit Review Hook with Auto-Fix
 
-**Trigger**: User runs `git commit`
+**Trigger**: Git prepare-commit-msg hook (before commit is created)
 **Flow**: Review → Create tasks → Auto-fix via fix: action
 **Outcome**: Auto-fix issues headlessly, block only if fixes fail
+
+**Note**: This use case assumes integration with Git's `prepare-commit-msg` hook, which runs after staging but before the commit is created. The hook would trigger `aiki review` with a custom event.
 
 ```yaml
 # .aiki/flows/pre-commit-review.yml
 name: "Pre-Commit Review with Auto-Fix"
 version: "1.0"
 
-shell.permission_asked:
-  - if: $event.command contains "git commit"
+# Triggered by Git prepare-commit-msg hook
+commit_message.started:
+  - log: "Running pre-commit review..."
+  
+  # Review staged changes
+  - review:
+      scope: staged
+      quick: true  # Use fast models for speed
+      prompt: default
+    alias: pre_commit_review
+  
+  # Auto-fix issues headlessly (uses authoring agent)
+  - if: $pre_commit_review.issues_found > 0
     then:
-      - log: "Running pre-commit review..."
-      
-      # Review staged changes
-      - review:
-          scope: staged
-          quick: true  # Use fast models for speed
-        alias: pre_commit_review
-      
-      # Auto-fix issues headlessly (uses authoring agent)
-      - if: $pre_commit_review.issues_found > 0
-        then:
-          - log: "Found {{$pre_commit_review.issues_found}} issues, fixing..."
-          - fix: $pre_commit_review.id  # Blocks until all fixed
-          - log: "✅ All issues resolved!"
+      - log: "Found {{$pre_commit_review.issues_found}} issues, fixing..."
+      - fix: $pre_commit_review.id  # Blocks until all fixed
+      - log: "✅ All issues resolved!"
 ```
 
 ### Use Case 2: Custom Remediation for Critical Files
@@ -961,7 +1420,7 @@ shell.permission_asked:
 name: "Critical File Security Review"
 version: "1.0"
 
-change.permission_asked:
+change.completed:
   - if: |
       $event.file_paths contains "src/auth" or
       $event.file_paths contains "src/payment" or
@@ -976,8 +1435,9 @@ change.permission_asked:
           files: $event.file_paths
 
 # Custom review.completed handler (overrides aiki/default)
+# Only handle security reviews (ignore other reviews like aiki/review-loop)
 review.completed:
-  - if: $event.review.issues_found > 0
+  - if: $event.review.prompt == "security" and $event.review.issues_found > 0
     then:
       - block: |
           🚨 SECURITY REVIEW FAILED
@@ -990,9 +1450,9 @@ review.completed:
 
 ### Use Case 3: Autonomous Review with Headless Auto-Fix
 
-**Trigger**: AI agent completes file modifications
-**Flow**: Review → Auto-fix headlessly → Notify agent
-**Outcome**: Issues automatically fixed without agent involvement
+**Trigger**: AI agent completes a response
+**Flow**: Review entire session → Auto-fix headlessly
+**Outcome**: All session changes reviewed and issues automatically fixed
 
 ```yaml
 # .aiki/flows/auto-review.yml
@@ -1000,27 +1460,29 @@ name: "Autonomous Review with Headless Auto-Fix"
 version: "1.0"
 
 response.received:
-  - if: $event.modified_files_count > 0
+  - if: $event.session.modified_files_count > 0
     then:
-      - log: "Agent modified files - running review..."
+      - log: "Agent completed response - reviewing session changes..."
       
-      # Review working copy
-      - review: "@"
-        alias: code_review
+      # Review all changes from this session
+      - review:
+          scope: session  # Reviews everything the agent did in this turn
+          quick: true
+        alias: session_review
       
       # Auto-fix issues headlessly if found (uses authoring agent)
-      - if: $code_review.issues_found > 0
+      - if: $session_review.issues_found > 0
         then:
-          - log: "Found {{$code_review.issues_found}} issues, fixing headlessly..."
-          - fix: $code_review.id
+          - log: "Found {{$session_review.issues_found}} issues, fixing headlessly..."
+          - fix: $session_review.id
           - log: "✅ All issues fixed automatically!"
 ```
 
 ### Use Case 3b: Self-Review with Headless Auto-Fix
 
-**Trigger**: AI agent completes file modifications
-**Flow**: Agent reviews own work → Fixes issues headlessly
-**Outcome**: Agent self-corrects via headless remediation
+**Trigger**: AI agent completes a response
+**Flow**: Agent reviews entire session's work → Fixes issues headlessly
+**Outcome**: Agent self-corrects all changes from the session
 
 ```yaml
 # .aiki/flows/self-review-loop.yml
@@ -1028,20 +1490,22 @@ name: "Self-Review with Headless Auto-Fix"
 version: "1.0"
 
 response.received:
-  - if: $event.modified_files_count > 0
+  - if: $event.session.modified_files_count > 0
     then:
-      - log: "Agent modified files - running self-review..."
+      - log: "Agent completed response - running self-review of session..."
       
-      # Self-review: agent reviews its own work
+      # Self-review: agent reviews all its changes from this session
       - review:
-          self: true
-        alias: self_review
+          scope: session  # Reviews everything from this conversation turn
+          self: true      # Uses same agent as reviewer
+          quick: true
+        alias: session_self_review
       
       # Auto-fix issues headlessly (same agent fixes its own issues)
-      - if: $self_review.issues_found > 0
+      - if: $session_self_review.issues_found > 0
         then:
-          - fix: $self_review.id
-          - log: "Self-corrections applied!"
+          - fix: $session_self_review.id
+          - log: "Self-corrections applied to all session changes!"
 ```
 
 ### Use Case 4: Pre-Push Security Review with Custom Handler
@@ -1066,9 +1530,10 @@ shell.permission_asked:
           prompt: security
 
 # Custom review.completed handler (overrides aiki/default)
+# Only handle security reviews (ignore other reviews like aiki/review-loop)
 # Block immediately on security issues, don't auto-fix
 review.completed:
-  - if: $event.review.issues_found > 0
+  - if: $event.review.prompt == "security" and $event.review.issues_found > 0
     then:
       - block: |
           🔒 SECURITY REVIEW FAILED
@@ -1171,6 +1636,106 @@ $ aiki review --self --quick
 ```
 
 **Note:** All review commands emit the `review.completed` event. The `aiki/default` flow handles auto-remediation. Users can customize this by overriding the event handler.
+
+---
+
+## Flow Composition with Review Loop
+
+With composable flows (Milestone 1.3), we can create reusable review flows that compose together.
+
+### Core Review Flow: `aiki/review-loop`
+
+Create a reusable review flow that other flows can include:
+
+```yaml
+# ~/.aiki/flows/aiki/review-loop.yml
+name: "Review Loop with Auto-Fix"
+version: "1"
+
+# This flow reviews ALL changes from the entire session when agent completes a response
+# Triggered on response.received (not change.completed to avoid reviewing partial work)
+
+response.received:
+  - log: "[Review Loop] Agent completed response, reviewing session changes..."
+  
+  # Only review if the session made file modifications
+  - if: $event.session.modified_files_count > 0
+    then:
+      - log: "[Review Loop] Reviewing {{$event.session.modified_files_count}} files from session..."
+      
+      # Review all changes from the entire session (not just working copy)
+      # This captures everything the agent did in this conversation turn
+      - review:
+          scope: session  # Reviews all changes made during this session
+      
+      # Auto-fix any issues found
+      - if: $review.issues_found > 0
+        then:
+          - log: "[Review Loop] Found {{$review.issues_found}} issues, fixing..."
+          - fix:
+              review: $review.id
+              max_iterations: 3
+              quick: true
+          - log: "[Review Loop] ✅ Auto-fix complete"
+      - else:
+          - log: "[Review Loop] ✅ No issues found, session changes look good!"
+```
+
+### Using Review Loop in Project default.yml
+
+Add the review loop as a `before:` flow in your project's `.aiki/flows/default.yml`:
+
+```yaml
+# .aiki/flows/default.yml
+name: "Aiki Repo Default Flow"
+version: "1"
+
+# Run review loop before main actions
+before:
+  - aiki/review-loop  # Reusable review flow from ~/.aiki/flows/aiki/
+
+# Main project-specific actions
+change.completed:
+  - log: "[Main] Project-specific change.completed actions..."
+
+response.received:
+  - log: "[Main] Project-specific response.received actions..."
+```
+
+### Execution Order
+
+When an event fires, the execution order is:
+
+```
+1. Bundled aiki/core (always first, immutable)
+2. default.yml - before flows
+   └─> aiki/review-loop (reviews and auto-fixes)
+3. default.yml - main actions (project-specific)
+4. default.yml - after flows (if any)
+```
+
+### Benefits of Composable Review Flows
+
+1. **Reusable** - Write review logic once in `aiki/review-loop`, use across projects
+2. **Override-able** - Projects can create `.aiki/flows/aiki/review-loop.yml` to customize
+3. **Composable** - Combine with other flows (security checks, linters, formatters)
+4. **Namespaced** - Clear organization in `~/.aiki/flows/aiki/` namespace
+
+### Example: Multi-Stage Review
+
+```yaml
+# .aiki/flows/default.yml
+name: "Multi-Stage Review Pipeline"
+version: "1"
+
+before:
+  - aiki/quick-lint       # Fast syntax checks
+  - aiki/format-check     # Code formatting
+
+after:
+  - aiki/review-loop      # Deep code review after main actions
+  - aiki/security-scan    # Security analysis
+```
 
 ---
 

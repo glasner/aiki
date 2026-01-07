@@ -6,9 +6,12 @@ version: "1"
 # 1. Bundled aiki/core always runs first (immutable)
 # 2. This default.yml runs after (optional customization)
 # 3. Flow composition with before/after flows
+# 4. Review loop integration (when implemented)
 
 before:
   - aiki/log-before
+  # Future: Add aiki/review-loop here when review feature is implemented
+  # - aiki/review-loop
 
 after:
   - aiki/log-after

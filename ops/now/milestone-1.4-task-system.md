@@ -132,162 +132,30 @@ Review requested: rev-xyz123
 
 ### Data Model
 
-#### Agent Types
+Tasks are stored as events on the `aiki/tasks` branch using event sourcing. Current state is reconstructed by replaying events.
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentType {
-    ClaudeCode,
-    Cursor,
-    Human,
-    // Future: Aider, Copilot, etc.
-}
-```
+#### Core Enums
 
-#### Task Definition
+- **AgentType**: `ClaudeCode`, `Cursor`, `Human`
+- **TaskType**: `Error`, `Warning`, `Suggestion`, `Feature`, `Chore`, `Review`, `FixReview`, `Implementation`
+- **TaskStatus**: `Open`, `InProgress`, `NeedsReview`, `NeedsFix`, `NeedsHuman`, `Closed`
+- **ClosureReason**: `Approved`, `Fixed`, `Abandoned`, `Completed`
+- **NeedsHumanReason**: `MaxRetriesExceeded`, `ReviewerDisagreement`, `ComplexityThreshold`
+- **DependencyType**: `Blocks`, `ParentChild`, `DiscoveredFrom`, `Related`
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskDefinition {
-    // Core (required)
-    pub objective: String,
-    pub r#type: TaskType,
-    pub priority: u8,  // 0-4 (0 = critical, 4 = backlog)
+#### Task Definition Fields
 
-    // Scope (required for errors)
-    pub scope: TaskScope,
-
-    // Evidence (for errors)
-    pub evidence: Vec<Evidence>,
-
-    // Context (optional, richer descriptions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,      // Why this matters
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approach: Option<String>,         // How to fix it
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub done_when: Option<String>,        // Acceptance criteria
-
-    // Dependencies
-    #[serde(default)]
-    pub blocked_by: Vec<String>,          // Task IDs that block this
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discovered_from: Option<String>,  // Parent task this was found during
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,        // For hierarchical IDs (err-a1b2.1)
-
-    // Assignment
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assignee: Option<AgentType>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskType {
-    Error,
-    Warning,
-    Suggestion,
-    Feature,
-    Chore,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskScope {
-    pub files: Vec<FileScope>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileScope {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub lines: Vec<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Evidence {
-    pub source: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-}
-```
+- objective, type, priority, scope, evidence
+- description, approach, done_when (hints)
+- blocked_by, discovered_from, parent_id (deps)
+- assignee (suggested)
 
 #### Event Types
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskEvent {
-    pub task_id: String,
-    pub event: EventType,
-    pub timestamp: DateTime<Utc>,
-    pub agent_type: AgentType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum EventType {
-    // Lifecycle
-    Created {
-        task: TaskDefinition,
-    },
-    Started,
-    Failed {
-        attempt: u32,
-    },
-    Closed {
-        fixed: bool,
-    },
-
-    // Assignment
-    Assigned {
-        to: AgentType,
-        by: AgentType,
-    },
-    Unassigned,
-
-    // Dependencies
-    DependencyAdded {
-        blocked_by: String,
-        dep_type: DependencyType,
-    },
-    DependencyRemoved {
-        blocked_by: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DependencyType {
-    Blocks,          // Hard dependency - affects ready
-    ParentChild,     // Hierarchy - affects ready
-    DiscoveredFrom,  // Soft - informational only
-    Related,         // Soft - informational only
-}
-```
-
-#### Reconstructed Task State
-
-```rust
-#[derive(Debug, Clone)]
-pub struct Task {
-    pub id: String,
-    pub definition: TaskDefinition,
-    pub status: TaskStatus,
-    pub assignee: Option<AgentType>,
-    pub attempts: Vec<Attempt>,
-    pub created_at: DateTime<Utc>,
-    pub closed_at: Option<DateTime<Utc>>,
-    pub fixed: Option<bool>,  // Set when closed
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskStatus {
-    Open,
-    InProgress,
-    Closed,
-}
-```
+**Lifecycle**: `Created`, `Started`, `CompletedWork`, `Failed`, `Closed`, `NeedsHuman`
+**Assignment**: `Assigned`, `Unassigned`
+**Dependencies**: `DependencyAdded`, `DependencyRemoved`
+**Review**: `ReviewCompleted`, `FixStarted`
 
 ### Hierarchical Task IDs
 
@@ -300,90 +168,16 @@ err-a1b2.1.1   (sub-subtask)
 err-a1b2.2     (another subtask)
 ```
 
-**Implementation:**
-
-```rust
-impl TaskManager {
-    pub fn create_subtask(
-        &self,
-        parent_id: &str,
-        definition: TaskDefinition,
-        agent_type: AgentType,
-    ) -> Result<String> {
-        // Find next available subtask number
-        let existing = self.get_child_tasks(parent_id)?;
-        let next_num = existing.len() + 1;
-
-        let task_id = format!("{}.{}", parent_id, next_num);
-
-        let mut def = definition;
-        def.parent_id = Some(parent_id.to_string());
-
-        // Subtasks implicitly depend on parent (parent-child relationship)
-        // But parent doesn't block subtask - subtask blocks parent closing
-
-        self.append_event(TaskEvent {
-            task_id: task_id.clone(),
-            event: EventType::Created { task: def },
-            timestamp: Utc::now(),
-            agent_type,
-        })?;
-
-        Ok(task_id)
-    }
-}
-```
+**Implementation:** Subtasks use parent ID + sequential number (e.g., `err-a1b2.1`, `err-a1b2.2`). Parent task sets `parent_id` field.
 
 ### Dependencies and Ready Queue
 
 **Key insight from Beads:** "Ready" means tasks with NO open blockers.
 
-```rust
-impl TaskManager {
-    /// Returns tasks that are:
-    /// - Status: Open (not InProgress or Closed)
-    /// - Not blocked by any open task
-    /// - Not a parent with open children (for hierarchical tasks)
-    pub fn query_ready(&self) -> Result<Vec<Task>> {
-        let all_tasks = self.get_all_tasks()?;
-
-        // Build set of open task IDs for quick lookup
-        let open_ids: HashSet<_> = all_tasks
-            .iter()
-            .filter(|t| t.status != TaskStatus::Closed)
-            .map(|t| t.id.as_str())
-            .collect();
-
-        all_tasks
-            .into_iter()
-            .filter(|task| {
-                // Must be open
-                if task.status != TaskStatus::Open {
-                    return false;
-                }
-
-                // All blockers must be closed
-                let all_blockers_closed = task.definition.blocked_by
-                    .iter()
-                    .all(|blocker_id| !open_ids.contains(blocker_id.as_str()));
-
-                if !all_blockers_closed {
-                    return false;
-                }
-
-                // For parent tasks: all children must be closed
-                // (Can't close epic until subtasks done)
-                let children = self.get_child_tasks(&task.id)?;
-                let all_children_closed = children
-                    .iter()
-                    .all(|c| c.status == TaskStatus::Closed);
-
-                all_children_closed
-            })
-            .collect()
-    }
-}
-```
+**Ready criteria:**
+- Status: Open (not InProgress, NeedsReview, NeedsFix, NeedsHuman, or Closed)
+- All `blocked_by` tasks are closed
+- All child tasks are closed (for parent tasks)
 
 ### CLI Commands
 
@@ -657,85 +451,17 @@ pub fn run_sync(repo_path: &Path) -> Result<SyncReport> {
 
 ### Compaction
 
-For long-running sessions, summarize old closed tasks to reduce context:
+For long-running sessions, summarize old closed tasks (>30 days) to reduce context.
 
-```rust
-pub enum EventType {
-    // ... existing variants
+**Event**: `Compacted { summary, original_size, compaction_level }`
 
-    Compacted {
-        summary: String,
-        original_size: usize,
-        compaction_level: u8,  // 1 = summarized, 2 = ultra-compact
-    },
-}
-
-impl TaskManager {
-    pub fn compact_task(&self, task_id: &str) -> Result<()> {
-        let task = self.get_task(task_id)?;
-
-        // Only compact closed tasks older than 30 days
-        if task.status != TaskStatus::Closed {
-            return Err(AikiError::TaskNotEligibleForCompaction(task_id.into()));
-        }
-
-        // Generate summary (could use Claude Haiku or simple template)
-        let summary = format!(
-            "{}\n\nOutcome: {} after {} attempt(s).",
-            task.definition.objective,
-            if task.was_fixed() { "Fixed" } else { "Abandoned" },
-            task.attempts.len()
-        );
-
-        // Append compaction event (original events still in history)
-        self.append_event(TaskEvent {
-            task_id: task_id.to_string(),
-            event: EventType::Compacted {
-                summary,
-                original_size: self.calculate_task_size(&task),
-                compaction_level: 1,
-            },
-            timestamp: Utc::now(),
-            agent_type: AgentType::System,
-        })
-    }
-}
-```
-
-During reconstruction, if a `Compacted` event exists, use summary instead of full replay.
+During reconstruction, if `Compacted` event exists, use summary instead of full replay.
 
 ### External Refs
 
-Link tasks to external systems (GitHub issues, Jira, etc.):
+Link tasks to external systems via `external_refs` field on TaskDefinition.
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskDefinition {
-    // ... existing fields
-
-    #[serde(default)]
-    pub external_refs: Vec<ExternalRef>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalRef {
-    pub system: ExternalSystem,
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalSystem {
-    GitHub,
-    GitHubPr,
-    Jira,
-    Linear,
-    JjChange,
-    Custom(String),
-}
-```
+**Systems**: `GitHub`, `GitHubPr`, `Jira`, `Linear`, `JjChange`, `Custom(String)`
 
 ```bash
 # Create task linked to GH issue
@@ -862,55 +588,20 @@ Event sourcing already handles this well:
 
 ### Data Model
 
-```rust
-// Stored on aiki/reviews branch (event-sourced like tasks)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewEvent {
-    pub review_id: String,           // Content-addressed ID
-    pub revset: String,              // JJ revset expression (e.g., "trunk()..@")
-    pub resolved_changes: Vec<String>, // Snapshot of change_ids at request time
-    pub event: ReviewEventType,
-    pub timestamp: DateTime<Utc>,
-    pub agent_type: AgentType,
-}
+Reviews are stored as events on `aiki/reviews` branch (event-sourced like tasks).
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ReviewEventType {
-    Requested {
-        from: AgentType,
-        by: AgentType,
-        context: Option<String>,
-    },
-    Completed {
-        by: AgentType,
-        outcome: ReviewOutcome,
-    },
-    Cancelled {
-        reason: Option<String>,
-    },
-}
+**ReviewEvent fields**: `review_id`, `revset`, `resolved_changes`, `event`, `timestamp`, `agent_type`
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ReviewOutcome {
-    Approved {
-        feedback: Option<String>,
-    },
-    Rejected {
-        feedback: String,
-        blocking_issues: Vec<String>,
-    },
-    ApprovedWithSuggestions {
-        feedback: String,
-        suggestions: Vec<String>,
-    },
-}
-```
+**Event Types**:
+- `Requested { from, by, context }` - Review requested
+- `Completed { by, outcome }` - Review finished
+- `Cancelled { reason }` - Review cancelled
+
+**Outcomes**: `Approved`, `Rejected { feedback, blocking_issues }`, `ApprovedWithSuggestions { feedback, suggestions }`
 
 **Why store both `revset` and `resolved_changes`?**
-- `revset`: Human-readable, shows intent ("trunk()..@", "feature-auth::")
-- `resolved_changes`: Audit trail of exactly which changes were reviewed
+- `revset`: Human-readable intent ("trunk()..@", "feature-auth::")
+- `resolved_changes`: Audit trail of exact change_ids reviewed
 
 ### CLI
 
@@ -1052,11 +743,87 @@ session.started:
 
 ### Relationship to Tasks
 
-Tasks and reviews are orthogonal:
+Reviews create tasks for issues found. The integration follows this flow:
+
+```
+1. Review completes → Creates review task (type: Review)
+   └─ Creates issue subtasks (type: Error/Warning/Suggestion)
+   
+2. fix: action → Creates fix task (type: FixReview)
+   ├─ Subtask 1: Analyze & plan
+   │   └─ Creates implementation subtasks (type: Implementation)
+   ├─ Subtask 2: Implement
+   └─ Subtask 3: Verify (self-review)
+   
+3. Verification passes → Closes issue tasks and fix task
+   OR
+   Verification fails → Creates new implementation subtasks, retry
+   OR
+   Max iterations → Status: NeedsHuman
+```
+
+**Task Hierarchy Example:**
+
+```
+review-456 (type: Review, status: Open)
+├─ review-456.1 (type: Error, status: Closed, resolved_by: fix-789.1.1)
+└─ review-456.2 (type: Warning, status: Closed, resolved_by: fix-789.1.2)
+
+fix-789 (type: FixReview, status: Closed, works_on: [review-456.1, review-456.2])
+├─ fix-789.1 (type: Implementation, objective: "Analyze & plan")
+│   ├─ fix-789.1.1 (type: Implementation, works_on: [review-456.1])
+│   └─ fix-789.1.2 (type: Implementation, works_on: [review-456.2])
+├─ fix-789.2 (type: Implementation, objective: "Implement")
+└─ fix-789.3 (type: Implementation, objective: "Verify")
+```
+
+**New Event Flow:**
+
+```rust
+// Review creates tasks
+review.completed → TaskEvent::Created { task: review-456 }
+                → TaskEvent::Created { task: review-456.1 }
+                → TaskEvent::Created { task: review-456.2 }
+
+// Fix task created
+fix: action → TaskEvent::Created { task: fix-789 }
+
+// Agent executes fix task
+TaskEvent::Started { task_id: fix-789.1 }  // Analysis
+TaskEvent::Created { task: fix-789.1.1 }   // Implementation subtask 1
+TaskEvent::Created { task: fix-789.1.2 }   // Implementation subtask 2
+TaskEvent::Closed { task_id: fix-789.1 }
+
+TaskEvent::Started { task_id: fix-789.2 }  // Implement
+TaskEvent::Closed { task_id: fix-789.2 }
+
+TaskEvent::Started { task_id: fix-789.3 }  // Verify
+TaskEvent::ReviewCompleted { review_id, issues_found: 0 }
+TaskEvent::Closed { task_id: review-456.1, reason: Approved }
+TaskEvent::Closed { task_id: review-456.2, reason: Approved }
+TaskEvent::Closed { task_id: fix-789.3, reason: Completed }
+TaskEvent::Closed { task_id: fix-789, reason: Approved }
+```
+
+**Status Transitions:**
+
+```
+Review Issue Task:
+  Open → Closed(Approved)  [resolved by implementation]
+
+Fix Task:
+  Open → InProgress → NeedsReview → Closed(Approved)
+         ↑____________|
+  OR
+  Open → InProgress → NeedsReview → NeedsFix → InProgress → ... → NeedsHuman
+                                      ↑____________|
+```
+
+**Orthogonal Concerns:**
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  TASKS                          │  REVIEWS                      │
+│  TASKS (Old Model)              │  REVIEWS (Old Model)          │
 │  Track work to be done          │  Verify code quality          │
 │  "Fix the auth bug"             │  "Review changes xyz..@"      │
 │  Has status, dependencies       │  Has outcome (approve/reject) │
