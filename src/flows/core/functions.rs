@@ -767,7 +767,6 @@ pub fn restore_original_files_change(
     })
 }
 
-
 /// Normalize a file path for use with jj commands
 ///
 /// JJ commands expect relative paths from the repo root. This function:
@@ -926,8 +925,8 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 /// This is used for context injection in flows to show task count.
 pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
-    let tasks = crate::tasks::engine::materialize_tasks(&events);
-    let ready = crate::tasks::engine::get_ready_queue(&tasks);
+    let tasks = crate::tasks::manager::materialize_tasks(&events);
+    let ready = crate::tasks::manager::get_ready_queue(&tasks);
 
     Ok(ActionResult {
         success: true,
@@ -943,8 +942,8 @@ pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
 /// This is used for context injection in flows.
 pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
-    let tasks = crate::tasks::engine::materialize_tasks(&events);
-    let in_progress = crate::tasks::engine::get_in_progress(&tasks);
+    let tasks = crate::tasks::manager::materialize_tasks(&events);
+    let in_progress = crate::tasks::manager::get_in_progress(&tasks);
 
     // Return as JSON array of IDs
     let ids: Vec<&str> = in_progress.iter().map(|t| t.id.as_str()).collect();
@@ -1149,7 +1148,8 @@ mod tests {
     fn test_classify_edits_change_no_edit_details() {
         let temp_dir = TempDir::new().unwrap();
 
-        let event = create_write_change_event(temp_dir.path(), vec!["test.txt".to_string()], vec![]);
+        let event =
+            create_write_change_event(temp_dir.path(), vec!["test.txt".to_string()], vec![]);
 
         let result = classify_edits_change(&event).unwrap();
         // No edit details → assume AI-only

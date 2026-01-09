@@ -1,4 +1,4 @@
-//! Task engine for materializing views and calculating ready queue
+//! Task manager for materializing views and calculating ready queue
 
 use std::collections::HashMap;
 
