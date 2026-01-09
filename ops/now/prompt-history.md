@@ -12,7 +12,9 @@ Store prompt/response history on a JJ `aiki/conversations` branch using the same
 3. **Session listing** - See what sessions have occurred
 4. _(Future)_ **Session resume** - Recover context when resuming sessions
 
-**Key Architecture:** Event-sourced log on orphan `aiki/conversations` branch. Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id`.
+**Key Architecture:** Event-sourced log on orphan `aiki/conversations` branch (local-only by default). Each prompt/response turn is a JJ change with structured metadata, linked to code changes via `change_id` range.
+
+**Privacy:** Prompts may contain secrets, PII, or proprietary code. The `aiki/conversations` branch is **not synced to remote by default**. Users can opt-in to sync with `aiki history sync --remote` (future feature).
 
 ---
 
@@ -97,6 +99,47 @@ Line 42: `const user = await getUser(id)?.validate();`
   Agent: "Added .validate() call per security requirements"
 ```
 
+### Line Attribution Strategy
+
+`aiki why file:line` uses a **two-step lookup** leveraging existing infrastructure:
+
+```
+aiki why src/auth.ts:42
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 1. BlameContext::blame_file()       │
+│    (existing, uses JJ FileAnnotator)│
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ LineAttribution {                   │
+│   change_id: "xyz789",  ◄── from JJ │
+│   session_id: "abc123", ◄── from provenance
+│   agent_type: Claude,               │
+│ }                                   │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 2. Query aiki/conversations:        │
+│    Find response where change_id    │
+│    is in first_change_id..last_change_id
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ ResponseEvent {                     │
+│   intent: "fix null check in auth", │
+│   turn: 3,                          │
+│   ...                               │
+│ }                                   │
+└─────────────────────────────────────┘
+```
+
+**Why this works:** The existing `aiki blame` already uses JJ's `FileAnnotator` to get per-line `change_id` attribution. We store the change_id range in response events, enabling reverse lookup from any line → conversation turn.
+
 ### `aiki log` - View AI Changes
 
 ```bash
@@ -141,13 +184,14 @@ s-def456  2025-01-14 15:00  claude-code   8 turns  "security fixes"
 |----------|------|------|
 | **SQLite** | Fast queries, indexes | Separate sync, migration burden |
 | **Flat files** | Simple | No structure, hard to query |
-| **JJ branch** | Native dedup, revsets, already synced | Linear scan (acceptable for <1000 entries) |
+| **JJ branch** | Native dedup, revsets, consistent with task system | Linear scan (acceptable for <1000 entries) |
 
 **JJ wins because:**
-- Already syncing JJ to remotes (prompts come free)
+- Consistent with `aiki/tasks` branch pattern
 - Revsets provide powerful querying (`jj log -r 'description("session=abc")'`)
 - Change descriptions are mutable (can annotate later)
 - No additional infrastructure
+- Optional sync to remote (user opt-in for privacy)
 
 ---
 
@@ -187,12 +231,15 @@ session_id: "abc123"
 timestamp: "2025-01-15T10:31:45Z"
 agent_type: claude-code
 turn: 1
-change_id: "xyz789"                    # Links to JJ change (for aiki who/why)
+first_change_id: "xyz788"              # First JJ change in this turn
+last_change_id: "xyz790"               # Last JJ change in this turn (for revset range)
 duration_ms: 105000
 files_read: ["src/auth.ts", "src/middleware.ts"]
 files_written: ["src/auth.ts", "src/routes/login.ts"]
 tools_used: ["Read", "Edit", "Bash"]
 errors_detected: 0
+intent: "add JWT authentication"       # Extracted from agent summary
+intent_source: agent_summary           # How intent was derived
 ---
 
 # Response Summary
@@ -209,8 +256,9 @@ Added JWT authentication with:
 ```
 
 **Key fields:**
-- `change_id` - Links to JJ change (enables who/why lookups)
-- `intent` - Short summary of WHY (see Intent Summaries below)
+- `first_change_id` / `last_change_id` - JJ change range (enables who/why lookups via revset)
+- `intent` - Short summary of WHY, derived from agent response (see Intent Summaries below)
+- `intent_source` - How intent was derived (agent_summary, prompt_first_line, etc.)
 
 ---
 
@@ -235,22 +283,26 @@ Intent is derived from multiple sources, in priority order:
 ```yaml
 intent_sources:
   1. explicit_tag:      # User tags intent: "intent: security fix"
-  2. prompt_first_line: # First line of prompt (often states goal)
-  3. agent_summary:     # Agent's "I did X" from response
+  2. agent_summary:     # Agent's "I did X" from response (preferred)
+  3. prompt_first_line: # First substantive line of prompt
   4. file_action:       # Fallback: "modified src/auth.ts"
 ```
+
+**Why agent summary is preferred:** The agent's response summary (e.g., "Added optional chaining to prevent null pointer") is more reliable than the user's prompt, which may be conversational or ambiguous ("can you fix that thing?").
 
 **Example derivation:**
 
 ```
 User prompt: "fix the null check in auth, it's causing crashes"
+Agent response: "Added optional chaining to prevent null pointer when user not found..."
 
 Intent extraction:
   - No explicit tag
-  - First line: "fix the null check in auth"  ← use this
+  - Agent summary first line: "Added optional chaining to prevent null pointer"
   - Truncate to ~50 chars
 
-Stored intent: "fix null check in auth"
+Stored intent: "add optional chaining for null safety"
+intent_source: agent_summary
 ```
 
 ### Response Event with Intent
@@ -261,30 +313,28 @@ aiki_conversation: v1
 event: response
 session_id: "abc123"
 turn: 3
-change_id: "xyz789"
-intent: "fix null check in auth"           # ← NEW: extracted intent
-intent_source: prompt_first_line           # ← how it was derived
+first_change_id: "xyz788"
+last_change_id: "xyz790"
+intent: "add optional chaining for null safety"
+intent_source: agent_summary
 files_written: ["src/auth.ts"]
 ---
 ```
 
-### Per-File Intent (for multi-file changes)
+### Per-File Intent (Phase 2)
 
-When a turn modifies multiple files, capture per-file intent:
+When a turn modifies multiple files, we use a single intent for v1. Per-file intent granularity is deferred to Phase 2:
 
 ```yaml
----
-aiki_conversation: v1
-event: response
-session_id: "abc123"
-turn: 2
-change_id: "xyz789"
+# Phase 1: Single intent for all files
 intent: "add JWT authentication"
-file_intents:                              # ← per-file breakdown
-  src/auth.ts: "core auth service"
-  src/routes/login.ts: "login endpoint"
-  src/middleware/auth.ts: "JWT validation middleware"
----
+files_written: ["src/auth.ts", "src/routes/login.ts", "src/middleware/auth.ts"]
+
+# Phase 2 (future): Per-file breakdown
+# file_intents:
+#   src/auth.ts: "core auth service"
+#   src/routes/login.ts: "login endpoint"
+#   src/middleware/auth.ts: "JWT validation middleware"
 ```
 
 ### How `aiki why` Uses Intent
@@ -346,7 +396,16 @@ aiki/conversations (orphan branch, linear append-only log)
 **Why orphan branch?**
 - No connection to main working copy
 - Append-only (never rebase/squash)
-- Independent sync
+- Local-only by default (privacy)
+
+### Concurrency
+
+Multiple agents or terminals may write to `aiki/conversations` simultaneously. We accept **eventual consistency**:
+
+- Events include timestamps for ordering
+- On read, sort by timestamp to reconstruct order
+- Interleaved events from different sessions are fine (filter by session_id)
+- No locking required for v1 (single-agent is the common case)
 
 ---
 
@@ -497,43 +556,37 @@ session.started:
 
 ## Implementation Plan
 
-### Phase 1: Core Storage & Session Commands
+### Phase 1: Core Storage & Commands
 
-1. **Create branch manager** (`cli/src/sessions/manager.rs`)
-   - Initialize `aiki/conversations` orphan branch
+1. **Create history manager** (`cli/src/history/manager.rs`)
+   - Initialize `aiki/conversations` orphan branch (local-only)
    - Append prompt/response events
    - Parse events from change descriptions
-   - Link responses to JJ changes via `change_id`
+   - Link responses to JJ changes via `first_change_id`/`last_change_id` range
 
 2. **Add event recording**
    - Hook into `prompt.submitted` event
    - Hook into `response.received` event
-   - Capture `change_id` from working copy
+   - Capture change_id range (first/last) during turn
+   - Extract intent from agent summary
 
 3. **CLI commands**
    - `aiki log` - List/search AI changes
    - `aiki sessions list` - List sessions
 
-### Phase 2: Code Archaeology Commands
-
-1. **`aiki blame`** (existing, enhanced)
-   - Quick facts: agent, session, timestamp
-   - Link to session/turn via change_id
-
-2. **`aiki why`** (new command)
-   - Look up change_id in aiki/conversations
+4. **`aiki why`** (new command)
+   - Two-step lookup: JJ blame → change_id → conversation
+   - Use existing `BlameContext::blame_file()` for line attribution
+   - Query conversation by change_id range
    - Show intent (not raw prompts)
-   - Display layered narrative of code evolution
 
-### Phase 3 (Future): Session Resume & Compaction
+### Phase 2 (Future): Extended Features
 
-1. **Compaction**
-   - Summarize old sessions
-   - Replace with compact event
+1. **Per-file intent** - Granular intent per file in multi-file changes
 
-2. **Remote sync**
-   - Push `aiki/conversations` to remote
-   - Handle multi-device scenarios
+2. **Compaction** - Summarize old sessions, replace with compact event
+
+3. **Remote sync (opt-in)** - `aiki history sync --remote` with privacy warnings
 
 ---
 
@@ -583,7 +636,7 @@ jj log -r 'aiki/conversations' --limit 10
 └──────────────────────────────────┴──────────────────────────────────────────┘
 
 Connections:
-- Response events include change_id → enables who/why queries
+- Response events include change_id range → enables who/why queries via two-step lookup
 - Response events can reference task IDs worked on
 - Task close events can reference the turn that fixed it
 - Session resume loads both history AND pending tasks
@@ -591,38 +644,50 @@ Connections:
 
 ---
 
+## Resolved Questions
+
+1. **Privacy** - Local-only by default. `aiki/conversations` is not synced to remote. Opt-in sync available as future feature.
+
+2. **Line attribution** - Two-step lookup: JJ blame → change_id → conversation. Uses existing `BlameContext::blame_file()`.
+
+3. **Multi-change linking** - Store `first_change_id` + `last_change_id` to define revset range for lookup.
+
+4. **Intent extraction** - Prefer agent summary over prompt first line. More reliable for deriving intent.
+
+5. **Per-file intent** - Defer to Phase 2. Single intent per response for v1.
+
+6. **Concurrency** - Accept eventual consistency. Timestamp-based ordering on read.
+
+7. **Session boundaries** - Already handled in aiki (via existing session tracking).
+
+8. **Performance overhead** - Already handled elsewhere (async/buffered recording).
+
 ## Open Questions
 
 1. **Response summarization** - LLM-based or heuristic (first paragraph)?
-   - Start with heuristic, add LLM option later
+   - Start with agent's first paragraph, add LLM option later
 
-2. **Privacy** - Should prompts be encrypted at rest?
-   - Defer to user preference (future feature)
-
-3. **Multi-agent** - How to handle multiple agents in same repo?
-   - Include agent_type in events, filter on query
-
-4. **Storage limits** - When to force compaction?
+2. **Storage limits** - When to force compaction?
    - Start with manual, add auto-compaction based on size later
 
 ---
 
 ## Success Criteria
 
-- [ ] Prompt/response events recorded on `aiki/conversations` branch
-- [ ] Response events include `change_id` linking to JJ changes
+- [ ] Prompt/response events recorded on `aiki/conversations` branch (local-only)
+- [ ] Response events include `first_change_id`/`last_change_id` range
 - [ ] `aiki log` lists and searches AI changes
 - [ ] `aiki sessions list` works
-- [ ] `aiki blame` shows attribution (agent, session, timestamp)
-- [ ] `aiki why` shows narrative from prompt history
+- [ ] `aiki blame` shows attribution (agent, session, timestamp) - already implemented
+- [ ] `aiki why` shows narrative using two-step lookup (blame → conversation)
 - [ ] JJ revset queries work for searching
-- [ ] <50ms overhead for recording events
+- [ ] Intent extracted from agent summary
 
 ---
 
 ## Next Steps
 
-1. Review this design
+1. ~~Review this design~~ ✓
 2. Implement Phase 1 (core storage + log/sessions commands)
-3. Implement Phase 2 (blame/why commands)
+3. Implement Phase 2 (blame enhancement + why command)
 4. Test with real sessions
