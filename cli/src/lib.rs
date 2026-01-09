@@ -10,6 +10,7 @@ pub mod flows;
 pub mod jj;
 pub mod provenance;
 pub mod session;
+pub mod tasks;
 pub mod tools;
 pub mod utils;
 pub mod verify;

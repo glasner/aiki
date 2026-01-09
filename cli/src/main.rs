@@ -13,6 +13,7 @@ mod provenance;
 mod repo;
 mod session;
 mod signing;
+mod tasks;
 mod tools;
 mod utils;
 mod verify;
@@ -94,6 +95,11 @@ enum Commands {
         #[arg(short, long, default_value = "50")]
         edits: usize,
     },
+    /// Manage tasks
+    Task {
+        #[command(subcommand)]
+        command: Option<commands::task::TaskCommands>,
+    },
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
@@ -155,6 +161,7 @@ fn run() -> Result<()> {
             agent_args,
         } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
+        Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
