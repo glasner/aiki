@@ -1633,6 +1633,19 @@ impl FlowEngine {
                 };
                 crate::flows::core::generate_coauthors(event)
             }
+            // ========================================================================
+            // Task system functions
+            // ========================================================================
+            ("core", "task_list_size") => {
+                // task_list_size can be called from any event context
+                // It reads from the task branch and returns the ready queue size
+                crate::flows::core::task_list_size(state.cwd())
+            }
+            ("core", "task_in_progress") => {
+                // task_in_progress can be called from any event context
+                // It reads from the task branch and returns in-progress task IDs
+                crate::flows::core::task_in_progress(state.cwd())
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
@@ -1804,6 +1817,17 @@ impl FlowEngine {
                     )));
                 };
                 crate::flows::core::generate_coauthors(event)
+            }
+            // ========================================================================
+            // Task system functions
+            // ========================================================================
+            ("core", "task_list_size") => {
+                // task_list_size can be called from any event context
+                crate::flows::core::task_list_size(state.cwd())
+            }
+            ("core", "task_in_progress") => {
+                // task_in_progress can be called from any event context
+                crate::flows::core::task_in_progress(state.cwd())
             }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),

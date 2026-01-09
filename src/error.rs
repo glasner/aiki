@@ -177,6 +177,19 @@ Alternatively, install the agent globally:
     #[error("Unsupported platform: {0}")]
     UnsupportedPlatform(String),
 
+    // Task system errors
+    #[error("Task not found: '{0}'")]
+    TaskNotFound(String),
+
+    #[error("No tasks in ready queue")]
+    NoTasksReady,
+
+    #[error("Failed to initialize aiki/tasks branch: {0}")]
+    TaskBranchInitFailed(String),
+
+    #[error("Failed to parse task event: {0}")]
+    TaskEventParseFailed(String),
+
     // Generic wrapper for underlying errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

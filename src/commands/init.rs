@@ -8,6 +8,82 @@ use anyhow::Context;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
+
+/// Template for the <aiki> block in AGENTS.md
+const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.0">
+## Aiki Task System
+
+You have access to an AI-first task management system. Tasks are:
+- **Automatically created** from errors you encounter (type errors, test failures, etc.)
+- **Automatically closed** when you fix the underlying issue
+- **Always visible** via context injection (survives Claude's context compaction)
+- **Stored persistently** on the `aiki/tasks` JJ branch
+
+### Quick Reference
+
+```bash
+# See what's ready to work on (3-5 tasks with context)
+aiki task
+
+# Start working on a task (shows full details with body)
+aiki task start <task-id>
+
+# Start multiple related tasks for batch work
+aiki task start <id1> <id2> <id3>
+
+# Stop current task (with optional reason)
+aiki task stop --reason "Blocked by API credentials"
+
+# Close completed task
+aiki task close <task-id>
+
+# Add new task manually
+aiki task add "Task name" --p0
+```
+
+### Task Output Format
+
+All task commands return XML with this structure:
+
+```xml
+<aiki_task cmd="list" status="ok">
+  <!-- What just happened -->
+  <started>...</started>
+
+  <!-- Current state -->
+  <context>
+    <in_progress>
+      <task id="a1b2" name="Fix null check"/>
+    </in_progress>
+    <list ready="3">
+      <task id="def" priority="p0" name="Fix missing return"/>
+      <task id="ghi" priority="p1" name="Consider using const"/>
+    </list>
+  </context>
+</aiki_task>
+```
+
+The `<context>` element shows:
+- What you're currently working on (`<in_progress>`)
+- What's ready to work on next (`<list>`)
+- Enough context to make batching decisions
+
+### Workflow Tips
+
+1. **Check tasks regularly** - Run `aiki task` to see what's ready
+2. **Batch related work** - Start multiple tasks together when they're related
+3. **Use task bodies** - When you start a task, read its `<body>` for full context
+4. **Stop when blocked** - Use `aiki task stop --reason` to explain blockers
+5. **Close when done** - Use `aiki task close` when you complete a task
+
+### Task Priorities
+
+Priorities: `p0` (urgent) → `p1` (high) → `p2` (normal, default) → `p3` (low)
+
+Tasks are automatically sorted by priority in the ready queue.
+</aiki>
+"#;
 
 pub fn run(quiet: bool) -> Result<()> {
     // Get current directory
@@ -216,6 +292,12 @@ pub fn run(quiet: bool) -> Result<()> {
         }
     }
 
+    // Ensure AGENTS.md has task system instructions
+    if !quiet {
+        println!("\nConfiguring agent instructions...");
+    }
+    ensure_agents_md(&repo_root, quiet)?;
+
     if !quiet {
         println!("\n✓ Repository initialized successfully!");
         println!("\nYour AI changes will now be tracked automatically.");
@@ -264,4 +346,43 @@ fn prompt_string(prompt: &str, default: Option<&str>) -> Result<String> {
     }
 
     Ok(input)
+}
+
+/// Ensure AGENTS.md exists with the <aiki> block for task system instructions
+fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
+    let agents_path = repo_root.join("AGENTS.md");
+
+    if agents_path.exists() {
+        // Read existing file
+        let content = fs::read_to_string(&agents_path)
+            .context("Failed to read AGENTS.md")?;
+
+        // Check for <aiki> block
+        if !content.contains("<aiki version=") {
+            // Prepend block
+            let updated = format!("{}\n{}", AIKI_BLOCK_TEMPLATE, content);
+            fs::write(&agents_path, updated)
+                .context("Failed to update AGENTS.md")?;
+            if !quiet {
+                println!("✓ Added <aiki> block to AGENTS.md");
+            }
+        } else if !content.contains("<aiki version=\"1.0\">") {
+            // Version is outdated
+            if !quiet {
+                println!("⚠ AGENTS.md has outdated <aiki> block");
+                println!("  Run `aiki doctor --fix` to update");
+            }
+        } else if !quiet {
+            println!("✓ AGENTS.md already has <aiki> block");
+        }
+    } else {
+        // Create new AGENTS.md with just the block
+        fs::write(&agents_path, AIKI_BLOCK_TEMPLATE)
+            .context("Failed to create AGENTS.md")?;
+        if !quiet {
+            println!("✓ Created AGENTS.md with task system instructions");
+        }
+    }
+
+    Ok(())
 }

@@ -12,4 +12,6 @@ pub use functions::{
     build_delete_metadata, build_human_metadata_change_post, build_human_metadata_change_pre,
     build_move_metadata, build_write_metadata, classify_edits_change, prepare_separation_change,
     restore_original_files_change, write_ai_files_change,
+    // Task system functions
+    task_in_progress, task_list_size,
 };

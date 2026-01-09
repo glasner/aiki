@@ -917,6 +917,48 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 }
 
 // =============================================================================
+// Task System Functions
+// =============================================================================
+
+/// Get the size of the ready task queue
+///
+/// Returns the number of open, unblocked tasks in the ready queue.
+/// This is used for context injection in flows to show task count.
+pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
+    let events = crate::tasks::storage::read_events(cwd)?;
+    let tasks = crate::tasks::engine::materialize_tasks(&events);
+    let ready = crate::tasks::engine::get_ready_queue(&tasks);
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: ready.len().to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Get the IDs of all tasks currently in progress
+///
+/// Returns a JSON array of task IDs that are currently being worked on.
+/// This is used for context injection in flows.
+pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
+    let events = crate::tasks::storage::read_events(cwd)?;
+    let tasks = crate::tasks::engine::materialize_tasks(&events);
+    let in_progress = crate::tasks::engine::get_in_progress(&tasks);
+
+    // Return as JSON array of IDs
+    let ids: Vec<&str> = in_progress.iter().map(|t| t.id.as_str()).collect();
+    let json = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: json,
+        stderr: String::new(),
+    })
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

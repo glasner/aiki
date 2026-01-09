@@ -24,6 +24,27 @@ session.started:
         jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession=$event.session_id\n[/aiki]"
       - jj: new
 
+  # Inject task context at session start
+  - let: task_count = self.task_list_size
+  - if: $task_count
+    then:
+      - context:
+          append: |
+            ---
+            Tasks ($task_count ready)
+            Run `aiki task` to view - OR - `aiki task start` to begin work.
+
+# prompt.submitted: Inject task context on every prompt (survives context compaction)
+prompt.submitted:
+  - let: task_count = self.task_list_size
+  - if: $task_count
+    then:
+      - context:
+          append: |
+            ---
+            Tasks ($task_count ready)
+            Run `aiki task` to view - OR - `aiki task start` to begin work.
+
 # ==============================================================================
 # Change Operation Events (unified mutations: write, delete, move)
 # ==============================================================================
@@ -118,7 +139,15 @@ read.completed:
 
 # response.received: Handle actions after agent response (e.g., autoreplies)
 response.received:
-  # Empty by default - can be customized in user flows
+  # Inject task reminder after agent responds
+  - let: task_count = self.task_list_size
+  - if: $task_count
+    then:
+      - autoreply:
+          append: |
+            ---
+            Tasks ($task_count ready)
+            Run `aiki task` to view - OR - `aiki task start` to begin work.
 
 # session.resumed: Handle actions when resuming a previous session
 # (as opposed to starting a new one)
