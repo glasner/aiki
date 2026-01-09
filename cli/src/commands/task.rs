@@ -12,10 +12,10 @@ use std::path::Path;
 
 use crate::error::{AikiError, Result};
 use crate::tasks::{
-    engine::{find_task, get_in_progress, get_ready_queue, materialize_tasks},
     id::generate_task_id,
+    manager::{find_task, get_in_progress, get_ready_queue, materialize_tasks},
     storage::{read_events, write_event},
-    types::{TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
+    types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     xml::{format_added, format_closed, format_started, format_stopped, format_task_list},
     XmlBuilder,
 };
@@ -131,19 +131,22 @@ fn run_add(cwd: &Path, name: String) -> Result<()> {
         status: TaskStatus::Open,
         assignee: None,
         created_at: timestamp,
-        started_at: None,
-        closed_at: None,
-        attempts: 0,
+        stopped_reason: None,
+        closed_outcome: None,
     };
 
     // Update ready queue (new task is now ready)
-    let mut ready = get_ready_queue(&tasks);
+    let mut ready: Vec<Task> = get_ready_queue(&tasks)
+        .into_iter()
+        .map(|t| (*t).clone())
+        .collect();
     ready.push(new_task.clone());
     ready.sort_by(|a, b| a.priority.cmp(&b.priority));
 
     let content = format_added(&[&new_task]);
 
-    let xml = XmlBuilder::new("add").build(&content, &in_progress, &ready);
+    let ready_refs: Vec<_> = ready.iter().collect();
+    let xml = XmlBuilder::new("add").build(&content, &in_progress, &ready_refs);
 
     println!("{}", xml);
     Ok(())
@@ -175,8 +178,8 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
     };
 
     // Get tasks before state changes (for output)
-    let mut stopped_tasks: Vec<_> = current_in_progress.clone();
-    let mut started_tasks: Vec<_> = ids_to_start
+    let mut stopped_tasks: Vec<Task> = current_in_progress.iter().map(|t| (*t).clone()).collect();
+    let mut started_tasks: Vec<Task> = ids_to_start
         .iter()
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
@@ -211,18 +214,17 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
     }
     for task in &mut started_tasks {
         task.status = TaskStatus::InProgress;
-        task.started_at = Some(timestamp);
-        task.attempts += 1;
+        task.stopped_reason = None;
     }
 
     // Update context: started tasks are now in progress
     let updated_in_progress = started_tasks.clone();
 
     // Update ready queue: remove started tasks, add stopped tasks
-    let mut updated_ready: Vec<_> = ready
-        .iter()
+    let mut updated_ready: Vec<Task> = ready
+        .into_iter()
         .filter(|t| !ids_to_start.contains(&t.id))
-        .cloned()
+        .map(|t| (*t).clone())
         .collect();
     updated_ready.extend(stopped_tasks.clone());
     updated_ready.sort_by(|a, b| a.priority.cmp(&b.priority));
@@ -241,7 +243,10 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
     let started_task_refs: Vec<_> = started_tasks.iter().collect();
     content.push_str(&format_started(&started_task_refs));
 
-    let xml = XmlBuilder::new("start").build(&content, &updated_in_progress, &updated_ready);
+    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
+    let updated_ready_refs: Vec<_> = updated_ready.iter().collect();
+    let xml =
+        XmlBuilder::new("start").build(&content, &updated_in_progress_refs, &updated_ready_refs);
 
     println!("{}", xml);
     Ok(())
@@ -318,19 +323,24 @@ fn run_stop(
     stopped_task.status = TaskStatus::Stopped;
 
     // Update context: remove from in_progress, add to ready
-    let updated_in_progress: Vec<_> = in_progress
-        .iter()
+    let updated_in_progress: Vec<Task> = in_progress
+        .into_iter()
         .filter(|t| t.id != task_id)
-        .cloned()
+        .map(|t| (*t).clone())
         .collect();
-    let mut ready = get_ready_queue(&tasks);
+    let mut ready: Vec<Task> = get_ready_queue(&tasks)
+        .into_iter()
+        .map(|t| (*t).clone())
+        .collect();
     ready.push(stopped_task.clone());
     ready.sort_by(|a, b| a.priority.cmp(&b.priority));
 
     // Build output
     let content = format_stopped(&[&stopped_task], reason.as_deref());
 
-    let xml = XmlBuilder::new("stop").build(&content, &updated_in_progress, &ready);
+    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
+    let ready_refs: Vec<_> = ready.iter().collect();
+    let xml = XmlBuilder::new("stop").build(&content, &updated_in_progress_refs, &ready_refs);
 
     println!("{}", xml);
     Ok(())
@@ -386,22 +396,27 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool) -> Result<()> {
     // Update closed tasks status
     for task in &mut closed_tasks {
         task.status = TaskStatus::Closed;
-        task.closed_at = Some(chrono::Utc::now());
+        task.closed_outcome = Some(outcome);
     }
 
     // Update context: remove closed tasks from in_progress
-    let updated_in_progress: Vec<_> = in_progress
-        .iter()
+    let updated_in_progress: Vec<Task> = in_progress
+        .into_iter()
         .filter(|t| !ids_to_close.contains(&t.id))
-        .cloned()
+        .map(|t| (*t).clone())
         .collect();
-    let ready = get_ready_queue(&tasks);
+    let ready: Vec<Task> = get_ready_queue(&tasks)
+        .into_iter()
+        .map(|t| (*t).clone())
+        .collect();
 
     // Build output
     let closed_task_refs: Vec<_> = closed_tasks.iter().collect();
     let content = format_closed(&closed_task_refs, &outcome.to_string());
 
-    let xml = XmlBuilder::new("close").build(&content, &updated_in_progress, &ready);
+    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
+    let ready_refs: Vec<_> = ready.iter().collect();
+    let xml = XmlBuilder::new("close").build(&content, &updated_in_progress_refs, &ready_refs);
 
     println!("{}", xml);
     Ok(())

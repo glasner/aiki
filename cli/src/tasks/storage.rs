@@ -49,14 +49,18 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 
     let metadata = event_to_metadata_block(event);
 
-    // Generate a unique marker to identify this specific change
-    let unique_marker = format!("__aiki_event_{}__", std::process::id());
-    let temp_message = format!("{}\n{}", unique_marker, metadata);
-
-    // Step 1: Create the change with our unique marker in the message
+    // Create a new change after the current head of aiki/tasks
+    // This appends to the linear event log on the tasks branch
     let result = Command::new("jj")
         .current_dir(cwd)
-        .args(["new", "--no-edit", TASKS_BRANCH, "-m", &temp_message])
+        .args([
+            "new",
+            "--no-edit",
+            "--insert-after",
+            TASKS_BRANCH,
+            "-m",
+            &metadata,
+        ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to create task event: {}", e)))?;
 
@@ -68,62 +72,11 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    // Step 2: Find the new change by its unique marker
-    let log_output = Command::new("jj")
-        .current_dir(cwd)
-        .args([
-            "log",
-            "-r",
-            "all()",
-            "--no-graph",
-            "-T",
-            &format!(
-                "if(description.contains(\"{}\"), change_id, \"\")",
-                unique_marker
-            ),
-        ])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to find new change: {}", e)))?;
-
-    if !log_output.status.success() {
-        let stderr = String::from_utf8_lossy(&log_output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to find new task change: {}",
-            stderr
-        )));
-    }
-
-    let output = String::from_utf8_lossy(&log_output.stdout);
-    let new_change_id = output.lines().find(|l| !l.is_empty());
-
-    let new_change_id = match new_change_id {
-        Some(id) => id.trim().to_string(),
-        None => {
-            return Err(AikiError::JjCommandFailed(
-                "Could not find newly created task change".to_string(),
-            ));
-        }
-    };
-
-    // Step 3: Update the description to remove the unique marker
+    // Move the bookmark forward to point at the newly created change
+    //The new change is now @ (working copy)
     let result = Command::new("jj")
         .current_dir(cwd)
-        .args(["describe", &new_change_id, "-m", &metadata])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to describe change: {}", e)))?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to set task event description: {}",
-            stderr
-        )));
-    }
-
-    // Step 4: Move the bookmark to the new change
-    let result = Command::new("jj")
-        .current_dir(cwd)
-        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_change_id])
+        .args(["bookmark", "set", TASKS_BRANCH, "-r", "@"])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to update bookmark: {}", e)))?;
 
