@@ -181,6 +181,9 @@ Alternatively, install the agent globally:
     #[error("Task not found: '{0}'")]
     TaskNotFound(String),
 
+    #[error("Cannot create subtask: parent task '{0}' is closed")]
+    ParentTaskClosed(String),
+
     #[error("No tasks in ready queue")]
     NoTasksReady,
 

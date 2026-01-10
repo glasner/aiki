@@ -19,7 +19,7 @@ pub fn escape_xml(s: &str) -> String {
 pub struct XmlBuilder {
     cmd: String,
     status: String,
-    scope: Option<String>,
+    scopes: Vec<String>,
 }
 
 impl XmlBuilder {
@@ -29,7 +29,7 @@ impl XmlBuilder {
         Self {
             cmd: cmd.to_string(),
             status: "ok".to_string(),
-            scope: None,
+            scopes: Vec::new(),
         }
     }
 
@@ -40,10 +40,17 @@ impl XmlBuilder {
         self
     }
 
-    /// Set the scope (parent task ID when working within a parent's children)
+    /// Set a single scope (parent task ID when working within a parent's children)
     #[must_use]
     pub fn with_scope(mut self, scope: &str) -> Self {
-        self.scope = Some(scope.to_string());
+        self.scopes = vec![scope.to_string()];
+        self
+    }
+
+    /// Set multiple scopes (when working on children from multiple parents)
+    #[must_use]
+    pub fn with_scopes(mut self, scopes: &[String]) -> Self {
+        self.scopes = scopes.to_vec();
         self
     }
 
@@ -56,8 +63,9 @@ impl XmlBuilder {
         xml.push_str("<aiki_task");
         xml.push_str(&format!(r#" cmd="{}""#, self.cmd));
         xml.push_str(&format!(r#" status="{}""#, self.status));
-        if let Some(ref scope) = self.scope {
-            xml.push_str(&format!(r#" scope="{}""#, scope));
+        if !self.scopes.is_empty() {
+            // Output scopes as comma-separated list
+            xml.push_str(&format!(r#" scope="{}""#, self.scopes.join(",")));
         }
         xml.push_str(">\n");
 
@@ -312,7 +320,9 @@ mod tests {
 
     #[test]
     fn test_xml_builder_error() {
-        let xml = XmlBuilder::new("start").error().build_error("Task not found");
+        let xml = XmlBuilder::new("start")
+            .error()
+            .build_error("Task not found");
 
         assert!(xml.contains(r#"status="error""#));
         assert!(xml.contains("<error>Task not found</error>"));
@@ -353,7 +363,12 @@ mod tests {
 
     #[test]
     fn test_format_stopped_with_reason() {
-        let task = make_task("a1b2", "Stopped task", TaskPriority::P2, TaskStatus::Stopped);
+        let task = make_task(
+            "a1b2",
+            "Stopped task",
+            TaskPriority::P2,
+            TaskStatus::Stopped,
+        );
         let xml = format_stopped(&[&task], Some("Need info"));
 
         assert!(xml.contains(r#"<stopped reason="Need info">"#));

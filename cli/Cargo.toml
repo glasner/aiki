@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "aiki"
 path = "src/main.rs"
 
+[[bench]]
+name = "task_benchmarks"
+harness = false
+
 [dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
 anyhow = "1.0"
@@ -29,6 +33,7 @@ agent-client-protocol = "0.7"
 which = "6.0"
 uuid = { version = "1.0", features = ["v5"] }
 globset = "0.4"
+rand = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2.0"
