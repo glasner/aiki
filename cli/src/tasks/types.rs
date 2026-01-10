@@ -132,6 +132,32 @@ pub enum TaskEvent {
         outcome: TaskOutcome,
         timestamp: DateTime<Utc>,
     },
+    /// Task was reopened
+    Reopened {
+        task_id: String,
+        reason: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Comment was added to a task
+    CommentAdded {
+        task_id: String,
+        text: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Task was updated
+    Updated {
+        task_id: String,
+        name: Option<String>,
+        priority: Option<TaskPriority>,
+        timestamp: DateTime<Utc>,
+    },
+}
+
+/// A comment on a task
+#[derive(Debug, Clone)]
+pub struct TaskComment {
+    pub text: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 /// Materialized task view (computed from events)
@@ -147,6 +173,8 @@ pub struct Task {
     pub stopped_reason: Option<String>,
     /// Closure outcome (if closed)
     pub closed_outcome: Option<TaskOutcome>,
+    /// Comments on this task
+    pub comments: Vec<TaskComment>,
 }
 
 #[cfg(test)]

@@ -295,6 +295,7 @@ mod tests {
             created_at: Utc::now(),
             stopped_reason: None,
             closed_outcome: None,
+            comments: Vec::new(),
         }
     }
 

@@ -155,9 +155,56 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
     Ok(events)
 }
 
-/// Helper to add metadata field
+/// Escape a string value for metadata storage
+/// Encodes characters that would break key=value parsing: %, =, \n, \r
+fn escape_metadata_value(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '%' => result.push_str("%25"),
+            '=' => result.push_str("%3D"),
+            '\n' => result.push_str("%0A"),
+            '\r' => result.push_str("%0D"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
+/// Unescape a metadata value
+fn unescape_metadata_value(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Read two hex characters
+            let hex: String = chars.by_ref().take(2).collect();
+            match hex.as_str() {
+                "25" => result.push('%'),
+                "3D" | "3d" => result.push('='),
+                "0A" | "0a" => result.push('\n'),
+                "0D" | "0d" => result.push('\r'),
+                _ => {
+                    // Unknown escape, keep as-is
+                    result.push('%');
+                    result.push_str(&hex);
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Helper to add metadata field (for safe values like task_id, event type)
 fn add_metadata(key: &str, value: impl std::fmt::Display, lines: &mut Vec<String>) {
     lines.push(format!("{}={}", key, value));
+}
+
+/// Helper to add metadata field with escaping (for user-provided text)
+fn add_metadata_escaped(key: &str, value: &str, lines: &mut Vec<String>) {
+    lines.push(format!("{}={}", key, escape_metadata_value(value)));
 }
 
 /// Helper to add timestamp metadata field
@@ -179,7 +226,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         } => {
             add_metadata("event", "created", &mut lines);
             add_metadata("task_id", task_id, &mut lines);
-            add_metadata("name", name, &mut lines);
+            add_metadata_escaped("name", name, &mut lines);
             add_metadata("priority", priority, &mut lines);
             if let Some(assignee) = assignee {
                 add_metadata("assignee", assignee, &mut lines);
@@ -213,10 +260,10 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             if let Some(reason) = reason {
-                add_metadata("reason", reason, &mut lines);
+                add_metadata_escaped("reason", reason, &mut lines);
             }
             if let Some(blocked) = blocked_reason {
-                add_metadata("blocked_reason", blocked, &mut lines);
+                add_metadata_escaped("blocked_reason", blocked, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -230,6 +277,42 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             add_metadata("outcome", outcome, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Reopened {
+            task_id,
+            reason,
+            timestamp,
+        } => {
+            add_metadata("event", "reopened", &mut lines);
+            add_metadata("task_id", task_id, &mut lines);
+            add_metadata_escaped("reason", reason, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::CommentAdded {
+            task_id,
+            text,
+            timestamp,
+        } => {
+            add_metadata("event", "comment_added", &mut lines);
+            add_metadata("task_id", task_id, &mut lines);
+            add_metadata_escaped("text", text, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Updated {
+            task_id,
+            name,
+            priority,
+            timestamp,
+        } => {
+            add_metadata("event", "updated", &mut lines);
+            add_metadata("task_id", task_id, &mut lines);
+            if let Some(name) = name {
+                add_metadata_escaped("name", name, &mut lines);
+            }
+            if let Some(priority) = priority {
+                add_metadata("priority", priority, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
     }
@@ -264,7 +347,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
     match *event_type {
         "created" => {
             let task_id = fields.get("task_id")?.first()?.to_string();
-            let name = fields.get("name")?.first()?.to_string();
+            let name = unescape_metadata_value(fields.get("name")?.first()?);
             let priority = fields
                 .get("priority")
                 .and_then(|v| v.first())
@@ -315,11 +398,11 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             let reason = fields
                 .get("reason")
                 .and_then(|v| v.first())
-                .map(|s| s.to_string());
+                .map(|s| unescape_metadata_value(s));
             let blocked_reason = fields
                 .get("blocked_reason")
                 .and_then(|v| v.first())
-                .map(|s| s.to_string());
+                .map(|s| unescape_metadata_value(s));
 
             Some(TaskEvent::Stopped {
                 task_ids,
@@ -343,6 +426,44 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Closed {
                 task_ids,
                 outcome,
+                timestamp,
+            })
+        }
+        "reopened" => {
+            let task_id = fields.get("task_id")?.first()?.to_string();
+            let reason = unescape_metadata_value(fields.get("reason")?.first()?);
+
+            Some(TaskEvent::Reopened {
+                task_id,
+                reason,
+                timestamp,
+            })
+        }
+        "comment_added" => {
+            let task_id = fields.get("task_id")?.first()?.to_string();
+            let text = unescape_metadata_value(fields.get("text")?.first()?);
+
+            Some(TaskEvent::CommentAdded {
+                task_id,
+                text,
+                timestamp,
+            })
+        }
+        "updated" => {
+            let task_id = fields.get("task_id")?.first()?.to_string();
+            let name = fields
+                .get("name")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
+            let priority = fields
+                .get("priority")
+                .and_then(|v| v.first())
+                .and_then(|s| TaskPriority::from_str(s));
+
+            Some(TaskEvent::Updated {
+                task_id,
+                name,
+                priority,
                 timestamp,
             })
         }
@@ -512,6 +633,373 @@ timestamp=2026-01-09T10:30:00Z
                 assert_eq!(id1, id2);
                 assert_eq!(name1, name2);
                 assert_eq!(p1, p2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_started() {
+        let original = TaskEvent::Started {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            agent_type: "claude-code".to_string(),
+            timestamp: Utc::now(),
+            stopped: vec!["stopped1".to_string()],
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Started {
+                    task_ids: ids1,
+                    agent_type: agent1,
+                    stopped: stopped1,
+                    ..
+                },
+                TaskEvent::Started {
+                    task_ids: ids2,
+                    agent_type: agent2,
+                    stopped: stopped2,
+                    ..
+                },
+            ) => {
+                assert_eq!(ids1, ids2);
+                assert_eq!(agent1, agent2);
+                assert_eq!(stopped1, stopped2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_stopped() {
+        let original = TaskEvent::Stopped {
+            task_ids: vec!["task1".to_string()],
+            reason: Some("Need more info".to_string()),
+            blocked_reason: Some("Waiting for API".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Stopped {
+                    task_ids: ids1,
+                    reason: reason1,
+                    blocked_reason: blocked1,
+                    ..
+                },
+                TaskEvent::Stopped {
+                    task_ids: ids2,
+                    reason: reason2,
+                    blocked_reason: blocked2,
+                    ..
+                },
+            ) => {
+                assert_eq!(ids1, ids2);
+                assert_eq!(reason1, reason2);
+                assert_eq!(blocked1, blocked2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_closed() {
+        let original = TaskEvent::Closed {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            outcome: TaskOutcome::WontDo,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Closed {
+                    task_ids: ids1,
+                    outcome: outcome1,
+                    ..
+                },
+                TaskEvent::Closed {
+                    task_ids: ids2,
+                    outcome: outcome2,
+                    ..
+                },
+            ) => {
+                assert_eq!(ids1, ids2);
+                assert_eq!(outcome1, outcome2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    // Edge case tests
+
+    #[test]
+    fn test_parse_missing_event_type() {
+        let block = r#"
+task_id=a1b2
+name=Some task
+"#;
+        assert!(parse_metadata_block(block).is_none());
+    }
+
+    #[test]
+    fn test_parse_unknown_event_type() {
+        let block = r#"
+event=unknown
+task_id=a1b2
+"#;
+        assert!(parse_metadata_block(block).is_none());
+    }
+
+    #[test]
+    fn test_parse_missing_required_fields_created() {
+        // Missing task_id
+        let block = r#"
+event=created
+name=Some task
+"#;
+        assert!(parse_metadata_block(block).is_none());
+
+        // Missing name
+        let block = r#"
+event=created
+task_id=a1b2
+"#;
+        assert!(parse_metadata_block(block).is_none());
+    }
+
+    #[test]
+    fn test_parse_missing_timestamp_uses_default() {
+        let block = r#"
+event=created
+task_id=a1b2
+name=Some task
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Created { timestamp, .. } => {
+                // Should use current time as default (within last second)
+                let now = Utc::now();
+                let diff = (now - timestamp).num_seconds().abs();
+                assert!(diff < 2, "Timestamp should be recent");
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_priority_uses_default() {
+        let block = r#"
+event=created
+task_id=a1b2
+name=Some task
+priority=invalid
+timestamp=2026-01-09T10:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Created { priority, .. } => {
+                assert_eq!(priority, TaskPriority::default()); // P2
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_whitespace_handling() {
+        let block = r#"
+  event = created
+  task_id = a1b2
+  name = Fix auth bug
+  timestamp = 2026-01-09T10:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Created { task_id, name, .. } => {
+                assert_eq!(task_id, "a1b2");
+                assert_eq!(name, "Fix auth bug");
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_special_characters_in_name() {
+        let block = r#"
+event=created
+task_id=a1b2
+name=Fix <bug> & "error" 'handling'
+timestamp=2026-01-09T10:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Created { name, .. } => {
+                assert_eq!(name, r#"Fix <bug> & "error" 'handling'"#);
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_block() {
+        let block = "";
+        assert!(parse_metadata_block(block).is_none());
+
+        let block = "   \n\n   ";
+        assert!(parse_metadata_block(block).is_none());
+    }
+
+    #[test]
+    fn test_parse_started_with_no_stopped_tasks() {
+        let block = r#"
+event=started
+task_id=a1b2
+agent_type=claude-code
+timestamp=2026-01-09T10:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Started { stopped, .. } => {
+                assert!(stopped.is_empty());
+            }
+            _ => panic!("Expected Started event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stopped_with_no_reason() {
+        let block = r#"
+event=stopped
+task_id=a1b2
+timestamp=2026-01-09T10:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Stopped {
+                reason,
+                blocked_reason,
+                ..
+            } => {
+                assert!(reason.is_none());
+                assert!(blocked_reason.is_none());
+            }
+            _ => panic!("Expected Stopped event"),
+        }
+    }
+
+    #[test]
+    fn test_escape_unescape_roundtrip() {
+        let test_cases = [
+            "simple text",
+            "with=equals",
+            "with\nnewline",
+            "with\r\nwindows newline",
+            "with%percent",
+            "complex=value\nwith%all=special\rchars",
+            "",
+            "===",
+            "\n\n\n",
+            "100% done = success\nNext line",
+        ];
+
+        for original in &test_cases {
+            let escaped = escape_metadata_value(original);
+            let unescaped = unescape_metadata_value(&escaped);
+            assert_eq!(
+                original, &unescaped,
+                "Roundtrip failed for: {:?}",
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn test_escape_produces_safe_output() {
+        // Escaped output should not contain newlines or unescaped equals
+        let input = "key=value\nwith\rnewlines";
+        let escaped = escape_metadata_value(input);
+
+        assert!(!escaped.contains('\n'), "Should not contain newline");
+        assert!(!escaped.contains('\r'), "Should not contain carriage return");
+        assert!(!escaped.contains('='), "Should not contain unescaped equals");
+    }
+
+    #[test]
+    fn test_roundtrip_created_with_special_chars() {
+        let original = TaskEvent::Created {
+            task_id: "test".to_string(),
+            name: "Fix bug = critical\nSee issue #123".to_string(),
+            priority: TaskPriority::P1,
+            assignee: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        // Extract the content between markers
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Created {
+                    name: name1,
+                    ..
+                },
+                TaskEvent::Created {
+                    name: name2,
+                    ..
+                },
+            ) => {
+                assert_eq!(name1, name2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_comment_with_special_chars() {
+        let original = TaskEvent::CommentAdded {
+            task_id: "a1b2".to_string(),
+            text: "This is a comment with\nmultiple lines\nand = signs".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::CommentAdded { text: text1, .. },
+                TaskEvent::CommentAdded { text: text2, .. },
+            ) => {
+                assert_eq!(text1, text2);
             }
             _ => panic!("Event type mismatch"),
         }
