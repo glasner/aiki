@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::id::{get_parent_id, is_direct_child_of};
-use super::types::{Task, TaskEvent, TaskStatus};
+use super::types::{Task, TaskComment, TaskEvent, TaskStatus};
 
 /// Represents the set of active scopes based on in-progress tasks
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -19,6 +19,17 @@ impl ScopeSet {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         !self.include_root && self.scopes.is_empty()
+    }
+
+    /// Get scope list for XML output, including "root" when include_root=true
+    #[must_use]
+    pub fn to_xml_scopes(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        if self.include_root {
+            result.push("root".to_string());
+        }
+        result.extend(self.scopes.iter().cloned());
+        result
     }
 }
 
@@ -49,6 +60,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         created_at: *timestamp,
                         stopped_reason: None,
                         closed_outcome: None,
+                        comments: Vec::new(),
                     },
                 );
             }
@@ -77,6 +89,39 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                     if let Some(task) = tasks.get_mut(task_id) {
                         task.status = TaskStatus::Closed;
                         task.closed_outcome = Some(*outcome);
+                    }
+                }
+            }
+            TaskEvent::Reopened { task_id, .. } => {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::Open;
+                    task.closed_outcome = None;
+                }
+            }
+            TaskEvent::CommentAdded {
+                task_id,
+                text,
+                timestamp,
+            } => {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.comments.push(TaskComment {
+                        text: text.clone(),
+                        timestamp: *timestamp,
+                    });
+                }
+            }
+            TaskEvent::Updated {
+                task_id,
+                name,
+                priority,
+                ..
+            } => {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    if let Some(new_name) = name {
+                        task.name = new_name.clone();
+                    }
+                    if let Some(new_priority) = priority {
+                        task.priority = *new_priority;
                     }
                 }
             }
@@ -238,6 +283,51 @@ pub fn get_unclosed_children<'a>(
         .into_iter()
         .filter(|t| t.status != TaskStatus::Closed)
         .collect()
+}
+
+/// Get ready queue based on a ScopeSet
+///
+/// When include_root is true, includes root-level tasks.
+/// When scopes has entries, includes tasks from those scopes.
+/// When scope_set is empty (no in-progress tasks), defaults to root-level tasks.
+/// Merges and deduplicates when multiple sources are active.
+#[must_use]
+pub fn get_ready_queue_for_scope_set<'a>(
+    tasks: &'a HashMap<String, Task>,
+    scope_set: &ScopeSet,
+) -> Vec<&'a Task> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut ready: Vec<&Task> = Vec::new();
+
+    // Include root-level tasks if requested OR if scope set is empty (no in-progress tasks)
+    // This ensures `task list` shows root tasks when nothing is in progress
+    if scope_set.include_root || scope_set.is_empty() {
+        for task in get_scoped_ready_queue(tasks, None) {
+            if seen.insert(&task.id) {
+                ready.push(task);
+            }
+        }
+    }
+
+    // Include tasks from each scope
+    for scope in &scope_set.scopes {
+        for task in get_scoped_ready_queue(tasks, Some(scope)) {
+            if seen.insert(&task.id) {
+                ready.push(task);
+            }
+        }
+    }
+
+    // Sort by priority then creation time
+    ready.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    ready
 }
 
 #[cfg(test)]
@@ -662,5 +752,421 @@ mod tests {
         assert!(!scope_set.include_root);
         assert!(scope_set.scopes.is_empty());
         assert!(scope_set.is_empty());
+    }
+
+    #[test]
+    fn test_scope_set_deeply_nested() {
+        // Deeply nested task in-progress (3 levels: parent.1.1)
+        // Should set scope to "parent.1", not "parent"
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Child", TaskPriority::P2, 3),
+            make_created_event("parent.1.1", "Grandchild", TaskPriority::P2, 2),
+            make_started_event("parent.1.1"),
+        ];
+        let tasks = materialize_tasks(&events);
+        let scope_set = get_current_scope_set(&tasks);
+
+        assert!(!scope_set.include_root);
+        // Scope should be the DIRECT parent of the in-progress task
+        assert_eq!(scope_set.scopes, vec!["parent.1".to_string()]);
+    }
+
+    #[test]
+    fn test_scope_set_multiple_depths() {
+        // Multiple in-progress tasks at different hierarchy depths
+        // root task + grandchild task
+        let events = vec![
+            make_created_event("root", "Root", TaskPriority::P2, 5),
+            make_created_event("parent", "Parent", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Child", TaskPriority::P2, 3),
+            make_created_event("parent.1.1", "Grandchild", TaskPriority::P2, 2),
+            make_started_event("root"),
+            make_started_event("parent.1.1"),
+        ];
+        let tasks = materialize_tasks(&events);
+        let scope_set = get_current_scope_set(&tasks);
+
+        assert!(scope_set.include_root); // root task is in-progress
+        assert_eq!(scope_set.scopes, vec!["parent.1".to_string()]); // grandchild's parent
+    }
+
+    #[test]
+    fn test_scope_set_deduplication() {
+        // Multiple children of same parent in-progress → only one scope entry
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Child 1", TaskPriority::P2, 3),
+            make_created_event("parent.2", "Child 2", TaskPriority::P2, 2),
+            make_created_event("parent.3", "Child 3", TaskPriority::P2, 1),
+            make_started_event("parent.1"),
+            make_started_event("parent.2"),
+            make_started_event("parent.3"),
+        ];
+        let tasks = materialize_tasks(&events);
+        let scope_set = get_current_scope_set(&tasks);
+
+        assert!(!scope_set.include_root);
+        // Should deduplicate to single "parent" scope
+        assert_eq!(scope_set.scopes, vec!["parent".to_string()]);
+    }
+
+    #[test]
+    fn test_materialize_empty_events() {
+        let events: Vec<TaskEvent> = vec![];
+        let tasks = materialize_tasks(&events);
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_ready_queue_empty_tasks() {
+        let tasks: HashMap<String, Task> = HashMap::new();
+        let ready = get_ready_queue(&tasks);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn test_scoped_ready_queue_empty_tasks() {
+        let tasks: HashMap<String, Task> = HashMap::new();
+        let ready = get_scoped_ready_queue(&tasks, None);
+        assert!(ready.is_empty());
+
+        let ready = get_scoped_ready_queue(&tasks, Some("parent"));
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn test_ready_queue_same_priority_same_time() {
+        // All tasks with same priority and creation time
+        // Should return in deterministic order (by ID as tiebreaker)
+        let now = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "task_c".to_string(),
+                name: "Task C".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: now,
+            },
+            TaskEvent::Created {
+                task_id: "task_a".to_string(),
+                name: "Task A".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: now,
+            },
+            TaskEvent::Created {
+                task_id: "task_b".to_string(),
+                name: "Task B".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: now,
+            },
+        ];
+        let tasks = materialize_tasks(&events);
+        let ready = get_ready_queue(&tasks);
+
+        assert_eq!(ready.len(), 3);
+        // With same priority and time, order is deterministic (HashMap iteration order + sort stability)
+        // The key thing is that all 3 appear and sorting doesn't crash
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"task_a"));
+        assert!(ids.contains(&"task_b"));
+        assert!(ids.contains(&"task_c"));
+    }
+
+    #[test]
+    fn test_task_lifecycle_complete() {
+        // Test complete lifecycle: Open → InProgress → Stopped → InProgress → Closed
+        let events = vec![
+            make_created_event("task1", "Task 1", TaskPriority::P2, 5),
+            make_started_event("task1"),
+            make_stopped_event("task1", Some("need info")),
+            make_started_event("task1"),
+            make_closed_event("task1", TaskOutcome::Done),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let task = tasks.get("task1").unwrap();
+        assert_eq!(task.status, TaskStatus::Closed);
+        assert_eq!(task.closed_outcome, Some(TaskOutcome::Done));
+    }
+
+    #[test]
+    fn test_find_task_nonexistent() {
+        let events = vec![make_created_event("task1", "Task 1", TaskPriority::P2, 1)];
+        let tasks = materialize_tasks(&events);
+
+        assert!(find_task(&tasks, "nonexistent").is_none());
+        assert!(find_task(&tasks, "").is_none());
+    }
+
+    #[test]
+    fn test_get_children_excludes_grandchildren() {
+        // Verify get_children only returns direct children, not grandchildren
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Child", TaskPriority::P2, 3),
+            make_created_event("parent.1.1", "Grandchild", TaskPriority::P2, 2),
+            make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let children = get_children(&tasks, "parent");
+        let ids: Vec<_> = children.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"parent.1"));
+        assert!(ids.contains(&"parent.2"));
+        assert!(!ids.contains(&"parent.1.1")); // Grandchild excluded
+    }
+
+    #[test]
+    fn test_has_children_with_only_grandchildren() {
+        // Parent has grandchildren but no direct children
+        // This is an edge case - should return false
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 3),
+            make_created_event("parent.1", "Child", TaskPriority::P2, 2),
+            make_created_event("parent.1.1", "Grandchild", TaskPriority::P2, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        // parent.1 has children (grandchild of parent)
+        assert!(has_children(&tasks, "parent.1"));
+        // parent has children (direct child parent.1)
+        assert!(has_children(&tasks, "parent"));
+        // parent.1.1 has no children
+        assert!(!has_children(&tasks, "parent.1.1"));
+    }
+
+    #[test]
+    fn test_in_progress_excludes_stopped() {
+        // Stopped tasks should not be in in_progress list
+        let events = vec![
+            make_created_event("task1", "Task 1", TaskPriority::P2, 3),
+            make_created_event("task2", "Task 2", TaskPriority::P2, 2),
+            make_started_event("task1"),
+            make_started_event("task2"),
+            make_stopped_event("task1", None),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let in_progress = get_in_progress(&tasks);
+        let ids: Vec<_> = in_progress.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&"task2"));
+        assert!(!ids.contains(&"task1"));
+    }
+
+    // Tests for get_ready_queue_for_scope_set
+
+    #[test]
+    fn test_scope_set_queue_empty_scope_set_defaults_to_root() {
+        // Empty ScopeSet (no in-progress tasks) should default to root-level tasks
+        // This ensures `task list` works when nothing is in progress
+        let events = vec![
+            make_created_event("root1", "Root 1", TaskPriority::P2, 2),
+            make_created_event("root2", "Root 2", TaskPriority::P1, 1),
+            make_created_event("parent.1", "Child 1", TaskPriority::P0, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec![],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        // Should return root-level tasks only (not children)
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"root1"));
+        assert!(ids.contains(&"root2"));
+        assert!(!ids.contains(&"parent.1")); // Child excluded
+    }
+
+    #[test]
+    fn test_scope_set_queue_root_only() {
+        // include_root=true should return root-level tasks only
+        let events = vec![
+            make_created_event("root1", "Root 1", TaskPriority::P2, 2),
+            make_created_event("root2", "Root 2", TaskPriority::P1, 1),
+            make_created_event("parent.1", "Child 1", TaskPriority::P0, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: true,
+            scopes: vec![],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"root1"));
+        assert!(ids.contains(&"root2"));
+        assert!(!ids.contains(&"parent.1")); // Child not included
+    }
+
+    #[test]
+    fn test_scope_set_queue_scoped_only() {
+        // Single scope should return only that scope's children
+        let events = vec![
+            make_created_event("root1", "Root 1", TaskPriority::P2, 3),
+            make_created_event("parent", "Parent", TaskPriority::P2, 3),
+            make_created_event("parent.1", "Child 1", TaskPriority::P0, 2),
+            make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec!["parent".to_string()],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"parent.1"));
+        assert!(ids.contains(&"parent.2"));
+        assert!(!ids.contains(&"root1")); // Root not included
+        // Verify priority sorting (P0 first)
+        assert_eq!(ready[0].id, "parent.1");
+    }
+
+    #[test]
+    fn test_scope_set_queue_root_and_scopes() {
+        // Both root and scopes should merge results
+        // Note: "parent" is also a root-level task so gets included with include_root=true
+        let events = vec![
+            make_created_event("root1", "Root 1", TaskPriority::P1, 4),
+            make_created_event("parent", "Parent", TaskPriority::P3, 3), // P3 so it's last
+            make_created_event("parent.1", "Child 1", TaskPriority::P0, 2),
+            make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: true,
+            scopes: vec!["parent".to_string()],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        // 4 tasks: root1, parent (root), parent.1, parent.2
+        assert_eq!(ids.len(), 4);
+        assert!(ids.contains(&"root1"));
+        assert!(ids.contains(&"parent"));
+        assert!(ids.contains(&"parent.1"));
+        assert!(ids.contains(&"parent.2"));
+        // Verify priority sorting (P0 first, then P1, then P2, then P3)
+        assert_eq!(ready[0].id, "parent.1"); // P0
+        assert_eq!(ready[1].id, "root1"); // P1
+        assert_eq!(ready[2].id, "parent.2"); // P2
+        assert_eq!(ready[3].id, "parent"); // P3
+    }
+
+    #[test]
+    fn test_scope_set_queue_multiple_scopes() {
+        // Multiple scopes should merge and deduplicate
+        let events = vec![
+            make_created_event("p1", "Parent 1", TaskPriority::P2, 5),
+            make_created_event("p2", "Parent 2", TaskPriority::P2, 4),
+            make_created_event("p1.1", "P1 Child", TaskPriority::P1, 3),
+            make_created_event("p2.1", "P2 Child", TaskPriority::P0, 2),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec!["p1".to_string(), "p2".to_string()],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"p1.1"));
+        assert!(ids.contains(&"p2.1"));
+        // Verify priority sorting
+        assert_eq!(ready[0].id, "p2.1"); // P0 first
+        assert_eq!(ready[1].id, "p1.1"); // P1 second
+    }
+
+    #[test]
+    fn test_scope_set_queue_excludes_non_open() {
+        // Should only include Open tasks, not InProgress/Stopped/Closed
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 5),
+            make_created_event("parent.1", "Open", TaskPriority::P2, 4),
+            make_created_event("parent.2", "InProgress", TaskPriority::P2, 3),
+            make_created_event("parent.3", "Closed", TaskPriority::P2, 2),
+            make_started_event("parent.2"),
+            make_closed_event("parent.3", TaskOutcome::Done),
+        ];
+        let tasks = materialize_tasks(&events);
+
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec!["parent".to_string()],
+        };
+
+        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&"parent.1"));
+        assert!(!ids.contains(&"parent.2")); // InProgress excluded
+        assert!(!ids.contains(&"parent.3")); // Closed excluded
+    }
+
+    // Tests for ScopeSet::to_xml_scopes
+
+    #[test]
+    fn test_to_xml_scopes_empty() {
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec![],
+        };
+        assert!(scope_set.to_xml_scopes().is_empty());
+    }
+
+    #[test]
+    fn test_to_xml_scopes_root_only() {
+        let scope_set = ScopeSet {
+            include_root: true,
+            scopes: vec![],
+        };
+        assert_eq!(scope_set.to_xml_scopes(), vec!["root".to_string()]);
+    }
+
+    #[test]
+    fn test_to_xml_scopes_scopes_only() {
+        let scope_set = ScopeSet {
+            include_root: false,
+            scopes: vec!["parent1".to_string(), "parent2".to_string()],
+        };
+        assert_eq!(
+            scope_set.to_xml_scopes(),
+            vec!["parent1".to_string(), "parent2".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_to_xml_scopes_root_and_scopes() {
+        let scope_set = ScopeSet {
+            include_root: true,
+            scopes: vec!["parent1".to_string()],
+        };
+        assert_eq!(
+            scope_set.to_xml_scopes(),
+            vec!["root".to_string(), "parent1".to_string()]
+        );
     }
 }

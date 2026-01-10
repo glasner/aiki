@@ -11,12 +11,12 @@ use clap::Subcommand;
 use std::path::Path;
 
 use crate::error::{AikiError, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::tasks::{
     generate_child_id, generate_task_id, get_next_child_number,
     manager::{
-        find_task, get_current_scope_set, get_in_progress, get_ready_queue, get_scoped_ready_queue,
+        find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
         has_children, materialize_tasks, ScopeSet,
     },
     storage::{read_events, write_event},
@@ -25,51 +25,31 @@ use crate::tasks::{
     XmlBuilder,
 };
 
-/// Get ready queue based on a ScopeSet
-///
-/// When include_root is true, includes root-level tasks.
-/// When scopes has entries, includes tasks from those scopes.
-/// Merges and deduplicates when multiple sources are active.
-fn get_ready_queue_for_scope_set<'a>(
-    tasks: &'a HashMap<String, Task>,
-    scope_set: &ScopeSet,
-) -> Vec<&'a Task> {
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut ready: Vec<&Task> = Vec::new();
-
-    // Include root-level tasks if requested
-    if scope_set.include_root {
-        for task in get_scoped_ready_queue(tasks, None) {
-            if seen.insert(&task.id) {
-                ready.push(task);
-            }
-        }
-    }
-
-    // Include tasks from each scope
-    for scope in &scope_set.scopes {
-        for task in get_scoped_ready_queue(tasks, Some(scope)) {
-            if seen.insert(&task.id) {
-                ready.push(task);
-            }
-        }
-    }
-
-    // Sort by priority then creation time
-    ready.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-    });
-
-    ready
-}
-
 /// Task subcommands
 #[derive(Subcommand)]
 pub enum TaskCommands {
     /// Show ready queue (default when no subcommand given)
-    List,
+    List {
+        /// Show all tasks (not just ready queue)
+        #[arg(long)]
+        all: bool,
+
+        /// Filter to open tasks only
+        #[arg(long)]
+        open: bool,
+
+        /// Filter to in-progress tasks only
+        #[arg(long)]
+        in_progress: bool,
+
+        /// Filter to stopped tasks only
+        #[arg(long)]
+        stopped: bool,
+
+        /// Filter to closed tasks only
+        #[arg(long)]
+        closed: bool,
+    },
 
     /// Create a new task
     Add {
@@ -79,6 +59,22 @@ pub enum TaskCommands {
         /// Create as child of existing task
         #[arg(long)]
         parent: Option<String>,
+
+        /// Set priority to P0 (critical/urgent)
+        #[arg(long, group = "priority")]
+        p0: bool,
+
+        /// Set priority to P1 (high)
+        #[arg(long, group = "priority")]
+        p1: bool,
+
+        /// Set priority to P2 (normal, default)
+        #[arg(long, group = "priority")]
+        p2: bool,
+
+        /// Set priority to P3 (low)
+        #[arg(long, group = "priority")]
+        p3: bool,
     },
 
     /// Start working on task(s)
@@ -86,6 +82,14 @@ pub enum TaskCommands {
         /// Task ID(s) to start (defaults to first from ready queue)
         #[arg(value_name = "ID")]
         ids: Vec<String>,
+
+        /// Reopen a closed task before starting
+        #[arg(long)]
+        reopen: bool,
+
+        /// Reason for reopening (required with --reopen)
+        #[arg(long, requires = "reopen")]
+        reason: Option<String>,
     },
 
     /// Stop the current task
@@ -97,9 +101,9 @@ pub enum TaskCommands {
         #[arg(long)]
         reason: Option<String>,
 
-        /// Create blocker task (assigned to human)
-        #[arg(long)]
-        blocked: Option<String>,
+        /// Create blocker task(s) (assigned to human). Can be specified multiple times.
+        #[arg(long, action = clap::ArgAction::Append)]
+        blocked: Vec<String>,
     },
 
     /// Close task(s) as done
@@ -112,6 +116,48 @@ pub enum TaskCommands {
         #[arg(long)]
         wont_do: bool,
     },
+
+    /// Show task details (including children for parent tasks)
+    Show {
+        /// Task ID to show (defaults to current in-progress task)
+        id: Option<String>,
+    },
+
+    /// Update task details
+    Update {
+        /// Task ID to update (defaults to current in-progress task)
+        id: Option<String>,
+
+        /// Set priority to P0 (critical/urgent)
+        #[arg(long, group = "priority")]
+        p0: bool,
+
+        /// Set priority to P1 (high)
+        #[arg(long, group = "priority")]
+        p1: bool,
+
+        /// Set priority to P2 (normal)
+        #[arg(long, group = "priority")]
+        p2: bool,
+
+        /// Set priority to P3 (low)
+        #[arg(long, group = "priority")]
+        p3: bool,
+
+        /// Update task name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Add a comment to a task
+    Comment {
+        /// Comment text (required)
+        text: String,
+
+        /// Task ID to comment on (defaults to current in-progress task)
+        #[arg(long)]
+        id: Option<String>,
+    },
 }
 
 /// Main entry point for `aiki task` command
@@ -121,23 +167,60 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Default to list if no subcommand provided
-    let cmd = command.unwrap_or(TaskCommands::List);
+    let cmd = command.unwrap_or(TaskCommands::List {
+        all: false,
+        open: false,
+        in_progress: false,
+        stopped: false,
+        closed: false,
+    });
 
     match cmd {
-        TaskCommands::List => run_list(&cwd, None),
-        TaskCommands::Add { name, parent } => run_add(&cwd, name, parent),
-        TaskCommands::Start { ids } => run_start(&cwd, ids),
+        TaskCommands::List {
+            all,
+            open,
+            in_progress,
+            stopped,
+            closed,
+        } => run_list(&cwd, None, all, open, in_progress, stopped, closed),
+        TaskCommands::Add {
+            name,
+            parent,
+            p0,
+            p1,
+            p2,
+            p3,
+        } => run_add(&cwd, name, parent, p0, p1, p2, p3),
+        TaskCommands::Start { ids, reopen, reason } => run_start(&cwd, ids, reopen, reason),
         TaskCommands::Stop {
             id,
             reason,
             blocked,
         } => run_stop(&cwd, id, reason, blocked),
         TaskCommands::Close { ids, wont_do } => run_close(&cwd, ids, wont_do),
+        TaskCommands::Show { id } => run_show(&cwd, id),
+        TaskCommands::Update {
+            id,
+            p0,
+            p1,
+            p2,
+            p3,
+            name,
+        } => run_update(&cwd, id, p0, p1, p2, p3, name),
+        TaskCommands::Comment { text, id } => run_comment(&cwd, text, id),
     }
 }
 
 /// List tasks in the ready queue
-fn run_list(cwd: &Path, scope_override: Option<&str>) -> Result<()> {
+fn run_list(
+    cwd: &Path,
+    scope_override: Option<&str>,
+    all: bool,
+    filter_open: bool,
+    filter_in_progress: bool,
+    filter_stopped: bool,
+    filter_closed: bool,
+) -> Result<()> {
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
 
@@ -151,24 +234,70 @@ fn run_list(cwd: &Path, scope_override: Option<&str>) -> Result<()> {
         get_current_scope_set(&tasks)
     };
 
-    // Get ready queue filtered by scope set
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    // Collect active status filters
+    let has_status_filters = filter_open || filter_in_progress || filter_stopped || filter_closed;
+
+    // Get list of tasks based on filters
+    let list_tasks: Vec<&Task> = if all || has_status_filters {
+        // Show all tasks (or filtered by status)
+        let mut all_tasks: Vec<_> = tasks.values().collect();
+        all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
+
+        if has_status_filters {
+            // Filter by status
+            all_tasks
+                .into_iter()
+                .filter(|t| {
+                    (filter_open && t.status == TaskStatus::Open)
+                        || (filter_in_progress && t.status == TaskStatus::InProgress)
+                        || (filter_stopped && t.status == TaskStatus::Stopped)
+                        || (filter_closed && t.status == TaskStatus::Closed)
+                })
+                .collect()
+        } else {
+            all_tasks
+        }
+    } else {
+        // Default: show ready queue filtered by scope set
+        get_ready_queue_for_scope_set(&tasks, &scope_set)
+    };
+
     let in_progress = get_in_progress(&tasks);
 
-    let content = format_task_list(&ready);
+    let content = format_task_list(&list_tasks);
 
     let mut builder = XmlBuilder::new("list");
-    if !scope_set.scopes.is_empty() {
-        builder = builder.with_scopes(&scope_set.scopes);
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
     }
-    let xml = builder.build(&content, &in_progress, &ready);
+    let xml = builder.build(&content, &in_progress, &list_tasks);
 
     println!("{}", xml);
     Ok(())
 }
 
 /// Add a new task
-fn run_add(cwd: &Path, name: String, parent: Option<String>) -> Result<()> {
+fn run_add(
+    cwd: &Path,
+    name: String,
+    parent: Option<String>,
+    p0: bool,
+    p1: bool,
+    p2: bool,
+    p3: bool,
+) -> Result<()> {
+    // Determine priority from flags (default P2)
+    let priority = if p0 {
+        TaskPriority::P0
+    } else if p1 {
+        TaskPriority::P1
+    } else if p3 {
+        TaskPriority::P3
+    } else {
+        TaskPriority::P2 // Default, also covers explicit --p2
+    };
+
     // Read current state first (needed for context)
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
@@ -199,7 +328,7 @@ fn run_add(cwd: &Path, name: String, parent: Option<String>) -> Result<()> {
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
-        priority: TaskPriority::default(),
+        priority,
         assignee: None, // Phase 3: auto-detect from agent
         timestamp,
     };
@@ -210,12 +339,13 @@ fn run_add(cwd: &Path, name: String, parent: Option<String>) -> Result<()> {
     let new_task = Task {
         id: task_id,
         name,
-        priority: TaskPriority::default(),
+        priority,
         status: TaskStatus::Open,
         assignee: None,
         created_at: timestamp,
         stopped_reason: None,
         closed_outcome: None,
+        comments: Vec::new(),
     };
 
     // Determine current scope set for context
@@ -246,8 +376,9 @@ fn run_add(cwd: &Path, name: String, parent: Option<String>) -> Result<()> {
 
     let ready_refs: Vec<_> = ready.iter().collect();
     let mut builder = XmlBuilder::new("add");
-    if !scope_set.scopes.is_empty() {
-        builder = builder.with_scopes(&scope_set.scopes);
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
     }
     let xml = builder.build(&content, &in_progress, &ready_refs);
 
@@ -256,7 +387,7 @@ fn run_add(cwd: &Path, name: String, parent: Option<String>) -> Result<()> {
 }
 
 /// Start working on task(s)
-fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
+fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<String>) -> Result<()> {
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
 
@@ -279,14 +410,59 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
             return Err(AikiError::NoTasksReady);
         }
     } else {
-        // Validate all IDs exist
+        // Validate all IDs exist and check reopen requirements
         for id in &ids {
-            if find_task(&tasks, id).is_none() {
+            if let Some(task) = find_task(&tasks, id) {
+                if task.status == TaskStatus::Closed {
+                    if !reopen {
+                        let xml = XmlBuilder::new("start")
+                            .error()
+                            .build_error(&format!(
+                                "Task '{}' is closed. Use --reopen --reason to reopen it.",
+                                id
+                            ));
+                        println!("{}", xml);
+                        return Ok(());
+                    }
+                    // Reopen requires a reason
+                    if reopen_reason.is_none() {
+                        let xml = XmlBuilder::new("start")
+                            .error()
+                            .build_error("--reopen requires --reason");
+                        println!("{}", xml);
+                        return Ok(());
+                    }
+                }
+            } else {
                 return Err(AikiError::TaskNotFound(id.clone()));
             }
         }
         ids
     };
+
+    // Reopen closed tasks if --reopen was specified
+    if reopen {
+        if let Some(reason) = &reopen_reason {
+            for id in &ids_to_start {
+                if let Some(task) = find_task(&tasks, id) {
+                    if task.status == TaskStatus::Closed {
+                        let reopen_event = TaskEvent::Reopened {
+                            task_id: id.clone(),
+                            reason: reason.clone(),
+                            timestamp: chrono::Utc::now(),
+                        };
+                        write_event(cwd, &reopen_event)?;
+
+                        // Update local task state
+                        if let Some(t) = tasks.get_mut(id) {
+                            t.status = TaskStatus::Open;
+                            t.closed_outcome = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Check if we're starting a parent task with children
     // If so, auto-create a planning task (.0) and start that instead
@@ -322,6 +498,7 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
                     created_at: timestamp,
                     stopped_reason: None,
                     closed_outcome: None,
+                    comments: Vec::new(),
                 };
                 tasks.insert(planning_id.clone(), task);
             }
@@ -440,8 +617,9 @@ fn run_start(cwd: &Path, ids: Vec<String>) -> Result<()> {
     let updated_ready_refs: Vec<_> = updated_ready.iter().collect();
 
     let mut builder = XmlBuilder::new("start");
-    if !output_scope_set.scopes.is_empty() {
-        builder = builder.with_scopes(&output_scope_set.scopes);
+    let xml_scopes = output_scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
     }
     let xml = builder.build(&content, &updated_in_progress_refs, &updated_ready_refs);
 
@@ -454,11 +632,16 @@ fn run_stop(
     cwd: &Path,
     id: Option<String>,
     reason: Option<String>,
-    blocked: Option<String>,
+    blocked: Vec<String>,
 ) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
-    let in_progress = get_in_progress(&tasks);
+    let mut tasks = materialize_tasks(&events);
+
+    // Get in-progress task IDs first (to avoid borrow conflicts)
+    let in_progress_ids: Vec<String> = get_in_progress(&tasks)
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
 
     // Determine which task to stop
     let task_id = if let Some(id) = id {
@@ -479,8 +662,8 @@ fn run_stop(
         }
     } else {
         // Default to first in-progress task
-        if let Some(task) = in_progress.first() {
-            task.id.clone()
+        if let Some(first_id) = in_progress_ids.first() {
+            first_id.clone()
         } else {
             // Try to print an error response
             let xml = XmlBuilder::new("stop")
@@ -495,35 +678,53 @@ fn run_stop(
     let mut stopped_task = tasks.get(&task_id).expect("Task should exist").clone();
 
     // Stop the task (batch operation with single task)
+    // Store first blocked reason in event (for backward compatibility)
     let stop_event = TaskEvent::Stopped {
         task_ids: vec![task_id.clone()],
         reason: reason.clone(),
-        blocked_reason: blocked.clone(),
+        blocked_reason: blocked.first().cloned(),
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &stop_event)?;
 
-    // If blocked reason provided, create a blocker task
-    if let Some(blocked_reason) = &blocked {
+    // Create blocker tasks for each --blocked flag and add to in-memory map
+    let timestamp = chrono::Utc::now();
+    for blocked_reason in &blocked {
         let blocker_id = generate_task_id(blocked_reason);
         let blocker_event = TaskEvent::Created {
-            task_id: blocker_id,
+            task_id: blocker_id.clone(),
             name: blocked_reason.clone(),
             priority: TaskPriority::P0, // Blockers are high priority
             assignee: Some("human".to_string()),
-            timestamp: chrono::Utc::now(),
+            timestamp,
         };
         write_event(cwd, &blocker_event)?;
+
+        // Add blocker task to in-memory map so it appears in ready queue
+        tasks.insert(
+            blocker_id.clone(),
+            Task {
+                id: blocker_id,
+                name: blocked_reason.clone(),
+                status: TaskStatus::Open,
+                priority: TaskPriority::P0,
+                assignee: Some("human".to_string()),
+                created_at: timestamp,
+                stopped_reason: None,
+                closed_outcome: None,
+                comments: Vec::new(),
+            },
+        );
     }
 
     // Update stopped task status
     stopped_task.status = TaskStatus::Stopped;
 
-    // Update context: remove from in_progress
-    let updated_in_progress: Vec<Task> = in_progress
-        .into_iter()
-        .filter(|t| t.id != task_id)
-        .map(|t| (*t).clone())
+    // Update context: get in-progress tasks minus the stopped one
+    let updated_in_progress: Vec<Task> = in_progress_ids
+        .iter()
+        .filter(|id| *id != &task_id)
+        .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
     // Determine scope set based on remaining in-progress tasks
@@ -565,8 +766,9 @@ fn run_stop(
     let ready_refs: Vec<_> = ready.iter().collect();
 
     let mut builder = XmlBuilder::new("stop");
-    if !scope_set.scopes.is_empty() {
-        builder = builder.with_scopes(&scope_set.scopes);
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
     }
     let xml = builder.build(&content, &updated_in_progress_refs, &ready_refs);
 
@@ -759,10 +961,290 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool) -> Result<()> {
     let ready_refs: Vec<_> = ready.iter().collect();
 
     let mut builder = XmlBuilder::new("close");
-    if !scope_set.scopes.is_empty() {
-        builder = builder.with_scopes(&scope_set.scopes);
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
     }
     let xml = builder.build(&content, &updated_in_progress_refs, &ready_refs);
+
+    println!("{}", xml);
+    Ok(())
+}
+
+/// Show task details (including children for parent tasks)
+fn run_show(cwd: &Path, id: Option<String>) -> Result<()> {
+    use crate::tasks::manager::get_children;
+    use crate::tasks::xml::escape_xml;
+
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+    let in_progress = get_in_progress(&tasks);
+
+    // Determine which task to show
+    let task_id = if let Some(id) = id {
+        if find_task(&tasks, &id).is_none() {
+            return Err(AikiError::TaskNotFound(id));
+        }
+        id
+    } else {
+        // Default to first in-progress task
+        if let Some(task) = in_progress.first() {
+            task.id.clone()
+        } else {
+            let xml = XmlBuilder::new("show")
+                .error()
+                .build_error("No task in progress to show");
+            println!("{}", xml);
+            return Ok(());
+        }
+    };
+
+    let task = tasks.get(&task_id).expect("Task should exist");
+
+    // Get children if this is a parent task
+    let children = get_children(&tasks, &task_id);
+    let has_children = !children.is_empty();
+
+    // Calculate progress if has children
+    let (completed, total) = if has_children {
+        let total = children.len();
+        let completed = children
+            .iter()
+            .filter(|t| t.status == TaskStatus::Closed)
+            .count();
+        (completed, total)
+    } else {
+        (0, 0)
+    };
+
+    // Build task XML content
+    let mut content = format!(
+        "  <task id=\"{}\" name=\"{}\" status=\"{}\" priority=\"{}\">",
+        escape_xml(&task.id),
+        escape_xml(&task.name),
+        task.status,
+        task.priority
+    );
+
+    // Add children section if this is a parent
+    if has_children {
+        content.push_str("\n    <children>");
+        for child in &children {
+            content.push_str(&format!(
+                "\n      <task id=\"{}\" status=\"{}\" name=\"{}\"/>",
+                escape_xml(&child.id),
+                child.status,
+                escape_xml(&child.name)
+            ));
+        }
+        content.push_str("\n    </children>");
+
+        // Add progress element
+        let percentage = if total > 0 {
+            (completed * 100) / total
+        } else {
+            0
+        };
+        content.push_str(&format!(
+            "\n    <progress completed=\"{}\" total=\"{}\" percentage=\"{}\"/>",
+            completed, total, percentage
+        ));
+    }
+
+    // Add comments if any
+    if !task.comments.is_empty() {
+        content.push_str("\n    <comments>");
+        for comment in &task.comments {
+            content.push_str(&format!(
+                "\n      <comment timestamp=\"{}\">{}</comment>",
+                comment.timestamp.to_rfc3339(),
+                escape_xml(&comment.text)
+            ));
+        }
+        content.push_str("\n    </comments>");
+    }
+
+    content.push_str("\n  </task>");
+
+    // Get scope set and ready queue for context
+    let scope_set = get_current_scope_set(&tasks);
+    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+
+    let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
+
+    let mut builder = XmlBuilder::new("show");
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
+    }
+    let xml = builder.build(&content, &in_progress_refs, &ready);
+
+    println!("{}", xml);
+    Ok(())
+}
+
+/// Update task details
+fn run_update(
+    cwd: &Path,
+    id: Option<String>,
+    p0: bool,
+    p1: bool,
+    p2: bool,
+    p3: bool,
+    name: Option<String>,
+) -> Result<()> {
+    use crate::tasks::xml::escape_xml;
+
+    let events = read_events(cwd)?;
+    let mut tasks = materialize_tasks(&events);
+    let in_progress = get_in_progress(&tasks);
+
+    // Determine which task to update
+    let task_id = if let Some(id) = id {
+        if find_task(&tasks, &id).is_none() {
+            return Err(AikiError::TaskNotFound(id));
+        }
+        id
+    } else {
+        // Default to first in-progress task
+        if let Some(task) = in_progress.first() {
+            task.id.clone()
+        } else {
+            let xml = XmlBuilder::new("update")
+                .error()
+                .build_error("No task in progress to update");
+            println!("{}", xml);
+            return Ok(());
+        }
+    };
+
+    // Determine new priority if any flag is set
+    let new_priority = if p0 {
+        Some(TaskPriority::P0)
+    } else if p1 {
+        Some(TaskPriority::P1)
+    } else if p2 {
+        Some(TaskPriority::P2)
+    } else if p3 {
+        Some(TaskPriority::P3)
+    } else {
+        None
+    };
+
+    // Check if there's anything to update
+    if new_priority.is_none() && name.is_none() {
+        let xml = XmlBuilder::new("update")
+            .error()
+            .build_error("No updates specified. Use --name or --p0/--p1/--p2/--p3");
+        println!("{}", xml);
+        return Ok(());
+    }
+
+    // Write the update event
+    let event = TaskEvent::Updated {
+        task_id: task_id.clone(),
+        name: name.clone(),
+        priority: new_priority,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &event)?;
+
+    // Update the in-memory task and insert back into map
+    {
+        let task = tasks.get_mut(&task_id).expect("Task should exist");
+        if let Some(ref new_name) = name {
+            task.name = new_name.clone();
+        }
+        if let Some(new_p) = new_priority {
+            task.priority = new_p;
+        }
+    }
+
+    // Get updated task for output
+    let updated_task = tasks.get(&task_id).expect("Task should exist");
+
+    // Build output
+    let content = format!(
+        "  <updated>\n    <task id=\"{}\" name=\"{}\" priority=\"{}\"/>\n  </updated>",
+        escape_xml(&updated_task.id),
+        escape_xml(&updated_task.name),
+        updated_task.priority
+    );
+
+    // Get scope set and ready queue for context (now uses updated tasks map)
+    let scope_set = get_current_scope_set(&tasks);
+    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    // Re-calculate in_progress since it may have changed
+    let updated_in_progress = get_in_progress(&tasks);
+    let in_progress_refs: Vec<_> = updated_in_progress.iter().map(|t| *t).collect();
+
+    let mut builder = XmlBuilder::new("update");
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
+    }
+    let xml = builder.build(&content, &in_progress_refs, &ready);
+
+    println!("{}", xml);
+    Ok(())
+}
+
+/// Add a comment to a task
+fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
+    use crate::tasks::xml::escape_xml;
+
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+    let in_progress = get_in_progress(&tasks);
+
+    // Determine which task to comment on
+    let task_id = if let Some(id) = id {
+        if find_task(&tasks, &id).is_none() {
+            return Err(AikiError::TaskNotFound(id));
+        }
+        id
+    } else {
+        // Default to first in-progress task
+        if let Some(task) = in_progress.first() {
+            task.id.clone()
+        } else {
+            let xml = XmlBuilder::new("comment")
+                .error()
+                .build_error("No task in progress to comment on");
+            println!("{}", xml);
+            return Ok(());
+        }
+    };
+
+    let timestamp = chrono::Utc::now();
+
+    // Write the comment event
+    let event = TaskEvent::CommentAdded {
+        task_id: task_id.clone(),
+        text: text.clone(),
+        timestamp,
+    };
+    write_event(cwd, &event)?;
+
+    // Build output
+    let content = format!(
+        "  <comment_added task_id=\"{}\" timestamp=\"{}\">\n    <text>{}</text>\n  </comment_added>",
+        escape_xml(&task_id),
+        timestamp.to_rfc3339(),
+        escape_xml(&text)
+    );
+
+    // Get scope set and ready queue for context
+    let scope_set = get_current_scope_set(&tasks);
+    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
+
+    let mut builder = XmlBuilder::new("comment");
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
+    }
+    let xml = builder.build(&content, &in_progress_refs, &ready);
 
     println!("{}", xml);
     Ok(())

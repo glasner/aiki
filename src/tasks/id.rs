@@ -310,4 +310,121 @@ mod tests {
         let task_ids = vec!["a1b2.1", "a1b2.1.1", "a1b2.1.2"];
         assert_eq!(get_next_child_number("a1b2.1", task_ids.iter().copied()), 3);
     }
+
+    // Edge case tests
+
+    #[test]
+    fn test_get_parent_id_edge_cases() {
+        // Empty string
+        assert_eq!(get_parent_id(""), None);
+
+        // No dots - root task
+        assert_eq!(get_parent_id("abcd1234"), None);
+
+        // Trailing dot (malformed but handle gracefully)
+        assert_eq!(get_parent_id("parent."), Some("parent"));
+
+        // Multiple trailing dots
+        assert_eq!(get_parent_id("parent.."), Some("parent."));
+
+        // Just a dot
+        assert_eq!(get_parent_id("."), Some(""));
+    }
+
+    #[test]
+    fn test_is_child_of_edge_cases() {
+        // Empty strings
+        assert!(!is_child_of("", "parent"));
+        assert!(!is_child_of("child", ""));
+        assert!(!is_child_of("", ""));
+
+        // Same ID with dot suffix ambiguity
+        assert!(is_child_of("parent.1", "parent"));
+        assert!(!is_child_of("parent1", "parent")); // No dot = not a child
+    }
+
+    #[test]
+    fn test_is_direct_child_of_edge_cases() {
+        // Empty parent
+        assert!(!is_direct_child_of("task.1", ""));
+
+        // ID that looks like but isn't a child (missing dot separator)
+        assert!(!is_direct_child_of("parent1", "parent"));
+
+        // Prefix collision: a1b2.10 should NOT match scope a1b2.1
+        // This is the bug we fixed!
+        assert!(!is_direct_child_of("a1b2.10", "a1b2.1"));
+        assert!(is_direct_child_of("a1b2.10", "a1b2"));
+        assert!(is_direct_child_of("a1b2.1", "a1b2"));
+    }
+
+    #[test]
+    fn test_get_child_number_edge_cases() {
+        // Non-numeric child number
+        assert_eq!(get_child_number("parent.abc"), None);
+
+        // Negative number (parsed as non-numeric)
+        assert_eq!(get_child_number("parent.-1"), None);
+
+        // Zero child number (valid but unusual - planning task)
+        assert_eq!(get_child_number("parent.0"), Some(0));
+
+        // Leading zeros (still valid numbers)
+        assert_eq!(get_child_number("parent.01"), Some(1));
+        assert_eq!(get_child_number("parent.001"), Some(1));
+
+        // Empty after dot
+        assert_eq!(get_child_number("parent."), None);
+
+        // Large number
+        assert_eq!(get_child_number("parent.999999"), Some(999999));
+    }
+
+    #[test]
+    fn test_get_next_child_number_edge_cases() {
+        // Empty task list
+        let task_ids: Vec<&str> = vec![];
+        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+
+        // Non-existent parent (no children found)
+        let task_ids = vec!["other.1", "other.2"];
+        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+
+        // Child with number 0 (planning task)
+        let task_ids = vec!["parent", "parent.0", "parent.1"];
+        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 2);
+
+        // Only planning task exists
+        let task_ids = vec!["parent", "parent.0"];
+        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+    }
+
+    #[test]
+    fn test_generate_child_id_edge_cases() {
+        // Child number 0 (planning task)
+        assert_eq!(generate_child_id("parent", 0), "parent.0");
+
+        // Large child number
+        assert_eq!(generate_child_id("parent", 999999), "parent.999999");
+
+        // Nested parent
+        assert_eq!(generate_child_id("a.1.2.3", 4), "a.1.2.3.4");
+    }
+
+    #[test]
+    fn test_id_uniqueness_bulk() {
+        // Generate many IDs and verify no collisions
+        use std::collections::HashSet;
+
+        let mut ids = HashSet::new();
+        for i in 0..1000 {
+            let id = generate_task_id(&format!("Task {}", i));
+            assert!(
+                ids.insert(id.clone()),
+                "Collision detected for task {}",
+                i
+            );
+        }
+        assert_eq!(ids.len(), 1000);
+    }
 }
