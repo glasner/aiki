@@ -155,6 +155,16 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
     Ok(events)
 }
 
+/// Helper to add metadata field
+fn add_metadata(key: &str, value: impl std::fmt::Display, lines: &mut Vec<String>) {
+    lines.push(format!("{}={}", key, value));
+}
+
+/// Helper to add timestamp metadata field
+fn add_metadata_timestamp(timestamp: &chrono::DateTime<chrono::Utc>, lines: &mut Vec<String>) {
+    add_metadata("timestamp", timestamp.to_rfc3339(), lines);
+}
+
 /// Convert a TaskEvent to a metadata block string
 fn event_to_metadata_block(event: &TaskEvent) -> String {
     let mut lines = vec![METADATA_START.to_string()];
@@ -167,30 +177,30 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             assignee,
             timestamp,
         } => {
-            lines.push("event=created".to_string());
-            lines.push(format!("task_id={}", task_id));
-            lines.push(format!("name={}", name));
-            lines.push(format!("priority={}", priority));
+            add_metadata("event", "created", &mut lines);
+            add_metadata("task_id", task_id, &mut lines);
+            add_metadata("name", name, &mut lines);
+            add_metadata("priority", priority, &mut lines);
             if let Some(assignee) = assignee {
-                lines.push(format!("assignee={}", assignee));
+                add_metadata("assignee", assignee, &mut lines);
             }
-            lines.push(format!("timestamp={}", timestamp.to_rfc3339()));
+            add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Started {
             task_ids,
             agent_type,
             timestamp,
-            stopped_tasks,
+            stopped,
         } => {
-            lines.push("event=started".to_string());
+            add_metadata("event", "started", &mut lines);
             for task_id in task_ids {
-                lines.push(format!("task_id={}", task_id));
+                add_metadata("task_id", task_id, &mut lines);
             }
-            lines.push(format!("agent_type={}", agent_type));
-            for stopped in stopped_tasks {
-                lines.push(format!("stopped_task={}", stopped));
+            add_metadata("agent_type", agent_type, &mut lines);
+            for stopped_id in stopped {
+                add_metadata("stopped_task", stopped_id, &mut lines);
             }
-            lines.push(format!("timestamp={}", timestamp.to_rfc3339()));
+            add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Stopped {
             task_ids,
@@ -198,29 +208,29 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             blocked_reason,
             timestamp,
         } => {
-            lines.push("event=stopped".to_string());
+            add_metadata("event", "stopped", &mut lines);
             for task_id in task_ids {
-                lines.push(format!("task_id={}", task_id));
+                add_metadata("task_id", task_id, &mut lines);
             }
             if let Some(reason) = reason {
-                lines.push(format!("reason={}", reason));
+                add_metadata("reason", reason, &mut lines);
             }
             if let Some(blocked) = blocked_reason {
-                lines.push(format!("blocked_reason={}", blocked));
+                add_metadata("blocked_reason", blocked, &mut lines);
             }
-            lines.push(format!("timestamp={}", timestamp.to_rfc3339()));
+            add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Closed {
             task_ids,
             outcome,
             timestamp,
         } => {
-            lines.push("event=closed".to_string());
+            add_metadata("event", "closed", &mut lines);
             for task_id in task_ids {
-                lines.push(format!("task_id={}", task_id));
+                add_metadata("task_id", task_id, &mut lines);
             }
-            lines.push(format!("outcome={}", outcome));
-            lines.push(format!("timestamp={}", timestamp.to_rfc3339()));
+            add_metadata("outcome", outcome, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
         }
     }
 
@@ -284,7 +294,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .and_then(|v| v.first())
                 .unwrap_or(&"unknown")
                 .to_string();
-            let stopped_tasks = fields
+            let stopped = fields
                 .get("stopped_task")
                 .map(|v| v.iter().map(|s| s.to_string()).collect())
                 .unwrap_or_else(Vec::new);
@@ -293,7 +303,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 task_ids,
                 agent_type,
                 timestamp,
-                stopped_tasks,
+                stopped,
             })
         }
         "stopped" => {
@@ -411,12 +421,12 @@ timestamp=2026-01-09T10:30:00Z
             TaskEvent::Started {
                 task_ids,
                 agent_type,
-                stopped_tasks,
+                stopped,
                 ..
             } => {
                 assert_eq!(task_ids, vec!["a1b2", "c3d4"]);
                 assert_eq!(agent_type, "claude-code");
-                assert_eq!(stopped_tasks, vec!["e5f6"]);
+                assert_eq!(stopped, vec!["e5f6"]);
             }
             _ => panic!("Expected Started event"),
         }

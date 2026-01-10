@@ -116,7 +116,7 @@ pub enum TaskEvent {
         agent_type: String,
         timestamp: DateTime<Utc>,
         /// Task IDs that were auto-stopped when these tasks started
-        stopped_tasks: Vec<String>,
+        stopped: Vec<String>,
     },
     /// Task(s) were stopped (batch operation)
     Stopped {
