@@ -237,7 +237,10 @@ fn run_list(
     // Collect active status filters
     let has_status_filters = filter_open || filter_in_progress || filter_stopped || filter_closed;
 
-    // Get list of tasks based on filters
+    // Always compute the actual ready queue for context (maintains contract)
+    let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
+
+    // Get list of tasks based on filters (for display in content)
     let list_tasks: Vec<&Task> = if all || has_status_filters {
         // Show all tasks (or filtered by status)
         let mut all_tasks: Vec<_> = tasks.values().collect();
@@ -258,8 +261,8 @@ fn run_list(
             all_tasks
         }
     } else {
-        // Default: show ready queue filtered by scope set
-        get_ready_queue_for_scope_set(&tasks, &scope_set)
+        // Default: show ready queue (same as context)
+        ready_queue.clone()
     };
 
     let in_progress = get_in_progress(&tasks);
@@ -271,7 +274,8 @@ fn run_list(
     if !xml_scopes.is_empty() {
         builder = builder.with_scopes(&xml_scopes);
     }
-    let xml = builder.build(&content, &in_progress, &list_tasks);
+    // Context always uses the actual ready queue, not the filtered list
+    let xml = builder.build(&content, &in_progress, &ready_queue);
 
     println!("{}", xml);
     Ok(())
