@@ -335,6 +335,7 @@ aiki task add "Fix null check in auth.ts"
 - `--p0`, `--p1`, `--p2`, `--p3` - Set priority (default: p2) [Phase 3]
 - `--body <text>` - Add description [Phase 4]
 - `--parent <id>` - Create as child of existing task [Phase 2]
+- `--children` - Read child task names from stdin (one per line) [Phase 2]
 
 #### `aiki task list`
 
@@ -646,6 +647,39 @@ aiki task close rev-234
 **Options**:
 - `--wont-do` - Won't implement (default: done)
 - `--duplicate <task-id>` - Duplicate of another task
+
+#### `aiki task run <id>`
+
+Run a task by delegating to an agent.
+
+```bash
+aiki task run a1b2
+
+# XML output:
+<aiki_task cmd="run" status="ok">
+  <started task_id="a1b2"/>
+  <completed task_id="a1b2" duration_ms="5000"/>
+  
+  <context>
+    <in_progress/>
+    <list ready="2">
+      <task id="def" priority="p0" name="Fix missing return"/>
+    </list>
+  </context>
+</aiki_task>
+```
+
+**Behavior**:
+- Starts the task (marks as in_progress)
+- Delegates execution to assigned agent (blocking/synchronous)
+- Agent executes task, may create subtasks, add comments, etc.
+- Marks task as completed when agent finishes
+- Returns to normal ready queue
+
+**Use Cases**:
+- Code reviews (agent analyzes code and creates followup tasks)
+- Automated refactoring (agent performs multi-step changes)
+- Documentation generation (agent creates docs from code)
 
 ### Phase 2 Commands (V1.1)
 
@@ -1714,6 +1748,7 @@ Together, these ensure agents can't ignore the task system.
 - `aiki task start` - start task (with auto-stop of current)
 - `aiki task stop` - stop task (with optional `--reason` or `--blocked`)
 - `aiki task close` - mark task done
+- `aiki task run <id>` - delegate task to agent
 
 **Core Features**:
 - `aiki task` with no subcommand defaults to `list`
@@ -1729,7 +1764,7 @@ Together, these ensure agents can't ignore the task system.
 **Deliverables**:
 - [ ] Event storage on `aiki/tasks` branch
 - [ ] Task engine (write/read events, materialize views)
-- [ ] 5 core CLI commands with XML output
+- [ ] 6 core CLI commands with XML output
 - [ ] Ready queue calculation
 - [ ] Context element generation
 - [ ] Auto-stop on context switch

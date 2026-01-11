@@ -1,138 +1,280 @@
-# Code Review System: Task-Native Design
+# Code Review System: Task-Based Design
 
 **Date**: 2026-01-10  
 **Status**: Proposed Architecture  
-**Purpose**: Design reviews as tasks with autonomous agent execution
+**Purpose**: Reviews as system tasks on `aiki/tasks`
 
 ---
 
 ## Executive Summary
 
-This design makes **tasks the orchestration primitive for agent work**. Reviews become tasks assigned to autonomous agents, creating a unified system where:
+This design uses **tasks for everything**:
 
-1. **Reviews are tasks** - No separate `aiki/reviews` branch
-2. **Agents are assignees** - `autonomous(codex)` vs `codex` distinguishes execution modes
-3. **Followup tasks created on completion** - Same pattern as current design
-4. **Headless execution is reusable** - Any task can be autonomous
-5. **Single event storage** - All work tracked on `aiki/tasks` branch
+1. **Review tasks** - Regular tasks with subtasks that agents execute to analyze code
+2. **Followup tasks** - User-visible tasks created atomically from review comments
+3. **Single storage branch** - All tasks on `aiki/tasks` branch
+4. **Simple workflow** - `aiki review` creates task, runs agent, processes comments, closes review
+5. **Consistent task lifecycle** - Reviews use same event structure as other tasks
 
 ---
 
 ## Core Concepts
 
-### Autonomous Agent Assignee
+### How Reviews Work
 
-Tasks can be assigned to **autonomous agents** using the pattern: `autonomous(agent-name)`
+1. **Agent does the work**: Agent executes review subtasks (digest, review) and adds comments
+2. **aiki review orchestrates**: Creates tasks, runs agent, processes comments into followup tasks
+3. **Atomic followup creation**: All followup tasks created together using `--children` flag
+4. **Clean separation**: Agent doesn't need to know about task management
 
-```yaml
-assignee: autonomous(codex)  # Autonomous execution
-assignee: codex              # Interactive execution
-assignee: claude-code        # Interactive execution
-```
+### Task Types
 
-**Key insight**: The assignee string distinguishes execution modes, ensuring autonomous tasks don't appear in interactive agent queues.
+**Review tasks**:
+- Created by `aiki review @` with 2 subtasks (digest, review)
+- Assigned to reviewer agent (e.g., `codex`)
+- Agent adds comments during review
+- Closed automatically after followup tasks created
 
-### Task Type Field
-
-Tasks have a top-level `task_type` field to distinguish different kinds of work:
-
-```rust
-pub enum TaskType {
-    Work,    // Default: regular task
-    Review,  // Autonomous code review
-}
-```
-
-Reviews use `task_type: Review`:
-
-```yaml
-task_id: xqrmnpst
-name: "Review: JWT authentication"
-assignee: autonomous(codex)
-task_type: Review
-metadata:
-  prompt: security
-  scope: working_copy
-```
+**Followup tasks**:
+- Created atomically from review comments (parent + all children in one operation)
+- Each child task references specific comment via `discovered_from`
+- Visible immediately (no draft flag needed)
+- Normal user tasks that can be worked on
 
 ---
 
-## Data Model: Task-Native Reviews
+## Data Model: Review Tasks
 
 ### Review Task Lifecycle
 
-**1. Review Task Created**
+**User runs:**
+```bash
+aiki review @
+```
+
+This internally executes:
+1. `task_add_with_children()` - Creates parent task + 2 subtasks atomically (digest, review)
+2. `aiki task run xqrmnpst` - Starts the review task and delegates to codex agent
+3. After agent completes, `aiki review` processes comments into followup tasks
+4. Closes the review task
+
+**1. Review Task Created** (parent task with children)
 ```yaml
 ---
 aiki_task_event: v1
 task_id: xqrmnpst
 event: created
+type: review
 timestamp: 2025-01-15T10:04:50Z
-name: "Review: JWT authentication"
-priority: p1
-assignee: autonomous(codex)
-task_type: Review
-body: |
-  Code review of current changes.
+name: "Review: @ (working copy)"
+assignee: codex
+instructions: |
+  Code review orchestration task
   
-  **Scope**: working_copy
-  **Prompt**: security
-  **Context**: Ready for merge
+  This task coordinates review steps and creates followup tasks from findings.
 metadata:
-  prompt: security
-  scope: working_copy
-blocks: [mxsl]  # Blocks the task that was in progress when review was run
+  revset: "@"
+  changes: [zxywtuvs]
 ---
 ```
 
-**Note**: The agent that requested the review (e.g., `claude-code`) can be derived from the JJ change metadata in the `[aiki]` block of the change description being reviewed.
+**Note**: 
+- Created with 2 subtasks atomically using `--children` pattern (digest, review)
+- Review tasks are normal tasks (not draft) since structure is complete
+- This is a parent orchestration task with sequential subtasks
+- Can be started immediately after creation
+- Agent only handles the review work; followup task creation is done by aiki review process after agent completes
 
-**2. Review Task Started (Autonomous Execution Begins)**
+**Subtask 1: Digest Code Changes**
 ```yaml
 ---
 aiki_task_event: v1
-task_id: xqrmnpst
-event: started
+task_id: xqrmnpst.1
+event: created
+type: review
 timestamp: 2025-01-15T10:04:51Z
-stopped: []
+name: "Digest code changes"
+assignee: codex
+instructions: |
+  Examine the code changes to understand what was modified.
+  
+  Commands to use:
+  - `jj diff --revision @` - Show full diff of working copy
+  - `jj show @` - Show change description and summary
+  - `jj log -r @` - Show change in log context
+  
+  Summarize:
+  - What files were changed
+  - What functionality was added/modified
+  - The scope and intent of the changes
 metadata:
-  execution_mode: autonomous
+  revset: "@"
+  changes: [zxywtuvs]
 ---
 ```
 
-**3. Review Task Completed (Results in Body)**
+**Subtask 2: Review Code**
 ```yaml
 ---
 aiki_task_event: v1
-task_id: xqrmnpst
-event: closed
-timestamp: 2025-01-15T10:05:00Z
-body: |
-  # Review Results
+task_id: xqrmnpst.2
+event: created
+type: review
+timestamp: 2025-01-15T10:04:51Z
+name: "Review code"
+assignee: codex
+instructions: |
+  Review the code changes for functionality, quality, security, and performance.
   
-  **Duration**: 9s
+  Focus on:
+  - **Functionality**: Logic errors, edge cases, correctness
+  - **Quality**: Error handling, resource leaks, null checks, code clarity
+  - **Security**: SQL injection, XSS, auth issues, data exposure, crypto misuse
+  - **Performance**: Inefficient algorithms, unnecessary operations, resource usage
   
-  ## Issues Found
+  For each issue found, add a comment using `aiki task comment` with:
+  **File**: <path>:<line>
+  **Severity**: error|warning|info
+  **Category**: functionality|quality|security|performance
   
-  1. **src/auth.ts:42** - Potential null pointer dereference (p0)
-  2. **src/auth.ts:67-69** - JWT token validation missing (p1)
+  <description of issue>
   
-  ## Followup
+  **Impact**: <what could go wrong>
   
-  Created followup task: lpqrstwo
-  - lpqrstwo.1: Fix null pointer check
-  - lpqrstwo.2: Fix JWT validation
+  **Suggested Fix**:
+  <how to fix it>
+  
+  Add comments as you find issues, don't wait until the end.
 metadata:
-  duration_ms: 9000
-  followup_task_id: lpqrstwo
+  revset: "@"
+  changes: [zxywtuvs]
 ---
 ```
 
-**Note**: Review outcome is derived from task relationships:
-- **Outcome**: `rejected` if followup task exists, `approved` otherwise
-- **Issues found**: Count of children of followup task
+**2. Task Run Starts Agent Session**
 
-**4. Followup Task Created**
+The `aiki task run` command spawns a background agent session to execute the review task:
+
+```yaml
+---
+event: session.started
+session: codex-session-review-xqrmnpst
+agent: codex
+parent_session: claude-session-abc123
+timestamp: 2025-01-15T10:04:56Z
+context:
+  task_id: xqrmnpst
+  mode: task_execution
+---
+```
+
+The agent (codex) receives the review task in its initial context and begins executing subtasks sequentially.
+
+**3. Subtask 1 Started and Completed**
+
+```yaml
+---
+aiki_task_event: v1
+task_id: xqrmnpst.1
+event: started
+timestamp: 2025-01-15T10:04:52Z
+---
+aiki_task_event: v1
+task_id: xqrmnpst.1
+event: closed
+outcome: done
+timestamp: 2025-01-15T10:04:55Z
+---
+```
+
+**4. Subtask 2 Started - Agent Begins Review**
+
+The codex agent starts executing the review task:
+
+```yaml
+---
+aiki_task_event: v1
+task_id: xqrmnpst.2
+event: started
+timestamp: 2025-01-15T10:04:56Z
+---
+```
+
+The agent analyzes the code changes and adds comments for each issue found.
+
+**5. Comments Added During Review**
+```yaml
+---
+aiki_task_event: v1
+task_id: xqrmnpst.2
+event: comment_added
+timestamp: 2025-01-15T10:05:00Z
+instructions: |
+  **File**: src/auth.ts:42
+  **Severity**: error
+  **Category**: quality
+  
+  Potential null pointer dereference when accessing user.name
+  
+  **Impact**: Runtime crash if user object is null from auth middleware
+  
+  **Suggested Fix**:
+  ```typescript
+  if (user && user.name) {
+    return user.name;
+  }
+  throw new Error("User not authenticated");
+  ```
+---
+aiki_task_event: v1
+task_id: xqrmnpst.2
+event: comment_added
+timestamp: 2025-01-15T10:05:03Z
+instructions: |
+  **File**: src/middleware.ts:28
+  **Severity**: warning
+  **Category**: security
+  
+  JWT expiration not validated before use
+  
+  **Impact**: Expired tokens may be accepted
+  
+  **Suggested Fix**:
+  Check exp claim before accepting token
+---
+```
+
+**6. Subtask 2 Completed**
+```yaml
+---
+aiki_task_event: v1
+task_id: xqrmnpst.2
+event: closed
+outcome: done
+timestamp: 2025-01-15T10:05:10Z
+---
+```
+
+**Note**: Comments are added as issues are discovered during the review process.
+
+**7. Agent Session Ends - Control Returns to aiki review**
+
+After the codex agent completes both review subtasks, the agent session ends:
+
+```yaml
+---
+event: session.ended
+session: codex-session-review-xqrmnpst
+timestamp: 2025-01-15T10:05:10Z
+---
+```
+
+Control returns to the `aiki review` process, which now reads all comments from task xqrmnpst.2 and creates followup tasks.
+
+**8. Followup Task Created with All Children** (atomically using --children)
+
+The `aiki review` process collects all comments, then creates the followup task + all child tasks in one operation:
+
 ```yaml
 ---
 aiki_task_event: v1
@@ -140,10 +282,9 @@ task_id: lpqrstwo
 event: created
 timestamp: 2025-01-15T10:05:01Z
 name: "Followup: JWT authentication review"
-priority: p1
-assignee: claude-code  # Back to interactive
-task_type: Work  # Regular work task
-body: |
+priority: p2  # Inherits from blocked task mxsl (or p1 if no blocked task)
+assignee: claude-code
+instructions: |
   Code review completed by codex (review:xqrmnpst)
   
   Found 2 issues requiring fixes.
@@ -152,24 +293,58 @@ scope:
   files:
     - path: src/auth.ts
     - path: src/middleware.ts
-discovered_from: task:xqrmnpst
-blocks: [mxsl]
+discovered_from: review:xqrmnpst
+blocks: [mxsl]  # Blocks originating task if review was of task changes
 ---
 ```
 
-**5. Child Tasks Created**
+**Child task 1:**
 ```yaml
 ---
 aiki_task_event: v1
 task_id: lpqrstwo.1
 event: created
-timestamp: 2025-01-15T10:05:02Z
-name: "Fix: Potential null pointer dereference"
+timestamp: 2025-01-15T10:05:01Z
+name: "Fix: Null pointer check in auth.ts"
 priority: p0
 assignee: claude-code
-task_type: Work
-body: |
-  **Review**: task:xqrmnpst
+instructions: |
+  **File**: src/auth.ts:42
+  **Severity**: error
+  **Category**: quality
+  
+  Potential null pointer dereference when accessing user.name
+  
+  **Impact**: Runtime crash if user object is null from auth middleware
+  
+  **Suggested Fix**:
+  ```typescript
+  if (user && user.name) {
+    return user.name;
+  }
+  throw new Error("User not authenticated");
+  ```
+scope:
+  files:
+    - path: src/auth.ts
+      lines: [42]
+discovered_from: review:xqrmnpst
+discovered_from: comment:c1a2b3c4
+---
+```
+
+**Child task 2:**
+```yaml
+---
+aiki_task_event: v1
+task_id: lpqrstwo.2
+event: created
+timestamp: 2025-01-15T10:05:01Z
+name: "Fix: JWT token validation"
+priority: p0
+assignee: claude-code
+instructions: |
+  **Review**: review:xqrmnpst
   **File**: src/auth.ts:42
   **Severity**: error
   
@@ -190,50 +365,74 @@ scope:
   files:
     - path: src/auth.ts
       lines: [42]
-discovered_from: task:xqrmnpst
+discovered_from: review:xqrmnpst
+discovered_from: comment:d5e6f7g8
 ---
 ```
+
+**Note**: 
+- Parent task + all child tasks created atomically in one operation using `task_add_with_children()`
+- No draft flag needed since all tasks are created together
+- Each child task preserves the comment structure (file, severity, issue, impact, suggested fix)
+- Priority inherits from blocked task (`mxsl` is p2), defaults to p1 if no blocked task
+- If the originating task (`mxsl`) was closed, it should be reopened with reason "Review found issues (task:lpqrstwo)"
+
+**9. aiki review Process Closes Review Task**
+
+After creating followup tasks, the `aiki review` process closes the review task:
+```yaml
+---
+aiki_task_event: v1
+task_id: xqrmnpst
+event: closed
+outcome: rejected
+timestamp: 2025-01-15T10:05:10Z
+---
+```
+
+**Note**: 
+- Review task is now complete and hidden (system task)
+- Review outcome derived from task relationships:
+  - **Outcome**: Followup task exists = `rejected`, absent = `approved`
+  - **Issues found**: Count children of followup task
 
 ---
 
 ## CLI Commands
 
-### Review Command (Creates Autonomous Task)
+### Primary Review Command
 
 ```bash
-aiki review @
+aiki review <revset> [--from <reviewer>]
 ```
 
 **Behavior:**
-1. Creates review task with `assignee: autonomous(codex)`
-2. Immediately starts task (autonomous execution begins)
-3. Codex runs review, updates task body with results
-4. If issues found, creates followup task with children
-5. Closes review task
+1. Creates review task with children using `task_add_with_children()` (assignee: codex)
+2. Calls `aiki task run <task_id>` to execute the review
+3. Task runs headless reviewer agent (blocking/synchronous)
+4. Agent adds comments to task as issues found
+5. When agent completes, creates followup tasks from comments
+6. Marks review task as completed
+7. Returns with summary
 
 **Output:**
 ```xml
 <aiki_review cmd="review" status="ok">
-  <task_created id="xqrmnpst" name="Review: current changes" assignee="autonomous(codex)">
-    Review task created and started.
-    Running autonomous review...
-  </task_created>
-  
-  <completed review_task="xqrmnpst" outcome="rejected" issues_found="2" duration_ms="9000">
+  <completed task_id="xqrmnpst" outcome="rejected" issues_found="2" duration_ms="9000">
     Review completed: Found 2 issues
     
     Followup task created: lpqrstwo
     Start with: aiki task start lpqrstwo
   </completed>
   
-  <!-- outcome and issues_found derived from task graph:
+  <!-- outcome and issues_found derived from task relationships:
        outcome = followup_task exists ? "rejected" : "approved"
        issues_found = count_children(followup_task) -->
   
   <context>
     <in_progress/>
     <list ready="4">
-      <task id="lpqrstwo" name="Followup: JWT auth review" priority="p1"/>
+      <task id="lpqrstwo" name="Followup: JWT auth review" priority="p2"/>
       <task id="mxsl" name="Implement user auth" priority="p2" blocked_by="lpqrstwo"/>
       <task id="npts" name="Add tests" priority="p2"/>
       <task id="oqru" name="Update docs" priority="p3"/>
@@ -242,22 +441,24 @@ aiki review @
 </aiki_review>
 ```
 
+**Note**: Draft tasks (like review tasks) are hidden from this list by default. Use `aiki task list --draft` to include them.
+
 ### Review History
 
 ```bash
 aiki review list
 ```
 
-**Behavior:** Queries tasks with `task_type: Review`
+**Behavior:** Queries completed review tasks (filters by task name pattern or discovered_from links)
 
 ```xml
 <aiki_review cmd="list" status="ok">
   <reviews>
-    <!-- outcome/issues_found derived from task graph -->
-    <review task_id="xqrmnpst" name="Review: JWT auth" outcome="rejected" issues_found="2" 
-            timestamp="2025-01-15T10:05:00Z" assignee="autonomous(codex)"/>
-    <review task_id="pqrstuv" name="Review: Login flow" outcome="approved" issues_found="0"
-            timestamp="2025-01-14T14:20:00Z" assignee="autonomous(codex)"/>
+    <!-- outcome and issues_found derived from task relationships -->
+    <review task_id="xqrmnpst" revset="@" outcome="rejected" issues_found="2" 
+            timestamp="2025-01-15T10:05:00Z" reviewer="codex"/>
+    <review task_id="pqrstuv" revset="main..@" outcome="approved" issues_found="0"
+            timestamp="2025-01-14T14:20:00Z" reviewer="codex"/>
   </reviews>
 </aiki_review>
 ```
@@ -268,57 +469,48 @@ aiki review list
 aiki review show xqrmnpst
 ```
 
-**Behavior:** Shows task details with review-specific formatting (derives `requested_by` from change metadata)
+**Behavior:** Shows review task details, comments, and links to followup task (equivalent to `aiki task show xqrmnpst`)
 
 ```xml
 <aiki_review cmd="show" status="ok">
   <review task_id="xqrmnpst">
-    <name>Review: JWT authentication</name>
-    <assignee>autonomous(codex)</assignee>
+    <reviewer>codex</reviewer>
     <requested_by>claude-code</requested_by>  <!-- Derived from change metadata -->
-    <scope>working_copy</scope>
-    <prompt>security</prompt>
-    <outcome>rejected</outcome>  <!-- Derived: followup_task exists -->
-    <issues_found>2</issues_found>  <!-- Derived: count_children(followup_task) -->
+    <revset>@</revset>
+    <changes>[zxywtuvs]</changes>
+    <outcome>rejected</outcome>  <!-- Derived: followup_task present -->
+    <issues_found>2</issues_found>  <!-- Derived: count children of followup_task -->
     <duration_ms>9000</duration_ms>
+    <comments>
+      <comment timestamp="2025-01-15T10:04:55Z">**File**: src/auth.ts:42...</comment>
+      <comment timestamp="2025-01-15T10:04:58Z">**File**: src/middleware.ts:28...</comment>
+    </comments>
     <followup_task id="lpqrstwo" name="Followup: JWT auth review">
-      <child id="lpqrstwo.1" name="Fix: Null pointer check" priority="p0"/>
-      <child id="lpqrstwo.2" name="Fix: JWT validation" priority="p1"/>
+      <children>
+        <task id="lpqrstwo.1" name="Fix: Null pointer check" priority="p0"/>
+        <task id="lpqrstwo.2" name="Fix: JWT validation" priority="p1"/>
+      </children>
     </followup_task>
-    <body>
-      # Review Results
-      
-      **Duration**: 9s
-      
-      ## Issues Found
-      
-      1. src/auth.ts:42 - Null pointer (p0)
-      2. src/auth.ts:67 - JWT validation (p1)
-      ...
-    </body>
   </review>
 </aiki_review>
 ```
 
 ---
 
-## Task List Filtering
-
-### Default Behavior
+## Task List Behavior
 
 ```bash
 aiki task list
 ```
 
-**Excludes autonomous tasks by default** - only shows interactive tasks:
+Shows ready tasks only (drafts hidden by default):
 
 ```xml
 <aiki_task cmd="list" status="ok">
   <context>
     <in_progress/>
     <list ready="4">
-      <!-- No xqrmnpst (autonomous review task) -->
-      <task id="lpqrstwo" name="Followup: JWT auth review" priority="p1"/>
+      <task id="lpqrstwo" name="Followup: JWT auth review" priority="p2"/>
       <task id="mxsl" name="Implement user auth" priority="p2" blocked_by="lpqrstwo"/>
       <task id="npts" name="Add tests" priority="p2"/>
       <task id="oqru" name="Update docs" priority="p3"/>
@@ -327,284 +519,255 @@ aiki task list
 </aiki_task>
 ```
 
-### Include Autonomous Tasks
+Include draft tasks:
 
 ```bash
-aiki task list --all
+aiki task list --draft
 ```
-
-Shows both interactive and autonomous:
 
 ```xml
-<list ready="5">
-  <task id="xqrmnpst" name="Review: JWT auth" assignee="autonomous(codex)" status="closed"/>
-  <task id="lpqrstwo" name="Followup: JWT auth review" priority="p1"/>
-  <task id="mxsl" name="Implement user auth" priority="p2"/>
-  ...
-</list>
-```
-
-### Only Autonomous Tasks
-
-```bash
-aiki task list --autonomous
-```
-
-Shows only autonomous tasks:
-
-```xml
-<list ready="1">
-  <task id="xqrmnpst" name="Review: JWT auth" assignee="autonomous(codex)" status="closed"/>
-</list>
+<aiki_task cmd="list" status="ok">
+  <context>
+    <in_progress/>
+    <list ready="6">
+      <task id="xqrmnpst" name="Review: @ (working copy)" assignee="codex" draft="true" status="completed"/>
+      <task id="lpqrstwo" name="Followup: JWT auth review" priority="p2"/>
+      <task id="mxsl" name="Implement user auth" priority="p2" blocked_by="lpqrstwo"/>
+      <task id="npts" name="Add tests" priority="p2"/>
+      <task id="oqru" name="Update docs" priority="p3"/>
+      <task id="pqrstuv" name="Review: main..@" assignee="codex" draft="true" status="completed"/>
+    </list>
+  </context>
+</aiki_task>
 ```
 
 ---
 
 ## Implementation
 
-### Autonomous Execution Primitive
+### Review Command
 
 ```rust
-pub enum TaskAssignee {
-    Interactive(String),      // "claude-code", "codex", etc.
-    Autonomous(String),        // "autonomous(codex)", etc.
-}
-
-impl TaskAssignee {
-    pub fn parse(s: &str) -> Self {
-        if let Some(agent) = s.strip_prefix("autonomous(").and_then(|s| s.strip_suffix(")")) {
-            Self::Autonomous(agent.to_string())
-        } else {
-            Self::Interactive(s.to_string())
-        }
-    }
+pub fn review(revset: &str, from: Option<String>) -> Result<()> {
+    let reviewer = from.unwrap_or_else(|| "codex".to_string());
+    let changes = resolve_revset(revset)?;
     
-    pub fn is_autonomous(&self) -> bool {
-        matches!(self, Self::Autonomous(_))
-    }
+    // Build metadata for all review tasks
+    let mut metadata = HashMap::new();
+    metadata.insert("revset".to_string(), json!(revset));
+    metadata.insert("changes".to_string(), json!(changes));
     
-    pub fn agent_name(&self) -> &str {
-        match self {
-            Self::Interactive(name) | Self::Autonomous(name) => name,
-        }
-    }
-}
-
-// Task filtering
-pub fn get_ready_queue(tasks: &HashMap<String, Task>, include_autonomous: bool) -> Vec<&Task> {
-    tasks.values()
-        .filter(|t| t.status == TaskStatus::Ready)
-        .filter(|t| include_autonomous || !t.assignee.is_autonomous())
-        .sorted_by_key(|t| &t.priority)
-        .collect()
-}
-```
-
-### Review Command Implementation
-
-```rust
-pub fn review(scope: ReviewScope, from: Option<String>) -> Result<()> {
-    let agent = from.unwrap_or_else(|| "codex".to_string());
-    
-    // 1. Get originating task (if any)
-    let originating_task = get_in_progress_task()?;
-    
-    // 2. Create review task
-    let review_task_id = generate_task_id("review");
-    let create_event = TaskEvent::Created {
-        task_id: review_task_id.clone(),
-        name: format!("Review: {}", get_scope_description(&scope)),
-        priority: Priority::P1,
-        assignee: TaskAssignee::Autonomous(agent.clone()),
-        body: format!("Code review of {}", scope),
-        metadata: hashmap! {
-            "task_type" => "review",
-            "scope" => scope.to_string(),
-            "originating_task_id" => originating_task.as_ref().map(|t| &t.id),
+    // Create review task with 2 subtasks (digest, review)
+    // All tasks get same metadata
+    let children = vec![
+        ChildTask {
+            name: "Digest code changes".to_string(),
+            metadata: Some(metadata.clone()),
         },
-        blocks: originating_task.map(|t| vec![t.id]),
-        timestamp: Utc::now(),
-    };
-    store_task_event(&create_event)?;
-    
-    // 3. Start task (begins autonomous execution)
-    let start_event = TaskEvent::Started {
-        task_ids: vec![review_task_id.clone()],
-        stopped: vec![],
-        agent_type: agent.clone(),
-        timestamp: Utc::now(),
-    };
-    store_task_event(&start_event)?;
-    
-    // 4. Launch autonomous agent
-    let result = launch_autonomous_agent(&agent, &review_task_id, &scope)?;
-    
-    // 5. Update task with results
-    let close_event = TaskEvent::Closed {
-        task_id: review_task_id.clone(),
-        timestamp: Utc::now(),
-        body: format_review_results(&result),
-        metadata: hashmap! {
-            "duration_ms" => result.duration_ms,
-            "followup_task_id" => result.followup_task_id,
-            // outcome and issues_found derived from task graph, not stored
+        ChildTask {
+            name: "Review code for functionality/quality/security/performance".to_string(),
+            metadata: Some(metadata.clone()),
         },
-    };
-    store_task_event(&close_event)?;
+    ];
     
-    // 6. Create followup tasks if issues found
-    if !result.issues.is_empty() {
-        create_followup_tasks(&review_task_id, &result, originating_task)?;
+    let task_id = task_add_with_children(
+        format!("Review: {}", revset),
+        reviewer,
+        false,  // draft = false (visible, ready to run)
+        children,
+        Some(metadata),  // Parent metadata
+    )?;
+    
+    // Run the review task - agent executes digest and review subtasks
+    task_run(&task_id)?;
+    
+    // After agent completes, process comments into followup tasks
+    let comments = get_task_comments(&task_id)?;
+    if !comments.is_empty() {
+        let followup_task_id = create_followup_from_comments(&task_id, &comments)?;
+        eprintln!("Created followup task: {}", followup_task_id);
     }
+    
+    // Close the review task
+    close_task(&task_id, format!("Review completed: {} issues found", comments.len()))?;
     
     Ok(())
 }
 
-fn launch_autonomous_agent(agent: &str, task_id: &str, scope: &ReviewScope) -> Result<ReviewResult> {
-    // Launch agent in headless mode
-    // Agent reads task from task system
-    // Agent performs review
-    // Agent returns results
-    // This is the reusable "autonomous task execution" primitive
+/// Child task creation info
+struct ChildTask {
+    name: String,
+    metadata: Option<HashMap<String, Value>>,
+}
+
+/// Create parent task with children atomically (implements --children flag)
+fn task_add_with_children(
+    name: String,
+    assignee: String,
+    draft: bool,
+    children: Vec<ChildTask>,
+    parent_metadata: Option<HashMap<String, Value>>,
+) -> Result<String> {
+    let parent_id = generate_task_id();
+    let timestamp = Utc::now();
     
-    todo!("Implement autonomous agent launcher")
+    // Build all events (parent + children)
+    let mut events = Vec::new();
+    
+    // Parent event
+    events.push(TaskEvent::Created {
+        task_id: parent_id.clone(),
+        name,
+        assignee: assignee.clone(),
+        draft,
+        metadata: parent_metadata,
+        timestamp,
+    });
+    
+    // Child events
+    for (i, child) in children.iter().enumerate() {
+        let child_id = format!("{}.{}", parent_id, i + 1);
+        events.push(TaskEvent::Created {
+            task_id: child_id,
+            name: child.name.clone(),
+            assignee: assignee.clone(),
+            draft,
+            metadata: child.metadata.clone(),
+            timestamp,
+        });
+    }
+    
+    // Store all events atomically in one write
+    store_task_events(&events)?;
+    
+    Ok(parent_id)
+}
+
+fn create_followup_from_comments(review_task_id: &str, comments: &[TaskComment]) -> Result<String> {
+    // Build parent metadata for followup task
+    let mut parent_metadata = HashMap::new();
+    parent_metadata.insert("discovered_from".to_string(), json!(format!("review:{}", review_task_id)));
+    if let Some(blocked_tasks) = find_blocked_tasks(review_task_id)? {
+        parent_metadata.insert("blocks".to_string(), json!(blocked_tasks));
+    }
+    
+    // Extract files from comments for scope
+    let files = extract_files_from_comments(comments);
+    if !files.is_empty() {
+        parent_metadata.insert("files".to_string(), json!(files));
+    }
+    
+    // Build child tasks with per-child metadata
+    let children: Vec<ChildTask> = comments.iter()
+        .map(|comment| {
+            let mut child_metadata = HashMap::new();
+            child_metadata.insert("discovered_from".to_string(), json!([
+                format!("review:{}", review_task_id),
+                format!("comment:{}", comment.id),
+            ]));
+            
+            ChildTask {
+                name: format!("Fix: {}", extract_issue_title(comment)),
+                metadata: Some(child_metadata),
+            }
+        })
+        .collect();
+    
+    // Create parent + all children atomically with metadata
+    let followup_task_id = task_add_with_children(
+        format!("Followup: Review {}", review_task_id),
+        "claude-code".to_string(),
+        false,  // Not draft - ready immediately
+        children,
+        Some(parent_metadata),
+    )?;
+    
+    Ok(followup_task_id)
 }
 ```
 
 ---
 
-## Benefits of Task-Native Approach
+## Benefits of Task-Based Approach
 
-### 1. Unified System
+### 1. Single Storage System
 
-**One event storage branch** (`aiki/tasks`):
-- Reviews
-- Interactive work
-- Followup tasks
-- All tracked together
+**Everything on `aiki/tasks`**:
+- Review tasks with `assignee: codex` (ready to run immediately)
+- Followup tasks start as `draft: true`, then marked ready after children added
+- User tasks with `draft: false` (or absent)
+- Single event structure for all tasks
+- No separate review event schema
 
-**One query interface**:
-- `aiki task list --type Review` shows reviews
-- `aiki task show xqrmnpst` shows review details
-- All task queries work on reviews
+### 2. Consistent Task Lifecycle
 
-### 2. Reusable Autonomous Execution
+**Reviews use standard task events**:
+- `created`, `started`, `comment_added`, `completed`
+- Same infrastructure as regular tasks
+- No special-case handling needed
 
-**Not just for reviews**:
-```yaml
-# Autonomous testing
-task_id: abc123
-name: "Run test suite"
-assignee: autonomous(test-runner)
+### 3. Natural Visibility Control
 
-# Autonomous documentation
-task_id: def456
-name: "Generate API docs"
-assignee: autonomous(doc-writer)
+**`draft` flag controls display**:
+- `aiki task list` - Shows only ready tasks (excludes drafts by default)
+- `aiki task list --draft` - Shows draft tasks
+- `aiki review list` - Convenience wrapper for draft tasks
+- No confusion about where to look
 
-# Autonomous refactoring
-task_id: ghi789
-name: "Refactor auth module"
-assignee: autonomous(claude-code)
-```
+### 4. Simpler Implementation
 
-### 3. Composable Agent Workflows
+**Single code path**:
+- Reuse existing task storage/query infrastructure
+- Reuse task comment system
+- Reuse task relationship tracking
+- Just add `draft` field to task schema
 
-**Agents can create autonomous subtasks**:
-```yaml
-# Human creates task
-task: "Implement feature X"
-assignee: claude-code
+### 5. Future-Proof
 
-# Agent creates review subtask
-subtask: "Review feature X"
-assignee: autonomous(codex)
+**Draft tasks can be used for**:
+- Code reviews (current use case)
+- Work-in-progress task creation (multi-step atomic operations)
+- Automated testing workflows
+- Documentation generation tasks
+- Any task that shouldn't be visible until ready
 
-# Review creates followup
-followup: "Fix review issues"
-assignee: claude-code
-```
-
-### 4. Natural Blocking
-
-**Task dependencies work automatically**:
-- Followup blocks review task
-- Review task blocks originating task
-- All visible in task graph
-
-### 5. Simplified Architecture
-
-**No need for**:
-- Separate `aiki/reviews` branch
-- Review-specific storage format
-- Review-specific query logic
-- Synchronization between systems
+All with the same infrastructure.
 
 ---
 
-## Migration from Current Design
+## Implementation Plan
 
-### Phase 1: Add Autonomous Assignee Support
+### Phase 1: Children Flag Support
 
-- Add `TaskAssignee` enum to task types
-- Update task creation to parse `autonomous(agent)` syntax
-- Update task list filtering to exclude autonomous by default
+- Add `--children` flag to `aiki task add` (accepts heredoc input)
+- Implement `task_add_with_children()` helper function
+- Atomically create parent + all child tasks in one operation
 
-### Phase 2: Implement Autonomous Execution
+### Phase 2: Review Task Creation
 
-- Add `launch_autonomous_agent()` function
-- Agent reads task from task system
-- Agent updates task body with results
-- Agent can create subtasks
+- `aiki review @` uses `task_add_with_children()` internally
+- Creates review task with `assignee: codex` with 2 subtasks (digest, review)
+- Uses `aiki task run` to execute review
+- After agent completes, collects comments and creates followup tasks atomically
+- Closes review task
 
-### Phase 3: Implement Task-Native Reviews
+### Phase 3: Review Commands
 
-- `aiki review` creates autonomous task
-- Results stored in task body
-- Followup tasks created from results
-
-### Phase 4: Migrate Existing Reviews (Optional)
-
-- If `aiki/reviews` branch exists, can keep for history
-- Or migrate old reviews to task format
-- New reviews use task-native approach
-
----
-
-## Open Questions
-
-1. **Autonomous vs Headless vs Auto terminology?**
-   - Current proposal: `autonomous(agent)`
-   - Alternatives: `headless(agent)`, `auto(agent)`
-   - Need to decide on final naming
-
-2. **Task metadata vs structured fields?**
-   - Current: Review results in task `body` (markdown)
-   - Alternative: Add structured review fields to task schema
-   - Body is more flexible, fields are more queryable
-
-3. **Should `aiki review` be a separate command or `aiki task` subcommand?**
-   - Current: `aiki review @` for convenience
-   - Alternative: `aiki task create --type review --autonomous codex`
-   - Keep `aiki review` as sugar over task creation
-
-4. **How to handle long-running autonomous tasks?**
-   - Reviews should be quick (seconds/minutes)
-   - But what if autonomous task takes hours?
-   - Need progress updates, ability to cancel, etc.
+- `aiki review list` - List review tasks
+- `aiki review show <id>` - Show review details (wrapper for `aiki task show`)
+- Integration with task context in XML output
 
 ---
 
 ## Summary
 
-This design makes **tasks the universal orchestration layer** for agent work:
+This task-based design unifies reviews and regular tasks:
 
-- **Reviews become tasks** assigned to autonomous agents
-- **No separate storage system** - unified on `aiki/tasks` branch  
-- **Autonomous execution is reusable** - any task can be autonomous
-- **Natural composition** - agents can create autonomous subtasks
-- **Simpler architecture** - one system, one query interface
+- **Single storage system** - All tasks on `aiki/tasks` branch
+- **Consistent lifecycle** - Reviews use same events as regular tasks
+- **Clean separation** - Agent does review work, aiki review handles orchestration
+- **Code reuse** - Leverage existing task infrastructure (task run, comments, hierarchy)
+- **Atomic task creation** - Parent + children created together using `--children` flag
+- **Simple workflow** - No draft flags or complex state management needed
 
-The `autonomous(agent)` assignee pattern ensures autonomous tasks don't interfere with interactive workflows while keeping them observable and queryable.
-
-This positions tasks as the foundation for **human-agent collaboration**, not just task tracking.
+This is simpler than maintaining separate storage systems and keeps the agent focused on what it does best: reviewing code.

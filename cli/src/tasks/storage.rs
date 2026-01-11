@@ -49,18 +49,26 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 
     let metadata = event_to_metadata_block(event);
 
-    // Create a new change after the current head of aiki/tasks
-    // This appends to the linear event log on the tasks branch
+    // Save current working copy change ID so we can restore it later
+    let current_wc = Command::new("jj")
+        .current_dir(cwd)
+        .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get working copy: {}", e)))?;
+
+    if !current_wc.status.success() {
+        let stderr = String::from_utf8_lossy(&current_wc.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to get working copy: {}",
+            stderr
+        )));
+    }
+    let saved_change_id = String::from_utf8_lossy(&current_wc.stdout).trim().to_string();
+
+    // Create a new change as child of aiki/tasks bookmark and move working copy there
     let result = Command::new("jj")
         .current_dir(cwd)
-        .args([
-            "new",
-            "--no-edit",
-            "--insert-after",
-            TASKS_BRANCH,
-            "-m",
-            &metadata,
-        ])
+        .args(["new", TASKS_BRANCH, "-m", &metadata])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to create task event: {}", e)))?;
 
@@ -72,8 +80,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    // Move the bookmark forward to point at the newly created change
-    //The new change is now @ (working copy)
+    // Move the bookmark forward to point at the newly created change (now @)
     let result = Command::new("jj")
         .current_dir(cwd)
         .args(["bookmark", "set", TASKS_BRANCH, "-r", "@"])
@@ -84,6 +91,21 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(AikiError::JjCommandFailed(format!(
             "Failed to update task bookmark: {}",
+            stderr
+        )));
+    }
+
+    // Restore the original working copy
+    let result = Command::new("jj")
+        .current_dir(cwd)
+        .args(["edit", &saved_change_id])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to restore working copy: {}", e)))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to restore working copy: {}",
             stderr
         )));
     }
@@ -1003,5 +1025,364 @@ timestamp=2026-01-09T10:30:00Z
             }
             _ => panic!("Event type mismatch"),
         }
+    }
+
+    #[test]
+    fn test_roundtrip_reopened() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let original = TaskEvent::Reopened {
+            task_id: "a1b2".to_string(),
+            reason: "Found new info".to_string(),
+            timestamp,
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Reopened {
+                    task_id: id1,
+                    reason: r1,
+                    timestamp: t1,
+                },
+                TaskEvent::Reopened {
+                    task_id: id2,
+                    reason: r2,
+                    timestamp: t2,
+                },
+            ) => {
+                assert_eq!(id1, id2);
+                assert_eq!(r1, r2);
+                assert_eq!(t1, t2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_reopened_with_special_chars() {
+        let original = TaskEvent::Reopened {
+            task_id: "a1b2".to_string(),
+            reason: "Need to fix = sign\nand newline".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Reopened { reason: r1, .. },
+                TaskEvent::Reopened { reason: r2, .. },
+            ) => {
+                assert_eq!(r1, r2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_name_only() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: Some("New name".to_string()),
+            priority: None,
+            timestamp,
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated {
+                    task_id: id1,
+                    name: n1,
+                    priority: p1,
+                    timestamp: t1,
+                },
+                TaskEvent::Updated {
+                    task_id: id2,
+                    name: n2,
+                    priority: p2,
+                    timestamp: t2,
+                },
+            ) => {
+                assert_eq!(id1, id2);
+                assert_eq!(n1, n2);
+                assert_eq!(p1, p2);
+                assert_eq!(t1, t2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_priority_only() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: None,
+            priority: Some(TaskPriority::P0),
+            timestamp,
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated {
+                    name: n1,
+                    priority: p1,
+                    ..
+                },
+                TaskEvent::Updated {
+                    name: n2,
+                    priority: p2,
+                    ..
+                },
+            ) => {
+                assert_eq!(n1, n2);
+                assert_eq!(p1, p2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_both_fields() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: Some("Updated name".to_string()),
+            priority: Some(TaskPriority::P1),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated {
+                    name: n1,
+                    priority: p1,
+                    ..
+                },
+                TaskEvent::Updated {
+                    name: n2,
+                    priority: p2,
+                    ..
+                },
+            ) => {
+                assert_eq!(n1, n2);
+                assert_eq!(p1, p2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_with_special_chars() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: Some("Name = special\nwith newlines".to_string()),
+            priority: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated { name: n1, .. },
+                TaskEvent::Updated { name: n2, .. },
+            ) => {
+                assert_eq!(n1, n2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_parse_metadata_block_reopened() {
+        let block = r#"
+event=reopened
+task_id=a1b2
+reason=Found new info
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Reopened {
+                task_id,
+                reason,
+                ..
+            } => {
+                assert_eq!(task_id, "a1b2");
+                assert_eq!(reason, "Found new info");
+            }
+            _ => panic!("Expected Reopened event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_metadata_block_comment_added() {
+        let block = r#"
+event=comment_added
+task_id=a1b2
+text=This is a comment
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::CommentAdded { task_id, text, .. } => {
+                assert_eq!(task_id, "a1b2");
+                assert_eq!(text, "This is a comment");
+            }
+            _ => panic!("Expected CommentAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_metadata_block_updated() {
+        let block = r#"
+event=updated
+task_id=a1b2
+name=New name
+priority=p0
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Updated {
+                task_id,
+                name,
+                priority,
+                ..
+            } => {
+                assert_eq!(task_id, "a1b2");
+                assert_eq!(name, Some("New name".to_string()));
+                assert_eq!(priority, Some(TaskPriority::P0));
+            }
+            _ => panic!("Expected Updated event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_metadata_block_updated_partial() {
+        // Test with only name, no priority
+        let block = r#"
+event=updated
+task_id=a1b2
+name=New name only
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::Updated {
+                name, priority, ..
+            } => {
+                assert_eq!(name, Some("New name only".to_string()));
+                assert_eq!(priority, None);
+            }
+            _ => panic!("Expected Updated event"),
+        }
+    }
+
+    #[test]
+    fn test_event_to_metadata_block_reopened() {
+        let event = TaskEvent::Reopened {
+            task_id: "a1b2".to_string(),
+            reason: "New information found".to_string(),
+            timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&event);
+        assert!(block.contains("[aiki-task]"));
+        assert!(block.contains("event=reopened"));
+        assert!(block.contains("task_id=a1b2"));
+        assert!(block.contains("reason=New information found"));
+        assert!(block.contains("[/aiki-task]"));
+    }
+
+    #[test]
+    fn test_event_to_metadata_block_comment_added() {
+        let event = TaskEvent::CommentAdded {
+            task_id: "a1b2".to_string(),
+            text: "This is a comment".to_string(),
+            timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&event);
+        assert!(block.contains("[aiki-task]"));
+        assert!(block.contains("event=comment_added"));
+        assert!(block.contains("task_id=a1b2"));
+        assert!(block.contains("text=This is a comment"));
+        assert!(block.contains("[/aiki-task]"));
+    }
+
+    #[test]
+    fn test_event_to_metadata_block_updated() {
+        let event = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: Some("New task name".to_string()),
+            priority: Some(TaskPriority::P1),
+            timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&event);
+        assert!(block.contains("[aiki-task]"));
+        assert!(block.contains("event=updated"));
+        assert!(block.contains("task_id=a1b2"));
+        assert!(block.contains("name=New task name"));
+        assert!(block.contains("priority=p1"));
+        assert!(block.contains("[/aiki-task]"));
     }
 }

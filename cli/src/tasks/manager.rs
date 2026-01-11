@@ -1169,4 +1169,286 @@ mod tests {
             vec!["root".to_string(), "parent1".to_string()]
         );
     }
+
+    #[test]
+    fn test_materialize_reopened_event() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["a1b2".to_string()],
+                outcome: TaskOutcome::Done,
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+            TaskEvent::Reopened {
+                task_id: "a1b2".to_string(),
+                reason: "Found another bug".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(2),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.status, TaskStatus::Open);
+        // Closed outcome should be cleared when reopened
+        assert!(task.closed_outcome.is_none());
+    }
+
+    #[test]
+    fn test_materialize_comment_added_event() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::CommentAdded {
+                task_id: "a1b2".to_string(),
+                text: "First comment".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+            TaskEvent::CommentAdded {
+                task_id: "a1b2".to_string(),
+                text: "Second comment".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(2),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.comments.len(), 2);
+        assert_eq!(task.comments[0].text, "First comment");
+        assert_eq!(task.comments[1].text, "Second comment");
+    }
+
+    #[test]
+    fn test_materialize_updated_event_name() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Original name".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Updated {
+                task_id: "a1b2".to_string(),
+                name: Some("Updated name".to_string()),
+                priority: None,
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.name, "Updated name");
+        assert_eq!(task.priority, TaskPriority::P2); // Priority unchanged
+    }
+
+    #[test]
+    fn test_materialize_updated_event_priority() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Updated {
+                task_id: "a1b2".to_string(),
+                name: None,
+                priority: Some(TaskPriority::P0),
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.name, "Test task"); // Name unchanged
+        assert_eq!(task.priority, TaskPriority::P0);
+    }
+
+    #[test]
+    fn test_materialize_updated_event_both_fields() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Original".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Updated {
+                task_id: "a1b2".to_string(),
+                name: Some("New name".to_string()),
+                priority: Some(TaskPriority::P1),
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.name, "New name");
+        assert_eq!(task.priority, TaskPriority::P1);
+    }
+
+    #[test]
+    fn test_materialize_full_task_lifecycle_with_reopen() {
+        let base_time = Utc::now();
+        let events = vec![
+            // Create task
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            // Start task
+            TaskEvent::Started {
+                task_ids: vec!["a1b2".to_string()],
+                agent_type: "claude-code".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(1),
+                stopped: vec![],
+            },
+            // Add comment
+            TaskEvent::CommentAdded {
+                task_id: "a1b2".to_string(),
+                text: "Working on this".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(2),
+            },
+            // Close task
+            TaskEvent::Closed {
+                task_ids: vec!["a1b2".to_string()],
+                outcome: TaskOutcome::Done,
+                timestamp: base_time + chrono::Duration::seconds(3),
+            },
+            // Reopen task
+            TaskEvent::Reopened {
+                task_id: "a1b2".to_string(),
+                reason: "Bug still exists".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(4),
+            },
+            // Update task
+            TaskEvent::Updated {
+                task_id: "a1b2".to_string(),
+                name: Some("Fix critical bug".to_string()),
+                priority: Some(TaskPriority::P0),
+                timestamp: base_time + chrono::Duration::seconds(5),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.status, TaskStatus::Open);
+        assert_eq!(task.name, "Fix critical bug");
+        assert_eq!(task.priority, TaskPriority::P0);
+        assert_eq!(task.comments.len(), 1);
+        assert!(task.closed_outcome.is_none());
+    }
+
+    #[test]
+    fn test_reopened_task_appears_in_ready_queue() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["a1b2".to_string()],
+                outcome: TaskOutcome::Done,
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events);
+        let ready = get_ready_queue(&tasks);
+        assert!(ready.is_empty(), "Closed task should not be in ready queue");
+
+        // Now add reopened event
+        let events_with_reopen = vec![
+            TaskEvent::Created {
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                timestamp: base_time,
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["a1b2".to_string()],
+                outcome: TaskOutcome::Done,
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+            TaskEvent::Reopened {
+                task_id: "a1b2".to_string(),
+                reason: "Found more issues".to_string(),
+                timestamp: base_time + chrono::Duration::seconds(2),
+            },
+        ];
+
+        let tasks = materialize_tasks(&events_with_reopen);
+        let ready = get_ready_queue(&tasks);
+        assert_eq!(ready.len(), 1, "Reopened task should be in ready queue");
+        assert_eq!(ready[0].id, "a1b2");
+    }
+
+    #[test]
+    fn test_update_nonexistent_task_ignored() {
+        let events = vec![TaskEvent::Updated {
+            task_id: "nonexistent".to_string(),
+            name: Some("New name".to_string()),
+            priority: None,
+            timestamp: Utc::now(),
+        }];
+
+        let tasks = materialize_tasks(&events);
+        assert!(tasks.is_empty(), "No task should be created from Update event alone");
+    }
+
+    #[test]
+    fn test_comment_on_nonexistent_task_ignored() {
+        let events = vec![TaskEvent::CommentAdded {
+            task_id: "nonexistent".to_string(),
+            text: "Comment".to_string(),
+            timestamp: Utc::now(),
+        }];
+
+        let tasks = materialize_tasks(&events);
+        assert!(tasks.is_empty(), "No task should be created from CommentAdded event alone");
+    }
+
+    #[test]
+    fn test_reopen_nonexistent_task_ignored() {
+        let events = vec![TaskEvent::Reopened {
+            task_id: "nonexistent".to_string(),
+            reason: "Reason".to_string(),
+            timestamp: Utc::now(),
+        }];
+
+        let tasks = materialize_tasks(&events);
+        assert!(tasks.is_empty(), "No task should be created from Reopened event alone");
+    }
 }
