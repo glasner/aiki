@@ -193,6 +193,9 @@ Alternatively, install the agent globally:
     #[error("Failed to parse task event: {0}")]
     TaskEventParseFailed(String),
 
+    #[error("{0}")]
+    TaskCommentRequired(String),
+
     // History/conversation errors
     #[error("Failed to initialize aiki/conversations branch: {0}")]
     ConversationsBranchInitFailed(String),

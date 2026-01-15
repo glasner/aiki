@@ -115,6 +115,10 @@ pub enum TaskCommands {
         /// Mark as won't do instead of done
         #[arg(long)]
         wont_do: bool,
+
+        /// Comment to add before closing (use "-" for stdin/heredoc)
+        #[arg(long)]
+        comment: Option<String>,
     },
 
     /// Show task details (including children for parent tasks)
@@ -197,7 +201,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             reason,
             blocked,
         } => run_stop(&cwd, id, reason, blocked),
-        TaskCommands::Close { ids, wont_do } => run_close(&cwd, ids, wont_do),
+        TaskCommands::Close { ids, wont_do, comment } => run_close(&cwd, ids, wont_do, comment),
         TaskCommands::Show { id } => run_show(&cwd, id),
         TaskCommands::Update {
             id,
@@ -781,8 +785,9 @@ fn run_stop(
 }
 
 /// Close task(s) as done
-fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool) -> Result<()> {
+fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String>) -> Result<()> {
     use crate::tasks::manager::{all_children_closed, get_unclosed_children};
+    use std::io::Read;
 
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
@@ -831,6 +836,32 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool) -> Result<()> {
         }
     }
 
+    // Handle stdin for --comment -
+    let comment_text = if comment.as_deref() == Some("-") {
+        let mut buffer = String::new();
+        std::io::stdin().read_to_string(&mut buffer)?;
+        Some(buffer.trim().to_string())
+    } else {
+        comment
+    };
+
+    // Check if agent session is active - require comment for agent-initiated closes
+    if comment_text.is_none() {
+        let sessions_dir = cwd.join(".aiki/sessions");
+        if sessions_dir.exists() {
+            let session_count = std::fs::read_dir(&sessions_dir)
+                .ok()
+                .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().is_file()).count())
+                .unwrap_or(0);
+
+            if session_count > 0 {
+                return Err(AikiError::TaskCommentRequired(
+                    "Closing tasks requires a comment when running in an agent session. Please summarize your work with --comment.".to_string()
+                ));
+            }
+        }
+    }
+
     let outcome = if wont_do {
         TaskOutcome::WontDo
     } else {
@@ -843,11 +874,25 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool) -> Result<()> {
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
+    // If comment provided, emit comment events first (1ms before close for chronological order)
+    let close_timestamp = chrono::Utc::now();
+    if let Some(ref comment) = comment_text {
+        let comment_timestamp = close_timestamp - chrono::Duration::milliseconds(1);
+        for task_id in &ids_to_close {
+            let comment_event = TaskEvent::CommentAdded {
+                task_id: task_id.clone(),
+                text: comment.clone(),
+                timestamp: comment_timestamp,
+            };
+            write_event(cwd, &comment_event)?;
+        }
+    }
+
     // Close the tasks (batch operation)
     let close_event = TaskEvent::Closed {
         task_ids: ids_to_close.clone(),
         outcome,
-        timestamp: chrono::Utc::now(),
+        timestamp: close_timestamp,
     };
     write_event(cwd, &close_event)?;
 
