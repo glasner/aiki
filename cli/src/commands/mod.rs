@@ -11,6 +11,8 @@ pub mod doctor;
 pub mod event;
 pub mod hooks;
 pub mod init;
+pub mod log;
+pub mod sessions;
 pub mod task;
 pub mod verify;
 pub mod zed_detection;
