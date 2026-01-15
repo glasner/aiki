@@ -8,6 +8,7 @@ mod error;
 mod event_bus;
 mod events;
 mod flows;
+mod history;
 mod jj;
 mod provenance;
 mod repo;
@@ -100,6 +101,16 @@ enum Commands {
         #[command(subcommand)]
         command: Option<commands::task::TaskCommands>,
     },
+    /// View AI change log
+    Log {
+        #[command(flatten)]
+        args: commands::log::LogArgs,
+    },
+    /// Manage sessions
+    Sessions {
+        #[command(subcommand)]
+        command: Option<commands::sessions::SessionsCommands>,
+    },
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
@@ -162,6 +173,8 @@ fn run() -> Result<()> {
         } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Task { command } => commands::task::run(command),
+        Commands::Log { args } => commands::log::run(args),
+        Commands::Sessions { command } => commands::sessions::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
