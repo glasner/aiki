@@ -43,31 +43,17 @@ pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
 }
 
 /// Write a conversation event to the aiki/conversations branch
+///
+/// Uses `jj new --no-edit` to create the event change without affecting the working copy.
 pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
     ensure_conversations_branch(cwd)?;
 
     let metadata = event_to_metadata_block(event);
 
-    // Save current working copy change ID so we can restore it later
-    let current_wc = Command::new("jj")
-        .current_dir(cwd)
-        .args(["log", "-r", "@", "--no-graph", "-T", "change_id"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get working copy: {}", e)))?;
-
-    if !current_wc.status.success() {
-        let stderr = String::from_utf8_lossy(&current_wc.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to get working copy: {}",
-            stderr
-        )));
-    }
-    let saved_change_id = String::from_utf8_lossy(&current_wc.stdout).trim().to_string();
-
-    // Create a new change as child of aiki/conversations bookmark and move working copy there
+    // Create a new change as child of aiki/conversations WITHOUT switching working copy
     let result = Command::new("jj")
         .current_dir(cwd)
-        .args(["new", CONVERSATIONS_BRANCH, "-m", &metadata])
+        .args(["new", CONVERSATIONS_BRANCH, "--no-edit", "-m", &metadata])
         .output()
         .map_err(|e| {
             AikiError::JjCommandFailed(format!("Failed to create conversation event: {}", e))
@@ -81,10 +67,20 @@ pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
         )));
     }
 
-    // Move the bookmark forward to point at the newly created change (now @)
+    // Move the bookmark forward to point at the newly created change
+    // Filter to only the conversation change (has [aiki-conversation] in description), not the working copy
     let result = Command::new("jj")
         .current_dir(cwd)
-        .args(["bookmark", "set", CONVERSATIONS_BRANCH, "-r", "@"])
+        .args([
+            "bookmark",
+            "set",
+            CONVERSATIONS_BRANCH,
+            "-r",
+            &format!(
+                "children({}) & description(substring:\"{}\")",
+                CONVERSATIONS_BRANCH, METADATA_START
+            ),
+        ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to update bookmark: {}", e)))?;
 
@@ -92,23 +88,6 @@ pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(AikiError::JjCommandFailed(format!(
             "Failed to update conversations bookmark: {}",
-            stderr
-        )));
-    }
-
-    // Restore the original working copy
-    let result = Command::new("jj")
-        .current_dir(cwd)
-        .args(["edit", &saved_change_id])
-        .output()
-        .map_err(|e| {
-            AikiError::JjCommandFailed(format!("Failed to restore working copy: {}", e))
-        })?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to restore working copy: {}",
             stderr
         )));
     }
