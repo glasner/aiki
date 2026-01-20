@@ -202,30 +202,30 @@ Review changes in @ (files: src/auth.ts, src/middleware.ts)
 
 #### Custom Variables (aiki task create)
 
-Templates can reference any metadata field using `{metadata.key}` syntax:
+Templates can reference any data field using `{data.key}` syntax:
 
 ```bash
 # Pass custom variables via metadata
 aiki task create --template feature \
-  --metadata feature_name="user auth" \
-  --metadata module="auth"
+  --data feature_name="user auth" \
+  --data module="auth"
 ```
 
 **Template:**
 ```markdown
-# Implement {metadata.feature_name}
+# Implement {data.feature_name}
 
-Add {metadata.feature_name} functionality to the {metadata.module} module.
+Add {data.feature_name} functionality to the {data.module} module.
 
 # Subtasks
 
-## Design {metadata.feature_name}
+## Design {data.feature_name}
 
-Create design doc for {metadata.feature_name}.
+Create design doc for {data.feature_name}.
 
-## Implement in {metadata.module}
+## Implement in {data.module}
 
-Write code in {metadata.module} module.
+Write code in {data.module} module.
 ```
 
 **Result:**
@@ -264,8 +264,8 @@ type: review                  # Optional: Task type (default: generic)
 assignee: codex               # Optional: Default assignee (can be overridden)
 priority: p2                  # Optional: Default priority
 
-# Optional: Custom metadata
-metadata:
+# Optional: Custom data
+data:
   custom_field: value
 ---
 
@@ -389,9 +389,9 @@ type: refactor
 assignee: claude-code
 ---
 
-# Refactor: {metadata.scope}
+# Refactor: {data.scope}
 
-Systematic refactoring and cleanup of {metadata.scope}.
+Systematic refactoring and cleanup of {data.scope}.
 
 Focus on code quality without changing behavior.
 
@@ -571,7 +571,7 @@ aiki review --prompt security
 aiki task create --template <name> [options]
 
 # Options:
-#   --metadata <key>=<value>  - Set metadata (accessible as {metadata.key} in template)
+#   --data <key>=<value>  - Set metadata (accessible as {data.key} in template)
 #   --assignee <agent>        - Override template assignee
 #   --priority <level>        - Override template priority
 #   --start                   - Start the task immediately after creation
@@ -580,20 +580,20 @@ aiki task create --template <name> [options]
 
 # Refactor with scope metadata (links to what's being refactored)
 aiki task create --template refactor-cleanup \
-  --metadata scope="src/auth.rs"
+  --data scope="src/auth.rs"
 
 # With custom metadata variables
 aiki task create --template feature \
-  --metadata feature_name="user auth" \
-  --metadata module="auth"
+  --data feature_name="user auth" \
+  --data module="auth"
 
 # Override assignee
 aiki task create --template api-docs --assignee claude-code
 
-# Multiple metadata fields + start immediately
+# Multiple data fields + start immediately
 aiki task create --template implement \
-  --metadata component="dashboard" \
-  --metadata language="rust" \
+  --data component="dashboard" \
+  --data language="rust" \
   --start
 ```
 
@@ -601,15 +601,17 @@ aiki task create --template implement \
 1. Load template from `.aiki/templates/`
 2. Substitute variables:
    - Built-in: `{scope}`, `{files}`, `{timestamp}`, etc.
-   - Metadata: `{metadata.key}` for any `--metadata` flag
+   - Metadata: `{data.key}` for any `--data` flag
 3. Create parent task + all subtasks atomically
 4. Store metadata on task for future querying
 5. Optionally start the task with `--start` flag
 
 **Variable Precedence:**
-1. Command-line `--metadata` flags (highest priority)
+1. Command-line `--data` flags (highest priority)
 2. Built-in variables from context
 3. Template frontmatter defaults
+
+**Implementation Note:** This requires renaming `task.metadata` to `task.data` throughout the codebase for consistency.
 
 ---
 
@@ -619,16 +621,19 @@ aiki task create --template implement \
 
 **Deliverables:**
 - Template parser (YAML → TaskTemplate struct)
-- Template resolution (custom → built-in → error)
-- Variable substitution engine
+- Template resolution (custom → aiki → error)
+- Variable substitution engine (support `{data.key}` syntax)
 - Template validation
+- **Prerequisite: Rename `metadata` to `data`** - Refactor `task.metadata` → `task.data` throughout codebase
 
 **Files:**
 - `cli/src/templates/mod.rs` - Template module
 - `cli/src/templates/parser.rs` - Markdown + frontmatter parsing
 - `cli/src/templates/resolver.rs` - Template resolution
 - `cli/src/templates/types.rs` - TaskTemplate struct
-- `cli/src/templates/variables.rs` - Variable substitution
+- `cli/src/templates/variables.rs` - Variable substitution with `{data.key}` support
+- `cli/src/tasks/types.rs` - Rename `metadata` field to `data`
+- `cli/src/commands/task.rs` - Rename `--metadata` flag to `--data`
 
 **Types:**
 ```rust
