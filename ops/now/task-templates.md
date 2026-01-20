@@ -202,28 +202,30 @@ Review changes in @ (files: src/auth.ts, src/middleware.ts)
 
 #### Custom Variables (aiki task create)
 
-When creating tasks from templates, you can pass custom variables:
+Templates can reference any metadata field using `{metadata.key}` syntax:
 
 ```bash
-# Template at .aiki/templates/custom/feature.md uses {feature_name} and {module}
-aiki task create --template feature --var feature_name="user auth" --var module="auth"
+# Pass custom variables via metadata
+aiki task create --template feature \
+  --metadata feature_name="user auth" \
+  --metadata module="auth"
 ```
 
 **Template:**
 ```markdown
-# Implement {feature_name}
+# Implement {metadata.feature_name}
 
-Add {feature_name} functionality to the {module} module.
+Add {metadata.feature_name} functionality to the {metadata.module} module.
 
 # Subtasks
 
-## Design {feature_name}
+## Design {metadata.feature_name}
 
-Create design doc for {feature_name}.
+Create design doc for {metadata.feature_name}.
 
-## Implement in {module}
+## Implement in {metadata.module}
 
-Write code in {module} module.
+Write code in {metadata.module} module.
 ```
 
 **Result:**
@@ -242,6 +244,8 @@ Create design doc for user auth.
 
 Write code in auth module.
 ```
+
+**Note:** The metadata is also stored on the task, so you can query tasks by these fields later.
 
 ---
 
@@ -385,9 +389,9 @@ type: refactor
 assignee: claude-code
 ---
 
-# Refactor: {scope}
+# Refactor: {metadata.scope}
 
-Systematic refactoring and cleanup of {scope}.
+Systematic refactoring and cleanup of {metadata.scope}.
 
 Focus on code quality without changing behavior.
 
@@ -567,39 +571,43 @@ aiki review --prompt security
 aiki task create --template <name> [options]
 
 # Options:
-#   --var <key>=<value>  - Set custom template variable (can be used multiple times)
-#   --assignee <agent>   - Override template assignee
-#   --priority <level>   - Override template priority
-#   --start              - Start the task immediately after creation
+#   --metadata <key>=<value>  - Set metadata (accessible as {metadata.key} in template)
+#   --assignee <agent>        - Override template assignee
+#   --priority <level>        - Override template priority
+#   --start                   - Start the task immediately after creation
 
 # Examples:
 
-# Simple template (no variables)
-aiki task create --template refactor-cleanup
+# Refactor with scope metadata (links to what's being refactored)
+aiki task create --template refactor-cleanup \
+  --metadata scope="src/auth.rs"
 
-# With custom variables
+# With custom metadata variables
 aiki task create --template feature \
-  --var feature_name="user auth" \
-  --var module="auth"
+  --metadata feature_name="user auth" \
+  --metadata module="auth"
 
 # Override assignee
 aiki task create --template api-docs --assignee claude-code
 
-# Multiple variables + start immediately
+# Multiple metadata fields + start immediately
 aiki task create --template implement \
-  --var component="dashboard" \
-  --var language="rust" \
+  --metadata component="dashboard" \
+  --metadata language="rust" \
   --start
 ```
 
 **Behavior:**
 1. Load template from `.aiki/templates/`
-2. Substitute variables (built-in + custom via `--var`)
+2. Substitute variables:
+   - Built-in: `{scope}`, `{files}`, `{timestamp}`, etc.
+   - Metadata: `{metadata.key}` for any `--metadata` flag
 3. Create parent task + all subtasks atomically
-4. Optionally start the task with `--start` flag
+4. Store metadata on task for future querying
+5. Optionally start the task with `--start` flag
 
 **Variable Precedence:**
-1. Command-line `--var` flags (highest priority)
+1. Command-line `--metadata` flags (highest priority)
 2. Built-in variables from context
 3. Template frontmatter defaults
 
