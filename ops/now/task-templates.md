@@ -121,6 +121,8 @@ Security-focused code review orchestration.
 
 This task coordinates security analysis of changes.
 
+# Subtasks
+
 ## Digest code changes
 
 Examine the code changes to understand what was modified.
@@ -164,9 +166,10 @@ For each issue found, add a comment using `aiki task comment` with:
 **Template Structure:**
 - **Filename** - Template name inferred from filename (e.g., `security-review.md` → name is `security-review`)
 - **Frontmatter** (YAML between `---`) - Optional metadata like type, assignee, description (no need for `name` field!)
-- **`# Heading`** - Task name (first h1), supports variables like `{scope}`
-- **Content before first `##`** - Parent task instructions
-- **`## Subheadings`** - Each h2 defines a subtask (heading text = subtask name)
+- **First `# Heading`** - Task name, supports variables like `{scope}`
+- **Content before `# Subtasks`** - Parent task instructions
+- **`# Subtasks`** - Marks beginning of subtasks section
+- **`## Subheadings`** under `# Subtasks` - Each h2 defines a subtask (heading text = subtask name)
 - **Content under each `##`** - Subtask instructions
 
 ### Template Variables
@@ -222,6 +225,8 @@ What the agent should know about this workflow.
 
 Can include context, goals, constraints.
 
+# Subtasks
+
 ## Subtask name
 
 What the agent should do in this step.
@@ -239,6 +244,12 @@ The simplest possible template (at `.aiki/templates/custom/minimal.md`):
 # Minimal task
 
 Do something.
+
+# Subtasks
+
+## Do the work
+
+Instructions here.
 ```
 
 **Note**: No frontmatter needed! Template name is inferred from filename (`minimal.md` → `minimal`).
@@ -255,6 +266,8 @@ Reviewer: {reviewer}
 Files: {files}
 
 Analyze the changes and provide feedback.
+
+# Subtasks
 
 ## Analyze {scope}
 
@@ -352,6 +365,8 @@ Systematic refactoring and cleanup of {scope}.
 
 Focus on code quality without changing behavior.
 
+# Subtasks
+
 ## Identify refactoring opportunities
 
 Scan the code for:
@@ -411,6 +426,8 @@ assignee: claude-code
 # Document API: {scope}
 
 Create comprehensive API documentation for {scope}.
+
+# Subtasks
 
 ## Inventory public APIs
 
@@ -645,6 +662,10 @@ Define once, use everywhere (file: `.aiki/templates/custom/team-refactor.md`):
 ```markdown
 # Team Refactoring Workflow
 
+Standard workflow for team refactoring tasks.
+
+# Subtasks
+
 ## Identify issues
 
 ## Propose changes
@@ -664,6 +685,8 @@ Templates are readable markdown with clear structure:
 # Clear heading hierarchy
 
 Parent task context goes here.
+
+# Subtasks
 
 ## Step 1
 
@@ -689,6 +712,10 @@ assignee: codex  # Override default
 Inherits subtasks from security template.
 
 Additional instructions here...
+
+# Subtasks
+
+(Subtasks inherited from security template)
 ```
 
 ### 5. Tooling Support
@@ -720,6 +747,8 @@ Additional company-specific checks:
 - Check for banned libraries
 - Verify compliance requirements
 
+# Subtasks
+
 ## Digest code changes
 
 ${subtasks.0.instructions}  # Inherit first subtask
@@ -739,6 +768,10 @@ File: `.aiki/templates/custom/multi-language-test.md`
 
 ```markdown
 # Run Tests
+
+Run tests for the appropriate language.
+
+# Subtasks
 
 ## Run Rust tests
 <!-- condition: file_exists("Cargo.toml") -->
@@ -781,6 +814,8 @@ Reviewing changes by {author}
 - Files changed: {files_count}
 - Lines added: {lines_added}
 - Lines removed: {lines_removed}
+
+# Subtasks
 
 ## Review changes
 
