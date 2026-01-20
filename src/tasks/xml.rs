@@ -40,14 +40,15 @@ impl XmlBuilder {
         self
     }
 
-    /// Set a single scope (parent task ID when working within a parent's children)
+    /// Set a single scope (parent task ID when working within a parent's subtasks)
     #[must_use]
+    #[allow(dead_code)] // Part of XmlBuilder API
     pub fn with_scope(mut self, scope: &str) -> Self {
         self.scopes = vec![scope.to_string()];
         self
     }
 
-    /// Set multiple scopes (when working on children from multiple parents)
+    /// Set multiple scopes (when working on subtasks from multiple parents)
     #[must_use]
     pub fn with_scopes(mut self, scopes: &[String]) -> Self {
         self.scopes = scopes.to_vec();
@@ -138,6 +139,7 @@ impl XmlBuilder {
 
 /// Format a task element for output
 #[must_use]
+#[allow(dead_code)] // Part of XML formatting API
 pub fn format_task(task: &Task, include_body: bool) -> String {
     let mut xml = format!(
         r#"<task id="{}" name="{}" priority="{}""#,
@@ -192,12 +194,17 @@ pub fn format_task_list(tasks: &[&Task]) -> String {
     let mut xml = format!("  <list total=\"{}\">\n", tasks.len());
 
     for task in tasks {
-        xml.push_str(&format!(
-            r#"    <task id="{}" name="{}" priority="{}"/>"#,
+        let mut task_xml = format!(
+            r#"    <task id="{}" name="{}" priority="{}""#,
             task.id,
             escape_xml(&task.name),
             task.priority
-        ));
+        );
+        if let Some(ref assignee) = task.assignee {
+            task_xml.push_str(&format!(r#" assignee="{}""#, escape_xml(assignee)));
+        }
+        task_xml.push_str("/>");
+        xml.push_str(&task_xml);
         xml.push('\n');
     }
 
@@ -211,12 +218,17 @@ pub fn format_added(tasks: &[&Task]) -> String {
     let mut xml = String::from("  <added>\n");
 
     for task in tasks {
-        xml.push_str(&format!(
-            r#"    <task id="{}" name="{}" priority="{}"/>"#,
+        let mut task_xml = format!(
+            r#"    <task id="{}" name="{}" priority="{}""#,
             task.id,
             escape_xml(&task.name),
             task.priority
-        ));
+        );
+        if let Some(ref assignee) = task.assignee {
+            task_xml.push_str(&format!(r#" assignee="{}""#, escape_xml(assignee)));
+        }
+        task_xml.push_str("/>");
+        xml.push_str(&task_xml);
         xml.push('\n');
     }
 
@@ -292,7 +304,10 @@ mod tests {
             status,
             priority,
             assignee: None,
+            sources: Vec::new(),
             created_at: Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
             stopped_reason: None,
             closed_outcome: None,
             comments: Vec::new(),

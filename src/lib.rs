@@ -1,4 +1,5 @@
 // Library interface for benchmarks and tests
+pub mod agents;
 pub mod authors;
 pub mod blame;
 pub mod cache;

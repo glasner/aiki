@@ -110,6 +110,7 @@ pub fn generate_child_id(parent_id: &str, child_number: usize) -> String {
 
 /// Check if a task ID is a child of another task ID
 #[must_use]
+#[allow(dead_code)] // Part of task ID API
 pub fn is_child_of(task_id: &str, parent_id: &str) -> bool {
     task_id.starts_with(&format!("{}.", parent_id))
 }
@@ -138,21 +139,79 @@ pub fn get_child_number(task_id: &str) -> Option<usize> {
         .and_then(|(_, num)| num.parse::<usize>().ok())
 }
 
-/// Get the next child number for a parent task
+/// Check if a string looks like a task ID (vs a task description)
 ///
-/// Scans the list of task IDs and finds the highest existing child number,
-/// then returns the next number. Returns 1 if no children exist.
+/// Task IDs are:
+/// - Root IDs: 32 characters, all lowercase k-z (JJ reverse hex)
+/// - Child IDs: root_id.N or root_id.N.M (with numeric suffixes)
+///
+/// Descriptions typically contain:
+/// - Spaces
+/// - Capital letters
+/// - Characters outside k-z
+/// - Punctuation other than dots
+///
+/// # Examples
+/// ```
+/// use aiki::tasks::is_task_id;
+/// assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls"));
+/// assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.1"));
+/// assert!(!is_task_id("Fix the auth bug"));
+/// assert!(!is_task_id("implement-login")); // has hyphen
+/// ```
 #[must_use]
-pub fn get_next_child_number<'a>(
+pub fn is_task_id(input: &str) -> bool {
+    // Empty string is not a task ID
+    if input.is_empty() {
+        return false;
+    }
+
+    // Contains space? Definitely a description
+    if input.contains(' ') {
+        return false;
+    }
+
+    // Split by dots to handle child IDs (parent.N.M)
+    let parts: Vec<&str> = input.split('.').collect();
+
+    // First part must be a valid root task ID
+    let root_part = parts[0];
+
+    // Root IDs are exactly 32 characters of lowercase k-z
+    let is_valid_root = root_part.len() == 32
+        && root_part.chars().all(|c| matches!(c, 'k'..='z'));
+
+    if !is_valid_root {
+        return false;
+    }
+
+    // If there are additional parts, they must all be numeric (child numbers)
+    if parts.len() > 1 {
+        for part in &parts[1..] {
+            if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Get the next subtask number for a parent task
+///
+/// Scans the list of task IDs and finds the highest existing subtask number,
+/// then returns the next number. Returns 1 if no subtasks exist.
+#[must_use]
+pub fn get_next_subtask_number<'a>(
     parent_id: &str,
     task_ids: impl Iterator<Item = &'a str>,
 ) -> usize {
-    let max_child = task_ids
+    let max_subtask = task_ids
         .filter(|id| is_direct_child_of(id, parent_id))
         .filter_map(get_child_number)
         .max();
 
-    max_child.map_or(1, |n| n + 1)
+    max_subtask.map_or(1, |n| n + 1)
 }
 
 #[cfg(test)]
@@ -265,11 +324,11 @@ mod tests {
 
     #[test]
     fn test_is_direct_child_of() {
-        // Direct children
+        // Direct subtasks
         assert!(is_direct_child_of("a1b2.1", "a1b2"));
         assert!(is_direct_child_of("a1b2.2", "a1b2"));
 
-        // Grandchildren are NOT direct children
+        // Grandsubtasks are NOT direct subtasks
         assert!(!is_direct_child_of("a1b2.1.1", "a1b2"));
         assert!(is_direct_child_of("a1b2.1.1", "a1b2.1"));
 
@@ -289,26 +348,26 @@ mod tests {
     }
 
     #[test]
-    fn test_get_next_child_number() {
-        // No children exist
+    fn test_get_next_subtask_number() {
+        // No subtasks exist
         let task_ids: Vec<&str> = vec!["a1b2", "other"];
-        assert_eq!(get_next_child_number("a1b2", task_ids.iter().copied()), 1);
+        assert_eq!(get_next_subtask_number("a1b2", task_ids.iter().copied()), 1);
 
-        // Has children
+        // Has subtasks
         let task_ids = vec!["a1b2", "a1b2.1", "a1b2.2"];
-        assert_eq!(get_next_child_number("a1b2", task_ids.iter().copied()), 3);
+        assert_eq!(get_next_subtask_number("a1b2", task_ids.iter().copied()), 3);
 
         // Has gaps (should find max + 1, not fill gap)
         let task_ids = vec!["a1b2", "a1b2.1", "a1b2.5"];
-        assert_eq!(get_next_child_number("a1b2", task_ids.iter().copied()), 6);
+        assert_eq!(get_next_subtask_number("a1b2", task_ids.iter().copied()), 6);
 
-        // Ignores grandchildren
+        // Ignores grandsubtasks
         let task_ids = vec!["a1b2", "a1b2.1", "a1b2.1.1", "a1b2.1.2"];
-        assert_eq!(get_next_child_number("a1b2", task_ids.iter().copied()), 2);
+        assert_eq!(get_next_subtask_number("a1b2", task_ids.iter().copied()), 2);
 
         // Works with nested parents
         let task_ids = vec!["a1b2.1", "a1b2.1.1", "a1b2.1.2"];
-        assert_eq!(get_next_child_number("a1b2.1", task_ids.iter().copied()), 3);
+        assert_eq!(get_next_subtask_number("a1b2.1", task_ids.iter().copied()), 3);
     }
 
     // Edge case tests
@@ -381,22 +440,22 @@ mod tests {
     }
 
     #[test]
-    fn test_get_next_child_number_edge_cases() {
+    fn test_get_next_subtask_number_edge_cases() {
         // Empty task list
         let task_ids: Vec<&str> = vec![];
-        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
 
-        // Non-existent parent (no children found)
+        // Non-existent parent (no subtasks found)
         let task_ids = vec!["other.1", "other.2"];
-        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
 
-        // Child with number 0 (planning task)
+        // Subtask with number 0 (planning task)
         let task_ids = vec!["parent", "parent.0", "parent.1"];
-        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 2);
+        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 2);
 
         // Only planning task exists
         let task_ids = vec!["parent", "parent.0"];
-        assert_eq!(get_next_child_number("parent", task_ids.iter().copied()), 1);
+        assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
     }
 
     #[test]
@@ -426,5 +485,81 @@ mod tests {
             );
         }
         assert_eq!(ids.len(), 1000);
+    }
+
+    // Tests for is_task_id
+
+    #[test]
+    fn test_is_task_id_valid_root() {
+        // Valid 32-char root ID
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls"));
+        assert!(is_task_id("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"));
+        assert!(is_task_id("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    }
+
+    #[test]
+    fn test_is_task_id_valid_child() {
+        // Valid child IDs
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.1"));
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.0"));
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.42"));
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.1.2"));
+        assert!(is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.1.2.3"));
+    }
+
+    #[test]
+    fn test_is_task_id_descriptions() {
+        // Descriptions with spaces
+        assert!(!is_task_id("Fix the auth bug"));
+        assert!(!is_task_id("Implement user authentication"));
+        assert!(!is_task_id("Add rate limiting"));
+
+        // Descriptions with capital letters (but no spaces)
+        assert!(!is_task_id("FixAuthBug"));
+
+        // Descriptions with hyphens
+        assert!(!is_task_id("implement-login"));
+        assert!(!is_task_id("fix-null-pointer"));
+
+        // Descriptions with underscores
+        assert!(!is_task_id("fix_auth_bug"));
+
+        // Descriptions with numbers
+        assert!(!is_task_id("bug123"));
+        assert!(!is_task_id("task42"));
+    }
+
+    #[test]
+    fn test_is_task_id_invalid_format() {
+        // Empty string
+        assert!(!is_task_id(""));
+
+        // Too short (less than 32 chars)
+        assert!(!is_task_id("mvslrspmo"));
+        assert!(!is_task_id("abcd"));
+
+        // Too long (more than 32 chars)
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztklsextra"));
+
+        // Wrong characters (a-j instead of k-z)
+        assert!(!is_task_id("abcdefghijabcdefghijabcdefghijab"));
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztkla")); // 'a' at end
+
+        // Invalid child format (non-numeric suffix)
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.abc"));
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls."));
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztkls.1."));
+    }
+
+    #[test]
+    fn test_is_task_id_edge_cases() {
+        // Short strings that could be ambiguous
+        assert!(!is_task_id("test"));
+        assert!(!is_task_id("task"));
+        assert!(!is_task_id("fix"));
+
+        // Only lowercase k-z but wrong length
+        assert!(!is_task_id("mvslrsp")); // 7 chars
+        assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztklss")); // 33 chars
     }
 }

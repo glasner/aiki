@@ -33,6 +33,7 @@ session.started:
             ---
             Tasks ($task_count ready)
             Run `aiki task` to view - OR - `aiki task start` to begin work.
+  - context: "If you haven't already, read AGENTS.md to learn more about aiki"
 
 # prompt.submitted: Inject task context on every prompt (survives context compaction)
 prompt.submitted:
@@ -140,14 +141,14 @@ read.completed:
 # response.received: Handle actions after agent response (e.g., autoreplies)
 response.received:
   # Inject task reminder after agent responds
-  - let: task_count = self.task_list_size
-  - if: $task_count
-    then:
-      - autoreply:
-          append: |
-            ---
-            Tasks ($task_count ready)
-            Run `aiki task` to view - OR - `aiki task start` to begin work.
+  # - let: task_count = self.task_list_size
+  # - if: $task_count
+  #   then:
+  #     - autoreply:
+  #         append: |
+  #           ---
+  #           Tasks ($task_count ready)
+  #           Run `aiki task` to view - OR - `aiki task start` to begin work.
 
 # session.resumed: Handle actions when resuming a previous session
 # (as opposed to starting a new one)

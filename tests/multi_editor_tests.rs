@@ -99,8 +99,8 @@ fn test_authors_shows_both_editors() {
 
     // For a proper multi-editor test, let's verify at least Cursor shows
     assert!(
-        stdout.contains("Cursor"),
-        "Expected Cursor in output: {}",
+        stdout.contains("cursor"),
+        "Expected 'cursor' agent type in output: {}",
         stdout
     );
 }
@@ -178,13 +178,13 @@ fn test_blame_distinguishes_editors() {
 
     // Should show both editors with Display format (not Debug)
     assert!(
-        stdout.contains("Claude"),
-        "Expected 'Claude' in blame output: {}",
+        stdout.contains("claude-code"),
+        "Expected 'claude-code' in blame output: {}",
         stdout
     );
     assert!(
-        stdout.contains("Cursor"),
-        "Expected 'Cursor' in blame output: {}",
+        stdout.contains("cursor"),
+        "Expected 'cursor' in blame output: {}",
         stdout
     );
 
@@ -232,12 +232,12 @@ fn test_blame_filter_by_claude_code() {
 
     // Should only show Claude lines
     assert!(
-        stdout.contains("Claude"),
-        "Expected 'Claude' in filtered output: {}",
+        stdout.contains("claude-code"),
+        "Expected 'claude-code' in filtered output: {}",
         stdout
     );
     assert!(
-        !stdout.contains("Cursor"),
+        !stdout.contains("cursor"),
         "Should not contain 'Cursor' when filtering by claude-code: {}",
         stdout
     );
@@ -279,12 +279,12 @@ fn test_blame_filter_by_cursor() {
 
     // Should only show Cursor lines
     assert!(
-        stdout.contains("Cursor"),
-        "Expected 'Cursor' in filtered output: {}",
+        stdout.contains("cursor"),
+        "Expected 'cursor' in filtered output: {}",
         stdout
     );
     assert!(
-        !stdout.contains("Claude"),
+        !stdout.contains("claude-code"),
         "Should not contain 'Claude' when filtering by cursor: {}",
         stdout
     );
@@ -326,13 +326,13 @@ fn test_blame_no_filter_shows_all() {
 
     // Should show both editors
     assert!(
-        stdout.contains("Claude"),
-        "Expected 'Claude' in output: {}",
+        stdout.contains("claude-code"),
+        "Expected 'claude-code' in output: {}",
         stdout
     );
     assert!(
-        stdout.contains("Cursor"),
-        "Expected 'Cursor' in output: {}",
+        stdout.contains("cursor"),
+        "Expected 'cursor' in output: {}",
         stdout
     );
 

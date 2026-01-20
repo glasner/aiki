@@ -54,6 +54,7 @@ impl FlowResolver {
     /// # Errors
     ///
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
+    #[allow(dead_code)] // Part of FlowResolver API
     pub fn new() -> Result<Self> {
         Ok(Self {
             path_resolver: PathResolver::new()?,
@@ -76,12 +77,14 @@ impl FlowResolver {
 
     /// Get the discovered project root directory.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowResolver API
     pub fn project_root(&self) -> &Path {
         self.path_resolver.project_root()
     }
 
     /// Get the home directory.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowResolver API
     pub fn home_dir(&self) -> &Path {
         self.path_resolver.home_dir()
     }

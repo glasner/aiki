@@ -85,6 +85,7 @@ pub struct LsToolInput {
 
 /// Tool input for WebFetch tool
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 pub struct WebFetchToolInput {
     pub url: String,
     #[serde(default)]
@@ -141,7 +142,9 @@ pub enum ClaudeTool {
     WebSearch(WebSearchToolInput),
 
     // Other tools
+    #[allow(dead_code)] // Field stores tool name for potential future use
     Internal(String), // Task, TodoRead, TodoWrite - store tool name
+    #[allow(dead_code)] // Field stores tool name for potential future use
     Mcp(String),      // MCP tools - store tool name
 
     // Unknown or failed parse

@@ -777,7 +777,7 @@ fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Re
     use crate::session::AikiSession;
 
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         session_id,
         Some(version),
         DetectionMethod::Hook,

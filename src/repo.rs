@@ -70,6 +70,7 @@ impl RepoDetector {
     /// In Git worktrees and submodules, `.git` is a file containing `gitdir: /path/to/real/git/dir`
     ///
     /// Returns the path to the actual Git directory, or an error if it cannot be resolved.
+    #[allow(dead_code)] // Part of RepoDetector API
     pub fn resolve_git_dir<P: AsRef<Path>>(repo_root: P) -> Result<PathBuf> {
         let git_path = repo_root.as_ref().join(".git");
 

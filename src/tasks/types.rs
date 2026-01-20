@@ -108,12 +108,16 @@ pub enum TaskEvent {
         name: String,
         priority: TaskPriority,
         assignee: Option<String>,
+        /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
+        sources: Vec<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were started (batch operation)
     Started {
         task_ids: Vec<String>,
         agent_type: String,
+        /// Session ID that claimed these tasks (deterministic UUID)
+        session_id: Option<String>,
         timestamp: DateTime<Utc>,
         /// Task IDs that were auto-stopped when these tasks started
         stopped: Vec<String>,
@@ -138,9 +142,9 @@ pub enum TaskEvent {
         reason: String,
         timestamp: DateTime<Utc>,
     },
-    /// Comment was added to a task
+    /// Comment was added to task(s) (batch operation)
     CommentAdded {
-        task_id: String,
+        task_ids: Vec<String>,
         text: String,
         timestamp: DateTime<Utc>,
     },
@@ -149,6 +153,8 @@ pub enum TaskEvent {
         task_id: String,
         name: Option<String>,
         priority: Option<TaskPriority>,
+        /// New assignee value. Some(Some("agent")) = assign, Some(None) = unassign, None = no change
+        assignee: Option<Option<String>>,
         timestamp: DateTime<Utc>,
     },
 }
@@ -168,7 +174,13 @@ pub struct Task {
     pub status: TaskStatus,
     pub priority: TaskPriority,
     pub assignee: Option<String>,
+    /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
+    pub sources: Vec<String>,
     pub created_at: DateTime<Utc>,
+    /// When the task was most recently started (for ordering in provenance)
+    pub started_at: Option<DateTime<Utc>>,
+    /// Session that claimed this task (if in progress)
+    pub claimed_by_session: Option<String>,
     /// Latest stop reason (if stopped)
     pub stopped_reason: Option<String>,
     /// Closure outcome (if closed)

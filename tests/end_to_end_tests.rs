@@ -226,9 +226,25 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         description.contains("author=claude"),
         "Description should contain author=claude"
     );
+    // Session ID is now a UUID (deterministic hash of agent_type + external_id)
+    // Check that it contains a valid UUID format (36 chars with hyphens)
     assert!(
-        description.contains("session=test-session-e2e"),
-        "Description should contain session ID"
+        description.contains("session="),
+        "Description should contain session= field"
+    );
+    // Extract session ID and verify it's a UUID format
+    let session_line = description
+        .lines()
+        .find(|line| line.contains("session="))
+        .expect("Should have session line");
+    let session_id = session_line
+        .split('=')
+        .nth(1)
+        .expect("Should have session value");
+    assert!(
+        session_id.len() == 36 && session_id.chars().filter(|c| *c == '-').count() == 4,
+        "Session ID should be a UUID format (36 chars with 4 hyphens). Got: '{}'",
+        session_id
     );
     assert!(
         description.contains("tool=Edit"),

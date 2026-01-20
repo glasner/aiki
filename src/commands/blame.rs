@@ -70,7 +70,7 @@ fn find_jj_workspace(start_dir: &std::path::Path) -> Option<PathBuf> {
 /// Parse agent type from string
 fn parse_agent_type(agent: &str) -> Result<provenance::AgentType> {
     match agent {
-        "claude-code" => Ok(provenance::AgentType::Claude),
+        "claude-code" => Ok(provenance::AgentType::ClaudeCode),
         "cursor" => Ok(provenance::AgentType::Cursor),
         _ => Err(AikiError::UnknownAgentType(agent.to_string())),
     }

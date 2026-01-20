@@ -15,6 +15,7 @@ pub enum Decision {
 impl Decision {
     /// Check if this decision allows the operation to continue
     #[must_use]
+    #[allow(dead_code)] // Part of Decision API
     pub fn is_continue(&self) -> bool {
         matches!(self, Decision::Allow)
     }
@@ -50,6 +51,7 @@ impl HookResult {
     }
 
     #[must_use]
+    #[allow(dead_code)] // Part of HookResult API
     pub fn success_with_context(context: impl Into<String>) -> Self {
         Self {
             context: Some(context.into()),
@@ -68,6 +70,7 @@ impl HookResult {
     }
 
     #[must_use]
+    #[allow(dead_code)] // Part of HookResult API
     pub fn blocking_failure(user_msg: impl Into<String>) -> Self {
         Self {
             context: None,
@@ -77,12 +80,14 @@ impl HookResult {
     }
 
     #[must_use]
+    #[allow(dead_code)] // Part of HookResult API
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
     }
 
     #[must_use]
+    #[allow(dead_code)] // Part of HookResult API
     pub fn with_failure(mut self, msg: impl Into<String>) -> Self {
         self.failures.push(Failure(msg.into()));
         self
@@ -96,6 +101,7 @@ impl HookResult {
 
     /// Check if this response is successful (no blocking and no failures)
     #[must_use]
+    #[allow(dead_code)] // Part of HookResult API
     pub fn is_success(&self) -> bool {
         self.decision.is_continue() && self.failures.is_empty()
     }

@@ -20,6 +20,7 @@ fn format_call_stack(stack: &[String]) -> String {
 
 /// Aiki-specific errors with structured error types
 #[derive(Error, Debug)]
+#[allow(dead_code)] // Error variants exist for API completeness
 pub enum AikiError {
     // Repository errors
     #[error("Not in a JJ repository. Run 'jj init' or 'aiki init' first")]
@@ -46,6 +47,11 @@ pub enum AikiError {
 
     #[error("Unsupported agent type: {0:?}")]
     UnsupportedAgentType(String),
+
+    #[error(
+        "Unknown assignee: '{0}'. Valid values: 'claude-code', 'codex', 'cursor', 'gemini', 'human'"
+    )]
+    UnknownAssignee(String),
 
     // Flow execution errors
     #[error("Invalid let syntax: '{0}'. Expected 'variable = expression'")]
@@ -196,9 +202,30 @@ Alternatively, install the agent globally:
     #[error("{0}")]
     TaskCommentRequired(String),
 
+    #[error("Task '{0}' is already closed")]
+    TaskAlreadyClosed(String),
+
+    #[error("Invalid task source: '{0}'. Sources must have a prefix: 'file:', 'task:', 'comment:', 'issue:', or 'prompt:'")]
+    InvalidTaskSource(String),
+
+    #[error("Task '{0}' has no assignee and no --agent specified")]
+    TaskNoAssignee(String),
+
+    #[error("Agent '{0}' does not support task execution")]
+    AgentNotSupported(String),
+
+    #[error("Failed to spawn agent: {0}")]
+    AgentSpawnFailed(String),
+
     // History/conversation errors
     #[error("Failed to initialize aiki/conversations branch: {0}")]
     ConversationsBranchInitFailed(String),
+
+    #[error("Cannot resolve --source prompt: no active session found. Use --source prompt:<change_id> to specify explicitly.")]
+    NoActiveSessionForPromptSource,
+
+    #[error("Cannot resolve --source prompt: no prompt events found for this session.")]
+    NoPromptEventsForSession,
 
     // Generic wrapper for underlying errors
     #[error(transparent)]

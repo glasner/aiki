@@ -247,6 +247,8 @@ pub enum Action {
     Autoreply(AutoreplyAction),
     /// Commit message (for PrepareCommitMessage events)
     CommitMessage(CommitMessageAction),
+    /// Run a task by spawning an agent session
+    TaskRun(TaskRunAction),
     /// Continue flow execution (generates Failure and returns FailedContinue)
     Continue(ContinueAction),
     /// Stop flow execution (emits warning and stops silently)
@@ -425,4 +427,27 @@ pub struct CommitMessageOp {
     /// Append footer (after everything)
     #[serde(default)]
     pub append_footer: Option<String>,
+}
+
+/// Task run action - spawns an agent session to work on a task
+/// YAML: `task.run: { task_id: "abc123" }` or `task.run: { task_id: "$var" }`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRunAction {
+    /// The task run configuration
+    #[serde(rename = "task.run")]
+    pub task_run: TaskRunConfig,
+
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
+/// Configuration for task.run action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRunConfig {
+    /// Task ID to run (supports variable interpolation)
+    pub task_id: String,
+
+    /// Optional agent override (claude-code, codex)
+    #[serde(default)]
+    pub agent: Option<String>,
 }

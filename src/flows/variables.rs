@@ -63,6 +63,7 @@ impl VariableResolver {
     }
 
     /// Add environment variables
+    #[allow(dead_code)] // Part of VariableResolver API
     pub fn add_env_vars(&mut self, env_vars: &HashMap<String, String>) {
         // Iterate and clone individual entries instead of cloning entire HashMap
         self.variables

@@ -10,20 +10,81 @@
 use clap::Subcommand;
 use std::path::Path;
 
+use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use std::collections::HashSet;
 
 use crate::tasks::{
-    generate_child_id, generate_task_id, get_next_child_number,
+    generate_child_id, generate_task_id, get_next_subtask_number, is_task_id,
     manager::{
-        find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
-        has_children, materialize_tasks, ScopeSet,
+        find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
+        get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, ScopeSet,
     },
+    runner::{run_task_with_xml, TaskRunOptions},
     storage::{read_events, write_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     xml::{format_added, format_closed, format_started, format_stopped, format_task_list},
     XmlBuilder,
 };
+
+/// Valid prefixes for task sources
+const VALID_SOURCE_PREFIXES: &[&str] = &["file:", "task:", "comment:", "issue:", "prompt:"];
+
+/// Validate that all sources have valid prefixes
+///
+/// Sources must start with one of: file:, task:, comment:, issue:, prompt:
+/// The special source "prompt" (without colon) is also valid and will be resolved
+/// to the latest prompt's change_id for the current session.
+/// Returns an error with the first invalid source if validation fails.
+fn validate_sources(sources: &[String]) -> Result<()> {
+    for source in sources {
+        // "prompt" without colon is special - will be resolved later
+        if source == "prompt" {
+            continue;
+        }
+        let has_valid_prefix = VALID_SOURCE_PREFIXES
+            .iter()
+            .any(|prefix| source.starts_with(prefix));
+        if !has_valid_prefix {
+            return Err(AikiError::InvalidTaskSource(source.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve "prompt" source to the actual prompt change_id
+///
+/// If `--source prompt` is used (without an explicit ID), this function resolves it
+/// to `prompt:<change_id>` using the latest prompt from the current session.
+///
+/// Returns the sources with "prompt" replaced, or an error if resolution fails.
+fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<String>> {
+    use crate::history::get_latest_prompt_change_id;
+    use crate::session::find_session_by_ancestor_pid;
+
+    // Check if any source is the special "prompt" (without ID)
+    let has_bare_prompt = sources.iter().any(|s| s == "prompt");
+    if !has_bare_prompt {
+        return Ok(sources);
+    }
+
+    // Find the current session via PID-based detection
+    let session =
+        find_session_by_ancestor_pid(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
+
+    // Get the latest prompt's change_id for this session
+    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.aiki_session_id)?
+        .ok_or(AikiError::NoPromptEventsForSession)?;
+
+    // Replace "prompt" with "prompt:<change_id>"
+    for source in &mut sources {
+        if source == "prompt" {
+            *source = format!("prompt:{}", prompt_change_id);
+        }
+    }
+
+    Ok(sources)
+}
 
 /// Task subcommands
 #[derive(Subcommand)]
@@ -49,6 +110,18 @@ pub enum TaskCommands {
         /// Filter to closed tasks only
         #[arg(long)]
         closed: bool,
+
+        /// Filter to tasks assigned to specific agent or human
+        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        assignee: Option<String>,
+
+        /// Filter to unassigned tasks only
+        #[arg(long)]
+        unassigned: bool,
+
+        /// Filter to tasks from a specific source (supports partial matching)
+        #[arg(long)]
+        source: Option<String>,
     },
 
     /// Create a new task
@@ -59,6 +132,15 @@ pub enum TaskCommands {
         /// Create as child of existing task
         #[arg(long)]
         parent: Option<String>,
+
+        /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
+        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        assignee: Option<String>,
+
+        /// Source that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
+        /// Can be specified multiple times
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Vec<String>,
 
         /// Set priority to P0 (critical/urgent)
         #[arg(long, group = "priority")]
@@ -78,9 +160,18 @@ pub enum TaskCommands {
     },
 
     /// Start working on task(s)
+    ///
+    /// Accepts either task ID(s) or a description. If a description is provided,
+    /// a new task will be created and started atomically (quick-start).
+    ///
+    /// Examples:
+    ///   aiki task start "Implement user auth"  # Quick-start: create and start
+    ///   aiki task start xmryrzwl...           # Start existing task by ID
     Start {
-        /// Task ID(s) to start (defaults to first from ready queue)
-        #[arg(value_name = "ID")]
+        /// Task ID(s) or description to start
+        ///
+        /// If a description (not a task ID), creates and starts a new task.
+        #[arg(value_name = "ID_OR_DESCRIPTION")]
         ids: Vec<String>,
 
         /// Reopen a closed task before starting
@@ -90,6 +181,27 @@ pub enum TaskCommands {
         /// Reason for reopening (required with --reopen)
         #[arg(long, requires = "reopen")]
         reason: Option<String>,
+
+        /// Set priority to P0 (critical/urgent) for new task
+        #[arg(long, group = "priority")]
+        p0: bool,
+
+        /// Set priority to P1 (high) for new task
+        #[arg(long, group = "priority")]
+        p1: bool,
+
+        /// Set priority to P2 (normal, default) for new task
+        #[arg(long, group = "priority")]
+        p2: bool,
+
+        /// Set priority to P3 (low) for new task
+        #[arg(long, group = "priority")]
+        p3: bool,
+
+        /// Source that spawned this task (for quick-start)
+        /// Can be specified multiple times
+        #[arg(long, action = clap::ArgAction::Append)]
+        source: Vec<String>,
     },
 
     /// Stop the current task
@@ -121,10 +233,14 @@ pub enum TaskCommands {
         comment: Option<String>,
     },
 
-    /// Show task details (including children for parent tasks)
+    /// Show task details (including subtasks for parent tasks)
     Show {
         /// Task ID to show (defaults to current in-progress task)
         id: Option<String>,
+
+        /// Show full diffs for all changes made during this task
+        #[arg(long)]
+        diff: bool,
     },
 
     /// Update task details
@@ -151,6 +267,19 @@ pub enum TaskCommands {
         /// Update task name
         #[arg(long)]
         name: Option<String>,
+
+        /// Reassign to specific agent or human (claude-code, codex, cursor, gemini, human)
+        #[arg(
+            long = "for",
+            visible_alias = "assignee",
+            value_name = "AGENT",
+            group = "assign"
+        )]
+        assignee: Option<String>,
+
+        /// Remove assignee (make task unassigned)
+        #[arg(long, group = "assign")]
+        unassign: bool,
     },
 
     /// Add a comment to a task
@@ -161,6 +290,21 @@ pub enum TaskCommands {
         /// Task ID to comment on (defaults to current in-progress task)
         #[arg(long)]
         id: Option<String>,
+    },
+
+    /// Run a task by spawning an agent session
+    ///
+    /// Spawns an agent session to work on the specified task. The agent will:
+    /// 1. Claim the task via `aiki task start`
+    /// 2. Execute the task (following instructions/subtasks)
+    /// 3. Close the task when complete
+    Run {
+        /// Task ID to run
+        id: String,
+
+        /// Override assignee agent (claude-code, codex)
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 
@@ -177,6 +321,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         in_progress: false,
         stopped: false,
         closed: false,
+        assignee: None,
+        unassigned: false,
+        source: None,
     });
 
     match cmd {
@@ -186,23 +333,52 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             in_progress,
             stopped,
             closed,
-        } => run_list(&cwd, None, all, open, in_progress, stopped, closed),
+            assignee,
+            unassigned,
+            source,
+        } => run_list(
+            &cwd,
+            None,
+            all,
+            open,
+            in_progress,
+            stopped,
+            closed,
+            assignee,
+            unassigned,
+            source,
+        ),
         TaskCommands::Add {
             name,
             parent,
+            assignee,
+            source,
             p0,
             p1,
             p2,
             p3,
-        } => run_add(&cwd, name, parent, p0, p1, p2, p3),
-        TaskCommands::Start { ids, reopen, reason } => run_start(&cwd, ids, reopen, reason),
+        } => run_add(&cwd, name, parent, assignee, source, p0, p1, p2, p3),
+        TaskCommands::Start {
+            ids,
+            reopen,
+            reason,
+            p0,
+            p1,
+            p2,
+            p3,
+            source,
+        } => run_start(&cwd, ids, reopen, reason, p0, p1, p2, p3, source),
         TaskCommands::Stop {
             id,
             reason,
             blocked,
         } => run_stop(&cwd, id, reason, blocked),
-        TaskCommands::Close { ids, wont_do, comment } => run_close(&cwd, ids, wont_do, comment),
-        TaskCommands::Show { id } => run_show(&cwd, id),
+        TaskCommands::Close {
+            ids,
+            wont_do,
+            comment,
+        } => run_close(&cwd, ids, wont_do, comment),
+        TaskCommands::Show { id, diff } => run_show(&cwd, id, diff),
         TaskCommands::Update {
             id,
             p0,
@@ -210,8 +386,11 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p2,
             p3,
             name,
-        } => run_update(&cwd, id, p0, p1, p2, p3, name),
+            assignee,
+            unassign,
+        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign),
         TaskCommands::Comment { text, id } => run_comment(&cwd, text, id),
+        TaskCommands::Run { id, agent } => run_run(&cwd, id, agent),
     }
 }
 
@@ -224,7 +403,13 @@ fn run_list(
     filter_in_progress: bool,
     filter_stopped: bool,
     filter_closed: bool,
+    filter_assignee: Option<String>,
+    filter_unassigned: bool,
+    filter_source: Option<String>,
 ) -> Result<()> {
+    use crate::agents::{AgentType, Assignee};
+    use crate::session::find_session_by_ancestor_pid;
+
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
 
@@ -240,36 +425,205 @@ fn run_list(
 
     // Collect active status filters
     let has_status_filters = filter_open || filter_in_progress || filter_stopped || filter_closed;
+    let has_explicit_assignee_filters = filter_assignee.is_some() || filter_unassigned;
 
-    // Always compute the actual ready queue for context (maintains contract)
-    let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
-
-    // Get list of tasks based on filters (for display in content)
-    let list_tasks: Vec<&Task> = if all || has_status_filters {
-        // Show all tasks (or filtered by status)
-        let mut all_tasks: Vec<_> = tasks.values().collect();
-        all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
-
-        if has_status_filters {
-            // Filter by status
-            all_tasks
-                .into_iter()
-                .filter(|t| {
-                    (filter_open && t.status == TaskStatus::Open)
-                        || (filter_in_progress && t.status == TaskStatus::InProgress)
-                        || (filter_stopped && t.status == TaskStatus::Stopped)
-                        || (filter_closed && t.status == TaskStatus::Closed)
-                })
-                .collect()
-        } else {
-            all_tasks
+    // Validate and normalize assignee filter if provided
+    // Converts "claude" → "claude-code", "me" → "human"
+    let normalized_filter_assignee = if let Some(ref a) = filter_assignee {
+        match Assignee::from_str(a) {
+            Some(parsed) => parsed.as_str().map(|s| s.to_string()),
+            None => return Err(AikiError::UnknownAssignee(a.clone())),
         }
     } else {
-        // Default: show ready queue (same as context)
-        ready_queue.clone()
+        None
     };
 
-    let in_progress = get_in_progress(&tasks);
+    // PID-based session detection: find session by matching ancestor PIDs
+    // This automatically finds our session without needing --session flag
+    let session_match = find_session_by_ancestor_pid(cwd);
+    let detected_agent: Option<AgentType> = session_match.as_ref().map(|m| m.agent_type);
+    let our_session_uuid: Option<String> = session_match.map(|m| m.aiki_session_id);
+
+    // Determine automatic assignee filtering based on session context
+    // If no explicit filter is set and not --all, apply visibility rules:
+    // - Agent detected: show tasks assigned to that agent + unassigned
+    // - No agent detected: show tasks assigned to human + unassigned (human terminal mode)
+    let auto_agent_filter: Option<AgentType> = if !all && !has_explicit_assignee_filters {
+        detected_agent
+    } else {
+        None
+    };
+
+    // Whether we should apply human visibility filtering (no agent detected)
+    let apply_human_filter = !all && !has_explicit_assignee_filters && detected_agent.is_none();
+
+    // Helper closure to check if a task is visible based on auto-filtering
+    let is_auto_visible = |task: &Task| -> bool {
+        if all {
+            return true; // --all bypasses all auto-filtering
+        }
+
+        let assignee = task
+            .assignee
+            .as_ref()
+            .and_then(|s| Assignee::from_str(s))
+            .unwrap_or(Assignee::Unassigned);
+
+        if let Some(ref agent) = auto_agent_filter {
+            assignee.is_visible_to(agent)
+        } else if apply_human_filter {
+            // Human mode: show human-assigned + unassigned
+            assignee.is_visible_to_human()
+        } else {
+            true // No auto-filtering
+        }
+    };
+
+    // Helper closure to check explicit assignee filter
+    let matches_explicit_filter = |task: &Task| -> bool {
+        if !has_explicit_assignee_filters {
+            return true;
+        }
+        if filter_unassigned {
+            task.assignee.is_none()
+        } else if let Some(ref target) = normalized_filter_assignee {
+            task.assignee.as_ref().map(|a| a == target).unwrap_or(false)
+        } else {
+            true
+        }
+    };
+
+    // Helper closure to check session ownership
+    // Task is visible if: unclaimed OR claimed by our session
+    let matches_session = |task: &Task| -> bool {
+        if all {
+            return true; // --all bypasses session filtering
+        }
+        match (&task.claimed_by_session, &our_session_uuid) {
+            (None, _) => true,                              // Unclaimed tasks visible to all
+            (Some(claimed), Some(ours)) => claimed == ours, // Claimed tasks visible only to owner
+            (Some(_), None) => false, // Claimed tasks not visible without session
+        }
+    };
+
+    // Helper closure to check source filter
+    // Supports partial matching: "ops/now/assign.md" matches "file:ops/now/assign.md"
+    let matches_source = |task: &Task| -> bool {
+        match &filter_source {
+            None => true, // No filter applied
+            Some(query) => {
+                // Match if any source in the task's sources list matches the query
+                task.sources.iter().any(|source| {
+                    // Exact match
+                    source == query ||
+                    // Partial match: query without prefix matches source
+                    source.ends_with(query) ||
+                    // Partial match: source without prefix matches query
+                    source.split(':').nth(1).map_or(false, |suffix| suffix == query)
+                })
+            }
+        }
+    };
+
+    // Always compute the actual ready queue for context (maintains contract)
+    // Apply agent/human filtering AND session filtering
+    let ready_queue: Vec<&Task> = if let Some(ref agent) = auto_agent_filter {
+        get_ready_queue_for_agent_scoped(&tasks, &scope_set, agent)
+            .into_iter()
+            .filter(|t| matches_session(t))
+            .collect()
+    } else if apply_human_filter {
+        // Human mode: filter to human-visible tasks
+        get_ready_queue_for_scope_set(&tasks, &scope_set)
+            .into_iter()
+            .filter(|t| is_auto_visible(t) && matches_session(t))
+            .collect()
+    } else {
+        get_ready_queue_for_scope_set(&tasks, &scope_set)
+            .into_iter()
+            .filter(|t| matches_session(t))
+            .collect()
+    };
+
+    // Get list of tasks based on filters (for display in content)
+    let list_tasks: Vec<&Task> =
+        if all || has_status_filters || has_explicit_assignee_filters || filter_source.is_some() {
+            // Show tasks with filters applied
+            let mut all_tasks: Vec<_> = tasks.values().collect();
+            all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
+
+            // Apply status filters if active
+            let filtered_by_status: Vec<_> = if has_status_filters {
+                all_tasks
+                    .into_iter()
+                    .filter(|t| {
+                        (filter_open && t.status == TaskStatus::Open)
+                            || (filter_in_progress && t.status == TaskStatus::InProgress)
+                            || (filter_stopped && t.status == TaskStatus::Stopped)
+                            || (filter_closed && t.status == TaskStatus::Closed)
+                    })
+                    .collect()
+            } else {
+                all_tasks
+            };
+
+            // Apply explicit assignee filters if active
+            let filtered_by_assignee: Vec<_> = if has_explicit_assignee_filters {
+                filtered_by_status
+                    .into_iter()
+                    .filter(|t| matches_explicit_filter(t))
+                    .collect()
+            } else {
+                filtered_by_status
+            };
+
+            // Apply source filter if active
+            let filtered_by_source: Vec<_> = if filter_source.is_some() {
+                filtered_by_assignee
+                    .into_iter()
+                    .filter(|t| matches_source(t))
+                    .collect()
+            } else {
+                filtered_by_assignee
+            };
+
+            // Apply auto visibility filter (unless --all is specified or explicit filter is used)
+            // This ensures status filters still respect assignee visibility
+            // Also apply session filtering
+            let filtered_by_visibility: Vec<_> = if !all && !has_explicit_assignee_filters {
+                filtered_by_source
+                    .into_iter()
+                    .filter(|t| is_auto_visible(t))
+                    .collect()
+            } else {
+                filtered_by_source
+            };
+
+            // Apply session filtering
+            filtered_by_visibility
+                .into_iter()
+                .filter(|t| matches_session(t))
+                .collect()
+        } else {
+            // Default: show ready queue (same as context)
+            ready_queue.clone()
+        };
+
+    // Get in-progress tasks, filtered by:
+    // 1. Explicit assignee filter (--for/--unassigned) if specified
+    // 2. Otherwise, auto visibility filter based on session context
+    // 3. Session ownership filter
+    let in_progress: Vec<&Task> = get_in_progress(&tasks)
+        .into_iter()
+        .filter(|t| {
+            let assignee_visible = if has_explicit_assignee_filters {
+                matches_explicit_filter(t)
+            } else {
+                is_auto_visible(t)
+            };
+            assignee_visible && matches_session(t)
+        })
+        .collect();
 
     let content = format_task_list(&list_tasks);
 
@@ -290,11 +644,32 @@ fn run_add(
     cwd: &Path,
     name: String,
     parent: Option<String>,
+    assignee_arg: Option<String>,
+    sources: Vec<String>,
     p0: bool,
     p1: bool,
-    p2: bool,
+    _p2: bool,
     p3: bool,
 ) -> Result<()> {
+    use crate::agents::Assignee;
+
+    // Validate and normalize assignee if provided
+    // This converts aliases like "claude" → "claude-code", "me" → "human"
+    let assignee = if let Some(ref a) = assignee_arg {
+        match Assignee::from_str(a) {
+            Some(parsed) => parsed.as_str().map(|s| s.to_string()),
+            None => return Err(AikiError::UnknownAssignee(a.clone())),
+        }
+    } else {
+        None
+    };
+
+    // Validate source prefixes
+    validate_sources(&sources)?;
+
+    // Resolve "prompt" source to actual prompt change_id
+    let sources = resolve_prompt_sources(cwd, sources)?;
+
     // Determine priority from flags (default P2)
     let priority = if p0 {
         TaskPriority::P0
@@ -311,24 +686,34 @@ fn run_add(
     let tasks = materialize_tasks(&events);
     let in_progress = get_in_progress(&tasks);
 
-    // Determine task ID based on whether this is a child task
-    let task_id = if let Some(ref parent_id) = parent {
+    // Determine task ID and possibly inherit parent's assignee
+    let (task_id, effective_assignee) = if let Some(ref parent_id) = parent {
         // Validate parent exists and is not closed
-        if let Some(parent_task) = find_task(&tasks, parent_id) {
-            if parent_task.status == TaskStatus::Closed {
+        let parent_task = if let Some(pt) = find_task(&tasks, parent_id) {
+            if pt.status == TaskStatus::Closed {
                 return Err(AikiError::ParentTaskClosed(parent_id.clone()));
             }
+            pt
         } else {
             return Err(AikiError::TaskNotFound(parent_id.clone()));
-        }
+        };
 
-        // Generate child ID (parent.N where N is next available)
+        // Generate subtask ID (parent.N where N is next available)
         let task_ids: Vec<&str> = tasks.keys().map(|s| s.as_str()).collect();
-        let child_num = get_next_child_number(parent_id, task_ids.into_iter());
-        generate_child_id(parent_id, child_num)
+        let subtask_num = get_next_subtask_number(parent_id, task_ids.into_iter());
+        let child_id = generate_child_id(parent_id, subtask_num);
+
+        // Inherit parent's assignee if none specified
+        let final_assignee = if assignee.is_some() {
+            assignee.clone()
+        } else {
+            parent_task.assignee.clone()
+        };
+
+        (child_id, final_assignee)
     } else {
         // Root-level task with new JJ-style ID
-        generate_task_id(&name)
+        (generate_task_id(&name), assignee.clone())
     };
 
     let timestamp = chrono::Utc::now();
@@ -337,7 +722,8 @@ fn run_add(
         task_id: task_id.clone(),
         name: name.clone(),
         priority,
-        assignee: None, // Phase 3: auto-detect from agent
+        assignee: effective_assignee.clone(),
+        sources: sources.clone(),
         timestamp,
     };
 
@@ -349,8 +735,11 @@ fn run_add(
         name,
         priority,
         status: TaskStatus::Open,
-        assignee: None,
+        assignee: effective_assignee,
+        sources,
         created_at: timestamp,
+        started_at: None,
+        claimed_by_session: None,
         stopped_reason: None,
         closed_outcome: None,
         comments: Vec::new(),
@@ -395,7 +784,35 @@ fn run_add(
 }
 
 /// Start working on task(s)
-fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<String>) -> Result<()> {
+fn run_start(
+    cwd: &Path,
+    ids: Vec<String>,
+    reopen: bool,
+    reopen_reason: Option<String>,
+    p0: bool,
+    p1: bool,
+    _p2: bool,
+    p3: bool,
+    sources: Vec<String>,
+) -> Result<()> {
+    use crate::session::find_session_by_ancestor_pid;
+
+    // Validate source prefixes (if any sources provided for quick-start)
+    validate_sources(&sources)?;
+
+    // Resolve "prompt" source to actual prompt change_id
+    let sources = resolve_prompt_sources(cwd, sources)?;
+
+    // Determine priority for new task (if quick-start is used)
+    let priority = if p0 {
+        TaskPriority::P0
+    } else if p1 {
+        TaskPriority::P1
+    } else if p3 {
+        TaskPriority::P3
+    } else {
+        TaskPriority::default() // P2
+    };
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
 
@@ -409,6 +826,9 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
     let current_scope_set = get_current_scope_set(&tasks);
     let ready = get_ready_queue_for_scope_set(&tasks, &current_scope_set);
 
+    // Track if we created a new task (for output formatting)
+    let mut created_new_task: Option<Task> = None;
+
     // Determine which task(s) to start
     let ids_to_start = if ids.is_empty() {
         // Default: start first from ready queue
@@ -417,18 +837,53 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
         } else {
             return Err(AikiError::NoTasksReady);
         }
+    } else if ids.len() == 1 && !is_task_id(&ids[0]) {
+        // Quick-start: input is a description, not a task ID
+        // Create a new task and start it atomically
+        let description = &ids[0];
+        let task_id = generate_task_id(description);
+        let timestamp = chrono::Utc::now();
+
+        // Create the task
+        let create_event = TaskEvent::Created {
+            task_id: task_id.clone(),
+            name: description.clone(),
+            priority,
+            assignee: None,
+            sources: sources.clone(),
+            timestamp,
+        };
+        write_event(cwd, &create_event)?;
+
+        // Add to local tasks map for output
+        let new_task = Task {
+            id: task_id.clone(),
+            name: description.clone(),
+            status: TaskStatus::Open,
+            priority,
+            assignee: None,
+            sources: sources.clone(),
+            created_at: timestamp,
+            started_at: None,
+            claimed_by_session: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            comments: Vec::new(),
+        };
+        tasks.insert(task_id.clone(), new_task.clone());
+        created_new_task = Some(new_task);
+
+        vec![task_id]
     } else {
         // Validate all IDs exist and check reopen requirements
         for id in &ids {
             if let Some(task) = find_task(&tasks, id) {
                 if task.status == TaskStatus::Closed {
                     if !reopen {
-                        let xml = XmlBuilder::new("start")
-                            .error()
-                            .build_error(&format!(
-                                "Task '{}' is closed. Use --reopen --reason to reopen it.",
-                                id
-                            ));
+                        let xml = XmlBuilder::new("start").error().build_error(&format!(
+                            "Task '{}' is closed. Use --reopen --reason to reopen it.",
+                            id
+                        ));
                         println!("{}", xml);
                         return Ok(());
                     }
@@ -472,14 +927,14 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
         }
     }
 
-    // Check if we're starting a parent task with children
+    // Check if we're starting a parent task with subtasks
     // If so, auto-create a planning task (.0) and start that instead
     let mut new_scope: Option<String> = None;
     let mut actual_ids_to_start = ids_to_start.clone();
 
     if ids_to_start.len() == 1 {
         let task_id = ids_to_start[0].clone();
-        if has_children(&tasks, &task_id) {
+        if has_subtasks(&tasks, &task_id) {
             // Starting a parent task - create planning task if needed
             let planning_id = generate_child_id(&task_id, 0);
 
@@ -492,6 +947,7 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
                     name: "Review all subtasks and start first batch".to_string(),
                     priority: TaskPriority::default(),
                     assignee: None,
+                    sources: Vec::new(),
                     timestamp,
                 };
                 write_event(cwd, &planning_event)?;
@@ -503,7 +959,10 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
                     status: TaskStatus::Open,
                     priority: TaskPriority::default(),
                     assignee: None,
+                    sources: Vec::new(),
                     created_at: timestamp,
+                    started_at: None,
+                    claimed_by_session: None,
                     stopped_reason: None,
                     closed_outcome: None,
                     comments: Vec::new(),
@@ -541,10 +1000,19 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
     }
 
     // Start new tasks (batch operation)
+    // PID-based session detection: find session by matching ancestor PIDs
+    let session_match = find_session_by_ancestor_pid(cwd);
+    let agent_type_str = session_match
+        .as_ref()
+        .map(|m| m.agent_type.as_str().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let session_id = session_match.as_ref().map(|m| m.aiki_session_id.clone());
+
     let timestamp = chrono::Utc::now();
     let start_event = TaskEvent::Started {
         task_ids: actual_ids_to_start.clone(),
-        agent_type: "claude-code".to_string(), // TODO: get from context
+        agent_type: agent_type_str,
+        session_id: session_id.clone(),
         timestamp,
         stopped: current_in_progress_ids.clone(),
     };
@@ -553,10 +1021,12 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
     // Update task statuses
     for task in &mut stopped_tasks {
         task.status = TaskStatus::Stopped;
+        task.claimed_by_session = None;
     }
     for task in &mut started_tasks {
         task.status = TaskStatus::InProgress;
         task.stopped_reason = None;
+        task.claimed_by_session = session_id.clone();
     }
 
     // Determine output scope set (new scope if starting parent, or scope set from started tasks)
@@ -614,6 +1084,12 @@ fn run_start(cwd: &Path, ids: Vec<String>, reopen: bool, reopen_reason: Option<S
     if !current_in_progress_ids.is_empty() {
         let stopped_task_refs: Vec<_> = stopped_tasks.iter().collect();
         content.push_str(&format_stopped(&stopped_task_refs, Some(&stop_reason)));
+        content.push('\n');
+    }
+
+    // Show created task if quick-start was used
+    if let Some(ref new_task) = created_new_task {
+        content.push_str(&format_added(&[new_task]));
         content.push('\n');
     }
 
@@ -704,6 +1180,7 @@ fn run_stop(
             name: blocked_reason.clone(),
             priority: TaskPriority::P0, // Blockers are high priority
             assignee: Some("human".to_string()),
+            sources: Vec::new(),
             timestamp,
         };
         write_event(cwd, &blocker_event)?;
@@ -717,7 +1194,10 @@ fn run_stop(
                 status: TaskStatus::Open,
                 priority: TaskPriority::P0,
                 assignee: Some("human".to_string()),
+                sources: Vec::new(),
                 created_at: timestamp,
+                started_at: None,
+                claimed_by_session: None,
                 stopped_reason: None,
                 closed_outcome: None,
                 comments: Vec::new(),
@@ -747,7 +1227,10 @@ fn run_stop(
     }
     scopes.sort();
     scopes.dedup();
-    let scope_set = ScopeSet { include_root, scopes };
+    let scope_set = ScopeSet {
+        include_root,
+        scopes,
+    };
 
     // Get scoped ready queue
     let mut ready: Vec<Task> = get_ready_queue_for_scope_set(&tasks, &scope_set)
@@ -756,7 +1239,10 @@ fn run_stop(
         .collect();
 
     // Add stopped task if it's in scope
-    let stopped_in_scope = match (crate::tasks::id::get_parent_id(&stopped_task.id), &scope_set) {
+    let stopped_in_scope = match (
+        crate::tasks::id::get_parent_id(&stopped_task.id),
+        &scope_set,
+    ) {
         // Root task in scope if root included or no scopes
         (None, ss) => ss.include_root || ss.is_empty(),
         // Child task in scope if parent is in scopes
@@ -786,7 +1272,7 @@ fn run_stop(
 
 /// Close task(s) as done
 fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String>) -> Result<()> {
-    use crate::tasks::manager::{all_children_closed, get_unclosed_children};
+    use crate::tasks::manager::{all_subtasks_closed, get_all_unclosed_descendants};
     use std::io::Read;
 
     let events = read_events(cwd)?;
@@ -799,7 +1285,7 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         .collect();
 
     // Determine which task(s) to close
-    let ids_to_close = if ids.is_empty() {
+    let mut ids_to_close = if ids.is_empty() {
         // Default to current in-progress tasks
         if in_progress_ids.is_empty() {
             let xml = XmlBuilder::new("close")
@@ -819,22 +1305,26 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         ids
     };
 
-    // Check if any task being closed is a parent with unclosed children
+    // Keep track of explicitly requested tasks vs cascade-closed descendants
+    let explicit_ids = ids_to_close.clone();
+
+    // Cascade close: collect all unclosed descendants for any parent tasks being closed
+    // This allows closing a parent to automatically close all its subtasks
+    let mut descendants_to_close: Vec<String> = Vec::new();
     for id in &ids_to_close {
-        if has_children(&tasks, id) {
-            let unclosed = get_unclosed_children(&tasks, id);
-            if !unclosed.is_empty() {
-                let unclosed_ids: Vec<_> = unclosed.iter().map(|t| t.id.as_str()).collect();
-                let xml = XmlBuilder::new("close").error().build_error(&format!(
-                    "Cannot close {}, children still open: {}",
-                    id,
-                    unclosed_ids.join(", ")
-                ));
-                println!("{}", xml);
-                return Ok(());
+        if has_subtasks(&tasks, id) {
+            let unclosed = get_all_unclosed_descendants(&tasks, id);
+            for task in unclosed {
+                if !ids_to_close.contains(&task.id) && !descendants_to_close.contains(&task.id) {
+                    descendants_to_close.push(task.id.clone());
+                }
             }
         }
     }
+    // Prepend descendants (they're in depth-first order, deepest first)
+    // so they get closed before their parents
+    descendants_to_close.append(&mut ids_to_close);
+    ids_to_close = descendants_to_close;
 
     // Handle stdin for --comment -
     let comment_text = if comment.as_deref() == Some("-") {
@@ -845,21 +1335,11 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         comment
     };
 
-    // Check if agent session is active - require comment for agent-initiated closes
+    // Always require a comment when closing tasks - ensures work is documented
     if comment_text.is_none() {
-        let sessions_dir = cwd.join(".aiki/sessions");
-        if sessions_dir.exists() {
-            let session_count = std::fs::read_dir(&sessions_dir)
-                .ok()
-                .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| e.path().is_file()).count())
-                .unwrap_or(0);
-
-            if session_count > 0 {
-                return Err(AikiError::TaskCommentRequired(
-                    "Closing tasks requires a comment when running in an agent session. Please summarize your work with --comment.".to_string()
-                ));
-            }
-        }
+        return Err(AikiError::TaskCommentRequired(
+            "Closing tasks requires a comment. Please summarize your work with --comment.".to_string()
+        ));
     }
 
     let outcome = if wont_do {
@@ -874,18 +1354,33 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
-    // If comment provided, emit comment events first (1ms before close for chronological order)
+    // Add comments before close (1ms before close for chronological order)
     let close_timestamp = chrono::Utc::now();
+    let comment_timestamp = close_timestamp - chrono::Duration::milliseconds(1);
+
+    // Descendants that were cascade-closed get "Closed with parent" comment
+    let cascade_ids: Vec<String> = ids_to_close
+        .iter()
+        .filter(|id| !explicit_ids.contains(id))
+        .cloned()
+        .collect();
+    if !cascade_ids.is_empty() {
+        let cascade_comment = TaskEvent::CommentAdded {
+            task_ids: cascade_ids,
+            text: "Closed with parent".to_string(),
+            timestamp: comment_timestamp,
+        };
+        write_event(cwd, &cascade_comment)?;
+    }
+
+    // User's comment goes only to explicitly requested tasks
     if let Some(ref comment) = comment_text {
-        let comment_timestamp = close_timestamp - chrono::Duration::milliseconds(1);
-        for task_id in &ids_to_close {
-            let comment_event = TaskEvent::CommentAdded {
-                task_id: task_id.clone(),
-                text: comment.clone(),
-                timestamp: comment_timestamp,
-            };
-            write_event(cwd, &comment_event)?;
-        }
+        let explicit_comment = TaskEvent::CommentAdded {
+            task_ids: explicit_ids,
+            text: comment.clone(),
+            timestamp: comment_timestamp,
+        };
+        write_event(cwd, &explicit_comment)?;
     }
 
     // Close the tasks (batch operation)
@@ -919,8 +1414,8 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
     let mut notices: Vec<String> = Vec::new();
 
     for parent_id in &unique_parent_ids {
-        // Check if all children are now closed
-        if all_children_closed(&tasks, parent_id) {
+        // Check if all subtasks are now closed
+        if all_subtasks_closed(&tasks, parent_id) {
             if let Some(parent) = tasks.get_mut(parent_id) {
                 // Guard: skip if already closed or in-progress
                 if parent.status == TaskStatus::Closed {
@@ -931,15 +1426,18 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
                 }
 
                 // Auto-start the parent for review/finalization
+                // Note: session_id is None since close doesn't have session context
                 let start_event = TaskEvent::Started {
                     task_ids: vec![parent_id.clone()],
                     agent_type: "claude-code".to_string(),
+                    session_id: None,
                     timestamp: chrono::Utc::now(),
                     stopped: Vec::new(),
                 };
                 write_event(cwd, &start_event)?;
 
                 parent.status = TaskStatus::InProgress;
+                parent.claimed_by_session = None;
                 auto_started_parents.push(parent.clone());
                 notices.push(format!(
                     "All subtasks complete. Parent task (id: {}) auto-started for review/finalization.",
@@ -1020,9 +1518,79 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
     Ok(())
 }
 
-/// Show task details (including children for parent tasks)
-fn run_show(cwd: &Path, id: Option<String>) -> Result<()> {
-    use crate::tasks::manager::get_children;
+/// Query changes that have a task ID in their provenance
+fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> {
+    use std::process::Command;
+
+    // Query JJ for changes with this task ID in their description
+    // Format: change_id timestamp (first line only)
+    let output = Command::new("jj")
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &format!("description(substring:\"task={}\")", task_id),
+            "--no-graph",
+            "-T",
+            r#"change_id ++ " " ++ author.timestamp().format("%Y-%m-%dT%H:%M:%S") ++ "\n""#,
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query changes: {}", e)))?;
+
+    if !output.status.success() {
+        // Empty result is not an error
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut changes = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.len() >= 1 {
+            let change_id = parts[0].to_string();
+            let timestamp = parts.get(1).map(|s| s.to_string());
+            changes.push(ChangeInfo {
+                change_id,
+                timestamp,
+            });
+        }
+    }
+
+    Ok(changes)
+}
+
+/// Get the diff for a specific change
+fn get_change_diff(cwd: &Path, change_id: &str) -> Result<String> {
+    use std::process::Command;
+
+    let output = Command::new("jj")
+        .current_dir(cwd)
+        .args(["diff", "-r", change_id, "--color=never"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Information about a change linked to a task
+struct ChangeInfo {
+    change_id: String,
+    timestamp: Option<String>,
+}
+
+/// Show task details (including subtasks for parent tasks)
+fn run_show(cwd: &Path, id: Option<String>, show_diff: bool) -> Result<()> {
+    use crate::tasks::manager::get_subtasks;
     use crate::tasks::xml::escape_xml;
 
     let events = read_events(cwd)?;
@@ -1050,14 +1618,14 @@ fn run_show(cwd: &Path, id: Option<String>) -> Result<()> {
 
     let task = tasks.get(&task_id).expect("Task should exist");
 
-    // Get children if this is a parent task
-    let children = get_children(&tasks, &task_id);
-    let has_children = !children.is_empty();
+    // Get subtasks if this is a parent task
+    let subtasks = get_subtasks(&tasks, &task_id);
+    let has_subtasks = !subtasks.is_empty();
 
-    // Calculate progress if has children
-    let (completed, total) = if has_children {
-        let total = children.len();
-        let completed = children
+    // Calculate progress if has subtasks
+    let (completed, total) = if has_subtasks {
+        let total = subtasks.len();
+        let completed = subtasks
             .iter()
             .filter(|t| t.status == TaskStatus::Closed)
             .count();
@@ -1075,18 +1643,27 @@ fn run_show(cwd: &Path, id: Option<String>) -> Result<()> {
         task.priority
     );
 
-    // Add children section if this is a parent
-    if has_children {
-        content.push_str("\n    <children>");
-        for child in &children {
+    // Add sources if any
+    if !task.sources.is_empty() {
+        content.push_str("\n    <sources>");
+        for source in &task.sources {
+            content.push_str(&format!("\n      <source>{}</source>", escape_xml(source)));
+        }
+        content.push_str("\n    </sources>");
+    }
+
+    // Add subtasks section if this is a parent
+    if has_subtasks {
+        content.push_str("\n    <subtasks>");
+        for subtask in &subtasks {
             content.push_str(&format!(
                 "\n      <task id=\"{}\" status=\"{}\" name=\"{}\"/>",
-                escape_xml(&child.id),
-                child.status,
-                escape_xml(&child.name)
+                escape_xml(&subtask.id),
+                subtask.status,
+                escape_xml(&subtask.name)
             ));
         }
-        content.push_str("\n    </children>");
+        content.push_str("\n    </subtasks>");
 
         // Add progress element
         let percentage = if total > 0 {
@@ -1111,6 +1688,38 @@ fn run_show(cwd: &Path, id: Option<String>) -> Result<()> {
             ));
         }
         content.push_str("\n    </comments>");
+    }
+
+    // Query changes for this task
+    let changes = query_changes_for_task(cwd, &task_id)?;
+    if !changes.is_empty() {
+        content.push_str(&format!("\n    <changes count=\"{}\">", changes.len()));
+        for change in &changes {
+            if show_diff {
+                // Include full diff
+                let diff = get_change_diff(cwd, &change.change_id)?;
+                content.push_str(&format!(
+                    "\n      <change id=\"{}\"{}>\n<![CDATA[{}]]>\n      </change>",
+                    escape_xml(&change.change_id),
+                    change
+                        .timestamp
+                        .as_ref()
+                        .map_or(String::new(), |ts| format!(" timestamp=\"{}\"", ts)),
+                    diff
+                ));
+            } else {
+                // Just list change IDs
+                content.push_str(&format!(
+                    "\n      <change id=\"{}\"{} />",
+                    escape_xml(&change.change_id),
+                    change
+                        .timestamp
+                        .as_ref()
+                        .map_or(String::new(), |ts| format!(" timestamp=\"{}\"", ts))
+                ));
+            }
+        }
+        content.push_str("\n    </changes>");
     }
 
     content.push_str("\n  </task>");
@@ -1141,7 +1750,10 @@ fn run_update(
     p2: bool,
     p3: bool,
     name: Option<String>,
+    assignee_arg: Option<String>,
+    unassign: bool,
 ) -> Result<()> {
+    use crate::agents::Assignee;
     use crate::tasks::xml::escape_xml;
 
     let events = read_events(cwd)?;
@@ -1180,11 +1792,24 @@ fn run_update(
         None
     };
 
+    // Determine new assignee: Some(Some(a)) = assign, Some(None) = unassign, None = no change
+    let new_assignee: Option<Option<String>> = if unassign {
+        Some(None) // Unassign
+    } else if let Some(ref a) = assignee_arg {
+        // Validate and normalize the assignee
+        match Assignee::from_str(a) {
+            Some(parsed) => Some(parsed.as_str().map(|s| s.to_string())),
+            None => return Err(AikiError::UnknownAssignee(a.clone())),
+        }
+    } else {
+        None // No change
+    };
+
     // Check if there's anything to update
-    if new_priority.is_none() && name.is_none() {
-        let xml = XmlBuilder::new("update")
-            .error()
-            .build_error("No updates specified. Use --name or --p0/--p1/--p2/--p3");
+    if new_priority.is_none() && name.is_none() && new_assignee.is_none() {
+        let xml = XmlBuilder::new("update").error().build_error(
+            "No updates specified. Use --name, --for, --unassign, or --p0/--p1/--p2/--p3",
+        );
         println!("{}", xml);
         return Ok(());
     }
@@ -1194,6 +1819,7 @@ fn run_update(
         task_id: task_id.clone(),
         name: name.clone(),
         priority: new_priority,
+        assignee: new_assignee.clone(),
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &event)?;
@@ -1206,6 +1832,9 @@ fn run_update(
         }
         if let Some(new_p) = new_priority {
             task.priority = new_p;
+        }
+        if let Some(ref new_a) = new_assignee {
+            task.assignee = new_a.clone();
         }
     }
 
@@ -1267,9 +1896,9 @@ fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
 
     let timestamp = chrono::Utc::now();
 
-    // Write the comment event
+    // Write the comment event (batch operation with single task)
     let event = TaskEvent::CommentAdded {
-        task_id: task_id.clone(),
+        task_ids: vec![task_id.clone()],
         text: text.clone(),
         timestamp,
     };
@@ -1297,4 +1926,26 @@ fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
 
     println!("{}", xml);
     Ok(())
+}
+
+/// Run a task by spawning an agent session
+fn run_run(cwd: &Path, id: String, agent: Option<String>) -> Result<()> {
+    // Parse and validate agent override if provided
+    let agent_override = if let Some(ref agent_str) = agent {
+        match AgentType::from_str(agent_str) {
+            Some(agent_type) => Some(agent_type),
+            None => return Err(AikiError::UnknownAgentType(agent_str.clone())),
+        }
+    } else {
+        None
+    };
+
+    // Build options
+    let mut options = TaskRunOptions::new();
+    if let Some(agent_type) = agent_override {
+        options = options.with_agent(agent_type);
+    }
+
+    // Run the task with XML output
+    run_task_with_xml(cwd, &id, options)
 }

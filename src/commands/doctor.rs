@@ -1,4 +1,6 @@
+use crate::commands::agents_template::{AIKI_BLOCK_TEMPLATE, AIKI_BLOCK_VERSION};
 use crate::commands::zed_detection;
+use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::repo::RepoDetector;
@@ -7,201 +9,6 @@ use anyhow::Context;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-
-/// Template for the <aiki> block in AGENTS.md
-const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.3">
-
-## ⛔ STOP - Read This First
-
-**Before doing ANY substantive work, you MUST run:**
-```bash
-aiki task add "Description of what you're about to do"
-aiki task start <task-id>
-```
-
-**FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool, or mental checklists. These do not persist.
-
-**When closing tasks, summarize your work:**
-```bash
-aiki task close <task-id> --comment "What you did"
-```
-
----
-
-## Aiki Task System
-
-**IMPORTANT: Use `aiki task` for ALL task management.** Do not use built-in todo tools (TodoWrite, task lists, etc.). Aiki tasks:
-- Persist in JJ history across sessions
-- Are visible to other agents and humans
-- Survive context compaction
-- Are stored on the `aiki/tasks` branch
-
-### TL;DR (First-Time Use)
-
-```bash
-# 1) List ready tasks
-aiki task
-
-# 2) Add a task
-aiki task add "Task description"
-
-# 3) Start the task (copy full ID from output)
-aiki task start <task-id>
-
-# 4) Close it when done (with comment describing your work)
-aiki task close <task-id> --comment "What I did to fix this"
-```
-
-### First Action Rule
-
-**Before doing any substantive work, create and start a task.** This includes:
-- Code reviews (`review @file`)
-- Document reviews (`review @doc.md`)
-- Bug investigations
-- Feature implementations
-- Refactoring
-
-```bash
-# ALWAYS do this first, before reading/analyzing/implementing:
-aiki task add "Review assign-tasks.md design"
-aiki task start <task-id>
-# ... now do the work ...
-aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
-```
-
-### When to Use Tasks
-
-- Any work beyond a quick one-liner or immediate response
-- Any multi-step change, investigation, or review
-- Anything that could carry over across sessions
-
-### Quick Reference
-
-```bash
-# See what's ready to work on
-aiki task
-
-# Add a new task (do this instead of TodoWrite!)
-aiki task add "Task description"
-
-# Start working on a task
-aiki task start <task-id>
-
-# Start multiple related tasks for batch work
-aiki task start <id1> <id2> <id3>
-
-# Stop current task (with optional reason)
-aiki task stop --reason "Blocked on X"
-
-# Add a comment (without closing)
-aiki task comment --id <task-id> "Progress update: ..."
-
-# Show task details including comments
-aiki task show <task-id>
-
-# Close with comment (preferred - atomic operation)
-aiki task close <task-id> --comment "Fixed by updating X to do Y"
-
-# Close multiple tasks
-aiki task close <id1> <id2> <id3> --comment "All done"
-```
-
-### Parent + Subtasks (Example)
-
-```bash
-# Create a parent task
-aiki task add "Review prompt-history findings"
-
-# Add subtasks under the parent
-aiki task add --parent <parent-id> "Check attribution range collisions"
-aiki task add --parent <parent-id> "Define intent summary field"
-aiki task add --parent <parent-id> "Add privacy redaction rules"
-
-# Start the parent - this reveals subtasks
-aiki task start <parent-id>
-
-# Work through subtasks, closing each with a comment
-aiki task start <parent-id>.1
-# ... do the work ...
-aiki task close <parent-id>.1 --comment "Fixed by ..."
-```
-
-### Parent Task Behavior
-
-When you start a parent task with subtasks:
-1. A `.0` subtask auto-starts: "Review all subtasks and start first batch"
-2. `aiki task` now shows only subtasks (scoped view)
-3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
-4. When all subtasks are closed, the parent auto-starts for final review
-5. Close the parent task when everything is complete
-
-### When Planning Work
-
-Instead of creating a mental todo list or using built-in tools:
-
-```bash
-# Break down the work
-aiki task add "Research existing implementation"
-aiki task add "Design the solution"
-aiki task add "Implement changes"
-aiki task add "Add tests"
-
-# Start the first task
-aiki task start <id>
-```
-
-### Task Output Format
-
-Commands return XML showing current state:
-
-```xml
-<aiki_task cmd="list" status="ok">
-  <context>
-    <in_progress>
-      <task id="abc" name="Current task"/>
-    </in_progress>
-    <list ready="3">
-      <task id="def" priority="p0" name="Next task"/>
-    </list>
-  </context>
-</aiki_task>
-```
-
-**Reading the output:**
-- `<in_progress>` - Tasks you're currently working on
-- `<list ready="N">` - Tasks ready to be started
-- `scope="<id>"` attribute means you're inside a parent task (only subtasks shown)
-
-### Task IDs
-
-- IDs are 32-character strings (e.g., `xtuttnyvykpulsxzqnznsxylrzkkqssy`)
-- Copy the full ID from command output
-- Subtask IDs append a number: `<parent-id>.1`, `<parent-id>.2`
-
-### Workflow
-
-1. **Plan with tasks** - Use `aiki task add` to break down work
-2. **Start before working** - Run `aiki task start` before implementation
-3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
-4. **Close with comment** - Use `aiki task close --comment` to document your work
-5. **Close immediately** - Don't leave tasks open after finishing
-
-### Common Pitfalls
-
-- **Doing reviews without creating a task first** ← Most common mistake!
-- **Using TodoWrite instead of `aiki task`** ← Second most common!
-- Forgetting to `start` before you begin work
-- Closing tasks without `--comment` to describe what you did
-- Leaving tasks open after finishing
-- Creating long tasks without subtasks for multi-step work
-- Trying to `start` a task that's already in progress
-- Forgetting to close the parent task after all subtasks are done
-
-### Task Priorities
-
-`p0` (urgent) → `p1` (high) → `p2` (normal, default) → `p3` (low)
-</aiki>
-"#;
 
 pub fn run(fix: bool) -> Result<()> {
     let mut issues_found = 0;
@@ -261,22 +68,52 @@ pub fn run(fix: bool) -> Result<()> {
         issues_found += 1;
     }
 
-    // Check Claude Code hooks
+    // Check Claude Code hooks - verify file exists AND contains hooks
     let claude_settings = home_dir.join(".claude/settings.json");
-    if claude_settings.exists() {
+    let claude_hooks_ok = check_claude_code_hooks(&claude_settings);
+    if claude_hooks_ok {
         println!("  ✓ Claude Code hooks configured");
     } else {
-        println!("  ⚠ Claude Code hooks not configured");
-        println!("    → Run: aiki hooks install");
+        println!("  ✗ Claude Code hooks not configured");
+        if fix {
+            println!("    Installing Claude Code hooks...");
+            match config::install_claude_code_hooks_global() {
+                Ok(()) => {
+                    println!("    ✓ Claude Code hooks installed");
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to install: {}", e);
+                    issues_found += 1;
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+            issues_found += 1;
+        }
     }
 
-    // Check Cursor hooks
-    let cursor_hooks = home_dir.join(".cursor/hooks.json");
-    if cursor_hooks.exists() {
+    // Check Cursor hooks - verify file exists AND contains aiki hooks
+    let cursor_hooks_path = home_dir.join(".cursor/hooks.json");
+    let cursor_hooks_ok = check_cursor_hooks(&cursor_hooks_path);
+    if cursor_hooks_ok {
         println!("  ✓ Cursor hooks configured");
     } else {
-        println!("  ⚠ Cursor hooks not configured");
-        println!("    → Run: aiki hooks install");
+        println!("  ✗ Cursor hooks not configured");
+        if fix {
+            println!("    Installing Cursor hooks...");
+            match config::install_cursor_hooks_global() {
+                Ok(()) => {
+                    println!("    ✓ Cursor hooks installed");
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to install: {}", e);
+                    issues_found += 1;
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+            issues_found += 1;
+        }
     }
 
     println!();
@@ -454,7 +291,7 @@ pub fn run(fix: bool) -> Result<()> {
     if agents_path.exists() {
         match fs::read_to_string(&agents_path) {
             Ok(content) => {
-                if content.contains("<aiki version=\"1.3\">") {
+                if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
                     println!("  ✓ AGENTS.md has current <aiki> block");
                 } else if content.contains("<aiki version=") {
                     println!("  ⚠ AGENTS.md has outdated <aiki> block");
@@ -464,10 +301,18 @@ pub fn run(fix: bool) -> Result<()> {
                             if let Some(end) = content.find("</aiki>") {
                                 let before = &content[..start];
                                 let after = &content[end + "</aiki>".len()..];
-                                let updated = format!("{}{}{}", before.trim_end(), AIKI_BLOCK_TEMPLATE, after.trim_start());
+                                let updated = format!(
+                                    "{}{}{}",
+                                    before.trim_end(),
+                                    AIKI_BLOCK_TEMPLATE,
+                                    after.trim_start()
+                                );
                                 match fs::write(&agents_path, updated) {
                                     Ok(()) => {
-                                        println!("    ✓ Updated <aiki> block to version 1.0");
+                                        println!(
+                                            "    ✓ Updated <aiki> block to version {}",
+                                            AIKI_BLOCK_VERSION
+                                        );
                                     }
                                     Err(e) => {
                                         println!("    ✗ Failed to update AGENTS.md: {}", e);
@@ -552,4 +397,599 @@ fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool> {
     }
 
     Ok(input == "y" || input == "yes")
+}
+
+/// Check if a command string invokes aiki hooks handle with specific agent/event
+///
+/// Matches commands like:
+/// - `aiki hooks handle --agent claude-code --event session.started`
+/// - `/path/to/aiki.exe hooks handle --agent cursor --event prompt.submitted`
+///
+/// If expected_agent or expected_event is Some, validates those flags are present.
+fn is_aiki_hooks_command_with_params(
+    cmd: &str,
+    expected_agent: Option<&str>,
+    expected_event: Option<&str>,
+) -> bool {
+    // Split command into words
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+
+    // Look for pattern: <something-ending-with-aiki> hooks handle
+    let mut found_hooks_handle = false;
+    for (i, word) in words.iter().enumerate() {
+        // Check if this word is the aiki binary (with or without path, with or without .exe)
+        let is_aiki_binary = word.ends_with("aiki") || word.ends_with("aiki.exe");
+
+        if is_aiki_binary {
+            // Check if followed by "hooks handle"
+            if i + 2 < words.len() && words[i + 1] == "hooks" && words[i + 2] == "handle" {
+                found_hooks_handle = true;
+                break;
+            }
+        }
+    }
+
+    if !found_hooks_handle {
+        return false;
+    }
+
+    // If no specific agent/event required, we're done
+    if expected_agent.is_none() && expected_event.is_none() {
+        return true;
+    }
+
+    // Check for --agent flag
+    if let Some(agent) = expected_agent {
+        let has_agent = words.windows(2).any(|w| w[0] == "--agent" && w[1] == agent);
+        if !has_agent {
+            return false;
+        }
+    }
+
+    // Check for --event flag
+    if let Some(event) = expected_event {
+        let has_event = words.windows(2).any(|w| w[0] == "--event" && w[1] == event);
+        if !has_event {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Check if Claude Code hooks are properly configured
+///
+/// Returns true if ~/.claude/settings.json exists AND contains both:
+/// - hooks.SessionStart with aiki command
+/// - hooks.PostToolUse with aiki command
+fn check_claude_code_hooks(settings_path: &std::path::Path) -> bool {
+    if !settings_path.exists() {
+        return false;
+    }
+
+    let content = match fs::read_to_string(settings_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let settings: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let hooks = match settings.get("hooks") {
+        Some(h) => h,
+        None => return false,
+    };
+
+    // Check SessionStart hook contains aiki command with correct agent/event
+    let has_session_start = hooks
+        .get("SessionStart")
+        .and_then(|arr| arr.as_array())
+        .map(|arr| {
+            arr.iter().any(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|hooks| {
+                        hooks.iter().any(|hook| {
+                            hook.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| {
+                                    is_aiki_hooks_command_with_params(
+                                        c,
+                                        Some("claude-code"),
+                                        Some("session.started"),
+                                    )
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    // Check PostToolUse hook contains aiki command with correct agent/event
+    let has_post_tool_use = hooks
+        .get("PostToolUse")
+        .and_then(|arr| arr.as_array())
+        .map(|arr| {
+            arr.iter().any(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|hooks| {
+                        hooks.iter().any(|hook| {
+                            hook.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|c| {
+                                    is_aiki_hooks_command_with_params(
+                                        c,
+                                        Some("claude-code"),
+                                        Some("change.completed"),
+                                    )
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    has_session_start && has_post_tool_use
+}
+
+/// Check if Cursor hooks are properly configured
+///
+/// Returns true if ~/.cursor/hooks.json exists AND contains both:
+/// - hooks.beforeSubmitPrompt with aiki hooks handle command
+/// - hooks.afterFileEdit with aiki hooks handle command
+fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
+    if !hooks_path.exists() {
+        return false;
+    }
+
+    let content = match fs::read_to_string(hooks_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    let hooks = match config.get("hooks") {
+        Some(h) => h,
+        None => return false,
+    };
+
+    // Helper to check if an array contains an aiki hooks handle command with specific agent/event
+    let has_aiki_hook_with_params =
+        |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
+            arr.as_array()
+                .map(|arr| {
+                    arr.iter().any(|hook| {
+                        hook.get("command")
+                            .and_then(|c| c.as_str())
+                            .map(|c| is_aiki_hooks_command_with_params(c, Some(agent), Some(event)))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+    // Check for hooks.beforeSubmitPrompt with cursor agent and prompt.submitted event
+    let has_before_submit = hooks
+        .get("beforeSubmitPrompt")
+        .map(|arr| has_aiki_hook_with_params(arr, "cursor", "prompt.submitted"))
+        .unwrap_or(false);
+
+    // Check for hooks.afterFileEdit with cursor agent and change.completed event
+    let has_after_file_edit = hooks
+        .get("afterFileEdit")
+        .map(|arr| has_aiki_hook_with_params(arr, "cursor", "change.completed"))
+        .unwrap_or(false);
+
+    has_before_submit && has_after_file_edit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_check_claude_code_hooks_complete() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event session.started"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_missing_post_tool_use() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event session.started"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(!check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_missing_session_start() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Edit|Write",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(!check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_wrong_command() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/some-other-tool"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(!check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_no_file() {
+        let path = std::path::Path::new("/nonexistent/path/settings.json");
+        assert!(!check_claude_code_hooks(path));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_complete() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event prompt.submitted"
+                }],
+                "afterFileEdit": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_missing_after_file_edit() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event prompt.submitted"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(!check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_missing_before_submit() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "afterFileEdit": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(!check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_wrong_command() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "/path/to/some-other-tool"
+                }],
+                "afterFileEdit": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(!check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_generic_aiki_not_enough() {
+        // Ensure just "aiki" without "hooks handle" doesn't match
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "/path/to/aiki init"
+                }],
+                "afterFileEdit": [{
+                    "command": "/path/to/aiki record"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(!check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_no_file() {
+        let path = std::path::Path::new("/nonexistent/path/hooks.json");
+        assert!(!check_cursor_hooks(path));
+    }
+
+    // Tests for is_aiki_hooks_command_with_params
+
+    #[test]
+    fn test_is_aiki_hooks_command_basic() {
+        assert!(is_aiki_hooks_command_with_params(
+            "aiki hooks handle --agent claude-code --event session.started",
+            Some("claude-code"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_with_exe() {
+        assert!(is_aiki_hooks_command_with_params(
+            "aiki.exe hooks handle --agent claude-code --event session.started",
+            Some("claude-code"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_with_path() {
+        assert!(is_aiki_hooks_command_with_params(
+            "/usr/local/bin/aiki hooks handle --agent cursor --event prompt.submitted",
+            Some("cursor"),
+            Some("prompt.submitted")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_with_path_and_exe() {
+        assert!(is_aiki_hooks_command_with_params(
+            "C:\\Program Files\\aiki.exe hooks handle --agent claude-code --event change.completed",
+            Some("claude-code"),
+            Some("change.completed")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_relative_path() {
+        assert!(is_aiki_hooks_command_with_params(
+            "./aiki hooks handle --agent cursor --event change.completed",
+            Some("cursor"),
+            Some("change.completed")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_wrong_agent() {
+        // Should fail: command has claude-code but we expect cursor
+        assert!(!is_aiki_hooks_command_with_params(
+            "aiki hooks handle --agent claude-code --event session.started",
+            Some("cursor"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_wrong_event() {
+        // Should fail: command has session.started but we expect change.completed
+        assert!(!is_aiki_hooks_command_with_params(
+            "aiki hooks handle --agent claude-code --event session.started",
+            Some("claude-code"),
+            Some("change.completed")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_missing_agent() {
+        // Should fail: no --agent flag
+        assert!(!is_aiki_hooks_command_with_params(
+            "aiki hooks handle --event session.started",
+            Some("claude-code"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_missing_event() {
+        // Should fail: no --event flag
+        assert!(!is_aiki_hooks_command_with_params(
+            "aiki hooks handle --agent claude-code",
+            Some("claude-code"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_not_hooks_handle() {
+        // Should fail: not "hooks handle"
+        assert!(!is_aiki_hooks_command_with_params(
+            "aiki init --agent claude-code --event session.started",
+            Some("claude-code"),
+            Some("session.started")
+        ));
+    }
+
+    #[test]
+    fn test_is_aiki_hooks_command_no_params_check() {
+        // Should pass with no param requirements
+        assert!(is_aiki_hooks_command_with_params(
+            "aiki hooks handle",
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_with_exe() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki.exe hooks handle --agent claude-code --event session.started"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event change.completed"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_with_exe() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event prompt.submitted"
+                }],
+                "afterFileEdit": [{
+                    "command": "./aiki.exe hooks handle --agent cursor --event change.completed"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        assert!(check_cursor_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_claude_code_hooks_wrong_agent() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks handle --agent cursor --event session.started"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki hooks handle --agent claude-code --event change.completed"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        // Should fail: SessionStart has wrong agent (cursor instead of claude-code)
+        assert!(!check_claude_code_hooks(file.path()));
+    }
+
+    #[test]
+    fn test_check_cursor_hooks_wrong_event() {
+        let mut file = NamedTempFile::new().unwrap();
+        let hooks = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "beforeSubmitPrompt": [{
+                    "command": "aiki hooks handle --agent cursor --event session.started"
+                }],
+                "afterFileEdit": [{
+                    "command": "aiki hooks handle --agent cursor --event change.completed"
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
+
+        // Should fail: beforeSubmitPrompt has wrong event (session.started instead of prompt.submitted)
+        assert!(!check_cursor_hooks(file.path()));
+    }
 }
