@@ -173,7 +173,11 @@ Add comments as you find issues, don't wait until the end.
 
 ### Template Variables
 
-Templates support runtime variable substitution:
+Templates support runtime variable substitution. Variables can be:
+1. **Built-in** - Provided automatically by commands
+2. **Custom** - Passed via CLI flags
+
+#### Built-in Variables (aiki review)
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -194,6 +198,49 @@ When used with `aiki review @`, this becomes:
 # Review: @
 
 Review changes in @ (files: src/auth.ts, src/middleware.ts)
+```
+
+#### Custom Variables (aiki task create)
+
+When creating tasks from templates, you can pass custom variables:
+
+```bash
+# Template at .aiki/templates/custom/feature.md uses {feature_name} and {module}
+aiki task create --template feature --var feature_name="user auth" --var module="auth"
+```
+
+**Template:**
+```markdown
+# Implement {feature_name}
+
+Add {feature_name} functionality to the {module} module.
+
+# Subtasks
+
+## Design {feature_name}
+
+Create design doc for {feature_name}.
+
+## Implement in {module}
+
+Write code in {module} module.
+```
+
+**Result:**
+```markdown
+# Implement user auth
+
+Add user auth functionality to the auth module.
+
+# Subtasks
+
+## Design user auth
+
+Create design doc for user auth.
+
+## Implement in auth
+
+Write code in auth module.
 ```
 
 ---
@@ -517,19 +564,44 @@ aiki review --prompt security
 
 ```bash
 # Create task from template
-aiki task create --template <name> [--scope <scope>] [--assignee <agent>]
+aiki task create --template <name> [options]
+
+# Options:
+#   --var <key>=<value>  - Set custom template variable (can be used multiple times)
+#   --assignee <agent>   - Override template assignee
+#   --priority <level>   - Override template priority
+#   --start              - Start the task immediately after creation
 
 # Examples:
-aiki task create --template refactor-cleanup --scope src/auth.rs
+
+# Simple template (no variables)
+aiki task create --template refactor-cleanup
+
+# With custom variables
+aiki task create --template feature \
+  --var feature_name="user auth" \
+  --var module="auth"
+
+# Override assignee
 aiki task create --template api-docs --assignee claude-code
-aiki task create --template integration-test
+
+# Multiple variables + start immediately
+aiki task create --template implement \
+  --var component="dashboard" \
+  --var language="rust" \
+  --start
 ```
 
 **Behavior:**
 1. Load template from `.aiki/templates/`
-2. Substitute variables (scope, assignee, etc.)
+2. Substitute variables (built-in + custom via `--var`)
 3. Create parent task + all subtasks atomically
 4. Optionally start the task with `--start` flag
+
+**Variable Precedence:**
+1. Command-line `--var` flags (highest priority)
+2. Built-in variables from context
+3. Template frontmatter defaults
 
 ---
 
