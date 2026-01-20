@@ -20,7 +20,7 @@ This design uses **tasks for everything** with an **async, composable CLI**:
 3. **Single storage branch** - All tasks on `aiki/tasks` branch
 4. **Async workflow** - `aiki task run --background` returns immediately, agent chains `wait && fix`
 5. **Consistent task lifecycle** - Reviews use same event structure as other tasks
-6. **Composable commands** - `aiki task wait` + `aiki fix` can be chained by agents
+6. **Composable commands** - `aiki wait` + `aiki fix` can be chained by agents
 7. **Task-change linkage** - Changes made during reviews include `task=` in provenance
 
 ---
@@ -44,7 +44,7 @@ This design uses **tasks for everything** with an **async, composable CLI**:
 ### How Reviews Work
 
 1. **Async task execution**: `aiki task run --background` starts review and returns immediately
-2. **Agent waits and fixes**: Agent chains `aiki task wait <id> && aiki fix <id>`
+2. **Agent waits and fixes**: Agent chains `aiki wait <id> && aiki fix <id>`
 3. **aiki fix creates followups**: Reads review comments and creates followup tasks atomically
 4. **Composable CLI**: Each command does one thing well, agents compose them
 5. **Provenance tracking**: Changes made by agents include `task=` field linking to the active task
@@ -69,8 +69,8 @@ This design uses **tasks for everything** with an **async, composable CLI**:
                           ↓
 ┌──────────────────────────────────────────────────────────────┐
 │  3. Requesting agent waits and fixes                          │
-│     • aiki task wait <id>  - blocks until complete            │
-│     • aiki fix <id>        - creates followup from comments   │
+│     • aiki wait <id>  - blocks until complete                 │
+│     • aiki fix <id>   - creates followup from comments        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -90,15 +90,17 @@ Reviews can target different scopes of changes:
 - **range** - JJ revset (e.g., `trunk()..@`, `main..@`)
 - **staged** - Files staged for commit (Git interop)
 
-### Review Prompts
+### Review Templates
 
-Different review focuses using prompt templates:
+Different review focuses using task templates:
 
 - **default** - General code quality, functionality, basic security
 - **security** - Deep security analysis (SQL injection, XSS, auth, crypto)
 - **performance** - Performance bottlenecks, algorithm efficiency
 - **style** - Code style, naming conventions, documentation
-- **custom** - User-defined prompt templates in `.aiki/prompts/`
+- **custom** - User-defined templates in `.aiki/templates/custom/`
+
+Templates define the full task structure (parent + subtasks + instructions). See [task-templates.md](task-templates.md) for details.
 
 ### Task Types
 
@@ -134,7 +136,7 @@ This internally executes:
 
 **Then agent processes:**
 ```bash
-aiki task wait xqrmnpst && aiki fix xqrmnpst
+aiki wait xqrmnpst && aiki fix xqrmnpst
 ```
 
 This:
@@ -259,7 +261,7 @@ instructions: |
   Code review orchestration task
 metadata:
   task_id: xqrmnpst
-  prompt: default
+  template: default
 scope_files:
   - src/auth.ts
   - src/middleware.ts
@@ -522,25 +524,22 @@ aiki task run <task_id> [--background]
     Review task started in background.
 
     To wait for completion and process findings:
-    aiki task wait xqrmnpst && aiki fix xqrmnpst
+    aiki wait xqrmnpst && aiki fix xqrmnpst
   </started>
 </aiki_task>
 ```
 
-### Task Wait Command
+### Wait Command
 
 ```bash
-aiki task wait <task_id> [--timeout <duration>]
+aiki wait <task_id>
 ```
-
-**Options:**
-- `--timeout <duration>` - Max wait time (e.g., "5m", "1h"). Default: no timeout.
 
 **Behavior:**
 - Blocks until the task reaches a terminal state (closed, stopped, or failed)
 - Exit code 0 if task completed successfully
-- Exit code 1 if task failed or timed out
-- Useful for chaining: `aiki task wait <id> && aiki fix <id>`
+- Exit code 1 if task failed
+- Useful for chaining: `aiki wait <id> && aiki fix <id>`
 
 **Output:**
 ```xml
@@ -551,22 +550,20 @@ aiki task wait <task_id> [--timeout <duration>]
 </aiki_task>
 ```
 
-### Fix Command (Create Followups from Comments)
+### Fix Command (Create and Start Followup Tasks)
 
 ```bash
-aiki fix <task_id> [options]
+aiki fix <task_id>
 ```
-
-**Options:**
-- `--assignee <agent>` - Who to assign followup tasks to (default: current agent)
-- `--priority <p0|p1|p2|p3>` - Priority for followup task (default: inherit from blocked task or p1)
 
 **Behavior:**
 1. Reads all comments from the specified task
 2. If no comments found: prints success message, exits 0 (no error)
-3. If comments found: creates followup task with one subtask per comment
+3. If comments found:
+   - Creates followup task with one subtask per comment
+   - **Automatically starts the followup task**
+   - Returns instructions for agent to complete the work
 4. Each subtask has `source` field linking to original comment
-5. Closes the review task with appropriate outcome
 
 **Output (no issues):**
 ```xml
@@ -580,16 +577,25 @@ aiki fix <task_id> [options]
 **Output (issues found):**
 ```xml
 <aiki_fix cmd="fix" status="ok">
-  <followup task_id="lpqrstwo" issues_found="2">
-    Created followup task with 2 subtasks.
+  <followup task_id="lpqrstwo" issues_found="2" status="started">
+    Created and started followup task with 2 subtasks.
 
-    Start with: aiki task start lpqrstwo
+    Please complete the following fixes:
+    
+    1. Fix: Null pointer check in auth.ts (p0)
+       File: src/auth.ts:42
+       
+    2. Fix: JWT expiration validation (p1)
+       File: src/middleware.ts:28
+    
+    Work on these issues and close each subtask when complete.
   </followup>
 
   <context>
-    <in_progress/>
-    <list ready="4">
+    <in_progress>
       <task id="lpqrstwo" name="Followup: Review xqrmnpst" priority="p2"/>
+    </in_progress>
+    <list ready="3">
       <task id="mxsl" name="Implement user auth" priority="p2" blocked_by="lpqrstwo"/>
       <task id="npts" name="Add tests" priority="p2"/>
       <task id="oqru" name="Update docs" priority="p3"/>
@@ -609,7 +615,7 @@ aiki review [<task-id>] [options]
 
 **Options:**
 - `--from <agent>` - Reviewer agent (default: codex)
-- `--prompt <template>` - Prompt template: default, security, performance, style
+- `--template <name>` - Task template: default, security, performance, style
 - `--background` - Return immediately after starting review (agent chains wait && fix)
 
 **Examples:**
@@ -623,8 +629,8 @@ aiki review xqrmnpst
 # Background review of session
 aiki review --background
 
-# Security review with custom prompt
-aiki review --prompt security
+# Security review with custom template
+aiki review --template security
 ```
 
 **Behavior (--background):**
@@ -639,7 +645,7 @@ aiki review --prompt security
     Review started in background.
 
     To wait for completion and process findings:
-    aiki task wait xqrmnpst && aiki fix xqrmnpst
+    aiki wait xqrmnpst && aiki fix xqrmnpst
   </started>
 </aiki_review>
 ```
@@ -786,7 +792,7 @@ task.completed:
   - review:
       task_id: $event.task.id
       from: codex
-      prompt: default
+      template: default
 ```
 
 **What the flow does:**
@@ -822,7 +828,7 @@ task.completed:
     then:
       - review:
           task_id: $event.task.id
-          prompt: security
+          template: security
 
 # Blocking review (waits for completion)
 response.received:
@@ -836,58 +842,20 @@ When a flow triggers background reviews, the agent decides when to wait and fix:
 
 ```bash
 # Single review - wait and fix
-aiki task wait xqrmnpst && aiki fix xqrmnpst
+aiki wait xqrmnpst && aiki fix xqrmnpst
 
 # Check review status without blocking
 aiki task show xqrmnpst
 ```
 
-### Multiple Reviews from a Single Hook
+### Agent Workflow After Review
 
-A single hook may trigger multiple reviews (e.g., security + performance). The flow should communicate each review ID clearly:
-
-**Flow output (multiple reviews):**
-```
-Reviews started:
-- Security review: xqrmnpst
-- Performance review: lpqrstwo
-
-To process each review when ready:
-aiki task wait xqrmnpst && aiki fix xqrmnpst
-aiki task wait lpqrstwo && aiki fix lpqrstwo
-
-Or wait for all and process sequentially:
-aiki task wait xqrmnpst lpqrstwo && aiki fix xqrmnpst && aiki fix lpqrstwo
-```
-
-**Agent pattern for multiple reviews:**
-```bash
-# Wait for all reviews, then fix each
-aiki task wait xqrmnpst lpqrstwo
-aiki fix xqrmnpst
-aiki fix lpqrstwo
-
-# Or process each independently (parallel-friendly)
-aiki task wait xqrmnpst && aiki fix xqrmnpst &
-aiki task wait lpqrstwo && aiki fix lpqrstwo &
-wait
-```
-
-### aiki task wait (Multiple IDs)
+When a review completes, the agent processes findings:
 
 ```bash
-aiki task wait <id1> [<id2> ...] [--timeout <duration>]
+# Wait for review, then process findings
+aiki wait xqrmnpst && aiki fix xqrmnpst
 ```
-
-**Behavior with multiple IDs:**
-- Waits until ALL specified tasks reach terminal state
-- Exit code 0 if all tasks completed successfully
-- Exit code 1 if any task failed or timed out
-
-The `aiki fix` command:
-- If no issues: prints "Review approved", closes review task, exits 0
-- If issues found: creates followup task with subtasks, closes review task
-- Can be called for each review independently
 
 ### review.started Event
 
@@ -900,7 +868,7 @@ review.started:
       A code review is running in background (task: ${event.review.task_id}).
 
       When ready to process findings:
-      aiki task wait ${event.review.task_id} && aiki fix ${event.review.task_id}
+      aiki wait ${event.review.task_id} && aiki fix ${event.review.task_id}
 ```
 
 **Event payload:**
@@ -910,7 +878,7 @@ review.started:
     "task_id": "xqrmnpst",
     "reviewer": "codex",
     "reviewed_task_id": "lpqrstwo",
-    "prompt": "default",
+    "template": "default",
     "background": true
   }
 }
@@ -930,52 +898,27 @@ task.completed:
           ⚠️ Security-sensitive files changed. A security review is running.
 
           You MUST wait for and address the review before continuing:
-          aiki task wait ${review.task_id} && aiki fix ${review.task_id}
+          aiki wait ${review.task_id} && aiki fix ${review.task_id}
 ```
 
-### Multiple Reviews in One Hook
+### Triggering Reviews from Flows
 
 ```yaml
-# Trigger both security and performance reviews
+# Trigger security review on task completion
 task.completed:
   - if: $event.files | any(f => f.path | contains("auth"))
     then:
       - review:
-          id: security_review  # Named for reference
           task_id: $event.task.id
-          prompt: security
-      - review:
-          id: perf_review
-          task_id: $event.task.id
-          prompt: performance
+          template: security
       - prompt: |
-          Multiple reviews started:
-          - Security: ${security_review.task_id}
-          - Performance: ${perf_review.task_id}
+          Security review started: ${review.task_id}
 
           To process when ready:
-          aiki task wait ${security_review.task_id} ${perf_review.task_id}
-          aiki fix ${security_review.task_id}
-          aiki fix ${perf_review.task_id}
+          aiki wait ${review.task_id} && aiki fix ${review.task_id}
 ```
 
-### Collect All Review IDs
 
-```yaml
-# Using review.ids variable (accumulates all review task IDs)
-change.completed:
-  - review:
-      prompt: default
-  - if: $event.files | any(f => f.path | contains("security"))
-    then:
-      - review:
-          prompt: security
-  - prompt: |
-      Reviews started: ${review.ids | join(", ")}
-
-      To process all reviews:
-      aiki task wait ${review.ids | join(" ")} && ${review.ids | map(id => "aiki fix " + id) | join(" && ")}
-```
 
 ---
 
@@ -1030,7 +973,7 @@ metadata:
   review_loop_parent: xqrmnpst  # Original review task
   review_loop_iteration: 1
   review_loop_task_id: lpqrstwo  # Task being reviewed
-  review_loop_prompt: security
+  review_loop_template: security
 ```
 
 **Note**: The `source` field uses the format defined in [task-change-linkage](../done/task-change-linkage.md) and is stored at the top level of the task event, not inside metadata.
@@ -1048,7 +991,7 @@ task.completed:
       - log: "Review loop followup completed, re-reviewing..."
       - review:
           task_id: $event.task.metadata.review_loop_task_id
-          prompt: $event.task.metadata.review_loop_prompt
+          template: $event.task.metadata.review_loop_template
           from: codex
 
 review.completed:
@@ -1087,7 +1030,7 @@ version: "1"
 commit_message.started:
   - log: "Running pre-commit review of session..."
   - review:
-      prompt: default  # Reviews all closed tasks in session by default
+      template: default  # Reviews all closed tasks in session by default
   
   - if: $review.issues_found > 0
     then:
@@ -1110,11 +1053,11 @@ task.completed:
       - log: "Security-sensitive task completed, starting review loop..."
       - review:
           task_id: $event.task.id
-          prompt: security
+          template: security
           loop: true
 
 review.completed:
-  - if: $event.review.prompt == "security" && $event.review.issues_found > 0
+  - if: $event.review.template == "security" && $event.review.issues_found > 0
     then:
       - block: |
           🚨 SECURITY REVIEW FAILED
@@ -1134,7 +1077,8 @@ response.received:
   - if: $event.session.modified_files_count > 5
     then:
       - log: "Running session review before commit..."
-      - review: {}  # Reviews all closed tasks in session by default
+      - review:
+          template: default  # Reviews all closed tasks in session by default
       
       - if: $review.issues_found > 0
         then:
@@ -1153,7 +1097,7 @@ shell.permission_asked:
     then:
       - log: "Running pre-push review of session with loop..."
       - review:
-          prompt: default  # Reviews all closed tasks in session
+          template: default  # Reviews all closed tasks in session
           loop: true
       
       - if: $review.issues_found > 0
@@ -1190,9 +1134,8 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 **Behavior:**
 - Poll task status in a loop with configurable interval
 - Exit immediately if task is in terminal state (closed/failed)
-- If timeout specified, exit with error if exceeded
-- Exit code 0 on success, 1 on failure/timeout
-- Suitable for command chaining: `aiki task wait <id> && aiki fix <id>`
+- Exit code 0 on success, 1 on failure
+- Suitable for command chaining: `aiki wait <id> && aiki fix <id>`
 
 ### Fix Command
 
@@ -1205,8 +1148,9 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
    - Each child task includes comment content (file, severity, issue, fix suggestion)
    - Parent task has `source` field linking to review task
    - Each child has `source` fields linking to review task and specific comment
-4. Print followup task ID and instructions to start work
-5. Show updated task context
+   - **Automatically start the followup task**
+   - Print list of issues with instructions for agent to complete the work
+4. Show updated task context with followup task in_progress
 
 **Note:** Review task is already closed (auto-closed when agent completed subtasks)
 
@@ -1217,17 +1161,16 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 2. Determine scope to review:
    - If task-id provided: review that specific task
    - Otherwise: review all closed tasks in current session (default)
-3. Build metadata (task_id or session, changes, prompt)
-4. Load prompt template (user custom or built-in: default, security, performance, style)
-5. Create review task with 2 subtasks atomically:
-   - Subtask 1: "Digest code changes" - analyze what changed
-   - Subtask 2: "Review code" - apply review criteria from prompt template
+3. Build metadata (task_id or session, changes, template)
+4. Load task template (user custom or aiki: default, security, performance, style)
+5. Create review task from template (parent + subtasks defined in template)
 6. If `--background`: start task and return immediately with instructions
 7. If blocking: run task, wait for completion, then call `fix` to create followup tasks
 
-**Prompt Template Loading:**
-- Check `.aiki/prompts/{name}.md` for user custom prompts
-- Fall back to built-in prompts (default, security, performance, style)
+**Template Loading:**
+- Check `.aiki/templates/custom/{name}.md` for user custom templates
+- Check `.aiki/templates/aiki/review-{name}.md` for aiki templates
+- Fall back to aiki templates (default, security, performance, style)
 
 **Helper Functions:**
 - `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
@@ -1353,12 +1296,13 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 
 **Deliverables:**
 - `aiki task run --background` flag - spawn agent and return immediately
-- `aiki task wait <id>` command - block until task completes
+- `aiki wait <id>` command - block until task completes
 - Background task tracking (PID, status polling)
 - Exit codes for chaining (`wait` exits 0 on success, 1 on failure)
 
 **Files:**
-- `cli/src/commands/task.rs` - Add `--background` flag, `wait` subcommand
+- `cli/src/commands/task.rs` - Add `--background` flag
+- `cli/src/commands/wait.rs` - Wait command implementation
 - `cli/src/tasks/runner.rs` - Background execution logic
 - `cli/src/agents/runtime/mod.rs` - Add `spawn_background()` method
 
@@ -1367,9 +1311,8 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 **Deliverables:**
 - `aiki fix <task_id>` command - create followup from comments
 - Read comments from task, create followup task with subtasks
+- Automatically start the followup task
 - Graceful handling when no comments (success, not error)
-- Close review task with appropriate outcome
-- Assignee and priority options
 
 **Files:**
 - `cli/src/commands/fix.rs` - Fix command implementation
@@ -1381,13 +1324,14 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 - `aiki review [<task-id>]` CLI command with all options
 - Review scope support (session (default), task)
 - Session scope = all closed tasks in current session
-- Prompt template system (default, security, performance, style)
+- Task template system (default, security, performance, style)
 - `--background` flag (default for flow integration)
-- Review task creation with digest/review subtasks
+- Review task creation from templates
 
 **Files:**
 - `cli/src/commands/review.rs` - Review command implementation
-- `cli/src/reviews/prompts/` - Built-in prompt templates
+- `cli/src/templates/` - Template loading and parsing (see task-templates.md)
+- `.aiki/templates/aiki/` - Aiki's built-in review templates
 
 ### Phase 5: Flow Integration
 
@@ -1395,7 +1339,7 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 - `review:` flow action (background by default)
 - `review.started` event with task ID
 - `prompt:` action to return instructions to agent
-- Agent workflow: `aiki task wait <id> && aiki fix <id>`
+- Agent workflow: `aiki wait <id> && aiki fix <id>`
 
 **Files:**
 - `cli/src/flows/actions/review.rs` - Review flow action
@@ -1424,10 +1368,9 @@ This task-based design unifies reviews and regular tasks with a composable, asyn
 
 - **Single storage system** - All tasks on `aiki/tasks` branch
 - **Consistent lifecycle** - Reviews use same events as regular tasks
-- **Composable CLI** - `task run --background`, `task wait`, `fix` can be chained
+- **Composable CLI** - `task run --background`, `wait`, `fix` can be chained
 - **Async by default** - Background reviews don't block the requesting agent
-- **Multiple review support** - Hooks can trigger multiple reviews, agent handles each
-- **Simple orchestration** - Agent chains: `aiki task wait <id> && aiki fix <id>`
+- **Simple orchestration** - Agent chains: `aiki wait <id> && aiki fix <id>`
 - **Graceful handling** - `aiki fix` succeeds with no error when no issues found
 - **Bidirectional linkage** - Changes include `task=` in provenance, tasks include `source` for lineage
 
@@ -1436,7 +1379,7 @@ This task-based design unifies reviews and regular tasks with a composable, asyn
 | Command | Purpose |
 |---------|---------|
 | `aiki task run <id> --background` | Start task, return immediately |
-| `aiki task wait <id> [<id2>...]` | Block until task(s) complete |
+| `aiki wait <id>` | Block until task completes |
 | `aiki fix <id>` | Create followup tasks from review comments |
 | `aiki review [<task-id>] --background` | Create and start review task (async) |
 
@@ -1447,4 +1390,4 @@ This task-based design unifies reviews and regular tasks with a composable, asyn
 | [run-task.md](../done/run-task.md) | `AgentRuntime` trait, `aiki task run` command |
 | [task-change-linkage.md](../done/task-change-linkage.md) | Provenance `task=` field, task `source` field |
 
-This composable design lets agents control when to wait for reviews and process findings, supporting parallel work and multiple review scenarios.
+This composable design lets agents control when to wait for reviews and process findings with a simple, consistent workflow.
