@@ -108,18 +108,18 @@ A **task template** is a YAML file that defines:
 Templates are markdown files with YAML frontmatter:
 
 ```markdown
-<!-- .aiki/templates/security-review.md -->
+<!-- .aiki/templates/aiki/review.md -->
 ---
-description: Deep security analysis of code changes
+description: General code quality, functionality, basic security
 type: review
 assignee: codex
 ---
 
-# Security Review: {scope}
+# Review: {scope}
 
-Security-focused code review orchestration.
+Code review orchestration task.
 
-This task coordinates security analysis of changes.
+This task coordinates review steps.
 
 # Subtasks
 
@@ -129,42 +129,41 @@ Examine the code changes to understand what was modified.
 
 Commands to use:
 - `jj diff --revision {scope}` - Show full diff
-- `jj show {scope}` - Show change description
+- `jj show {scope}` - Show change description and summary
+- `jj log -r {scope}` - Show change in log context
 
 Summarize:
 - What files were changed
 - What functionality was added/modified
-- Security-relevant areas (auth, crypto, input validation)
+- The scope and intent of the changes
 
-## Security analysis
+## Review code
 
-Deep security review focusing on common vulnerabilities.
+Review the code changes for functionality, quality, security, and performance.
 
-**Critical Security Issues:**
-- **SQL Injection** - Unsanitized queries, string concatenation
-- **XSS** - Unescaped user input in HTML/JavaScript
-- **Authentication** - Weak password checks, missing auth checks
-- **Authorization** - Missing permission checks, privilege escalation
-- **Cryptography** - Weak algorithms, hardcoded keys, ECB mode
-- **Data Exposure** - Logging secrets, exposing sensitive data
+Focus on:
+- **Functionality**: Logic errors, edge cases, correctness
+- **Quality**: Error handling, resource leaks, null checks, code clarity
+- **Security**: SQL injection, XSS, auth issues, data exposure, crypto misuse
+- **Performance**: Inefficient algorithms, unnecessary operations, resource usage
 
 For each issue found, add a comment using `aiki task comment` with:
 **File**: <path>:<line>
 **Severity**: error|warning|info
-**Category**: security
-**CVE/CWE**: <reference if applicable>
+**Category**: functionality|quality|security|performance
 
-<description of vulnerability>
+<description of issue>
 
-**Impact**: <what an attacker could do>
-**Exploit Scenario**: <how it could be exploited>
+**Impact**: <what could go wrong>
 
 **Suggested Fix**:
-<secure code example>
+<how to fix it>
+
+Add comments as you find issues, don't wait until the end.
 ```
 
 **Template Structure:**
-- **Filename** - Template name inferred from filename (e.g., `security-review.md` → name is `security-review`)
+- **Filename** - Template name inferred from filename (e.g., `review.md` → name is `review`)
 - **Frontmatter** (YAML between `---`) - Optional metadata like type, assignee, description (no need for `name` field!)
 - **First `# Heading`** - Task name, supports variables like `{scope}`
 - **Content before `# Subtasks`** - Parent task instructions
@@ -278,47 +277,31 @@ Run: jj diff --revision {scope}
 
 ## Built-in Templates
 
-Aiki ships with these built-in templates (maintaining all functionality from old `--prompt` system):
+Aiki ships with these built-in templates:
 
-### 1. `default` - General Code Review
+### 1. `review` - General Code Review (Default)
 
-**Location**: `.aiki/templates/aiki/review-default.md`
+**Location**: `.aiki/templates/aiki/review.md`
 
-**Purpose**: General code quality, functionality, basic security
-
-**Subtasks:**
-1. Digest code changes
-2. Review code (functionality, quality, security, performance)
-
-### 2. `security` - Security-Focused Review
-
-**Location**: `.aiki/templates/aiki/review-security.md`
-
-**Purpose**: Deep security analysis (SQL injection, XSS, auth, crypto)
+**Purpose**: General code quality, functionality, basic security, and performance
 
 **Subtasks:**
-1. Digest code changes
-2. Security analysis (CVE/CWE focus)
+1. **Digest code changes** - Examine what was modified
+2. **Review code** - Check functionality, quality, security, performance
 
-### 3. `performance` - Performance Review
+**Usage:**
+```bash
+aiki review                    # Uses default review template
+aiki review --template review  # Explicit
+```
 
-**Location**: `.aiki/templates/aiki/review-performance.md`
+### Future Templates
 
-**Purpose**: Performance bottlenecks, algorithm efficiency
+Additional specialized templates can be added:
 
-**Subtasks:**
-1. Digest code changes
-2. Performance analysis (O(n) complexity, hot paths, memory usage)
-
-### 4. `style` - Code Style Review
-
-**Location**: `.aiki/templates/aiki/review-style.md`
-
-**Purpose**: Code style, naming conventions, documentation
-
-**Subtasks:**
-1. Digest code changes
-2. Style analysis (naming, formatting, comments, docs)
+- **`review-security.md`** - Deep security analysis (SQL injection, XSS, auth, crypto)
+- **`review-performance.md`** - Performance bottlenecks, algorithm efficiency  
+- **`review-style.md`** - Code style, naming conventions, documentation
 
 ### Template Location Strategy
 
@@ -326,10 +309,7 @@ Aiki ships with these built-in templates (maintaining all functionality from old
 .aiki/
 ├── templates/
 │   ├── aiki/                  # Shipped with aiki (read-only)
-│   │   ├── review-default.md
-│   │   ├── review-security.md
-│   │   ├── review-performance.md
-│   │   └── review-style.md
+│   │   └── review.md          # Default review template
 │   └── custom/                # User-defined templates
 │       ├── refactor-cleanup.md
 │       ├── api-docs.md
@@ -339,8 +319,7 @@ Aiki ships with these built-in templates (maintaining all functionality from old
 **Resolution order:**
 1. Check `.aiki/templates/custom/{name}.md`
 2. Check `.aiki/templates/aiki/{name}.md`
-3. Check `.aiki/templates/aiki/review-{name}.md` (for review templates)
-4. Error: Template not found
+3. Error: Template not found
 
 ---
 
@@ -599,13 +578,10 @@ pub struct TaskDefinition {
 
 **Deliverables:**
 - Create `.aiki/templates/aiki/` directory
-- Ship `review-default.md`, `review-security.md`, `review-performance.md`, `review-style.md`
+- Ship `review.md` (default review template)
 
 **Files:**
-- `.aiki/templates/aiki/review-default.md`
-- `.aiki/templates/aiki/review-security.md`
-- `.aiki/templates/aiki/review-performance.md`
-- `.aiki/templates/aiki/review-style.md`
+- `.aiki/templates/aiki/review.md`
 
 ### Phase 3: CLI Integration
 

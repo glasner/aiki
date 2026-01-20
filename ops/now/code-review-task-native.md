@@ -92,13 +92,15 @@ Reviews can target different scopes of changes:
 
 ### Review Templates
 
-Different review focuses using task templates:
+The default review template covers general code quality:
 
-- **default** - General code quality, functionality, basic security
-- **security** - Deep security analysis (SQL injection, XSS, auth, crypto)
-- **performance** - Performance bottlenecks, algorithm efficiency
-- **style** - Code style, naming conventions, documentation
-- **custom** - User-defined templates in `.aiki/templates/custom/`
+- **`review`** (default) - General code quality, functionality, security, and performance
+  - Subtasks: Digest code changes, Review code
+  - Location: `.aiki/templates/aiki/review.md`
+
+**Custom templates:**
+- Users can create custom templates in `.aiki/templates/custom/`
+- Future: Additional specialized templates (security, performance, style)
 
 Templates define the full task structure (parent + subtasks + instructions). See [task-templates.md](task-templates.md) for details.
 
@@ -261,7 +263,7 @@ instructions: |
   Code review orchestration task
 metadata:
   task_id: xqrmnpst
-  template: default
+  template: review
 scope_files:
   - src/auth.ts
   - src/middleware.ts
@@ -615,12 +617,12 @@ aiki review [<task-id>] [options]
 
 **Options:**
 - `--from <agent>` - Reviewer agent (default: codex)
-- `--template <name>` - Task template: default, security, performance, style
+- `--template <name>` - Task template (default: review)
 - `--background` - Return immediately after starting review (agent chains wait && fix)
 
 **Examples:**
 ```bash
-# Review all closed tasks in session (default)
+# Review all closed tasks in session (uses default template)
 aiki review
 
 # Review specific task by ID
@@ -629,8 +631,11 @@ aiki review xqrmnpst
 # Background review of session
 aiki review --background
 
-# Security review with custom template
-aiki review --template security
+# Explicit template
+aiki review --template review
+
+# Custom template (if user creates one)
+aiki review --template my-custom-review
 ```
 
 **Behavior (--background):**
@@ -792,7 +797,7 @@ task.completed:
   - review:
       task_id: $event.task.id
       from: codex
-      template: default
+      template: review
 ```
 
 **What the flow does:**
@@ -1030,7 +1035,7 @@ version: "1"
 commit_message.started:
   - log: "Running pre-commit review of session..."
   - review:
-      template: default  # Reviews all closed tasks in session by default
+      template: review  # Reviews all closed tasks in session by default
   
   - if: $review.issues_found > 0
     then:
@@ -1078,7 +1083,7 @@ response.received:
     then:
       - log: "Running session review before commit..."
       - review:
-          template: default  # Reviews all closed tasks in session by default
+          template: review  # Reviews all closed tasks in session by default
       
       - if: $review.issues_found > 0
         then:
@@ -1097,7 +1102,7 @@ shell.permission_asked:
     then:
       - log: "Running pre-push review of session with loop..."
       - review:
-          template: default  # Reviews all closed tasks in session
+          template: review  # Reviews all closed tasks in session
           loop: true
       
       - if: $review.issues_found > 0
@@ -1162,15 +1167,15 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
    - If task-id provided: review that specific task
    - Otherwise: review all closed tasks in current session (default)
 3. Build metadata (task_id or session, changes, template)
-4. Load task template (user custom or aiki: default, security, performance, style)
+4. Load task template (user custom or aiki: default is `review`)
 5. Create review task from template (parent + subtasks defined in template)
 6. If `--background`: start task and return immediately with instructions
 7. If blocking: run task, wait for completion, then call `fix` to create followup tasks
 
 **Template Loading:**
 - Check `.aiki/templates/custom/{name}.md` for user custom templates
-- Check `.aiki/templates/aiki/review-{name}.md` for aiki templates
-- Fall back to aiki templates (default, security, performance, style)
+- Check `.aiki/templates/aiki/{name}.md` for aiki templates
+- Default template is `review` (at `.aiki/templates/aiki/review.md`)
 
 **Helper Functions:**
 - `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
