@@ -38,7 +38,7 @@ pub fn run_prepare_commit_message() -> Result<()> {
     let commit_msg_file = env::var("AIKI_COMMIT_MSG_FILE").ok().map(PathBuf::from);
 
     let event = AikiCommitMessageStartedPayload {
-        agent_type: AgentType::Claude, // Default agent for git hooks
+        agent_type: AgentType::ClaudeCode, // Default agent for git hooks
         cwd,
         timestamp: Utc::now(),
         commit_msg_file,

@@ -51,7 +51,7 @@ fn test_has_context_none() {
 fn test_build_context_returns_none_when_empty() {
     // Create a response.received event (has context assembler)
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
         DetectionMethod::Hook,
@@ -78,7 +78,7 @@ fn test_build_context_returns_none_when_empty() {
 #[test]
 fn test_build_context_returns_some_with_chunks() {
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
         DetectionMethod::Hook,
@@ -159,7 +159,7 @@ fn test_session_end_triggered_without_autoreply() {
     // response.received with no Context actions -> has_context() = false -> session.ended triggered
 
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "test-no-autoreply",
         None::<&str>,
         DetectionMethod::Hook,
@@ -220,7 +220,7 @@ fn test_documented_behavior() {
 
     // 2. build_context() returns None when assembler is empty
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "doc-test",
         None::<&str>,
         DetectionMethod::Hook,

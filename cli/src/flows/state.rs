@@ -32,6 +32,7 @@ pub struct AikiState {
     pub flow_name: Option<String>,
 
     /// Context assembler for events that build messages
+    /// - session.started: accumulates context for session initialization
     /// - prompt.submitted: accumulates prompt modifications and context
     /// - response.received: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
@@ -47,6 +48,10 @@ impl AikiState {
 
         // Initialize context assembler based on event type
         let context_assembler = match &event {
+            crate::events::AikiEvent::SessionStarted(_) => {
+                // session.started: build additional context from scratch
+                Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
+            }
             crate::events::AikiEvent::PromptSubmitted(e) => {
                 // prompt.submitted: start with original prompt
                 Some(crate::flows::context::ContextAssembler::new(
@@ -79,6 +84,7 @@ impl AikiState {
 
     /// Helper to get the agent type
     #[must_use]
+    #[allow(dead_code)] // Part of AikiState API
     pub fn agent_type(&self) -> crate::provenance::AgentType {
         self.event.agent_type()
     }
@@ -117,19 +123,19 @@ impl AikiState {
     }
 
     /// Get mutable reference to the context assembler
-    /// Only available for prompt.submitted and response.received events
+    /// Only available for session.started, prompt.submitted, and response.received events
     pub fn get_context_assembler_mut(
         &mut self,
     ) -> crate::error::Result<&mut crate::flows::context::ContextAssembler> {
         self.context_assembler.as_mut().ok_or_else(|| {
             crate::error::AikiError::Other(anyhow::anyhow!(
-                "Context assembler not available (not a prompt.submitted or response.received event)"
+                "Context assembler not available (not a session.started, prompt.submitted, or response.received event)"
             ))
         })
     }
 
     /// Build the final context from accumulated chunks
-    /// Works for prompt.submitted (builds prompt) and response.received (builds autoreply)
+    /// Works for session.started, prompt.submitted (builds prompt), and response.received (builds autoreply)
     /// Returns None if:
     /// - This event doesn't have a context assembler, OR
     /// - The assembler is empty (no Context actions were executed)
@@ -162,6 +168,7 @@ impl AikiState {
 
     /// Get the number of failures
     #[must_use]
+    #[allow(dead_code)] // Part of AikiState API
     pub fn failures_count(&self) -> usize {
         self.failures.len()
     }
@@ -214,7 +221,7 @@ mod tests {
         use crate::session::AikiSession;
 
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,

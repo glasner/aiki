@@ -35,6 +35,7 @@ use crate::events::{
 };
 use crate::flows::state::ActionResult;
 use crate::provenance::ProvenanceRecord;
+use crate::tasks::{manager, storage};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::fs;
@@ -78,6 +79,28 @@ pub fn get_git_user() -> Option<String> {
     Some(format!("{} <{}>", name, email))
 }
 
+/// Get in-progress task IDs for a session
+///
+/// Queries the task storage to find tasks that are currently in-progress
+/// and claimed by the given session. Returns task IDs ordered by most
+/// recently started first.
+///
+/// Returns an empty Vec if tasks cannot be read (graceful degradation).
+fn get_in_progress_tasks_for_session(cwd: &Path, session_id: &str) -> Vec<String> {
+    // Read task events from storage (gracefully handle errors)
+    let events = match storage::read_events(cwd) {
+        Ok(events) => events,
+        Err(e) => {
+            debug_log(|| format!("[flows/core] Failed to read task events: {}", e));
+            return Vec::new();
+        }
+    };
+
+    // Materialize tasks and get in-progress ones for this session
+    let tasks = manager::materialize_tasks(&events);
+    manager::get_in_progress_task_ids_for_session(&tasks, session_id)
+}
+
 // =============================================================================
 // Metadata Generation Functions
 // =============================================================================
@@ -110,8 +133,12 @@ pub fn build_write_metadata(
         }
     };
 
-    // Create provenance record from change event
-    let mut provenance = ProvenanceRecord::from_change_completed_event(event);
+    // Get in-progress tasks for this session
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+
+    // Create provenance record from change event with task IDs
+    let mut provenance =
+        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
 
     // Check if we have overlapping user edits and should add coauthor
     if let Some(ctx) = context {
@@ -174,7 +201,11 @@ pub fn build_delete_metadata(
         }
     };
 
-    let provenance = ProvenanceRecord::from_change_completed_event(event);
+    // Get in-progress tasks for this session
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+
+    let provenance =
+        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
@@ -221,7 +252,11 @@ pub fn build_move_metadata(
         }
     };
 
-    let provenance = ProvenanceRecord::from_change_completed_event(event);
+    // Get in-progress tasks for this session
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+
+    let provenance =
+        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
@@ -544,7 +579,11 @@ pub fn prepare_separation_change(event: &AikiChangeCompletedPayload) -> Result<A
         });
     }
 
-    let provenance = ProvenanceRecord::from_change_completed_event(event);
+    // Get in-progress tasks for this session
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+
+    let provenance =
+        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 
@@ -791,6 +830,7 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
 }
 
 /// Run jj split to create AI change and user change
+#[allow(dead_code)] // Reserved for future split-based separation strategy
 fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Result<String> {
     // Build jj split command
     // Note: jj split doesn't support --author, we'll set it separately
@@ -850,6 +890,7 @@ fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Re
 }
 
 /// Parse jj split output to extract change IDs
+#[allow(dead_code)] // Reserved for future split-based separation strategy
 fn parse_split_output(output: &str) -> Result<(String, String)> {
     // jj split output format (example):
     // "First part: qpvuntsm 12345678 AI changes
@@ -919,10 +960,29 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 // Task System Functions
 // =============================================================================
 
-/// Get the size of the ready task queue
+/// Get the size of the ready task queue for a specific agent
+///
+/// Returns the number of open, unblocked tasks visible to the given agent.
+/// When agent is provided, filters to show only tasks assigned to that agent
+/// or unassigned tasks. This is used for context injection in flows.
+pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) -> Result<ActionResult> {
+    let events = crate::tasks::storage::read_events(cwd)?;
+    let tasks = crate::tasks::manager::materialize_tasks(&events);
+    let ready = crate::tasks::manager::get_ready_queue_for_agent(&tasks, agent);
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: ready.len().to_string(),
+        stderr: String::new(),
+    })
+}
+
+/// Get the size of the ready task queue (all tasks, no filtering)
 ///
 /// Returns the number of open, unblocked tasks in the ready queue.
 /// This is used for context injection in flows to show task count.
+#[allow(dead_code)] // Part of flow function API
 pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
     let tasks = crate::tasks::manager::materialize_tasks(&events);
@@ -979,7 +1039,7 @@ mod tests {
         edit_details: Vec<EditDetail>,
     ) -> AikiChangeCompletedPayload {
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
@@ -1004,7 +1064,7 @@ mod tests {
     #[test]
     fn test_build_write_metadata_with_claude() {
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test-session-123".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
@@ -1031,10 +1091,21 @@ mod tests {
         assert_eq!(json["author"], "Claude <noreply@anthropic.com>");
         assert!(json["message"].as_str().unwrap().contains("[aiki]"));
         assert!(json["message"].as_str().unwrap().contains("author=claude"));
-        assert!(json["message"]
-            .as_str()
-            .unwrap()
-            .contains("session=test-session-123"));
+        // Session ID is now a UUID (deterministic hash of agent_type + external_id)
+        // Check that it contains a session= field with a UUID-like format (36 chars with hyphens)
+        let message = json["message"].as_str().unwrap();
+        let session_start = message.find("session=").expect("Should have session=");
+        let session_value = &message[session_start + 8..session_start + 44]; // 36 char UUID
+        assert_eq!(
+            session_value.len(),
+            36,
+            "Session ID should be 36 chars (UUID format)"
+        );
+        assert_eq!(
+            session_value.chars().filter(|c| *c == '-').count(),
+            4,
+            "Session ID should have 4 hyphens (UUID format)"
+        );
     }
 
     #[test]

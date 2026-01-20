@@ -23,6 +23,11 @@ task.create:
       - path: src/file.ts
         lines: [42, 50]
 
+task.run:
+  task_id: task-123
+  # Starts agent session to work on the task
+  # Blocks until task completes or agent returns control
+
 task.close:
   id: task-123
   outcome: done
@@ -58,6 +63,41 @@ response.received:
         append: |
           📋 Created $errors.length task(s)
           Run `aiki task list` to see ready tasks
+```
+
+### Auto-Run Review Followup Tasks
+
+```yaml
+# Automatically start working on review issues
+review.completed:
+  - if: $event.review.issues_found > 0
+    then:
+      - log: "Review found ${event.review.issues_found} issues, starting fixes..."
+      - task.run:
+          task_id: $event.review.followup_task_id
+      # Agent works on the followup task (and its children)
+      # When done, control returns here
+      - log: "Finished working on review issues"
+```
+
+### Review Loop with Auto-Fix
+
+```yaml
+# Complete review loop: review → auto-fix → re-review
+review.completed:
+  - if: $event.review.loop_enabled && $event.review.issues_found > 0
+    then:
+      - log: "Starting automatic fix of ${event.review.issues_found} issues..."
+      - task.run:
+          task_id: $event.review.followup_task_id
+      
+      # After fixes complete, trigger re-review
+      - log: "Fixes complete, re-reviewing..."
+      - review:
+          scope: $event.review.scope
+          files: $event.review.files
+          prompt: $event.review.prompt
+          loop: true
 ```
 
 ### Auto-Close Tasks on Fix

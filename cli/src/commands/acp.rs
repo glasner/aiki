@@ -115,8 +115,7 @@ use crate::cache::debug_log;
 use crate::commands::zed_detection;
 use crate::editors::acp::handlers::{
     fire_pre_file_change_event, fire_session_start_event, handle_session_end,
-    handle_session_prompt, handle_session_update, parse_permission_request, Autoreply,
-    ToolCallContext,
+    handle_session_prompt, handle_session_update, parse_permission_request, ToolCallContext,
 };
 use crate::editors::acp::protocol::{
     session_id, AgentInfo, ClientInfo, InitializeRequest, InitializeResponse, JsonRpcId,
@@ -306,7 +305,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             }
                         }
                         "session/new" => {
-                            // Extract working directory from session requests
+                            // Extract working directory and agent_pid from session requests
+                            let mut agent_pid: Option<u32> = None;
                             if let Some(params) = &msg.params {
                                 if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
                                     let path = PathBuf::from(cwd_str);
@@ -322,12 +322,21 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         format!("ACP Proxy: Set working directory to: {}", cwd_str)
                                     });
                                 }
+
+                                // Extract agent_pid for PID-based session detection
+                                if let Some(pid) = params.get("agent_pid").and_then(|v| v.as_u64()) {
+                                    agent_pid = Some(pid as u32);
+                                    debug_log(|| {
+                                        format!("ACP Proxy: Extracted agent_pid: {}", pid)
+                                    });
+                                }
                             }
 
                             // Track session/new request for session.started event
                             if let Some(request_id) = &msg.id {
                                 let _ = metadata_tx_clone.send(StateMessage::TrackNewSession {
                                     request_id: request_id.clone(),
+                                    agent_pid,
                                 });
                             }
                         }
@@ -453,8 +462,8 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     let mut prompt_requests: HashMap<JsonRpcId, SessionId> = HashMap::new();
 
     // Track session/new requests for session.started event
-    // Key is JsonRpcId (normalized request_id), value is boolean (true = pending)
-    let mut session_new_requests: HashMap<JsonRpcId, bool> = HashMap::new();
+    // Key is JsonRpcId (normalized request_id), value is agent_pid (for PID-based session detection)
+    let mut session_new_requests: HashMap<JsonRpcId, Option<u32>> = HashMap::new();
 
     // Track autoreply counters per session (not global)
     let mut autoreply_counters: HashMap<SessionId, usize> = HashMap::new();
@@ -503,9 +512,9 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             format!("[acp] Reset autoreply counter for session: {}", session_id)
                         });
                     }
-                    StateMessage::TrackNewSession { request_id } => {
+                    StateMessage::TrackNewSession { request_id, agent_pid } => {
                         // Track session/new request to match with response
-                        session_new_requests.insert(JsonRpcId::from_value(&request_id), true);
+                        session_new_requests.insert(JsonRpcId::from_value(&request_id), agent_pid);
                     }
                     StateMessage::Shutdown => {
                         // Explicit shutdown signal - exit the loop
@@ -539,16 +548,17 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                         // Check for session/new response (session.started event)
                         if let Some(response_id) = &msg.id {
                             let request_id = JsonRpcId::from_value(response_id);
-                            if session_new_requests.remove(&request_id).is_some() {
+                            if let Some(agent_pid) = session_new_requests.remove(&request_id) {
                                 // This is a session/new response
                                 if let Some(session_id) =
                                     result.get("sessionId").and_then(|v| v.as_str())
                                 {
-                                    // Fire session.started event
+                                    // Fire session.started event with agent_pid for PID-based detection
                                     if let Err(e) = fire_session_start_event(
                                         session_id,
                                         &validated_agent_type,
                                         &cwd,
+                                        agent_pid,
                                     ) {
                                         eprintln!(
                                             "Warning: Failed to fire session.started event: {}",
@@ -790,7 +800,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
 /// Parse and validate agent type against our AgentType enum
 fn parse_agent_type(agent: &str) -> Result<AgentType> {
     match agent {
-        "claude" | "claude-code" => Ok(AgentType::Claude), // Accept both for backwards compatibility
+        "claude" | "claude-code" => Ok(AgentType::ClaudeCode), // Accept both for backwards compatibility
         "codex" => Ok(AgentType::Codex),
         "cursor" => Ok(AgentType::Cursor),
         "gemini" => Ok(AgentType::Gemini),
@@ -803,7 +813,7 @@ mod tests {
     use super::*;
     use crate::editors::acp::handlers::{
         build_modified_prompt, concatenate_text_chunks, extract_autoreply,
-        extract_text_from_prompt_array,
+        extract_text_from_prompt_array, Autoreply,
     };
     use crate::editors::acp::state::{check_autoreply_limit, increment_autoreply_counter};
     use crate::events::result::HookResult;
@@ -811,10 +821,10 @@ mod tests {
 
     #[test]
     fn test_parse_agent_type_valid() {
-        assert!(matches!(parse_agent_type("claude"), Ok(AgentType::Claude)));
+        assert!(matches!(parse_agent_type("claude"), Ok(AgentType::ClaudeCode)));
         assert!(matches!(
             parse_agent_type("claude-code"),
-            Ok(AgentType::Claude)
+            Ok(AgentType::ClaudeCode)
         ));
         assert!(matches!(parse_agent_type("codex"), Ok(AgentType::Codex)));
         assert!(matches!(parse_agent_type("cursor"), Ok(AgentType::Cursor)));

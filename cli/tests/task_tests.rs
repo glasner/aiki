@@ -208,7 +208,7 @@ fn test_task_close_current() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close the current task
-    aiki_task(temp_dir.path(), &["close"])
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"])
         .success()
         .stdout(predicate::str::contains(r#"cmd="close""#))
         .stdout(predicate::str::contains(r#"<closed outcome="done">"#))
@@ -225,7 +225,7 @@ fn test_task_close_wont_do() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close as won't do
-    aiki_task(temp_dir.path(), &["close", "--wont-do"])
+    aiki_task(temp_dir.path(), &["close", "--wont-do", "--comment", "Not implementing"])
         .success()
         .stdout(predicate::str::contains(r#"outcome="wont_do""#));
 }
@@ -319,7 +319,7 @@ fn test_task_list_all() {
     aiki_task(temp_dir.path(), &["add", "Open task"]).success();
     aiki_task(temp_dir.path(), &["add", "To be closed"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close"]).success();
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
 
     // --all should show all tasks including closed
     aiki_task(temp_dir.path(), &["list", "--all"])
@@ -338,7 +338,7 @@ fn test_task_list_open_filter() {
     aiki_task(temp_dir.path(), &["add", "Task to close"]).success();
     aiki_task(temp_dir.path(), &["add", "Task to keep open"]).success();
     aiki_task(temp_dir.path(), &["start"]).success(); // Starts "Task to close" (oldest)
-    aiki_task(temp_dir.path(), &["close"]).success(); // Closes "Task to close"
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success(); // Closes "Task to close"
 
     // --open should only show open tasks
     let output = aiki_task(temp_dir.path(), &["list", "--open"]).success();
@@ -405,7 +405,7 @@ fn test_task_list_closed_filter() {
     // Create and close a task
     aiki_task(temp_dir.path(), &["add", "Closed task"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close"]).success();
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
 
     // --closed should show closed tasks
     aiki_task(temp_dir.path(), &["list", "--closed"])
@@ -614,7 +614,7 @@ fn test_task_start_reopen() {
     // Create, start, and close a task
     aiki_task(temp_dir.path(), &["add", "Task to reopen"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close"]).success();
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
 
     // Get the task ID from closed list
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -729,7 +729,7 @@ fn test_list_filter_preserves_context_ready_queue() {
     aiki_task(temp_dir.path(), &["add", "Open task"]).success();
     aiki_task(temp_dir.path(), &["add", "To close"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close"]).success();
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
 
     // When filtering by --closed, the context should still show actual ready queue
     let output = aiki_task(temp_dir.path(), &["list", "--closed"]).success();
@@ -756,9 +756,12 @@ fn test_task_start_nonexistent() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
+    // Quick-start feature: if input isn't a task ID, it's treated as a description
+    // and a new task is created with that name
     aiki_task(temp_dir.path(), &["start", "nonexistent"])
-        .failure()
-        .stderr(predicate::str::contains("Task not found"));
+        .success()
+        .stdout(predicate::str::contains(r#"<added>"#))
+        .stdout(predicate::str::contains(r#"name="nonexistent""#));
 }
 
 #[test]
@@ -795,7 +798,7 @@ fn test_task_close_when_none_in_progress() {
     aiki_task(temp_dir.path(), &["add", "Not started"]).success();
 
     // Note: Error cases return exit code 0 but with XML error output
-    aiki_task(temp_dir.path(), &["close"])
+    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"])
         .success()
         .stdout(predicate::str::contains(r#"status="error""#))
         .stdout(predicate::str::contains("No task in progress to close"));

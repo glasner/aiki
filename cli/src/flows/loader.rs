@@ -52,6 +52,7 @@ impl FlowLoader {
     /// # Errors
     ///
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn new() -> Result<Self> {
         Ok(Self {
             resolver: FlowResolver::new()?,
@@ -163,6 +164,7 @@ impl FlowLoader {
     ///
     /// A reference to the cached core flow.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn load_core_flow() -> &'static Flow {
         super::bundled::load_core_flow()
     }
@@ -171,24 +173,28 @@ impl FlowLoader {
     ///
     /// This is useful for testing or when you need to reload flows
     /// that may have changed on disk.
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
 
     /// Get the number of cached flows.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn cache_size(&self) -> usize {
         self.cache.len()
     }
 
     /// Get the project root directory.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn project_root(&self) -> &Path {
         self.resolver.project_root()
     }
 
     /// Get the home directory.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn home_dir(&self) -> &Path {
         self.resolver.home_dir()
     }
@@ -197,6 +203,7 @@ impl FlowLoader {
     ///
     /// Returns `{project_root}/.aiki/flows`.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowLoader API
     pub fn default_flows_dir(&self) -> PathBuf {
         self.resolver.project_root().join(".aiki/flows")
     }

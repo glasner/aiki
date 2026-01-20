@@ -363,6 +363,7 @@ impl<'a> FlowComposer<'a> {
 
     /// Get the current call stack depth.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowComposer API
     pub fn depth(&self) -> usize {
         self.call_stack.len()
     }
@@ -371,6 +372,7 @@ impl<'a> FlowComposer<'a> {
     ///
     /// This is a helper for testing cycle detection.
     #[must_use]
+    #[allow(dead_code)] // Part of FlowComposer API
     pub fn is_in_stack(&self, path: &Path) -> bool {
         self.call_stack.contains(&path.to_path_buf())
     }
@@ -483,7 +485,7 @@ version: "1"
     /// Create a test AikiState with a ChangeCompleted event
     fn create_test_state(temp_dir: &TempDir) -> AikiState {
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             DetectionMethod::Hook,

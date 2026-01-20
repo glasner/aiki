@@ -12,7 +12,7 @@ use std::path::PathBuf;
 fn test_must_use_warning_compilation() {
     // Test that event construction works
     let session = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
@@ -30,7 +30,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using &str
     let session1 = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "session-1".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
@@ -43,7 +43,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using String
     let session2 = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
@@ -76,7 +76,7 @@ fn test_impl_asref_path_ergonomics() {
 
     // Using PathBuf
     let session4 = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "session-3".to_string(),
         None::<&str>,
         DetectionMethod::Hook,
@@ -90,7 +90,7 @@ fn test_impl_asref_path_ergonomics() {
     // Using &PathBuf
     let pb = PathBuf::from("/tmp");
     let session5 = AikiSession::new(
-        AgentType::Claude,
+        AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
         DetectionMethod::Hook,

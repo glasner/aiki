@@ -225,6 +225,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             name,
             priority,
             assignee,
+            sources,
             timestamp,
         } => {
             add_metadata("event", "created", &mut lines);
@@ -234,11 +235,16 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(assignee) = assignee {
                 add_metadata("assignee", assignee, &mut lines);
             }
+            // Add source= lines (one per source)
+            for source in sources {
+                add_metadata("source", source, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Started {
             task_ids,
             agent_type,
+            session_id,
             timestamp,
             stopped,
         } => {
@@ -247,6 +253,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             add_metadata("agent_type", agent_type, &mut lines);
+            if let Some(sid) = session_id {
+                add_metadata("session_id", sid, &mut lines);
+            }
             for stopped_id in stopped {
                 add_metadata("stopped_task", stopped_id, &mut lines);
             }
@@ -293,12 +302,14 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::CommentAdded {
-            task_id,
+            task_ids,
             text,
             timestamp,
         } => {
             add_metadata("event", "comment_added", &mut lines);
-            add_metadata("task_id", task_id, &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
             add_metadata_escaped("text", text, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -306,6 +317,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             task_id,
             name,
             priority,
+            assignee,
             timestamp,
         } => {
             add_metadata("event", "updated", &mut lines);
@@ -316,6 +328,15 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(priority) = priority {
                 add_metadata("priority", priority, &mut lines);
             }
+            // Serialize assignee: Some(Some(a)) = "assignee=<value>", Some(None) = "assignee="
+            if let Some(assignee_value) = assignee {
+                if let Some(ref a) = assignee_value {
+                    add_metadata("assignee", a, &mut lines);
+                } else {
+                    add_metadata("assignee", "", &mut lines); // Explicit unassign
+                }
+            }
+            // If assignee is None, we don't write anything (no change)
             add_metadata_timestamp(timestamp, &mut lines);
         }
     }
@@ -360,12 +381,18 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("assignee")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
+            // Parse sources (multiple source= lines)
+            let sources = fields
+                .get("source")
+                .map(|v| v.iter().map(|s| s.to_string()).collect())
+                .unwrap_or_else(Vec::new);
 
             Some(TaskEvent::Created {
                 task_id,
                 name,
                 priority,
                 assignee,
+                sources,
                 timestamp,
             })
         }
@@ -380,6 +407,10 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .and_then(|v| v.first())
                 .unwrap_or(&"unknown")
                 .to_string();
+            let session_id = fields
+                .get("session_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             let stopped = fields
                 .get("stopped_task")
                 .map(|v| v.iter().map(|s| s.to_string()).collect())
@@ -388,6 +419,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Started {
                 task_ids,
                 agent_type,
+                session_id,
                 timestamp,
                 stopped,
             })
@@ -443,11 +475,15 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             })
         }
         "comment_added" => {
-            let task_id = fields.get("task_id")?.first()?.to_string();
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             let text = unescape_metadata_value(fields.get("text")?.first()?);
 
             Some(TaskEvent::CommentAdded {
-                task_id,
+                task_ids,
                 text,
                 timestamp,
             })
@@ -462,11 +498,21 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("priority")
                 .and_then(|v| v.first())
                 .and_then(|s| TaskPriority::from_str(s));
+            // Parse assignee: absent=None, empty=Some(None), value=Some(Some(value))
+            let assignee = fields.get("assignee").map(|v| {
+                let value = v.first().map(|s| *s).unwrap_or("");
+                if value.is_empty() {
+                    None  // Unassign
+                } else {
+                    Some(value.to_string())  // Assign
+                }
+            });
 
             Some(TaskEvent::Updated {
                 task_id,
                 name,
                 priority,
+                assignee,
                 timestamp,
             })
         }
@@ -485,6 +531,7 @@ mod tests {
             name: "Fix auth bug".to_string(),
             priority: TaskPriority::P2,
             assignee: Some("claude-code".to_string()),
+            sources: Vec::new(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -607,6 +654,7 @@ timestamp=2026-01-09T10:30:00Z
             name: "Test task".to_string(),
             priority: TaskPriority::P1,
             assignee: None,
+            sources: Vec::new(),
             timestamp: Utc::now(),
         };
 
@@ -646,6 +694,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Started {
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             agent_type: "claude-code".to_string(),
+            session_id: Some("test-session-uuid".to_string()),
             timestamp: Utc::now(),
             stopped: vec!["stopped1".to_string()],
         };
@@ -954,6 +1003,7 @@ timestamp=2026-01-09T10:30:00Z
             name: "Fix bug = critical\nSee issue #123".to_string(),
             priority: TaskPriority::P1,
             assignee: None,
+            sources: Vec::new(),
             timestamp: Utc::now(),
         };
 
@@ -985,7 +1035,7 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_roundtrip_comment_with_special_chars() {
         let original = TaskEvent::CommentAdded {
-            task_id: "a1b2".to_string(),
+            task_ids: vec!["a1b2".to_string()],
             text: "This is a comment with\nmultiple lines\nand = signs".to_string(),
             timestamp: Utc::now(),
         };
@@ -1084,6 +1134,7 @@ timestamp=2026-01-09T10:30:00Z
             task_id: "a1b2".to_string(),
             name: Some("New name".to_string()),
             priority: None,
+            assignee: None,
             timestamp,
         };
 
@@ -1100,18 +1151,21 @@ timestamp=2026-01-09T10:30:00Z
                     task_id: id1,
                     name: n1,
                     priority: p1,
+                    assignee: a1,
                     timestamp: t1,
                 },
                 TaskEvent::Updated {
                     task_id: id2,
                     name: n2,
                     priority: p2,
+                    assignee: a2,
                     timestamp: t2,
                 },
             ) => {
                 assert_eq!(id1, id2);
                 assert_eq!(n1, n2);
                 assert_eq!(p1, p2);
+                assert_eq!(a1, a2);
                 assert_eq!(t1, t2);
             }
             _ => panic!("Event type mismatch"),
@@ -1128,6 +1182,7 @@ timestamp=2026-01-09T10:30:00Z
             task_id: "a1b2".to_string(),
             name: None,
             priority: Some(TaskPriority::P0),
+            assignee: None,
             timestamp,
         };
 
@@ -1164,6 +1219,7 @@ timestamp=2026-01-09T10:30:00Z
             task_id: "a1b2".to_string(),
             name: Some("Updated name".to_string()),
             priority: Some(TaskPriority::P1),
+            assignee: None,
             timestamp: Utc::now(),
         };
 
@@ -1200,6 +1256,7 @@ timestamp=2026-01-09T10:30:00Z
             task_id: "a1b2".to_string(),
             name: Some("Name = special\nwith newlines".to_string()),
             priority: None,
+            assignee: None,
             timestamp: Utc::now(),
         };
 
@@ -1255,8 +1312,8 @@ timestamp=2026-01-09T10:30:00Z
 
         let event = parse_metadata_block(block).expect("Should parse");
         match event {
-            TaskEvent::CommentAdded { task_id, text, .. } => {
-                assert_eq!(task_id, "a1b2");
+            TaskEvent::CommentAdded { task_ids, text, .. } => {
+                assert_eq!(task_ids, vec!["a1b2"]);
                 assert_eq!(text, "This is a comment");
             }
             _ => panic!("Expected CommentAdded event"),
@@ -1332,7 +1389,7 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_event_to_metadata_block_comment_added() {
         let event = TaskEvent::CommentAdded {
-            task_id: "a1b2".to_string(),
+            task_ids: vec!["a1b2".to_string()],
             text: "This is a comment".to_string(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
@@ -1353,6 +1410,7 @@ timestamp=2026-01-09T10:30:00Z
             task_id: "a1b2".to_string(),
             name: Some("New task name".to_string()),
             priority: Some(TaskPriority::P1),
+            assignee: None,
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

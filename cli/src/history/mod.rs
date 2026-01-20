@@ -1,17 +1,15 @@
 //! Prompt history system for Aiki
 //!
-//! Provides conversation history tracking with:
+//! Provides conversation history recording with:
 //! - Event-sourced storage on `aiki/conversations` branch
-//! - Session and log materialization
-//! - Search/filter capabilities
+//! - Content truncation for large prompts/responses
 
-pub mod manager;
+pub mod recorder;
 pub mod storage;
 pub mod types;
 
-pub use manager::{filter_log_entries, get_sessions_by_agent, materialize_log_entries, materialize_sessions};
-pub use storage::{ensure_conversations_branch, read_events, write_event};
-pub use types::{
-    AgentType, ConversationEvent, IntentSource, LogEntry, Session, CONVERSATIONS_BRANCH,
-    METADATA_END, METADATA_START,
-};
+pub use recorder::{record_prompt, record_response, record_session_end, record_session_start};
+#[allow(unused_imports)]
+pub use storage::{ensure_conversations_branch, get_latest_prompt_change_id, read_events, write_event};
+#[allow(unused_imports)]
+pub use types::{AgentType, ConversationEvent, Session, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};

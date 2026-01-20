@@ -38,6 +38,7 @@ pub enum StateMessage {
     /// Track session/new request ID to match with response for session.started event
     TrackNewSession {
         request_id: serde_json::Value, // Raw JSON-RPC "id" field (normalized at consumption)
+        agent_pid: Option<u32>,        // Optional agent PID for PID-based session detection
     },
     /// Signal shutdown when agent process exits
     Shutdown,

@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::history;
 
 /// session.ended event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,12 +12,16 @@ pub struct AikiSessionEndedPayload {
 /// Handle session.ended event
 ///
 /// Executes the session.ended flow section for user-defined cleanup actions,
-/// then cleans up the session file. This event fires when the agent session
-/// ends, either explicitly or when response.received doesn't generate an autoreply.
+/// then cleans up the session file and records session end to history.
 pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResult> {
     use super::prelude::execute_flow;
 
     debug_log(|| format!("Session ended by {:?}", payload.session.agent_type()));
+
+    // Record session end to conversation history (non-blocking on failure)
+    if let Err(e) = history::record_session_end(&payload.cwd, &payload.session, payload.timestamp) {
+        debug_log(|| format!("Failed to record session end: {}", e));
+    }
 
     // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();

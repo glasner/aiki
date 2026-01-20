@@ -160,6 +160,7 @@ fn build_prompt_submitted_event(payload: UserPromptSubmitPayload) -> AikiEvent {
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
+        injected_refs: vec![], // TODO: track injected context
     })
 }
 

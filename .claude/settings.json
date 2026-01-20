@@ -1,6 +1,6 @@
 {
   "enabledPlugins": {
-    "aiki@aiki": true
+    "aiki@aiki": false
   },
   "extraKnownMarketplaces": {
     "aiki": {
@@ -9,5 +9,71 @@
         "source": "directory"
       }
     }
+  },
+  "permissions": {
+    "allowedTools": {
+      "mcp__acp__Edit": true,
+      "mcp__acp__Read": true,
+      "mcp__acp__Write": true
+    },
+    "allow": [
+      "Read",
+      "Edit",
+      "Bash(aiki:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo bench:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo install:*)",
+      "Bash(cargo search:*)",
+      "Bash(rustc:*)",
+      "Bash(rustfmt:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git pull:*)",
+      "Bash(git fetch:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git remote:*)",
+      "Bash(jj:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)",
+      "Bash(which:*)",
+      "Bash(echo:*)",
+      "Bash(pwd:*)",
+      "Bash(date:*)",
+      "Bash(env:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(xargs:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(xxd:*)",
+      "Bash(file:*)",
+      "Bash(getconf:*)",
+      "Bash(./target/debug/aiki:*)",
+      "Bash(./target/release/aiki:*)",
+      "Bash(./cli/target/debug/aiki:*)",
+      "Bash(./cli/target/release/aiki:*)"
+    ]
   }
 }

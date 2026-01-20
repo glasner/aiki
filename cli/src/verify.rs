@@ -246,7 +246,7 @@ mod tests {
 
         let prov = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -258,6 +258,7 @@ mod tests {
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         // Valid signature + provenance = verified

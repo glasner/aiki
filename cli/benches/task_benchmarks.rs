@@ -1,10 +1,10 @@
 use aiki::tasks::{
-    storage::{create_task, ensure_tasks_branch, read_events, write_event},
+    id::generate_task_id,
+    storage::{ensure_tasks_branch, read_events, write_event},
     types::{TaskEvent, TaskOutcome, TaskPriority},
 };
 use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::path::Path;
 use tempfile::TempDir;
 
 /// Setup a temporary JJ repository for benchmarking
@@ -24,13 +24,10 @@ fn setup_temp_repo() -> TempDir {
     temp_dir
 }
 
-/// Benchmark creating a single task with generated ID (current approach)
+/// Benchmark creating a single task with generated ID
 fn bench_create_task(c: &mut Criterion) {
-    use aiki::tasks::id::generate_task_id;
-
     let mut group = c.benchmark_group("create_task");
 
-    // New approach: generate ID locally
     group.bench_function("generated_id", |b| {
         b.iter_batched(
             || setup_temp_repo(),
@@ -45,25 +42,6 @@ fn bench_create_task(c: &mut Criterion) {
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
-            },
-            criterion::BatchSize::LargeInput,
-        );
-    });
-
-    // Old approach: query JJ for change_id (kept for comparison)
-    group.bench_function("jj_change_id", |b| {
-        b.iter_batched(
-            || setup_temp_repo(),
-            |temp_dir| {
-                let cwd = temp_dir.path();
-                create_task(
-                    cwd,
-                    black_box("Benchmark task".to_string()),
-                    TaskPriority::P2,
-                    None,
-                    Utc::now(),
-                )
-                .expect("Failed to create task");
             },
             criterion::BatchSize::LargeInput,
         );
@@ -100,19 +78,22 @@ fn bench_write_events(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let temp_dir = setup_temp_repo();
-                // Pre-create a task
                 let cwd = temp_dir.path();
-                let task_id = create_task(
-                    cwd,
-                    "Task to start".to_string(),
-                    TaskPriority::P2,
-                    None,
-                    Utc::now(),
-                )
-                .expect("Failed to create task");
+
+                // Pre-create a task
+                let task_id = generate_task_id("Task to start");
+                let event = TaskEvent::Created {
+                    task_id: task_id.clone(),
+                    name: "Task to start".to_string(),
+                    priority: TaskPriority::P2,
+                    assignee: None,
+                    timestamp: Utc::now(),
+                };
+                write_event(cwd, &event).expect("Failed to create task");
+
                 (temp_dir, task_id)
             },
-            |(temp_dir, task_id)| {
+            |(temp_dir, task_id): (TempDir, String)| {
                 let cwd = temp_dir.path();
                 let event = TaskEvent::Started {
                     task_ids: black_box(vec![task_id]),
@@ -132,17 +113,21 @@ fn bench_write_events(c: &mut Criterion) {
             || {
                 let temp_dir = setup_temp_repo();
                 let cwd = temp_dir.path();
-                let task_id = create_task(
-                    cwd,
-                    "Task to stop".to_string(),
-                    TaskPriority::P2,
-                    None,
-                    Utc::now(),
-                )
-                .expect("Failed to create task");
+
+                // Pre-create a task
+                let task_id = generate_task_id("Task to stop");
+                let event = TaskEvent::Created {
+                    task_id: task_id.clone(),
+                    name: "Task to stop".to_string(),
+                    priority: TaskPriority::P2,
+                    assignee: None,
+                    timestamp: Utc::now(),
+                };
+                write_event(cwd, &event).expect("Failed to create task");
+
                 (temp_dir, task_id)
             },
-            |(temp_dir, task_id)| {
+            |(temp_dir, task_id): (TempDir, String)| {
                 let cwd = temp_dir.path();
                 let event = TaskEvent::Stopped {
                     task_ids: black_box(vec![task_id]),
@@ -162,17 +147,21 @@ fn bench_write_events(c: &mut Criterion) {
             || {
                 let temp_dir = setup_temp_repo();
                 let cwd = temp_dir.path();
-                let task_id = create_task(
-                    cwd,
-                    "Task to close".to_string(),
-                    TaskPriority::P2,
-                    None,
-                    Utc::now(),
-                )
-                .expect("Failed to create task");
+
+                // Pre-create a task
+                let task_id = generate_task_id("Task to close");
+                let event = TaskEvent::Created {
+                    task_id: task_id.clone(),
+                    name: "Task to close".to_string(),
+                    priority: TaskPriority::P2,
+                    assignee: None,
+                    timestamp: Utc::now(),
+                };
+                write_event(cwd, &event).expect("Failed to create task");
+
                 (temp_dir, task_id)
             },
-            |(temp_dir, task_id)| {
+            |(temp_dir, task_id): (TempDir, String)| {
                 let cwd = temp_dir.path();
                 let event = TaskEvent::Closed {
                     task_ids: black_box(vec![task_id]),
@@ -202,14 +191,15 @@ fn bench_read_events(c: &mut Criterion) {
 
                 // Pre-create tasks
                 for i in 0..num_tasks {
-                    create_task(
-                        cwd,
-                        format!("Task {}", i),
-                        TaskPriority::P2,
-                        None,
-                        Utc::now(),
-                    )
-                    .expect("Failed to create task");
+                    let task_id = generate_task_id(&format!("Task {}", i));
+                    let event = TaskEvent::Created {
+                        task_id,
+                        name: format!("Task {}", i),
+                        priority: TaskPriority::P2,
+                        assignee: None,
+                        timestamp: Utc::now(),
+                    };
+                    write_event(cwd, &event).expect("Failed to create task");
                 }
 
                 b.iter(|| {
@@ -236,14 +226,15 @@ fn bench_sequential_tasks(c: &mut Criterion) {
                     |temp_dir| {
                         let cwd = temp_dir.path();
                         for i in 0..num_tasks {
-                            create_task(
-                                cwd,
-                                black_box(format!("Sequential task {}", i)),
-                                TaskPriority::P2,
-                                None,
-                                Utc::now(),
-                            )
-                            .expect("Failed to create task");
+                            let task_id = generate_task_id(&format!("Sequential task {}", i));
+                            let event = TaskEvent::Created {
+                                task_id,
+                                name: black_box(format!("Sequential task {}", i)),
+                                priority: TaskPriority::P2,
+                                assignee: None,
+                                timestamp: Utc::now(),
+                            };
+                            write_event(cwd, &event).expect("Failed to create task");
                         }
                     },
                     criterion::BatchSize::LargeInput,
@@ -264,14 +255,15 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                 let cwd = temp_dir.path();
 
                 // Create task
-                let task_id = create_task(
-                    cwd,
-                    black_box("Lifecycle task".to_string()),
-                    TaskPriority::P2,
-                    None,
-                    Utc::now(),
-                )
-                .expect("Failed to create task");
+                let task_id = generate_task_id(black_box("Lifecycle task"));
+                let event = TaskEvent::Created {
+                    task_id: task_id.clone(),
+                    name: black_box("Lifecycle task".to_string()),
+                    priority: TaskPriority::P2,
+                    assignee: None,
+                    timestamp: Utc::now(),
+                };
+                write_event(cwd, &event).expect("Failed to create task");
 
                 // Start task
                 let event = TaskEvent::Started {

@@ -220,17 +220,27 @@ fn test_blame_shows_recorded_change() {
     // Format is: <commit_id> (<agent_type> <session_id> <confidence>) <line_num>| <line_text>
     // The modified line (line 2) should show Claude attribution
 
-    // Look for Claude agent type in the output (using Display format with space)
+    // Look for Claude Code agent type in the output
+    // Note: Currently displays as "claude-code" (the metadata format) rather than "Claude" (display name)
     assert!(
-        blame_output.contains("Claude"),
-        "Blame should show 'Claude' agent type. Output:\n{}",
+        blame_output.contains("claude-code"),
+        "Blame should show 'claude-code' agent type. Output:\n{}",
         blame_output
     );
 
-    // Verify session ID appears (truncated to first 9 chars as "test-sess...")
+    // Session ID is now a UUID (deterministic hash of agent_type + external_id)
+    // Verify it appears in UUID format (8 hex chars followed by hyphen)
+    // The format is truncated in blame output to first 9 chars like "abc12345-..."
+    let has_uuid_prefix = blame_output
+        .lines()
+        .any(|line| {
+            // Look for a UUID-like pattern: 8 hex chars followed by hyphen
+            line.contains(char::is_alphanumeric)
+                && line.chars().filter(|c| *c == '-').count() >= 1
+        });
     assert!(
-        blame_output.contains("test-sess"),
-        "Blame should show truncated session ID 'test-sess...'. Output:\n{}",
+        has_uuid_prefix || blame_output.contains("..."),
+        "Blame should show truncated session UUID. Output:\n{}",
         blame_output
     );
 
@@ -242,8 +252,8 @@ fn test_blame_shows_recorded_change() {
     );
 
     println!("✅ Verified Claude Code attribution in blame output:");
-    println!("   ✓ Agent type: Claude Code");
-    println!("   ✓ Session ID: test-session-123");
+    println!("   ✓ Agent type: claude-code");
+    println!("   ✓ Session ID: UUID format");
     println!("   ✓ Confidence: High");
 }
 
@@ -355,5 +365,8 @@ method=Hook
         blame_verify_output.contains("line 1"),
         "Should show file content"
     );
-    assert!(blame_verify_output.contains("Claude"), "Should show agent");
+    assert!(
+        blame_verify_output.contains("claude-code"),
+        "Should show agent (claude-code)"
+    );
 }

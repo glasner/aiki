@@ -273,6 +273,7 @@ impl ChangeOperation {
     /// - Delete: files that were removed
     /// - Move: files at their new locations (destinations)
     #[must_use]
+    #[allow(dead_code)] // Part of ChangeOperation API
     pub fn file_paths(&self) -> Vec<String> {
         match self {
             Self::Write(op) => op.file_paths.clone(),
@@ -283,6 +284,7 @@ impl ChangeOperation {
 
     /// Get edit details if this is a Write operation
     #[must_use]
+    #[allow(dead_code)] // Part of ChangeOperation API
     pub fn edit_details(&self) -> &[EditDetail] {
         match self {
             Self::Write(op) => &op.edit_details,
@@ -292,6 +294,7 @@ impl ChangeOperation {
 
     /// Get source paths if this is a Move operation
     #[must_use]
+    #[allow(dead_code)] // Part of ChangeOperation API
     pub fn source_paths(&self) -> &[String] {
         match self {
             Self::Move(op) => &op.source_paths,
@@ -301,6 +304,7 @@ impl ChangeOperation {
 
     /// Get destination paths if this is a Move operation
     #[must_use]
+    #[allow(dead_code)] // Part of ChangeOperation API
     pub fn destination_paths(&self) -> &[String] {
         match self {
             Self::Move(op) => &op.destination_paths,

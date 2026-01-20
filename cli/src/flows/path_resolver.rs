@@ -47,6 +47,7 @@ impl PathResolver {
     /// # Errors
     ///
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
+    #[allow(dead_code)] // Part of PathResolver API
     pub fn new() -> Result<Self> {
         let cwd = env::current_dir()?;
         Self::with_start_dir(&cwd)
@@ -132,6 +133,7 @@ impl PathResolver {
     /// - Path is empty
     /// - Path after `@/` is empty
     /// - Path doesn't start with a recognized prefix
+    #[allow(dead_code)] // Part of PathResolver API
     pub fn resolve(&self, path: &str, current_dir: &Path) -> Result<PathBuf> {
         if path.is_empty() {
             return Err(AikiError::InvalidPath {
@@ -177,6 +179,7 @@ impl PathResolver {
     ///
     /// The resolved absolute path.
     #[must_use]
+    #[allow(dead_code)] // Part of PathResolver API
     pub fn resolve_tilde(&self, path: &str) -> PathBuf {
         if let Some(rest) = path.strip_prefix("~/") {
             self.home_dir.join(rest)

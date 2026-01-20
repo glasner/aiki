@@ -12,7 +12,7 @@ pub fn create_session(session_id: &str, cwd: &str) -> AikiSession {
     let repo_path = Path::new(cwd);
     let agent_version = get_agent_version(session_id, repo_path);
 
-    AikiSession::for_hook(AgentType::Claude, session_id, agent_version)
+    AikiSession::for_hook(AgentType::ClaudeCode, session_id, agent_version)
 }
 
 /// Get agent version from cache or detect it
@@ -22,7 +22,7 @@ pub fn create_session(session_id: &str, cwd: &str) -> AikiSession {
 /// Falls back to detection if cache read fails.
 fn get_agent_version(session_id: &str, repo_path: &Path) -> Option<String> {
     // Compute session file path directly without creating full session object
-    let session_uuid = AikiSession::generate_uuid(AgentType::Claude, session_id);
+    let session_uuid = AikiSession::generate_uuid(AgentType::ClaudeCode, session_id);
     let session_file_path = repo_path.join(".aiki/sessions").join(&session_uuid);
 
     // Try to read cached version from session file
@@ -59,14 +59,14 @@ mod tests {
 
         // Create session using the detected version
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             session_id,
             agent_version.clone(),
             DetectionMethod::Hook,
         );
 
         // Verify session was created
-        assert_eq!(session.agent_type(), AgentType::Claude);
+        assert_eq!(session.agent_type(), AgentType::ClaudeCode);
         assert_eq!(session.external_id(), session_id);
         assert_eq!(session.detection_method(), &DetectionMethod::Hook);
 

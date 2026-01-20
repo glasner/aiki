@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Re-export AgentType from canonical location
+pub use crate::agents::AgentType;
+
 /// Information about the AI agent that made a change
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -11,57 +14,6 @@ pub struct AgentInfo {
     pub detected_at: DateTime<Utc>,
     pub confidence: AttributionConfidence,
     pub detection_method: DetectionMethod,
-}
-
-/// Type of AI agent
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum AgentType {
-    Claude,
-    Codex,
-    Cursor,
-    Gemini,
-    Unknown,
-}
-
-impl std::fmt::Display for AgentType {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            AgentType::Claude => write!(f, "Claude"),
-            AgentType::Codex => write!(f, "Codex"),
-            AgentType::Cursor => write!(f, "Cursor"),
-            AgentType::Gemini => write!(f, "Gemini"),
-            AgentType::Unknown => write!(f, "Unknown"),
-        }
-    }
-}
-
-impl AgentType {
-    /// Get the lowercase identifier for metadata serialization
-    pub fn to_metadata_string(&self) -> &'static str {
-        match self {
-            AgentType::Claude => "claude",
-            AgentType::Codex => "codex",
-            AgentType::Cursor => "cursor",
-            AgentType::Gemini => "gemini",
-            AgentType::Unknown => "unknown",
-        }
-    }
-
-    /// Get the email address for this agent type
-    pub fn email(&self) -> &'static str {
-        match self {
-            AgentType::Claude => "noreply@anthropic.com",
-            AgentType::Codex => "noreply@openai.com",
-            AgentType::Cursor => "noreply@cursor.com",
-            AgentType::Gemini => "noreply@google.com",
-            AgentType::Unknown => "noreply@aiki.dev",
-        }
-    }
-
-    /// Format as a git author string (name + email)
-    pub fn git_author(&self) -> String {
-        format!("{} <{}>", self, self.email())
-    }
 }
 
 /// Confidence level of the attribution
@@ -111,6 +63,10 @@ pub struct ProvenanceRecord {
     pub tool_name: String,
     /// Optional human coauthor (for overlapping user edits)
     pub coauthor: Option<String>,
+    /// Task IDs that were in-progress when this change was made
+    /// Ordered by start time (most recently started first)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<String>,
 }
 
 impl ProvenanceRecord {
@@ -118,6 +74,9 @@ impl ProvenanceRecord {
     ///
     /// This constructor extracts all necessary fields from the unified change event
     /// and creates a provenance record. Works with Write, Delete, and Move operations.
+    ///
+    /// Note: The `tasks` field is empty by default. Use `with_tasks()` to add
+    /// task IDs that were in-progress when the change was made.
     pub fn from_change_completed_event(event: &crate::events::AikiChangeCompletedPayload) -> Self {
         Self {
             agent: AgentInfo {
@@ -130,10 +89,18 @@ impl ProvenanceRecord {
             client_name: event.session.client_name().map(|s| s.to_string()),
             client_version: event.session.client_version().map(|s| s.to_string()),
             agent_version: event.session.agent_version().map(|s| s.to_string()),
-            session_id: event.session.external_id().to_string(),
+            session_id: event.session.uuid().to_string(),
             tool_name: event.tool_name.clone(),
             coauthor: None,
+            tasks: Vec::new(),
         }
+    }
+
+    /// Set the tasks that were in-progress when this change was made
+    #[must_use]
+    pub fn with_tasks(mut self, tasks: Vec<String>) -> Self {
+        self.tasks = tasks;
+        self
     }
 
     /// Serialize provenance metadata to change description format
@@ -162,7 +129,7 @@ impl ProvenanceRecord {
     ///
     /// let record = ProvenanceRecord {
     ///     agent: AgentInfo {
-    ///         agent_type: AgentType::Claude,
+    ///         agent_type: AgentType::ClaudeCode,
     ///         version: None,
     ///         detected_at: Utc::now(),
     ///         confidence: AttributionConfidence::High,
@@ -174,6 +141,7 @@ impl ProvenanceRecord {
     ///     session_id: "test-session".to_string(),
     ///     tool_name: "Edit".to_string(),
     ///     coauthor: None,
+    ///     tasks: Vec::new(),
     /// };
     ///
     /// let description = record.to_description();
@@ -182,7 +150,7 @@ impl ProvenanceRecord {
     /// ```
     pub fn to_description(&self) -> String {
         let agent_type = match self.agent.agent_type {
-            AgentType::Claude => "claude",
+            AgentType::ClaudeCode => "claude",
             AgentType::Codex => "codex",
             AgentType::Cursor => "cursor",
             AgentType::Gemini => "gemini",
@@ -231,6 +199,11 @@ impl ProvenanceRecord {
             lines.push(format!("coauthor={}", coauthor));
         }
 
+        // Add task IDs (one per line, most recently started first)
+        for task_id in &self.tasks {
+            lines.push(format!("task={}", task_id));
+        }
+
         lines.push("[/aiki]".to_string());
 
         lines.join("\n")
@@ -257,7 +230,10 @@ impl ProvenanceRecord {
         let aiki_block = &description[start + start_marker.len()..end];
 
         // Parse key=value pairs
+        // Use HashMap for single-value fields, Vec for multi-value fields (task=)
         let mut metadata = HashMap::new();
+        let mut tasks = Vec::new();
+
         for line in aiki_block.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -265,13 +241,21 @@ impl ProvenanceRecord {
             }
 
             if let Some((key, value)) = line.split_once('=') {
-                metadata.insert(key.trim().to_string(), value.trim().to_string());
+                let key = key.trim();
+                let value = value.trim().to_string();
+
+                // task= can appear multiple times
+                if key == "task" {
+                    tasks.push(value);
+                } else {
+                    metadata.insert(key.to_string(), value);
+                }
             }
         }
 
         // Extract and parse required fields
         let agent_type = match metadata.get("author").map(|s| s.as_str()) {
-            Some("claude") => AgentType::Claude,
+            Some("claude") => AgentType::ClaudeCode,
             Some("codex") => AgentType::Codex,
             Some("cursor") => AgentType::Cursor,
             Some("gemini") => AgentType::Gemini,
@@ -323,6 +307,7 @@ impl ProvenanceRecord {
             session_id,
             tool_name,
             coauthor,
+            tasks,
         }))
     }
 }
@@ -335,7 +320,7 @@ mod tests {
     fn test_to_description() {
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -347,6 +332,7 @@ mod tests {
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -367,7 +353,7 @@ mod tests {
         // Test that special characters in session ID don't break the format
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -379,6 +365,7 @@ mod tests {
             session_id: "session-with-dashes_underscores.dots".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -394,7 +381,7 @@ mod tests {
         let long_session_id = "claude-session-".to_string() + &"a".repeat(200);
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -406,6 +393,7 @@ mod tests {
             session_id: long_session_id.clone(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -423,7 +411,7 @@ mod tests {
         for tool_name in tool_names {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::Claude,
+                    agent_type: AgentType::ClaudeCode,
                     version: None,
                     detected_at: Utc::now(),
                     confidence: AttributionConfidence::High,
@@ -435,6 +423,7 @@ mod tests {
                 session_id: "test-session".to_string(),
                 tool_name: tool_name.to_string(),
                 coauthor: None,
+                tasks: Vec::new(),
             };
 
             let description = record.to_description();
@@ -446,7 +435,7 @@ mod tests {
     fn test_to_description_all_agent_types() {
         // Test serialization for all agent types
         let agent_types = vec![
-            (AgentType::Claude, "claude"),
+            (AgentType::ClaudeCode, "claude"),
             (AgentType::Unknown, "unknown"),
         ];
 
@@ -465,6 +454,7 @@ mod tests {
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
                 coauthor: None,
+                tasks: Vec::new(),
             };
 
             let description = record.to_description();
@@ -485,7 +475,7 @@ mod tests {
         for (confidence, expected_str) in confidence_levels {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::Claude,
+                    agent_type: AgentType::ClaudeCode,
                     version: None,
                     detected_at: Utc::now(),
                     confidence,
@@ -497,6 +487,7 @@ mod tests {
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
                 coauthor: None,
+                tasks: Vec::new(),
             };
 
             let description = record.to_description();
@@ -515,7 +506,7 @@ mod tests {
         for (method, expected_str) in methods {
             let record = ProvenanceRecord {
                 agent: AgentInfo {
-                    agent_type: AgentType::Claude,
+                    agent_type: AgentType::ClaudeCode,
                     version: None,
                     detected_at: Utc::now(),
                     confidence: AttributionConfidence::High,
@@ -527,6 +518,7 @@ mod tests {
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
                 coauthor: None,
+                tasks: Vec::new(),
             };
 
             let description = record.to_description();
@@ -539,7 +531,7 @@ mod tests {
         // Test that the format has correct structure
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -551,6 +543,7 @@ mod tests {
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -569,7 +562,7 @@ mod tests {
         // Verify that the markers themselves don't contain '='
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -581,6 +574,7 @@ mod tests {
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -601,7 +595,7 @@ mod tests {
         // Test edge case with empty session ID
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -613,6 +607,7 @@ mod tests {
             session_id: "".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -628,7 +623,7 @@ mod tests {
         // Test that ProvenanceRecord can be serialized and deserialized
         let record = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: Some("1.0.0".to_string()),
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::Medium,
@@ -640,6 +635,7 @@ mod tests {
             session_id: "roundtrip-test".to_string(),
             tool_name: "Write".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         // Test JSON serialization
@@ -666,7 +662,7 @@ mod tests {
         assert!(result.is_some());
 
         let record = result.unwrap();
-        assert!(matches!(record.agent.agent_type, AgentType::Claude));
+        assert!(matches!(record.agent.agent_type, AgentType::ClaudeCode));
         assert_eq!(record.session_id, "test-session-456");
         assert_eq!(record.tool_name, "Write");
         assert!(matches!(
@@ -714,7 +710,7 @@ mod tests {
     fn test_from_description_round_trip() {
         let original = ProvenanceRecord {
             agent: AgentInfo {
-                agent_type: AgentType::Claude,
+                agent_type: AgentType::ClaudeCode,
                 version: None,
                 detected_at: Utc::now(),
                 confidence: AttributionConfidence::High,
@@ -726,6 +722,7 @@ mod tests {
             session_id: "round-trip".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = original.to_description();
@@ -733,7 +730,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(matches!(parsed.agent.agent_type, AgentType::Claude));
+        assert!(matches!(parsed.agent.agent_type, AgentType::ClaudeCode));
         assert_eq!(parsed.session_id, original.session_id);
         assert_eq!(parsed.tool_name, original.tool_name);
         assert!(matches!(
@@ -786,6 +783,7 @@ mod tests {
             session_id: "cursor-session-123".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -827,6 +825,7 @@ mod tests {
             session_id: "cursor-roundtrip".to_string(),
             tool_name: "Write".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = original.to_description();
@@ -855,6 +854,7 @@ mod tests {
             session_id: "codex-session-123".to_string(),
             tool_name: "Edit".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = record.to_description();
@@ -896,6 +896,7 @@ mod tests {
             session_id: "codex-roundtrip".to_string(),
             tool_name: "Write".to_string(),
             coauthor: None,
+            tasks: Vec::new(),
         };
 
         let description = original.to_description();
@@ -906,5 +907,196 @@ mod tests {
         assert!(matches!(parsed.agent.agent_type, AgentType::Codex));
         assert_eq!(parsed.session_id, original.session_id);
         assert_eq!(parsed.tool_name, original.tool_name);
+    }
+
+    // =========================================================================
+    // Task field tests
+    // =========================================================================
+
+    #[test]
+    fn test_to_description_with_single_task() {
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            client_version: None,
+            agent_version: None,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            coauthor: None,
+            tasks: vec!["abc123".to_string()],
+        };
+
+        let description = record.to_description();
+        assert!(description.contains("task=abc123"));
+    }
+
+    #[test]
+    fn test_to_description_with_multiple_tasks() {
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            client_version: None,
+            agent_version: None,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            coauthor: None,
+            tasks: vec!["task1".to_string(), "task2".to_string(), "task3".to_string()],
+        };
+
+        let description = record.to_description();
+        assert!(description.contains("task=task1"));
+        assert!(description.contains("task=task2"));
+        assert!(description.contains("task=task3"));
+
+        // Tasks should appear in order (most recently started first)
+        let task1_pos = description.find("task=task1").unwrap();
+        let task2_pos = description.find("task=task2").unwrap();
+        let task3_pos = description.find("task=task3").unwrap();
+        assert!(task1_pos < task2_pos);
+        assert!(task2_pos < task3_pos);
+    }
+
+    #[test]
+    fn test_to_description_with_no_tasks() {
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            client_version: None,
+            agent_version: None,
+            session_id: "test-session".to_string(),
+            tool_name: "Edit".to_string(),
+            coauthor: None,
+            tasks: Vec::new(),
+        };
+
+        let description = record.to_description();
+        // No task= lines should be present
+        assert!(!description.contains("task="));
+    }
+
+    #[test]
+    fn test_from_description_with_single_task() {
+        let description = "[aiki]\n\
+            author=claude\n\
+            session=test-session\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            task=abc123\n\
+            [/aiki]";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+        let record = result.unwrap();
+        assert_eq!(record.tasks, vec!["abc123"]);
+    }
+
+    #[test]
+    fn test_from_description_with_multiple_tasks() {
+        let description = "[aiki]\n\
+            author=claude\n\
+            session=test-session\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            task=task1\n\
+            task=task2\n\
+            task=task3\n\
+            [/aiki]";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+        let record = result.unwrap();
+        assert_eq!(record.tasks, vec!["task1", "task2", "task3"]);
+    }
+
+    #[test]
+    fn test_from_description_with_no_tasks() {
+        let description = "[aiki]\n\
+            author=claude\n\
+            session=test-session\n\
+            tool=Edit\n\
+            confidence=High\n\
+            method=Hook\n\
+            [/aiki]";
+
+        let result = ProvenanceRecord::from_description(description).unwrap();
+        assert!(result.is_some());
+        let record = result.unwrap();
+        assert!(record.tasks.is_empty());
+    }
+
+    #[test]
+    fn test_tasks_round_trip() {
+        let original = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            client_version: None,
+            agent_version: None,
+            session_id: "task-roundtrip".to_string(),
+            tool_name: "Edit".to_string(),
+            coauthor: None,
+            tasks: vec!["task-alpha".to_string(), "task-beta".to_string()],
+        };
+
+        let description = original.to_description();
+        let parsed = ProvenanceRecord::from_description(&description)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(parsed.tasks, original.tasks);
+    }
+
+    #[test]
+    fn test_with_tasks_builder() {
+        use crate::events::AikiChangeCompletedPayload;
+
+        // Create a mock payload with necessary fields
+        // Note: This is a simplified test - full integration would require a real payload
+        let record = ProvenanceRecord {
+            agent: AgentInfo {
+                agent_type: AgentType::ClaudeCode,
+                version: None,
+                detected_at: Utc::now(),
+                confidence: AttributionConfidence::High,
+                detection_method: DetectionMethod::Hook,
+            },
+            client_name: None,
+            client_version: None,
+            agent_version: None,
+            session_id: "test".to_string(),
+            tool_name: "Edit".to_string(),
+            coauthor: None,
+            tasks: Vec::new(),
+        };
+
+        // Use with_tasks to add task IDs
+        let record_with_tasks = record.with_tasks(vec!["task1".to_string(), "task2".to_string()]);
+
+        assert_eq!(record_with_tasks.tasks, vec!["task1", "task2"]);
     }
 }

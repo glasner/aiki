@@ -1,14 +1,37 @@
-<aiki version="1.3">
+<aiki version="1.7">
 
 ## ⛔ STOP - Read This First
 
-**Before doing ANY substantive work, you MUST run:**
+**Before doing ANY work, you MUST run:**
 ```bash
-aiki task add "Description of what you're about to do"
-aiki task start <task-id>
+aiki task start "Description of what you're about to do"
 ```
 
+This creates and starts a task in one atomic command (quick-start).
+
+**"Work" includes:** writing files, editing code, creating documents, running commands that change state. Reading files to understand the task is OK before starting.
+
 **FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool, or mental checklists. These do not persist.
+
+### ❌ WRONG (don't do this)
+```bash
+# Reading the codebase, writing the plan file...
+# Oh, I should track this
+aiki task start "Already done task"
+aiki task close <id> --comment "..."  # Immediately closing - defeats the purpose!
+```
+
+### ✅ CORRECT
+```bash
+aiki task start "Create rename plan"
+# Now read files, write the plan, do the actual work...
+aiki task close <id> --comment "Created plan at ops/now/rename.md"
+```
+
+**Leave progress comments during long tasks:**
+```bash
+aiki task comment --id <task-id> "Completed phase 1, now working on phase 2"
+```
 
 **When closing tasks, summarize your work:**
 ```bash
@@ -28,22 +51,22 @@ aiki task close <task-id> --comment "What you did"
 ### TL;DR (First-Time Use)
 
 ```bash
-# 1) List ready tasks
-aiki task
+# 1) Quick-start: create and start a task in one command
+aiki task start "Task description"
 
-# 2) Add a task
-aiki task add "Task description"
-
-# 3) Start the task (copy full ID from output)
-aiki task start <task-id>
-
-# 4) Close it when done (with comment describing your work)
+# 2) Close it when done (with comment describing your work)
 aiki task close <task-id> --comment "What I did to fix this"
+```
+
+Alternative (two-step):
+```bash
+aiki task add "Task description"
+aiki task start <task-id>
 ```
 
 ### First Action Rule
 
-**Before doing any substantive work, create and start a task.** This includes:
+**Before doing any work, create and start a task.** This includes:
 - Code reviews (`review @file`)
 - Document reviews (`review @doc.md`)
 - Bug investigations
@@ -52,11 +75,12 @@ aiki task close <task-id> --comment "What I did to fix this"
 
 ```bash
 # ALWAYS do this first, before reading/analyzing/implementing:
-aiki task add "Review assign-tasks.md design"
-aiki task start <task-id>
+aiki task start "Review assign-tasks.md design" --source prompt
 # ... now do the work ...
 aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
 ```
+
+Using `--source prompt` links the task to the user's request that triggered it.
 
 ### When to Use Tasks
 
@@ -64,19 +88,47 @@ aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
 - Any multi-step change, investigation, or review
 - Anything that could carry over across sessions
 
+### Progress Updates
+
+**For multi-step or long-running tasks, leave comments to track progress:**
+
+```bash
+# Start the task
+aiki task start "Implement user authentication system"
+
+# As you make progress, add comments
+aiki task comment --id <task-id> "Completed database schema design"
+aiki task comment --id <task-id> "Implemented password hashing"
+aiki task comment --id <task-id> "Added login endpoint, now testing"
+
+# Close with final summary
+aiki task close <task-id> --comment "Completed: authentication with JWT tokens, password hashing, and session management"
+```
+
+**Benefits:**
+- Other agents can see what's been done if they take over
+- User can track progress on long tasks
+- Creates a record of your thought process and approach
+
 ### Quick Reference
 
 ```bash
 # See what's ready to work on
 aiki task
 
-# Add a new task (do this instead of TodoWrite!)
-aiki task add "Task description"
+# Quick-start: create and start a new task (RECOMMENDED)
+aiki task start "Task description"
 
-# Start working on a task
+# Quick-start with priority
+aiki task start "Urgent fix" --p0
+
+# Quick-start with source (track where task came from)
+aiki task start "Implement feature X" --source file:ops/now/design.md
+
+# Start existing task by ID
 aiki task start <task-id>
 
-# Start multiple related tasks for batch work
+# Start multiple existing tasks for batch work
 aiki task start <id1> <id2> <id3>
 
 # Stop current task (with optional reason)
@@ -93,6 +145,10 @@ aiki task close <task-id> --comment "Fixed by updating X to do Y"
 
 # Close multiple tasks
 aiki task close <id1> <id2> <id3> --comment "All done"
+
+# Filter tasks by source
+aiki task list --source file:ops/now/design.md
+aiki task list --source ops/now/design.md  # partial match works
 ```
 
 ### Parent + Subtasks (Example)
@@ -129,14 +185,59 @@ When you start a parent task with subtasks:
 Instead of creating a mental todo list or using built-in tools:
 
 ```bash
-# Break down the work
-aiki task add "Research existing implementation"
-aiki task add "Design the solution"
-aiki task add "Implement changes"
-aiki task add "Add tests"
+# Break down the work (with source for traceability)
+aiki task add "Research existing implementation" --source file:ops/now/design.md
+aiki task add "Design the solution" --source file:ops/now/design.md
+aiki task add "Implement changes" --source file:ops/now/design.md
+aiki task add "Add tests" --source file:ops/now/design.md
 
 # Start the first task
 aiki task start <id>
+```
+
+### Task Sources
+
+The `--source` flag tracks where tasks originate from. This enables:
+- **Plan lineage** - Link tasks to design docs or plans that spawned them
+- **Review lineage** - Link followup tasks to code reviews
+- **Prompt lineage** - Link tasks to the user prompt that triggered them
+- **Traceability** - Answer "why does this task exist?"
+
+**Source prefixes:**
+| Prefix | Meaning | Example |
+|--------|---------|---------|
+| `file:` | File path (design doc, plan) | `file:ops/now/design.md` |
+| `task:` | Another task (follow-up, review) | `task:xqrmnpst` |
+| `comment:` | Specific comment within a task | `comment:c1a2b3c4` |
+| `issue:` | External issue tracker | `issue:GH-123` |
+| `prompt:` | User prompt that triggered work | `prompt:nzwtoqqr` |
+
+**Linking tasks to prompts:**
+
+Use `--source prompt` to automatically link a task to the user's latest prompt:
+
+```bash
+# Quick-start with prompt source (RECOMMENDED for agents)
+aiki task start "Implement feature X" --source prompt
+
+# The system resolves "prompt" to the actual change_id, e.g., "prompt:nzwtoqqr"
+```
+
+This creates traceability from tasks back to the user request that triggered them.
+
+```bash
+# Task from a design document
+aiki task add "Implement session tracking" --source file:ops/now/design.md
+
+# Task with multiple sources (from another task + specific comment)
+aiki task add "Fix auth bug" --source task:abc123 --source comment:c1a2b3c4
+
+# Quick-start with source
+aiki task start "Implement X" --source file:ops/now/design.md
+
+# Query tasks from a specific source
+aiki task list --source file:ops/now/design.md
+aiki task list --source ops/now/design.md  # partial match works
 ```
 
 ### Task Output Format
@@ -163,26 +264,70 @@ Commands return XML showing current state:
 
 ### Task IDs
 
-- IDs are 32-character strings (e.g., `xtuttnyvykpulsxzqnznsxylrzkkqssy`)
-- Copy the full ID from command output
-- Subtask IDs append a number: `<parent-id>.1`, `<parent-id>.2`
+**Format:** Task IDs are exactly 32 lowercase letters (a-z only), e.g., `xtuttnyvykpulsxzqnznsxylrzkkqssy`
+
+**Recognizing task IDs:** When a user provides a 32-character lowercase alphabetic string, it's almost certainly a task ID. Examples:
+- `fix luppzupttoslmupvtsromtrytsqsqmxp` → User wants you to work on task `luppzupttoslmupvtsromtrytsqsqmxp`
+- `show oorznprsukkomwtnolrrqspllrywxznv` → User wants to see task details
+- `close tnslzmpqpzypnymnzlroorzvxkqtulml` → User wants to close that task
+
+**When you see a task ID:**
+1. Run `aiki task show <id>` to see what the task is about
+2. If the user wants work done, run `aiki task start <id>` (if not already started)
+3. Do the work described in the task
+4. Close with `aiki task close <id> --comment "What you did"`
+
+**Subtask IDs:** Append a dot and number to parent ID: `<parent-id>.1`, `<parent-id>.2`
 
 ### Workflow
 
-1. **Plan with tasks** - Use `aiki task add` to break down work
-2. **Start before working** - Run `aiki task start` before implementation
+1. **Start before working** - Run `aiki task start` before implementation
+2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
 3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
 4. **Close with comment** - Use `aiki task close --comment` to document your work
 5. **Close immediately** - Don't leave tasks open after finishing
+6. **Report what you did** - Include completed tasks when replying to user
+
+### Reporting Completed Tasks
+
+**When replying to the user, always include a summary of tasks completed.**
+
+At the end of your response, list the tasks you worked on:
+
+```
+## Tasks Completed
+- `<task-id>` - Task name: Brief summary of what was done
+- `<task-id>` - Task name: Brief summary of what was done
+```
+
+Example:
+```
+## Tasks Completed
+- `abc123...` - Fix login bug: Updated auth handler to validate tokens before redirect
+- `def456...` - Add unit tests: Added 5 tests covering edge cases in token validation
+```
+
+**Why this matters:**
+- User sees exactly what work was accomplished
+- Creates clear audit trail linking responses to tasks
+- Helps user understand scope of changes made
+- Makes it easy to review or revert specific work
+
+**When to include:**
+- Always include when you've closed one or more tasks
+- Include task IDs so user can run `aiki task show <id>` for details
+- Keep summaries brief (one line per task)
 
 ### Common Pitfalls
 
-- **Doing reviews without creating a task first** ← Most common mistake!
-- **Using TodoWrite instead of `aiki task`** ← Second most common!
-- Forgetting to `start` before you begin work
+- **Using TodoWrite instead of `aiki task`** ← Most common mistake!
+- **Not leaving progress comments on long tasks** ← Easy to forget!
+- **Not reporting completed tasks to user** ← User can't see what was done!
+- Forgetting to `start` a task before you begin work
 - Closing tasks without `--comment` to describe what you did
 - Leaving tasks open after finishing
 - Creating long tasks without subtasks for multi-step work
+- Not updating progress with comments during multi-step work
 - Trying to `start` a task that's already in progress
 - Forgetting to close the parent task after all subtasks are done
 
@@ -1168,6 +1313,12 @@ If you're unsure whether to use "commit" or "change":
 
 ## Related Documentation
 
+**IMPORTANT:** The `ops/` folder is at the **repo root** (`aiki/ops/`), not in `cli/`. Always use:
+- `ops/now/` - Current work and active plans
+- `ops/done/` - Completed work
+- `ops/future/` - Future plans and ideas
+
+Documentation:
 - `ops/CHANGE_ID_IMPLEMENTATION.md` - Technical deep-dive on change_id vs commit_id
 - `ops/phase-1.md` - Architecture docs (now includes terminology guide)
 - `ops/ROADMAP.md` - Strategic vision showing the change-centric approach

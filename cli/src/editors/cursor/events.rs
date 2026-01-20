@@ -59,6 +59,7 @@ enum CursorEvent {
 
 /// beforeSubmitPrompt hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct BeforeSubmitPromptPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -77,6 +78,7 @@ struct BeforeSubmitPromptPayload {
 
 /// stop hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct StopPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -95,6 +97,7 @@ struct StopPayload {
 
 /// beforeShellExecution hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct BeforeShellExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -113,6 +116,7 @@ struct BeforeShellExecutionPayload {
 
 /// afterShellExecution hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct AfterShellExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -132,6 +136,7 @@ struct AfterShellExecutionPayload {
 
 /// beforeMCPExecution hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 pub struct BeforeMcpExecutionPayload {
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
@@ -152,6 +157,7 @@ pub struct BeforeMcpExecutionPayload {
 
 /// afterMCPExecution hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct AfterMcpExecutionPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -175,6 +181,7 @@ struct AfterMcpExecutionPayload {
 
 /// afterFileEdit hook payload
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
 struct AfterFileEditPayload {
     #[serde(rename = "conversationId")]
     conversation_id: String,
@@ -238,6 +245,7 @@ fn build_prompt_submitted_event(payload: BeforeSubmitPromptPayload) -> AikiEvent
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
         prompt: payload.prompt,
+        injected_refs: vec![], // TODO: track injected context
     })
 }
 

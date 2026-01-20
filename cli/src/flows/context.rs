@@ -201,6 +201,7 @@ impl ContextChunk {
     ///
     /// An 8-character hex-encoded hash of the chunk's YAML representation.
     #[must_use]
+    #[allow(dead_code)] // Part of ContextChunk API
     pub fn check_id(&self) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -414,6 +415,7 @@ impl ContextAssembler {
 
     /// Get the number of chunks accumulated.
     #[must_use]
+    #[allow(dead_code)] // Part of ContextAssembler API
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -447,6 +449,7 @@ impl ContextAssembler {
     /// assert!(assembler.is_empty());
     /// assert_eq!(assembler.build(), "original"); // Original preserved
     /// ```
+    #[allow(dead_code)] // Part of ContextAssembler API
     pub fn clear(&mut self) {
         self.chunks.clear();
     }

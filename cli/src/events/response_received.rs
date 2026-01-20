@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::history;
 
 /// response.received event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,7 @@ pub struct AikiResponseReceivedPayload {
 ///
 /// This event fires when the agent finishes generating its response,
 /// allowing flows to validate output, detect errors, and optionally send an autoreply to the agent.
+/// Also records the response to conversation history (if not opted out).
 /// Returns autoreply via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<HookResult> {
@@ -29,6 +31,23 @@ pub fn handle_response_received(payload: AikiResponseReceivedPayload) -> Result<
             payload.response.len()
         )
     });
+
+    // Record response to conversation history (non-blocking on failure)
+    let files_written: Vec<String> = payload
+        .modified_files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+
+    if let Err(e) = history::record_response(
+        &payload.cwd,
+        &payload.session,
+        &payload.response,
+        files_written,
+        payload.timestamp,
+    ) {
+        debug_log(|| format!("Failed to record response: {}", e));
+    }
 
     // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();

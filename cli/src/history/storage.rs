@@ -9,9 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use super::types::{
-    AgentType, ConversationEvent, IntentSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START,
-};
+use super::types::{AgentType, ConversationEvent, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
 
 /// Ensure the aiki/conversations branch exists
 pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
@@ -95,7 +93,77 @@ pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
     Ok(())
 }
 
+/// Get the change_id of the latest prompt event for a given session
+///
+/// Used by `--source prompt` to automatically resolve to the triggering prompt.
+/// Returns None if no prompt events found for the session.
+pub fn get_latest_prompt_change_id(cwd: &Path, session_id: &str) -> Result<Option<String>> {
+    // Check if branch exists first
+    let output = Command::new("jj")
+        .current_dir(cwd)
+        .args(["bookmark", "list", "--all"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to list bookmarks: {}",
+            stderr
+        )));
+    }
+
+    let bookmarks = String::from_utf8_lossy(&output.stdout);
+    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
+        // Branch doesn't exist yet
+        return Ok(None);
+    }
+
+    // Query for the latest prompt event from this session
+    // We use a revset to find prompt events, ordered by newest first
+    // Match on metadata markers to avoid false positives from prompt content:
+    // - METADATA_START ensures we're looking at aiki metadata
+    // - event=prompt ensures it's a prompt event (not response, session_start, etc.)
+    // - session_id=<id> ensures it's from the right session
+    let output = Command::new("jj")
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &format!(
+                "ancestors({}) & description(substring:'{}') & description(substring:'event=prompt') & description(substring:'session_id={}')",
+                CONVERSATIONS_BRANCH, METADATA_START, session_id
+            ),
+            "--no-graph",
+            "-T",
+            "change_id ++ \"\\n\"",
+            "--limit",
+            "1",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::JjCommandFailed(format!("Failed to query prompt events: {}", e))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to query prompt events: {}",
+            stderr
+        )));
+    }
+
+    let change_id = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Ok(change_id)
+}
+
 /// Read all conversation events from the aiki/conversations branch
+#[allow(dead_code)] // Part of history API
 pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
     // Check if branch exists first
     let output = Command::new("jj")
@@ -176,6 +244,7 @@ fn escape_metadata_value(value: &str) -> String {
 }
 
 /// Unescape a metadata value
+#[allow(dead_code)] // Used by parse_metadata_block
 fn unescape_metadata_value(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
@@ -230,7 +299,6 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
     match event {
         ConversationEvent::Prompt {
             session_id,
-            turn,
             agent_type,
             content,
             injected_refs,
@@ -238,7 +306,6 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
         } => {
             add_metadata("event", "prompt", &mut lines);
             add_metadata("session_id", session_id, &mut lines);
-            add_metadata("turn", turn, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
             add_metadata_escaped("content", content, &mut lines);
             add_metadata_list("injected_ref", injected_refs, &mut lines);
@@ -246,41 +313,15 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
         }
         ConversationEvent::Response {
             session_id,
-            turn,
             agent_type,
-            first_change_id,
-            last_change_id,
-            intent,
-            intent_source,
-            duration_ms,
-            files_read,
             files_written,
-            tools_used,
             summary,
             timestamp,
         } => {
             add_metadata("event", "response", &mut lines);
             add_metadata("session_id", session_id, &mut lines);
-            add_metadata("turn", turn, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
-            if let Some(id) = first_change_id {
-                add_metadata("first_change_id", id, &mut lines);
-            }
-            if let Some(id) = last_change_id {
-                add_metadata("last_change_id", id, &mut lines);
-            }
-            if let Some(i) = intent {
-                add_metadata_escaped("intent", i, &mut lines);
-            }
-            if let Some(src) = intent_source {
-                add_metadata("intent_source", src, &mut lines);
-            }
-            if let Some(ms) = duration_ms {
-                add_metadata("duration_ms", ms, &mut lines);
-            }
-            add_metadata_list("files_read", files_read, &mut lines);
             add_metadata_list("files_written", files_written, &mut lines);
-            add_metadata_list("tools_used", tools_used, &mut lines);
             if let Some(s) = summary {
                 add_metadata_escaped("summary", s, &mut lines);
             }
@@ -289,25 +330,19 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
         ConversationEvent::SessionStart {
             session_id,
             agent_type,
-            resume_from,
             timestamp,
         } => {
             add_metadata("event", "session_start", &mut lines);
             add_metadata("session_id", session_id, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
-            if let Some(rf) = resume_from {
-                add_metadata("resume_from", rf, &mut lines);
-            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         ConversationEvent::SessionEnd {
             session_id,
-            total_turns,
             timestamp,
         } => {
             add_metadata("event", "session_end", &mut lines);
             add_metadata("session_id", session_id, &mut lines);
-            add_metadata("total_turns", total_turns, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
         }
     }
@@ -317,6 +352,7 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
 }
 
 /// Parse list values from metadata fields
+#[allow(dead_code)] // Used by parse_metadata_block
 fn parse_list_field(fields: &HashMap<&str, Vec<&str>>, key: &str) -> Vec<String> {
     fields
         .get(key)
@@ -325,6 +361,7 @@ fn parse_list_field(fields: &HashMap<&str, Vec<&str>>, key: &str) -> Vec<String>
 }
 
 /// Parse a metadata block into a ConversationEvent
+#[allow(dead_code)] // Used by read_events
 fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
     let mut fields: HashMap<&str, Vec<&str>> = HashMap::new();
 
@@ -350,16 +387,11 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
     match *event_type {
         "prompt" => {
             let session_id = fields.get("session_id")?.first()?.to_string();
-            let turn = fields
-                .get("turn")
-                .and_then(|v| v.first())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
             let agent_type = fields
                 .get("agent_type")
                 .and_then(|v| v.first())
-                .map(|s| AgentType::from_str(s))
-                .unwrap_or(AgentType::Other("unknown".to_string()));
+                .and_then(|s| AgentType::from_str(s))
+                .unwrap_or(AgentType::Unknown);
             let content = fields
                 .get("content")
                 .and_then(|v| v.first())
@@ -369,7 +401,6 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
 
             Some(ConversationEvent::Prompt {
                 session_id,
-                turn,
                 agent_type,
                 content,
                 injected_refs,
@@ -378,39 +409,12 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
         }
         "response" => {
             let session_id = fields.get("session_id")?.first()?.to_string();
-            let turn = fields
-                .get("turn")
-                .and_then(|v| v.first())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
             let agent_type = fields
                 .get("agent_type")
                 .and_then(|v| v.first())
-                .map(|s| AgentType::from_str(s))
-                .unwrap_or(AgentType::Other("unknown".to_string()));
-            let first_change_id = fields
-                .get("first_change_id")
-                .and_then(|v| v.first())
-                .map(|s| s.to_string());
-            let last_change_id = fields
-                .get("last_change_id")
-                .and_then(|v| v.first())
-                .map(|s| s.to_string());
-            let intent = fields
-                .get("intent")
-                .and_then(|v| v.first())
-                .map(|s| unescape_metadata_value(s));
-            let intent_source = fields
-                .get("intent_source")
-                .and_then(|v| v.first())
-                .and_then(|s| IntentSource::from_str(s));
-            let duration_ms = fields
-                .get("duration_ms")
-                .and_then(|v| v.first())
-                .and_then(|s| s.parse().ok());
-            let files_read = parse_list_field(&fields, "files_read");
+                .and_then(|s| AgentType::from_str(s))
+                .unwrap_or(AgentType::Unknown);
             let files_written = parse_list_field(&fields, "files_written");
-            let tools_used = parse_list_field(&fields, "tools_used");
             let summary = fields
                 .get("summary")
                 .and_then(|v| v.first())
@@ -418,16 +422,8 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
 
             Some(ConversationEvent::Response {
                 session_id,
-                turn,
                 agent_type,
-                first_change_id,
-                last_change_id,
-                intent,
-                intent_source,
-                duration_ms,
-                files_read,
                 files_written,
-                tools_used,
                 summary,
                 timestamp,
             })
@@ -437,31 +433,20 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
             let agent_type = fields
                 .get("agent_type")
                 .and_then(|v| v.first())
-                .map(|s| AgentType::from_str(s))
-                .unwrap_or(AgentType::Other("unknown".to_string()));
-            let resume_from = fields
-                .get("resume_from")
-                .and_then(|v| v.first())
-                .map(|s| s.to_string());
+                .and_then(|s| AgentType::from_str(s))
+                .unwrap_or(AgentType::Unknown);
 
             Some(ConversationEvent::SessionStart {
                 session_id,
                 agent_type,
-                resume_from,
                 timestamp,
             })
         }
         "session_end" => {
             let session_id = fields.get("session_id")?.first()?.to_string();
-            let total_turns = fields
-                .get("total_turns")
-                .and_then(|v| v.first())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
 
             Some(ConversationEvent::SessionEnd {
                 session_id,
-                total_turns,
                 timestamp,
             })
         }
@@ -503,7 +488,6 @@ mod tests {
     fn test_event_to_metadata_block_prompt() {
         let event = ConversationEvent::Prompt {
             session_id: "sess123".to_string(),
-            turn: 1,
             agent_type: AgentType::ClaudeCode,
             content: "Fix the bug".to_string(),
             injected_refs: vec!["file1.rs".to_string()],
@@ -516,7 +500,6 @@ mod tests {
         assert!(block.contains("[aiki-conversation]"));
         assert!(block.contains("event=prompt"));
         assert!(block.contains("session_id=sess123"));
-        assert!(block.contains("turn=1"));
         assert!(block.contains("agent_type=claude-code"));
         assert!(block.contains("content=Fix the bug"));
         assert!(block.contains("[/aiki-conversation]"));
@@ -526,16 +509,8 @@ mod tests {
     fn test_event_to_metadata_block_response() {
         let event = ConversationEvent::Response {
             session_id: "sess123".to_string(),
-            turn: 1,
             agent_type: AgentType::ClaudeCode,
-            first_change_id: Some("abc123".to_string()),
-            last_change_id: Some("def456".to_string()),
-            intent: Some("Fixed authentication bug".to_string()),
-            intent_source: Some(IntentSource::AgentSummary),
-            duration_ms: Some(5000),
-            files_read: vec!["auth.rs".to_string()],
             files_written: vec!["auth.rs".to_string(), "tests.rs".to_string()],
-            tools_used: vec!["Edit".to_string()],
             summary: Some("Updated auth module".to_string()),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
@@ -544,9 +519,8 @@ mod tests {
 
         let block = event_to_metadata_block(&event);
         assert!(block.contains("event=response"));
-        assert!(block.contains("first_change_id=abc123"));
-        assert!(block.contains("intent=Fixed authentication bug"));
-        assert!(block.contains("intent_source=agent_summary"));
+        assert!(block.contains("files_written=auth.rs"));
+        assert!(block.contains("summary=Updated auth module"));
     }
 
     #[test]
@@ -554,7 +528,6 @@ mod tests {
         let block = r#"
 event=prompt
 session_id=sess123
-turn=1
 agent_type=claude-code
 content=Fix the bug
 injected_ref=file1.rs
@@ -565,14 +538,12 @@ timestamp=2026-01-09T10:30:00Z
         match event {
             ConversationEvent::Prompt {
                 session_id,
-                turn,
                 agent_type,
                 content,
                 injected_refs,
                 ..
             } => {
                 assert_eq!(session_id, "sess123");
-                assert_eq!(turn, 1);
                 assert_eq!(agent_type, AgentType::ClaudeCode);
                 assert_eq!(content, "Fix the bug");
                 assert_eq!(injected_refs, vec!["file1.rs"]);
@@ -586,17 +557,9 @@ timestamp=2026-01-09T10:30:00Z
         let block = r#"
 event=response
 session_id=sess123
-turn=1
 agent_type=claude-code
-first_change_id=abc123
-last_change_id=def456
-intent=Fixed bug
-intent_source=agent_summary
-duration_ms=5000
-files_read=auth.rs
 files_written=auth.rs
 files_written=tests.rs
-tools_used=Edit
 summary=Updated auth
 timestamp=2026-01-09T10:30:00Z
 "#;
@@ -605,21 +568,13 @@ timestamp=2026-01-09T10:30:00Z
         match event {
             ConversationEvent::Response {
                 session_id,
-                turn,
-                first_change_id,
-                intent,
-                intent_source,
-                duration_ms,
                 files_written,
+                summary,
                 ..
             } => {
                 assert_eq!(session_id, "sess123");
-                assert_eq!(turn, 1);
-                assert_eq!(first_change_id, Some("abc123".to_string()));
-                assert_eq!(intent, Some("Fixed bug".to_string()));
-                assert_eq!(intent_source, Some(IntentSource::AgentSummary));
-                assert_eq!(duration_ms, Some(5000));
                 assert_eq!(files_written, vec!["auth.rs", "tests.rs"]);
+                assert_eq!(summary, Some("Updated auth".to_string()));
             }
             _ => panic!("Expected Response event"),
         }
@@ -639,12 +594,10 @@ timestamp=2026-01-09T10:30:00Z
             ConversationEvent::SessionStart {
                 session_id,
                 agent_type,
-                resume_from,
                 ..
             } => {
                 assert_eq!(session_id, "sess123");
                 assert_eq!(agent_type, AgentType::Cursor);
-                assert!(resume_from.is_none());
             }
             _ => panic!("Expected SessionStart event"),
         }
@@ -655,19 +608,13 @@ timestamp=2026-01-09T10:30:00Z
         let block = r#"
 event=session_end
 session_id=sess123
-total_turns=5
 timestamp=2026-01-09T10:30:00Z
 "#;
 
         let event = parse_metadata_block(block).expect("Should parse");
         match event {
-            ConversationEvent::SessionEnd {
-                session_id,
-                total_turns,
-                ..
-            } => {
+            ConversationEvent::SessionEnd { session_id, .. } => {
                 assert_eq!(session_id, "sess123");
-                assert_eq!(total_turns, 5);
             }
             _ => panic!("Expected SessionEnd event"),
         }
@@ -677,7 +624,6 @@ timestamp=2026-01-09T10:30:00Z
     fn test_roundtrip_prompt() {
         let original = ConversationEvent::Prompt {
             session_id: "test".to_string(),
-            turn: 3,
             agent_type: AgentType::Gemini,
             content: "Test prompt with = special\nchars".to_string(),
             injected_refs: vec!["ref1.rs".to_string(), "ref2.rs".to_string()],
@@ -695,19 +641,16 @@ timestamp=2026-01-09T10:30:00Z
             (
                 ConversationEvent::Prompt {
                     session_id: id1,
-                    turn: t1,
                     content: c1,
                     ..
                 },
                 ConversationEvent::Prompt {
                     session_id: id2,
-                    turn: t2,
                     content: c2,
                     ..
                 },
             ) => {
                 assert_eq!(id1, id2);
-                assert_eq!(t1, t2);
                 assert_eq!(c1, c2);
             }
             _ => panic!("Event type mismatch"),
@@ -718,16 +661,8 @@ timestamp=2026-01-09T10:30:00Z
     fn test_roundtrip_response() {
         let original = ConversationEvent::Response {
             session_id: "test".to_string(),
-            turn: 2,
             agent_type: AgentType::ClaudeCode,
-            first_change_id: Some("abc".to_string()),
-            last_change_id: Some("def".to_string()),
-            intent: Some("Did something = important\nwith newlines".to_string()),
-            intent_source: Some(IntentSource::ExplicitTag),
-            duration_ms: Some(1234),
-            files_read: vec!["a.rs".to_string()],
             files_written: vec!["b.rs".to_string()],
-            tools_used: vec!["Edit".to_string(), "Read".to_string()],
             summary: Some("Summary text".to_string()),
             timestamp: Utc::now(),
         };
@@ -742,18 +677,18 @@ timestamp=2026-01-09T10:30:00Z
         match (original, parsed) {
             (
                 ConversationEvent::Response {
-                    intent: i1,
                     files_written: fw1,
+                    summary: s1,
                     ..
                 },
                 ConversationEvent::Response {
-                    intent: i2,
                     files_written: fw2,
+                    summary: s2,
                     ..
                 },
             ) => {
-                assert_eq!(i1, i2);
                 assert_eq!(fw1, fw2);
+                assert_eq!(s1, s2);
             }
             _ => panic!("Event type mismatch"),
         }

@@ -200,7 +200,9 @@ aiki task add "General cleanup"
 ### Task Listing
 
 ```bash
-# Default: shows tasks for current agent (if in session) or all
+# Default behavior depends on caller:
+# - From agent session: tasks for that agent + unassigned
+# - From human (terminal): human-assigned + unassigned (agent tasks hidden)
 aiki task list
 
 # Filter by assignee
@@ -208,9 +210,11 @@ aiki task list --for claude-code
 aiki task list --for human
 aiki task list --unassigned
 
-# Show all regardless of assignee
+# Show all regardless of assignee (overrides default filtering)
 aiki task list --all
 ```
+
+**Note**: When invoked from a terminal (not in an agent session), `aiki task list` defaults to showing human-assigned and unassigned tasks. This prevents humans from seeing agent-specific tasks in their queue. Use `--all` to override this behavior.
 
 ### Task Update
 
@@ -293,10 +297,34 @@ fn get_tasks_for_agent(agent: &AgentType) -> Result<Vec<Task>> {
 </aiki_task>
 ```
 
-### Flow Integration
+### Flow Integration (Single Source)
+
+Context injection happens **only in the flow** (`cli/src/flows/core/flow.yaml`), not in the session_started handler. The handler simply invokes the flow:
+
+```rust
+// session_started.rs - just invokes flow, no context injection here
+let flow_result = execute_flow(EventType::SessionStarted, &mut state, &core_flow.session_started)?;
+```
+
+The flow handles task context injection:
 
 ```yaml
-# .aiki/flows/task-context.yml
+# cli/src/flows/core/flow.yaml - single source of context injection
+session.started:
+  # ... init actions ...
+  - let: task_count = self.task_list_size
+  - if: $task_count
+    then:
+      - context:
+          append: |
+            Tasks ($task_count ready)
+            Run `aiki task` to view - OR - `aiki task start` to begin work.
+```
+
+User-defined flows can customize this in `.aiki/flows/`:
+
+```yaml
+# .aiki/flows/custom.yml - overrides core flow
 session.started:
   - context: |
       You have tasks assigned to you. Run `aiki task list` to see them.
@@ -316,7 +344,7 @@ Execute a task by spawning the appropriate agent:
 aiki task run ab12
 
 # Run with explicit agent (overrides assignee)
-aiki task run ab12 --with codex
+aiki task run ab12 --agent codex
 ```
 
 ### Execution Flow
@@ -361,8 +389,8 @@ fn spawn_agent_for_task(task: &Task, agent: &AgentType) -> Result<()> {
             let codex = CodexClient::new()?;
             codex.run_task(task)?;
         }
-        AgentType::Claude => {
-            // If we're in a Claude session, execute inline
+        AgentType::ClaudeCode => {
+            // If we're in a Claude Code session, execute inline
             // Otherwise, error (need claude-code running)
             if is_in_claude_session()? {
                 // Task is already in context, just return
@@ -450,7 +478,7 @@ fn spawn_agent_for_task(task: &Task, agent: &AgentType) -> Result<()> {
 **Files**:
 - `cli/src/tasks/manager.rs` - Add filtering helpers
 - `cli/src/events/session_started.rs` - Filter context
-- `cli/src/flows/bundled.yaml` - Update context injection
+- `cli/src/flows/core/flow.yaml` - Update context injection
 
 ### Phase 4: Task Execution (Future)
 

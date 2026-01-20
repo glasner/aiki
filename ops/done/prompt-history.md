@@ -402,8 +402,9 @@ aiki/conversations (orphan branch, linear append-only log)
 
 Multiple agents or terminals may write to `aiki/conversations` simultaneously. We accept **eventual consistency**:
 
-- Events include timestamps for ordering
-- On read, sort by timestamp to reconstruct order
+- Events are read in JJ commit order (append-only branch gives deterministic order)
+- Within a session, use session_id + turn as composite key for ordering
+- Timestamps stored for display, not ordering (avoids clock skew issues)
 - Interleaved events from different sessions are fine (filter by session_id)
 - No locking required for v1 (single-agent is the common case)
 
@@ -656,7 +657,7 @@ Connections:
 
 5. **Per-file intent** - Defer to Phase 2. Single intent per response for v1.
 
-6. **Concurrency** - Accept eventual consistency. Timestamp-based ordering on read.
+6. **Concurrency** - Accept eventual consistency. JJ commit order + session/turn for ordering.
 
 7. **Session boundaries** - Already handled in aiki (via existing session tracking).
 
@@ -669,6 +670,202 @@ Connections:
 
 2. **Storage limits** - When to force compaction?
    - Start with manual, add auto-compaction based on size later
+
+~~3. JJ description size limits - see "Size Limits & Truncation" in Design Decisions~~
+
+~~4. Privacy redaction - see "Privacy Opt-Out" in Design Decisions~~
+
+---
+
+## Design Decisions
+
+> **Implementation status:** These are finalized design decisions. Some have phased rollouts
+> (e.g., Privacy Opt-Out has Phase 1 and Phase 2 items). See each section for details.
+
+### Interleaved Changes & Range-Collision Attribution
+
+**Problem:** When multiple sessions are concurrent, their `first_change_id..last_change_id` ranges could overlap, leading to incorrect attribution in `aiki why`.
+
+**Solution:** Two-layer verification for line attribution:
+
+1. **Primary lookup:** JJ blame gives us the `change_id` that created a line
+2. **Provenance check:** Each code change already has session_id in its `[aiki]` provenance block
+3. **Conversation query:** Only match response events where `session_id` matches the change's provenance
+
+```
+Line 42 → JJ blame → change_id=xyz789
+                         ↓
+          change xyz789 has [aiki] block with session_id=abc123
+                         ↓
+          Query: response events where session_id=abc123 AND
+                 first_change_id..last_change_id contains xyz789
+```
+
+This eliminates range collisions because the session_id from the change's provenance is authoritative.
+
+### Event Ordering Strategy
+
+**Problem:** With concurrent sessions, clock skew could cause timestamp-based ordering to interleave events incorrectly.
+
+**Solution:** Hybrid ordering strategy:
+
+1. **Inter-session:** Use JJ commit order (deterministic, append-only on orphan branch)
+2. **Intra-session:** Use `session_id + turn` as composite key
+3. **Read strategy:** Read events in JJ order (`--reversed`), group by session_id, sort by turn within session
+
+```rust
+// Events are read in JJ commit order (oldest first)
+let events = read_events(cwd)?;
+
+// For display, group by session and sort by turn
+let sessions = materialize_sessions(&events);
+```
+
+**Why this works:**
+- JJ branch is append-only, so commit order is stable
+- Turn numbers are monotonically increasing within a session
+- Timestamps are stored but used as secondary info, not ordering
+
+### Intent Derivation from Agent Response
+
+**Problem:** How exactly to extract "intent" from agent responses for `aiki log` and `aiki why`?
+
+**Solution:** Hierarchical extraction with source tracking:
+
+```
+Priority 1: explicit_tag     - User writes "intent: <text>" in prompt
+Priority 2: agent_summary    - First substantive line from agent response
+Priority 3: prompt_first_line - First line of user's prompt
+Priority 4: file_action      - Fallback: "modified <files>"
+```
+
+**Agent summary extraction rules:**
+1. Skip initial acknowledgments ("Sure!", "I'll help with that", etc.)
+2. Take first substantive line (action/description)
+3. Truncate to ~80 characters
+4. Store in `intent` field with `intent_source=agent_summary`
+
+**Example:**
+```
+Agent response: "I'll add the validation check.
+
+Added null safety check to prevent crashes when user is not found.
+The optional chaining (?.) ensures we don't call methods on undefined..."
+
+Extracted intent: "Added null safety check to prevent crashes"
+intent_source: agent_summary
+```
+
+### Session Title Field
+
+**Problem:** What should `aiki sessions list` display as the session title?
+
+**Solution:** The `Session.summary` field (already implemented) serves as the title:
+
+```rust
+pub struct Session {
+    // ...
+    /// First line of first prompt (for display as session title)
+    pub summary: Option<String>,
+}
+```
+
+**Derivation:**
+1. First prompt in session → take first line
+2. Truncate to 80 characters (add "..." if truncated)
+3. Store in `Session.summary` during materialization
+
+**Display in `aiki sessions list`:**
+```
+s-abc123  2025-01-15 10:30  claude-code  12 turns  "auth refactor"
+          └─────────────────────────────────────────────────────┘
+                                                   From summary field
+```
+
+This is already implemented in `materialize_sessions()` in manager.rs.
+
+### Size Limits & Truncation Strategy
+
+**Research findings:**
+- JJ description size: Limited only by Git blob size (several GB)
+- macOS ARG_MAX: 1,048,576 bytes (~1MB) for command line args
+- `jj describe --stdin` bypasses ARG_MAX limit
+
+**Practical limits:**
+- Most prompts: < 1KB
+- Large prompts: Usually due to injected context (which we store as references, not content)
+- Response summaries: Typically 1-2KB, max 4KB (we store summary, not full response)
+
+**Truncation strategy:**
+1. **Prompt content**: Truncate at 64KB with "...[truncated]" marker
+2. **Response summary**: Truncate at 4KB
+3. **Intent**: Truncate at 80 characters
+4. **File lists**: Cap at 100 files per list (files_read, files_written)
+
+**Implementation:**
+```rust
+const MAX_PROMPT_SIZE: usize = 64 * 1024;  // 64KB
+const MAX_SUMMARY_SIZE: usize = 4 * 1024;   // 4KB
+const MAX_INTENT_SIZE: usize = 80;
+const MAX_FILES_LIST: usize = 100;
+
+fn truncate_with_marker(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...[truncated]", &s[..max - 14])  // "...[truncated]" is 14 chars
+    }
+}
+```
+
+**Why these limits:**
+- 64KB prompt: Covers 99%+ of real prompts; injected context stored as refs
+- 4KB summary: Enough for detailed summary; full responses reconstructible from code
+- 80 char intent: Fits in terminal displays; focused on WHY not details
+
+### Privacy Opt-Out Mechanism
+
+**Problem:** Prompts may contain secrets, PII, or proprietary code that users don't want recorded.
+
+**Solution:** Multi-layer opt-out:
+
+1. **Global opt-out** (environment variable):
+   ```bash
+   export AIKI_NO_HISTORY=1  # Disable all history recording
+   ```
+
+2. **Session opt-out** (CLI flag):
+   ```bash
+   aiki --no-history  # Don't record this session
+   ```
+
+3. **Prompt opt-out** (inline tag):
+   ```
+   [no-history]
+   Please review this API key: sk-abc123...
+   ```
+   Neither prompt nor response is recorded for this turn. This ensures secrets in the prompt
+   cannot leak via response summaries that might reference them.
+
+4. **Redaction** (inline tag):
+   ```
+   The database password is [redact]supersecret[/redact] - please help configure...
+   ```
+   Stored as: `The database password is [REDACTED] - please help configure...`
+
+**Implementation priority:**
+- Phase 1: Global opt-out (`AIKI_NO_HISTORY`)
+- Phase 1: Inline `[no-history]` tag
+- Phase 2: Session flag and `[redact]` tags
+
+**Recording behavior with opt-out:**
+
+| Scenario | Prompt stored? | Response stored? |
+|----------|----------------|------------------|
+| Normal | Yes | Yes (summary) |
+| `AIKI_NO_HISTORY=1` | No | No |
+| `[no-history]` in prompt | No | No |
+| `[redact]...[/redact]` | Yes (redacted) | Yes |
 
 ---
 

@@ -184,6 +184,9 @@ pub fn extract_autoreply(response: &HookResult) -> Option<String> {
 // ============================================================================
 
 /// Create an AikiSession for ACP protocol tracking
+///
+/// In ACP mode, `agent_pid` can be provided by the agent in the session/start message.
+/// This enables PID-based session detection for subprocesses spawned by the agent.
 pub fn create_session(
     agent_type: AgentType,
     session_id: impl Into<String>,
@@ -195,6 +198,25 @@ pub fn create_session(
         agent_version,
         crate::provenance::DetectionMethod::ACP,
     )
+}
+
+/// Create an AikiSession with agent_pid for ACP protocol tracking
+///
+/// When `agent_pid` is provided, it's stored in the session file to enable
+/// PID-based session detection for subprocesses spawned by the agent.
+pub fn create_session_with_pid(
+    agent_type: AgentType,
+    session_id: impl Into<String>,
+    agent_version: Option<&str>,
+    agent_pid: Option<u32>,
+) -> AikiSession {
+    AikiSession::new(
+        agent_type,
+        session_id,
+        agent_version,
+        crate::provenance::DetectionMethod::ACP,
+    )
+    .with_parent_pid(agent_pid)
 }
 
 // ============================================================================
@@ -585,10 +607,14 @@ pub fn record_post_change_events(
 // ============================================================================
 
 /// Fire session.started event
+///
+/// If `agent_pid` is provided, it will be stored in the session file to enable
+/// PID-based session detection for subprocesses spawned by the agent.
 pub fn fire_session_start_event(
     session_id_str: &str,
     agent_type: &AgentType,
     cwd: &Option<PathBuf>,
+    agent_pid: Option<u32>,
 ) -> Result<()> {
     // Get working directory (required)
     let working_dir = cwd
@@ -596,8 +622,13 @@ pub fn fire_session_start_event(
         .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Working directory not available")))?
         .clone();
 
-    // Create and dispatch session.started event
-    let session = create_session(*agent_type, session_id_str.to_string(), None::<&str>);
+    // Create session with agent_pid for PID-based session detection
+    let session = create_session_with_pid(
+        *agent_type,
+        session_id_str.to_string(),
+        None::<&str>,
+        agent_pid,
+    );
     let event = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session,
         cwd: working_dir,
@@ -610,8 +641,8 @@ pub fn fire_session_start_event(
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired session.started event for session: {}",
-                session_id_str
+                "[acp] Fired session.started event for session: {} (agent_pid: {:?})",
+                session_id_str, agent_pid
             )
         });
     }
@@ -741,6 +772,7 @@ pub fn handle_session_prompt(
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         prompt: original_text.clone(),
+        injected_refs: vec![], // TODO: track injected context
     });
 
     let response = event_bus::dispatch(event)?;
@@ -879,32 +911,20 @@ pub fn handle_session_end(
     }
 
     // Check for autoreply (agent-visible via next prompt)
-    // Combine both messages and context if both are present
+    // Only send autoreply when the flow explicitly sets autoreply context.
+    // Failure messages are already shown to user via stderr above.
     let formatted_messages = response.format_messages();
     let autoreply_context = extract_autoreply(&response);
 
-    let autoreply_text = match (formatted_messages.is_empty(), autoreply_context.is_some()) {
-        (false, true) => {
-            // Both messages and autoreply context: combine them
-            Some(format!(
-                "{}\n\n{}",
-                formatted_messages,
-                autoreply_context.unwrap()
-            ))
+    // Only autoreply if there's explicit autoreply context from the flow
+    let autoreply_text = autoreply_context.map(|context| {
+        if formatted_messages.is_empty() {
+            context
+        } else {
+            // Combine failure messages with autoreply context
+            format!("{}\n\n{}", formatted_messages, context)
         }
-        (false, false) => {
-            // Only messages
-            Some(formatted_messages)
-        }
-        (true, true) => {
-            // Only autoreply context
-            autoreply_context
-        }
-        (true, false) => {
-            // Neither
-            None
-        }
-    };
+    });
 
     if let Some(autoreply_text) = autoreply_text {
         // Get current autoreply count for this session

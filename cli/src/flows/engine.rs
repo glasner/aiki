@@ -9,7 +9,7 @@ use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
     FlowStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure, OnFailureShortcut,
-    SelfAction, ShellAction, SwitchStatement,
+    SelfAction, ShellAction, SwitchStatement, TaskRunAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -331,7 +331,7 @@ impl FlowEngine {
 
         // Add agent type as event.agent_type
         let agent_str = match state.event.agent_type() {
-            crate::provenance::AgentType::Claude => "claude",
+            crate::provenance::AgentType::ClaudeCode => "claude",
             crate::provenance::AgentType::Codex => "codex",
             crate::provenance::AgentType::Cursor => "cursor",
             crate::provenance::AgentType::Gemini => "gemini",
@@ -426,6 +426,7 @@ impl FlowEngine {
             Action::CommitMessage(commit_msg_action) => {
                 Self::execute_commit_message(commit_msg_action, state)
             }
+            Action::TaskRun(task_run_action) => Self::execute_task_run(task_run_action, state),
             Action::Continue(continue_action) => Self::execute_continue(continue_action, state),
             Action::Stop(stop_action) => Self::execute_stop(stop_action, state),
             Action::Block(block_action) => Self::execute_block(block_action, state),
@@ -446,6 +447,7 @@ impl FlowEngine {
             Action::Context(context_action) => &context_action.on_failure,
             Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
+            Action::TaskRun(task_run_action) => &task_run_action.on_failure,
             Action::Log(_) => return Ok(FlowResult::Success),
             Action::Continue(_) => return Ok(FlowResult::FailedContinue),
             Action::Stop(_) => return Ok(FlowResult::FailedStop),
@@ -554,6 +556,9 @@ impl FlowEngine {
             }
             Action::CommitMessage(_) => {
                 // commit_message actions don't produce storable results
+            }
+            Action::TaskRun(_) => {
+                // task.run actions don't produce storable results
             }
             Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
                 // Flow control actions add messages and control execution flow
@@ -739,6 +744,63 @@ impl FlowEngine {
         })
     }
 
+    /// Execute a task.run action - spawns an agent session to work on a task
+    fn execute_task_run(action: &TaskRunAction, state: &mut AikiState) -> Result<ActionResult> {
+        use crate::agents::AgentType;
+        use crate::tasks::runner::{task_run, TaskRunOptions};
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(state);
+
+        // Resolve task_id (supports variable interpolation)
+        let task_id = resolver.resolve(&action.task_run.task_id);
+        if task_id.is_empty() {
+            return Ok(ActionResult {
+                success: false,
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "task.run: task_id is required".to_string(),
+            });
+        }
+
+        // Resolve optional agent override
+        let agent_override = action.task_run.agent.as_ref().map(|a| resolver.resolve(a));
+
+        // Build options
+        let mut options = TaskRunOptions::new();
+        if let Some(ref agent_str) = agent_override {
+            if let Some(agent_type) = AgentType::from_str(agent_str) {
+                options = options.with_agent(agent_type);
+            } else {
+                return Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!("task.run: unknown agent type '{}'", agent_str),
+                });
+            }
+        }
+
+        // Get cwd from state
+        let cwd = state.cwd();
+
+        // Run the task
+        match task_run(&cwd, &task_id, options) {
+            Ok(()) => Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: format!("Task {} completed", task_id),
+                stderr: String::new(),
+            }),
+            Err(e) => Ok(ActionResult {
+                success: false,
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: e.to_string(),
+            }),
+        }
+    }
+
     /// Execute a continue action (generates Failure and continues)
     fn execute_continue(
         action: &crate::flows::types::ContinueAction,
@@ -826,17 +888,19 @@ impl FlowEngine {
     /// Execute a context action
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
-    /// Works for PrePrompt and response.received events.
+    /// Works for session.started, prompt.submitted, and response.received events.
     fn execute_context(action: &ContextAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
-        // Verify this is a PrePrompt or PostResponse event
+        // Verify this is an event type that supports context injection
         if !matches!(
             &state.event,
-            AikiEvent::PromptSubmitted(_) | AikiEvent::ResponseReceived(_)
+            AikiEvent::SessionStarted(_)
+                | AikiEvent::PromptSubmitted(_)
+                | AikiEvent::ResponseReceived(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "context action can only be used in PrePrompt or response.received events"
+                "context action can only be used in session.started, prompt.submitted, or response.received events"
             )));
         }
 
@@ -1639,7 +1703,9 @@ impl FlowEngine {
             ("core", "task_list_size") => {
                 // task_list_size can be called from any event context
                 // It reads from the task branch and returns the ready queue size
-                crate::flows::core::task_list_size(state.cwd())
+                // Filtered by agent type to show only tasks visible to this agent
+                let agent_type = state.event.agent_type();
+                crate::flows::core::task_list_size_for_agent(state.cwd(), &agent_type)
             }
             ("core", "task_in_progress") => {
                 // task_in_progress can be called from any event context
@@ -1823,7 +1889,9 @@ impl FlowEngine {
             // ========================================================================
             ("core", "task_list_size") => {
                 // task_list_size can be called from any event context
-                crate::flows::core::task_list_size(state.cwd())
+                // Filtered by agent type to show only tasks visible to this agent
+                let agent_type = state.event.agent_type();
+                crate::flows::core::task_list_size_for_agent(state.cwd(), &agent_type)
             }
             ("core", "task_in_progress") => {
                 // task_in_progress can be called from any event context
@@ -1988,7 +2056,7 @@ mod tests {
     // Helper to create a simple test event
     fn create_test_event() -> AikiEvent {
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
@@ -2009,7 +2077,7 @@ mod tests {
     // Helper to create a test event with custom file_path
     fn create_test_event_with_file(file_path: &str) -> AikiEvent {
         let session = AikiSession::new(
-            AgentType::Claude,
+            AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
@@ -3207,7 +3275,7 @@ mod tests {
 
         // Create PrePrompt event
         let session = AikiSession::new(
-            crate::provenance::AgentType::Claude,
+            crate::provenance::AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
@@ -3217,6 +3285,7 @@ mod tests {
             prompt: "test".to_string(),
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
+            injected_refs: vec![],
         });
 
         // Create action that calls a self.* function that doesn't exist
