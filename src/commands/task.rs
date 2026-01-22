@@ -141,48 +141,6 @@ pub enum TaskCommands {
         template: Option<String>,
     },
 
-    /// Create a task from a template
-    ///
-    /// Templates are markdown files with YAML frontmatter that define task structure.
-    ///
-    /// Examples:
-    ///   aiki task create --template aiki/review --data scope="@"
-    ///   aiki task create --template myorg/build --source file:ops/now/feature.md
-    Create {
-        /// Template name (e.g., "aiki/review", "myorg/refactor-cleanup")
-        #[arg(long, required = true)]
-        template: String,
-
-        /// Set task data (accessible as {data.key} in template). Can be specified multiple times.
-        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
-        data: Vec<String>,
-
-        /// Source that spawned this task (e.g., "file:ops/now/plan.md")
-        /// Can be specified multiple times
-        #[arg(long, action = clap::ArgAction::Append)]
-        source: Vec<String>,
-
-        /// Override template assignee
-        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
-        assignee: Option<String>,
-
-        /// Set priority to P0 (critical/urgent)
-        #[arg(long, group = "priority")]
-        p0: bool,
-
-        /// Set priority to P1 (high)
-        #[arg(long, group = "priority")]
-        p1: bool,
-
-        /// Set priority to P2 (normal, default)
-        #[arg(long, group = "priority")]
-        p2: bool,
-
-        /// Set priority to P3 (low)
-        #[arg(long, group = "priority")]
-        p3: bool,
-    },
-
     /// List or show templates
     Template {
         #[command(subcommand)]
@@ -190,9 +148,24 @@ pub enum TaskCommands {
     },
 
     /// Create a new task
+    ///
+    /// Create a task either by name or from a template.
+    ///
+    /// Examples:
+    ///   aiki task add "Implement user auth"
+    ///   aiki task add --template aiki/review --data scope="@"
+    ///   aiki task add --template myorg/build --source file:ops/now/feature.md
     Add {
-        /// Task name
-        name: String,
+        /// Task name (required unless --template is provided)
+        name: Option<String>,
+
+        /// Create from a template (e.g., "aiki/review", "myorg/refactor-cleanup")
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Set task data (for template-based tasks). Can be specified multiple times.
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
 
         /// Create as child of existing task
         #[arg(long)]
@@ -428,19 +401,11 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             source,
             template,
         ),
-        TaskCommands::Create {
-            template,
-            data,
-            source,
-            assignee,
-            p0,
-            p1,
-            p2,
-            p3,
-        } => run_create(&cwd, template, data, source, assignee, p0, p1, p2, p3),
         TaskCommands::Template { command } => run_template(&cwd, command),
         TaskCommands::Add {
             name,
+            template,
+            data,
             parent,
             assignee,
             source,
@@ -448,7 +413,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
-        } => run_add(&cwd, name, parent, assignee, source, p0, p1, p2, p3),
+        } => run_add(&cwd, name, template, data, parent, assignee, source, p0, p1, p2, p3),
         TaskCommands::Start {
             ids,
             template,
@@ -764,7 +729,9 @@ fn run_list(
 /// Add a new task
 fn run_add(
     cwd: &Path,
-    name: String,
+    name: Option<String>,
+    template_name: Option<String>,
+    data_args: Vec<String>,
     parent: Option<String>,
     assignee_arg: Option<String>,
     sources: Vec<String>,
@@ -774,6 +741,53 @@ fn run_add(
     p3: bool,
 ) -> Result<()> {
     use crate::agents::Assignee;
+
+    // If --template is provided, delegate to template-based creation
+    if let Some(ref template) = template_name {
+        // Template-based creation doesn't support --parent (templates define their own structure)
+        if parent.is_some() {
+            return Err(AikiError::InvalidArgument(
+                "--parent cannot be used with --template (templates define their own task structure)".to_string()
+            ));
+        }
+
+        let task_id = create_from_template(cwd, template, &data_args, &sources, assignee_arg.as_deref(), p0, p1, false, p3)?;
+
+        // Read events to get the task we just created
+        let events = read_events(cwd)?;
+        let tasks = materialize_tasks(&events);
+        let in_progress = get_in_progress(&tasks);
+
+        let task = tasks.get(&task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
+
+        // Get scope set and ready queue
+        let scope_set = get_current_scope_set(&tasks);
+        let ready: Vec<_> = get_ready_queue_for_scope_set(&tasks, &scope_set)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        // Build output
+        let content = format_added(&[task]);
+
+        let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
+        let ready_refs: Vec<_> = ready.iter().collect();
+
+        let mut builder = XmlBuilder::new("add");
+        let xml_scopes = scope_set.to_xml_scopes();
+        if !xml_scopes.is_empty() {
+            builder = builder.with_scopes(&xml_scopes);
+        }
+        let xml = builder.build(&content, &in_progress_refs, &ready_refs);
+
+        println!("{}", xml);
+        return Ok(());
+    }
+
+    // Manual task creation requires a name
+    let name = name.ok_or_else(|| AikiError::InvalidArgument(
+        "Task name required. Either provide a name or use --template".to_string()
+    ))?;
 
     // Validate and normalize assignee if provided
     // This converts aliases like "claude" → "claude-code", "me" → "human"
@@ -2116,51 +2130,6 @@ fn run_run(cwd: &Path, id: String, agent: Option<String>) -> Result<()> {
     run_task_with_xml(cwd, &id, options)
 }
 
-/// Create task(s) from a template
-fn run_create(
-    cwd: &Path,
-    template_name: String,
-    data_args: Vec<String>,
-    sources: Vec<String>,
-    assignee_arg: Option<String>,
-    p0: bool,
-    p1: bool,
-    p2: bool,
-    p3: bool,
-) -> Result<()> {
-    let task_id = create_from_template(cwd, &template_name, &data_args, &sources, assignee_arg.as_deref(), p0, p1, p2, p3)?;
-
-    // Read events to get the task we just created
-    let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
-    let in_progress = get_in_progress(&tasks);
-
-    let task = tasks.get(&task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
-
-    // Get scope set and ready queue
-    let scope_set = get_current_scope_set(&tasks);
-    let ready: Vec<_> = get_ready_queue_for_scope_set(&tasks, &scope_set)
-        .into_iter()
-        .cloned()
-        .collect();
-
-    // Build output
-    let content = format_added(&[task]);
-
-    let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
-    let ready_refs: Vec<_> = ready.iter().collect();
-
-    let mut builder = XmlBuilder::new("create");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &in_progress_refs, &ready_refs);
-
-    println!("{}", xml);
-    Ok(())
-}
-
 /// Handle template subcommands (list, show)
 fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
     use crate::tasks::templates::{find_templates_dir, list_templates, load_template};
@@ -2381,7 +2350,7 @@ fn create_from_template(
         assignee: assignee.clone(),
         sources: sources.clone(),
         template: Some(template.template_id()),
-        working_copy: None, // TODO: Capture actual working copy change_id for historical template lookup
+        working_copy: get_working_copy_change_id(cwd),
         instructions: parent_instructions,
         data: data.clone(),
         timestamp,
@@ -2390,8 +2359,7 @@ fn create_from_template(
 
     // Create subtasks
     for (i, subtask_def) in template.subtasks.iter().enumerate() {
-        // Substitute variables in subtask name
-        let subtask_name = substitute_with_template_name(&subtask_def.name, &ctx, Some(template_name))?;
+        // Generate subtask ID first (only depends on parent ID and index)
         let subtask_id = generate_child_id(&task_id, i + 1);
 
         // Determine subtask priority (override or inherit)
@@ -2419,9 +2387,39 @@ fn create_from_template(
             subtask_data.insert(key.clone(), value_str);
         }
 
-        // Substitute variables in subtask instructions
+        // Build subtask-specific context for variable substitution
+        // Subtask context uses subtask's data/assignee/priority, with parent.* prefix for parent values
+        let mut subtask_ctx = VariableContext::new();
+        for (key, value) in &subtask_data {
+            subtask_ctx.set_data(key, value);
+        }
+        subtask_ctx.set_builtin("id", &subtask_id);
+        if let Some(ref a) = subtask_assignee {
+            subtask_ctx.set_builtin("assignee", a);
+        }
+        subtask_ctx.set_builtin("priority", subtask_priority.to_string());
+        subtask_ctx.set_builtin("created", timestamp.to_rfc3339());
+        if let Some(ref t) = template.defaults.task_type {
+            subtask_ctx.set_builtin("type", t);
+        }
+        // Parent context accessible via parent.* prefix
+        subtask_ctx.set_builtin("parent.id", &task_id);
+        if let Some(ref a) = assignee {
+            subtask_ctx.set_builtin("parent.assignee", a);
+        }
+        subtask_ctx.set_builtin("parent.priority", priority.to_string());
+        for (key, value) in &data {
+            subtask_ctx.set_builtin(&format!("parent.data.{}", key), value);
+        }
+        if let Some(source) = sources.first() {
+            subtask_ctx.set_source(source);
+            subtask_ctx.set_builtin("parent.source", source);
+        }
+
+        // Substitute variables in subtask name and instructions using subtask context
+        let subtask_name = substitute_with_template_name(&subtask_def.name, &subtask_ctx, Some(template_name))?;
         let subtask_instructions = if !subtask_def.instructions.is_empty() {
-            Some(substitute_with_template_name(&subtask_def.instructions, &ctx, Some(template_name))?)
+            Some(substitute_with_template_name(&subtask_def.instructions, &subtask_ctx, Some(template_name))?)
         } else {
             None
         };
@@ -2442,4 +2440,29 @@ fn create_from_template(
     }
 
     Ok(task_id)
+}
+
+/// Get the current working copy change_id from JJ
+///
+/// Returns the change_id of the current working copy (`@` in jj terms).
+/// This is captured when creating tasks from templates for historical template lookup.
+fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("jj")
+        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if change_id.is_empty() {
+        None
+    } else {
+        Some(change_id)
+    }
 }

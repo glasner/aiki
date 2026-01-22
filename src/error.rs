@@ -183,6 +183,10 @@ Alternatively, install the agent globally:
     #[error("Unsupported platform: {0}")]
     UnsupportedPlatform(String),
 
+    // Argument validation errors
+    #[error("{0}")]
+    InvalidArgument(String),
+
     // Task system errors
     #[error("Task not found: '{0}'")]
     TaskNotFound(String),
