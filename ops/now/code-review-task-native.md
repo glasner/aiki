@@ -1145,17 +1145,52 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 ### Fix Command
 
 **Behavior:**
-1. Read all comments from the completed review task
-2. If no comments: print "approved" message and exit 0
-3. If comments found:
-   - Determine assignee (default to agent that authored the reviewed changes)
-   - Create parent followup task with one child task per comment
+1. Wrapper around template system: `aiki fix <task_id>` → `aiki task add --template aiki/fix --source task:<task_id>`
+2. Template system loads `aiki/fix` template (bundled in binary)
+3. If no comments: print "approved" message and exit 0
+4. If comments found:
+   - Template uses `subtasks.from: source.comments` to iterate over comments
+   - Creates parent followup task with one child task per comment
    - Each child task includes comment content (file, severity, issue, fix suggestion)
-   - Parent task has `source` field linking to review task
+   - Parent task has `source` field linking to review task  
    - Each child has `source` fields linking to review task and specific comment
    - **Automatically start the followup task**
    - Print list of issues with instructions for agent to complete the work
-4. Show updated task context with followup task in_progress
+5. Show updated task context with followup task in_progress
+
+**Template:** `cli/src/tasks/templates/builtin/fix.md`
+```markdown
+---
+version: 1.0.0
+subtasks:
+  from: source.comments
+---
+
+# Followup: {source.name}
+
+Fix all issues identified in review.
+
+# Subtasks
+
+## {text}
+
+**Review**: {parent.source.name}
+**File**: {file}:{line}
+**Severity**: {severity}
+**Category**: {category}
+
+{description}
+```
+
+**Implementation:**
+```rust
+pub fn fix(task_id: String) -> Result<()> {
+    create_task_from_template(
+        "aiki/fix",
+        HashMap::from([("source", format!("task:{}", task_id))]),
+    )
+}
+```
 
 **Note:** Review task is already closed (auto-closed when agent completed subtasks)
 
@@ -1180,7 +1215,7 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 
 **Helper Functions:**
 - `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
-- `create_followup_from_comments()` - Build followup task with one child per comment, including source lineage
+- `create_task_from_template()` - Load template, resolve variables, create tasks with iteration support
 
 ---
 
