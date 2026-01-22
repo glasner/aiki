@@ -99,7 +99,7 @@ The default review template covers general code quality:
   - Location: `.aiki/templates/aiki/review.md`
 
 **Custom templates:**
-- Users can create custom templates in `.aiki/templates/custom/`
+- Users can create custom templates in `.aiki/templates/{namespace}/` (e.g., `.aiki/templates/myorg/`)
 - Future: Additional specialized templates (security, performance, style)
 
 Templates define the full task structure (parent + subtasks + instructions). See [task-templates.md](task-templates.md) for details.
@@ -632,10 +632,10 @@ aiki review xqrmnpst
 aiki review --background
 
 # Explicit template
-aiki review --template review
+aiki review --template aiki/review
 
 # Custom template (if user creates one)
-aiki review --template my-custom-review
+aiki review --template myorg/custom-review
 ```
 
 **Behavior (--background):**
@@ -1173,9 +1173,10 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 7. If blocking: run task, wait for completion, then call `fix` to create followup tasks
 
 **Template Loading:**
-- Check `.aiki/templates/custom/{name}.md` for user custom templates
-- Check `.aiki/templates/aiki/{name}.md` for aiki templates
-- Default template is `review` (at `.aiki/templates/aiki/review.md`)
+- Templates use namespace prefixes: `aiki/review` or `myorg/custom-review`
+- Built-in templates in `.aiki/templates/aiki/{name}.md`
+- Custom templates in `.aiki/templates/{namespace}/{name}.md` (e.g., `.aiki/templates/myorg/custom-review.md`)
+- Default template is `aiki/review` (at `.aiki/templates/aiki/review.md`)
 
 **Helper Functions:**
 - `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
@@ -1329,14 +1330,23 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 - `aiki review [<task-id>]` CLI command with all options
 - Review scope support (session (default), task)
 - Session scope = all closed tasks in current session
-- Task template system (default, security, performance, style)
+- `--template` flag for review templates (default: `review`)
 - `--background` flag (default for flow integration)
-- Review task creation from templates
+- Review task creation from templates with review-specific data
 
 **Files:**
 - `cli/src/commands/review.rs` - Review command implementation
-- `cli/src/templates/` - Template loading and parsing (see task-templates.md)
-- `.aiki/templates/aiki/` - Aiki's built-in review templates
+- Integration with template system from [task-templates.md](task-templates.md)
+
+**Dependencies:**
+- Requires template infrastructure from task-templates.md Phase 1-2
+- Review command populates `{data.scope}` and `{data.files}` variables
+- Uses `.aiki/templates/aiki/review.md` as default template
+
+**Implementation Notes:**
+- `aiki review @` creates task from template with `data.scope="@"`, `data.files="..."`
+- Template system handles variable substitution and task creation
+- Review command is a specialized wrapper around `aiki task create --template`
 
 ### Phase 5: Flow Integration
 
