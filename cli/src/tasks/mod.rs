@@ -5,11 +5,13 @@
 //! - XML output format for agent consumption
 //! - Ready queue calculation with priority sorting
 //! - Task execution via agent runtimes
+//! - Template-based task creation
 
 pub mod id;
 pub mod manager;
 pub mod runner;
 pub mod storage;
+pub mod templates;
 pub mod types;
 pub mod xml;
 

@@ -226,6 +226,8 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             priority,
             assignee,
             sources,
+            template,
+            data,
             timestamp,
         } => {
             add_metadata("event", "created", &mut lines);
@@ -238,6 +240,14 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             // Add source= lines (one per source)
             for source in sources {
                 add_metadata("source", source, &mut lines);
+            }
+            // Add template if present
+            if let Some(template) = template {
+                add_metadata("template", template, &mut lines);
+            }
+            // Add data= lines (key:value pairs)
+            for (key, value) in data {
+                add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -386,6 +396,24 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("source")
                 .map(|v| v.iter().map(|s| s.to_string()).collect())
                 .unwrap_or_else(Vec::new);
+            // Parse template
+            let template = fields
+                .get("template")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
+            // Parse data (multiple data= lines with key:value format)
+            let data = fields
+                .get("data")
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|s| {
+                            let s = unescape_metadata_value(s);
+                            let (key, value) = s.split_once(':')?;
+                            Some((key.to_string(), value.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             Some(TaskEvent::Created {
                 task_id,
@@ -393,6 +421,8 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 priority,
                 assignee,
                 sources,
+                template,
+                data,
                 timestamp,
             })
         }
@@ -532,6 +562,8 @@ mod tests {
             priority: TaskPriority::P2,
             assignee: Some("claude-code".to_string()),
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -655,6 +687,8 @@ timestamp=2026-01-09T10:30:00Z
             priority: TaskPriority::P1,
             assignee: None,
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         };
 
@@ -1004,6 +1038,8 @@ timestamp=2026-01-09T10:30:00Z
             priority: TaskPriority::P1,
             assignee: None,
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         };
 
