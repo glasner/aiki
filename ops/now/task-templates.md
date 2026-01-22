@@ -959,13 +959,14 @@ pub struct TaskDefinition {
     pub data: HashMap<String, Value>,  // From subtask frontmatter
 }
 
-/// Fields captured when creating a task from a template
+/// Fields captured ONLY when creating a task from a template
+/// Non-template tasks have these fields as None/empty
 /// (stored in TaskEvent::Created and materialized Task)
-pub struct CreatedTaskFields {
-    pub template: String,         // "name@version" (e.g., "myorg/review@1.2.0")
-    pub working_copy: String,     // JJ change_id at creation time
-    pub instructions: String,     // Template instructions with variables substituted
-    pub data: HashMap<String, Value>,  // Merged from template defaults + CLI --data
+pub struct TemplateTaskFields {
+    pub template: Option<String>,         // "name@version" (e.g., "myorg/review@1.2.0")
+    pub working_copy: Option<String>,     // JJ change_id at creation time (template tasks only)
+    pub instructions: Option<String>,     // Template instructions with variables substituted
+    pub data: HashMap<String, Value>,     // Merged from template defaults + CLI --data
 }
 ```
 
