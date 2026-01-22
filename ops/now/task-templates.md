@@ -27,9 +27,9 @@ aiki review --template aiki/security
 
 # Same power as old --prompt system
 # But now templates can define any workflow:
-aiki task create --template myorg/refactor-cleanup
-aiki task create --template myorg/integration-test
-aiki task create --template myorg/documentation-audit
+aiki task add --template myorg/refactor-cleanup
+aiki task add --template myorg/integration-test
+aiki task add --template myorg/documentation-audit
 ```
 
 ---
@@ -74,13 +74,13 @@ With templates, we can define **any repeatable agent workflow**:
 aiki review --template aiki/security
 
 # Refactoring workflows
-aiki task create --template myorg/refactor-cleanup
+aiki task add --template myorg/refactor-cleanup
 
 # Testing workflows
-aiki task create --template myorg/integration-test
+aiki task add --template myorg/integration-test
 
 # Documentation workflows
-aiki task create --template myorg/api-docs
+aiki task add --template myorg/api-docs
 ```
 
 **Benefits:**
@@ -219,12 +219,12 @@ Error: Variable '{data.foo}' referenced but not provided
 
 ```bash
 # Safe: Braces in values are literal text
-aiki task create --template myorg/deploy \
+aiki task add --template myorg/deploy \
   --data region="us-{east}-1"
 # Result: region is literally "us-{east}-1", no nested substitution
 
 # Safe: Special characters don't break parsing
-aiki task create --template myorg/note \
+aiki task add --template myorg/note \
   --data message="---\nThis is not frontmatter"
 # Result: Inserted as plain text in body, not parsed as YAML
 ```
@@ -298,7 +298,7 @@ Review changes in @ (files: src/auth.ts, src/middleware.ts)
 Assigned to: codex
 ```
 
-#### Custom Variables (aiki task create)
+#### Custom Variables (aiki task add --template)
 
 Templates can reference:
 - **Data fields** using `{data.key}` syntax
@@ -310,7 +310,7 @@ The `{source}` variable accesses the task's source lineage (set via `--source`):
 
 ```bash
 # Link task to a plan document
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 ```
 
@@ -366,7 +366,7 @@ Verify implementation matches file:ops/now/feature.md.
 Templates can also use custom data fields:
 
 ```bash
-aiki task create --template myorg/deploy \
+aiki task add --template myorg/deploy \
   --data environment="production" \
   --data region="us-east-1"
 ```
@@ -387,7 +387,7 @@ Deploy application to {data.environment} in {data.region}.
 
 **Example:**
 ```bash
-aiki task create --template myorg/test \
+aiki task add --template myorg/test \
   --data parallel="true" \
   --data threads="4"
 ```
@@ -720,42 +720,44 @@ aiki review --template aiki/performance
 aiki review --template aiki/style
 
 # Custom templates (with namespace):
-aiki task create --template myorg/refactor-cleanup
-aiki task create --template myorg/api-docs
-aiki task create --template myorg/integration-test
+aiki task add --template myorg/refactor-cleanup
+aiki task add --template myorg/api-docs
+aiki task add --template myorg/integration-test
 ```
 
-### New `aiki task create` Command
+### Template Support in `aiki task add`
+
+The `--template` flag adds template-based task creation to the existing `task add` command:
 
 ```bash
 # Create task from template
-aiki task create --template <name> [options]
+aiki task add --template <name> [options]
 
 # Options:
-#   --data <key>=<value>  - Set metadata (accessible as {data.key} in template)
-#   --assignee <agent>        - Override template assignee
-#   --priority <level>        - Override template priority
+#   --data <key>=<value>  - Set data (accessible as {data.key} in template)
+#   --for <agent>         - Override template assignee
+#   --p0/--p1/--p2/--p3   - Override template priority
 
 # Examples:
 
-# Refactor with scope metadata (links to what's being refactored)
-aiki task create --template myorg/refactor-cleanup \
+# Refactor with scope data (links to what's being refactored)
+aiki task add --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Link to a plan document via source
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 
 # Override assignee
-aiki task create --template myorg/api-docs --assignee claude-code
+aiki task add --template myorg/api-docs --for claude-code
 
 # Multiple data fields
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --data component="dashboard" \
   --data language="rust"
 
 # Combine source + data
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md \
   --data target="v2.0"
 ```
@@ -788,7 +790,7 @@ data:
 ```
 
 ```bash
-aiki task create --template myorg/deploy --data region="us-east-1"
+aiki task add --template myorg/deploy --data region="us-east-1"
 ```
 
 **Result:** `environment=staging`, `region=us-east-1`
@@ -922,7 +924,7 @@ This enables:
 - Values are plain text (braces in values are literal, not evaluated)
 
 **Validation Timing:**
-- Templates are validated when used (`aiki task create --template X`), not at `aiki init` time
+- Templates are validated when used (`aiki task add --template X`), not at `aiki init` time
 - Invalid templates produce clear error messages at usage time (see Error Messages section)
 
 **Files:**
@@ -959,29 +961,30 @@ pub struct TaskDefinition {
     pub data: HashMap<String, Value>,  // From subtask frontmatter
 }
 
-/// Fields captured ONLY when creating a task from a template
-/// Non-template tasks have these fields as None/empty
-/// (stored in TaskEvent::Created and materialized Task)
+/// Template-specific fields (stored in TaskEvent::Created and materialized Task)
 pub struct TemplateTaskFields {
-    pub template: Option<String>,         // "name@version" (e.g., "myorg/review@1.2.0")
-    pub working_copy: Option<String>,     // JJ change_id at creation time (template tasks only)
-    pub instructions: Option<String>,     // Template instructions with variables substituted
+    pub template: Option<String>,         // "name@version" - template tasks only
+    pub instructions: Option<String>,     // Template instructions with variables substituted - template tasks only
     pub data: HashMap<String, Value>,     // Merged from template defaults + CLI --data
 }
 ```
 
 **Working Copy Capture:**
 
-When a task is created from a template, the current JJ working copy `change_id` is captured in `task.working_copy`. This enables:
+The `working_copy` field captures the JJ change_id at task creation time for **ALL tasks** (not just template tasks). This enables:
 
-1. **Historical template lookup** - Retrieve the exact template version used:
+1. **Historical source lookup** - Retrieve files at the time the task was created:
    ```bash
+   # For file: sources
+   jj show <working_copy>:ops/now/design.md
+
+   # For template tasks
    jj show <working_copy>:.aiki/templates/<template>.md
    ```
 
-2. **Reproducibility** - Understand what instructions the agent received at the time
+2. **Reproducibility** - Understand the workspace state when any task was created
 
-3. **Audit trail** - Link tasks back to the workspace state when they were created
+3. **Audit trail** - Link tasks back to the exact codebase snapshot when they were created
 
 ### Phase 2: Built-in Templates
 
@@ -996,14 +999,14 @@ When a task is created from a template, the current JJ working copy `change_id` 
 ### Phase 3: Generic Task Creation
 
 **Deliverables:**
-- New `aiki task create --template` command
+- New `aiki task add --template` command
 - Add `--template` support to `aiki task start` (create + start)
 - Task creation from arbitrary templates
 - Support for non-review workflows
 - Template filtering: `aiki task list --template <name>`
 
 **Files:**
-- `cli/src/commands/task.rs` - Add `create` subcommand, `--template` flag to `start`, and `--template` filter
+- `cli/src/commands/task.rs` - Add `--template` flag to `add` and `start`, and `--template` filter to `list`
 
 **Implementation Notes:**
 - Store template name and version in `task.template` field as `name@version` (e.g., `myorg/review@1.2.0`)
@@ -1025,7 +1028,7 @@ aiki task start --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Equivalent to:
-aiki task create --template myorg/refactor-cleanup --data scope="src/auth.rs"
+aiki task add --template myorg/refactor-cleanup --data scope="src/auth.rs"
 TASK_ID=$(aiki task list --format=json | jq -r '.[0].id')
 aiki task start $TASK_ID
 ```
@@ -1124,7 +1127,7 @@ See [`ops/future/templates/`](../future/templates/) for detailed future enhancem
 
 ```bash
 # Create task from template
-aiki task create --template myorg/refactor-cleanup \
+aiki task add --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Start task from template (create + start)
@@ -1132,7 +1135,7 @@ aiki task start --template myorg/api-docs \
   --data module="src/core"
 
 # With source linkage
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 
 # Query tasks by template

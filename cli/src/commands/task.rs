@@ -854,6 +854,8 @@ fn run_add(
 
     let timestamp = chrono::Utc::now();
 
+    let working_copy = get_working_copy_change_id(cwd);
+
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
@@ -861,7 +863,7 @@ fn run_add(
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
         template: None,
-        working_copy: None,
+        working_copy: working_copy.clone(),
         instructions: None,
         data: std::collections::HashMap::new(),
         timestamp,
@@ -878,7 +880,7 @@ fn run_add(
         assignee: effective_assignee,
         sources,
         template: None,
-        working_copy: None,
+        working_copy,
         instructions: None,
         data: std::collections::HashMap::new(),
         created_at: timestamp,
@@ -999,6 +1001,7 @@ fn run_start(
         let description = &ids[0];
         let task_id = generate_task_id(description);
         let timestamp = chrono::Utc::now();
+        let working_copy = get_working_copy_change_id(cwd);
 
         // Create the task
         let create_event = TaskEvent::Created {
@@ -1008,7 +1011,7 @@ fn run_start(
             assignee: None,
             sources: sources.clone(),
             template: None,
-            working_copy: None,
+            working_copy: working_copy.clone(),
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp,
@@ -1024,7 +1027,7 @@ fn run_start(
             assignee: None,
             sources: sources.clone(),
             template: None,
-            working_copy: None,
+            working_copy,
             instructions: None,
             data: std::collections::HashMap::new(),
             created_at: timestamp,
@@ -1106,6 +1109,7 @@ fn run_start(
             if find_task(&tasks, &planning_id).is_none() {
                 // Create the planning task
                 let timestamp = chrono::Utc::now();
+                let working_copy = get_working_copy_change_id(cwd);
                 let planning_event = TaskEvent::Created {
                     task_id: planning_id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
@@ -1113,7 +1117,7 @@ fn run_start(
                     assignee: None,
                     sources: Vec::new(),
                     template: None,
-                    working_copy: None,
+                    working_copy: working_copy.clone(),
                     instructions: None,
                     data: std::collections::HashMap::new(),
                     timestamp,
@@ -1129,7 +1133,7 @@ fn run_start(
                     assignee: None,
                     sources: Vec::new(),
                     template: None,
-                    working_copy: None,
+                    working_copy,
                     instructions: None,
                     data: std::collections::HashMap::new(),
                     created_at: timestamp,
@@ -1345,6 +1349,7 @@ fn run_stop(
 
     // Create blocker tasks for each --blocked flag and add to in-memory map
     let timestamp = chrono::Utc::now();
+    let working_copy = get_working_copy_change_id(cwd);
     for blocked_reason in &blocked {
         let blocker_id = generate_task_id(blocked_reason);
         let blocker_event = TaskEvent::Created {
@@ -1354,7 +1359,7 @@ fn run_stop(
             assignee: Some("human".to_string()),
             sources: Vec::new(),
             template: None,
-            working_copy: None,
+            working_copy: working_copy.clone(),
             instructions: None,
             data: std::collections::HashMap::new(),
             timestamp,
@@ -1372,7 +1377,7 @@ fn run_stop(
                 assignee: Some("human".to_string()),
                 sources: Vec::new(),
                 template: None,
-                working_copy: None,
+                working_copy: working_copy.clone(),
                 instructions: None,
                 data: std::collections::HashMap::new(),
                 created_at: timestamp,
