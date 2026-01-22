@@ -241,6 +241,38 @@ Built-in variables are populated from the task struct:
 | `{type}` | Task type | `review`, `refactor`, `test` |
 | `{created}` | Creation timestamp | `2026-01-20T10:00:00Z` |
 
+**Variable Scoping in Subtasks:**
+
+When rendering subtask instructions, variables resolve to the **subtask's context** (with fallback to parent):
+
+| Variable | Resolution |
+|----------|------------|
+| `{id}` | Subtask's own ID (e.g., `parent_id.1`) |
+| `{assignee}` | Subtask's assignee (from subtask frontmatter) → parent's assignee |
+| `{priority}` | Subtask's priority (from subtask frontmatter) → parent's priority |
+| `{data.*}` | Subtask's data merged over parent's data |
+| `{parent.id}` | Parent task's ID |
+| `{parent.assignee}` | Parent task's assignee |
+| `{parent.data.*}` | Parent task's data fields |
+
+**Example:**
+```markdown
+## Security audit
+---
+assignee: security-specialist
+priority: p0
+---
+
+Task {id} assigned to {assignee} (priority: {priority})
+Parent task: {parent.id}
+```
+
+Renders as:
+```markdown
+Task xqrmnpst.2 assigned to security-specialist (priority: p0)
+Parent task: xqrmnpst
+```
+
 #### Review-Specific Variables (in data)
 
 When using `aiki review`, review-specific information is passed via data:
@@ -823,39 +855,66 @@ The substitution engine must guarantee security and determinism:
 
 ```rust
 // Pseudocode for safe substitution
-fn load_template(path: &Path, data: &HashMap<String, String>) -> Result<Task> {
+fn load_template(path: &Path, data: &HashMap<String, Value>) -> Result<Task> {
     let content = read_file(path)?;
-    
+
     // 1. Parse frontmatter FIRST (no substitution in YAML)
     let (frontmatter, body) = parse_frontmatter(&content)?;
-    
+
     // 2. Substitute variables in body only (single-pass, no recursion)
-    let substituted_body = substitute_once(&body, data)?;
-    
+    //    Values are converted to strings for text substitution
+    let substituted_body = substitute_once(&body, &data)?;
+
     // 3. Parse markdown structure from substituted body
     let task = parse_task_structure(&substituted_body)?;
-    
+
+    // 4. Store typed data on task (not the string-rendered version)
+    task.data = data;
+
     Ok(task)
 }
 
-fn substitute_once(text: &str, data: &HashMap<String, String>) -> Result<String> {
+fn substitute_once(text: &str, data: &HashMap<String, Value>) -> Result<String> {
     let mut result = text.to_string();
-    
+
     // Handle escaping: {{...}} -> {...} (literal braces)
     result = result.replace("{{", "\x00").replace("}}", "\x01");
-    
-    // Substitute variables: {key} -> value (plain text, no re-evaluation)
+
+    // Substitute variables: {key} -> value.to_string() (typed value rendered as text)
     for (key, value) in data {
         let pattern = format!("{{{}}}", key);
-        result = result.replace(&pattern, value);
+        let rendered = match value {
+            Value::Bool(b) => b.to_string(),      // "true" or "false"
+            Value::Number(n) => n.to_string(),    // "42" or "3.14"
+            Value::String(s) => s.clone(),        // as-is
+            Value::Null => "".to_string(),        // empty
+            _ => serde_json::to_string(value)?,   // arrays/objects as JSON
+        };
+        result = result.replace(&pattern, &rendered);
     }
-    
+
     // Restore escaped braces
     result = result.replace("\x00", "{").replace("\x01", "}");
-    
+
     Ok(result)
 }
 ```
+
+**Typed Data Storage:**
+
+Data values are stored with their types preserved (using `serde_json::Value`):
+
+| CLI Input | Stored Type | Stored Value |
+|-----------|-------------|--------------|
+| `--data enabled="true"` | `Value::Bool` | `true` |
+| `--data count="42"` | `Value::Number` | `42` |
+| `--data name="test"` | `Value::String` | `"test"` |
+| `--data ratio="3.14"` | `Value::Number` | `3.14` |
+
+This enables:
+- **Querying by type** - Find tasks where `data.enabled == true` (boolean comparison)
+- **JSON serialization** - Data serializes correctly without quote escaping issues
+- **Template conditionals** (future) - `{{#if data.enabled}}...{{/if}}`
 
 **Key guarantees:**
 - Frontmatter parsing happens before substitution (values can't inject YAML)
@@ -899,7 +958,29 @@ pub struct TaskDefinition {
     pub assignee: Option<String>,
     pub data: HashMap<String, Value>,  // From subtask frontmatter
 }
+
+/// Fields captured when creating a task from a template
+/// (stored in TaskEvent::Created and materialized Task)
+pub struct CreatedTaskFields {
+    pub template: String,         // "name@version" (e.g., "myorg/review@1.2.0")
+    pub working_copy: String,     // JJ change_id at creation time
+    pub instructions: String,     // Template instructions with variables substituted
+    pub data: HashMap<String, Value>,  // Merged from template defaults + CLI --data
+}
 ```
+
+**Working Copy Capture:**
+
+When a task is created from a template, the current JJ working copy `change_id` is captured in `task.working_copy`. This enables:
+
+1. **Historical template lookup** - Retrieve the exact template version used:
+   ```bash
+   jj show <working_copy>:.aiki/templates/<template>.md
+   ```
+
+2. **Reproducibility** - Understand what instructions the agent received at the time
+
+3. **Audit trail** - Link tasks back to the workspace state when they were created
 
 ### Phase 2: Built-in Templates
 
