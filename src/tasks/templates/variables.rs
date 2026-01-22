@@ -9,6 +9,60 @@
 use crate::error::{AikiError, Result};
 use std::collections::HashMap;
 
+/// Coerce a string value to a typed serde_json::Value
+///
+/// Type coercion rules:
+/// - "true" / "false" (case-insensitive) → boolean
+/// - Numeric strings (integers and floats) → number
+/// - Everything else → string
+///
+/// # Examples
+/// ```
+/// use aiki::tasks::templates::variables::coerce_value;
+///
+/// assert_eq!(coerce_value("true"), serde_json::json!(true));
+/// assert_eq!(coerce_value("42"), serde_json::json!(42));
+/// assert_eq!(coerce_value("3.14"), serde_json::json!(3.14));
+/// assert_eq!(coerce_value("hello"), serde_json::json!("hello"));
+/// ```
+#[must_use]
+pub fn coerce_value(value: &str) -> serde_json::Value {
+    // Try boolean
+    match value.to_lowercase().as_str() {
+        "true" => return serde_json::Value::Bool(true),
+        "false" => return serde_json::Value::Bool(false),
+        _ => {}
+    }
+
+    // Try integer
+    if let Ok(n) = value.parse::<i64>() {
+        return serde_json::json!(n);
+    }
+
+    // Try float
+    if let Ok(n) = value.parse::<f64>() {
+        return serde_json::json!(n);
+    }
+
+    // Default to string
+    serde_json::Value::String(value.to_string())
+}
+
+/// Convert a string to a typed value and back to string representation
+///
+/// This is useful when you want to normalize values (e.g., "TRUE" → "true")
+/// while keeping the storage as strings.
+#[must_use]
+pub fn coerce_to_string(value: &str) -> String {
+    let typed = coerce_value(value);
+    match typed {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => value.to_string(),
+    }
+}
+
 /// Context for variable substitution
 #[derive(Debug, Clone, Default)]
 pub struct VariableContext {
@@ -309,5 +363,42 @@ mod tests {
         assert_eq!(ctx.resolve("data.scope"), Some("@".to_string()));
         assert_eq!(ctx.resolve("source"), Some("file:plan.md".to_string()));
         assert_eq!(ctx.resolve("unknown"), None);
+    }
+
+    #[test]
+    fn test_coerce_value_boolean() {
+        assert_eq!(coerce_value("true"), serde_json::json!(true));
+        assert_eq!(coerce_value("false"), serde_json::json!(false));
+        assert_eq!(coerce_value("TRUE"), serde_json::json!(true));
+        assert_eq!(coerce_value("False"), serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_coerce_value_integer() {
+        assert_eq!(coerce_value("42"), serde_json::json!(42));
+        assert_eq!(coerce_value("-7"), serde_json::json!(-7));
+        assert_eq!(coerce_value("0"), serde_json::json!(0));
+    }
+
+    #[test]
+    fn test_coerce_value_float() {
+        assert_eq!(coerce_value("3.14"), serde_json::json!(3.14));
+        assert_eq!(coerce_value("-2.5"), serde_json::json!(-2.5));
+    }
+
+    #[test]
+    fn test_coerce_value_string() {
+        assert_eq!(coerce_value("hello"), serde_json::json!("hello"));
+        assert_eq!(coerce_value(""), serde_json::json!(""));
+        assert_eq!(coerce_value("123abc"), serde_json::json!("123abc"));
+        assert_eq!(coerce_value("truthy"), serde_json::json!("truthy")); // not "true"
+    }
+
+    #[test]
+    fn test_coerce_to_string_normalizes() {
+        assert_eq!(coerce_to_string("TRUE"), "true");
+        assert_eq!(coerce_to_string("False"), "false");
+        assert_eq!(coerce_to_string("42"), "42");
+        assert_eq!(coerce_to_string("hello"), "hello");
     }
 }

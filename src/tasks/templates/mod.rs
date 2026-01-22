@@ -51,4 +51,4 @@ pub mod variables;
 pub use parser::parse_template;
 pub use resolver::{find_templates_dir, list_templates, load_template, load_template_file, TemplateInfo};
 pub use types::{TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
-pub use variables::{find_variables, substitute, substitute_with_template_name, VariableContext};
+pub use variables::{coerce_to_string, coerce_value, find_variables, substitute, substitute_with_template_name, VariableContext};

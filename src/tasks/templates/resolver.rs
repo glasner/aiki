@@ -83,7 +83,13 @@ pub fn load_template_file(file_path: &Path, name: &str) -> Result<TaskTemplate> 
         suggestions: format!("\n  Error reading file: {}", e),
     })?;
 
-    parse_template(&content, name, &file_path.display().to_string())
+    let mut template = parse_template(&content, name, &file_path.display().to_string())?;
+
+    // Store the source path and raw content for display purposes
+    template.source_path = Some(file_path.display().to_string());
+    template.raw_content = Some(content);
+
+    Ok(template)
 }
 
 /// Suggest similar template names

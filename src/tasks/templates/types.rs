@@ -23,6 +23,10 @@ pub struct TaskTemplate {
     pub parent: TaskDefinition,
     /// Subtask definitions
     pub subtasks: Vec<TaskDefinition>,
+    /// Source file path (for display purposes)
+    pub source_path: Option<String>,
+    /// Raw template content (for display purposes)
+    pub raw_content: Option<String>,
 }
 
 impl TaskTemplate {
@@ -36,6 +40,8 @@ impl TaskTemplate {
             defaults: TaskDefaults::default(),
             parent: TaskDefinition::default(),
             subtasks: Vec::new(),
+            source_path: None,
+            raw_content: None,
         }
     }
 

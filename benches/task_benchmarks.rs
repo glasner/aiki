@@ -39,6 +39,11 @@ fn bench_create_task(c: &mut Criterion) {
                     name: black_box("Benchmark task".to_string()),
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
@@ -65,6 +70,11 @@ fn bench_write_events(c: &mut Criterion) {
                     name: black_box("Test task".to_string()),
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to write event");
@@ -87,6 +97,11 @@ fn bench_write_events(c: &mut Criterion) {
                     name: "Task to start".to_string(),
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
@@ -121,6 +136,11 @@ fn bench_write_events(c: &mut Criterion) {
                     name: "Task to stop".to_string(),
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
@@ -155,6 +175,11 @@ fn bench_write_events(c: &mut Criterion) {
                     name: "Task to close".to_string(),
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
@@ -197,6 +222,10 @@ fn bench_read_events(c: &mut Criterion) {
                         name: format!("Task {}", i),
                         priority: TaskPriority::P2,
                         assignee: None,
+                        sources: Vec::new(),
+                        template: None,
+                        working_copy: None,
+                        data: std::collections::HashMap::new(),
                         timestamp: Utc::now(),
                     };
                     write_event(cwd, &event).expect("Failed to create task");

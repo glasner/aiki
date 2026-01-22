@@ -847,6 +847,8 @@ fn run_add(
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
         template: None,
+        working_copy: None,
+        instructions: None,
         data: std::collections::HashMap::new(),
         timestamp,
     };
@@ -862,6 +864,8 @@ fn run_add(
         assignee: effective_assignee,
         sources,
         template: None,
+        working_copy: None,
+        instructions: None,
         data: std::collections::HashMap::new(),
         created_at: timestamp,
         started_at: None,
@@ -990,6 +994,8 @@ fn run_start(
             assignee: None,
             sources: sources.clone(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             timestamp,
         };
@@ -1004,6 +1010,8 @@ fn run_start(
             assignee: None,
             sources: sources.clone(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             created_at: timestamp,
             started_at: None,
@@ -1091,6 +1099,8 @@ fn run_start(
                     assignee: None,
                     sources: Vec::new(),
                     template: None,
+                    working_copy: None,
+                    instructions: None,
                     data: std::collections::HashMap::new(),
                     timestamp,
                 };
@@ -1105,6 +1115,8 @@ fn run_start(
                     assignee: None,
                     sources: Vec::new(),
                     template: None,
+                    working_copy: None,
+                    instructions: None,
                     data: std::collections::HashMap::new(),
                     created_at: timestamp,
                     started_at: None,
@@ -1328,6 +1340,8 @@ fn run_stop(
             assignee: Some("human".to_string()),
             sources: Vec::new(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             timestamp,
         };
@@ -1344,6 +1358,8 @@ fn run_stop(
                 assignee: Some("human".to_string()),
                 sources: Vec::new(),
                 template: None,
+                working_copy: None,
+                instructions: None,
                 data: std::collections::HashMap::new(),
                 created_at: timestamp,
                 started_at: None,
@@ -2197,6 +2213,12 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
             let mut content = String::new();
             content.push_str("  <template>\n");
             content.push_str(&format!("    <name>{}</name>\n", escape_xml(&template.name)));
+
+            // Show source location
+            if let Some(ref path) = template.source_path {
+                content.push_str(&format!("    <source>{}</source>\n", escape_xml(path)));
+            }
+
             if let Some(ref v) = template.version {
                 content.push_str(&format!("    <version>{}</version>\n", escape_xml(v)));
             }
@@ -2225,6 +2247,13 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
                 content.push_str("    </subtasks>\n");
             }
 
+            // Show full template content
+            if let Some(ref raw) = template.raw_content {
+                content.push_str("    <content><![CDATA[\n");
+                content.push_str(raw);
+                content.push_str("\n]]></content>\n");
+            }
+
             content.push_str("  </template>");
 
             let empty: Vec<&Task> = vec![];
@@ -2249,7 +2278,7 @@ fn create_from_template(
     p3: bool,
 ) -> Result<String> {
     use crate::agents::Assignee;
-    use crate::tasks::templates::{find_templates_dir, load_template, substitute_with_template_name, VariableContext};
+    use crate::tasks::templates::{coerce_to_string, find_templates_dir, load_template, substitute_with_template_name, VariableContext};
 
     // Validate source prefixes
     validate_sources(sources)?;
@@ -2257,13 +2286,15 @@ fn create_from_template(
     // Resolve "prompt" source to actual prompt change_id
     let sources = resolve_prompt_sources(cwd, sources.to_vec())?;
 
-    // Parse data arguments into HashMap
+    // Parse data arguments into HashMap with type coercion
+    // "true"/"false" → boolean string, numeric strings normalized
     let mut data: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for arg in data_args {
         let (key, value) = arg.split_once('=').ok_or_else(|| {
             AikiError::InvalidTaskSource(format!("Invalid --data format: '{}'. Use: --data key=value", arg))
         })?;
-        data.insert(key.to_string(), value.to_string());
+        // Apply type coercion: normalizes booleans and numbers
+        data.insert(key.to_string(), coerce_to_string(value));
     }
 
     // Find and load template
@@ -2335,6 +2366,13 @@ fn create_from_template(
     let timestamp = chrono::Utc::now();
     ctx.set_builtin("created", timestamp.to_rfc3339());
 
+    // Substitute variables in parent instructions
+    let parent_instructions = if !template.parent.instructions.is_empty() {
+        Some(substitute_with_template_name(&template.parent.instructions, &ctx, Some(template_name))?)
+    } else {
+        None
+    };
+
     // Create parent task event
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
@@ -2343,6 +2381,8 @@ fn create_from_template(
         assignee: assignee.clone(),
         sources: sources.clone(),
         template: Some(template.template_id()),
+        working_copy: None, // TODO: Capture actual working copy change_id for historical template lookup
+        instructions: parent_instructions,
         data: data.clone(),
         timestamp,
     };
@@ -2368,6 +2408,24 @@ fn create_from_template(
             assignee.clone()
         };
 
+        // Merge data: parent data + subtask frontmatter data (subtask wins on conflict)
+        let mut subtask_data = data.clone();
+        for (key, value) in &subtask_def.data {
+            // Convert serde_json::Value to string
+            let value_str = match value {
+                serde_json::Value::String(s) => s.clone(),
+                _ => value.to_string(),
+            };
+            subtask_data.insert(key.clone(), value_str);
+        }
+
+        // Substitute variables in subtask instructions
+        let subtask_instructions = if !subtask_def.instructions.is_empty() {
+            Some(substitute_with_template_name(&subtask_def.instructions, &ctx, Some(template_name))?)
+        } else {
+            None
+        };
+
         let subtask_event = TaskEvent::Created {
             task_id: subtask_id,
             name: subtask_name,
@@ -2375,7 +2433,9 @@ fn create_from_template(
             assignee: subtask_assignee,
             sources: vec![format!("task:{}", task_id)],
             template: Some(template.template_id()),
-            data: data.clone(),
+            working_copy: None, // Inherit from parent (captured once)
+            instructions: subtask_instructions,
+            data: subtask_data,
             timestamp,
         };
         write_event(cwd, &subtask_event)?;

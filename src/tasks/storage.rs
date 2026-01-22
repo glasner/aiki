@@ -227,6 +227,8 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             assignee,
             sources,
             template,
+            working_copy,
+            instructions,
             data,
             timestamp,
         } => {
@@ -244,6 +246,14 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             // Add template if present
             if let Some(template) = template {
                 add_metadata("template", template, &mut lines);
+            }
+            // Add working_copy if present
+            if let Some(wc) = working_copy {
+                add_metadata("working_copy", wc, &mut lines);
+            }
+            // Add instructions if present (escaped to handle newlines and special chars)
+            if let Some(instr) = instructions {
+                add_metadata_escaped("instructions", instr, &mut lines);
             }
             // Add data= lines (key:value pairs)
             for (key, value) in data {
@@ -401,6 +411,16 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("template")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
+            // Parse working_copy
+            let working_copy = fields
+                .get("working_copy")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
+            // Parse instructions (escaped value)
+            let instructions = fields
+                .get("instructions")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
             // Parse data (multiple data= lines with key:value format)
             let data = fields
                 .get("data")
@@ -422,6 +442,8 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 assignee,
                 sources,
                 template,
+                working_copy,
+                instructions,
                 data,
                 timestamp,
             })
@@ -563,6 +585,8 @@ mod tests {
             assignee: Some("claude-code".to_string()),
             sources: Vec::new(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
@@ -688,6 +712,8 @@ timestamp=2026-01-09T10:30:00Z
             assignee: None,
             sources: Vec::new(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         };
@@ -1039,6 +1065,8 @@ timestamp=2026-01-09T10:30:00Z
             assignee: None,
             sources: Vec::new(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         };
