@@ -49,6 +49,8 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                 priority,
                 assignee,
                 sources,
+                template,
+                data,
                 timestamp,
             } => {
                 tasks.insert(
@@ -60,6 +62,8 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         priority: *priority,
                         assignee: assignee.clone(),
                         sources: sources.clone(),
+                        template: template.clone(),
+                        data: data.clone(),
                         created_at: *timestamp,
                         started_at: None,
                         claimed_by_session: None,
@@ -518,6 +522,8 @@ mod tests {
             priority,
             assignee: None,
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
         }
     }
@@ -1104,6 +1110,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: now,
             },
             TaskEvent::Created {
@@ -1112,6 +1120,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: now,
             },
             TaskEvent::Created {
@@ -1120,6 +1130,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: now,
             },
         ];
@@ -1440,6 +1452,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Closed {
@@ -1472,6 +1486,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::CommentAdded {
@@ -1504,6 +1520,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Updated {
@@ -1532,6 +1550,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Updated {
@@ -1560,6 +1580,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Updated {
@@ -1589,6 +1611,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             // Start task
@@ -1647,6 +1671,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Closed {
@@ -1668,6 +1694,8 @@ mod tests {
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
+                template: None,
+                data: std::collections::HashMap::new(),
                 timestamp: base_time,
             },
             TaskEvent::Closed {
@@ -1741,6 +1769,8 @@ mod tests {
             priority,
             assignee: assignee.map(|s| s.to_string()),
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
         }
     }

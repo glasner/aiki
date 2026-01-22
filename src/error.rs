@@ -227,6 +227,30 @@ Alternatively, install the agent globally:
     #[error("Cannot resolve --source prompt: no prompt events found for this session.")]
     NoPromptEventsForSession,
 
+    // Template system errors
+    #[error("Template not found: '{name}'\n  Expected: {expected_path}{suggestions}")]
+    TemplateNotFound {
+        name: String,
+        expected_path: String,
+        suggestions: String,
+    },
+
+    #[error("Variable '{{{variable}}}' referenced but not provided{template_info}\n  {hint}")]
+    TemplateVariableNotFound {
+        variable: String,
+        hint: String,
+        template_info: String,
+    },
+
+    #[error("Invalid template frontmatter\n  File: {file}\n  {details}")]
+    TemplateFrontmatterInvalid { file: String, details: String },
+
+    #[error("Invalid template structure\n  File: {file}\n  {details}")]
+    TemplateStructureInvalid { file: String, details: String },
+
+    #[error("No templates directory found at: {path}")]
+    TemplatesDirectoryNotFound { path: String },
+
     // Generic wrapper for underlying errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

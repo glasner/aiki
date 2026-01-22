@@ -305,6 +305,8 @@ mod tests {
             priority,
             assignee: None,
             sources: Vec::new(),
+            template: None,
+            data: std::collections::HashMap::new(),
             created_at: Utc::now(),
             started_at: None,
             claimed_by_session: None,
