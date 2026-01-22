@@ -113,6 +113,10 @@ pub enum TaskEvent {
         sources: Vec<String>,
         /// Template used to create this task (e.g., "aiki/review@1.0.0")
         template: Option<String>,
+        /// Working copy change_id at creation time (for historical template lookup)
+        working_copy: Option<String>,
+        /// Instructions from template (with variables substituted)
+        instructions: Option<String>,
         /// Custom data/metadata for the task
         data: HashMap<String, String>,
         timestamp: DateTime<Utc>,
@@ -183,6 +187,10 @@ pub struct Task {
     pub sources: Vec<String>,
     /// Template used to create this task (e.g., "aiki/review@1.0.0")
     pub template: Option<String>,
+    /// Working copy change_id at creation time (for historical template lookup)
+    pub working_copy: Option<String>,
+    /// Instructions from template (with variables substituted)
+    pub instructions: Option<String>,
     /// Custom data/metadata for the task
     pub data: HashMap<String, String>,
     pub created_at: DateTime<Utc>,

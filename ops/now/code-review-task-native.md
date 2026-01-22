@@ -96,7 +96,7 @@ The default review template covers general code quality:
 
 - **`review`** (default) - General code quality, functionality, security, and performance
   - Subtasks: Digest code changes, Review code
-  - Location: `.aiki/templates/aiki/review.md`
+  - Bundled in binary at `cli/src/tasks/templates/builtin/review.md`
 
 **Custom templates:**
 - Users can create custom templates in `.aiki/templates/{namespace}/` (e.g., `.aiki/templates/myorg/`)
@@ -1174,9 +1174,9 @@ The task run command uses the `AgentRuntime` abstraction from [run-task.md](../d
 
 **Template Loading:**
 - Templates use namespace prefixes: `aiki/review` or `myorg/custom-review`
-- Built-in templates in `.aiki/templates/aiki/{name}.md`
+- Built-in templates bundled in binary at `cli/src/tasks/templates/builtin/{name}.md`
 - Custom templates in `.aiki/templates/{namespace}/{name}.md` (e.g., `.aiki/templates/myorg/custom-review.md`)
-- Default template is `aiki/review` (at `.aiki/templates/aiki/review.md`)
+- Default template is `aiki/review` (bundled in binary)
 
 **Helper Functions:**
 - `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
@@ -1341,7 +1341,7 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 **Dependencies:**
 - Requires template infrastructure from task-templates.md Phase 1-2
 - Review command populates `{data.scope}` and `{data.files}` variables
-- Uses `.aiki/templates/aiki/review.md` as default template
+- Uses built-in `aiki/review` template (bundled in binary)
 
 **Implementation Notes:**
 - `aiki review @` creates task from template with `data.scope="@"`, `data.files="..."`

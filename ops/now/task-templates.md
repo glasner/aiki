@@ -108,7 +108,7 @@ A **task template** is a markdown file with YAML frontmatter that defines:
 Templates are markdown files with YAML frontmatter:
 
 ```markdown
-<!-- .aiki/templates/aiki/review.md -->
+<!-- cli/src/tasks/templates/builtin/review.md (bundled in binary) -->
 ---
 description: General code quality, functionality, basic security
 type: review
@@ -472,7 +472,7 @@ Aiki ships with these built-in templates:
 
 ### 1. `review` - General Code Review (Default)
 
-**Location**: `.aiki/templates/aiki/review.md`
+**Location**: Bundled in binary at `cli/src/tasks/templates/builtin/review.md`
 
 **Purpose**: General code quality, functionality, basic security, and performance
 
@@ -509,7 +509,8 @@ aiki review --template aiki/review  # Explicit
   - Organizations can namespace their templates
 
 **Resolution:**
-- Template name includes the namespace path: `aiki/review` → `.aiki/templates/aiki/review.md`
+- Template name includes the namespace: `aiki/review` (built-in templates bundled in binary)
+- User templates stored in `.aiki/templates/{namespace}/` (e.g., `.aiki/templates/myorg/review.md`)
 - Custom template: `myorg/refactor-cleanup` → `.aiki/templates/myorg/refactor-cleanup.md`
 - No fallback search needed - template name is exact path within `.aiki/templates/`
 
@@ -900,14 +901,15 @@ pub struct TaskDefinition {
 }
 ```
 
-### Phase 2: Aiki Templates
+### Phase 2: Built-in Templates
 
 **Deliverables:**
-- Create `.aiki/templates/aiki/` directory
-- Ship `review.md` (default review template)
+- Bundle `review.md` template in binary (using `include_str!` like `flow.yaml`)
+- Load built-in templates from binary at runtime
 
 **Files:**
-- `.aiki/templates/aiki/review.md`
+- `cli/src/tasks/templates/builtin/review.md` - Bundled template file
+- `cli/src/tasks/templates/builtin/mod.rs` - Template loader using `include_str!`
 
 ### Phase 3: Generic Task Creation
 
@@ -975,7 +977,7 @@ aiki task template show aiki/review
 
 # Output:
 Template: aiki/review
-Location: .aiki/templates/aiki/review.md
+Source: Built-in (bundled in binary)
 Description: General code quality, functionality, basic security
 
 # Review: {data.scope}
@@ -989,9 +991,11 @@ Code review orchestration task.
 - `cli/src/tasks/templates/discovery.rs` - Template discovery logic
 
 **Implementation Notes:**
-- `list` scans `.aiki/templates/` directory recursively
+- `list` shows both built-in templates (from binary) and user templates (from `.aiki/templates/`)
+- Built-in templates loaded via `include_str!` (like `flow.yaml`)
+- User templates scanned from `.aiki/templates/` directory recursively
 - Groups by namespace (aiki/, myorg/, etc.)
-- `show` displays template name, location, description, and full content
+- `show` displays template name, source (built-in or file path), description, and full content
 - Both commands work without requiring a task to be created
 
 ### Phase 5: Documentation

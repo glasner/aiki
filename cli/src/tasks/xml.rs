@@ -306,6 +306,8 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
+            working_copy: None,
+            instructions: None,
             data: std::collections::HashMap::new(),
             created_at: Utc::now(),
             started_at: None,
