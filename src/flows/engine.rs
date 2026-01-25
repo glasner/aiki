@@ -50,8 +50,11 @@ impl FlowEngine {
 
         // Add event-specific variables based on event type
         match &state.event {
-            crate::events::AikiEvent::PromptSubmitted(e) => {
+            crate::events::AikiEvent::TurnStarted(e) => {
                 resolver.add_var("event.prompt".to_string(), e.prompt.clone());
+                resolver.add_var("event.source".to_string(), e.source.to_string());
+                resolver.add_var("event.turn".to_string(), e.turn.to_string());
+                resolver.add_var("event.turn_id".to_string(), e.turn_id.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
@@ -89,8 +92,11 @@ impl FlowEngine {
                     e.session.external_id().to_string(),
                 );
             }
-            crate::events::AikiEvent::ResponseReceived(e) => {
+            crate::events::AikiEvent::TurnCompleted(e) => {
                 resolver.add_var("event.response".to_string(), e.response.clone());
+                resolver.add_var("event.source".to_string(), e.source.to_string());
+                resolver.add_var("event.turn".to_string(), e.turn.to_string());
+                resolver.add_var("event.turn_id".to_string(), e.turn_id.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
@@ -888,7 +894,7 @@ impl FlowEngine {
     /// Execute a context action
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
-    /// Works for session.started, prompt.submitted, and response.received events.
+    /// Works for session.started, turn.started, and turn.completed events.
     fn execute_context(action: &ContextAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
@@ -896,11 +902,11 @@ impl FlowEngine {
         if !matches!(
             &state.event,
             AikiEvent::SessionStarted(_)
-                | AikiEvent::PromptSubmitted(_)
-                | AikiEvent::ResponseReceived(_)
+                | AikiEvent::TurnStarted(_)
+                | AikiEvent::TurnCompleted(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "context action can only be used in session.started, prompt.submitted, or response.received events"
+                "context action can only be used in session.started, turn.started, or turn.completed events"
             )));
         }
 
@@ -942,15 +948,15 @@ impl FlowEngine {
 
     /// Execute an autoreply action
     ///
-    /// This action adds content to the autoreply assembler for response.received events.
-    /// Only works for response.received events that have an autoreply_assembler.
+    /// This action adds content to the autoreply assembler for turn.completed events.
+    /// Only works for turn.completed events that have an autoreply_assembler.
     fn execute_autoreply(action: &AutoreplyAction, state: &mut AikiState) -> Result<ActionResult> {
         use crate::events::AikiEvent;
 
-        // Verify this is a PostResponse event
-        if !matches!(&state.event, AikiEvent::ResponseReceived(_)) {
+        // Verify this is a TurnCompleted event
+        if !matches!(&state.event, AikiEvent::TurnCompleted(_)) {
             return Err(AikiError::Other(anyhow::anyhow!(
-                "autoreply action can only be used in response.received events"
+                "autoreply action can only be used in turn.completed events"
             )));
         }
 
@@ -3271,20 +3277,23 @@ mod tests {
 
     #[test]
     fn test_self_function_error_propagation() {
-        use crate::events::{AikiEvent, AikiPromptSubmittedPayload};
+        use crate::events::{AikiEvent, AikiTurnStartedPayload, TurnSource};
 
-        // Create PrePrompt event
+        // Create TurnStarted event
         let session = AikiSession::new(
             crate::provenance::AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
         );
-        let event = AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
+        let event = AikiEvent::TurnStarted(AikiTurnStartedPayload {
             session,
             prompt: "test".to_string(),
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
+            turn: 0,
+            turn_id: String::new(),
+            source: TurnSource::User,
             injected_refs: vec![],
         });
 

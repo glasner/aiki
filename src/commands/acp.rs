@@ -15,8 +15,8 @@
 //! │  │ IDE → Agent Thread   │   StateMessage     │ Agent → IDE Thread   │  │
 //! │  │                      │  ─────────────────▶│                      │  │
 //! │  │ - Parse IDE requests │   mpsc::channel    │ - OWNS all state     │  │
-//! │  │ - Fire prompt.submitted                   │ - Parse agent msgs   │  │
-//! │  │ - Fire change.permission_asked            │ - Fire response.received  │
+//! │  │ - Fire turn.started                       │ - Parse agent msgs   │  │
+//! │  │ - Fire change.permission_asked            │ - Fire turn.completed     │
 //! │  │ - Forward to agent   │                    │ - Fire change.done   │  │
 //! │  │                      │                    │ - Track tool calls   │  │
 //! │  │                      │  AutoreplyChannel  │ - Accumulate text    │  │
@@ -47,7 +47,7 @@
 //! - Reads JSON-RPC messages from IDE (stdin)
 //! - Extracts metadata (client info, session IDs, working directory)
 //! - Sends metadata updates via `StateMessage` channel to Agent→IDE thread
-//! - Fires `prompt.submitted` events (allows flows to inject context)
+//! - Fires `turn.started` events (allows flows to inject context)
 //! - Forwards messages to agent stdin
 //!
 //! ## Agent → IDE Thread (State Owner)
@@ -93,7 +93,7 @@
 //! # Events Fired
 //!
 //! - **session.started**: When `session/new` response is received with `sessionId`
-//! - **prompt.submitted**: Before `session/prompt` is forwarded to agent (allows context injection)
+//! - **turn.started**: Before `session/prompt` is forwarded to agent (allows context injection)
 //! - **change.permission_asked**: Before `session/request_permission` for file-modifying tools
 //! - **change.done**: When tool calls complete (from `session/update` notifications)
 //! - **session.ended**: When agent completes a turn (`stopReason: end_turn`)
@@ -104,7 +104,7 @@
 //! 2. Agent responds with `initialize` response → Agent→IDE thread extracts agent info
 //! 3. IDE sends `session/new` → IDE→Agent thread tracks request ID
 //! 4. Agent responds with `sessionId` → Agent→IDE thread fires `session.started` event
-//! 5. IDE sends `session/prompt` → IDE→Agent thread fires `prompt.submitted` event
+//! 5. IDE sends `session/prompt` → IDE→Agent thread fires `turn.started` event
 //! 6. Agent sends `session/update` chunks → Agent→IDE thread accumulates response text
 //! 7. Agent completes turn → Agent→IDE thread fires `session.ended` event
 //! 8. Flow returns autoreply → Agent→IDE thread queues it via autoreply channel
@@ -114,7 +114,7 @@
 use crate::cache::debug_log;
 use crate::commands::zed_detection;
 use crate::editors::acp::handlers::{
-    fire_pre_file_change_event, fire_session_start_event, handle_session_end,
+    create_session, fire_pre_file_change_event, fire_session_start_event, handle_session_end,
     handle_session_prompt, handle_session_update, parse_permission_request, ToolCallContext,
 };
 use crate::editors::acp::protocol::{
@@ -125,6 +125,8 @@ use crate::editors::acp::state::{
     reset_autoreply_counter, AutoreplyMessage, StateMessage, MAX_AUTOREPLIES,
 };
 use crate::error::{AikiError, Result};
+use crate::event_bus;
+use crate::events::{AikiEvent, AikiSessionEndedPayload};
 use crate::provenance::AgentType;
 use agent_client_protocol::{ContentBlock, SessionUpdate, ToolCallId};
 use std::collections::HashMap;
@@ -266,7 +268,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         let stdin = io::stdin();
         eprintln!("ACP Proxy: IDE → Agent thread started");
 
-        // Track cwd in this thread for prompt.submitted events
+        // Track cwd in this thread for turn.started events
         // This mirrors the `cwd` in Agent→IDE thread, both updated via StateMessage::SetWorkingDirectory
         let mut cwd: Option<PathBuf> = None;
 
@@ -360,7 +362,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                             }
                         }
                         "session/prompt" => {
-                            // prompt.submitted event: intercept and potentially modify prompt
+                            // turn.started event: intercept and potentially modify prompt
                             if let Some(params) = &msg.params {
                                 // Extract sessionId directly from params (session/prompt doesn't have 'update' field)
                                 let session_id_str = params
@@ -372,7 +374,7 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                     let session_id = session_id(session_id_str);
 
                                     // Track this prompt request BEFORE any fallible work
-                                    // This ensures session.ended fires even if prompt.submitted processing fails (graceful degradation)
+                                    // This ensures turn.completed fires even if turn.started processing fails (graceful degradation)
                                     if let Some(request_id) = &msg.id {
                                         let _ = metadata_tx_clone.send(StateMessage::TrackPrompt {
                                             request_id: request_id.clone(),
@@ -748,6 +750,29 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
             );
         }
     }
+
+    // Fire session.ended for any sessions still active on connection close
+    // This handles the case where the agent disconnects without a clean stopReason
+    let working_dir = cwd
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+    for (_request_id, session_id) in prompt_requests.drain() {
+        let session = create_session(validated_agent_type, session_id.to_string(), None::<&str>);
+        let event = AikiEvent::SessionEnded(AikiSessionEndedPayload {
+            session,
+            cwd: working_dir.clone(),
+            timestamp: chrono::Utc::now(),
+            reason: "connection_close".to_string(),
+        });
+        if let Err(e) = event_bus::dispatch(event) {
+            debug_log(|| format!("[acp] Failed to fire session.ended on close: {}", e));
+        }
+    }
+
+    // Clean up accumulated response text for sessions that were ended above
+    response_accumulator.clear();
 
     // Send explicit shutdown signals to threads
     // This is more robust than relying on channel closure via drop()

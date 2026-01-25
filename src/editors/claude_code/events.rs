@@ -6,11 +6,12 @@ use crate::error::Result;
 use crate::events::FileOperation;
 use crate::events::{
     parse_mcp_server, AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
-    AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload,
-    AikiReadCompletedPayload, AikiReadPermissionAskedPayload, AikiResponseReceivedPayload,
+    AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload, AikiReadCompletedPayload,
+    AikiReadPermissionAskedPayload, AikiSessionEndedPayload, AikiSessionResumedPayload,
     AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
-    AikiWebCompletedPayload, AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation,
-    MoveOperation, WriteOperation,
+    AikiTurnCompletedPayload, AikiTurnStartedPayload, AikiWebCompletedPayload,
+    AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation, TurnSource,
+    WriteOperation,
 };
 use crate::tools::ToolType;
 
@@ -51,13 +52,31 @@ enum ClaudeEvent {
         #[serde(flatten)]
         payload: StopPayload,
     },
+    #[serde(rename = "SessionEnd")]
+    SessionEnd {
+        #[serde(flatten)]
+        payload: SessionEndPayload,
+    },
 }
 
 /// SessionStart hook payload
+///
+/// Claude Code provides a `source` field indicating how the session started:
+/// - "startup" - New session started
+/// - "resume" - Session resumed (from --resume, --continue, or /resume)
+/// - "clear" - Session after /clear command
+/// - "compact" - Session after compaction
 #[derive(Deserialize, Debug)]
 struct SessionStartPayload {
     session_id: String,
     cwd: String,
+    /// Source of the session start (startup, resume, clear, compact)
+    #[serde(default = "default_session_source")]
+    source: String,
+}
+
+fn default_session_source() -> String {
+    "startup".to_string()
 }
 
 /// UserPromptSubmit hook payload
@@ -98,6 +117,23 @@ struct StopPayload {
     cwd: String,
 }
 
+/// SessionEnd hook payload
+///
+/// Claude Code fires this when the session terminates.
+/// Reasons: "clear", "logout", "prompt_input_exit", "other"
+#[derive(Deserialize, Debug)]
+struct SessionEndPayload {
+    session_id: String,
+    cwd: String,
+    /// Reason for session termination
+    #[serde(default = "default_session_end_reason")]
+    reason: String,
+}
+
+fn default_session_end_reason() -> String {
+    "other".to_string()
+}
+
 // ============================================================================
 // Event Building
 // ============================================================================
@@ -109,10 +145,11 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
 
     let aiki_event = match event {
         ClaudeEvent::SessionStart { payload } => build_session_started_event(payload),
-        ClaudeEvent::UserPromptSubmit { payload } => build_prompt_submitted_event(payload),
+        ClaudeEvent::UserPromptSubmit { payload } => build_turn_started_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
         ClaudeEvent::PostToolUse { payload } => build_completed_event_for_tool_type(payload),
-        ClaudeEvent::Stop { payload } => build_response_received_event(payload),
+        ClaudeEvent::Stop { payload } => build_turn_completed_event(payload),
+        ClaudeEvent::SessionEnd { payload } => build_session_ended_event(payload),
     };
 
     Ok(aiki_event)
@@ -144,23 +181,43 @@ fn build_completed_event_for_tool_type(payload: PostToolUsePayload) -> AikiEvent
     }
 }
 
-/// Build session.started event
+/// Build session.started or session.resumed event based on source field
+///
+/// Claude Code emits SessionStart for both new and resumed sessions.
+/// The `source` field distinguishes them:
+/// - "resume" → session.resumed event
+/// - "startup", "clear", "compact" → session.started event
 fn build_session_started_event(payload: SessionStartPayload) -> AikiEvent {
-    AikiEvent::SessionStarted(AikiSessionStartPayload {
-        session: create_session(&payload.session_id, &payload.cwd),
-        cwd: PathBuf::from(&payload.cwd),
-        timestamp: chrono::Utc::now(),
-    })
+    let session = create_session(&payload.session_id, &payload.cwd);
+    let cwd = PathBuf::from(&payload.cwd);
+    let timestamp = chrono::Utc::now();
+
+    if payload.source == "resume" {
+        AikiEvent::SessionResumed(AikiSessionResumedPayload {
+            session,
+            cwd,
+            timestamp,
+        })
+    } else {
+        AikiEvent::SessionStarted(AikiSessionStartPayload {
+            session,
+            cwd,
+            timestamp,
+        })
+    }
 }
 
-/// Build prompt.submitted event
-fn build_prompt_submitted_event(payload: UserPromptSubmitPayload) -> AikiEvent {
-    AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
+/// Build turn.started event (maps from UserPromptSubmit hook)
+fn build_turn_started_event(payload: UserPromptSubmitPayload) -> AikiEvent {
+    AikiEvent::TurnStarted(AikiTurnStartedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        turn: 0,     // Set by handle_turn_started
+        turn_id: String::new(), // Set by handle_turn_started
+        source: TurnSource::User,
         prompt: payload.prompt,
-        injected_refs: vec![], // TODO: track injected context
+        injected_refs: vec![],
     })
 }
 
@@ -710,13 +767,26 @@ fn build_web_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> A
     })
 }
 
-/// Build response.received event
-fn build_response_received_event(payload: StopPayload) -> AikiEvent {
-    AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
+/// Build turn.completed event (maps from Stop hook)
+fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
+    AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
+        turn: 0,     // Set by handle_turn_completed
+        turn_id: String::new(), // Set by handle_turn_completed
+        source: TurnSource::User,
         response: String::new(),
         modified_files: vec![],
+    })
+}
+
+/// Build session.ended event (maps from SessionEnd hook)
+fn build_session_ended_event(payload: SessionEndPayload) -> AikiEvent {
+    AikiEvent::SessionEnded(AikiSessionEndedPayload {
+        session: create_session(&payload.session_id, &payload.cwd),
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+        reason: payload.reason,
     })
 }

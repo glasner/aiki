@@ -34,6 +34,9 @@ which = "6.0"
 uuid = { version = "1.0", features = ["v5"] }
 globset = "0.4"
 rand = "0.8"
+libc = "0.2"
+flate2 = "1.0"
+prost = "0.13"
 
 [dev-dependencies]
 assert_cmd = "2.0"

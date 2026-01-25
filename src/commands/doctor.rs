@@ -116,6 +116,52 @@ pub fn run(fix: bool) -> Result<()> {
         }
     }
 
+    // Check Codex hooks - verify config.toml contains aiki OTel + notify
+    let codex_config_path = home_dir.join(".codex/config.toml");
+    let codex_hooks_ok = check_codex_hooks(&codex_config_path);
+    if codex_hooks_ok {
+        println!("  ✓ Codex hooks configured");
+    } else {
+        println!("  ✗ Codex hooks not configured");
+        if fix {
+            println!("    Installing Codex hooks...");
+            match config::install_codex_hooks_global() {
+                Ok(()) => {
+                    println!("    ✓ Codex hooks installed");
+                }
+                Err(e) => {
+                    println!("    ✗ Failed to install: {}", e);
+                    issues_found += 1;
+                }
+            }
+        } else {
+            println!("    → Run: aiki doctor --fix");
+            issues_found += 1;
+        }
+    }
+
+    // Check Codex OTel receiver socket (non-blocking connection test)
+    let otel_receiver_ok = check_otel_receiver();
+    if otel_receiver_ok && !fix {
+        println!("  ✓ OTel receiver listening on 127.0.0.1:19876");
+    } else if fix {
+        println!("  {} OTel receiver", if otel_receiver_ok { "✓" } else { "✗" });
+        println!("    Restarting OTel receiver...");
+        match config::restart_otel_receiver() {
+            Ok(()) => {
+                println!("    ✓ OTel receiver restarted");
+            }
+            Err(e) => {
+                println!("    ✗ Failed to restart OTel receiver: {}", e);
+                issues_found += 1;
+            }
+        }
+    } else {
+        println!("  ✗ OTel receiver not listening");
+        println!("    → Run: aiki doctor --fix");
+        issues_found += 1;
+    }
+
     println!();
 
     // Check ACP (Agent Client Protocol) configuration
@@ -403,7 +449,7 @@ fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool> {
 ///
 /// Matches commands like:
 /// - `aiki hooks handle --agent claude-code --event session.started`
-/// - `/path/to/aiki.exe hooks handle --agent cursor --event prompt.submitted`
+/// - `/path/to/aiki.exe hooks handle --agent cursor --event beforeSubmitPrompt`
 ///
 /// If expected_agent or expected_event is Some, validates those flags are present.
 fn is_aiki_hooks_command_with_params(
@@ -482,63 +528,46 @@ fn check_claude_code_hooks(settings_path: &std::path::Path) -> bool {
         None => return false,
     };
 
-    // Check SessionStart hook contains aiki command with correct agent/event
-    let has_session_start = hooks
-        .get("SessionStart")
-        .and_then(|arr| arr.as_array())
-        .map(|arr| {
-            arr.iter().any(|entry| {
-                entry
-                    .get("hooks")
-                    .and_then(|h| h.as_array())
-                    .map(|hooks| {
-                        hooks.iter().any(|hook| {
-                            hook.get("command")
-                                .and_then(|c| c.as_str())
-                                .map(|c| {
-                                    is_aiki_hooks_command_with_params(
-                                        c,
-                                        Some("claude-code"),
-                                        Some("session.started"),
-                                    )
-                                })
-                                .unwrap_or(false)
-                        })
-                    })
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
+    // Required Claude Code hooks
+    let required_hooks = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    ];
 
-    // Check PostToolUse hook contains aiki command with correct agent/event
-    let has_post_tool_use = hooks
-        .get("PostToolUse")
-        .and_then(|arr| arr.as_array())
-        .map(|arr| {
-            arr.iter().any(|entry| {
-                entry
-                    .get("hooks")
-                    .and_then(|h| h.as_array())
-                    .map(|hooks| {
-                        hooks.iter().any(|hook| {
-                            hook.get("command")
-                                .and_then(|c| c.as_str())
-                                .map(|c| {
-                                    is_aiki_hooks_command_with_params(
-                                        c,
-                                        Some("claude-code"),
-                                        Some("change.completed"),
-                                    )
-                                })
-                                .unwrap_or(false)
+    // Helper to check if a Claude Code hook entry contains aiki command with correct params
+    let has_hook = |hook_name: &str| -> bool {
+        hooks
+            .get(hook_name)
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter().any(|entry| {
+                    entry
+                        .get("hooks")
+                        .and_then(|h| h.as_array())
+                        .map(|hooks_arr| {
+                            hooks_arr.iter().any(|hook| {
+                                hook.get("command")
+                                    .and_then(|c| c.as_str())
+                                    .map(|c| {
+                                        is_aiki_hooks_command_with_params(
+                                            c,
+                                            Some("claude-code"),
+                                            Some(hook_name),
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                            })
                         })
-                    })
-                    .unwrap_or(false)
+                        .unwrap_or(false)
+                })
             })
-        })
-        .unwrap_or(false);
+            .unwrap_or(false)
+    };
 
-    has_session_start && has_post_tool_use
+    required_hooks.iter().all(|name| has_hook(name))
 }
 
 /// Check if Cursor hooks are properly configured
@@ -581,19 +610,81 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
                 .unwrap_or(false)
         };
 
-    // Check for hooks.beforeSubmitPrompt with cursor agent and prompt.submitted event
-    let has_before_submit = hooks
-        .get("beforeSubmitPrompt")
-        .map(|arr| has_aiki_hook_with_params(arr, "cursor", "prompt.submitted"))
+    // Required Cursor hooks
+    let required_hooks = [
+        "beforeSubmitPrompt",
+        "afterFileEdit",
+        "beforeShellExecution",
+        "afterShellExecution",
+        "beforeMCPExecution",
+        "afterMCPExecution",
+        "stop",
+    ];
+
+    required_hooks.iter().all(|hook_name| {
+        hooks
+            .get(*hook_name)
+            .map(|arr| has_aiki_hook_with_params(arr, "cursor", hook_name))
+            .unwrap_or(false)
+    })
+}
+
+/// Check if Codex hooks are properly configured
+///
+/// Returns true if ~/.codex/config.toml exists AND contains both:
+/// - [otel] section with aiki endpoint (127.0.0.1:19876)
+/// - notify array with aiki hooks handle command
+fn check_codex_hooks(config_path: &std::path::Path) -> bool {
+    if !config_path.exists() {
+        return false;
+    }
+
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let config: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Check [otel.exporter.otlp-http] section has aiki endpoint
+    let has_otel = config
+        .get("otel")
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("exporter"))
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("otlp-http"))
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("endpoint"))
+        .and_then(|v| v.as_str())
+        .map(|endpoint| endpoint.contains("19876"))
         .unwrap_or(false);
 
-    // Check for hooks.afterFileEdit with cursor agent and change.completed event
-    let has_after_file_edit = hooks
-        .get("afterFileEdit")
-        .map(|arr| has_aiki_hook_with_params(arr, "cursor", "change.completed"))
+    // Check notify array contains aiki command
+    let has_notify = config
+        .get("notify")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .any(|v| v.as_str().map(|s| s.contains("aiki")).unwrap_or(false))
+        })
         .unwrap_or(false);
 
-    has_before_submit && has_after_file_edit
+    has_otel && has_notify
+}
+
+/// Check if the OTel receiver is listening on 127.0.0.1:19876
+///
+/// Attempts a non-blocking TCP connection with a short timeout.
+/// Returns true if the port is reachable (socket activation is working).
+fn check_otel_receiver() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let addr: SocketAddr = "127.0.0.1:19876".parse().unwrap();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
 }
 
 #[cfg(test)]
@@ -611,14 +702,35 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event session.started"
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event SessionStart"
+                    }]
+                }],
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event UserPromptSubmit"
+                    }]
+                }],
+                "PreToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event PreToolUse"
                     }]
                 }],
                 "PostToolUse": [{
-                    "matcher": "Edit|Write",
+                    "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event PostToolUse"
+                    }]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event Stop"
                     }]
                 }]
             }
@@ -656,7 +768,7 @@ mod tests {
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -682,7 +794,7 @@ mod tests {
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event change.completed"
+                        "command": "/path/to/aiki hooks handle --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -705,10 +817,25 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event prompt.submitted"
+                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeSubmitPrompt"
                 }],
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
+                }],
+                "beforeShellExecution": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeShellExecution"
+                }],
+                "afterShellExecution": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event afterShellExecution"
+                }],
+                "beforeMCPExecution": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeMCPExecution"
+                }],
+                "afterMCPExecution": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event afterMCPExecution"
+                }],
+                "stop": [{
+                    "command": "/path/to/aiki hooks handle --agent cursor --event stop"
                 }]
             }
         });
@@ -724,7 +851,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event prompt.submitted"
+                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeSubmitPrompt"
                 }]
             }
         });
@@ -740,7 +867,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
                 }]
             }
         });
@@ -759,7 +886,7 @@ mod tests {
                     "command": "/path/to/some-other-tool"
                 }],
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event change.completed"
+                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
                 }]
             }
         });
@@ -817,27 +944,27 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_with_path() {
         assert!(is_aiki_hooks_command_with_params(
-            "/usr/local/bin/aiki hooks handle --agent cursor --event prompt.submitted",
+            "/usr/local/bin/aiki hooks handle --agent cursor --event beforeSubmitPrompt",
             Some("cursor"),
-            Some("prompt.submitted")
+            Some("beforeSubmitPrompt")
         ));
     }
 
     #[test]
     fn test_is_aiki_hooks_command_with_path_and_exe() {
         assert!(is_aiki_hooks_command_with_params(
-            "C:\\Program Files\\aiki.exe hooks handle --agent claude-code --event change.completed",
+            "C:\\Program Files\\aiki.exe hooks handle --agent claude-code --event afterFileEdit",
             Some("claude-code"),
-            Some("change.completed")
+            Some("afterFileEdit")
         ));
     }
 
     #[test]
     fn test_is_aiki_hooks_command_relative_path() {
         assert!(is_aiki_hooks_command_with_params(
-            "./aiki hooks handle --agent cursor --event change.completed",
+            "./aiki hooks handle --agent cursor --event afterFileEdit",
             Some("cursor"),
-            Some("change.completed")
+            Some("afterFileEdit")
         ));
     }
 
@@ -910,14 +1037,35 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki.exe hooks handle --agent claude-code --event session.started"
+                        "command": "aiki.exe hooks handle --agent claude-code --event SessionStart"
+                    }]
+                }],
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki.exe hooks handle --agent claude-code --event UserPromptSubmit"
+                    }]
+                }],
+                "PreToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki.exe hooks handle --agent claude-code --event PreToolUse"
                     }]
                 }],
                 "PostToolUse": [{
-                    "matcher": "Edit|Write",
+                    "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event change.completed"
+                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event PostToolUse"
+                    }]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event Stop"
                     }]
                 }]
             }
@@ -934,10 +1082,25 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event prompt.submitted"
+                    "command": "aiki.exe hooks handle --agent cursor --event beforeSubmitPrompt"
                 }],
                 "afterFileEdit": [{
-                    "command": "./aiki.exe hooks handle --agent cursor --event change.completed"
+                    "command": "./aiki.exe hooks handle --agent cursor --event afterFileEdit"
+                }],
+                "beforeShellExecution": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event beforeShellExecution"
+                }],
+                "afterShellExecution": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event afterShellExecution"
+                }],
+                "beforeMCPExecution": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event beforeMCPExecution"
+                }],
+                "afterMCPExecution": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event afterMCPExecution"
+                }],
+                "stop": [{
+                    "command": "aiki.exe hooks handle --agent cursor --event stop"
                 }]
             }
         });
@@ -962,7 +1125,7 @@ mod tests {
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki hooks handle --agent claude-code --event change.completed"
+                        "command": "aiki hooks handle --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -983,13 +1146,13 @@ mod tests {
                     "command": "aiki hooks handle --agent cursor --event session.started"
                 }],
                 "afterFileEdit": [{
-                    "command": "aiki hooks handle --agent cursor --event change.completed"
+                    "command": "aiki hooks handle --agent cursor --event afterFileEdit"
                 }]
             }
         });
         write!(file, "{}", serde_json::to_string(&hooks).unwrap()).unwrap();
 
-        // Should fail: beforeSubmitPrompt has wrong event (session.started instead of prompt.submitted)
+        // Should fail: beforeSubmitPrompt has wrong event (session.started instead of beforeSubmitPrompt)
         assert!(!check_cursor_hooks(file.path()));
     }
 }

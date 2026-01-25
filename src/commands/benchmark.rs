@@ -44,11 +44,11 @@ impl Vendor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EventType {
     SessionStarted,
-    PromptSubmitted,
+    TurnStarted,
     ChangePermissionAsked,
     ChangeCompleted,
-    ResponseReceived,          // WITHOUT autoreply (includes session.ended)
-    ResponseReceivedAutoreply, // WITH autoreply (response.received only, no session.ended)
+    TurnCompleted,          // WITHOUT autoreply
+    TurnCompletedAutoreply, // WITH autoreply (turn.completed only)
     CommitMessageStarted,
 }
 
@@ -56,11 +56,11 @@ impl EventType {
     fn name(&self) -> &'static str {
         match self {
             EventType::SessionStarted => "session.started",
-            EventType::PromptSubmitted => "prompt.submitted",
+            EventType::TurnStarted => "turn.started",
             EventType::ChangePermissionAsked => "change.permission_asked",
             EventType::ChangeCompleted => "change.completed",
-            EventType::ResponseReceived => "response.received",
-            EventType::ResponseReceivedAutoreply => "response.received+autoreply",
+            EventType::TurnCompleted => "turn.completed",
+            EventType::TurnCompletedAutoreply => "turn.completed+autoreply",
             EventType::CommitMessageStarted => "commit.message_started",
         }
     }
@@ -400,7 +400,7 @@ fn run_vendor_lifecycle(
 
     // 2. PrePrompt
     let duration = simulate_pre_prompt(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::PromptSubmitted, duration);
+    vendor_results.add_sample(EventType::TurnStarted, duration);
 
     // 3. Hot path: PreFileChange + Edit + PostFileChange
     let src_dir = repo_path.join("src");
@@ -420,13 +420,13 @@ fn run_vendor_lifecycle(
         vendor_results.add_sample(EventType::ChangeCompleted, duration);
     }
 
-    // 4a. PostResponse WITHOUT autoreply (includes SessionEnd)
+    // 4a. TurnCompleted WITHOUT autoreply
     let duration = simulate_post_response(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::ResponseReceived, duration);
+    vendor_results.add_sample(EventType::TurnCompleted, duration);
 
-    // 4b. PostResponse WITH autoreply (PostResponse only, no SessionEnd)
+    // 4b. TurnCompleted WITH autoreply (session continues)
     let duration = simulate_post_response_with_autoreply(repo_path, aiki_exe, vendor)?;
-    vendor_results.add_sample(EventType::ResponseReceivedAutoreply, duration);
+    vendor_results.add_sample(EventType::TurnCompletedAutoreply, duration);
 
     Ok(())
 }
@@ -629,10 +629,10 @@ fn simulate_post_response(
     Ok(start.elapsed())
 }
 
-/// Simulate PostResponse WITH autoreply (session continues, no SessionEnd)
+/// Simulate TurnCompleted WITH autoreply (session continues)
 ///
-/// This measures the PostResponse handler alone, without SessionEnd cleanup.
-/// Uses AIKI_BENCHMARK_FORCE_AUTOREPLY env var to skip SessionEnd.
+/// This measures the TurnCompleted handler with forced autoreply context.
+/// Uses AIKI_BENCHMARK_FORCE_AUTOREPLY env var to force autoreply behavior.
 fn simulate_post_response_with_autoreply(
     repo_path: &PathBuf,
     aiki_exe: &PathBuf,
@@ -783,7 +783,7 @@ fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Re
         DetectionMethod::Hook,
     );
 
-    session.file(repo_path).create(repo_path)?;
+    session.file(repo_path).create()?;
     Ok(())
 }
 
@@ -808,11 +808,11 @@ fn print_results(results: &BenchmarkResults, _num_edits: usize) {
 
     let events = [
         EventType::SessionStarted,
-        EventType::PromptSubmitted,
+        EventType::TurnStarted,
         EventType::ChangePermissionAsked,
         EventType::ChangeCompleted,
-        EventType::ResponseReceived,
-        EventType::ResponseReceivedAutoreply,
+        EventType::TurnCompleted,
+        EventType::TurnCompletedAutoreply,
     ];
 
     for event in events {
@@ -1019,10 +1019,10 @@ fn load_previous_benchmark(benchmark_dir: &PathBuf) -> Result<Option<MetricsJson
 fn print_comparison(prev: &MetricsJson, current: &BenchmarkResults) {
     println!("vs Previous Run:");
 
-    // Compare key events (hot path change.completed and prompt.submitted)
+    // Compare key events (hot path change.completed and turn.started)
     let events_to_compare = [
         ("change.completed", EventType::ChangeCompleted),
-        ("prompt.submitted", EventType::PromptSubmitted),
+        ("turn.started", EventType::TurnStarted),
     ];
 
     for (name, event_type) in events_to_compare {

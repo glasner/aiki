@@ -23,6 +23,16 @@ pub fn run_install() -> Result<()> {
     // Install all editor hooks
     config::install_claude_code_hooks_global()?;
     config::install_cursor_hooks_global()?;
+    config::install_codex_hooks_global()?;
+
+    // Install OTel receiver for Codex session tracking
+    if !config::is_otel_receiver_installed() {
+        print!("Installing OTel receiver... ");
+        match config::install_otel_receiver() {
+            Ok(()) => println!("✓"),
+            Err(e) => println!("⚠ {}", e),
+        }
+    }
 
     println!("\n✓ Global hooks installed successfully!");
     println!("\nRepositories will be automatically initialized when you:");
@@ -80,9 +90,9 @@ pub fn run_install() -> Result<()> {
     Ok(())
 }
 
-pub fn run_handle(agent: String, event: String) -> Result<()> {
+pub fn run_handle(agent: String, event: String, payload: Option<String>) -> Result<()> {
     let agent_type = parse_agent_type(&agent)?;
-    handle_event(agent_type, &event)
+    handle_event(agent_type, &event, payload.as_deref())
 }
 
 /// Check which editors are currently running (single process scan)
@@ -175,18 +185,20 @@ fn parse_agent_type(agent: &str) -> Result<provenance::AgentType> {
     match agent {
         "claude-code" => Ok(provenance::AgentType::ClaudeCode),
         "cursor" => Ok(provenance::AgentType::Cursor),
+        "codex" => Ok(provenance::AgentType::Codex),
         _ => Err(AikiError::UnknownAgentType(agent.to_string())),
     }
 }
 
 /// Handle editor event (called by hooks)
-fn handle_event(agent: provenance::AgentType, event: &str) -> Result<()> {
+fn handle_event(agent: provenance::AgentType, event: &str, payload: Option<&str>) -> Result<()> {
     use crate::error::AikiError;
     use provenance::AgentType;
 
     match agent {
         AgentType::ClaudeCode => Ok(editors::claude_code::handle(event)?),
         AgentType::Cursor => Ok(editors::cursor::handle(event)?),
+        AgentType::Codex => Ok(editors::codex::handle(event, payload)?),
         _ => Err(AikiError::UnsupportedAgentType(format!("{:?}", agent))),
     }
 }

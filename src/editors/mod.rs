@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod claude_code;
+pub mod codex;
 pub mod cursor;
 pub mod npm;
 pub mod zed;
