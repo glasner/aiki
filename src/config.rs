@@ -351,7 +351,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
 
         if let Some(ref ep) = existing_endpoint {
             if ep != aiki_endpoint {
-                // Different endpoint: warn and only update log_user_prompt
+                // Different endpoint: warn and only update log_user_prompt + disable traces
                 eprintln!(
                     "⚠️  [otel.exporter.otlp-http] already has endpoint = \"{}\"\n   Aiki's OTel receiver listens on {}",
                     ep, aiki_endpoint
@@ -360,13 +360,21 @@ pub fn install_codex_hooks_global() -> Result<()> {
 
                 if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
                     otel.insert(
+                        "trace_exporter".to_string(),
+                        toml::Value::String("none".to_string()),
+                    );
+                    otel.insert(
                         "log_user_prompt".to_string(),
                         toml::Value::Boolean(true),
                     );
                 }
             } else {
-                // Same endpoint: just ensure log_user_prompt is set
+                // Same endpoint: ensure trace_exporter is disabled and log_user_prompt is set
                 if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
+                    otel.insert(
+                        "trace_exporter".to_string(),
+                        toml::Value::String("none".to_string()),
+                    );
                     otel.insert(
                         "log_user_prompt".to_string(),
                         toml::Value::Boolean(true),
@@ -377,6 +385,10 @@ pub fn install_codex_hooks_global() -> Result<()> {
             // Has exporter as a unit variant (e.g., "none" or "statsig") - replace with our struct
             if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
                 otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+                otel.insert(
+                    "trace_exporter".to_string(),
+                    toml::Value::String("none".to_string()),
+                );
                 otel.insert(
                     "log_user_prompt".to_string(),
                     toml::Value::Boolean(true),
@@ -390,6 +402,10 @@ pub fn install_codex_hooks_global() -> Result<()> {
             if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
                 otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
                 otel.insert(
+                    "trace_exporter".to_string(),
+                    toml::Value::String("none".to_string()),
+                );
+                otel.insert(
                     "log_user_prompt".to_string(),
                     toml::Value::Boolean(true),
                 );
@@ -401,7 +417,14 @@ pub fn install_codex_hooks_global() -> Result<()> {
     } else {
         // No [otel] section: create with aiki's full defaults
         let mut otel_table = toml::map::Map::new();
+        // Enable log exporter (semantic events like codex.user_prompt, codex.tool_result)
+        // exporter is a tagged enum: { otlp-http = { endpoint, protocol } }
         otel_table.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+        // Disable trace exporter (we only want logs, not distributed tracing spans)
+        otel_table.insert(
+            "trace_exporter".to_string(),
+            toml::Value::String("none".to_string()),
+        );
         otel_table.insert(
             "log_user_prompt".to_string(),
             toml::Value::Boolean(true),
@@ -427,7 +450,8 @@ pub fn install_codex_hooks_global() -> Result<()> {
     fs::write(&config_path, content).context("Failed to write ~/.codex/config.toml")?;
 
     println!("✓ Installed Codex hooks at {}", config_path.display());
-    println!("  - [otel]: OTel receiver at {}", aiki_endpoint);
+    println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
+    println!("  - [otel.trace_exporter]: Disabled (no trace spans)");
     println!("  - notify: Turn completion tracking");
     println!("  - log_user_prompt: true (prompt content capture enabled)");
 

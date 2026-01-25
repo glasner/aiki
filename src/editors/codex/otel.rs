@@ -139,6 +139,59 @@ pub struct KeyValueList {
 }
 
 // ============================================================================
+// OTLP Trace Protobuf Types
+//
+// Codex sends trace data (ExportTraceServiceRequest) even when configured for
+// the /v1/logs endpoint. Events are embedded in span events with attributes
+// like event.name, conversation.id, etc.
+// ============================================================================
+
+/// Top-level OTLP/HTTP request for traces
+#[derive(Clone, PartialEq, Message)]
+pub struct ExportTraceServiceRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub resource_spans: Vec<ResourceSpans>,
+}
+
+/// A collection of spans from a resource
+#[derive(Clone, PartialEq, Message)]
+pub struct ResourceSpans {
+    #[prost(message, optional, tag = "1")]
+    pub resource: Option<Resource>,
+    #[prost(message, repeated, tag = "2")]
+    pub scope_spans: Vec<ScopeSpans>,
+}
+
+/// A collection of spans from an instrumentation scope
+#[derive(Clone, PartialEq, Message)]
+pub struct ScopeSpans {
+    #[prost(message, optional, tag = "1")]
+    pub scope: Option<InstrumentationScope>,
+    #[prost(message, repeated, tag = "2")]
+    pub spans: Vec<Span>,
+}
+
+/// A trace span (contains events with Codex telemetry data)
+#[derive(Clone, PartialEq, Message)]
+pub struct Span {
+    #[prost(string, tag = "5")]
+    pub name: String,
+    #[prost(message, repeated, tag = "9")]
+    pub attributes: Vec<KeyValue>,
+    #[prost(message, repeated, tag = "11")]
+    pub events: Vec<SpanEvent>,
+}
+
+/// A span event (contains Codex event data like codex.user_prompt, codex.tool_decision)
+#[derive(Clone, PartialEq, Message)]
+pub struct SpanEvent {
+    #[prost(string, tag = "2")]
+    pub name: String,
+    #[prost(message, repeated, tag = "3")]
+    pub attributes: Vec<KeyValue>,
+}
+
+// ============================================================================
 // Codex OTel Event Types
 // ============================================================================
 
@@ -204,6 +257,91 @@ pub fn parse_otlp_logs(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)> {
     }
 
     events
+}
+
+/// Parse an OTLP/HTTP trace protobuf payload into Codex events
+///
+/// Codex sends trace data (ExportTraceServiceRequest) even when configured for
+/// the logs endpoint. Events are embedded as span events with attributes like:
+/// - event.name: "codex.user_prompt", "codex.tool_decision", etc.
+/// - conversation.id: the session identifier
+/// - app.version: agent version
+pub fn parse_otlp_traces(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)> {
+    let request = match ExportTraceServiceRequest::decode(data) {
+        Ok(r) => r,
+        Err(e) => {
+            debug_log(|| format!("Failed to decode OTLP trace protobuf: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let mut events = Vec::new();
+
+    for resource_spans in &request.resource_spans {
+        let resource_context = build_context_from_resource(resource_spans.resource.as_ref());
+
+        for scope_spans in &resource_spans.scope_spans {
+            for span in &scope_spans.spans {
+                // Extract events from span events (where Codex puts telemetry data)
+                for span_event in &span.events {
+                    if let Some(event) = parse_span_event(span_event) {
+                        let mut context = resource_context.clone();
+                        merge_context_from_attributes(&mut context, &span_event.attributes);
+                        events.push((event, context));
+                    }
+                }
+            }
+        }
+    }
+
+    events
+}
+
+/// Parse a span event into a Codex event
+fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
+    // The event.name attribute contains the Codex event type
+    let event_name = get_string_attribute(&event.attributes, "event.name")?;
+
+    // Extract conversation.id from attributes
+    let conversation_id = get_string_attribute(&event.attributes, "conversation.id")
+        .or_else(|| get_string_attribute(&event.attributes, "conversation_id"))
+        .unwrap_or_default();
+
+    // Skip events without conversation.id (internal tracing noise)
+    if conversation_id.is_empty() {
+        return None;
+    }
+
+    match event_name.as_str() {
+        "codex.conversation_starts" => Some(CodexOtelEvent::ConversationStarts {
+            conversation_id,
+        }),
+        "codex.user_prompt" => {
+            let prompt = get_string_attribute(&event.attributes, "prompt")
+                .or_else(|| get_string_attribute(&event.attributes, "content"));
+            Some(CodexOtelEvent::UserPrompt {
+                conversation_id,
+                prompt,
+            })
+        }
+        "codex.tool_result" => {
+            let tool_name = get_string_attribute(&event.attributes, "tool_name")
+                .or_else(|| get_string_attribute(&event.attributes, "name"));
+            let arguments = get_string_attribute(&event.attributes, "arguments");
+            Some(CodexOtelEvent::ToolResult {
+                conversation_id,
+                tool_name,
+                arguments,
+            })
+        }
+        // Deferred events: acknowledged but not mapped
+        "codex.api_request" | "codex.sse_event" | "codex.tool_decision" => {
+            Some(CodexOtelEvent::Unknown {
+                event_name: event_name.clone(),
+            })
+        }
+        _ => None, // Skip unknown trace events (lots of internal tracing)
+    }
 }
 
 /// Parse a single log record into a Codex event
@@ -839,6 +977,176 @@ mod tests {
     #[test]
     fn test_malformed_protobuf() {
         let events = parse_otlp_logs(b"not a valid protobuf");
+        assert!(events.is_empty());
+    }
+
+    // ========================================================================
+    // Trace parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_traces_empty_payload() {
+        let events = parse_otlp_traces(&[]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_parse_traces_user_prompt() {
+        // Build a trace request with a user_prompt event in span events
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.version".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(any_value::Value::StringValue("0.89.0".to_string())),
+                        }),
+                    }],
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![Span {
+                        name: "handle_responses".to_string(),
+                        attributes: Vec::new(),
+                        events: vec![SpanEvent {
+                            name: "event otel/src/traces/otel_manager.rs:362".to_string(),
+                            attributes: vec![
+                                KeyValue {
+                                    key: "event.name".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "codex.user_prompt".to_string(),
+                                        )),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "conversation.id".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "019bf548-9109-7f52-bce2-b66bb20c68dd".to_string(),
+                                        )),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "prompt".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "Fix the login bug".to_string(),
+                                        )),
+                                    }),
+                                },
+                            ],
+                        }],
+                    }],
+                }],
+            }],
+        };
+
+        let encoded = request.encode_to_vec();
+        let events = parse_otlp_traces(&encoded);
+
+        assert_eq!(events.len(), 1);
+        let (event, context) = &events[0];
+        assert_eq!(context.agent_version.as_deref(), Some("0.89.0"));
+
+        match event {
+            CodexOtelEvent::UserPrompt {
+                conversation_id,
+                prompt,
+            } => {
+                assert_eq!(conversation_id, "019bf548-9109-7f52-bce2-b66bb20c68dd");
+                assert_eq!(prompt.as_deref(), Some("Fix the login bug"));
+            }
+            _ => panic!("Expected UserPrompt event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_traces_tool_decision() {
+        // Tool decision events should be parsed as Unknown (deferred)
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![Span {
+                        name: "dispatch_tool_call".to_string(),
+                        attributes: Vec::new(),
+                        events: vec![SpanEvent {
+                            name: "event".to_string(),
+                            attributes: vec![
+                                KeyValue {
+                                    key: "event.name".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "codex.tool_decision".to_string(),
+                                        )),
+                                    }),
+                                },
+                                KeyValue {
+                                    key: "conversation.id".to_string(),
+                                    value: Some(AnyValue {
+                                        value: Some(any_value::Value::StringValue(
+                                            "conv-123".to_string(),
+                                        )),
+                                    }),
+                                },
+                            ],
+                        }],
+                    }],
+                }],
+            }],
+        };
+
+        let encoded = request.encode_to_vec();
+        let events = parse_otlp_traces(&encoded);
+
+        assert_eq!(events.len(), 1);
+        match &events[0].0 {
+            CodexOtelEvent::Unknown { event_name } => {
+                assert_eq!(event_name, "codex.tool_decision");
+            }
+            _ => panic!("Expected Unknown event for tool_decision"),
+        }
+    }
+
+    #[test]
+    fn test_parse_traces_skips_events_without_conversation_id() {
+        // Internal tracing events without conversation.id should be skipped
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![Span {
+                        name: "internal_span".to_string(),
+                        attributes: Vec::new(),
+                        events: vec![SpanEvent {
+                            name: "some internal event".to_string(),
+                            attributes: vec![KeyValue {
+                                key: "event.name".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(any_value::Value::StringValue(
+                                        "codex.user_prompt".to_string(),
+                                    )),
+                                }),
+                            }],
+                            // Note: no conversation.id attribute
+                        }],
+                    }],
+                }],
+            }],
+        };
+
+        let encoded = request.encode_to_vec();
+        let events = parse_otlp_traces(&encoded);
+
+        assert!(events.is_empty(), "Should skip events without conversation.id");
+    }
+
+    #[test]
+    fn test_parse_traces_malformed() {
+        let events = parse_otlp_traces(b"not a valid protobuf");
         assert!(events.is_empty());
     }
 }

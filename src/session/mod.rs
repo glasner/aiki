@@ -144,6 +144,55 @@ impl AikiSessionFile {
                 .map(|v| v.to_string())
         })
     }
+
+    /// Update the session file with parent_pid if not already present.
+    ///
+    /// This is called when we discover the agent PID via `find_ancestor_by_name`
+    /// after the session was created without a PID (e.g., Codex via OTEL).
+    /// Subsequent lookups can then use fast PID-based matching.
+    pub fn update_parent_pid(&self, pid: u32) -> Result<()> {
+        use std::io::Write;
+
+        let content = match fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(AikiError::Other(anyhow::anyhow!(
+                    "Failed to read session file: {}",
+                    e
+                )))
+            }
+        };
+
+        // Check if parent_pid already exists
+        if content.lines().any(|line| line.starts_with("parent_pid=")) {
+            return Ok(()); // Already has PID, no update needed
+        }
+
+        // Insert parent_pid before [/aiki] closing tag
+        let new_content = content.replace(
+            "[/aiki]\n",
+            &format!("parent_pid={}\n[/aiki]\n", pid),
+        );
+
+        // Write atomically via temp file
+        let tmp_path = self.path.with_extension("tmp");
+        let mut file = fs::File::create(&tmp_path).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e))
+        })?;
+        file.write_all(new_content.as_bytes()).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e))
+        })?;
+        file.sync_all().map_err(|e| {
+            AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e))
+        })?;
+
+        fs::rename(&tmp_path, &self.path).map_err(|e| {
+            AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e))
+        })?;
+
+        Ok(())
+    }
 }
 
 /// Aiki Session tracking
@@ -602,6 +651,51 @@ fn get_ancestor_pids() -> HashSet<u32> {
     ancestors
 }
 
+/// Find an ancestor process by name
+///
+/// Walks up the process tree from the current process, looking for a process
+/// whose name contains the given substring (case-insensitive).
+///
+/// This is useful for detecting agent processes (like "codex") that don't
+/// provide their PID via other means (e.g., OTEL attributes).
+///
+/// Returns the PID of the first matching ancestor, or None if not found.
+#[must_use]
+pub fn find_ancestor_by_name(name: &str) -> Option<u32> {
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    let name_lower = name.to_lowercase();
+    let mut pid = Pid::from_u32(std::process::id());
+
+    loop {
+        let Some(process) = system.process(pid) else {
+            break;
+        };
+
+        let Some(parent_pid) = process.parent() else {
+            break;
+        };
+
+        // Prevent infinite loop
+        if parent_pid == pid {
+            break;
+        }
+
+        // Check parent process name
+        if let Some(parent_process) = system.process(parent_pid) {
+            let process_name = parent_process.name().to_string_lossy().to_lowercase();
+            if process_name.contains(&name_lower) {
+                return Some(parent_pid.as_u32());
+            }
+        }
+
+        pid = parent_pid;
+    }
+
+    None
+}
+
 /// Result of PID-based session lookup
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields are part of SessionMatch API
@@ -718,6 +812,154 @@ pub fn find_session_by_ancestor_pid(repo_path: impl AsRef<Path>) -> Option<Sessi
     }
 
     best_match.map(|(m, _)| m)
+}
+
+/// Find an active session by agent type, used when PID matching fails but we
+/// detect we're running under a specific agent (via `find_ancestor_by_name`).
+///
+/// This is a fallback for agents like Codex that don't provide their PID via OTEL.
+/// Matches sessions by:
+/// 1. Agent type (must match)
+/// 2. Most recently active session (by .turn file mtime or started_at)
+///
+/// Returns None if no matching session found.
+pub fn find_session_by_agent_type(
+    repo_path: impl AsRef<Path>,
+    target_agent: AgentType,
+) -> Option<SessionMatch> {
+    let sessions_dir = repo_path.as_ref().join(".aiki/sessions");
+
+    if !sessions_dir.exists() {
+        return None;
+    }
+
+    let entries = match fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
+    // Track best match with its last-activity time
+    let mut best_match: Option<(SessionMatch, std::time::SystemTime)> = None;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        // Skip non-session files (e.g., .turn state files)
+        if path.extension().is_some() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Parse session file fields
+        let mut agent_type: Option<AgentType> = None;
+        let mut external_session_id: Option<String> = None;
+        let mut aiki_session_id: Option<String> = None;
+        let mut started_at: Option<std::time::SystemTime> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("agent=") {
+                agent_type = AgentType::from_str(val);
+            } else if let Some(val) = line.strip_prefix("external_session_id=") {
+                external_session_id = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("session_id=") {
+                aiki_session_id = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("aiki_session_id=") {
+                if aiki_session_id.is_none() {
+                    aiki_session_id = Some(val.to_string());
+                }
+            } else if let Some(val) = line.strip_prefix("started_at=") {
+                if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(val) {
+                    started_at = Some(ts.into());
+                }
+            }
+        }
+
+        // Check if this session matches the target agent type
+        if let Some(agent) = agent_type {
+            if agent == target_agent {
+                if let (Some(ext_id), Some(aiki_id)) = (external_session_id, aiki_session_id) {
+                    let candidate = SessionMatch {
+                        agent_type: agent,
+                        external_session_id: ext_id,
+                        session_id: aiki_id,
+                    };
+
+                    // Determine last activity time (prefer .turn file mtime)
+                    let turn_file = path.with_extension("turn");
+                    let last_activity = turn_file
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .or(started_at)
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+                    let should_replace = match &best_match {
+                        None => true,
+                        Some((_, prev_time)) => last_activity > *prev_time,
+                    };
+
+                    if should_replace {
+                        best_match = Some((candidate, last_activity));
+                    }
+                }
+            }
+        }
+    }
+
+    best_match.map(|(m, _)| m)
+}
+
+/// Find a session, trying PID-based matching first, then agent-type matching.
+///
+/// This is the main entry point for session detection:
+/// 1. Try `find_session_by_ancestor_pid` (works for Claude Code, Cursor, etc.)
+/// 2. If that fails, check `find_ancestor_by_name("codex")` for Codex
+/// 3. If Codex detected, use `find_session_by_agent_type` as fallback
+/// 4. If found via fallback, update session file with discovered PID for future lookups
+///
+/// Returns None if no matching session found (human terminal mode).
+pub fn find_active_session(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
+    let repo = repo_path.as_ref();
+
+    // First try PID-based matching (works for most agents)
+    if let Some(session) = find_session_by_ancestor_pid(repo) {
+        return Some(session);
+    }
+
+    // Check if we're running under Codex (which doesn't provide PID via OTEL)
+    if let Some(codex_pid) = find_ancestor_by_name("codex") {
+        if let Some(session) = find_session_by_agent_type(repo, AgentType::Codex) {
+            // Update session file with discovered PID for future fast lookups
+            let session_file_path = repo.join(".aiki/sessions").join(&session.session_id);
+            let session_file = AikiSessionFile {
+                path: session_file_path,
+                session: AikiSession::new(
+                    session.agent_type,
+                    &session.external_session_id,
+                    None::<&str>,
+                    DetectionMethod::Hook,
+                ),
+            };
+            if let Err(e) = session_file.update_parent_pid(codex_pid) {
+                // Log but don't fail - session was still found
+                crate::cache::debug_log(|| {
+                    format!("Failed to update session file with PID: {}", e)
+                });
+            }
+            return Some(session);
+        }
+    }
+
+    // No session found
+    None
 }
 
 /// Get the TTL threshold for a given agent type
@@ -1092,6 +1334,71 @@ mod tests {
 
         // Should only have one file
         assert_eq!(count_sessions(repo_path).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_update_parent_pid_adds_pid_to_session_file() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create session without PID (using new() instead of for_hook() to avoid auto-capture)
+        let session = AikiSession::new(
+            AgentType::Codex,
+            "codex-session-123",
+            None::<&str>,
+            DetectionMethod::Hook,
+        );
+        // Don't call with_parent_pid - leave it as None
+        let session_file = session.file(repo_path);
+        session_file.create().unwrap();
+
+        // Verify no parent_pid initially
+        let session_file_path = repo_path.join(".aiki/sessions").join(session.uuid());
+        let content = fs::read_to_string(&session_file_path).unwrap();
+        assert!(
+            !content.contains("parent_pid="),
+            "Session should not have parent_pid initially"
+        );
+
+        // Update with PID
+        session_file.update_parent_pid(12345).unwrap();
+
+        // Verify parent_pid was added
+        let content = fs::read_to_string(&session_file_path).unwrap();
+        assert!(
+            content.contains("parent_pid=12345"),
+            "Session should have parent_pid after update"
+        );
+        assert!(
+            content.contains("[/aiki]"),
+            "Session file should still have closing tag"
+        );
+    }
+
+    #[test]
+    fn test_update_parent_pid_idempotent() {
+        let temp_dir = setup_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create session without PID
+        let session = AikiSession::new(
+            AgentType::Codex,
+            "codex-session-456",
+            None::<&str>,
+            DetectionMethod::Hook,
+        );
+        let session_file = session.file(repo_path);
+        session_file.create().unwrap();
+
+        // Update with PID twice
+        session_file.update_parent_pid(11111).unwrap();
+        session_file.update_parent_pid(22222).unwrap(); // Should not change anything
+
+        // Verify only first PID is present
+        let session_file_path = repo_path.join(".aiki/sessions").join(session.uuid());
+        let content = fs::read_to_string(&session_file_path).unwrap();
+        assert!(content.contains("parent_pid=11111"));
+        assert!(!content.contains("parent_pid=22222"));
     }
 
     #[test]
@@ -1973,5 +2280,38 @@ mod tests {
 
         let result = determine_cleanup_action(true, AgentType::ClaudeCode, parsed, now);
         assert_eq!(result, None, "Query errors should keep session (transient failure)");
+    }
+
+    #[test]
+    fn test_find_ancestor_by_name_finds_shell() {
+        // Should find zsh or bash in our process ancestry (test runner runs in a shell)
+        let zsh = find_ancestor_by_name("zsh");
+        let bash = find_ancestor_by_name("bash");
+        let sh = find_ancestor_by_name("sh");
+
+        // At least one shell should be in our ancestry
+        assert!(
+            zsh.is_some() || bash.is_some() || sh.is_some(),
+            "Should find a shell in process ancestry"
+        );
+    }
+
+    #[test]
+    fn test_find_ancestor_by_name_not_found() {
+        // Should not find a process with an unlikely name
+        let result = find_ancestor_by_name("definitely_not_a_real_process_xyz123");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_ancestor_by_name_case_insensitive() {
+        // Test case insensitivity - ZSH should match zsh
+        let lower = find_ancestor_by_name("zsh");
+        let upper = find_ancestor_by_name("ZSH");
+
+        // If zsh exists, both should find it
+        if lower.is_some() {
+            assert_eq!(lower, upper, "Search should be case-insensitive");
+        }
     }
 }
