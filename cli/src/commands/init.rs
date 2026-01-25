@@ -218,6 +218,27 @@ pub fn run(quiet: bool) -> Result<()> {
         }
     }
 
+    // Install OTel receiver for Codex session tracking
+    if !config::is_otel_receiver_installed() {
+        if !quiet {
+            println!("\nInstalling OTel receiver...");
+        }
+        match config::install_otel_receiver() {
+            Ok(()) => {
+                if !quiet {
+                    println!("✓ OTel receiver installed (socket-activated on 127.0.0.1:19876)");
+                }
+            }
+            Err(e) => {
+                if !quiet {
+                    println!("⚠ Failed to install OTel receiver: {}", e);
+                    println!("  Codex session tracking will not work until this is resolved.");
+                    println!("  Run: aiki doctor --fix");
+                }
+            }
+        }
+    }
+
     // Ensure AGENTS.md has task system instructions
     if !quiet {
         println!("\nConfiguring agent instructions...");

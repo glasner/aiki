@@ -28,7 +28,7 @@ fn build_session_start_output(response: &HookResult) -> HookCommandOutput {
     let json_value = if let Some(ctx) = combined {
         // Has context - include systemMessage and hookSpecificOutput
         json!({
-            "systemMessage": "🎉 aiki initialized",
+            "systemMessage": "合 aiki initialized",
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": ctx
@@ -154,19 +154,16 @@ fn build_post_tool_use_output(response: &HookResult) -> HookCommandOutput {
 }
 
 /// Build Stop command output for Claude Code
+///
+/// Stop hook schema only supports: continue (bool), suppressOutput (bool), stopReason (string).
+/// There is no "decision" field or "additionalContext" for Stop hooks.
 fn build_stop_output(response: &HookResult) -> HookCommandOutput {
-    // The context field contains the autoreply text from the flow
-    let json_value = if let Some(ref autoreply_text) = response.context {
-        // Force continuation with autoreply via additionalContext
-        json!({
-            "decision": "continue",
-            "additionalContext": autoreply_text
-        })
+    let json_value = if response.context.is_some() {
+        // Flow wants to continue the session (e.g., autoreply configured)
+        json!({ "continue": true })
     } else {
-        // No autoreply - allow normal stop
-        json!({
-            "decision": "stop"
-        })
+        // No intervention - allow normal stop
+        json!({})
     };
 
     HookCommandOutput::new(Some(json_value), 0)

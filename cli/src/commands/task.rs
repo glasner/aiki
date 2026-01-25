@@ -73,7 +73,7 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
         find_session_by_ancestor_pid(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
 
     // Get the latest prompt's change_id for this session
-    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.aiki_session_id)?
+    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.session_id)?
         .ok_or(AikiError::NoPromptEventsForSession)?;
 
     // Replace "prompt" with "prompt:<change_id>"
@@ -502,7 +502,7 @@ fn run_list(
     // This automatically finds our session without needing --session flag
     let session_match = find_session_by_ancestor_pid(cwd);
     let detected_agent: Option<AgentType> = session_match.as_ref().map(|m| m.agent_type);
-    let our_session_uuid: Option<String> = session_match.map(|m| m.aiki_session_id);
+    let our_session_uuid: Option<String> = session_match.map(|m| m.session_id);
 
     // Determine automatic assignee filtering based on session context
     // If no explicit filter is set and not --all, apply visibility rules:
@@ -1182,7 +1182,7 @@ fn run_start(
         .as_ref()
         .map(|m| m.agent_type.as_str().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let session_id = session_match.as_ref().map(|m| m.aiki_session_id.clone());
+    let session_id = session_match.as_ref().map(|m| m.session_id.clone());
 
     let timestamp = chrono::Utc::now();
     let start_event = TaskEvent::Started {
@@ -2471,3 +2471,4 @@ fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
         Some(change_id)
     }
 }
+

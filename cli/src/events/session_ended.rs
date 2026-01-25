@@ -1,5 +1,6 @@
 use super::prelude::*;
 use crate::history;
+use crate::session::turn_state::TurnState;
 
 /// session.ended event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,6 +8,9 @@ pub struct AikiSessionEndedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
+    /// Reason for session termination (e.g., "clear", "logout", "user_close", "ttl_expired")
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// Handle session.ended event
@@ -19,7 +23,7 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
     debug_log(|| format!("Session ended by {:?}", payload.session.agent_type()));
 
     // Record session end to conversation history (non-blocking on failure)
-    if let Err(e) = history::record_session_end(&payload.cwd, &payload.session, payload.timestamp) {
+    if let Err(e) = history::record_session_end(&payload.cwd, &payload.session, payload.timestamp, &payload.reason) {
         debug_log(|| format!("Failed to record session end: {}", e));
     }
 
@@ -38,6 +42,10 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
 
     // Clean up session file (always happens, regardless of flow result)
     payload.session.end(&payload.cwd)?;
+
+    // Clean up turn state file
+    let turn_state = TurnState::load(payload.session.uuid(), &payload.cwd);
+    turn_state.delete();
 
     // Extract failures from state
     let failures = state.take_failures();

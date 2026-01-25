@@ -257,6 +257,9 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };

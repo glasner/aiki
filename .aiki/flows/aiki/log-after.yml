@@ -10,5 +10,5 @@ change.completed:
 session.started:
   - log: "[AFTER] Session complete - log-after flow"
 
-prompt.submitted:
-  - log: "[AFTER] Prompt processing complete - log-after flow"
+turn.started:
+  - log: "[AFTER] Turn started complete - log-after flow"

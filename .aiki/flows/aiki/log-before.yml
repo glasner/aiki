@@ -10,5 +10,5 @@ change.completed:
 session.started:
   - log: "[BEFORE] Session starting - log-before flow"
 
-prompt.submitted:
-  - log: "[BEFORE] Prompt submitted - log-before flow"
+turn.started:
+  - log: "[BEFORE] Turn started - log-before flow"

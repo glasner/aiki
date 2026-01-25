@@ -340,9 +340,13 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
         ConversationEvent::SessionEnd {
             session_id,
             timestamp,
+            reason,
         } => {
             add_metadata("event", "session_end", &mut lines);
             add_metadata("session_id", session_id, &mut lines);
+            if !reason.is_empty() {
+                add_metadata("reason", reason, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
     }
@@ -444,10 +448,15 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
         }
         "session_end" => {
             let session_id = fields.get("session_id")?.first()?.to_string();
+            let reason = fields.get("reason")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
 
             Some(ConversationEvent::SessionEnd {
                 session_id,
                 timestamp,
+                reason,
             })
         }
         _ => None,

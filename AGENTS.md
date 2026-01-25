@@ -177,8 +177,7 @@ When you start a parent task with subtasks:
 1. A `.0` subtask auto-starts: "Review all subtasks and start first batch"
 2. `aiki task` now shows only subtasks (scoped view)
 3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
-4. When all subtasks are closed, the parent auto-starts for final review
-5. Close the parent task when everything is complete
+4. When all subtasks are closed, the parent auto-closes
 
 ### When Planning Work
 
@@ -329,7 +328,7 @@ Example:
 - Creating long tasks without subtasks for multi-step work
 - Not updating progress with comments during multi-step work
 - Trying to `start` a task that's already in progress
-- Forgetting to close the parent task after all subtasks are done
+- Not verifying parent auto-closed after all subtasks are done
 
 ### Task Priorities
 

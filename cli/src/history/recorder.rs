@@ -62,10 +62,12 @@ pub fn record_session_end(
     cwd: &Path,
     session: &AikiSession,
     timestamp: DateTime<Utc>,
+    reason: &str,
 ) -> Result<()> {
     let event = ConversationEvent::SessionEnd {
         session_id: session.uuid().to_string(),
         timestamp,
+        reason: reason.to_string(),
     };
 
     write_event(cwd, &event)?;

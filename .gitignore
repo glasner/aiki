@@ -20,6 +20,7 @@ Thumbs.db
 .aiki/logs/
 .aiki/cache/
 .aiki/tmp/
+.aiki/sessions/
 
 # Test artifacts
 *.db

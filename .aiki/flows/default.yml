@@ -8,20 +8,20 @@ version: "1"
 # 3. Flow composition with before/after flows
 # 4. Review loop integration (when implemented)
 
-before:
-  - aiki/log-before
-  # Future: Add aiki/review-loop here when review feature is implemented
-  # - aiki/review-loop
+# before:
+# - aiki/log-before
+# Future: Add aiki/review-loop here when review feature is implemented
+# - aiki/review-loop
 
-after:
-  - aiki/log-after
+# after:
+#   - aiki/log-after
 
 change.completed:
-  - log: "[MAIN] Custom flow: Running after aiki/core for change.completed"
-  - log: "[MAIN] This is from .aiki/flows/default.yml in the aiki repo"
+  # - log: "[MAIN] Custom flow: Running after aiki/core for change.completed"
+  # - log: "[MAIN] This is from .aiki/flows/default.yml in the aiki repo"
 
 session.started:
-  - log: "[MAIN] Custom flow: Session started in aiki repo"
+  # - log: "[MAIN] Custom flow: Session started in aiki repo"
 
-prompt.submitted:
-  - log: "[MAIN] Custom flow: Prompt submitted"
+turn.started:
+  # - log: "[MAIN] Custom flow: Turn started"

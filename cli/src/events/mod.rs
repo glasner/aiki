@@ -35,14 +35,16 @@ pub enum AikiEvent {
     SessionEnded(AikiSessionEndedPayload),
 
     // ========================================================================
-    // User / Agent Interaction Events
+    // Turn Lifecycle Events
     // ========================================================================
-    /// User submitted a prompt to the agent (allows context injection and blocking)
-    #[serde(rename = "prompt.submitted")]
-    PromptSubmitted(AikiPromptSubmittedPayload),
-    /// Agent finished responding (allows validation and autoreply)
-    #[serde(rename = "response.received")]
-    ResponseReceived(AikiResponseReceivedPayload),
+    /// Turn started - user submitted a prompt or autoreply was generated
+    /// (allows context injection and blocking)
+    #[serde(rename = "turn.started")]
+    TurnStarted(AikiTurnStartedPayload),
+    /// Turn completed - agent finished processing
+    /// (allows validation and autoreply; does NOT auto-trigger session.ended)
+    #[serde(rename = "turn.completed")]
+    TurnCompleted(AikiTurnCompletedPayload),
 
     // ========================================================================
     // Read Operation Events
@@ -121,9 +123,9 @@ impl AikiEvent {
             Self::SessionStarted(e) => &e.cwd,
             Self::SessionResumed(e) => &e.cwd,
             Self::SessionEnded(e) => &e.cwd,
-            // User / agent interaction
-            Self::PromptSubmitted(e) => &e.cwd,
-            Self::ResponseReceived(e) => &e.cwd,
+            // Turn lifecycle
+            Self::TurnStarted(e) => &e.cwd,
+            Self::TurnCompleted(e) => &e.cwd,
             // Read operations
             Self::ReadPermissionAsked(e) => &e.cwd,
             Self::ReadCompleted(e) => &e.cwd,
@@ -154,9 +156,9 @@ impl AikiEvent {
             Self::SessionStarted(e) => e.session.agent_type(),
             Self::SessionResumed(e) => e.session.agent_type(),
             Self::SessionEnded(e) => e.session.agent_type(),
-            // User / agent interaction
-            Self::PromptSubmitted(e) => e.session.agent_type(),
-            Self::ResponseReceived(e) => e.session.agent_type(),
+            // Turn lifecycle
+            Self::TurnStarted(e) => e.session.agent_type(),
+            Self::TurnCompleted(e) => e.session.agent_type(),
             // Read operations
             Self::ReadPermissionAsked(e) => e.session.agent_type(),
             Self::ReadCompleted(e) => e.session.agent_type(),
@@ -189,9 +191,9 @@ mod session_ended;
 mod session_resumed;
 mod session_started;
 
-// User / agent interaction
-mod prompt_submitted;
-mod response_received;
+// Turn lifecycle
+mod turn_completed;
+mod turn_started;
 
 // Read operations
 mod read_completed;
@@ -226,9 +228,9 @@ pub use session_ended::*;
 pub use session_resumed::*;
 pub use session_started::*;
 
-// User / agent interaction
-pub use prompt_submitted::*;
-pub use response_received::*;
+// Turn lifecycle
+pub use turn_completed::*;
+pub use turn_started::*;
 
 // Read operations
 pub use read_completed::*;
@@ -269,9 +271,9 @@ impl From<AikiSessionStartPayload> for AikiEvent {
     }
 }
 
-impl From<AikiPromptSubmittedPayload> for AikiEvent {
-    fn from(payload: AikiPromptSubmittedPayload) -> Self {
-        AikiEvent::PromptSubmitted(payload)
+impl From<AikiTurnStartedPayload> for AikiEvent {
+    fn from(payload: AikiTurnStartedPayload) -> Self {
+        AikiEvent::TurnStarted(payload)
     }
 }
 
@@ -307,9 +309,9 @@ impl From<AikiCommitMessageStartedPayload> for AikiEvent {
     }
 }
 
-impl From<AikiResponseReceivedPayload> for AikiEvent {
-    fn from(payload: AikiResponseReceivedPayload) -> Self {
-        AikiEvent::ResponseReceived(payload)
+impl From<AikiTurnCompletedPayload> for AikiEvent {
+    fn from(payload: AikiTurnCompletedPayload) -> Self {
+        AikiEvent::TurnCompleted(payload)
     }
 }
 

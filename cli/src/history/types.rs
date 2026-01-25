@@ -46,6 +46,8 @@ pub enum ConversationEvent {
     SessionEnd {
         session_id: String,
         timestamp: DateTime<Utc>,
+        /// Reason for termination (e.g., "clear", "logout", "ttl_expired", "pid_dead")
+        reason: String,
     },
 }
 

@@ -26,7 +26,7 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
     // Create session file for PID-based session detection
     // This preserves the parent_pid from the payload session
     let session_file = AikiSessionFile::new(&payload.session, &payload.cwd);
-    if let Err(e) = session_file.create(&payload.cwd) {
+    if let Err(e) = session_file.create() {
         debug_log(|| format!("Failed to create session file: {}", e));
     }
 
