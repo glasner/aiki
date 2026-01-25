@@ -161,22 +161,29 @@ fn parse_turn_file(path: &Path) -> (u32, TurnSource) {
     }
 }
 
-/// Restore turn counter from JJ history by finding the max turn value
-/// in changes associated with this session.
+/// Restore turn counter from JJ history by finding the latest turn value
+/// in the aiki/conversations branch for this session.
 ///
-/// Queries JJ for all changes with `session_id=<uuid>` in their description,
-/// parses `turn=N` values, and returns the maximum.
+/// Queries the aiki/conversations branch for the most recent event with
+/// `session=<uuid>` in its description, and extracts the `turn=N` value.
 ///
-/// Returns `None` if JJ is unavailable or no turns are found.
+/// Returns `None` if JJ is unavailable, the branch doesn't exist, or no turns are found.
 fn restore_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
+    const CONVERSATIONS_BRANCH: &str = "aiki/conversations";
+
     let output = Command::new("jj")
         .args([
             "log",
             "-r",
-            &format!("description(\"session_id={}\")", session_uuid),
+            &format!(
+                "ancestors({}) & description(substring:'session={}') & description(substring:'turn=')",
+                CONVERSATIONS_BRANCH, session_uuid
+            ),
             "--template",
-            "description ++ \"\\n---\\n\"",
+            "description ++ \"\\n\"",
             "--no-graph",
+            "--limit",
+            "1",
         ])
         .current_dir(repo_path)
         .output()
@@ -187,28 +194,27 @@ fn restore_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let max_turn = stdout
+    let turn = stdout
         .lines()
-        .filter_map(|line| {
+        .find_map(|line| {
             let trimmed = line.trim();
             if trimmed.starts_with("turn=") {
                 trimmed.strip_prefix("turn=")?.parse::<u32>().ok()
             } else {
                 None
             }
-        })
-        .max();
+        });
 
-    if let Some(turn) = max_turn {
+    if let Some(turn) = turn {
         debug_log(|| {
             format!(
-                "Restored turn counter from JJ history: session={}, turn={}",
+                "Restored turn counter from aiki/conversations branch: session={}, turn={}",
                 session_uuid, turn
             )
         });
     }
 
-    max_turn
+    turn
 }
 
 /// Generate a deterministic turn ID using UUID v5
