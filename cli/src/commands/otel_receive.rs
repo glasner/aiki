@@ -82,7 +82,14 @@ pub fn run() -> Result<()> {
     };
 
     // Parse OTLP protobuf and process events
-    let events = otel::parse_otlp_logs(&body);
+    // Try traces first (Codex sends traces even to /v1/logs endpoint)
+    let mut events = otel::parse_otlp_traces(&body);
+
+    // Fall back to logs parsing if no trace events found
+    if events.is_empty() {
+        events = otel::parse_otlp_logs(&body);
+    }
+
     if events.is_empty() && !body.is_empty() {
         debug_log(|| {
             format!(
@@ -483,17 +490,16 @@ fn maybe_emit_session_started(conversation_id: &str, state: &state::CodexSession
         });
         return;
     }
-    let Some(agent_pid) = state.agent_pid else {
-        return;
-    };
-
+    // Note: agent_pid may be None for Codex (not provided via OTEL).
+    // Session file will be created without parent_pid, and aiki commands
+    // running under Codex will use find_ancestor_by_name("codex") + cwd matching.
     let session = AikiSession::new(
         AgentType::Codex,
         conversation_id,
         state.agent_version.as_deref(),
         DetectionMethod::Hook,
     )
-    .with_parent_pid(Some(agent_pid));
+    .with_parent_pid(state.agent_pid);
 
     let now = Utc::now();
     let event = AikiEvent::SessionStarted(AikiSessionStartPayload {

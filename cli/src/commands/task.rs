@@ -60,7 +60,7 @@ fn validate_sources(sources: &[String]) -> Result<()> {
 /// Returns the sources with "prompt" replaced, or an error if resolution fails.
 fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<String>> {
     use crate::history::get_latest_prompt_change_id;
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
 
     // Check if any source is the special "prompt" (without ID)
     let has_bare_prompt = sources.iter().any(|s| s == "prompt");
@@ -68,9 +68,9 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
         return Ok(sources);
     }
 
-    // Find the current session via PID-based detection
+    // Find the current session via PID or agent-type detection
     let session =
-        find_session_by_ancestor_pid(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
+        find_active_session(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
 
     // Get the latest prompt's change_id for this session
     let prompt_change_id = get_latest_prompt_change_id(cwd, &session.session_id)?
@@ -468,7 +468,7 @@ fn run_list(
     filter_template: Option<String>,
 ) -> Result<()> {
     use crate::agents::{AgentType, Assignee};
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
 
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
@@ -498,9 +498,9 @@ fn run_list(
         None
     };
 
-    // PID-based session detection: find session by matching ancestor PIDs
+    // Session detection: find session by PID matching or agent-type fallback
     // This automatically finds our session without needing --session flag
-    let session_match = find_session_by_ancestor_pid(cwd);
+    let session_match = find_active_session(cwd);
     let detected_agent: Option<AgentType> = session_match.as_ref().map(|m| m.agent_type);
     let our_session_uuid: Option<String> = session_match.map(|m| m.session_id);
 
@@ -944,7 +944,7 @@ fn run_start(
     sources: Vec<String>,
     assignee_arg: Option<String>,
 ) -> Result<()> {
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
     use crate::agents::Assignee;
 
     // If --template is provided, create from template and start
@@ -1176,8 +1176,8 @@ fn run_start(
     }
 
     // Start new tasks (batch operation)
-    // PID-based session detection: find session by matching ancestor PIDs
-    let session_match = find_session_by_ancestor_pid(cwd);
+    // Session detection: find session by PID matching or agent-type fallback
+    let session_match = find_active_session(cwd);
     let agent_type_str = session_match
         .as_ref()
         .map(|m| m.agent_type.as_str().to_string())
