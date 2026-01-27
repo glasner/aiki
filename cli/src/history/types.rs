@@ -129,6 +129,18 @@ pub struct LogEntry {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Summary of a conversation for listing purposes
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Part of history API
+pub struct ConversationSummary {
+    pub session_id: String,
+    pub agent_type: AgentType,
+    pub started_at: DateTime<Utc>,
+    pub turn_count: u32,
+    pub last_activity: DateTime<Utc>,
+    pub repo_id: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

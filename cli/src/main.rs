@@ -99,10 +99,10 @@ enum Commands {
         #[arg(short, long, default_value = "50")]
         edits: usize,
     },
-    /// Manage sessions
-    Session {
+    /// Manage conversations
+    Conversation {
         #[command(subcommand)]
-        command: commands::session::SessionCommands,
+        command: commands::conversation::ConversationCommands,
     },
     /// Manage tasks
     Task {
@@ -179,7 +179,7 @@ fn run() -> Result<()> {
             agent_args,
         } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
-        Commands::Session { command } => commands::session::run(command),
+        Commands::Conversation { command } => commands::conversation::run(command),
         Commands::Task { command } => commands::task::run(command),
         Commands::OtelReceive => commands::otel_receive::run(),
         Commands::Event { command } => match command {
