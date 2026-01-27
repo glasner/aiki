@@ -1,7 +1,7 @@
-# Plan: Rename `aiki session` to `aiki conversation` and list all conversations
+# Plan: Enhance `aiki session` with history-backed listing
 
 ## Problem
-Users think in terms of "conversations" not "sessions." Currently `aiki session list` only shows active sessions (PID files in `~/.aiki/sessions/`). There's no way to see past conversations. The internal concept of "session" and "conversation" being separate creates unnecessary cognitive overhead for users.
+`aiki session list` only showed active sessions (PID files in `~/.aiki/sessions/`). There was no way to see past sessions. We keep the `session` command name for brevity and consistency.
 
 ## Goal
 Replace `aiki session` with `aiki conversation` as the user-facing command. Show all conversations by default (from JJ history), with `--active` to filter to live ones.

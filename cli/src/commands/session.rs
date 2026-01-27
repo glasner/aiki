@@ -7,27 +7,27 @@ use clap::Subcommand;
 use std::collections::HashMap;
 
 #[derive(Subcommand)]
-pub enum ConversationCommands {
-    /// List conversations
+pub enum SessionCommands {
+    /// List sessions
     List {
-        /// Show only active conversations (with running agent process)
+        /// Show only active sessions (with running agent process)
         #[arg(long)]
         active: bool,
-        /// Maximum number of conversations to show (default: 10)
+        /// Maximum number of sessions to show (default: 10)
         #[arg(long, default_value = "10")]
         limit: usize,
     },
-    /// Show turns for a specific conversation
+    /// Show turns for a specific session
     Show {
-        /// Conversation/session ID (or unique prefix)
+        /// Session ID (or unique prefix)
         id: String,
     },
 }
 
-pub fn run(command: ConversationCommands) -> Result<()> {
+pub fn run(command: SessionCommands) -> Result<()> {
     match command {
-        ConversationCommands::List { active, limit } => run_list(active, limit),
-        ConversationCommands::Show { id } => run_show(&id),
+        SessionCommands::List { active, limit } => run_list(active, limit),
+        SessionCommands::Show { id } => run_show(&id),
     }
 }
 
@@ -42,7 +42,7 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
     if active {
         // --active: show only active sessions, enriched with history data
         if active_sessions.is_empty() {
-            println!("No conversations found");
+            println!("No sessions found");
             return Ok(());
         }
 
@@ -56,7 +56,7 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
 
         println!(
             "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-            "CONVERSATION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
+            "SESSION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
         );
 
         for s in active_sessions.iter().take(limit) {
@@ -93,17 +93,17 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
 
         let count = active_sessions.len();
         println!(
-            "\n{} conversation{}",
+            "\n{} session{}",
             count,
             if count == 1 { "" } else { "s" }
         );
     } else {
-        // Default: show all conversations from JJ history
+        // Default: show all sessions from JJ history
         let aiki_dir = global::global_aiki_dir();
         let conversations = history::storage::list_conversations(&aiki_dir, Some(limit))?;
 
         if conversations.is_empty() {
-            println!("No conversations found");
+            println!("No sessions found");
             return Ok(());
         }
 
@@ -115,7 +115,7 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
 
         println!(
             "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-            "CONVERSATION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
+            "SESSION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
         );
 
         for conv in &conversations {
@@ -149,7 +149,7 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
 
         let count = conversations.len();
         println!(
-            "\n{} conversation{}",
+            "\n{} session{}",
             count,
             if count == 1 { "" } else { "s" }
         );
@@ -179,7 +179,7 @@ fn run_show(id: &str) -> Result<()> {
         .collect();
 
     if matching.is_empty() {
-        println!("No conversation found with ID: {}", id);
+        println!("No session found with ID: {}", id);
         return Ok(());
     }
 
