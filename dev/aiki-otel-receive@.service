@@ -1,0 +1,10 @@
+[Unit]
+Description=Aiki OTel Receiver (per-connection instance)
+Documentation=https://github.com/AikiForge/aiki
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/aiki otel-receive
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

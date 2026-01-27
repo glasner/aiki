@@ -4,11 +4,9 @@ use crate::error::Result;
 use crate::events::result::HookResult;
 use crate::events::{
     self, AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
-    AikiSessionEndedPayload, ChangeOperation, DeleteOperation, MoveOperation,
+    ChangeOperation, DeleteOperation, MoveOperation,
 };
-use crate::session::AikiSession;
 use crate::tools::{parse_file_operation_from_shell_command, FileOperation};
-use std::path::PathBuf;
 
 /// Dispatch an event to the appropriate handler
 ///
@@ -28,9 +26,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             AikiEvent::SessionStarted(_) => "session.started",
             AikiEvent::SessionResumed(_) => "session.resumed",
             AikiEvent::SessionEnded(_) => "session.ended",
-            // User / agent interaction
-            AikiEvent::PromptSubmitted(_) => "prompt.submitted",
-            AikiEvent::ResponseReceived(_) => "response.received",
+            // Turn lifecycle
+            AikiEvent::TurnStarted(_) => "turn.started",
+            AikiEvent::TurnCompleted(_) => "turn.completed",
             // Read operations
             AikiEvent::ReadPermissionAsked(_) => "read.permission_asked",
             AikiEvent::ReadCompleted(_) => "read.completed",
@@ -67,35 +65,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
         AikiEvent::SessionResumed(e) => events::handle_session_resumed(e),
         AikiEvent::SessionEnded(e) => events::handle_session_ended(e),
 
-        // User / agent interaction
-        AikiEvent::PromptSubmitted(e) => events::handle_prompt_submitted(e),
-        AikiEvent::ResponseReceived(e) => {
-            // Extract fields we'll need for session.ended before consuming the event
-            let session = e.session.clone();
-            let cwd = e.cwd.clone();
-
-            // Handle response.received and check for autoreply
-            let response = events::handle_response_received(e)?;
-
-            // Allow benchmark to force autoreply behavior (skip session.ended)
-            // Preserve actual failures/decisions but override context
-            if std::env::var("AIKI_BENCHMARK_FORCE_AUTOREPLY").is_ok() {
-                return Ok(HookResult {
-                    context: Some("benchmark-autoreply".to_string()),
-                    decision: response.decision,
-                    failures: response.failures,
-                });
-            }
-
-            // If response.received produced an autoreply, return it (session continues)
-            if response.has_context() {
-                return Ok(response);
-            }
-
-            // No autoreply - session is done, trigger session.ended event
-            let session_ended_event = build_session_ended_payload(session, cwd);
-            events::handle_session_ended(session_ended_event)
-        }
+        // Turn lifecycle
+        AikiEvent::TurnStarted(e) => events::handle_turn_started(e),
+        AikiEvent::TurnCompleted(e) => events::handle_turn_completed(e),
 
         // Read operations
         AikiEvent::ReadPermissionAsked(e) => events::handle_read_permission_asked(e),
@@ -161,19 +133,6 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             eprintln!("Warning: Aiki event handler failed: {}", e);
             Ok(HookResult::failure(format!("Aiki handler failed: {}", e)))
         }
-    }
-}
-
-/// Build a session.ended event payload
-///
-/// Called automatically when response.received doesn't generate an autoreply.
-fn build_session_ended_payload(session: AikiSession, cwd: PathBuf) -> AikiSessionEndedPayload {
-    debug_log(|| "No autoreply generated - ending session automatically");
-
-    AikiSessionEndedPayload {
-        session,
-        cwd,
-        timestamp: chrono::Utc::now(),
     }
 }
 
@@ -248,6 +207,7 @@ fn transform_shell_delete_to_change_completed(
         timestamp: shell_event.timestamp,
         tool_name: "Bash".to_string(),
         success: shell_event.success,
+        turn: crate::events::Turn::unknown(), // Shell commands don't have turn context
         operation: ChangeOperation::Delete(DeleteOperation {
             file_paths: deleted_paths,
         }),
@@ -340,6 +300,7 @@ fn transform_shell_move_to_change_completed(
         timestamp: shell_event.timestamp,
         tool_name: "Bash".to_string(),
         success: shell_event.success,
+        turn: crate::events::Turn::unknown(), // Shell commands don't have turn context
         operation: ChangeOperation::Move(move_op),
     }
 }

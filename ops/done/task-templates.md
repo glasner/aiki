@@ -27,9 +27,9 @@ aiki review --template aiki/security
 
 # Same power as old --prompt system
 # But now templates can define any workflow:
-aiki task create --template myorg/refactor-cleanup
-aiki task create --template myorg/integration-test
-aiki task create --template myorg/documentation-audit
+aiki task add --template myorg/refactor-cleanup
+aiki task add --template myorg/integration-test
+aiki task add --template myorg/documentation-audit
 ```
 
 ---
@@ -74,13 +74,13 @@ With templates, we can define **any repeatable agent workflow**:
 aiki review --template aiki/security
 
 # Refactoring workflows
-aiki task create --template myorg/refactor-cleanup
+aiki task add --template myorg/refactor-cleanup
 
 # Testing workflows
-aiki task create --template myorg/integration-test
+aiki task add --template myorg/integration-test
 
 # Documentation workflows
-aiki task create --template myorg/api-docs
+aiki task add --template myorg/api-docs
 ```
 
 **Benefits:**
@@ -108,7 +108,7 @@ A **task template** is a markdown file with YAML frontmatter that defines:
 Templates are markdown files with YAML frontmatter:
 
 ```markdown
-<!-- .aiki/templates/aiki/review.md -->
+<!-- cli/src/tasks/templates/builtin/review.md (bundled in binary) -->
 ---
 description: General code quality, functionality, basic security
 type: review
@@ -219,12 +219,12 @@ Error: Variable '{data.foo}' referenced but not provided
 
 ```bash
 # Safe: Braces in values are literal text
-aiki task create --template myorg/deploy \
+aiki task add --template myorg/deploy \
   --data region="us-{east}-1"
 # Result: region is literally "us-{east}-1", no nested substitution
 
 # Safe: Special characters don't break parsing
-aiki task create --template myorg/note \
+aiki task add --template myorg/note \
   --data message="---\nThis is not frontmatter"
 # Result: Inserted as plain text in body, not parsed as YAML
 ```
@@ -240,6 +240,38 @@ Built-in variables are populated from the task struct:
 | `{priority}` | Task priority | `p0`, `p1`, `p2`, `p3` |
 | `{type}` | Task type | `review`, `refactor`, `test` |
 | `{created}` | Creation timestamp | `2026-01-20T10:00:00Z` |
+
+**Variable Scoping in Subtasks:**
+
+When rendering subtask instructions, variables resolve to the **subtask's context** (with fallback to parent):
+
+| Variable | Resolution |
+|----------|------------|
+| `{id}` | Subtask's own ID (e.g., `parent_id.1`) |
+| `{assignee}` | Subtask's assignee (from subtask frontmatter) → parent's assignee |
+| `{priority}` | Subtask's priority (from subtask frontmatter) → parent's priority |
+| `{data.*}` | Subtask's data merged over parent's data |
+| `{parent.id}` | Parent task's ID |
+| `{parent.assignee}` | Parent task's assignee |
+| `{parent.data.*}` | Parent task's data fields |
+
+**Example:**
+```markdown
+## Security audit
+---
+assignee: security-specialist
+priority: p0
+---
+
+Task {id} assigned to {assignee} (priority: {priority})
+Parent task: {parent.id}
+```
+
+Renders as:
+```markdown
+Task xqrmnpst.2 assigned to security-specialist (priority: p0)
+Parent task: xqrmnpst
+```
 
 #### Review-Specific Variables (in data)
 
@@ -266,7 +298,7 @@ Review changes in @ (files: src/auth.ts, src/middleware.ts)
 Assigned to: codex
 ```
 
-#### Custom Variables (aiki task create)
+#### Custom Variables (aiki task add --template)
 
 Templates can reference:
 - **Data fields** using `{data.key}` syntax
@@ -278,7 +310,7 @@ The `{source}` variable accesses the task's source lineage (set via `--source`):
 
 ```bash
 # Link task to a plan document
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 ```
 
@@ -334,7 +366,7 @@ Verify implementation matches file:ops/now/feature.md.
 Templates can also use custom data fields:
 
 ```bash
-aiki task create --template myorg/deploy \
+aiki task add --template myorg/deploy \
   --data environment="production" \
   --data region="us-east-1"
 ```
@@ -355,7 +387,7 @@ Deploy application to {data.environment} in {data.region}.
 
 **Example:**
 ```bash
-aiki task create --template myorg/test \
+aiki task add --template myorg/test \
   --data parallel="true" \
   --data threads="4"
 ```
@@ -472,7 +504,7 @@ Aiki ships with these built-in templates:
 
 ### 1. `review` - General Code Review (Default)
 
-**Location**: `.aiki/templates/aiki/review.md`
+**Location**: Bundled in binary at `cli/src/tasks/templates/builtin/review.md`
 
 **Purpose**: General code quality, functionality, basic security, and performance
 
@@ -509,7 +541,8 @@ aiki review --template aiki/review  # Explicit
   - Organizations can namespace their templates
 
 **Resolution:**
-- Template name includes the namespace path: `aiki/review` → `.aiki/templates/aiki/review.md`
+- Template name includes the namespace: `aiki/review` (built-in templates bundled in binary)
+- User templates stored in `.aiki/templates/{namespace}/` (e.g., `.aiki/templates/myorg/review.md`)
 - Custom template: `myorg/refactor-cleanup` → `.aiki/templates/myorg/refactor-cleanup.md`
 - No fallback search needed - template name is exact path within `.aiki/templates/`
 
@@ -547,42 +580,44 @@ aiki review --template aiki/performance
 aiki review --template aiki/style
 
 # Custom templates (with namespace):
-aiki task create --template myorg/refactor-cleanup
-aiki task create --template myorg/api-docs
-aiki task create --template myorg/integration-test
+aiki task add --template myorg/refactor-cleanup
+aiki task add --template myorg/api-docs
+aiki task add --template myorg/integration-test
 ```
 
-### New `aiki task create` Command
+### Template Support in `aiki task add`
+
+The `--template` flag adds template-based task creation to the existing `task add` command:
 
 ```bash
 # Create task from template
-aiki task create --template <name> [options]
+aiki task add --template <name> [options]
 
 # Options:
-#   --data <key>=<value>  - Set metadata (accessible as {data.key} in template)
-#   --assignee <agent>        - Override template assignee
-#   --priority <level>        - Override template priority
+#   --data <key>=<value>  - Set data (accessible as {data.key} in template)
+#   --for <agent>         - Override template assignee
+#   --p0/--p1/--p2/--p3   - Override template priority
 
 # Examples:
 
-# Refactor with scope metadata (links to what's being refactored)
-aiki task create --template myorg/refactor-cleanup \
+# Refactor with scope data (links to what's being refactored)
+aiki task add --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Link to a plan document via source
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 
 # Override assignee
-aiki task create --template myorg/api-docs --assignee claude-code
+aiki task add --template myorg/api-docs --for claude-code
 
 # Multiple data fields
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --data component="dashboard" \
   --data language="rust"
 
 # Combine source + data
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md \
   --data target="v2.0"
 ```
@@ -615,7 +650,7 @@ data:
 ```
 
 ```bash
-aiki task create --template myorg/deploy --data region="us-east-1"
+aiki task add --template myorg/deploy --data region="us-east-1"
 ```
 
 **Result:** `environment=staging`, `region=us-east-1`
@@ -682,39 +717,66 @@ The substitution engine must guarantee security and determinism:
 
 ```rust
 // Pseudocode for safe substitution
-fn load_template(path: &Path, data: &HashMap<String, String>) -> Result<Task> {
+fn load_template(path: &Path, data: &HashMap<String, Value>) -> Result<Task> {
     let content = read_file(path)?;
-    
+
     // 1. Parse frontmatter FIRST (no substitution in YAML)
     let (frontmatter, body) = parse_frontmatter(&content)?;
-    
+
     // 2. Substitute variables in body only (single-pass, no recursion)
-    let substituted_body = substitute_once(&body, data)?;
-    
+    //    Values are converted to strings for text substitution
+    let substituted_body = substitute_once(&body, &data)?;
+
     // 3. Parse markdown structure from substituted body
     let task = parse_task_structure(&substituted_body)?;
-    
+
+    // 4. Store typed data on task (not the string-rendered version)
+    task.data = data;
+
     Ok(task)
 }
 
-fn substitute_once(text: &str, data: &HashMap<String, String>) -> Result<String> {
+fn substitute_once(text: &str, data: &HashMap<String, Value>) -> Result<String> {
     let mut result = text.to_string();
-    
+
     // Handle escaping: {{...}} -> {...} (literal braces)
     result = result.replace("{{", "\x00").replace("}}", "\x01");
-    
-    // Substitute variables: {key} -> value (plain text, no re-evaluation)
+
+    // Substitute variables: {key} -> value.to_string() (typed value rendered as text)
     for (key, value) in data {
         let pattern = format!("{{{}}}", key);
-        result = result.replace(&pattern, value);
+        let rendered = match value {
+            Value::Bool(b) => b.to_string(),      // "true" or "false"
+            Value::Number(n) => n.to_string(),    // "42" or "3.14"
+            Value::String(s) => s.clone(),        // as-is
+            Value::Null => "".to_string(),        // empty
+            _ => serde_json::to_string(value)?,   // arrays/objects as JSON
+        };
+        result = result.replace(&pattern, &rendered);
     }
-    
+
     // Restore escaped braces
     result = result.replace("\x00", "{").replace("\x01", "}");
-    
+
     Ok(result)
 }
 ```
+
+**Typed Data Storage:**
+
+Data values are stored with their types preserved (using `serde_json::Value`):
+
+| CLI Input | Stored Type | Stored Value |
+|-----------|-------------|--------------|
+| `--data enabled="true"` | `Value::Bool` | `true` |
+| `--data count="42"` | `Value::Number` | `42` |
+| `--data name="test"` | `Value::String` | `"test"` |
+| `--data ratio="3.14"` | `Value::Number` | `3.14` |
+
+This enables:
+- **Querying by type** - Find tasks where `data.enabled == true` (boolean comparison)
+- **JSON serialization** - Data serializes correctly without quote escaping issues
+- **Template conditionals** (future) - `{{#if data.enabled}}...{{/if}}`
 
 **Key guarantees:**
 - Frontmatter parsing happens before substitution (values can't inject YAML)
@@ -722,7 +784,7 @@ fn substitute_once(text: &str, data: &HashMap<String, String>) -> Result<String>
 - Values are plain text (braces in values are literal, not evaluated)
 
 **Validation Timing:**
-- Templates are validated when used (`aiki task create --template X`), not at `aiki init` time
+- Templates are validated when used (`aiki task add --template X`), not at `aiki init` time
 - Invalid templates produce clear error messages at usage time (see Error Messages section)
 
 **Files:**
@@ -758,28 +820,53 @@ pub struct TaskDefinition {
     pub assignee: Option<String>,
     pub data: HashMap<String, Value>,  // From subtask frontmatter
 }
+
+/// Template-specific fields (stored in TaskEvent::Created and materialized Task)
+pub struct TemplateTaskFields {
+    pub template: Option<String>,         // "name@version" - template tasks only
+    pub instructions: Option<String>,     // Template instructions with variables substituted - template tasks only
+    pub data: HashMap<String, Value>,     // Merged from template defaults + CLI --data
+}
 ```
 
-### Phase 2: Aiki Templates
+**Working Copy Capture:**
+
+The `working_copy` field captures the JJ change_id at task creation time for **ALL tasks** (not just template tasks). This enables:
+
+1. **Historical source lookup** - Retrieve files at the time the task was created:
+   ```bash
+   # For file: sources
+   jj show <working_copy>:ops/now/design.md
+
+   # For template tasks
+   jj show <working_copy>:.aiki/templates/<template>.md
+   ```
+
+2. **Reproducibility** - Understand the workspace state when any task was created
+
+3. **Audit trail** - Link tasks back to the exact codebase snapshot when they were created
+
+### Phase 2: Built-in Templates
 
 **Deliverables:**
-- Create `.aiki/templates/aiki/` directory
-- Ship `review.md` (default review template)
+- Bundle `review.md` template in binary (using `include_str!` like `flow.yaml`)
+- Load built-in templates from binary at runtime
 
 **Files:**
-- `.aiki/templates/aiki/review.md`
+- `cli/src/tasks/templates/builtin/review.md` - Bundled template file
+- `cli/src/tasks/templates/builtin/mod.rs` - Template loader using `include_str!`
 
 ### Phase 3: Generic Task Creation
 
 **Deliverables:**
-- New `aiki task create --template` command
+- New `aiki task add --template` command
 - Add `--template` support to `aiki task start` (create + start)
 - Task creation from arbitrary templates
 - Support for non-review workflows
 - Template filtering: `aiki task list --template <name>`
 
 **Files:**
-- `cli/src/commands/task.rs` - Add `create` subcommand, `--template` flag to `start`, and `--template` filter
+- `cli/src/commands/task.rs` - Add `--template` flag to `add` and `start`, and `--template` filter to `list`
 
 **Implementation Notes:**
 - Store template name and version in `task.template` field as `name@version` (e.g., `myorg/review@1.2.0`)
@@ -801,7 +888,7 @@ aiki task start --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Equivalent to:
-aiki task create --template myorg/refactor-cleanup --data scope="src/auth.rs"
+aiki task add --template myorg/refactor-cleanup --data scope="src/auth.rs"
 TASK_ID=$(aiki task list --format=json | jq -r '.[0].id')
 aiki task start $TASK_ID
 ```
@@ -835,7 +922,7 @@ aiki task template show aiki/review
 
 # Output:
 Template: aiki/review
-Location: .aiki/templates/aiki/review.md
+Source: Built-in (bundled in binary)
 Description: General code quality, functionality, basic security
 
 # Review: {data.scope}
@@ -849,9 +936,11 @@ Code review orchestration task.
 - `cli/src/tasks/templates/discovery.rs` - Template discovery logic
 
 **Implementation Notes:**
-- `list` scans `.aiki/templates/` directory recursively
+- `list` shows both built-in templates (from binary) and user templates (from `.aiki/templates/`)
+- Built-in templates loaded via `include_str!` (like `flow.yaml`)
+- User templates scanned from `.aiki/templates/` directory recursively
 - Groups by namespace (aiki/, myorg/, etc.)
-- `show` displays template name, location, description, and full content
+- `show` displays template name, source (built-in or file path), description, and full content
 - Both commands work without requiring a task to be created
 
 ### Phase 5: Documentation
@@ -898,7 +987,7 @@ See [`ops/future/templates/`](../future/templates/) for detailed future enhancem
 
 ```bash
 # Create task from template
-aiki task create --template myorg/refactor-cleanup \
+aiki task add --template myorg/refactor-cleanup \
   --data scope="src/auth.rs"
 
 # Start task from template (create + start)
@@ -906,7 +995,7 @@ aiki task start --template myorg/api-docs \
   --data module="src/core"
 
 # With source linkage
-aiki task create --template myorg/build \
+aiki task add --template myorg/build \
   --source file:ops/now/feature.md
 
 # Query tasks by template

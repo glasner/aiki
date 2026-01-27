@@ -5,8 +5,9 @@ use crate::cache::debug_log;
 use crate::error::Result;
 use crate::events::{
     parse_mcp_server, AikiChangeCompletedPayload, AikiEvent, AikiMcpCompletedPayload,
-    AikiMcpPermissionAskedPayload, AikiPromptSubmittedPayload, AikiShellCompletedPayload,
-    AikiShellPermissionAskedPayload, ChangeOperation, WriteOperation,
+    AikiMcpPermissionAskedPayload, AikiSessionEndedPayload, AikiShellCompletedPayload,
+    AikiShellPermissionAskedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload,
+    ChangeOperation, WriteOperation,
 };
 
 use super::session::create_session;
@@ -54,6 +55,11 @@ enum CursorEvent {
     AfterFileEdit {
         #[serde(flatten)]
         payload: AfterFileEditPayload,
+    },
+    #[serde(rename = "sessionEnd")]
+    SessionEnd {
+        #[serde(flatten)]
+        payload: SessionEndPayload,
     },
 }
 
@@ -206,6 +212,30 @@ struct EditPayload {
     new_string: String,
 }
 
+/// sessionEnd hook payload
+///
+/// Cursor fires this when the session terminates.
+/// Reasons: "completed", "aborted", "error", "window_close", "user_close"
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)] // Fields needed for serde deserialization
+struct SessionEndPayload {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(rename = "cursorVersion")]
+    cursor_version: String,
+    #[serde(rename = "workspaceRoots")]
+    workspace_roots: Vec<String>,
+    /// Reason for session termination
+    #[serde(default)]
+    reason: String,
+    /// Session duration in milliseconds
+    #[serde(default)]
+    duration_ms: u64,
+    /// Whether this was a background agent
+    #[serde(default, rename = "isBackgroundAgent")]
+    is_background_agent: bool,
+}
+
 // ============================================================================
 // Event Building
 // ============================================================================
@@ -216,7 +246,7 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
     let event: CursorEvent = super::super::read_stdin_json()?;
 
     let aiki_event = match event {
-        CursorEvent::BeforeSubmitPrompt { payload } => build_prompt_submitted_event(payload),
+        CursorEvent::BeforeSubmitPrompt { payload } => build_turn_started_event(payload),
         CursorEvent::BeforeShellExecution { payload } => {
             build_shell_permission_asked_event(payload)
         }
@@ -224,28 +254,30 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
         CursorEvent::BeforeMcpExecution { payload } => build_mcp_permission_asked_event(payload),
         CursorEvent::AfterMcpExecution { payload } => build_mcp_completed_event(payload),
         CursorEvent::AfterFileEdit { payload } => build_change_completed_event(payload),
-        CursorEvent::Stop { payload } => build_response_received_event(payload),
+        CursorEvent::Stop { payload } => build_turn_completed_event(payload),
+        CursorEvent::SessionEnd { payload } => build_session_ended_event(payload),
     };
 
     Ok(aiki_event)
 }
 
-/// Build prompt.submitted event from beforeSubmitPrompt payload
+/// Build turn.started event from beforeSubmitPrompt payload
 ///
 /// Note: Cursor's beforeSubmitPrompt fires on EVERY prompt submission.
 /// Ideally we should track conversation_id changes to fire session.started only
 /// on new conversations, but that requires stateful tracking across invocations.
-/// For now, we fire prompt.submitted on every call, which enables validation workflows.
+/// For now, we fire turn.started on every call, which enables validation workflows.
 ///
 /// Limitation: Cursor's beforeSubmitPrompt can only BLOCK prompts, not modify them.
 /// The modifiedPrompt field is not supported - only blocking via user_message.
-fn build_prompt_submitted_event(payload: BeforeSubmitPromptPayload) -> AikiEvent {
-    AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
+fn build_turn_started_event(payload: BeforeSubmitPromptPayload) -> AikiEvent {
+    AikiEvent::TurnStarted(AikiTurnStartedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt: payload.prompt,
-        injected_refs: vec![], // TODO: track injected context
+        injected_refs: vec![],
     })
 }
 
@@ -340,6 +372,7 @@ fn build_change_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
         timestamp: chrono::Utc::now(),
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         success: true, // afterFileEdit implies success
+        turn: crate::events::Turn::unknown(), // Cursor events don't have turn context
         operation: ChangeOperation::Write(WriteOperation {
             file_paths: vec![file_path],
             edit_details,
@@ -347,14 +380,25 @@ fn build_change_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
     })
 }
 
-/// Build response.received event from stop payload
-fn build_response_received_event(payload: StopPayload) -> AikiEvent {
-    AikiEvent::ResponseReceived(crate::events::AikiResponseReceivedPayload {
+/// Build turn.completed event from stop payload
+fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
+    AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
+    })
+}
+
+/// Build session.ended event from sessionEnd payload
+fn build_session_ended_event(payload: SessionEndPayload) -> AikiEvent {
+    AikiEvent::SessionEnded(AikiSessionEndedPayload {
+        session: create_session(&payload.conversation_id, &payload.cursor_version),
+        cwd: get_cwd(&payload.workspace_roots),
+        timestamp: chrono::Utc::now(),
+        reason: payload.reason,
     })
 }
 

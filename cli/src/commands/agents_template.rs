@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.7";
+pub const AIKI_BLOCK_VERSION: &str = "1.8";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.7">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.8">
 
 ## ⛔ STOP - Read This First
 
@@ -147,6 +147,9 @@ aiki task show <task-id>
 # Close with comment (preferred - atomic operation)
 aiki task close <task-id> --comment "Fixed by updating X to do Y"
 
+# Close as won't-do (skipped, not needed, or deliberately declined)
+aiki task close <task-id> --wont-do --comment "Already handled by existing code"
+
 # Close multiple tasks
 aiki task close <id1> <id2> <id3> --comment "All done"
 ```
@@ -240,8 +243,9 @@ Commands return XML showing current state:
 2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
 3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
 4. **Close with comment** - Use `aiki task close --comment` to document your work
-5. **Close immediately** - Don't leave tasks open after finishing
-6. **Report what you did** - Include completed tasks when replying to user
+5. **Close as won't-do when appropriate** - Use `aiki task close --wont-do --comment` for tasks you skip or decline (not needed, already done, disagree with approach)
+6. **Close immediately** - Don't leave tasks open after finishing
+7. **Report what you did** - Include completed tasks when replying to user
 
 ### Reporting Completed Tasks
 

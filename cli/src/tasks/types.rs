@@ -1,6 +1,7 @@
 //! Core types for the task system
 
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use std::fmt;
 
 /// Task status (derived from event stream)
@@ -110,6 +111,14 @@ pub enum TaskEvent {
         assignee: Option<String>,
         /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
         sources: Vec<String>,
+        /// Template used to create this task (e.g., "aiki/review@1.0.0")
+        template: Option<String>,
+        /// Working copy change_id at creation time (for historical template lookup)
+        working_copy: Option<String>,
+        /// Instructions from template (with variables substituted)
+        instructions: Option<String>,
+        /// Custom data/metadata for the task
+        data: HashMap<String, String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were started (batch operation)
@@ -176,6 +185,14 @@ pub struct Task {
     pub assignee: Option<String>,
     /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
     pub sources: Vec<String>,
+    /// Template used to create this task (e.g., "aiki/review@1.0.0")
+    pub template: Option<String>,
+    /// Working copy change_id at creation time (for historical template lookup)
+    pub working_copy: Option<String>,
+    /// Instructions from template (with variables substituted)
+    pub instructions: Option<String>,
+    /// Custom data/metadata for the task
+    pub data: HashMap<String, String>,
     pub created_at: DateTime<Utc>,
     /// When the task was most recently started (for ordering in provenance)
     pub started_at: Option<DateTime<Utc>>,

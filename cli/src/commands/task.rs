@@ -60,7 +60,7 @@ fn validate_sources(sources: &[String]) -> Result<()> {
 /// Returns the sources with "prompt" replaced, or an error if resolution fails.
 fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<String>> {
     use crate::history::get_latest_prompt_change_id;
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
 
     // Check if any source is the special "prompt" (without ID)
     let has_bare_prompt = sources.iter().any(|s| s == "prompt");
@@ -68,12 +68,12 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
         return Ok(sources);
     }
 
-    // Find the current session via PID-based detection
+    // Find the current session via PID or agent-type detection
     let session =
-        find_session_by_ancestor_pid(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
+        find_active_session(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
 
     // Get the latest prompt's change_id for this session
-    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.aiki_session_id)?
+    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.session_id)?
         .ok_or(AikiError::NoPromptEventsForSession)?;
 
     // Replace "prompt" with "prompt:<change_id>"
@@ -84,6 +84,19 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
     }
 
     Ok(sources)
+}
+
+/// Template subcommands for `aiki task template`
+#[derive(Subcommand)]
+pub enum TemplateCommands {
+    /// List all available templates
+    List,
+
+    /// Show details of a specific template
+    Show {
+        /// Template name (e.g., "aiki/review")
+        name: String,
+    },
 }
 
 /// Task subcommands
@@ -122,12 +135,37 @@ pub enum TaskCommands {
         /// Filter to tasks from a specific source (supports partial matching)
         #[arg(long)]
         source: Option<String>,
+
+        /// Filter to tasks created from a specific template (e.g., "aiki/review", "myorg/build@1.0")
+        #[arg(long)]
+        template: Option<String>,
+    },
+
+    /// List or show templates
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
     },
 
     /// Create a new task
+    ///
+    /// Create a task either by name or from a template.
+    ///
+    /// Examples:
+    ///   aiki task add "Implement user auth"
+    ///   aiki task add --template aiki/review --data scope="@"
+    ///   aiki task add --template myorg/build --source file:ops/now/feature.md
     Add {
-        /// Task name
-        name: String,
+        /// Task name (required unless --template is provided)
+        name: Option<String>,
+
+        /// Create from a template (e.g., "aiki/review", "myorg/refactor-cleanup")
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Set task data (for template-based tasks). Can be specified multiple times.
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
 
         /// Create as child of existing task
         #[arg(long)]
@@ -161,18 +199,26 @@ pub enum TaskCommands {
 
     /// Start working on task(s)
     ///
-    /// Accepts either task ID(s) or a description. If a description is provided,
-    /// a new task will be created and started atomically (quick-start).
+    /// Accepts either task ID(s), a description, or --template for template-based tasks.
     ///
     /// Examples:
     ///   aiki task start "Implement user auth"  # Quick-start: create and start
     ///   aiki task start xmryrzwl...           # Start existing task by ID
+    ///   aiki task start --template aiki/review --data scope="@"  # Create from template and start
     Start {
         /// Task ID(s) or description to start
         ///
         /// If a description (not a task ID), creates and starts a new task.
         #[arg(value_name = "ID_OR_DESCRIPTION")]
         ids: Vec<String>,
+
+        /// Create from template and start (quick-start pattern for templates)
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Set task data (for template-based tasks). Can be specified multiple times.
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
 
         /// Reopen a closed task before starting
         #[arg(long)]
@@ -202,6 +248,10 @@ pub enum TaskCommands {
         /// Can be specified multiple times
         #[arg(long, action = clap::ArgAction::Append)]
         source: Vec<String>,
+
+        /// Override template assignee
+        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        assignee: Option<String>,
     },
 
     /// Stop the current task
@@ -324,6 +374,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         assignee: None,
         unassigned: false,
         source: None,
+        template: None,
     });
 
     match cmd {
@@ -336,6 +387,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             assignee,
             unassigned,
             source,
+            template,
         } => run_list(
             &cwd,
             None,
@@ -347,9 +399,13 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             assignee,
             unassigned,
             source,
+            template,
         ),
+        TaskCommands::Template { command } => run_template(&cwd, command),
         TaskCommands::Add {
             name,
+            template,
+            data,
             parent,
             assignee,
             source,
@@ -357,9 +413,11 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
-        } => run_add(&cwd, name, parent, assignee, source, p0, p1, p2, p3),
+        } => run_add(&cwd, name, template, data, parent, assignee, source, p0, p1, p2, p3),
         TaskCommands::Start {
             ids,
+            template,
+            data,
             reopen,
             reason,
             p0,
@@ -367,7 +425,8 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p2,
             p3,
             source,
-        } => run_start(&cwd, ids, reopen, reason, p0, p1, p2, p3, source),
+            assignee,
+        } => run_start(&cwd, ids, template, data, reopen, reason, p0, p1, p2, p3, source, assignee),
         TaskCommands::Stop {
             id,
             reason,
@@ -406,9 +465,10 @@ fn run_list(
     filter_assignee: Option<String>,
     filter_unassigned: bool,
     filter_source: Option<String>,
+    filter_template: Option<String>,
 ) -> Result<()> {
     use crate::agents::{AgentType, Assignee};
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
 
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
@@ -438,11 +498,11 @@ fn run_list(
         None
     };
 
-    // PID-based session detection: find session by matching ancestor PIDs
+    // Session detection: find session by PID matching or agent-type fallback
     // This automatically finds our session without needing --session flag
-    let session_match = find_session_by_ancestor_pid(cwd);
+    let session_match = find_active_session(cwd);
     let detected_agent: Option<AgentType> = session_match.as_ref().map(|m| m.agent_type);
-    let our_session_uuid: Option<String> = session_match.map(|m| m.aiki_session_id);
+    let our_session_uuid: Option<String> = session_match.map(|m| m.session_id);
 
     // Determine automatic assignee filtering based on session context
     // If no explicit filter is set and not --all, apply visibility rules:
@@ -525,6 +585,23 @@ fn run_list(
         }
     };
 
+    // Helper closure to check template filter
+    // Supports exact match and version-agnostic matching:
+    // - "aiki/review" matches "aiki/review" and "aiki/review@1.0.0"
+    // - "aiki/review@1.0.0" only matches "aiki/review@1.0.0"
+    let matches_template = |task: &Task| -> bool {
+        match (&filter_template, &task.template) {
+            (None, _) => true, // No filter applied
+            (Some(_), None) => false, // Filter applied but task has no template
+            (Some(query), Some(task_template)) => {
+                // Exact match
+                task_template == query ||
+                // Version-agnostic match: query without version matches task_template with version
+                task_template.split('@').next() == Some(query)
+            }
+        }
+    };
+
     // Always compute the actual ready queue for context (maintains contract)
     // Apply agent/human filtering AND session filtering
     let ready_queue: Vec<&Task> = if let Some(ref agent) = auto_agent_filter {
@@ -547,7 +624,7 @@ fn run_list(
 
     // Get list of tasks based on filters (for display in content)
     let list_tasks: Vec<&Task> =
-        if all || has_status_filters || has_explicit_assignee_filters || filter_source.is_some() {
+        if all || has_status_filters || has_explicit_assignee_filters || filter_source.is_some() || filter_template.is_some() {
             // Show tasks with filters applied
             let mut all_tasks: Vec<_> = tasks.values().collect();
             all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
@@ -587,16 +664,26 @@ fn run_list(
                 filtered_by_assignee
             };
 
+            // Apply template filter if active
+            let filtered_by_template: Vec<_> = if filter_template.is_some() {
+                filtered_by_source
+                    .into_iter()
+                    .filter(|t| matches_template(t))
+                    .collect()
+            } else {
+                filtered_by_source
+            };
+
             // Apply auto visibility filter (unless --all is specified or explicit filter is used)
             // This ensures status filters still respect assignee visibility
             // Also apply session filtering
             let filtered_by_visibility: Vec<_> = if !all && !has_explicit_assignee_filters {
-                filtered_by_source
+                filtered_by_template
                     .into_iter()
                     .filter(|t| is_auto_visible(t))
                     .collect()
             } else {
-                filtered_by_source
+                filtered_by_template
             };
 
             // Apply session filtering
@@ -642,7 +729,9 @@ fn run_list(
 /// Add a new task
 fn run_add(
     cwd: &Path,
-    name: String,
+    name: Option<String>,
+    template_name: Option<String>,
+    data_args: Vec<String>,
     parent: Option<String>,
     assignee_arg: Option<String>,
     sources: Vec<String>,
@@ -652,6 +741,53 @@ fn run_add(
     p3: bool,
 ) -> Result<()> {
     use crate::agents::Assignee;
+
+    // If --template is provided, delegate to template-based creation
+    if let Some(ref template) = template_name {
+        // Template-based creation doesn't support --parent (templates define their own structure)
+        if parent.is_some() {
+            return Err(AikiError::InvalidArgument(
+                "--parent cannot be used with --template (templates define their own task structure)".to_string()
+            ));
+        }
+
+        let task_id = create_from_template(cwd, template, &data_args, &sources, assignee_arg.as_deref(), p0, p1, false, p3)?;
+
+        // Read events to get the task we just created
+        let events = read_events(cwd)?;
+        let tasks = materialize_tasks(&events);
+        let in_progress = get_in_progress(&tasks);
+
+        let task = tasks.get(&task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
+
+        // Get scope set and ready queue
+        let scope_set = get_current_scope_set(&tasks);
+        let ready: Vec<_> = get_ready_queue_for_scope_set(&tasks, &scope_set)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        // Build output
+        let content = format_added(&[task]);
+
+        let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
+        let ready_refs: Vec<_> = ready.iter().collect();
+
+        let mut builder = XmlBuilder::new("add");
+        let xml_scopes = scope_set.to_xml_scopes();
+        if !xml_scopes.is_empty() {
+            builder = builder.with_scopes(&xml_scopes);
+        }
+        let xml = builder.build(&content, &in_progress_refs, &ready_refs);
+
+        println!("{}", xml);
+        return Ok(());
+    }
+
+    // Manual task creation requires a name
+    let name = name.ok_or_else(|| AikiError::InvalidArgument(
+        "Task name required. Either provide a name or use --template".to_string()
+    ))?;
 
     // Validate and normalize assignee if provided
     // This converts aliases like "claude" → "claude-code", "me" → "human"
@@ -718,12 +854,18 @@ fn run_add(
 
     let timestamp = chrono::Utc::now();
 
+    let working_copy = get_working_copy_change_id(cwd);
+
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
         priority,
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
+        template: None,
+        working_copy: working_copy.clone(),
+        instructions: None,
+        data: std::collections::HashMap::new(),
         timestamp,
     };
 
@@ -737,6 +879,10 @@ fn run_add(
         status: TaskStatus::Open,
         assignee: effective_assignee,
         sources,
+        template: None,
+        working_copy,
+        instructions: None,
+        data: std::collections::HashMap::new(),
         created_at: timestamp,
         started_at: None,
         claimed_by_session: None,
@@ -787,6 +933,8 @@ fn run_add(
 fn run_start(
     cwd: &Path,
     ids: Vec<String>,
+    template_name: Option<String>,
+    data_args: Vec<String>,
     reopen: bool,
     reopen_reason: Option<String>,
     p0: bool,
@@ -794,8 +942,18 @@ fn run_start(
     _p2: bool,
     p3: bool,
     sources: Vec<String>,
+    assignee_arg: Option<String>,
 ) -> Result<()> {
-    use crate::session::find_session_by_ancestor_pid;
+    use crate::session::find_active_session;
+    use crate::agents::Assignee;
+
+    // If --template is provided, create from template and start
+    if let Some(ref template) = template_name {
+        // Create task from template first
+        let task_id = create_from_template(cwd, template, &data_args, &sources, assignee_arg.as_deref(), p0, p1, false, p3)?;
+        // Now start that task - recursive call with just the task ID
+        return run_start(cwd, vec![task_id], None, Vec::new(), false, None, false, false, false, false, Vec::new(), None);
+    }
 
     // Validate source prefixes (if any sources provided for quick-start)
     validate_sources(&sources)?;
@@ -843,6 +1001,7 @@ fn run_start(
         let description = &ids[0];
         let task_id = generate_task_id(description);
         let timestamp = chrono::Utc::now();
+        let working_copy = get_working_copy_change_id(cwd);
 
         // Create the task
         let create_event = TaskEvent::Created {
@@ -851,6 +1010,10 @@ fn run_start(
             priority,
             assignee: None,
             sources: sources.clone(),
+            template: None,
+            working_copy: working_copy.clone(),
+            instructions: None,
+            data: std::collections::HashMap::new(),
             timestamp,
         };
         write_event(cwd, &create_event)?;
@@ -863,6 +1026,10 @@ fn run_start(
             priority,
             assignee: None,
             sources: sources.clone(),
+            template: None,
+            working_copy,
+            instructions: None,
+            data: std::collections::HashMap::new(),
             created_at: timestamp,
             started_at: None,
             claimed_by_session: None,
@@ -942,12 +1109,17 @@ fn run_start(
             if find_task(&tasks, &planning_id).is_none() {
                 // Create the planning task
                 let timestamp = chrono::Utc::now();
+                let working_copy = get_working_copy_change_id(cwd);
                 let planning_event = TaskEvent::Created {
                     task_id: planning_id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
                     priority: TaskPriority::default(),
                     assignee: None,
                     sources: Vec::new(),
+                    template: None,
+                    working_copy: working_copy.clone(),
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp,
                 };
                 write_event(cwd, &planning_event)?;
@@ -960,6 +1132,10 @@ fn run_start(
                     priority: TaskPriority::default(),
                     assignee: None,
                     sources: Vec::new(),
+                    template: None,
+                    working_copy,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     created_at: timestamp,
                     started_at: None,
                     claimed_by_session: None,
@@ -1000,13 +1176,13 @@ fn run_start(
     }
 
     // Start new tasks (batch operation)
-    // PID-based session detection: find session by matching ancestor PIDs
-    let session_match = find_session_by_ancestor_pid(cwd);
+    // Session detection: find session by PID matching or agent-type fallback
+    let session_match = find_active_session(cwd);
     let agent_type_str = session_match
         .as_ref()
         .map(|m| m.agent_type.as_str().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let session_id = session_match.as_ref().map(|m| m.aiki_session_id.clone());
+    let session_id = session_match.as_ref().map(|m| m.session_id.clone());
 
     let timestamp = chrono::Utc::now();
     let start_event = TaskEvent::Started {
@@ -1173,6 +1349,7 @@ fn run_stop(
 
     // Create blocker tasks for each --blocked flag and add to in-memory map
     let timestamp = chrono::Utc::now();
+    let working_copy = get_working_copy_change_id(cwd);
     for blocked_reason in &blocked {
         let blocker_id = generate_task_id(blocked_reason);
         let blocker_event = TaskEvent::Created {
@@ -1181,6 +1358,10 @@ fn run_stop(
             priority: TaskPriority::P0, // Blockers are high priority
             assignee: Some("human".to_string()),
             sources: Vec::new(),
+            template: None,
+            working_copy: working_copy.clone(),
+            instructions: None,
+            data: std::collections::HashMap::new(),
             timestamp,
         };
         write_event(cwd, &blocker_event)?;
@@ -1195,6 +1376,10 @@ fn run_stop(
                 priority: TaskPriority::P0,
                 assignee: Some("human".to_string()),
                 sources: Vec::new(),
+                template: None,
+                working_copy: working_copy.clone(),
+                instructions: None,
+                data: std::collections::HashMap::new(),
                 created_at: timestamp,
                 started_at: None,
                 claimed_by_session: None,
@@ -1949,3 +2134,341 @@ fn run_run(cwd: &Path, id: String, agent: Option<String>) -> Result<()> {
     // Run the task with XML output
     run_task_with_xml(cwd, &id, options)
 }
+
+/// Handle template subcommands (list, show)
+fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
+    use crate::tasks::templates::{find_templates_dir, list_templates, load_template};
+    use crate::tasks::xml::escape_xml;
+
+    // Find templates directory
+    let templates_dir = match find_templates_dir(cwd) {
+        Ok(dir) => dir,
+        Err(_) => {
+            // No templates directory found - show helpful message
+            let xml = XmlBuilder::new("template")
+                .build_error("No templates directory found. Create .aiki/templates/ to add templates.");
+            println!("{}", xml);
+            return Ok(());
+        }
+    };
+
+    match command {
+        TemplateCommands::List => {
+            let templates = list_templates(&templates_dir)?;
+
+            if templates.is_empty() {
+                let xml = XmlBuilder::new("template")
+                    .build_error("No templates found. Create template files in .aiki/templates/");
+                println!("{}", xml);
+                return Ok(());
+            }
+
+            // Build XML output
+            let mut content = String::new();
+            content.push_str("  <templates>\n");
+            for template in &templates {
+                let desc = template.description.as_deref().unwrap_or("");
+                content.push_str(&format!(
+                    "    <template name=\"{}\" description=\"{}\" />\n",
+                    escape_xml(&template.name),
+                    escape_xml(desc)
+                ));
+            }
+            content.push_str("  </templates>");
+
+            let empty: Vec<&Task> = vec![];
+            let xml = XmlBuilder::new("template").build(&content, &empty, &empty);
+            println!("{}", xml);
+        }
+        TemplateCommands::Show { name } => {
+            let template = load_template(&name, &templates_dir)?;
+
+            // Build XML output showing template details
+            let mut content = String::new();
+            content.push_str("  <template>\n");
+            content.push_str(&format!("    <name>{}</name>\n", escape_xml(&template.name)));
+
+            // Show source location
+            if let Some(ref path) = template.source_path {
+                content.push_str(&format!("    <source>{}</source>\n", escape_xml(path)));
+            }
+
+            if let Some(ref v) = template.version {
+                content.push_str(&format!("    <version>{}</version>\n", escape_xml(v)));
+            }
+            if let Some(ref desc) = template.description {
+                content.push_str(&format!("    <description>{}</description>\n", escape_xml(desc)));
+            }
+            if let Some(ref t) = template.defaults.task_type {
+                content.push_str(&format!("    <type>{}</type>\n", escape_xml(t)));
+            }
+            if let Some(ref a) = template.defaults.assignee {
+                content.push_str(&format!("    <assignee>{}</assignee>\n", escape_xml(a)));
+            }
+            if let Some(ref p) = template.defaults.priority {
+                content.push_str(&format!("    <priority>{}</priority>\n", escape_xml(p)));
+            }
+
+            // Show parent task name
+            content.push_str(&format!("    <parent_name>{}</parent_name>\n", escape_xml(&template.parent.name)));
+
+            // Show subtasks
+            if !template.subtasks.is_empty() {
+                content.push_str("    <subtasks>\n");
+                for subtask in &template.subtasks {
+                    content.push_str(&format!("      <subtask name=\"{}\" />\n", escape_xml(&subtask.name)));
+                }
+                content.push_str("    </subtasks>\n");
+            }
+
+            // Show full template content
+            if let Some(ref raw) = template.raw_content {
+                content.push_str("    <content><![CDATA[\n");
+                content.push_str(raw);
+                content.push_str("\n]]></content>\n");
+            }
+
+            content.push_str("  </template>");
+
+            let empty: Vec<&Task> = vec![];
+            let xml = XmlBuilder::new("template").build(&content, &empty, &empty);
+            println!("{}", xml);
+        }
+    }
+
+    Ok(())
+}
+
+/// Create task(s) from a template (shared logic for create and start --template)
+fn create_from_template(
+    cwd: &Path,
+    template_name: &str,
+    data_args: &[String],
+    sources: &[String],
+    assignee_override: Option<&str>,
+    p0: bool,
+    p1: bool,
+    _p2: bool,
+    p3: bool,
+) -> Result<String> {
+    use crate::agents::Assignee;
+    use crate::tasks::templates::{coerce_to_string, find_templates_dir, load_template, substitute_with_template_name, VariableContext};
+
+    // Validate source prefixes
+    validate_sources(sources)?;
+
+    // Resolve "prompt" source to actual prompt change_id
+    let sources = resolve_prompt_sources(cwd, sources.to_vec())?;
+
+    // Parse data arguments into HashMap with type coercion
+    // "true"/"false" → boolean string, numeric strings normalized
+    let mut data: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for arg in data_args {
+        let (key, value) = arg.split_once('=').ok_or_else(|| {
+            AikiError::InvalidTaskSource(format!("Invalid --data format: '{}'. Use: --data key=value", arg))
+        })?;
+        // Apply type coercion: normalizes booleans and numbers
+        data.insert(key.to_string(), coerce_to_string(value));
+    }
+
+    // Find and load template
+    let templates_dir = find_templates_dir(cwd)?;
+    let template = load_template(template_name, &templates_dir)?;
+
+    // Determine priority
+    let priority = if p0 {
+        TaskPriority::P0
+    } else if p1 {
+        TaskPriority::P1
+    } else if p3 {
+        TaskPriority::P3
+    } else if let Some(ref p) = template.defaults.priority {
+        TaskPriority::from_str(p).unwrap_or_default()
+    } else {
+        TaskPriority::default()
+    };
+
+    // Determine assignee
+    let assignee = if let Some(a) = assignee_override {
+        match Assignee::from_str(a) {
+            Some(parsed) => parsed.as_str().map(|s| s.to_string()),
+            None => return Err(AikiError::UnknownAssignee(a.to_string())),
+        }
+    } else if let Some(ref a) = template.defaults.assignee {
+        Some(a.clone())
+    } else {
+        None
+    };
+
+    // Merge data: template defaults + CLI overrides (CLI wins)
+    for (key, value) in &template.defaults.data {
+        if !data.contains_key(key) {
+            // Convert serde_json::Value to string
+            let value_str = match value {
+                serde_json::Value::String(s) => s.clone(),
+                _ => value.to_string(),
+            };
+            data.insert(key.clone(), value_str);
+        }
+    }
+
+    // Build variable context
+    let mut ctx = VariableContext::new();
+    for (key, value) in &data {
+        ctx.set_data(key, value);
+    }
+    if let Some(ref a) = assignee {
+        ctx.set_builtin("assignee", a);
+    }
+    ctx.set_builtin("priority", priority.to_string());
+    if let Some(ref t) = template.defaults.task_type {
+        ctx.set_builtin("type", t);
+    }
+    if let Some(source) = sources.first() {
+        ctx.set_source(source);
+    }
+
+    // Substitute variables in parent task name
+    let parent_name = substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
+
+    // Generate task ID
+    let task_id = generate_task_id(&parent_name);
+
+    // Set id in context for substitution
+    ctx.set_builtin("id", &task_id);
+
+    let timestamp = chrono::Utc::now();
+    ctx.set_builtin("created", timestamp.to_rfc3339());
+
+    // Substitute variables in parent instructions
+    let parent_instructions = if !template.parent.instructions.is_empty() {
+        Some(substitute_with_template_name(&template.parent.instructions, &ctx, Some(template_name))?)
+    } else {
+        None
+    };
+
+    // Create parent task event
+    let create_event = TaskEvent::Created {
+        task_id: task_id.clone(),
+        name: parent_name.clone(),
+        priority,
+        assignee: assignee.clone(),
+        sources: sources.clone(),
+        template: Some(template.template_id()),
+        working_copy: get_working_copy_change_id(cwd),
+        instructions: parent_instructions,
+        data: data.clone(),
+        timestamp,
+    };
+    write_event(cwd, &create_event)?;
+
+    // Create subtasks
+    for (i, subtask_def) in template.subtasks.iter().enumerate() {
+        // Generate subtask ID first (only depends on parent ID and index)
+        let subtask_id = generate_child_id(&task_id, i + 1);
+
+        // Determine subtask priority (override or inherit)
+        let subtask_priority = if let Some(ref p) = subtask_def.priority {
+            TaskPriority::from_str(p).unwrap_or(priority)
+        } else {
+            priority
+        };
+
+        // Determine subtask assignee (override or inherit)
+        let subtask_assignee = if let Some(ref a) = subtask_def.assignee {
+            Some(a.clone())
+        } else {
+            assignee.clone()
+        };
+
+        // Merge data: parent data + subtask frontmatter data (subtask wins on conflict)
+        let mut subtask_data = data.clone();
+        for (key, value) in &subtask_def.data {
+            // Convert serde_json::Value to string
+            let value_str = match value {
+                serde_json::Value::String(s) => s.clone(),
+                _ => value.to_string(),
+            };
+            subtask_data.insert(key.clone(), value_str);
+        }
+
+        // Build subtask-specific context for variable substitution
+        // Subtask context uses subtask's data/assignee/priority, with parent.* prefix for parent values
+        let mut subtask_ctx = VariableContext::new();
+        for (key, value) in &subtask_data {
+            subtask_ctx.set_data(key, value);
+        }
+        subtask_ctx.set_builtin("id", &subtask_id);
+        if let Some(ref a) = subtask_assignee {
+            subtask_ctx.set_builtin("assignee", a);
+        }
+        subtask_ctx.set_builtin("priority", subtask_priority.to_string());
+        subtask_ctx.set_builtin("created", timestamp.to_rfc3339());
+        if let Some(ref t) = template.defaults.task_type {
+            subtask_ctx.set_builtin("type", t);
+        }
+        // Parent context accessible via parent.* prefix
+        subtask_ctx.set_builtin("parent.id", &task_id);
+        if let Some(ref a) = assignee {
+            subtask_ctx.set_builtin("parent.assignee", a);
+        }
+        subtask_ctx.set_builtin("parent.priority", priority.to_string());
+        for (key, value) in &data {
+            subtask_ctx.set_builtin(&format!("parent.data.{}", key), value);
+        }
+        if let Some(source) = sources.first() {
+            subtask_ctx.set_source(source);
+            subtask_ctx.set_builtin("parent.source", source);
+        }
+
+        // Substitute variables in subtask name and instructions using subtask context
+        let subtask_name = substitute_with_template_name(&subtask_def.name, &subtask_ctx, Some(template_name))?;
+        let subtask_instructions = if !subtask_def.instructions.is_empty() {
+            Some(substitute_with_template_name(&subtask_def.instructions, &subtask_ctx, Some(template_name))?)
+        } else {
+            None
+        };
+
+        let subtask_event = TaskEvent::Created {
+            task_id: subtask_id,
+            name: subtask_name,
+            priority: subtask_priority,
+            assignee: subtask_assignee,
+            sources: vec![format!("task:{}", task_id)],
+            template: Some(template.template_id()),
+            working_copy: None, // Inherit from parent (captured once)
+            instructions: subtask_instructions,
+            data: subtask_data,
+            timestamp,
+        };
+        write_event(cwd, &subtask_event)?;
+    }
+
+    Ok(task_id)
+}
+
+/// Get the current working copy change_id from JJ
+///
+/// Returns the change_id of the current working copy (`@` in jj terms).
+/// This is captured when creating tasks from templates for historical template lookup.
+fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("jj")
+        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if change_id.is_empty() {
+        None
+    } else {
+        Some(change_id)
+    }
+}
+

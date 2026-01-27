@@ -116,15 +116,15 @@ pub struct Flow {
     pub session_ended: Vec<FlowStatement>,
 
     // ========================================================================
-    // User / Agent Interaction Events
+    // Turn Lifecycle Events
     // ========================================================================
-    /// prompt.submitted event handler (user submitted a prompt to the agent)
-    #[serde(rename = "prompt.submitted", default)]
-    pub prompt_submitted: Vec<FlowStatement>,
+    /// turn.started event handler (turn began - user prompt or autoreply)
+    #[serde(rename = "turn.started", default)]
+    pub turn_started: Vec<FlowStatement>,
 
-    /// response.received event handler (agent finished responding)
-    #[serde(rename = "response.received", default)]
-    pub response_received: Vec<FlowStatement>,
+    /// turn.completed event handler (turn ended - agent finished processing)
+    #[serde(rename = "turn.completed", default)]
+    pub turn_completed: Vec<FlowStatement>,
 
     // ========================================================================
     // Read Operation Events

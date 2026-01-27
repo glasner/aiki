@@ -27,8 +27,8 @@ use crate::event_bus;
 use crate::events::result::HookResult;
 use crate::events::{
     AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
-    AikiPromptSubmittedPayload, AikiResponseReceivedPayload, AikiSessionStartPayload,
-    ChangeOperation, DeleteOperation, MoveOperation, WriteOperation,
+    AikiSessionStartPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload, ChangeOperation,
+    DeleteOperation, MoveOperation, WriteOperation,
 };
 use crate::provenance::AgentType;
 use crate::session::AikiSession;
@@ -585,12 +585,14 @@ pub fn record_post_change_events(
     };
 
     // Create and dispatch the change.completed event
+    // Note: Turn info is not available in ACP context; provenance will use defaults
     let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         tool_name: tool_name.to_string(),
         success: true,
+        turn: crate::events::Turn::unknown(),
         operation,
     });
 
@@ -727,14 +729,14 @@ pub fn fire_pre_file_change_event(
 // Prompt handling
 // ============================================================================
 
-/// Handle session/prompt request and fire prompt.submitted event
+/// Handle session/prompt request and fire turn.started event
 ///
-/// This intercepts the user's prompt, fires a prompt.submitted event, and potentially
+/// This intercepts the user's prompt, fires a turn.started event, and potentially
 /// modifies the prompt before forwarding to the agent. Implements graceful
 /// degradation - on any error, forwards the original message.
 ///
 /// Note: Request tracking (TrackPrompt) is done by the caller before this function
-/// to ensure response.received fires even if prompt.submitted processing fails.
+/// to ensure turn.completed fires even if turn.started processing fails.
 pub fn handle_session_prompt(
     agent_stdin: &Arc<Mutex<std::process::ChildStdin>>,
     msg: &JsonRpcMessage,
@@ -765,14 +767,15 @@ pub fn handle_session_prompt(
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-    // Fire prompt.submitted event
+    // Fire turn.started event
     let session = create_session(*agent_type, sid.to_string(), None::<&str>);
-    let event = AikiEvent::PromptSubmitted(AikiPromptSubmittedPayload {
+    let event = AikiEvent::TurnStarted(AikiTurnStartedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt: original_text.clone(),
-        injected_refs: vec![], // TODO: track injected context
+        injected_refs: vec![],
     });
 
     let response = event_bus::dispatch(event)?;
@@ -787,7 +790,7 @@ pub fn handle_session_prompt(
     // Check if blocked
     if response.is_blocking() {
         return Err(AikiError::Other(anyhow::anyhow!(
-            "prompt.submitted validation blocked prompt"
+            "turn.started validation blocked prompt"
         )));
     }
 
@@ -835,7 +838,7 @@ pub fn handle_session_prompt(
     }
 
     // Note: Request tracking is now done in the caller (before this function is called)
-    // to ensure response.received fires even if prompt.submitted processing fails (graceful degradation)
+    // to ensure turn.completed fires even if turn.started processing fails (graceful degradation)
 
     // Forward modified message to agent
     let modified_line = serde_json::to_string(&modified_msg).map_err(|e| {
@@ -861,7 +864,7 @@ pub fn handle_session_prompt(
 
     debug_log(|| {
         format!(
-            "[acp] Fired prompt.submitted event for session: {}, modified: {}",
+            "[acp] Fired turn.started event for session: {}, modified: {}",
             sid,
             final_prompt != original_text
         )
@@ -891,12 +894,13 @@ pub fn handle_session_end(
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
-    // Fire response.received event with accumulated response text
+    // Fire turn.completed event with accumulated response text
     let session = create_session(*agent_type, sid.to_string(), None::<&str>);
-    let event = AikiEvent::ResponseReceived(AikiResponseReceivedPayload {
+    let event = AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: response_text.to_string(),
         modified_files: Vec::new(), // Files tracked separately via change.done events
     });
@@ -936,7 +940,7 @@ pub fn handle_session_end(
 
             debug_log(|| {
                 format!(
-                    "[acp] response.received autoreply #{} for session {}: {} chars",
+                    "[acp] turn.completed autoreply #{} for session {}: {} chars",
                     new_count,
                     sid,
                     autoreply_text.len()
@@ -951,7 +955,7 @@ pub fn handle_session_end(
 
             // ✅ FIX for Issue #2: Insert into HashMap BEFORE sending to channel
             // This prevents a race condition where the agent responds before we've
-            // registered the request ID, causing the response.received event to be lost.
+            // registered the request ID, causing the turn.completed event to be lost.
             // The correct order is: prepare state first, then trigger the action.
             prompt_requests.insert(
                 autoreply_msg.normalized_request_id().clone(),
@@ -983,7 +987,7 @@ pub fn handle_session_end(
     } else {
         debug_log(|| {
             format!(
-                "[acp] Fired response.received event for session: {}, no autoreply",
+                "[acp] Fired turn.completed event for session: {}, no autoreply",
                 sid
             )
         });

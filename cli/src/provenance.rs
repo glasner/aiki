@@ -61,6 +61,15 @@ pub struct ProvenanceRecord {
     pub session_id: String,
     /// Tool name used (e.g., "Edit" or "Write")
     pub tool_name: String,
+    /// Sequential turn number within session (0 if not tracked)
+    #[serde(default)]
+    pub turn: u32,
+    /// Deterministic turn identifier (empty if not tracked)
+    #[serde(default)]
+    pub turn_id: String,
+    /// Source of the current turn (user or autoreply)
+    #[serde(default)]
+    pub turn_source: String,
     /// Optional human coauthor (for overlapping user edits)
     pub coauthor: Option<String>,
     /// Task IDs that were in-progress when this change was made
@@ -75,9 +84,16 @@ impl ProvenanceRecord {
     /// This constructor extracts all necessary fields from the unified change event
     /// and creates a provenance record. Works with Write, Delete, and Move operations.
     ///
+    /// Turn info (turn, turn_id, turn_source) is taken directly from the event payload
+    /// rather than querying TurnState. If these fields are not set in the payload
+    /// (e.g., for shell commands without turn context), they default to 0/"".
+    ///
     /// Note: The `tasks` field is empty by default. Use `with_tasks()` to add
     /// task IDs that were in-progress when the change was made.
     pub fn from_change_completed_event(event: &crate::events::AikiChangeCompletedPayload) -> Self {
+        // Use turn info from payload (populated by the turn context if available)
+        // This avoids the JJ query overhead of loading TurnState for each change event
+
         Self {
             agent: AgentInfo {
                 agent_type: event.session.agent_type(),
@@ -91,6 +107,9 @@ impl ProvenanceRecord {
             agent_version: event.session.agent_version().map(|s| s.to_string()),
             session_id: event.session.uuid().to_string(),
             tool_name: event.tool_name.clone(),
+            turn: event.turn.number,
+            turn_id: event.turn.id.clone(),
+            turn_source: event.turn.source.clone(),
             coauthor: None,
             tasks: Vec::new(),
         }
@@ -140,6 +159,9 @@ impl ProvenanceRecord {
     ///     agent_version: None,
     ///     session_id: "test-session".to_string(),
     ///     tool_name: "Edit".to_string(),
+    ///     turn: 0,
+    ///     turn_id: String::new(),
+    ///     turn_source: String::new(),
     ///     coauthor: None,
     ///     tasks: Vec::new(),
     /// };
@@ -194,6 +216,13 @@ impl ProvenanceRecord {
             format!("confidence={}", confidence),
             format!("method={}", method),
         ]);
+
+        // Add turn tracking metadata (only if turn has been started)
+        if self.turn > 0 {
+            lines.push(format!("turn={}", self.turn));
+            lines.push(format!("turn_id={}", self.turn_id));
+            lines.push(format!("turn_source={}", self.turn_source));
+        }
 
         if let Some(ref coauthor) = self.coauthor {
             lines.push(format!("coauthor={}", coauthor));
@@ -293,6 +322,14 @@ impl ProvenanceRecord {
         let agent_version = metadata.get("agent_version").cloned();
         let coauthor = metadata.get("coauthor").cloned();
 
+        // Parse turn tracking fields (optional, default to 0/"")
+        let turn = metadata
+            .get("turn")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        let turn_id = metadata.get("turn_id").cloned().unwrap_or_default();
+        let turn_source = metadata.get("turn_source").cloned().unwrap_or_default();
+
         Ok(Some(ProvenanceRecord {
             agent: AgentInfo {
                 agent_type,
@@ -306,6 +343,9 @@ impl ProvenanceRecord {
             agent_version,
             session_id,
             tool_name,
+            turn,
+            turn_id,
+            turn_source,
             coauthor,
             tasks,
         }))
@@ -331,6 +371,9 @@ mod tests {
             agent_version: None,
             session_id: "test-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -364,6 +407,9 @@ mod tests {
             agent_version: None,
             session_id: "session-with-dashes_underscores.dots".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -392,6 +438,9 @@ mod tests {
             agent_version: None,
             session_id: long_session_id.clone(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -422,6 +471,9 @@ mod tests {
                 agent_version: None,
                 session_id: "test-session".to_string(),
                 tool_name: tool_name.to_string(),
+                turn: 0,
+                turn_id: String::new(),
+                turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
             };
@@ -453,6 +505,9 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                turn: 0,
+                turn_id: String::new(),
+                turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
             };
@@ -486,6 +541,9 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                turn: 0,
+                turn_id: String::new(),
+                turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
             };
@@ -517,6 +575,9 @@ mod tests {
                 agent_version: None,
                 session_id: "test".to_string(),
                 tool_name: "Edit".to_string(),
+                turn: 0,
+                turn_id: String::new(),
+                turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
             };
@@ -542,6 +603,9 @@ mod tests {
             agent_version: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -573,6 +637,9 @@ mod tests {
             agent_version: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -606,6 +673,9 @@ mod tests {
             agent_version: None,
             session_id: "".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -634,6 +704,9 @@ mod tests {
             agent_version: None,
             session_id: "roundtrip-test".to_string(),
             tool_name: "Write".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -721,6 +794,9 @@ mod tests {
             agent_version: None,
             session_id: "round-trip".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -782,6 +858,9 @@ mod tests {
             agent_version: None,
             session_id: "cursor-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -824,6 +903,9 @@ mod tests {
             agent_version: None,
             session_id: "cursor-roundtrip".to_string(),
             tool_name: "Write".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -853,6 +935,9 @@ mod tests {
             agent_version: None,
             session_id: "codex-session-123".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -895,6 +980,9 @@ mod tests {
             agent_version: None,
             session_id: "codex-roundtrip".to_string(),
             tool_name: "Write".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -928,6 +1016,9 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: vec!["abc123".to_string()],
         };
@@ -951,6 +1042,9 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: vec!["task1".to_string(), "task2".to_string(), "task3".to_string()],
         };
@@ -983,6 +1077,9 @@ mod tests {
             agent_version: None,
             session_id: "test-session".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };
@@ -1059,6 +1156,9 @@ mod tests {
             agent_version: None,
             session_id: "task-roundtrip".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: vec!["task-alpha".to_string(), "task-beta".to_string()],
         };
@@ -1090,6 +1190,9 @@ mod tests {
             agent_version: None,
             session_id: "test".to_string(),
             tool_name: "Edit".to_string(),
+            turn: 0,
+            turn_id: String::new(),
+            turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
         };

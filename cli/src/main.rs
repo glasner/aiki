@@ -9,10 +9,12 @@ mod error;
 mod event_bus;
 mod events;
 mod flows;
+mod global;
 mod history;
 mod jj;
 mod provenance;
 mod repo;
+mod repo_id;
 mod session;
 mod signing;
 mod tasks;
@@ -102,6 +104,9 @@ enum Commands {
         #[command(subcommand)]
         command: Option<commands::task::TaskCommands>,
     },
+    /// OTel receiver for Codex (socket-activated, reads HTTP from stdin)
+    #[command(name = "otel-receive", hide = true)]
+    OtelReceive,
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
@@ -124,12 +129,15 @@ enum HooksCommands {
     /// Handle vendor event (called by all hooks)
     #[command(hide = true)]
     Handle {
-        /// Agent type (e.g., claude-code, cursor)
+        /// Agent type (e.g., claude-code, cursor, codex)
         #[arg(long)]
         agent: String,
         /// Vendor event name (e.g., SessionStart, PostToolUse, beforeSubmitPrompt, afterFileEdit)
         #[arg(long)]
         event: String,
+        /// JSON payload (used by Codex notify, passed as trailing CLI argument)
+        #[arg(trailing_var_arg = true)]
+        payload: Vec<String>,
     },
 }
 
@@ -148,7 +156,10 @@ fn run() -> Result<()> {
         Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Hooks { command } => match command {
             HooksCommands::Install => commands::hooks::run_install(),
-            HooksCommands::Handle { agent, event } => commands::hooks::run_handle(agent, event),
+            HooksCommands::Handle { agent, event, payload } => {
+                let payload_str = if payload.is_empty() { None } else { Some(payload.join(" ")) };
+                commands::hooks::run_handle(agent, event, payload_str)
+            }
         },
         Commands::Blame {
             file,
@@ -164,6 +175,7 @@ fn run() -> Result<()> {
         } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Task { command } => commands::task::run(command),
+        Commands::OtelReceive => commands::otel_receive::run(),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },

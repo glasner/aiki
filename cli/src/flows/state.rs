@@ -33,8 +33,8 @@ pub struct AikiState {
 
     /// Context assembler for events that build messages
     /// - session.started: accumulates context for session initialization
-    /// - prompt.submitted: accumulates prompt modifications and context
-    /// - response.received: accumulates autoreply content
+    /// - turn.started: accumulates prompt modifications and context
+    /// - turn.completed: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
 
     /// Failure messages emitted by the flow
@@ -52,15 +52,15 @@ impl AikiState {
                 // session.started: build additional context from scratch
                 Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
             }
-            crate::events::AikiEvent::PromptSubmitted(e) => {
-                // prompt.submitted: start with original prompt
+            crate::events::AikiEvent::TurnStarted(e) => {
+                // turn.started: start with original prompt
                 Some(crate::flows::context::ContextAssembler::new(
                     Some(e.prompt.clone()),
                     "\n\n",
                 ))
             }
-            crate::events::AikiEvent::ResponseReceived(_) => {
-                // response.received: build autoreply from scratch
+            crate::events::AikiEvent::TurnCompleted(_) => {
+                // turn.completed: build autoreply from scratch
                 Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
             }
             _ => None,
@@ -123,19 +123,19 @@ impl AikiState {
     }
 
     /// Get mutable reference to the context assembler
-    /// Only available for session.started, prompt.submitted, and response.received events
+    /// Only available for session.started, turn.started, and turn.completed events
     pub fn get_context_assembler_mut(
         &mut self,
     ) -> crate::error::Result<&mut crate::flows::context::ContextAssembler> {
         self.context_assembler.as_mut().ok_or_else(|| {
             crate::error::AikiError::Other(anyhow::anyhow!(
-                "Context assembler not available (not a session.started, prompt.submitted, or response.received event)"
+                "Context assembler not available (not a session.started, turn.started, or turn.completed event)"
             ))
         })
     }
 
     /// Build the final context from accumulated chunks
-    /// Works for session.started, prompt.submitted (builds prompt), and response.received (builds autoreply)
+    /// Works for session.started, turn.started (builds prompt), and turn.completed (builds autoreply)
     /// Returns None if:
     /// - This event doesn't have a context assembler, OR
     /// - The assembler is empty (no Context actions were executed)
@@ -232,6 +232,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
             success: true,
+            turn: crate::events::Turn::unknown(),
             operation: ChangeOperation::Write(WriteOperation {
                 file_paths: vec!["/test/file.rs".to_string()],
                 edit_details: vec![],

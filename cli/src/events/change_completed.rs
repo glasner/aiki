@@ -330,6 +330,9 @@ pub struct AikiChangeCompletedPayload {
     pub tool_name: String,
     /// Whether the operation succeeded
     pub success: bool,
+    /// Turn metadata (number, id, source) - defaults if not tracked
+    #[serde(default)]
+    pub turn: super::Turn,
     /// The specific operation that occurred (contains operation-specific fields)
     #[serde(flatten)]
     pub operation: ChangeOperation,

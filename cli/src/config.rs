@@ -115,6 +115,9 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         settings["hooks"] = json!({});
     }
 
+    // Tool matcher for Pre/PostToolUse hooks (covers all file, shell, web, and MCP tools)
+    let tool_matcher = "Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|LS|Bash|WebFetch|WebSearch|mcp__.*";
+
     // SessionStart hook for auto-initialization
     settings["hooks"]["SessionStart"] = json!([{
         "matcher": "startup",
@@ -125,12 +128,52 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         }]
     }]);
 
+    // UserPromptSubmit hook for turn.started
+    settings["hooks"]["UserPromptSubmit"] = json!([{
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hooks handle --agent claude-code --event UserPromptSubmit", aiki_path),
+            "timeout": 5
+        }]
+    }]);
+
+    // PreToolUse hook for permission tracking
+    settings["hooks"]["PreToolUse"] = json!([{
+        "matcher": tool_matcher,
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hooks handle --agent claude-code --event PreToolUse", aiki_path),
+            "timeout": 5
+        }]
+    }]);
+
     // PostToolUse hook for change tracking
     settings["hooks"]["PostToolUse"] = json!([{
-        "matcher": "Edit|Write",
+        "matcher": tool_matcher,
         "hooks": [{
             "type": "command",
             "command": format!("{} hooks handle --agent claude-code --event PostToolUse", aiki_path),
+            "timeout": 5
+        }]
+    }]);
+
+    // Stop hook for turn.completed
+    settings["hooks"]["Stop"] = json!([{
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hooks handle --agent claude-code --event Stop", aiki_path),
+            "timeout": 5
+        }]
+    }]);
+
+    // SessionEnd hook for session.ended
+    settings["hooks"]["SessionEnd"] = json!([{
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hooks handle --agent claude-code --event SessionEnd", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -145,7 +188,11 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         settings_path.display()
     );
     println!("  - SessionStart: Auto-initialize repositories");
+    println!("  - UserPromptSubmit: Track turn start");
+    println!("  - PreToolUse: Track tool permissions");
     println!("  - PostToolUse: Track AI-assisted changes");
+    println!("  - Stop: Track turn completion");
+    println!("  - SessionEnd: Track session termination");
 
     Ok(())
 }
@@ -202,28 +249,39 @@ pub fn install_cursor_hooks_global() -> Result<()> {
         hooks["hooks"]["beforeSubmitPrompt"] = json!(new_hooks);
     }
 
-    // afterFileEdit hook for change tracking
-    let after_file_edit = hooks["hooks"]["afterFileEdit"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    // Install remaining Cursor hooks (afterFileEdit, stop, shell, MCP, sessionEnd)
+    let additional_hooks = [
+        ("afterFileEdit", "afterFileEdit"),
+        ("beforeShellExecution", "beforeShellExecution"),
+        ("afterShellExecution", "afterShellExecution"),
+        ("beforeMCPExecution", "beforeMCPExecution"),
+        ("afterMCPExecution", "afterMCPExecution"),
+        ("stop", "stop"),
+        ("sessionEnd", "sessionEnd"),
+    ];
 
-    let aiki_record_hook = json!({
-        "command": format!("{} hooks handle --agent cursor --event afterFileEdit", aiki_path)
-    });
+    for (hook_name, event_name) in &additional_hooks {
+        let existing = hooks["hooks"][*hook_name]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
 
-    // Check if already installed
-    let record_already_installed = after_file_edit.iter().any(|hook| {
-        hook.get("command")
-            .and_then(|c| c.as_str())
-            .map(|c| c.contains("aiki hooks handle"))
-            .unwrap_or(false)
-    });
+        let aiki_hook = json!({
+            "command": format!("{} hooks handle --agent cursor --event {}", aiki_path, event_name)
+        });
 
-    if !record_already_installed {
-        let mut new_hooks = after_file_edit;
-        new_hooks.push(aiki_record_hook);
-        hooks["hooks"]["afterFileEdit"] = json!(new_hooks);
+        let already_installed = existing.iter().any(|hook| {
+            hook.get("command")
+                .and_then(|c| c.as_str())
+                .map(|c| c.contains("aiki hooks handle"))
+                .unwrap_or(false)
+        });
+
+        if !already_installed {
+            let mut new_hooks = existing;
+            new_hooks.push(aiki_hook);
+            hooks["hooks"][*hook_name] = json!(new_hooks);
+        }
     }
 
     // Write updated hooks
@@ -231,10 +289,465 @@ pub fn install_cursor_hooks_global() -> Result<()> {
     fs::write(&hooks_path, content).context("Failed to write ~/.cursor/hooks.json")?;
 
     println!("✓ Installed Cursor hooks at {}", hooks_path.display());
-    println!("  - beforeSubmitPrompt: Auto-initialize repositories");
+    println!("  - beforeSubmitPrompt: Track turn start");
     println!("  - afterFileEdit: Track AI-assisted changes");
+    println!("  - beforeShellExecution: Track shell permissions");
+    println!("  - afterShellExecution: Track shell completions");
+    println!("  - beforeMCPExecution: Track MCP permissions");
+    println!("  - afterMCPExecution: Track MCP completions");
+    println!("  - stop: Track turn completion");
+    println!("  - sessionEnd: Track session termination");
 
     Ok(())
+}
+
+/// Install global Codex hooks in ~/.codex/config.toml
+///
+/// Adds both OTel receiver config and notify command:
+/// - [otel] section with exporter.otlp-http (struct variant) and log_user_prompt
+/// - notify array with aiki hooks handle command
+///
+/// The exporter field is a tagged enum in codex's config:
+/// - Unit variants: "none", "statsig"
+/// - Struct variants: { "otlp-http": { endpoint, protocol } }
+///
+/// If [otel] already exists with a different exporter endpoint, warns but doesn't overwrite.
+/// log_user_prompt is always safe to set/update regardless of existing config.
+pub fn install_codex_hooks_global() -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let config_path = home_dir.join(".codex/config.toml");
+    let aiki_path = get_aiki_binary_path();
+
+    // Create ~/.codex if it doesn't exist
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create ~/.codex directory")?;
+    }
+
+    // Read existing config or create new
+    let mut config: toml::Value = if config_path.exists() {
+        let content =
+            fs::read_to_string(&config_path).context("Failed to read ~/.codex/config.toml")?;
+        toml::from_str(&content).context("Failed to parse ~/.codex/config.toml")?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let config_table = config
+        .as_table_mut()
+        .context("Config root is not a table")?;
+
+    // Configure [otel] section
+    // Codex's OtelExporterKind is a tagged enum:
+    //   "none" | "statsig" (unit variants)
+    //   { "otlp-http": { endpoint, protocol, ... } } (struct variant)
+    // So we must write: [otel.exporter.otlp-http] with endpoint/protocol inside
+    let aiki_endpoint = "http://127.0.0.1:19876/v1/logs";
+
+    let existing_otel = config_table.get("otel").and_then(|v| v.as_table()).cloned();
+
+    if let Some(ref otel) = existing_otel {
+        // [otel] already exists - check if exporter is compatible
+        let existing_endpoint = get_otlp_http_endpoint(otel);
+
+        if let Some(ref ep) = existing_endpoint {
+            if ep != aiki_endpoint {
+                // Different endpoint: warn and only update log_user_prompt + disable traces
+                eprintln!(
+                    "⚠️  [otel.exporter.otlp-http] already has endpoint = \"{}\"\n   Aiki's OTel receiver listens on {}",
+                    ep, aiki_endpoint
+                );
+                eprintln!("   To use aiki, update your endpoint to: {}", aiki_endpoint);
+
+                if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
+                    otel.insert(
+                        "trace_exporter".to_string(),
+                        toml::Value::String("none".to_string()),
+                    );
+                    otel.insert(
+                        "log_user_prompt".to_string(),
+                        toml::Value::Boolean(true),
+                    );
+                }
+            } else {
+                // Same endpoint: ensure trace_exporter is disabled and log_user_prompt is set
+                if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
+                    otel.insert(
+                        "trace_exporter".to_string(),
+                        toml::Value::String("none".to_string()),
+                    );
+                    otel.insert(
+                        "log_user_prompt".to_string(),
+                        toml::Value::Boolean(true),
+                    );
+                }
+            }
+        } else if otel.get("exporter").and_then(|v| v.as_str()).is_some() {
+            // Has exporter as a unit variant (e.g., "none" or "statsig") - replace with our struct
+            if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
+                otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+                otel.insert(
+                    "trace_exporter".to_string(),
+                    toml::Value::String("none".to_string()),
+                );
+                otel.insert(
+                    "log_user_prompt".to_string(),
+                    toml::Value::Boolean(true),
+                );
+                // Remove legacy flat fields if present from old aiki versions
+                otel.remove("endpoint");
+                otel.remove("protocol");
+            }
+        } else {
+            // No exporter configured: add our struct variant
+            if let Some(otel) = config_table.get_mut("otel").and_then(|v| v.as_table_mut()) {
+                otel.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+                otel.insert(
+                    "trace_exporter".to_string(),
+                    toml::Value::String("none".to_string()),
+                );
+                otel.insert(
+                    "log_user_prompt".to_string(),
+                    toml::Value::Boolean(true),
+                );
+                // Remove legacy flat fields if present from old aiki versions
+                otel.remove("endpoint");
+                otel.remove("protocol");
+            }
+        }
+    } else {
+        // No [otel] section: create with aiki's full defaults
+        let mut otel_table = toml::map::Map::new();
+        // Enable log exporter (semantic events like codex.user_prompt, codex.tool_result)
+        // exporter is a tagged enum: { otlp-http = { endpoint, protocol } }
+        otel_table.insert("exporter".to_string(), build_otlp_http_exporter(aiki_endpoint));
+        // Disable trace exporter (we only want logs, not distributed tracing spans)
+        otel_table.insert(
+            "trace_exporter".to_string(),
+            toml::Value::String("none".to_string()),
+        );
+        otel_table.insert(
+            "log_user_prompt".to_string(),
+            toml::Value::Boolean(true),
+        );
+        config_table.insert("otel".to_string(), toml::Value::Table(otel_table));
+    }
+
+    // Configure notify command
+    let notify_cmd = vec![
+        toml::Value::String(aiki_path),
+        toml::Value::String("hooks".to_string()),
+        toml::Value::String("handle".to_string()),
+        toml::Value::String("--agent".to_string()),
+        toml::Value::String("codex".to_string()),
+        toml::Value::String("--event".to_string()),
+        toml::Value::String("agent-turn-complete".to_string()),
+    ];
+    config_table.insert("notify".to_string(), toml::Value::Array(notify_cmd));
+
+    // Write updated config
+    let content =
+        toml::to_string_pretty(&config).context("Failed to serialize config.toml")?;
+    fs::write(&config_path, content).context("Failed to write ~/.codex/config.toml")?;
+
+    println!("✓ Installed Codex hooks at {}", config_path.display());
+    println!("  - [otel.exporter]: Log events → {}", aiki_endpoint);
+    println!("  - [otel.trace_exporter]: Disabled (no trace spans)");
+    println!("  - notify: Turn completion tracking");
+    println!("  - log_user_prompt: true (prompt content capture enabled)");
+
+    Ok(())
+}
+
+/// Build the exporter struct variant for otlp-http
+///
+/// Produces a TOML table representing:
+/// ```toml
+/// [otel.exporter.otlp-http]
+/// endpoint = "..."
+/// protocol = "binary"
+/// ```
+fn build_otlp_http_exporter(endpoint: &str) -> toml::Value {
+    let mut otlp_http = toml::map::Map::new();
+    otlp_http.insert(
+        "endpoint".to_string(),
+        toml::Value::String(endpoint.to_string()),
+    );
+    otlp_http.insert(
+        "protocol".to_string(),
+        toml::Value::String("binary".to_string()),
+    );
+
+    let mut exporter = toml::map::Map::new();
+    exporter.insert("otlp-http".to_string(), toml::Value::Table(otlp_http));
+    toml::Value::Table(exporter)
+}
+
+/// Extract the endpoint from an existing [otel.exporter.otlp-http] struct variant
+fn get_otlp_http_endpoint(otel: &toml::map::Map<String, toml::Value>) -> Option<String> {
+    otel.get("exporter")
+        .and_then(|v| v.as_table())
+        .and_then(|exp| exp.get("otlp-http"))
+        .and_then(|v| v.as_table())
+        .and_then(|http| http.get("endpoint"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Install the OTel receiver as a socket-activated service.
+///
+/// On macOS: installs a launchd plist to ~/Library/LaunchAgents/
+/// On Linux: installs systemd user units to ~/.config/systemd/user/
+/// On other platforms: returns Ok(()) with a warning printed.
+///
+/// The binary path in the template is substituted with the actual aiki binary location.
+pub fn install_otel_receiver() -> Result<()> {
+    let aiki_path = get_aiki_binary_path();
+
+    match std::env::consts::OS {
+        "macos" => install_otel_receiver_macos(&aiki_path),
+        "linux" => install_otel_receiver_linux(&aiki_path),
+        other => {
+            eprintln!(
+                "⚠ OTel receiver socket activation not supported on {} yet",
+                other
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Check if the OTel receiver is already installed (unit files exist).
+pub fn is_otel_receiver_installed() -> bool {
+    let home_dir = match dirs::home_dir() {
+        Some(h) => h,
+        None => return false,
+    };
+
+    match std::env::consts::OS {
+        "macos" => home_dir
+            .join("Library/LaunchAgents/com.aiki.otel-receive.plist")
+            .exists(),
+        "linux" => home_dir
+            .join(".config/systemd/user/aiki-otel-receive.socket")
+            .exists(),
+        _ => false,
+    }
+}
+
+/// Restart the OTel receiver. If not installed, falls back to install.
+pub fn restart_otel_receiver() -> Result<()> {
+    if !is_otel_receiver_installed() {
+        return install_otel_receiver();
+    }
+
+    match std::env::consts::OS {
+        "macos" => restart_otel_receiver_macos(),
+        "linux" => restart_otel_receiver_linux(),
+        other => {
+            eprintln!(
+                "⚠ OTel receiver restart not supported on {} yet",
+                other
+            );
+            Ok(())
+        }
+    }
+}
+
+fn restart_otel_receiver_macos() -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let plist_path = home_dir.join("Library/LaunchAgents/com.aiki.otel-receive.plist");
+
+    // Unload (stop)
+    let _ = Command::new("launchctl")
+        .args(["unload", "-w"])
+        .arg(&plist_path)
+        .output();
+
+    // Reload (start)
+    let output = Command::new("launchctl")
+        .args(["load", "-w"])
+        .arg(&plist_path)
+        .output()
+        .context("Failed to run launchctl load")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("launchctl load failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+fn restart_otel_receiver_linux() -> Result<()> {
+    let output = Command::new("systemctl")
+        .args(["--user", "restart", "aiki-otel-receive.socket"])
+        .output()
+        .context("Failed to run systemctl --user restart")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("systemctl restart failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+fn install_otel_receiver_macos(aiki_path: &str) -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let agents_dir = home_dir.join("Library/LaunchAgents");
+    let plist_path = agents_dir.join("com.aiki.otel-receive.plist");
+
+    fs::create_dir_all(&agents_dir).context("Failed to create ~/Library/LaunchAgents")?;
+
+    // Unload existing if present (ignore errors - may not be loaded)
+    if plist_path.exists() {
+        let _ = Command::new("launchctl")
+            .args(["unload", "-w"])
+            .arg(&plist_path)
+            .output();
+    }
+
+    let plist_content = generate_launchd_plist(aiki_path);
+    fs::write(&plist_path, &plist_content).context("Failed to write launchd plist")?;
+
+    // Load the agent
+    let output = Command::new("launchctl")
+        .args(["load", "-w"])
+        .arg(&plist_path)
+        .output()
+        .context("Failed to run launchctl load")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("launchctl load failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+fn install_otel_receiver_linux(aiki_path: &str) -> Result<()> {
+    let home_dir = dirs::home_dir().context("Could not find home directory")?;
+    let user_units_dir = home_dir.join(".config/systemd/user");
+
+    fs::create_dir_all(&user_units_dir).context("Failed to create ~/.config/systemd/user")?;
+
+    let socket_path = user_units_dir.join("aiki-otel-receive.socket");
+    let service_path = user_units_dir.join("aiki-otel-receive@.service");
+
+    let socket_content = generate_systemd_socket();
+    let service_content = generate_systemd_service(aiki_path);
+
+    fs::write(&socket_path, &socket_content).context("Failed to write systemd socket unit")?;
+    fs::write(&service_path, &service_content).context("Failed to write systemd service unit")?;
+
+    // Reload and enable
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output();
+
+    let output = Command::new("systemctl")
+        .args(["--user", "enable", "--now", "aiki-otel-receive.socket"])
+        .output()
+        .context("Failed to run systemctl --user enable")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("systemctl enable failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+fn generate_launchd_plist(aiki_path: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aiki.otel-receive</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>otel-receive</string>
+    </array>
+
+    <!-- Socket activation: pass incoming connection as stdin -->
+    <key>Sockets</key>
+    <dict>
+        <key>Listeners</key>
+        <dict>
+            <key>SockServiceName</key>
+            <string>19876</string>
+            <key>SockNodeName</key>
+            <string>127.0.0.1</string>
+            <key>SockType</key>
+            <string>stream</string>
+        </dict>
+    </dict>
+
+    <!-- inetd-style: stdin/stdout are the socket -->
+    <key>inetdCompatibility</key>
+    <dict>
+        <key>Wait</key>
+        <false/>
+    </dict>
+
+    <!-- Enable debug logging for diagnostics -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AIKI_DEBUG</key>
+        <string>1</string>
+    </dict>
+
+    <!-- Logging -->
+    <key>StandardErrorPath</key>
+    <string>/tmp/aiki-otel-receive.err</string>
+
+    <!-- Process spawning settings -->
+    <key>SessionCreate</key>
+    <false/>
+
+    <!-- Don't keep running - only launch on socket activation -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+"#,
+        aiki_path
+    )
+}
+
+fn generate_systemd_socket() -> String {
+    "[Unit]\n\
+     Description=Aiki OTel Receiver Socket\n\
+     \n\
+     [Socket]\n\
+     ListenStream=127.0.0.1:19876\n\
+     Accept=yes\n\
+     \n\
+     [Install]\n\
+     WantedBy=sockets.target\n"
+        .to_string()
+}
+
+fn generate_systemd_service(aiki_path: &str) -> String {
+    format!(
+        "[Unit]\n\
+         Description=Aiki OTel Receiver (per-connection instance)\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={} otel-receive\n\
+         StandardInput=socket\n\
+         StandardOutput=socket\n\
+         StandardError=journal\n",
+        aiki_path
+    )
 }
 
 /// Read JJ repository config from .jj/repo/config.toml

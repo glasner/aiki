@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use std::path::Path;
 
 use super::storage::write_event;
-use super::types::ConversationEvent;
+use super::types::{ConversationEvent, TurnSource};
 use crate::error::Result;
 use crate::session::AikiSession;
 
@@ -46,58 +46,83 @@ fn truncate_file_list(files: Vec<String>) -> Vec<String> {
 }
 
 /// Record a session start event
-pub fn record_session_start(cwd: &Path, session: &AikiSession, timestamp: DateTime<Utc>) -> Result<()> {
+pub fn record_session_start(
+    jj_cwd: &Path,
+    session: &AikiSession,
+    timestamp: DateTime<Utc>,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
+) -> Result<()> {
     let event = ConversationEvent::SessionStart {
         session_id: session.uuid().to_string(),
         agent_type: session.agent_type(),
         timestamp,
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
     };
 
-    write_event(cwd, &event)?;
+    write_event(jj_cwd, &event)?;
     Ok(())
 }
 
 /// Record a session end event
 pub fn record_session_end(
-    cwd: &Path,
+    jj_cwd: &Path,
     session: &AikiSession,
     timestamp: DateTime<Utc>,
+    reason: &str,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
 ) -> Result<()> {
     let event = ConversationEvent::SessionEnd {
         session_id: session.uuid().to_string(),
         timestamp,
+        reason: reason.to_string(),
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
     };
 
-    write_event(cwd, &event)?;
+    write_event(jj_cwd, &event)?;
     Ok(())
 }
 
 /// Record a prompt event
 pub fn record_prompt(
-    cwd: &Path,
+    jj_cwd: &Path,
     session: &AikiSession,
     content: &str,
     injected_refs: Vec<String>,
+    turn: u32,
+    source: TurnSource,
     timestamp: DateTime<Utc>,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
 ) -> Result<()> {
     let event = ConversationEvent::Prompt {
         session_id: session.uuid().to_string(),
         agent_type: session.agent_type(),
+        turn,
+        source,
         content: truncate_with_marker(content, MAX_PROMPT_SIZE),
         injected_refs: truncate_file_list(injected_refs),
         timestamp,
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
     };
 
-    write_event(cwd, &event)
+    write_event(jj_cwd, &event)
 }
 
 /// Record a response event
 pub fn record_response(
-    cwd: &Path,
+    jj_cwd: &Path,
     session: &AikiSession,
     response_text: &str,
     files_written: Vec<String>,
+    turn: u32,
     timestamp: DateTime<Utc>,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
 ) -> Result<()> {
     // Create summary (first paragraph, truncated)
     let summary = response_text
@@ -108,13 +133,39 @@ pub fn record_response(
     let event = ConversationEvent::Response {
         session_id: session.uuid().to_string(),
         agent_type: session.agent_type(),
+        turn,
         files_written: truncate_file_list(files_written),
         summary,
         timestamp,
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
     };
 
-    write_event(cwd, &event)?;
+    write_event(jj_cwd, &event)?;
     Ok(())
+}
+
+/// Record an autoreply event (pending injection into next turn)
+pub fn record_autoreply(
+    jj_cwd: &Path,
+    session: &AikiSession,
+    content: &str,
+    turn: u32,
+    timestamp: DateTime<Utc>,
+    repo_id: Option<&str>,
+    event_cwd: Option<&str>,
+) -> Result<()> {
+    let event = ConversationEvent::Autoreply {
+        session_id: session.uuid().to_string(),
+        agent_type: session.agent_type(),
+        turn,
+        content: truncate_with_marker(content, MAX_PROMPT_SIZE), // Same limit as prompts
+        timestamp,
+        repo_id: repo_id.map(String::from),
+        cwd: event_cwd.map(String::from),
+    };
+
+    write_event(jj_cwd, &event)
 }
 
 #[cfg(test)]

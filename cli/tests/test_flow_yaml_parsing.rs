@@ -38,7 +38,7 @@ fn test_parse_switch_statement() {
 name: test-flow
 version: "1"
 
-prompt.submitted:
+turn.started:
   - switch: "$agent_type"
     cases:
       claude:
@@ -51,9 +51,9 @@ prompt.submitted:
 
     let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(flow.prompt_submitted.len(), 1);
+    assert_eq!(flow.turn_started.len(), 1);
 
-    match &flow.prompt_submitted[0] {
+    match &flow.turn_started[0] {
         FlowStatement::Switch(switch_stmt) => {
             assert_eq!(switch_stmt.expression, "$agent_type");
             assert_eq!(switch_stmt.cases.len(), 2);

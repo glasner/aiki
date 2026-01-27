@@ -29,8 +29,8 @@
 //!
 //! - **Variables are isolated**: Each flow gets a fresh variable context
 //! - **Event state is shared**: All flows modify the same event object
-//!   - Example: PromptSubmitted's ContextAssembler accumulates chunks from all flows
-//!   - Example: ResponseReceived's autoreply builder accumulates from all flows
+//!   - Example: TurnStarted's ContextAssembler accumulates chunks from all flows
+//!   - Example: TurnCompleted's autoreply builder accumulates from all flows
 
 use std::path::{Path, PathBuf};
 
@@ -49,8 +49,8 @@ pub enum EventType {
     SessionStarted,
     SessionResumed,
     SessionEnded,
-    PromptSubmitted,
-    ResponseReceived,
+    TurnStarted,
+    TurnCompleted,
     ReadPermissionAsked,
     ReadCompleted,
     ChangePermissionAsked,
@@ -72,8 +72,8 @@ impl EventType {
             EventType::SessionStarted => &flow.session_started,
             EventType::SessionResumed => &flow.session_resumed,
             EventType::SessionEnded => &flow.session_ended,
-            EventType::PromptSubmitted => &flow.prompt_submitted,
-            EventType::ResponseReceived => &flow.response_received,
+            EventType::TurnStarted => &flow.turn_started,
+            EventType::TurnCompleted => &flow.turn_completed,
             EventType::ReadPermissionAsked => &flow.read_permission_asked,
             EventType::ReadCompleted => &flow.read_completed,
             EventType::ChangePermissionAsked => &flow.change_permission_asked,
@@ -496,6 +496,7 @@ version: "1"
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
             success: true,
+            turn: crate::events::Turn::unknown(),
             operation: ChangeOperation::Write(WriteOperation {
                 file_paths: vec!["/test/file.rs".to_string()],
                 edit_details: vec![],
@@ -689,7 +690,7 @@ commit.message_started:
             EventType::CommitMessageStarted.get_statements(&flow).len(),
             1
         );
-        assert!(EventType::PromptSubmitted.get_statements(&flow).is_empty());
+        assert!(EventType::TurnStarted.get_statements(&flow).is_empty());
     }
 
     #[test]

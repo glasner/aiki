@@ -1,0 +1,161 @@
+use super::prelude::*;
+use super::Turn;
+use crate::global;
+use crate::history;
+use crate::history::TurnSource;
+use crate::repo_id;
+use crate::session::turn_state::generate_turn_id;
+
+/// turn.completed event payload
+///
+/// Fires when a turn ends (agent finishes processing).
+/// Every turn.started has exactly one turn.completed (1:1 correspondence).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AikiTurnCompletedPayload {
+    pub session: AikiSession,
+    pub cwd: PathBuf,
+    pub timestamp: DateTime<Utc>,
+    /// Turn metadata (number, id, source)
+    #[serde(default)]
+    pub turn: Turn,
+    /// The agent's response text for this turn
+    pub response: String,
+    /// Files modified during this turn
+    #[serde(default)]
+    pub modified_files: Vec<PathBuf>,
+}
+
+/// Handle turn.completed event
+///
+/// This event fires when the agent finishes generating its response,
+/// allowing flows to validate output, detect errors, and optionally send
+/// an autoreply to the agent.
+/// Also records the response to conversation history (if not opted out).
+/// Returns autoreply via `response.context` and failures via `response.failures`,
+/// with graceful degradation on errors.
+///
+/// Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
+/// across turns and are only ended explicitly (via session end hooks or TTL cleanup).
+pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<HookResult> {
+    use super::prelude::execute_flow;
+
+    // Query the Prompt event for this session's current turn info
+    // This replaces reading from TurnState, getting turn/source from history instead
+    // Defensive fallback: if history lookup fails (JJ unavailable, branch doesn't exist, etc.),
+    // we use defaults (turn=0, source=User) and continue recording - turn=0 is acceptable.
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let (turn_number, source) =
+        match history::get_current_turn_info(&global::global_aiki_dir(), payload.session.uuid()) {
+            Ok(result) => result,
+            Err(e) => {
+                debug_log(|| {
+                    format!(
+                        "History lookup failed for session {}, using defaults (turn=0): {}",
+                        payload.session.uuid(),
+                        e
+                    )
+                });
+                (0, TurnSource::User)
+            }
+        };
+    payload.turn = Turn::new(
+        turn_number,
+        generate_turn_id(payload.session.uuid(), turn_number),
+        source.to_string(),
+    );
+
+    debug_log(|| {
+        format!(
+            "turn.completed event from {:?}, source: {}, turn: {}, response length: {}",
+            payload.session.agent_type(),
+            payload.turn.source,
+            payload.turn.number,
+            payload.response.len()
+        )
+    });
+
+    // Record response to conversation history (non-blocking on failure)
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let files_written: Vec<String> = payload
+        .modified_files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+
+    let cwd_str = payload.cwd.to_string_lossy().to_string();
+    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    if let Err(e) = history::record_response(
+        &global::global_aiki_dir(),
+        &payload.session,
+        &payload.response,
+        files_written,
+        payload.turn.number,
+        payload.timestamp,
+        repo_id.as_deref(),
+        Some(&cwd_str),
+    ) {
+        debug_log(|| format!("Failed to record response: {}", e));
+    }
+
+    // Save values needed for autoreply recording (payload is moved to state below)
+    let payload_cwd = payload.cwd.clone();
+    let payload_session = payload.session.clone();
+    let payload_turn_number = payload.turn.number;
+
+    // Load core flow for fallback
+    let core_flow = crate::flows::load_core_flow();
+
+    // Build execution state from payload
+    let mut state = AikiState::new(payload);
+
+    // Execute flow via FlowComposer (with fallback to bundled core flow)
+    let _flow_result = match execute_flow(
+        EventType::TurnCompleted,
+        &mut state,
+        &core_flow.turn_completed,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            // Flow execution failed - log warning and skip autoreply
+            eprintln!("\nturn.completed flow failed: {}", e);
+            eprintln!("No autoreply generated.\n");
+            return Ok(HookResult {
+                context: state.build_context(),
+                decision: Decision::Allow,
+                failures: state.take_failures(),
+            });
+        }
+    };
+
+    // Extract failures from state
+    let failures = state.take_failures();
+
+    // Build the autoreply context
+    let context = state.build_context();
+
+    // Record autoreply to history if one was generated
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    if let Some(autoreply_content) = context.as_ref() {
+        // Best-effort - log and continue on failure (matches existing error handling)
+        let autoreply_cwd = payload_cwd.to_string_lossy();
+        let autoreply_repo_id = repo_id::compute_repo_id(&payload_cwd).ok();
+        if let Err(e) = history::record_autoreply(
+            &global::global_aiki_dir(),
+            &payload_session,
+            autoreply_content,
+            payload_turn_number,
+            Utc::now(),
+            autoreply_repo_id.as_deref(),
+            Some(&autoreply_cwd),
+        ) {
+            debug_log(|| format!("Failed to record autoreply: {}", e));
+        }
+    }
+
+    // turn.completed never blocks - always allow
+    Ok(HookResult {
+        context,
+        decision: Decision::Allow,
+        failures,
+    })
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Aiki OTel Receiver Socket
+Documentation=https://github.com/AikiForge/aiki
+
+[Socket]
+ListenStream=127.0.0.1:19876
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
