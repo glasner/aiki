@@ -8,7 +8,7 @@ pub mod agents_template;
 pub mod authors;
 pub mod benchmark;
 pub mod blame;
-pub mod conversation;
+pub mod session;
 pub mod doctor;
 pub mod event;
 pub mod hooks;
