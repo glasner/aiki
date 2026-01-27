@@ -353,7 +353,7 @@ fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
 /// - `~/.aiki/sessions/` for global session files
 /// - `~/.aiki/.jj/` for global conversation history
 fn init_global_directories(quiet: bool) -> Result<()> {
-    use std::process::Command;
+    use crate::jj::jj_cmd;
 
     let global_aiki = global::global_aiki_dir();
     let global_sessions = global::global_sessions_dir();
@@ -372,9 +372,9 @@ fn init_global_directories(quiet: bool) -> Result<()> {
         // Create parent directory first
         fs::create_dir_all(&global_aiki).context("Failed to create global aiki directory")?;
 
-        // Initialize JJ repo (non-colocated)
-        let result = Command::new("jj")
-            .args(["init", "--no-import-rev"])
+        // Initialize JJ repo (non-colocated, git backend)
+        let result = jj_cmd()
+            .args(["git", "init", "--no-colocate"])
             .current_dir(&global_aiki)
             .output()
             .context("Failed to run jj init for global repo")?;

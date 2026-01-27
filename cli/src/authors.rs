@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use crate::jj::jj_cmd;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -118,7 +119,7 @@ impl AuthorsCommand {
 
     /// Get list of files changed in working copy using jj status
     fn get_working_copy_changed_files(&self) -> Result<Vec<PathBuf>> {
-        let output = Command::new("jj")
+        let output = jj_cmd()
             .args(["status", "--no-pager"])
             .current_dir(&self.repo_path)
             .output()

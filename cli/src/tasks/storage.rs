@@ -4,9 +4,9 @@
 //! Each event is a JJ change with metadata in the description.
 
 use crate::error::{AikiError, Result};
+use crate::jj::jj_cmd;
 use chrono::{DateTime, Utc};
 use std::path::Path;
-use std::process::Command;
 
 use super::types::{TaskEvent, TaskOutcome, TaskPriority};
 
@@ -17,9 +17,9 @@ const METADATA_END: &str = "[/aiki-task]";
 /// Ensure the aiki/tasks branch exists
 pub fn ensure_tasks_branch(cwd: &Path) -> Result<()> {
     // Check if branch exists by listing bookmarks
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .current_dir(cwd)
-        .args(["bookmark", "list", "--all"])
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
 
@@ -27,9 +27,9 @@ pub fn ensure_tasks_branch(cwd: &Path) -> Result<()> {
 
     if !bookmarks.contains(TASKS_BRANCH) {
         // Create the branch as an orphan (no parent) starting from root()
-        let result = Command::new("jj")
+        let result = jj_cmd()
             .current_dir(cwd)
-            .args(["bookmark", "create", TASKS_BRANCH, "-r", "root()"])
+            .args(["bookmark", "create", TASKS_BRANCH, "-r", "root()", "--ignore-working-copy"])
             .output()
             .map_err(|e| {
                 AikiError::TaskBranchInitFailed(format!("Failed to create bookmark: {}", e))
@@ -52,9 +52,9 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     let metadata = event_to_metadata_block(event);
 
     // Create a new change as child of aiki/tasks WITHOUT switching working copy
-    let result = Command::new("jj")
+    let result = jj_cmd()
         .current_dir(cwd)
-        .args(["new", TASKS_BRANCH, "--no-edit", "-m", &metadata])
+        .args(["new", TASKS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to create task event: {}", e)))?;
 
@@ -68,7 +68,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 
     // Move the bookmark forward to point at the newly created change
     // Filter to only the task change (has [aiki-task] in description), not the working copy
-    let result = Command::new("jj")
+    let result = jj_cmd()
         .current_dir(cwd)
         .args([
             "bookmark",
@@ -79,6 +79,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
                 "children({}) & description(substring:\"{}\")",
                 TASKS_BRANCH, METADATA_START
             ),
+            "--ignore-working-copy",
         ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to update bookmark: {}", e)))?;
@@ -97,9 +98,9 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 /// Read all task events from the aiki/tasks branch
 pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
     // Check if branch exists first
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .current_dir(cwd)
-        .args(["bookmark", "list", "--all"])
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
 
@@ -112,7 +113,7 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
     // Read all changes on the branch, oldest first
     // Using `root()..aiki/tasks` to get ancestors of bookmark (excluding root)
     // This gives us the linear chain of task events
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .current_dir(cwd)
         .args([
             "log",
@@ -122,6 +123,7 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
             "-T",
             "description ++ \"\\n---EVENT-SEPARATOR---\\n\"",
             "--reversed",
+            "--ignore-working-copy",
         ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read task events: {}", e)))?;

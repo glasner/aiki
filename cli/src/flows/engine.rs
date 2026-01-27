@@ -1,4 +1,5 @@
 use anyhow::Context;
+use crate::jj::jj_cmd;
 use std::process::Command;
 use std::time::Duration;
 
@@ -708,7 +709,7 @@ impl FlowEngine {
                 jj_email,
             )?
         } else {
-            let mut cmd = Command::new("jj");
+            let mut cmd = jj_cmd();
             cmd.args(&args).current_dir(state.cwd());
 
             // Set JJ_USER and JJ_EMAIL if provided

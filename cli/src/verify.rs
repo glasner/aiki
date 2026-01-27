@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
+use crate::jj::jj_cmd;
 use std::path::Path;
-use std::process::Command;
 
 use crate::provenance::ProvenanceRecord;
 
@@ -92,7 +92,7 @@ impl VerificationResult {
 
 /// Run a JJ template query and return the output
 fn run_jj_template(repo_path: &Path, revision: &str, template: &str) -> Result<String> {
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .args(["log", "-r", revision, "-T", template, "--no-graph"])
         .current_dir(repo_path)
         .output()

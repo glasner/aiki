@@ -98,7 +98,7 @@ fn extract_prompt_from_input_messages(
 ///
 /// For Codex, the only event dispatched via notify is `agent-turn-complete`.
 /// The JSON payload is passed as a CLI argument (not stdin).
-/// TTL cleanup is handled by the general cleanup_stale_sessions in session/mod.rs.
+/// Stale session cleanup is handled by prune_dead_pid_sessions in session/mod.rs.
 pub fn handle(event_name: &str, payload_json: Option<&str>) -> Result<()> {
     debug_log(|| format!("Codex hook event: {}", event_name));
 

@@ -1,0 +1,3 @@
+❯ please review @ops/now/global-state.md and then plan out execution using aiki task with subtasks for each discrete piece of testable work. Then implement subtasks by creating a
+  subagent for each sequentially. When the subagent returns it's work review. If there are any issues, create a new subtask for each finding and create a new subagent to fix. Once no
+  issues are found move to the next subtask
