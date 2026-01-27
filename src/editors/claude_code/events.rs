@@ -10,7 +10,7 @@ use crate::events::{
     AikiReadPermissionAskedPayload, AikiSessionEndedPayload, AikiSessionResumedPayload,
     AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
     AikiTurnCompletedPayload, AikiTurnStartedPayload, AikiWebCompletedPayload,
-    AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation, TurnSource,
+    AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation,
     WriteOperation,
 };
 use crate::tools::ToolType;
@@ -213,9 +213,7 @@ fn build_turn_started_event(payload: UserPromptSubmitPayload) -> AikiEvent {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_started
-        turn_id: String::new(), // Set by handle_turn_started
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt: payload.prompt,
         injected_refs: vec![],
     })
@@ -474,6 +472,7 @@ fn build_change_completed_event_write(payload: PostToolUsePayload, tool: ClaudeT
         timestamp: chrono::Utc::now(),
         tool_name: payload.tool_name,
         success: true,
+        turn: crate::events::Turn::unknown(), // Turn info not available in PostToolUse hook
         operation: ChangeOperation::Write(WriteOperation {
             file_paths,
             edit_details,
@@ -515,6 +514,7 @@ fn build_change_completed_event_delete(
         timestamp: chrono::Utc::now(),
         tool_name: payload.tool_name,
         success: true,
+        turn: crate::events::Turn::unknown(), // Turn info not available in PostToolUse hook
         operation: ChangeOperation::Delete(DeleteOperation { file_paths }),
     })
 }
@@ -554,6 +554,7 @@ fn build_change_completed_event_move(
         timestamp: chrono::Utc::now(),
         tool_name: payload.tool_name,
         success: true,
+        turn: crate::events::Turn::unknown(), // Turn info not available in PostToolUse hook
         operation: ChangeOperation::Move(MoveOperation {
             file_paths: destination_paths.clone(),
             source_paths,
@@ -773,9 +774,7 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_completed
-        turn_id: String::new(), // Set by handle_turn_completed
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: String::new(),
         modified_files: vec![],
     })

@@ -28,7 +28,7 @@ use crate::events::result::HookResult;
 use crate::events::{
     AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
     AikiSessionStartPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload, ChangeOperation,
-    DeleteOperation, MoveOperation, TurnSource, WriteOperation,
+    DeleteOperation, MoveOperation, WriteOperation,
 };
 use crate::provenance::AgentType;
 use crate::session::AikiSession;
@@ -585,12 +585,14 @@ pub fn record_post_change_events(
     };
 
     // Create and dispatch the change.completed event
+    // Note: Turn info is not available in ACP context; provenance will use defaults
     let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
         tool_name: tool_name.to_string(),
         success: true,
+        turn: crate::events::Turn::unknown(),
         operation,
     });
 
@@ -771,9 +773,7 @@ pub fn handle_session_prompt(
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_started
-        turn_id: String::new(), // Set by handle_turn_started
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt: original_text.clone(),
         injected_refs: vec![],
     });
@@ -900,9 +900,7 @@ pub fn handle_session_end(
         session,
         cwd: working_dir,
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_completed
-        turn_id: String::new(), // Set by handle_turn_completed
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: response_text.to_string(),
         modified_files: Vec::new(), // Files tracked separately via change.done events
     });

@@ -60,9 +60,7 @@ fn test_build_context_returns_none_when_empty() {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),
-        turn: 0,
-        turn_id: String::new(),
-        source: TurnSource::User,
+        turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
     };
@@ -90,9 +88,7 @@ fn test_build_context_returns_some_with_chunks() {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),
-        turn: 0,
-        turn_id: String::new(),
-        source: TurnSource::User,
+        turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
     };
@@ -176,9 +172,7 @@ fn test_turn_completed_does_not_trigger_session_ended() {
         session: session.clone(),
         cwd: PathBuf::from("/tmp/test"),
         timestamp: Utc::now(),
-        turn: 0,
-        turn_id: String::new(),
-        source: TurnSource::User,
+        turn: aiki::events::Turn::unknown(),
         response: "Task completed".to_string(),
         modified_files: vec![],
     };
@@ -241,9 +235,7 @@ fn test_documented_behavior() {
         session,
         cwd: PathBuf::from("/tmp"),
         timestamp: Utc::now(),
-        turn: 0,
-        turn_id: String::new(),
-        source: TurnSource::User,
+        turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
     };

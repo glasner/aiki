@@ -62,16 +62,19 @@ fn build_user_prompt_submit_output(response: &HookResult) -> HookCommandOutput {
 
         HookCommandOutput::new(Some(json_value), 0)
     } else {
-        // Allow with optional modified prompt
-        // The context field contains the modified prompt text from the flow
-        let mut json_value = json!({
-            "decision": "continue"
-        });
-
-        // If context exists, use it as the modified prompt
-        if let Some(ref modified_prompt) = response.context {
-            json_value["modifiedPrompt"] = json!(modified_prompt);
-        }
+        // Allow with optional additional context
+        let combined = response.combined_output();
+        let json_value = if let Some(ctx) = combined {
+            json!({
+                "decision": "approve",
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": ctx
+                }
+            })
+        } else {
+            json!({ "decision": "approve" })
+        };
 
         HookCommandOutput::new(Some(json_value), 0)
     }

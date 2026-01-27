@@ -54,6 +54,7 @@ fn test_impl_asref_path_ergonomics() {
         timestamp: chrono::Utc::now(),
         tool_name: "Edit".to_string(),
         success: true,
+        turn: crate::events::Turn::unknown(),
         operation: ChangeOperation::Write(WriteOperation {
             file_paths: vec!["/tmp/file.rs".to_string()],
             edit_details: vec![],
@@ -101,6 +102,7 @@ fn test_impl_asref_path_ergonomics() {
         timestamp: chrono::Utc::now(),
         tool_name: "Write".to_string(),
         success: true,
+        turn: crate::events::Turn::unknown(),
         operation: ChangeOperation::Write(WriteOperation {
             file_paths: vec!["/tmp/file.rs".to_string()],
             edit_details: vec![],

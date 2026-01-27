@@ -84,12 +84,15 @@ impl ProvenanceRecord {
     /// This constructor extracts all necessary fields from the unified change event
     /// and creates a provenance record. Works with Write, Delete, and Move operations.
     ///
+    /// Turn info (turn, turn_id, turn_source) is taken directly from the event payload
+    /// rather than querying TurnState. If these fields are not set in the payload
+    /// (e.g., for shell commands without turn context), they default to 0/"".
+    ///
     /// Note: The `tasks` field is empty by default. Use `with_tasks()` to add
     /// task IDs that were in-progress when the change was made.
     pub fn from_change_completed_event(event: &crate::events::AikiChangeCompletedPayload) -> Self {
-        // Load current turn state for this session
-        let turn_state =
-            crate::session::turn_state::TurnState::load(event.session.uuid(), &event.cwd);
+        // Use turn info from payload (populated by the turn context if available)
+        // This avoids the JJ query overhead of loading TurnState for each change event
 
         Self {
             agent: AgentInfo {
@@ -104,9 +107,9 @@ impl ProvenanceRecord {
             agent_version: event.session.agent_version().map(|s| s.to_string()),
             session_id: event.session.uuid().to_string(),
             tool_name: event.tool_name.clone(),
-            turn: turn_state.current_turn,
-            turn_id: turn_state.current_turn_id,
-            turn_source: turn_state.current_turn_source.to_string(),
+            turn: event.turn.number,
+            turn_id: event.turn.id.clone(),
+            turn_source: event.turn.source.clone(),
             coauthor: None,
             tasks: Vec::new(),
         }

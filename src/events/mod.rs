@@ -9,6 +9,47 @@ use std::path::Path;
 pub mod result;
 
 // ============================================================================
+// Turn Info (shared across event payloads)
+// ============================================================================
+
+/// Turn metadata for events
+///
+/// Tracks turn number, deterministic ID, and source within a session.
+/// Used by turn.started, turn.completed, and change.completed events.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Turn {
+    /// Sequential turn number within session (starts at 1, 0 if unknown)
+    #[serde(default)]
+    pub number: u32,
+    /// Deterministic turn identifier: uuid_v5(session_uuid, turn.to_string())
+    #[serde(default)]
+    pub id: String,
+    /// Source of this turn: "user" or "autoreply"
+    #[serde(default)]
+    pub source: String,
+}
+
+impl Turn {
+    /// Create a new Turn with the given values
+    #[must_use]
+    pub fn new(number: u32, id: String, source: String) -> Self {
+        Self { number, id, source }
+    }
+
+    /// Create an empty/unknown turn (defaults)
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self::default()
+    }
+
+    /// Check if this turn has valid data (number > 0)
+    #[must_use]
+    pub fn is_known(&self) -> bool {
+        self.number > 0
+    }
+}
+
+// ============================================================================
 // Main Event Enum
 // ============================================================================
 
