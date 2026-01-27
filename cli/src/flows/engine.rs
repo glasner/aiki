@@ -52,9 +52,9 @@ impl FlowEngine {
         match &state.event {
             crate::events::AikiEvent::TurnStarted(e) => {
                 resolver.add_var("event.prompt".to_string(), e.prompt.clone());
-                resolver.add_var("event.source".to_string(), e.source.to_string());
-                resolver.add_var("event.turn".to_string(), e.turn.to_string());
-                resolver.add_var("event.turn_id".to_string(), e.turn_id.clone());
+                resolver.add_var("event.source".to_string(), e.turn.source.clone());
+                resolver.add_var("event.turn".to_string(), e.turn.number.to_string());
+                resolver.add_var("event.turn_id".to_string(), e.turn.id.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
@@ -94,9 +94,9 @@ impl FlowEngine {
             }
             crate::events::AikiEvent::TurnCompleted(e) => {
                 resolver.add_var("event.response".to_string(), e.response.clone());
-                resolver.add_var("event.source".to_string(), e.source.to_string());
-                resolver.add_var("event.turn".to_string(), e.turn.to_string());
-                resolver.add_var("event.turn_id".to_string(), e.turn_id.clone());
+                resolver.add_var("event.source".to_string(), e.turn.source.clone());
+                resolver.add_var("event.turn".to_string(), e.turn.number.to_string());
+                resolver.add_var("event.turn_id".to_string(), e.turn.id.clone());
                 resolver.add_var(
                     "event.session_id".to_string(),
                     e.session.external_id().to_string(),
@@ -2073,6 +2073,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
             success: true,
+            turn: crate::events::Turn::unknown(),
             operation: ChangeOperation::Write(WriteOperation {
                 file_paths: vec!["/tmp/file.rs".to_string()],
                 edit_details: vec![],
@@ -2094,6 +2095,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
             success: true,
+            turn: crate::events::Turn::unknown(),
             operation: ChangeOperation::Write(WriteOperation {
                 file_paths: vec![file_path.to_string()],
                 edit_details: vec![],
@@ -3291,9 +3293,7 @@ mod tests {
             prompt: "test".to_string(),
             timestamp: chrono::Utc::now(),
             cwd: std::path::PathBuf::from("/tmp"),
-            turn: 0,
-            turn_id: String::new(),
-            source: TurnSource::User,
+            turn: crate::events::Turn::unknown(),
             injected_refs: vec![],
         });
 

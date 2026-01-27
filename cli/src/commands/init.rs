@@ -2,8 +2,10 @@ use crate::commands::agents_template::{AIKI_BLOCK_TEMPLATE, AIKI_BLOCK_VERSION};
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
+use crate::global;
 use crate::jj;
 use crate::repo::RepoDetector;
+use crate::repo_id;
 use crate::signing;
 use anyhow::Context;
 use std::env;
@@ -56,6 +58,9 @@ pub fn run(quiet: bool) -> Result<()> {
         println!("Initializing Aiki in: {}", repo_root.display());
     }
 
+    // Initialize global aiki directories (~/.aiki/sessions/ and ~/.aiki/.jj/)
+    init_global_directories(quiet)?;
+
     // Check if JJ is already initialized
     if RepoDetector::has_jj(&repo_root) {
         if !quiet {
@@ -81,6 +86,17 @@ pub fn run(quiet: bool) -> Result<()> {
     // Create .aiki directory to store repository-specific configuration
     let aiki_dir = repo_root.join(".aiki");
     fs::create_dir_all(&aiki_dir).context("Failed to create .aiki directory")?;
+
+    // Generate repository ID for global state tracking
+    let repo_id = repo_id::ensure_repo_id(&repo_root)?;
+    if !quiet {
+        if repo_id.starts_with("local-") {
+            println!("✓ Generated repository ID (local): {}", repo_id);
+            println!("  Note: This will upgrade to a stable ID after your first git commit");
+        } else {
+            println!("✓ Generated repository ID: {}", repo_id);
+        }
+    }
 
     // Save previous git hooks path before configuring global hooks
     // This allows Git hooks to chain to pre-existing hooks
@@ -326,6 +342,56 @@ fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
         if !quiet {
             println!("✓ Created AGENTS.md with task system instructions");
         }
+    }
+
+    Ok(())
+}
+
+/// Initialize global aiki directories
+///
+/// Creates:
+/// - `~/.aiki/sessions/` for global session files
+/// - `~/.aiki/.jj/` for global conversation history
+fn init_global_directories(quiet: bool) -> Result<()> {
+    use std::process::Command;
+
+    let global_aiki = global::global_aiki_dir();
+    let global_sessions = global::global_sessions_dir();
+    let global_jj = global::global_jj_dir();
+
+    // Create sessions directory
+    fs::create_dir_all(&global_sessions).context("Failed to create global sessions directory")?;
+
+    // Initialize global JJ repo if not exists
+    // The JJ repo is non-colocated (no git), stores conversation history
+    if !global_jj.exists() {
+        if !quiet {
+            println!("Initializing global JJ repository...");
+        }
+
+        // Create parent directory first
+        fs::create_dir_all(&global_aiki).context("Failed to create global aiki directory")?;
+
+        // Initialize JJ repo (non-colocated)
+        let result = Command::new("jj")
+            .args(["init", "--no-import-rev"])
+            .current_dir(&global_aiki)
+            .output()
+            .context("Failed to run jj init for global repo")?;
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            // Ignore "already exists" errors (idempotent)
+            if !stderr.contains("already exists") {
+                return Err(anyhow::anyhow!("Failed to initialize global JJ repo: {}", stderr).into());
+            }
+        }
+
+        if !quiet {
+            println!("✓ Initialized global JJ repository at {}", global_jj.display());
+        }
+    } else if !quiet {
+        println!("✓ Global JJ repository exists");
     }
 
     Ok(())

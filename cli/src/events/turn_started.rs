@@ -1,25 +1,13 @@
 use super::prelude::*;
+use super::Turn;
+use crate::global;
 use crate::history;
+use crate::repo_id;
 use crate::session::turn_state::TurnState;
 
-/// Source of a turn (user prompt or autoreply)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TurnSource {
-    /// User-initiated turn (from prompt submission)
-    User,
-    /// Aiki-initiated turn (from autoreply context injection)
-    Autoreply,
-}
-
-impl std::fmt::Display for TurnSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TurnSource::User => write!(f, "user"),
-            TurnSource::Autoreply => write!(f, "autoreply"),
-        }
-    }
-}
+// Re-export TurnSource from history for backward compatibility
+// (TurnSource was previously defined here but moved to history to avoid cycles)
+pub use crate::history::TurnSource;
 
 /// turn.started event payload
 ///
@@ -30,24 +18,14 @@ pub struct AikiTurnStartedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
-    /// Sequential turn number within session (starts at 1, set by handler)
+    /// Turn metadata (number, id, source)
     #[serde(default)]
-    pub turn: u32,
-    /// Deterministic turn identifier: uuid_v5(session_uuid, turn.to_string())
-    #[serde(default)]
-    pub turn_id: String,
-    /// Source of this turn (user or autoreply)
-    #[serde(default = "default_turn_source")]
-    pub source: TurnSource,
+    pub turn: Turn,
     /// The prompt text (user input or autoreply context)
     pub prompt: String,
     /// References to files injected as context (paths only, not content)
     #[serde(default)]
     pub injected_refs: Vec<String>,
-}
-
-fn default_turn_source() -> TurnSource {
-    TurnSource::User
 }
 
 /// Handle turn.started event
@@ -62,28 +40,44 @@ fn default_turn_source() -> TurnSource {
 pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookResult> {
     use super::prelude::execute_flow;
 
-    // Load turn state and check for pending autoreply flag
-    let mut turn_state = TurnState::load(payload.session.uuid(), &payload.cwd);
+    // Load turn state from JJ history
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let mut turn_state = TurnState::load(payload.session.uuid(), &global::global_aiki_dir());
 
-    // If the previous turn.completed generated an autoreply, this turn was
-    // triggered by that autoreply, not by the user directly
-    if turn_state.take_pending_autoreply() {
-        payload.source = TurnSource::Autoreply;
-        debug_log(|| "Detected pending autoreply flag, setting source to Autoreply".to_string());
-    }
+    // Check if there's a pending autoreply from history
+    // If the latest event for this session is an Autoreply event, set source to Autoreply
+    // Defensive: if history lookup fails, we default to User source (no autoreply)
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let source = match history::has_pending_autoreply(&global::global_aiki_dir(), payload.session.uuid()) {
+        Ok(true) => TurnSource::Autoreply,
+        Ok(false) => TurnSource::User,
+        Err(e) => {
+            debug_log(|| {
+                format!(
+                    "Autoreply check failed for session {}, defaulting to User source: {}",
+                    payload.session.uuid(),
+                    e
+                )
+            });
+            TurnSource::User
+        }
+    };
 
     // Increment turn counter and generate turn_id
-    let turn = turn_state.start_turn(payload.source.clone());
-    payload.turn = turn;
-    payload.turn_id = turn_state.current_turn_id.clone();
+    let turn_number = turn_state.start_turn(source.clone());
+    payload.turn = Turn::new(
+        turn_number,
+        turn_state.current_turn_id.clone(),
+        source.to_string(),
+    );
 
     debug_log(|| {
         format!(
             "turn.started event from {:?}, source: {}, turn: {}, turn_id: {}, prompt length: {}",
             payload.session.agent_type(),
-            payload.source,
-            payload.turn,
-            payload.turn_id,
+            payload.turn.source,
+            payload.turn.number,
+            payload.turn.id,
             payload.prompt.len()
         )
     });
@@ -91,12 +85,19 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
     // Record prompt to conversation history (non-blocking on failure)
     // The prompt's change_id is stored in JJ and can be looked up later via
     // `--source prompt` which resolves to the latest prompt for this session
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let cwd_str = payload.cwd.to_string_lossy();
+    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
     if let Err(e) = history::record_prompt(
-        &payload.cwd,
+        &global::global_aiki_dir(),
         &payload.session,
         &payload.prompt,
         payload.injected_refs.clone(),
+        payload.turn.number,
+        source,
         payload.timestamp,
+        repo_id.as_deref(),
+        Some(&cwd_str),
     ) {
         debug_log(|| format!("Failed to record prompt: {}", e));
     }

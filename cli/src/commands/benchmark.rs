@@ -783,7 +783,7 @@ fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Re
         DetectionMethod::Hook,
     );
 
-    session.file(repo_path).create()?;
+    session.file().create()?;
     Ok(())
 }
 

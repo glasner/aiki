@@ -232,6 +232,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             tool_name: "Edit".to_string(),
             success: true,
+            turn: crate::events::Turn::unknown(),
             operation: ChangeOperation::Write(WriteOperation {
                 file_paths: vec!["/test/file.rs".to_string()],
                 edit_details: vec![],

@@ -1,7 +1,10 @@
 use super::prelude::*;
-use super::turn_started::TurnSource;
+use super::Turn;
+use crate::global;
 use crate::history;
-use crate::session::turn_state::TurnState;
+use crate::history::TurnSource;
+use crate::repo_id;
+use crate::session::turn_state::generate_turn_id;
 
 /// turn.completed event payload
 ///
@@ -12,24 +15,14 @@ pub struct AikiTurnCompletedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
-    /// Sequential turn number within session (loaded from turn state)
+    /// Turn metadata (number, id, source)
     #[serde(default)]
-    pub turn: u32,
-    /// Deterministic turn identifier: uuid_v5(session_uuid, turn.to_string())
-    #[serde(default)]
-    pub turn_id: String,
-    /// Source of this turn (user or autoreply)
-    #[serde(default = "default_turn_source")]
-    pub source: TurnSource,
+    pub turn: Turn,
     /// The agent's response text for this turn
     pub response: String,
     /// Files modified during this turn
     #[serde(default)]
     pub modified_files: Vec<PathBuf>,
-}
-
-fn default_turn_source() -> TurnSource {
-    TurnSource::User
 }
 
 /// Handle turn.completed event
@@ -46,42 +39,68 @@ fn default_turn_source() -> TurnSource {
 pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<HookResult> {
     use super::prelude::execute_flow;
 
-    // Load current turn state (set by the preceding turn.started event)
-    let turn_state = TurnState::load(payload.session.uuid(), &payload.cwd);
-    payload.turn = turn_state.current_turn;
-    payload.turn_id = turn_state.current_turn_id.clone();
-    payload.source = turn_state.current_turn_source.clone();
+    // Query the Prompt event for this session's current turn info
+    // This replaces reading from TurnState, getting turn/source from history instead
+    // Defensive fallback: if history lookup fails (JJ unavailable, branch doesn't exist, etc.),
+    // we use defaults (turn=0, source=User) and continue recording - turn=0 is acceptable.
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let (turn_number, source) =
+        match history::get_current_turn_info(&global::global_aiki_dir(), payload.session.uuid()) {
+            Ok(result) => result,
+            Err(e) => {
+                debug_log(|| {
+                    format!(
+                        "History lookup failed for session {}, using defaults (turn=0): {}",
+                        payload.session.uuid(),
+                        e
+                    )
+                });
+                (0, TurnSource::User)
+            }
+        };
+    payload.turn = Turn::new(
+        turn_number,
+        generate_turn_id(payload.session.uuid(), turn_number),
+        source.to_string(),
+    );
 
     debug_log(|| {
         format!(
             "turn.completed event from {:?}, source: {}, turn: {}, response length: {}",
             payload.session.agent_type(),
-            payload.source,
-            payload.turn,
+            payload.turn.source,
+            payload.turn.number,
             payload.response.len()
         )
     });
 
     // Record response to conversation history (non-blocking on failure)
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
     let files_written: Vec<String> = payload
         .modified_files
         .iter()
         .map(|p| p.display().to_string())
         .collect();
 
+    let cwd_str = payload.cwd.to_string_lossy().to_string();
+    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
     if let Err(e) = history::record_response(
-        &payload.cwd,
+        &global::global_aiki_dir(),
         &payload.session,
         &payload.response,
         files_written,
+        payload.turn.number,
         payload.timestamp,
+        repo_id.as_deref(),
+        Some(&cwd_str),
     ) {
         debug_log(|| format!("Failed to record response: {}", e));
     }
 
-    // Capture session/cwd before payload is moved into state
-    let session_uuid = payload.session.uuid().to_string();
+    // Save values needed for autoreply recording (payload is moved to state below)
     let payload_cwd = payload.cwd.clone();
+    let payload_session = payload.session.clone();
+    let payload_turn_number = payload.turn.number;
 
     // Load core flow for fallback
     let core_flow = crate::flows::load_core_flow();
@@ -114,11 +133,23 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
     // Build the autoreply context
     let context = state.build_context();
 
-    // If an autoreply was generated, mark the next turn as autoreply-initiated
-    if context.is_some() {
-        let turn_state = TurnState::load(&session_uuid, &payload_cwd);
-        turn_state.set_pending_autoreply();
-        debug_log(|| "Autoreply generated, set pending_autoreply flag for next turn".to_string());
+    // Record autoreply to history if one was generated
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    if let Some(autoreply_content) = context.as_ref() {
+        // Best-effort - log and continue on failure (matches existing error handling)
+        let autoreply_cwd = payload_cwd.to_string_lossy();
+        let autoreply_repo_id = repo_id::compute_repo_id(&payload_cwd).ok();
+        if let Err(e) = history::record_autoreply(
+            &global::global_aiki_dir(),
+            &payload_session,
+            autoreply_content,
+            payload_turn_number,
+            Utc::now(),
+            autoreply_repo_id.as_deref(),
+            Some(&autoreply_cwd),
+        ) {
+            debug_log(|| format!("Failed to record autoreply: {}", e));
+        }
     }
 
     // turn.completed never blocks - always allow

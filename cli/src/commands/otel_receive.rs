@@ -1,13 +1,13 @@
 use crate::cache::debug_log;
 use crate::editors::codex::otel::{self, CodexOtelContext, CodexOtelEvent};
-use crate::editors::codex::state;
 use crate::error::Result;
 use crate::event_bus;
-use crate::events::{AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload, TurnSource};
+use crate::events::{AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload};
 use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::AikiSession;
+use crate::session::{AikiSession, AikiSessionFile};
 use chrono::Utc;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Run the OTel receiver: read HTTP from stdin, parse OTLP, update session state.
@@ -371,20 +371,20 @@ fn dump_otlp_payload(body: &[u8], content_type: Option<&str>, request_path: &str
     debug_log(|| format!("Wrote OTel payload dump to {}", bin_path.display()));
 }
 
-/// Process a single Codex OTel event, updating session state
+/// Process a single Codex OTel event
+///
+/// Turn tracking uses JJ history (same as stdin integrations).
+/// Modified files from tool_result are ignored - they come from JJ file tracking.
 fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
     match event {
         CodexOtelEvent::ConversationStarts { conversation_id } => {
             debug_log(|| format!("OTel: conversation_starts: {}", conversation_id));
 
-            let updated = state::update_state(&conversation_id, |s| {
-                merge_context(s, context);
-                s.touch();
-            });
+            let Some(cwd) = context.cwd.clone() else {
+                return;
+            };
 
-            if let Some(state) = updated {
-                maybe_emit_session_started(&conversation_id, &state);
-            }
+            maybe_emit_session_started(&conversation_id, context, &cwd);
         }
 
         CodexOtelEvent::UserPrompt {
@@ -399,88 +399,43 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
                 )
             });
 
-            let updated = state::update_state(&conversation_id, |s| {
-                // Start new turn: increment counter, clear modified_files
-                s.start_turn();
-                merge_context(s, context);
-                s.touch();
-            });
+            let Some(cwd) = context.cwd.clone() else {
+                return;
+            };
 
-            if let Some(state) = updated {
-                let refreshed = state::read_state(&conversation_id).unwrap_or(state);
-                maybe_emit_turn_started(
-                    &conversation_id,
-                    &refreshed,
-                    prompt.unwrap_or_default(),
-                );
-            }
+            maybe_emit_turn_started(&conversation_id, context, &cwd, prompt.unwrap_or_default());
         }
 
-        CodexOtelEvent::ToolResult {
-            conversation_id,
-            tool_name,
-            arguments,
-        } => {
-            // Extract modified file paths
-            let cwd = context
-                .cwd
-                .clone()
-                .or_else(|| state::read_state(&conversation_id).and_then(|s| s.cwd.clone()));
-
-            let files = otel::extract_modified_files(
-                tool_name.as_deref(),
-                arguments.as_deref(),
-                cwd.as_deref(),
-            );
-
-            if !files.is_empty() {
-                debug_log(|| {
-                    format!(
-                        "OTel: tool_result: conv={}, files={:?}",
-                        conversation_id, files
-                    )
-                });
-
-                state::update_state(&conversation_id, |s| {
-                    merge_context(s, context);
-                    for file in &files {
-                        s.add_modified_file(file.clone());
-                    }
-                });
-            } else {
-                state::update_state(&conversation_id, |s| {
-                    merge_context(s, context);
-                    s.touch();
-                });
-            }
+        CodexOtelEvent::ToolResult { conversation_id, .. } => {
+            // Modified files come from JJ file tracking, not OTel
+            debug_log(|| format!("OTel: tool_result: conv={} (ignored, files from JJ)", conversation_id));
         }
 
         CodexOtelEvent::Unknown { event_name } => {
             debug_log(|| format!("OTel: acknowledged (not mapped): {}", event_name));
-            // No state update for deferred events
         }
     }
 }
 
-fn merge_context(state: &mut state::CodexSessionState, context: &CodexOtelContext) {
-    if let Some(version) = &context.agent_version {
-        state.agent_version = Some(version.clone());
-    }
-    if let Some(pid) = context.agent_pid {
-        state.set_agent_pid(pid);
-    }
-    if let Some(cwd) = &context.cwd {
-        state.set_cwd(cwd.clone());
-    }
-}
+fn maybe_emit_session_started(
+    conversation_id: &str,
+    context: &CodexOtelContext,
+    cwd: &PathBuf,
+) {
+    // Check if session already started via session file existence
+    let session = AikiSession::new(
+        AgentType::Codex,
+        conversation_id,
+        context.agent_version.as_deref(),
+        DetectionMethod::Hook,
+    )
+    .with_parent_pid(context.agent_pid);
 
-fn maybe_emit_session_started(conversation_id: &str, state: &state::CodexSessionState) {
-    if state.session_started {
+    let session_file = AikiSessionFile::new(&session);
+    if session_file.exists() {
         return;
     }
-    let Some(cwd) = state.cwd.clone() else {
-        return;
-    };
+
     if !cwd.is_absolute() {
         debug_log(|| {
             format!(
@@ -490,46 +445,46 @@ fn maybe_emit_session_started(conversation_id: &str, state: &state::CodexSession
         });
         return;
     }
-    // Note: agent_pid may be None for Codex (not provided via OTEL).
-    // Session file will be created without parent_pid, and aiki commands
-    // running under Codex will use find_ancestor_by_name("codex") + cwd matching.
-    let session = AikiSession::new(
-        AgentType::Codex,
-        conversation_id,
-        state.agent_version.as_deref(),
-        DetectionMethod::Hook,
-    )
-    .with_parent_pid(state.agent_pid);
 
     let now = Utc::now();
     let event = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session,
-        cwd,
+        cwd: cwd.clone(),
         timestamp: now,
     });
 
     if let Err(e) = event_bus::dispatch(event) {
         debug_log(|| format!("Failed to dispatch session.started from OTel: {}", e));
-        return;
     }
-
-    state::update_state(conversation_id, |s| {
-        s.mark_session_started();
-        s.touch();
-    });
+    // Session file is created by the session.started handler
 }
 
 fn maybe_emit_turn_started(
     conversation_id: &str,
-    state: &state::CodexSessionState,
+    context: &CodexOtelContext,
+    cwd: &PathBuf,
     prompt: String,
 ) {
-    if state.last_turn_started >= state.current_turn {
+    let session = AikiSession::new(
+        AgentType::Codex,
+        conversation_id,
+        context.agent_version.as_deref(),
+        DetectionMethod::Hook,
+    )
+    .with_parent_pid(context.agent_pid);
+
+    let session_file = AikiSessionFile::new(&session);
+
+    // Need session to exist first
+    if !session_file.exists() {
         return;
     }
-    let Some(cwd) = state.cwd.clone() else {
-        return;
-    };
+
+    // OTel user_prompt events may arrive multiple times or out of order.
+    // The turn.started handler will query JJ for the actual turn number and
+    // record the prompt. We just dispatch the event and let the handler
+    // manage deduplication via JJ history.
+
     if !cwd.is_absolute() {
         debug_log(|| {
             format!(
@@ -539,38 +494,18 @@ fn maybe_emit_turn_started(
         });
         return;
     }
-    if !state.session_started && state.agent_pid.is_none() {
-        return;
-    }
-
-    let session = AikiSession::new(
-        AgentType::Codex,
-        conversation_id,
-        state.agent_version.as_deref(),
-        DetectionMethod::Hook,
-    )
-    .with_parent_pid(state.agent_pid);
 
     let now = Utc::now();
     let event = AikiEvent::TurnStarted(AikiTurnStartedPayload {
         session,
-        cwd,
+        cwd: cwd.clone(),
         timestamp: now,
-        turn: 0,
-        turn_id: String::new(),
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt,
         injected_refs: vec![],
     });
 
     if let Err(e) = event_bus::dispatch(event) {
         debug_log(|| format!("Failed to dispatch turn.started from OTel: {}", e));
-        return;
     }
-
-    let turn = state.current_turn;
-    state::update_state(conversation_id, |s| {
-        s.mark_turn_started(turn);
-        s.touch();
-    });
 }

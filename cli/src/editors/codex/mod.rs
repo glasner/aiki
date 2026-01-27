@@ -1,16 +1,14 @@
 pub mod otel;
-pub mod state;
 
 use crate::cache::debug_log;
 use crate::editors::HookCommandOutput;
 use crate::error::Result;
 use crate::event_bus;
-use crate::events::{
-    AikiEvent, AikiSessionEndedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload,
-    TurnSource,
-};
-use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::AikiSession;
+use crate::events::{AikiEvent, AikiTurnCompletedPayload, AikiTurnStartedPayload};
+use crate::global;
+use crate::history;
+use crate::provenance::AgentType;
+use crate::session::{AikiSession, AikiSessionFile};
 use chrono::Utc;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -100,12 +98,9 @@ fn extract_prompt_from_input_messages(
 ///
 /// For Codex, the only event dispatched via notify is `agent-turn-complete`.
 /// The JSON payload is passed as a CLI argument (not stdin).
-/// Also performs TTL cleanup of stale Codex sessions.
+/// TTL cleanup is handled by the general cleanup_stale_sessions in session/mod.rs.
 pub fn handle(event_name: &str, payload_json: Option<&str>) -> Result<()> {
     debug_log(|| format!("Codex hook event: {}", event_name));
-
-    // Clean up expired sessions (2h TTL) and emit final events
-    cleanup_expired_sessions();
 
     match event_name {
         "agent-turn-complete" => handle_turn_complete(payload_json),
@@ -116,67 +111,10 @@ pub fn handle(event_name: &str, payload_json: Option<&str>) -> Result<()> {
     }
 }
 
-/// Clean up expired Codex sessions and emit final events.
-///
-/// For each expired session:
-/// - If modified_files is non-empty, emit turn.completed with empty response
-/// - Emit session.ended with reason "ttl_expired"
-fn cleanup_expired_sessions() {
-    let expired = state::cleanup_stale_sessions();
-
-    for session_info in expired {
-        let cwd = match session_info.cwd {
-            Some(c) => c,
-            None => continue, // No cwd known, can't dispatch events
-        };
-
-        let session = AikiSession::new(
-            AgentType::Codex,
-            &session_info.external_id,
-            session_info.agent_version.as_deref(),
-            DetectionMethod::Hook,
-        );
-        let now = Utc::now();
-
-        // Emit final turn.completed if there are unreported modified_files
-        if !session_info.modified_files.is_empty() {
-            let turn_completed = AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
-                session: session.clone(),
-                cwd: cwd.clone(),
-                timestamp: now,
-                turn: session_info.current_turn,
-                turn_id: format!("{}:{}", session_info.external_id, session_info.current_turn),
-                source: TurnSource::User,
-                response: String::new(),
-                modified_files: session_info
-                    .modified_files
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .collect(),
-            });
-            if let Err(e) = event_bus::dispatch(turn_completed) {
-                debug_log(|| format!("Failed to dispatch final turn.completed: {}", e));
-            }
-        }
-
-        // Emit session.ended
-        let session_ended = AikiEvent::SessionEnded(AikiSessionEndedPayload {
-            session,
-            cwd,
-            timestamp: now,
-            reason: "ttl_expired".to_string(),
-        });
-        if let Err(e) = event_bus::dispatch(session_ended) {
-            debug_log(|| format!("Failed to dispatch session.ended: {}", e));
-        }
-    }
-}
-
 /// Handle the `agent-turn-complete` notify event
 ///
-/// Reads session state (accumulated by OTel), emits `turn.completed` with
-/// the response text and modified_files. Emits `turn.started` if OTel
-/// hasn't dispatched it for the current turn.
+/// Uses JJ history for turn tracking (same as stdin integrations).
+/// Modified files come from JJ file tracking.
 fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
     let json = match payload_json {
         Some(j) => j,
@@ -201,96 +139,70 @@ fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
         )
     });
 
-    // Read session state (accumulated by OTel receiver)
-    let codex_state = state::read_state(&payload.thread_id);
-
-    let (
-        current_turn,
-        modified_files,
-        agent_version,
-        last_turn_started,
-        agent_pid,
-    ): (u32, Vec<String>, Option<String>, u32, Option<u32>) = match &codex_state {
-        Some(s) => (
-            s.current_turn,
-            s.modified_files.iter().cloned().collect(),
-            s.agent_version.clone(),
-            s.last_turn_started,
-            s.agent_pid,
-        ),
-        None => {
-            // No OTel state exists - notify arrived without prior OTel events
-            debug_log(|| {
-                format!(
-                    "No OTel session state for thread {}. Notify without OTel is a no-op.",
-                    payload.thread_id
-                )
-            });
-            return Ok(());
-        }
-        };
-
-    // Update session state: set cwd (normalizing any relative paths) and touch
-    state::update_state(&payload.thread_id, |s| {
-        s.set_cwd(PathBuf::from(&payload.cwd));
-        if let Some(pid) = agent_pid {
-            s.set_agent_pid(pid);
-        }
-        s.touch();
-    });
-
     // Build AikiSession for event dispatch
-    let session = AikiSession::for_hook(
-        AgentType::Codex,
-        &payload.thread_id,
-        agent_version.as_deref(),
-    );
-    if agent_pid.is_none() {
-        if let Some(pid) = session.parent_pid() {
-            state::update_state(&payload.thread_id, |s| {
-                s.set_agent_pid(pid);
-                s.touch();
-            });
-        }
+    let session = AikiSession::for_hook(AgentType::Codex, &payload.thread_id, None::<&str>);
+    let session_file = AikiSessionFile::new(&session);
+
+    // Check if session file exists (OTel should have created it)
+    if !session_file.exists() {
+        debug_log(|| {
+            format!(
+                "No session file for thread {}. Notify without OTel is a no-op.",
+                payload.thread_id
+            )
+        });
+        return Ok(());
     }
+
     let cwd = PathBuf::from(&payload.cwd);
     let now = Utc::now();
 
-    // Codex notify arrives after the prompt is sent; we still emit turn.started
-    // to keep turn state and prompt history consistent with other agents.
-    if last_turn_started < current_turn {
+    // Get current turn from JJ history (same as stdin integrations)
+    let jj_cwd = global::global_aiki_dir();
+    let current_turn = match history::get_current_turn_number(&jj_cwd, session.uuid()) {
+        Ok(t) => t,
+        Err(e) => {
+            debug_log(|| format!("Failed to query turn from JJ: {}", e));
+            0
+        }
+    };
+
+    // If no turn recorded yet, emit turn.started first
+    if current_turn == 0 {
         let prompt = extract_prompt_from_input_messages(payload.input_messages.as_ref())
             .unwrap_or_default();
         let turn_started = AikiEvent::TurnStarted(AikiTurnStartedPayload {
             session: session.clone(),
             cwd: cwd.clone(),
             timestamp: now,
-            turn: 0,
-            turn_id: String::new(),
-            source: TurnSource::User,
+            turn: crate::events::Turn::unknown(), // Set by handle_turn_started
             prompt,
             injected_refs: vec![],
         });
         if let Err(e) = event_bus::dispatch(turn_started) {
             debug_log(|| format!("Failed to dispatch turn.started for Codex: {}", e));
-        } else {
-            state::update_state(&payload.thread_id, |s| {
-                s.mark_turn_started(current_turn);
-                s.touch();
-            });
         }
     }
 
+    // Re-query turn after potential turn.started
+    let current_turn = match history::get_current_turn_number(&jj_cwd, session.uuid()) {
+        Ok(t) => t.max(1), // At least 1 for turn.completed
+        Err(_) => 1,
+    };
+
     // Emit turn.completed
+    // Modified files come from JJ file tracking (empty here, will be populated by JJ)
     let turn_completed = AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session,
         cwd,
         timestamp: now,
-        turn: current_turn,
-        turn_id: format!("{}:{}", payload.thread_id, current_turn),
-        source: TurnSource::User,
+        turn: crate::events::Turn::new(
+            current_turn,
+            format!("{}:{}", payload.thread_id, current_turn),
+            "user".to_string(),
+        ),
         response: payload.last_assistant_message.unwrap_or_default(),
-        modified_files: modified_files.into_iter().map(PathBuf::from).collect(),
+        modified_files: vec![], // Files come from JJ
     });
     if let Err(e) = event_bus::dispatch(turn_completed) {
         debug_log(|| format!("Failed to dispatch turn.completed for Codex: {}", e));

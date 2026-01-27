@@ -1,5 +1,21 @@
 # Remove .turn Files - Query JJ Instead
 
+## Progress
+
+- [x] Step 1: Remove TurnState file management (TurnState is now ephemeral)
+- [x] Step 2: Align conversation event schema (session_id -> session)
+- [x] Step 2.5: Move TurnSource to history/types.rs
+- [x] Step 3: Add turn and source fields to Prompt and Response events
+- [x] Step 4: Query JJ for turn number
+- [x] Step 5: Add Autoreply event to conversation history
+- [x] Step 6: Update turn_completed to query source from history
+- [x] Step 7: Save autoreply to aiki/conversations
+- [x] Step 8: Check for pending autoreply from history
+- [x] Step 9: Update session activity tracking
+- [x] Step 10: Clean up session_ended.rs
+- [x] Step 11: Update cleanup_session_file()
+- [ ] Step 12: Update tests
+
 ## Goal
 
 Eliminate `.aiki/sessions/<uuid>.turn` and `.turn.autoreply` files by storing all turn state in JJ history.
@@ -37,6 +53,38 @@ add_metadata("session", session_id, &mut lines);
 ```
 
 Update parser to read `session=` instead of `session_id=`.
+
+### 2.5. Move TurnSource to history/types.rs
+
+**From:** `cli/src/events/turn_started.rs`
+**To:** `cli/src/history/types.rs`
+
+Move the `TurnSource` enum and its `Display` impl to `history/types.rs` to avoid a dependency cycle. The `events` module already depends on `history` (for `record_prompt`), so adding `TurnSource` to `ConversationEvent` would create `history → events → history` if we imported from events.
+
+```rust
+// In cli/src/history/types.rs
+/// Source of a turn (user prompt or autoreply)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TurnSource {
+    User,
+    Autoreply,
+}
+
+impl std::fmt::Display for TurnSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TurnSource::User => write!(f, "user"),
+            TurnSource::Autoreply => write!(f, "autoreply"),
+        }
+    }
+}
+```
+
+Update `turn_started.rs` to import from history:
+```rust
+use crate::history::TurnSource;
+```
 
 ### 3. Add turn field to conversation events
 
@@ -167,7 +215,7 @@ Query logic: find the latest event for this session. If it's an `Autoreply` even
 
 **File:** `cli/src/session/mod.rs`
 
-In `find_session_by_ancestor_pid()`, replace `.turn` file mtime check with JJ query:
+Both `find_session_by_ancestor_pid()` and `find_session_by_agent_type()` use `.turn` file mtime to determine session activity. Update both to query JJ instead:
 
 ```rust
 // Before: .turn file mtime
@@ -205,10 +253,10 @@ Remove `.turn` and `.turn.autoreply` file deletion from `cleanup_session_file()`
 ## Files to Modify
 
 1. `cli/src/session/turn_state.rs` - Simplify to JJ-only queries
-2. `cli/src/history/types.rs` - Add `turn` field to events, add `Autoreply` event type
+2. `cli/src/history/types.rs` - Add `TurnSource` enum, add `turn` field to events, add `Autoreply` event type
 3. `cli/src/history/recorder.rs` - Add `turn` param, add `record_autoreply()` function
 4. `cli/src/history/storage.rs` - Change `session_id=` to `session=`, add `has_pending_autoreply()` query
-5. `cli/src/events/turn_started.rs` - Use history query instead of flag file
+5. `cli/src/events/turn_started.rs` - Import `TurnSource` from history, use history query instead of flag file
 6. `cli/src/events/turn_completed.rs` - Record autoreply instead of flag file
 7. `cli/src/events/session_ended.rs` - Remove .turn file cleanup
 
@@ -222,3 +270,7 @@ No migration needed - `.turn` files are ephemeral session state. Old files will 
 - No ephemeral files to manage
 - Autoreplies become part of conversation history (queryable, auditable)
 - Simpler code - less state synchronization
+
+## Trade-offs
+
+- **JJ query overhead in provenance**: `ProvenanceRecord::from_change_completed_event` (`cli/src/provenance.rs`) loads `TurnState` to get turn info. With .turn files removed, this becomes a JJ query per change event. Accepted trade-off: JJ queries are fast and file changes aren't super frequent. Could optimize later by caching TurnState for the duration of a turn if needed.

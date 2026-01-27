@@ -7,7 +7,7 @@ use crate::events::{
     parse_mcp_server, AikiChangeCompletedPayload, AikiEvent, AikiMcpCompletedPayload,
     AikiMcpPermissionAskedPayload, AikiSessionEndedPayload, AikiShellCompletedPayload,
     AikiShellPermissionAskedPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload,
-    ChangeOperation, TurnSource, WriteOperation,
+    ChangeOperation, WriteOperation,
 };
 
 use super::session::create_session;
@@ -275,9 +275,7 @@ fn build_turn_started_event(payload: BeforeSubmitPromptPayload) -> AikiEvent {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_started
-        turn_id: String::new(), // Set by handle_turn_started
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_started
         prompt: payload.prompt,
         injected_refs: vec![],
     })
@@ -374,6 +372,7 @@ fn build_change_completed_event(payload: AfterFileEditPayload) -> AikiEvent {
         timestamp: chrono::Utc::now(),
         tool_name: "edit".to_string(), // Cursor doesn't distinguish Edit/Write
         success: true, // afterFileEdit implies success
+        turn: crate::events::Turn::unknown(), // Cursor events don't have turn context
         operation: ChangeOperation::Write(WriteOperation {
             file_paths: vec![file_path],
             edit_details,
@@ -387,9 +386,7 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         session: create_session(&payload.conversation_id, &payload.cursor_version),
         cwd: get_cwd(&payload.workspace_roots),
         timestamp: chrono::Utc::now(),
-        turn: 0,     // Set by handle_turn_completed
-        turn_id: String::new(), // Set by handle_turn_completed
-        source: TurnSource::User,
+        turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
     })

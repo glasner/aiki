@@ -1,5 +1,7 @@
 use super::prelude::*;
+use crate::global;
 use crate::history;
+use crate::repo_id;
 use crate::session::{cleanup_stale_sessions, AikiSessionFile};
 
 /// session.started event payload
@@ -21,18 +23,28 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
     debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
     // Clean up stale sessions from crashed agents
-    cleanup_stale_sessions(&payload.cwd);
+    // Uses global JJ repo at ~/.aiki/.jj/ for TTL queries
+    cleanup_stale_sessions(&global::global_aiki_dir());
 
     // Create session file for PID-based session detection
     // This preserves the parent_pid from the payload session
-    let session_file = AikiSessionFile::new(&payload.session, &payload.cwd);
+    // Session files are stored globally at $AIKI_HOME/sessions/
+    let session_file = AikiSessionFile::new(&payload.session);
     if let Err(e) = session_file.create() {
         debug_log(|| format!("Failed to create session file: {}", e));
     }
 
     // Record session start to conversation history (non-blocking on failure)
-    if let Err(e) = history::record_session_start(&payload.cwd, &payload.session, payload.timestamp)
-    {
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    let cwd_str = payload.cwd.to_string_lossy();
+    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    if let Err(e) = history::record_session_start(
+        &global::global_aiki_dir(),
+        &payload.session,
+        payload.timestamp,
+        repo_id.as_deref(),
+        Some(&cwd_str),
+    ) {
         debug_log(|| format!("Failed to record session start: {}", e));
     }
 

@@ -1,19 +1,16 @@
 use crate::cache::debug_log;
-use crate::events::TurnSource;
-use std::fs;
-use std::path::{Path, PathBuf};
+use crate::history::TurnSource;
+use std::path::Path;
 use std::process::Command;
 
-/// Persistent turn state for a session
+/// Ephemeral turn state for a session
 ///
-/// Tracks the current turn number across hook invocations.
-/// Stored in `.aiki/sessions/<uuid>.turn` as a simple integer.
+/// Tracks the current turn number by querying JJ history on load.
+/// No longer persists to `.aiki/sessions/<uuid>.turn` files.
 ///
 /// Turn IDs are deterministic: `turn_id = uuid_v5(session_uuid, turn.to_string())`
 #[derive(Debug, Clone)]
 pub struct TurnState {
-    /// Path to the turn state file
-    state_path: PathBuf,
     /// The session UUID (used as namespace for turn_id generation)
     session_uuid: String,
     /// Current turn number (starts at 0, incremented on each turn.started)
@@ -25,150 +22,48 @@ pub struct TurnState {
 }
 
 impl TurnState {
-    /// Load turn state from disk, or create fresh state if no file exists.
+    /// Load turn state by querying JJ history
     ///
-    /// The state file is at `.aiki/sessions/<uuid>.turn` and contains
-    /// just the current turn number as a decimal integer.
+    /// Queries the `aiki/conversations` branch for the max turn number in this
+    /// session's events. This makes turn state ephemeral (computed on load).
     ///
-    /// If the `.turn` file is missing (e.g., deleted or lost), falls back to
-    /// querying JJ history for the max turn number in this session's changes.
-    /// This prevents turn_id collisions on session resume after file loss.
+    /// Turn source defaults to User since we can't determine the source from
+    /// JJ history at load time. The actual source is determined by checking
+    /// for pending autoreply events in the conversation history.
     #[must_use]
     pub fn load(session_uuid: &str, repo_path: &Path) -> Self {
-        let state_path = repo_path
-            .join(".aiki/sessions")
-            .join(format!("{}.turn", session_uuid));
-
-        let (current_turn, current_turn_source) = if state_path.exists() {
-            parse_turn_file(&state_path)
-        } else {
-            // Fallback: try to restore turn counter from JJ history
-            (restore_turn_from_jj(session_uuid, repo_path).unwrap_or(0), TurnSource::User)
-        };
-
+        // Always query JJ - no file persistence needed
+        let current_turn = query_max_turn_from_jj(session_uuid, repo_path).unwrap_or(0);
         let current_turn_id = generate_turn_id(session_uuid, current_turn);
 
         Self {
-            state_path,
             session_uuid: session_uuid.to_string(),
             current_turn,
             current_turn_id,
-            current_turn_source,
+            // Default to User - actual source will be determined by history query
+            current_turn_source: TurnSource::User,
         }
     }
 
-    /// Start a new turn: increment counter, generate turn_id, persist to disk
+    /// Start a new turn: increment counter, generate turn_id
     ///
     /// Returns the new turn number.
+    /// Note: State is no longer persisted to disk - it's ephemeral.
     pub fn start_turn(&mut self, source: TurnSource) -> u32 {
         self.current_turn += 1;
         self.current_turn_id = generate_turn_id(&self.session_uuid, self.current_turn);
         self.current_turn_source = source;
-
-        // Persist to disk (best-effort, don't fail the hook)
-        if let Err(e) = self.save() {
-            debug_log(|| format!("Failed to save turn state: {}", e));
-        }
-
         self.current_turn
     }
-
-    /// Save current turn number and source to disk
-    fn save(&self) -> std::io::Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.state_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let source_str = match self.current_turn_source {
-            TurnSource::User => "user",
-            TurnSource::Autoreply => "autoreply",
-        };
-        fs::write(&self.state_path, format!("{} {}", self.current_turn, source_str))
-    }
-
-    /// Delete the turn state file (called on session end)
-    pub fn delete(&self) {
-        if self.state_path.exists() {
-            if let Err(e) = fs::remove_file(&self.state_path) {
-                debug_log(|| format!("Failed to delete turn state file: {}", e));
-            }
-        }
-        // Also clean up any pending autoreply flag
-        self.clear_pending_autoreply();
-    }
-
-    /// Mark that the next turn.started should be treated as an autoreply.
-    ///
-    /// Called from turn.completed when a flow produces autoreply context.
-    /// The presence of `<uuid>.turn.autoreply` signals this.
-    pub fn set_pending_autoreply(&self) {
-        let flag_path = self.autoreply_flag_path();
-        if let Some(parent) = flag_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Err(e) = fs::write(&flag_path, "") {
-            debug_log(|| format!("Failed to set pending autoreply flag: {}", e));
-        }
-    }
-
-    /// Check and consume the pending autoreply flag.
-    ///
-    /// Returns `true` if the flag was set (and clears it).
-    /// Called from turn.started to detect autoreply-initiated turns.
-    pub fn take_pending_autoreply(&self) -> bool {
-        let flag_path = self.autoreply_flag_path();
-        if flag_path.exists() {
-            let _ = fs::remove_file(&flag_path);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Clear pending autoreply flag without checking it
-    fn clear_pending_autoreply(&self) {
-        let flag_path = self.autoreply_flag_path();
-        if flag_path.exists() {
-            let _ = fs::remove_file(&flag_path);
-        }
-    }
-
-    /// Path to the autoreply flag file
-    fn autoreply_flag_path(&self) -> PathBuf {
-        self.state_path.with_extension("turn.autoreply")
-    }
 }
 
-/// Parse the turn state file, supporting both old format (just number) and
-/// new format (number + source).
-fn parse_turn_file(path: &Path) -> (u32, TurnSource) {
-    let content = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return (0, TurnSource::User),
-    };
-    let trimmed = content.trim();
-    // New format: "<turn> <source>"
-    if let Some((turn_str, source_str)) = trimmed.split_once(' ') {
-        let turn = turn_str.parse::<u32>().unwrap_or(0);
-        let source = match source_str {
-            "autoreply" => TurnSource::Autoreply,
-            _ => TurnSource::User,
-        };
-        (turn, source)
-    } else {
-        // Old format: just the turn number
-        (trimmed.parse::<u32>().unwrap_or(0), TurnSource::User)
-    }
-}
-
-/// Restore turn counter from JJ history by finding the latest turn value
-/// in the aiki/conversations branch for this session.
+/// Query max turn number from JJ history for this session
 ///
 /// Queries the aiki/conversations branch for the most recent event with
 /// `session=<uuid>` in its description, and extracts the `turn=N` value.
 ///
 /// Returns `None` if JJ is unavailable, the branch doesn't exist, or no turns are found.
-fn restore_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
+fn query_max_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
     const CONVERSATIONS_BRANCH: &str = "aiki/conversations";
 
     let output = Command::new("jj")
@@ -208,7 +103,7 @@ fn restore_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
     if let Some(turn) = turn {
         debug_log(|| {
             format!(
-                "Restored turn counter from aiki/conversations branch: session={}, turn={}",
+                "Loaded turn counter from aiki/conversations branch: session={}, turn={}",
                 session_uuid, turn
             )
         });
@@ -222,7 +117,7 @@ fn restore_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
 /// `turn_id = uuid_v5(session_uuid_as_namespace, turn.to_string())`
 ///
 /// This ensures the same session + turn number always produces the same turn_id.
-fn generate_turn_id(session_uuid: &str, turn: u32) -> String {
+pub fn generate_turn_id(session_uuid: &str, turn: u32) -> String {
     // Parse the session UUID to use as namespace
     let namespace = uuid::Uuid::parse_str(session_uuid).unwrap_or(uuid::Uuid::nil());
     let turn_id = uuid::Uuid::new_v5(&namespace, turn.to_string().as_bytes());
@@ -235,17 +130,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_fresh_state() {
+    fn test_fresh_state_defaults_to_zero() {
+        // Without JJ history, turn defaults to 0
         let tmp = TempDir::new().unwrap();
         let state = TurnState::load("test-session-uuid", tmp.path());
         assert_eq!(state.current_turn, 0);
+        assert_eq!(state.current_turn_source, TurnSource::User);
     }
 
     #[test]
     fn test_start_turn_increments() {
         let tmp = TempDir::new().unwrap();
-        // Create sessions directory
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
 
         let mut state = TurnState::load("test-session-uuid", tmp.path());
         assert_eq!(state.current_turn, 0);
@@ -260,9 +155,10 @@ mod tests {
     }
 
     #[test]
-    fn test_state_persists_across_loads() {
+    fn test_state_is_ephemeral_no_file_persistence() {
+        // TurnState is ephemeral - state is NOT persisted to files
+        // Each load starts fresh from JJ history (which defaults to 0 without a JJ repo)
         let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
 
         // Start some turns
         {
@@ -270,55 +166,14 @@ mod tests {
             state.start_turn(TurnSource::User);
             state.start_turn(TurnSource::User);
             state.start_turn(TurnSource::Autoreply);
+            assert_eq!(state.current_turn, 3);
+            assert_eq!(state.current_turn_source, TurnSource::Autoreply);
         }
 
-        // Load again - should have turn 3 and source Autoreply (last start_turn)
+        // Load again - starts fresh (no JJ repo means turn=0)
         let state = TurnState::load("test-session-uuid", tmp.path());
-        assert_eq!(state.current_turn, 3);
-        assert_eq!(state.current_turn_source, TurnSource::Autoreply);
-    }
-
-    #[test]
-    fn test_source_persists_user() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
-
-        {
-            let mut state = TurnState::load("test-session-uuid", tmp.path());
-            state.start_turn(TurnSource::User);
-        }
-
-        let state = TurnState::load("test-session-uuid", tmp.path());
+        assert_eq!(state.current_turn, 0);
         assert_eq!(state.current_turn_source, TurnSource::User);
-    }
-
-    #[test]
-    fn test_source_persists_autoreply() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
-
-        {
-            let mut state = TurnState::load("test-session-uuid", tmp.path());
-            state.start_turn(TurnSource::Autoreply);
-        }
-
-        let state = TurnState::load("test-session-uuid", tmp.path());
-        assert_eq!(state.current_turn_source, TurnSource::Autoreply);
-    }
-
-    #[test]
-    fn test_old_format_backwards_compatible() {
-        let tmp = TempDir::new().unwrap();
-        let sessions_dir = tmp.path().join(".aiki/sessions");
-        fs::create_dir_all(&sessions_dir).unwrap();
-
-        // Simulate old format: just the turn number
-        let state_path = sessions_dir.join("test-session-uuid.turn");
-        fs::write(&state_path, "5").unwrap();
-
-        let state = TurnState::load("test-session-uuid", tmp.path());
-        assert_eq!(state.current_turn, 5);
-        assert_eq!(state.current_turn_source, TurnSource::User); // defaults to User
     }
 
     #[test]
@@ -337,82 +192,61 @@ mod tests {
     }
 
     #[test]
+    fn test_turn_id_generated_on_start_turn() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut state = TurnState::load("550e8400-e29b-41d4-a716-446655440000", tmp.path());
+
+        // Before start_turn, turn_id is for turn 0
+        let initial_turn_id = state.current_turn_id.clone();
+
+        // After start_turn, turn_id changes
+        state.start_turn(TurnSource::User);
+        assert_ne!(state.current_turn_id, initial_turn_id);
+
+        // Turn ID should be deterministic for turn 1
+        let expected_id = generate_turn_id("550e8400-e29b-41d4-a716-446655440000", 1);
+        assert_eq!(state.current_turn_id, expected_id);
+    }
+
+    #[test]
     fn test_turn_source_tracking() {
         let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
 
         let mut state = TurnState::load("test-session-uuid", tmp.path());
+
+        // Default source is User
+        assert_eq!(state.current_turn_source, TurnSource::User);
+
+        // start_turn with User keeps it User
         state.start_turn(TurnSource::User);
         assert_eq!(state.current_turn_source, TurnSource::User);
 
+        // start_turn with Autoreply changes to Autoreply
         state.start_turn(TurnSource::Autoreply);
         assert_eq!(state.current_turn_source, TurnSource::Autoreply);
-    }
 
-    #[test]
-    fn test_delete_removes_file() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
-
-        let mut state = TurnState::load("test-session-uuid", tmp.path());
+        // start_turn with User changes back to User
         state.start_turn(TurnSource::User);
-
-        // File should exist
-        assert!(state.state_path.exists());
-
-        // Delete should remove it
-        state.delete();
-        assert!(!state.state_path.exists());
+        assert_eq!(state.current_turn_source, TurnSource::User);
     }
 
     #[test]
-    fn test_pending_autoreply_flag() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
+    fn test_turn_id_with_invalid_uuid_uses_nil_namespace() {
+        // Invalid UUID strings should fall back to nil namespace
+        let id1 = generate_turn_id("not-a-uuid", 1);
+        let id2 = generate_turn_id("also-not-a-uuid", 1);
 
-        let state = TurnState::load("test-session-uuid", tmp.path());
-
-        // Initially no pending autoreply
-        assert!(!state.take_pending_autoreply());
-
-        // Set the flag
-        state.set_pending_autoreply();
-
-        // Take should return true and clear the flag
-        assert!(state.take_pending_autoreply());
-
-        // Second take should return false (consumed)
-        assert!(!state.take_pending_autoreply());
+        // Different invalid UUIDs that both fall back to nil namespace
+        // produce the same turn_id for the same turn number
+        assert_eq!(id1, id2);
     }
 
     #[test]
-    fn test_pending_autoreply_persists_across_loads() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
+    fn test_turn_id_format_is_valid_uuid() {
+        let id = generate_turn_id("550e8400-e29b-41d4-a716-446655440000", 1);
 
-        // Set flag in one instance
-        {
-            let mut state = TurnState::load("test-session-uuid", tmp.path());
-            state.start_turn(TurnSource::User);
-            state.set_pending_autoreply();
-        }
-
-        // Load fresh instance - flag should persist
-        let state = TurnState::load("test-session-uuid", tmp.path());
-        assert!(state.take_pending_autoreply());
-    }
-
-    #[test]
-    fn test_delete_clears_pending_autoreply() {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join(".aiki/sessions")).unwrap();
-
-        let mut state = TurnState::load("test-session-uuid", tmp.path());
-        state.start_turn(TurnSource::User);
-        state.set_pending_autoreply();
-
-        // Delete should remove both files
-        state.delete();
-        assert!(!state.take_pending_autoreply());
+        // Should be a valid UUID string
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
     }
 }

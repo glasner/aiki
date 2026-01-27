@@ -207,6 +207,7 @@ fn transform_shell_delete_to_change_completed(
         timestamp: shell_event.timestamp,
         tool_name: "Bash".to_string(),
         success: shell_event.success,
+        turn: crate::events::Turn::unknown(), // Shell commands don't have turn context
         operation: ChangeOperation::Delete(DeleteOperation {
             file_paths: deleted_paths,
         }),
@@ -299,6 +300,7 @@ fn transform_shell_move_to_change_completed(
         timestamp: shell_event.timestamp,
         tool_name: "Bash".to_string(),
         success: shell_event.success,
+        turn: crate::events::Turn::unknown(), // Shell commands don't have turn context
         operation: ChangeOperation::Move(move_op),
     }
 }
