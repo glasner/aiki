@@ -371,6 +371,199 @@ fn dump_otlp_payload(body: &[u8], content_type: Option<&str>, request_path: &str
     debug_log(|| format!("Wrote OTel payload dump to {}", bin_path.display()));
 }
 
+/// Get the PID of the process that connected to our socket.
+///
+/// In inetd-compatibility mode (launchd/systemd socket activation), stdin (fd 0)
+/// IS the accepted socket. The socket is TCP (127.0.0.1), so LOCAL_PEERPID (Unix
+/// domain only) does not work. Instead we:
+/// 1. Call getpeername(0) to learn the peer's ephemeral port
+/// 2. Use `lsof` to find which process owns that port
+///
+/// On Linux, SO_PEERCRED works for Unix domain sockets. For TCP, we fall back
+/// to the same lsof approach.
+fn get_socket_peer_pid() -> Option<u32> {
+    // Try Unix domain socket methods first (cheap, no subprocess)
+    if let Some(pid) = get_unix_socket_peer_pid() {
+        return Some(pid);
+    }
+
+    // Fall back to TCP: getpeername + lsof
+    get_tcp_peer_pid()
+}
+
+/// Try LOCAL_PEERPID (macOS) or SO_PEERCRED (Linux) on fd 0.
+/// Only works if the socket is AF_UNIX.
+fn get_unix_socket_peer_pid() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        const SOL_LOCAL: libc::c_int = 0;
+        const LOCAL_PEERPID: libc::c_int = 2;
+        let mut pid: libc::pid_t = 0;
+        let mut len: libc::socklen_t = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let ret = unsafe {
+            libc::getsockopt(
+                0,
+                SOL_LOCAL,
+                LOCAL_PEERPID,
+                &mut pid as *mut libc::pid_t as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if ret == 0 && pid > 0 {
+            debug_log(|| format!("OTel: LOCAL_PEERPID = {}", pid));
+            return Some(pid as u32);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+        let mut len: libc::socklen_t = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let ret = unsafe {
+            libc::getsockopt(
+                0,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut libc::ucred as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if ret == 0 && cred.pid > 0 {
+            debug_log(|| format!("OTel: SO_PEERCRED = {}", cred.pid));
+            return Some(cred.pid as u32);
+        }
+    }
+
+    None
+}
+
+/// Get the peer PID for a TCP loopback connection on fd 0.
+///
+/// Calls getpeername(0) to get the peer's ephemeral port, then runs
+/// `lsof -i TCP@127.0.0.1:{port} -sTCP:ESTABLISHED -t` to resolve the PID.
+fn get_tcp_peer_pid() -> Option<u32> {
+    // getpeername on fd 0 to learn the peer's address:port
+    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    let ret = unsafe {
+        libc::getpeername(
+            0,
+            &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
+            &mut len,
+        )
+    };
+    if ret != 0 {
+        debug_log(|| format!("OTel: getpeername failed: {}", io::Error::last_os_error()));
+        return None;
+    }
+
+    let peer_port = u16::from_be(addr.sin_port);
+    if peer_port == 0 {
+        debug_log(|| "OTel: getpeername returned port 0".to_string());
+        return None;
+    }
+
+    debug_log(|| format!("OTel: TCP peer port = {}", peer_port));
+
+    // Use lsof to find which process owns this ephemeral port
+    let output = match std::process::Command::new("lsof")
+        .args([
+            "-i", &format!("TCP@127.0.0.1:{}", peer_port),
+            "-sTCP:ESTABLISHED",
+            "-t",
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            debug_log(|| format!("OTel: lsof failed: {}", e));
+            return None;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // lsof -t outputs one PID per line; pick the first that isn't us
+    let our_pid = std::process::id();
+    for line in stdout.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            if pid != our_pid && pid > 0 {
+                debug_log(|| format!("OTel: socket peer PID = {} (via lsof)", pid));
+                return Some(pid);
+            }
+        }
+    }
+
+    debug_log(|| format!("OTel: lsof found no peer PID for port {}", peer_port));
+    None
+}
+
+/// Info resolved from the socket peer's process tree.
+struct SocketPeerInfo {
+    /// The PID of the codex process found in the ancestor chain.
+    codex_pid: u32,
+    /// The cwd of the codex process (if available from sysinfo).
+    cwd: Option<PathBuf>,
+}
+
+/// Resolve the Codex process PID and cwd from the socket peer.
+///
+/// Gets the peer PID from the socket, then walks up its process tree to find
+/// the actual "codex" process. This is needed because the OTel exporter may
+/// be a child thread/process of codex, not codex itself.
+///
+/// Also captures the cwd of the codex process via sysinfo, which avoids
+/// the race condition of reading the `.jsonl` session file.
+fn resolve_codex_info_from_socket() -> Option<SocketPeerInfo> {
+    let peer_pid = get_socket_peer_pid()?;
+
+    // Walk up from the peer PID to find "codex" in ancestors
+    // We need to start from the peer, not from ourselves (the OTel receiver is
+    // not a child of codex — it's spawned by launchd/systemd).
+    use sysinfo::{ProcessesToUpdate, System};
+
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    let mut pid = sysinfo::Pid::from_u32(peer_pid);
+
+    // Check the peer process itself first
+    if let Some(process) = system.process(pid) {
+        let name = process.name().to_string_lossy().to_lowercase();
+        if name.contains("codex") {
+            let cwd = process.cwd().map(|p| p.to_path_buf());
+            debug_log(|| format!("OTel: peer PID {} is codex, cwd={:?}", peer_pid, cwd));
+            return Some(SocketPeerInfo { codex_pid: peer_pid, cwd });
+        }
+    }
+
+    // Walk up ancestors
+    loop {
+        let Some(process) = system.process(pid) else {
+            break;
+        };
+        let Some(parent_pid) = process.parent() else {
+            break;
+        };
+        if parent_pid == pid {
+            break;
+        }
+
+        if let Some(parent_process) = system.process(parent_pid) {
+            let name = parent_process.name().to_string_lossy().to_lowercase();
+            if name.contains("codex") {
+                let cwd = parent_process.cwd().map(|p| p.to_path_buf());
+                debug_log(|| format!("OTel: found codex ancestor at PID {} (peer was {}), cwd={:?}", parent_pid.as_u32(), peer_pid, cwd));
+                return Some(SocketPeerInfo { codex_pid: parent_pid.as_u32(), cwd });
+            }
+        }
+
+        pid = parent_pid;
+    }
+
+    debug_log(|| format!("OTel: no codex ancestor found for peer PID {}", peer_pid));
+    None
+}
+
 /// Process a single Codex OTel event
 ///
 /// Turn tracking uses JJ history (same as stdin integrations).
@@ -380,11 +573,28 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
         CodexOtelEvent::ConversationStarts { conversation_id } => {
             debug_log(|| format!("OTel: conversation_starts: {}", conversation_id));
 
-            let Some(cwd) = context.cwd.clone() else {
-                return;
+            // Resolve Codex PID and cwd from socket peer if OTel didn't provide them.
+            // This avoids the .jsonl race condition for cwd and gives us PID for session tracking.
+            let socket_info = if context.agent_pid.is_none() || context.cwd.is_none() {
+                debug_log(|| format!(
+                    "OTel: missing pid={} cwd={}, trying socket peer",
+                    context.agent_pid.is_none(),
+                    context.cwd.is_none()
+                ));
+                resolve_codex_info_from_socket()
+            } else {
+                None
             };
 
-            maybe_emit_session_started(&conversation_id, context, &cwd);
+            let cwd = context.cwd.clone()
+                .or_else(|| socket_info.as_ref().and_then(|i| i.cwd.clone()))
+                .or_else(|| lookup_cwd_from_codex_session(&conversation_id));
+            let cwd = match cwd {
+                Some(c) => c,
+                None => return,
+            };
+
+            maybe_emit_session_started(&conversation_id, context, &cwd, socket_info);
         }
 
         CodexOtelEvent::UserPrompt {
@@ -399,8 +609,12 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
                 )
             });
 
-            let Some(cwd) = context.cwd.clone() else {
-                return;
+            let cwd = match context.cwd.clone() {
+                Some(c) => c,
+                None => match lookup_cwd_from_codex_session(&conversation_id) {
+                    Some(c) => c,
+                    None => return,
+                },
             };
 
             maybe_emit_turn_started(&conversation_id, context, &cwd, prompt.unwrap_or_default());
@@ -421,7 +635,10 @@ fn maybe_emit_session_started(
     conversation_id: &str,
     context: &CodexOtelContext,
     cwd: &PathBuf,
+    socket_info: Option<SocketPeerInfo>,
 ) {
+    let agent_pid = context.agent_pid.or(socket_info.as_ref().map(|i| i.codex_pid));
+
     // Check if session already started via session file existence
     let session = AikiSession::new(
         AgentType::Codex,
@@ -429,7 +646,7 @@ fn maybe_emit_session_started(
         context.agent_version.as_deref(),
         DetectionMethod::Hook,
     )
-    .with_parent_pid(context.agent_pid);
+    .with_parent_pid(agent_pid);
 
     let session_file = AikiSessionFile::new(&session);
     if session_file.exists() {
@@ -508,4 +725,127 @@ fn maybe_emit_turn_started(
     if let Err(e) = event_bus::dispatch(event) {
         debug_log(|| format!("Failed to dispatch turn.started from OTel: {}", e));
     }
+}
+
+/// Look up the working directory from Codex's own session file.
+///
+/// Codex writes session files to `~/.codex/sessions/{YYYY}/{MM}/{DD}/rollout-{date}-{conv_id}.jsonl`.
+/// The first line is a `session_meta` JSON object containing `"cwd"`.
+fn lookup_cwd_from_codex_session(conversation_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let sessions_dir = home.join(".codex").join("sessions");
+
+    if !sessions_dir.is_dir() {
+        debug_log(|| "OTel: ~/.codex/sessions/ not found for cwd fallback".to_string());
+        return None;
+    }
+
+    // The file name ends with `-{conversation_id}.jsonl`.
+    // Walk today's date directory first, then search more broadly.
+    //
+    // Race condition: Codex writes this file at roughly the same time as
+    // it fires the conversation_starts OTel event. Poll briefly if not found.
+    let suffix = format!("-{}.jsonl", conversation_id);
+
+    let session_file = match find_file_with_suffix_retry(&sessions_dir, &suffix) {
+        Some(f) => f,
+        None => {
+            debug_log(|| {
+                format!(
+                    "OTel: no Codex session file found for conv {} (after retries)",
+                    conversation_id
+                )
+            });
+            return None;
+        }
+    };
+
+    // Read only the first line (session_meta)
+    let first_line = match std::fs::read_to_string(&session_file) {
+        Ok(content) => match content.lines().next() {
+            Some(line) => line.to_string(),
+            None => return None,
+        },
+        Err(e) => {
+            debug_log(|| format!("OTel: failed to read Codex session file: {}", e));
+            return None;
+        }
+    };
+
+    // Parse JSON and extract cwd from payload
+    let json: serde_json::Value = match serde_json::from_str(&first_line) {
+        Ok(v) => v,
+        Err(e) => {
+            debug_log(|| format!("OTel: failed to parse session_meta JSON: {}", e));
+            return None;
+        }
+    };
+
+    let cwd = json
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(|c| c.as_str())
+        .map(PathBuf::from);
+
+    if let Some(ref c) = cwd {
+        debug_log(|| format!("OTel: resolved cwd from Codex session file: {}", c.display()));
+    }
+
+    cwd
+}
+
+/// Find a file with the given suffix, retrying briefly if not found.
+///
+/// Codex writes its session `.jsonl` file at roughly the same time as the
+/// `conversation_starts` OTel event fires. This function polls for the file
+/// up to ~500ms (10 attempts, 50ms apart) to handle the race condition.
+fn find_file_with_suffix_retry(dir: &std::path::Path, suffix: &str) -> Option<PathBuf> {
+    // First attempt (no delay)
+    if let Some(found) = find_file_with_suffix(dir, suffix) {
+        return Some(found);
+    }
+
+    // Retry with short polling
+    for attempt in 1..=10 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Some(found) = find_file_with_suffix(dir, suffix) {
+            debug_log(|| {
+                format!(
+                    "OTel: found Codex session file on retry {} ({}ms)",
+                    attempt,
+                    attempt * 50
+                )
+            });
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+/// Recursively find a file whose name ends with the given suffix.
+///
+/// Searches in reverse-sorted order (newest date directories first) to find
+/// the most recent match quickly.
+fn find_file_with_suffix(dir: &std::path::Path, suffix: &str) -> Option<PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).collect();
+    // Sort descending so newest date directories are checked first
+    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(suffix) {
+                    return Some(path);
+                }
+            }
+        } else if path.is_dir() {
+            if let Some(found) = find_file_with_suffix(&path, suffix) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
 }

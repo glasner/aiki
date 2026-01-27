@@ -6,7 +6,6 @@
 //! - Hook installation (config.toml generation)
 
 use aiki::editors::codex::otel::{self, CodexOtelEvent};
-use aiki::editors::codex::state::CodexSessionState;
 use prost::Message;
 use std::fs;
 
@@ -182,45 +181,7 @@ fn test_otel_deferred_events_not_mapped() {
     }
 }
 
-#[test]
-fn test_session_state_turn_tracking() {
-    let mut state = CodexSessionState::new("conv_turns");
 
-    // Initial state
-    assert_eq!(state.current_turn, 0);
-    assert_eq!(state.turn_id(), "conv_turns:0");
-
-    // First turn
-    state.start_turn();
-    assert_eq!(state.current_turn, 1);
-    assert_eq!(state.turn_id(), "conv_turns:1");
-
-    // Add files during turn
-    state.add_modified_file("src/a.rs");
-    state.add_modified_file("src/b.rs");
-    assert_eq!(state.modified_files.len(), 2);
-
-    // Second turn clears files
-    state.start_turn();
-    assert_eq!(state.current_turn, 2);
-    assert!(state.modified_files.is_empty());
-}
-
-#[test]
-fn test_session_state_modified_files_deduplication() {
-    let mut state = CodexSessionState::new("conv_dedup");
-    state.start_turn();
-
-    // Same file modified multiple times
-    state.add_modified_file("src/main.rs");
-    state.add_modified_file("src/lib.rs");
-    state.add_modified_file("src/main.rs"); // duplicate
-    state.add_modified_file("src/main.rs"); // duplicate again
-
-    assert_eq!(state.modified_files.len(), 2);
-    assert!(state.modified_files.contains("src/main.rs"));
-    assert!(state.modified_files.contains("src/lib.rs"));
-}
 
 #[test]
 fn test_notify_payload_parsing() {
@@ -445,121 +406,9 @@ fn test_gzip_decompression_roundtrip() {
     ));
 }
 
-#[test]
-fn test_race_condition_notify_before_late_tool_result() {
-    // Scenario: notify fires, then OTel tool_result arrives late
-    // The late tool_result should NOT be lost - it rolls into the current turn's state
-    let mut state = CodexSessionState::new("conv_race");
 
-    // Turn 1: user_prompt arrives
-    state.start_turn();
-    assert_eq!(state.current_turn, 1);
 
-    // Some tool_results arrive
-    state.add_modified_file("src/a.rs");
 
-    // Notify fires (reads current state: turn=1, modified_files=["src/a.rs"])
-    let snapshot_files: Vec<_> = state.modified_files.iter().cloned().collect();
-    assert_eq!(snapshot_files, vec!["src/a.rs"]);
-
-    // Late tool_result arrives AFTER notify (still in turn 1)
-    state.add_modified_file("src/b.rs");
-    assert_eq!(state.modified_files.len(), 2);
-
-    // Turn 2 starts - clears ALL modified_files (including late arrivals)
-    state.start_turn();
-    assert_eq!(state.current_turn, 2);
-    assert!(state.modified_files.is_empty());
-
-    // The plan says: "modified_files is cleared on turn.started (not on turn.completed)
-    // to avoid a race where notify fires before late-arriving OTel tool_result events"
-    // This test confirms: late tool_result in turn 1 is included in turn 1's state,
-    // and only cleared when turn 2 starts.
-}
-
-#[test]
-fn test_set_cwd_normalizes_relative_paths() {
-    let mut state = CodexSessionState::new("conv_cwd_norm");
-    state.start_turn();
-
-    // Add relative paths (cwd not yet known)
-    state.add_modified_file("src/main.rs");
-    state.add_modified_file("lib/utils.rs");
-    state.add_modified_file("/absolute/path.rs"); // absolute stays as-is
-
-    // Set cwd - should normalize relative paths
-    state.set_cwd(std::path::PathBuf::from("/home/user/project"));
-
-    assert!(state.modified_files.contains("/home/user/project/src/main.rs"));
-    assert!(state.modified_files.contains("/home/user/project/lib/utils.rs"));
-    assert!(state.modified_files.contains("/absolute/path.rs"));
-    assert_eq!(state.modified_files.len(), 3);
-}
-
-#[test]
-fn test_set_cwd_no_op_for_same_cwd() {
-    let mut state = CodexSessionState::new("conv_cwd_noop");
-    state.start_turn();
-
-    let cwd = std::path::PathBuf::from("/home/user/project");
-    state.set_cwd(cwd.clone());
-
-    state.add_modified_file("src/new.rs");
-
-    // Setting same cwd again should be a no-op (not double-resolve)
-    state.set_cwd(cwd);
-    assert!(state.modified_files.contains("src/new.rs"));
-}
-
-#[test]
-fn test_ttl_cleanup_expired_sessions() {
-    use aiki::editors::codex::state;
-    use chrono::{Duration, Utc};
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    // Create a session state file that's expired (3 hours old)
-    let mut expired_state = CodexSessionState::new("conv_expired");
-    expired_state.start_turn();
-    expired_state.add_modified_file("src/old.rs");
-    expired_state.cwd = Some(std::path::PathBuf::from("/old/project"));
-    expired_state.last_event_at = Utc::now() - Duration::hours(3);
-
-    // Create a session state file that's still active (30 min old)
-    let mut active_state = CodexSessionState::new("conv_active");
-    active_state.start_turn();
-    active_state.add_modified_file("src/new.rs");
-    active_state.last_event_at = Utc::now() - Duration::minutes(30);
-
-    // Write both to disk
-    let expired_path = dir.join("conv_expired.json");
-    let active_path = dir.join("conv_active.json");
-    fs::write(
-        &expired_path,
-        serde_json::to_string_pretty(&expired_state).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        &active_path,
-        serde_json::to_string_pretty(&active_state).unwrap(),
-    )
-    .unwrap();
-
-    // Run cleanup (uses internal function via the test-accessible state)
-    // Since cleanup_stale_sessions_in is private, we verify behavior via list_sessions
-    // by checking that after TTL, the state would be expired
-    assert!(expired_state.last_event_at < Utc::now() - Duration::hours(2));
-    assert!(active_state.last_event_at > Utc::now() - Duration::hours(2));
-
-    // Verify the expired session's data is correct for dispatch
-    assert_eq!(expired_state.current_turn, 1);
-    assert!(expired_state.modified_files.contains("src/old.rs"));
-    assert_eq!(
-        expired_state.cwd,
-        Some(std::path::PathBuf::from("/old/project"))
-    );
-}
 
 #[test]
 fn test_content_type_detection_logs_endpoint() {
@@ -572,32 +421,4 @@ fn test_content_type_detection_logs_endpoint() {
     assert!(!path.contains("/v1/traces"));
 }
 
-#[test]
-fn test_otel_conversation_starts_sets_version() {
-    let mut state = CodexSessionState::new("conv_version");
 
-    // Simulate what process_event does for conversation_starts
-    state.agent_version = Some("2.1.0".to_string());
-    state.touch();
-
-    assert_eq!(state.agent_version.as_deref(), Some("2.1.0"));
-}
-
-#[test]
-fn test_lock_failure_returns_none() {
-    // On non-unix platforms, acquire_lock always returns None
-    // On unix, we can verify the update_state behavior by checking
-    // that the function signature allows None return
-    let tmp = tempfile::TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    // First update should succeed (creates state)
-    let result = aiki::editors::codex::state::update_state_with_dir(
-        dir,
-        "test-lock-1",
-        |s| s.start_turn(),
-    );
-    // On unix, this should succeed (lock acquired)
-    #[cfg(unix)]
-    assert!(result.is_some());
-}

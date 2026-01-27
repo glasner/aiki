@@ -1,8 +1,8 @@
+use super::jj_cmd;
 use super::workspace::JJWorkspace;
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSetBuilder};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Get list of deleted file paths from JJ, filtered by command arguments
 ///
@@ -167,7 +167,7 @@ fn parse_move_line(line: &str) -> Option<(String, String)> {
 /// Returns error if JJ command fails (not installed, not a workspace, etc.)
 /// Callers should handle errors and fall back to syntactic detection.
 fn run_jj_diff_summary(workspace_root: &Path) -> Result<String> {
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .arg("diff")
         .arg("-r")
         .arg("@")

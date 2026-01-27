@@ -41,6 +41,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use crate::jj::jj_cmd;
 
 // =============================================================================
 // Utility Functions
@@ -834,7 +835,7 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
 fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Result<String> {
     // Build jj split command
     // Note: jj split doesn't support --author, we'll set it separately
-    let mut cmd = Command::new("jj");
+    let mut cmd = jj_cmd();
     cmd.current_dir(cwd);
     cmd.arg("split");
     cmd.arg("--message").arg(message);
@@ -861,7 +862,7 @@ fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Re
 
     // Step 2: Set author on the first part (AI change) using jj metaedit
     // After split, the first part is at @- (parent of working copy)
-    let mut metaedit_cmd = Command::new("jj");
+    let mut metaedit_cmd = jj_cmd();
     metaedit_cmd.current_dir(cwd);
     metaedit_cmd.arg("metaedit");
     metaedit_cmd.arg("-r").arg("@-");

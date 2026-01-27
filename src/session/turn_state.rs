@@ -1,7 +1,7 @@
 use crate::cache::debug_log;
 use crate::history::TurnSource;
+use crate::jj::jj_cmd;
 use std::path::Path;
-use std::process::Command;
 
 /// Ephemeral turn state for a session
 ///
@@ -66,7 +66,7 @@ impl TurnState {
 fn query_max_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
     const CONVERSATIONS_BRANCH: &str = "aiki/conversations";
 
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .args([
             "log",
             "-r",
@@ -79,6 +79,7 @@ fn query_max_turn_from_jj(session_uuid: &str, repo_path: &Path) -> Option<u32> {
             "--no-graph",
             "--limit",
             "1",
+            "--ignore-working-copy",
         ])
         .current_dir(repo_path)
         .output()

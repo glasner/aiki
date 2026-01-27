@@ -13,6 +13,7 @@ pub mod event;
 pub mod hooks;
 pub mod init;
 pub mod otel_receive;
+pub mod session;
 pub mod task;
 pub mod verify;
 pub mod zed_detection;

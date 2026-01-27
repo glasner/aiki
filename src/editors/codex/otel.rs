@@ -242,11 +242,31 @@ pub fn parse_otlp_logs(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)> {
 
     let mut events = Vec::new();
 
-    for resource_logs in &request.resource_logs {
+    for (ri, resource_logs) in request.resource_logs.iter().enumerate() {
+        // Dump resource attributes
+        if let Some(ref resource) = resource_logs.resource {
+            debug_log(|| format!("OTLP LOG resource[{}] attributes:", ri));
+            for kv in &resource.attributes {
+                debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
+            }
+        }
+
         let resource_context = build_context_from_resource(resource_logs.resource.as_ref());
 
-        for scope_logs in &resource_logs.scope_logs {
-            for log_record in &scope_logs.log_records {
+        for (si, scope_logs) in resource_logs.scope_logs.iter().enumerate() {
+            for (li, log_record) in scope_logs.log_records.iter().enumerate() {
+                debug_log(|| {
+                    let body_str = get_body_string(log_record)
+                        .unwrap_or_else(|| "<no body>".to_string());
+                    format!(
+                        "OTLP LOG record[{}.{}.{}] body={:?} attributes:",
+                        ri, si, li, body_str
+                    )
+                });
+                for kv in &log_record.attributes {
+                    debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
+                }
+
                 if let Some(event) = parse_log_record(log_record) {
                     let mut context = resource_context.clone();
                     merge_context_from_attributes(&mut context, &log_record.attributes);
@@ -277,13 +297,37 @@ pub fn parse_otlp_traces(data: &[u8]) -> Vec<(CodexOtelEvent, CodexOtelContext)>
 
     let mut events = Vec::new();
 
-    for resource_spans in &request.resource_spans {
+    for (ri, resource_spans) in request.resource_spans.iter().enumerate() {
+        // Dump resource attributes
+        if let Some(ref resource) = resource_spans.resource {
+            debug_log(|| format!("OTLP TRACE resource[{}] attributes:", ri));
+            for kv in &resource.attributes {
+                debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
+            }
+        }
+
         let resource_context = build_context_from_resource(resource_spans.resource.as_ref());
 
-        for scope_spans in &resource_spans.scope_spans {
-            for span in &scope_spans.spans {
-                // Extract events from span events (where Codex puts telemetry data)
-                for span_event in &span.events {
+        for (si, scope_spans) in resource_spans.scope_spans.iter().enumerate() {
+            for (spi, span) in scope_spans.spans.iter().enumerate() {
+                debug_log(|| format!(
+                    "OTLP TRACE span[{}.{}.{}] name={:?} attributes:",
+                    ri, si, spi, span.name
+                ));
+                for kv in &span.attributes {
+                    debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
+                }
+
+                // Dump and parse span events
+                for (ei, span_event) in span.events.iter().enumerate() {
+                    debug_log(|| format!(
+                        "OTLP TRACE span_event[{}.{}.{}.{}] name={:?} attributes:",
+                        ri, si, spi, ei, span_event.name
+                    ));
+                    for kv in &span_event.attributes {
+                        debug_log(|| format!("  {} = {}", kv.key, format_any_value(&kv.value)));
+                    }
+
                     if let Some(event) = parse_span_event(span_event) {
                         let mut context = resource_context.clone();
                         merge_context_from_attributes(&mut context, &span_event.attributes);
@@ -389,6 +433,41 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
             debug_log(|| format!("Unknown Codex OTel event: {}", event_name));
             Some(CodexOtelEvent::Unknown { event_name })
         }
+    }
+}
+
+/// Format an AnyValue for debug logging
+fn format_any_value(value: &Option<AnyValue>) -> String {
+    let Some(v) = value else {
+        return "<none>".to_string();
+    };
+    match &v.value {
+        Some(any_value::Value::StringValue(s)) => {
+            // Truncate long strings
+            if s.len() > 200 {
+                format!("{:?}... ({} bytes)", &s[..200], s.len())
+            } else {
+                format!("{:?}", s)
+            }
+        }
+        Some(any_value::Value::IntValue(i)) => format!("{}", i),
+        Some(any_value::Value::DoubleValue(d)) => format!("{}", d),
+        Some(any_value::Value::BoolValue(b)) => format!("{}", b),
+        Some(any_value::Value::BytesValue(b)) => format!("<bytes len={}>", b.len()),
+        Some(any_value::Value::ArrayValue(arr)) => {
+            format!("<array len={}>", arr.values.len())
+        }
+        Some(any_value::Value::KvlistValue(kvs)) => {
+            let items: Vec<String> = kvs.values.iter().take(10).map(|kv| {
+                format!("{}={}", kv.key, format_any_value(&kv.value))
+            }).collect();
+            if kvs.values.len() > 10 {
+                format!("{{{}, ... +{}}}", items.join(", "), kvs.values.len() - 10)
+            } else {
+                format!("{{{}}}", items.join(", "))
+            }
+        }
+        None => "<empty>".to_string(),
     }
 }
 

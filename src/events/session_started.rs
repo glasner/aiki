@@ -2,7 +2,7 @@ use super::prelude::*;
 use crate::global;
 use crate::history;
 use crate::repo_id;
-use crate::session::{cleanup_stale_sessions, AikiSessionFile};
+use crate::session::{prune_dead_pid_sessions, AikiSessionFile};
 
 /// session.started event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,9 +22,8 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
 
     debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
-    // Clean up stale sessions from crashed agents
-    // Uses global JJ repo at ~/.aiki/.jj/ for TTL queries
-    cleanup_stale_sessions(&global::global_aiki_dir());
+    // Clean up sessions from crashed agents (PID-based)
+    prune_dead_pid_sessions();
 
     // Create session file for PID-based session detection
     // This preserves the parent_pid from the payload session

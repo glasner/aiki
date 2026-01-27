@@ -7,24 +7,13 @@ use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
-
-/// TTL threshold for editor agents (Claude Code, Cursor) - 8 hours
-const EDITOR_TTL: Duration = Duration::from_secs(8 * 60 * 60);
-
-/// TTL threshold for CLI agents (standalone tools) - 2 hours
-const CLI_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Reason a session was cleaned up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionCleanupReason {
     /// Parent process no longer alive
     PidDead,
-    /// No activity within TTL threshold
-    TtlExpired,
-    /// Orphaned session (no events found in conversation history)
-    NoEvents,
 }
 
 /// Session file handle for atomic file operations
@@ -575,6 +564,89 @@ pub fn count_sessions() -> Result<usize> {
     Ok(count)
 }
 
+/// Parsed session info for listing
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub agent: String,
+    pub started_at: String,
+    pub parent_pid: Option<u32>,
+    pub repos: Vec<String>,
+}
+
+/// List all sessions from the global sessions directory
+pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
+    let sessions_dir = global::global_sessions_dir();
+
+    if !sessions_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let entries = fs::read_dir(&sessions_dir)
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to read sessions directory: {}", e)))?;
+
+    let mut sessions = Vec::new();
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() || path.extension().is_some() {
+            continue; // Skip directories and .turn/.tmp files
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let mut agent = String::new();
+        let mut session_id = String::new();
+        let mut started_at = String::new();
+        let mut parent_pid: Option<u32> = None;
+        let mut repos = Vec::new();
+
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("agent=") {
+                agent = val.to_string();
+            } else if let Some(val) = line.strip_prefix("session_id=") {
+                session_id = val.to_string();
+            } else if let Some(val) = line.strip_prefix("aiki_session_id=") {
+                if session_id.is_empty() {
+                    session_id = val.to_string();
+                }
+            } else if let Some(val) = line.strip_prefix("started_at=") {
+                started_at = val.to_string();
+            } else if let Some(val) = line.strip_prefix("parent_pid=") {
+                parent_pid = val.parse().ok();
+            } else if let Some(val) = line.strip_prefix("repo=") {
+                repos.push(val.to_string());
+            }
+        }
+
+        // Use filename as session_id fallback
+        if session_id.is_empty() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                session_id = name.to_string();
+            } else {
+                continue;
+            }
+        }
+
+        sessions.push(SessionInfo {
+            session_id,
+            agent,
+            started_at,
+            parent_pid,
+            repos,
+        });
+    }
+
+    // Sort by started_at descending (newest first)
+    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    Ok(sessions)
+}
+
 /// Result of detecting the current session context
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // Part of session API
@@ -1113,18 +1185,6 @@ fn find_session_by_repo(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
     matching_sessions.pop()
 }
 
-/// Get the TTL threshold for a given agent type
-///
-/// Editor agents (Cursor, Claude Code) get 8 hours.
-/// CLI agents get 2 hours.
-#[must_use]
-fn get_ttl_threshold(agent_type: AgentType) -> Duration {
-    match agent_type {
-        AgentType::ClaudeCode | AgentType::Cursor => EDITOR_TTL,
-        _ => CLI_TTL,
-    }
-}
-
 /// Extract and parse the `timestamp=` field from a JJ event description.
 ///
 /// Supports RFC 3339 format (e.g., "2026-01-23T12:00:00Z") and
@@ -1179,13 +1239,13 @@ fn parse_event_timestamp(description: &str) -> std::result::Result<Option<DateTi
 /// - `Ok(None)` - no events found (orphaned session)
 /// - `Err(e)` - JJ query failed (repo lock, jj not in PATH, etc.)
 fn query_latest_event(repo_path: &Path, session_id: &str) -> std::result::Result<Option<DateTime<Utc>>, String> {
-    use std::process::Command;
+    use crate::jj::jj_cmd;
 
     // Query JJ for latest event in this session
     // Use ::aiki/conversations (ancestors) to scan full conversation history
     // Extract the event metadata timestamp= field (not committer.timestamp() which
     // can skew if events are backfilled or timestamped differently)
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .args([
             "log",
             "-r",
@@ -1193,6 +1253,7 @@ fn query_latest_event(repo_path: &Path, session_id: &str) -> std::result::Result
             "--limit", "1",
             "--no-graph",
             "--template", "description ++ \"\\n\"",
+            "--ignore-working-copy",
         ])
         .current_dir(repo_path)
         .output()
@@ -1211,11 +1272,12 @@ fn query_latest_event(repo_path: &Path, session_id: &str) -> std::result::Result
     parse_event_timestamp(&stdout)
 }
 
-/// Parse a session file and extract metadata needed for TTL cleanup
+/// Parsed session file metadata used for cleanup and session detection
 struct SessionFileInfo {
     path: PathBuf,
     agent_type: Option<AgentType>,
     session_id: Option<String>,
+    external_session_id: Option<String>,
     parent_pid: Option<u32>,
 }
 
@@ -1223,6 +1285,7 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
     let content = fs::read_to_string(path).ok()?;
     let mut agent_type: Option<AgentType> = None;
     let mut session_id: Option<String> = None;
+    let mut external_session_id: Option<String> = None;
     let mut parent_pid: Option<u32> = None;
 
     for line in content.lines() {
@@ -1238,6 +1301,8 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
             if session_id.is_none() {
                 session_id = Some(val.to_string());
             }
+        } else if let Some(val) = line.strip_prefix("external_session_id=") {
+            external_session_id = Some(val.to_string());
         }
     }
 
@@ -1245,21 +1310,24 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
         path: path.to_path_buf(),
         agent_type,
         session_id,
+        external_session_id,
         parent_pid,
     })
 }
 
-/// Emit a synthetic session.ended event to history only (no flow execution)
+/// Emit a synthetic session.ended event through the event bus.
 ///
-/// Used during TTL/PID cleanup when the agent is disconnected.
-/// Does NOT execute the `session.ended` flow section since context actions are meaningless.
-fn emit_synthetic_session_ended(repo_path: &Path, session_info: &SessionFileInfo, reason: SessionCleanupReason) {
+/// Used during PID cleanup when the agent process is dead.
+/// Dispatches a full `session.ended` event so that history recording,
+/// flow execution, and session file cleanup all happen through the
+/// normal event handling path.
+fn emit_synthetic_session_ended(session_info: &SessionFileInfo, reason: SessionCleanupReason) {
     use crate::cache::debug_log;
+    use crate::event_bus;
+    use crate::events::{AikiEvent, AikiSessionEndedPayload};
 
     let reason_str = match reason {
         SessionCleanupReason::PidDead => "pid_dead",
-        SessionCleanupReason::TtlExpired => "ttl_expired",
-        SessionCleanupReason::NoEvents => "no_events",
     };
 
     debug_log(|| format!(
@@ -1268,81 +1336,35 @@ fn emit_synthetic_session_ended(repo_path: &Path, session_info: &SessionFileInfo
         reason_str
     ));
 
-    // Record to history if we have enough info
-    // Use from_uuid since session_id in the file IS the final UUID (not external_id)
-    if let (Some(session_id), Some(agent_type)) = (&session_info.session_id, session_info.agent_type) {
-        let session = AikiSession::from_uuid(session_id.clone(), agent_type);
-        let cwd_str = repo_path.to_string_lossy();
-        if let Err(e) = crate::history::record_session_end(
-            repo_path,
-            &session,
-            Utc::now(),
-            reason_str,
-            None, // repo_id: will be populated after global state migration
-            Some(&cwd_str),
-        ) {
-            debug_log(|| format!("Failed to record synthetic session end: {}", e));
-        }
+    let (Some(session_id), Some(agent_type)) = (&session_info.session_id, session_info.agent_type) else {
+        debug_log(|| "Cannot emit synthetic session.ended: missing session_id or agent_type".to_string());
+        return;
+    };
+
+    let session = AikiSession::from_uuid(session_id.clone(), agent_type);
+    let cwd = global::global_aiki_dir();
+
+    let event = AikiEvent::SessionEnded(AikiSessionEndedPayload {
+        session,
+        cwd,
+        timestamp: Utc::now(),
+        reason: reason_str.to_string(),
+    });
+
+    if let Err(e) = event_bus::dispatch(event) {
+        debug_log(|| format!("Failed to dispatch synthetic session.ended: {}", e));
     }
 }
 
-/// Determine what cleanup action to take for a session.
-///
-/// Returns `Some(reason)` if the session should be cleaned up, `None` if it should be kept.
-/// This is the core decision logic extracted for testability.
-///
-/// Decision priorities:
-/// 1. PID dead → immediate cleanup (fast, no JJ query needed)
-/// 2. TTL expired → cleanup if last event exceeds threshold
-/// 3. No events → orphaned session, cleanup
-/// 4. Query error → keep session (transient failure)
-fn determine_cleanup_action(
-    pid_alive: bool,
-    agent_type: AgentType,
-    latest_event: std::result::Result<Option<DateTime<Utc>>, String>,
-    now: DateTime<Utc>,
-) -> Option<SessionCleanupReason> {
-    // Fast path: PID dead takes precedence
-    if !pid_alive {
-        return Some(SessionCleanupReason::PidDead);
-    }
 
-    let ttl = get_ttl_threshold(agent_type);
-
-    match latest_event {
-        Ok(Some(last_event)) => {
-            let elapsed = now.signed_duration_since(last_event);
-            if elapsed > chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::hours(8)) {
-                Some(SessionCleanupReason::TtlExpired)
-            } else {
-                None // Active session - within TTL
-            }
-        }
-        Ok(None) => {
-            // No events found = orphaned session (created but never used)
-            Some(SessionCleanupReason::NoEvents)
-        }
-        Err(_) => {
-            // Query failed - don't delete (could be transient error)
-            None
-        }
-    }
-}
-
-/// Clean up stale session files where the parent process no longer exists
-/// or where the session has exceeded its TTL threshold.
+/// Remove session files whose parent PID is dead.
 ///
-/// Called on SessionStart to remove orphaned sessions from crashed agents.
-/// Cleanup priorities:
-/// 1. PID dead → immediate cleanup (fast, no JJ query)
-/// 2. TTL expired → cleanup after JJ query confirms staleness
-/// 3. No events → orphaned session, cleanup
+/// Dispatches full session.ended events through the event bus for each dead
+/// session. The event handler records to history, executes flows, and cleans
+/// up the session file.
 ///
-/// The `jj_cwd` parameter is needed for querying JJ to get latest event timestamps.
-pub fn cleanup_stale_sessions(jj_cwd: impl AsRef<Path>) {
-    use crate::cache::debug_log;
-
-    let jj_cwd = jj_cwd.as_ref();
+/// Does not query JJ for TTL — only checks process liveness.
+pub fn prune_dead_pid_sessions() {
     let sessions_dir = global::global_sessions_dir();
 
     if !sessions_dir.exists() {
@@ -1354,16 +1376,14 @@ pub fn cleanup_stale_sessions(jj_cwd: impl AsRef<Path>) {
         Err(_) => return,
     };
 
-    // Refresh process list once for all PID checks
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::All, true);
 
-    // Collect session files to process
     let session_files: Vec<_> = entries
         .filter_map(|e| e.ok())
         .filter(|entry| {
             let path = entry.path();
-            path.is_file() && path.extension().is_none() // Skip .turn files
+            path.is_file() && path.extension().is_none()
         })
         .filter_map(|entry| parse_session_file(&entry.path()))
         .collect();
@@ -1374,47 +1394,10 @@ pub fn cleanup_stale_sessions(jj_cwd: impl AsRef<Path>) {
             None => true, // No PID = can't determine, treat as alive
         };
 
-        let agent_type = match session_info.agent_type {
-            Some(at) => at,
-            None => continue, // Can't determine TTL without agent type
-        };
-
-        let session_id = match &session_info.session_id {
-            Some(id) => id,
-            None => continue, // Can't query without session_id
-        };
-
-        // Skip JJ query if PID is dead (determine_cleanup_action will return PidDead)
-        let latest_event = if pid_alive {
-            query_latest_event(jj_cwd, session_id)
-        } else {
-            Ok(None) // Doesn't matter - PID dead takes precedence
-        };
-
-        match determine_cleanup_action(pid_alive, agent_type, latest_event, Utc::now()) {
-            Some(reason) => cleanup_session_file(jj_cwd, session_info, reason),
-            None => {
-                // Session is active or query failed - keep it
-                if !pid_alive {
-                    // Shouldn't reach here, but log if it does
-                    debug_log(|| "Unexpected: PID dead but no cleanup action".to_string());
-                }
-            }
-        }
-    }
-}
-
-/// Remove a session file, emitting synthetic session.ended
-fn cleanup_session_file(jj_cwd: &Path, session_info: &SessionFileInfo, reason: SessionCleanupReason) {
-    use crate::cache::debug_log;
-
-    // Emit synthetic session.ended to history only (no flows)
-    emit_synthetic_session_ended(jj_cwd, session_info, reason);
-
-    // Remove session file
-    if let Err(e) = fs::remove_file(&session_info.path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            debug_log(|| format!("Failed to remove session file: {}", e));
+        if !pid_alive {
+            // Dispatches through event bus → handle_session_ended which
+            // records history, runs flows, and deletes the session file.
+            emit_synthetic_session_ended(session_info, SessionCleanupReason::PidDead);
         }
     }
 }
@@ -1960,10 +1943,9 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_stale_sessions_removes_dead_pid() {
+    fn test_prune_dead_pid_sessions_removes_dead_pid() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
-        let repo_path = repo_dir.path();
+        let (_repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
 
         // Create a session with a PID that definitely doesn't exist
         let session = AikiSession::new(
@@ -1981,17 +1963,16 @@ mod tests {
         assert!(session_file.exists());
 
         // Cleanup should remove it
-        cleanup_stale_sessions(repo_path);
+        prune_dead_pid_sessions();
 
         // Session file should be gone
         assert!(!session_file.exists());
     }
 
     #[test]
-    fn test_cleanup_stale_sessions_keeps_live_pid() {
+    fn test_prune_dead_pid_sessions_keeps_live_pid() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
-        let repo_path = repo_dir.path();
+        let (_repo_dir, _aiki_home, _guard) = setup_test_repo_with_global_inner();
 
         // Create a session with our own PID (which is alive)
         let our_pid = std::process::id();
@@ -2010,7 +1991,7 @@ mod tests {
         assert!(session_file.exists());
 
         // Cleanup should NOT remove it (process is alive)
-        cleanup_stale_sessions(repo_path);
+        prune_dead_pid_sessions();
 
         // Session file should still exist
         assert!(session_file.exists());
@@ -2074,12 +2055,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ttl_threshold_editor_agents() {
-        assert_eq!(get_ttl_threshold(AgentType::ClaudeCode), EDITOR_TTL);
-        assert_eq!(get_ttl_threshold(AgentType::Cursor), EDITOR_TTL);
-    }
-
-    #[test]
     fn test_parse_session_file_new_format() {
         let temp_dir = setup_test_repo();
         let sessions_dir = temp_dir.path().join(".aiki/sessions");
@@ -2107,29 +2082,6 @@ mod tests {
         assert_eq!(info.agent_type, Some(AgentType::Cursor));
         assert_eq!(info.session_id, Some("old-uuid-123".to_string()));
         assert_eq!(info.parent_pid, Some(88888));
-    }
-
-    #[test]
-    fn test_cleanup_session_file_removes_session_file() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
-        let sessions_dir = repo_path.join(".aiki/sessions");
-        fs::create_dir_all(&sessions_dir).unwrap();
-
-        // Create session file
-        let session_path = sessions_dir.join("test-session");
-        fs::write(&session_path, "[aiki]\nagent=claude\nsession_id=test-uuid\nparent_pid=1\n[/aiki]\n").unwrap();
-
-        let info = SessionFileInfo {
-            path: session_path.clone(),
-            agent_type: Some(AgentType::ClaudeCode),
-            session_id: Some("test-uuid".to_string()),
-            parent_pid: Some(1),
-        };
-
-        cleanup_session_file(repo_path, &info, SessionCleanupReason::PidDead);
-
-        assert!(!session_path.exists(), "Session file should be removed");
     }
 
     #[test]
@@ -2172,138 +2124,6 @@ mod tests {
             session.session_id == "uuid-a" || session.session_id == "uuid-b",
             "Should return one of the matching sessions"
         );
-    }
-
-    #[test]
-    fn test_cleanup_session_file_with_ttl_expired_reason() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
-        let sessions_dir = repo_path.join(".aiki/sessions");
-        fs::create_dir_all(&sessions_dir).unwrap();
-
-        let session_path = sessions_dir.join("ttl-session");
-        fs::write(&session_path, "[aiki]\nagent=claude\nsession_id=ttl-uuid\nparent_pid=1\n[/aiki]\n").unwrap();
-
-        let info = SessionFileInfo {
-            path: session_path.clone(),
-            agent_type: Some(AgentType::ClaudeCode),
-            session_id: Some("ttl-uuid".to_string()),
-            parent_pid: Some(1),
-        };
-
-        cleanup_session_file(repo_path, &info, SessionCleanupReason::TtlExpired);
-
-        assert!(!session_path.exists(), "Session file should be removed for ttl_expired");
-    }
-
-    #[test]
-    fn test_cleanup_session_file_with_no_events_reason() {
-        let temp_dir = setup_test_repo();
-        let repo_path = temp_dir.path();
-        let sessions_dir = repo_path.join(".aiki/sessions");
-        fs::create_dir_all(&sessions_dir).unwrap();
-
-        let session_path = sessions_dir.join("orphan-session");
-        fs::write(&session_path, "[aiki]\nagent=cursor\nsession_id=orphan-uuid\nparent_pid=2\n[/aiki]\n").unwrap();
-
-        let info = SessionFileInfo {
-            path: session_path.clone(),
-            agent_type: Some(AgentType::Cursor),
-            session_id: Some("orphan-uuid".to_string()),
-            parent_pid: Some(2),
-        };
-
-        cleanup_session_file(repo_path, &info, SessionCleanupReason::NoEvents);
-
-        assert!(!session_path.exists(), "Session file should be removed for no_events");
-    }
-
-    // --- determine_cleanup_action decision layer tests ---
-
-    #[test]
-    fn test_cleanup_decision_pid_dead_trumps_all() {
-        let now = Utc::now();
-        // Even with a recent event, PID dead should trigger cleanup
-        let recent_event = Ok(Some(now - chrono::Duration::minutes(5)));
-        let result = determine_cleanup_action(false, AgentType::ClaudeCode, recent_event, now);
-        assert_eq!(result, Some(SessionCleanupReason::PidDead));
-    }
-
-    #[test]
-    fn test_cleanup_decision_pid_dead_with_no_events() {
-        let now = Utc::now();
-        let result = determine_cleanup_action(false, AgentType::Cursor, Ok(None), now);
-        assert_eq!(result, Some(SessionCleanupReason::PidDead));
-    }
-
-    #[test]
-    fn test_cleanup_decision_pid_dead_with_query_error() {
-        let now = Utc::now();
-        let result = determine_cleanup_action(false, AgentType::ClaudeCode, Err("jj failed".to_string()), now);
-        assert_eq!(result, Some(SessionCleanupReason::PidDead));
-    }
-
-    #[test]
-    fn test_cleanup_decision_ttl_expired_editor_agent() {
-        let now = Utc::now();
-        // Editor TTL is 8 hours; event 9 hours ago should trigger cleanup
-        let old_event = Ok(Some(now - chrono::Duration::hours(9)));
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, old_event, now);
-        assert_eq!(result, Some(SessionCleanupReason::TtlExpired));
-    }
-
-    #[test]
-    fn test_cleanup_decision_ttl_expired_cli_agent() {
-        let now = Utc::now();
-        // CLI TTL is 2 hours; event 3 hours ago should trigger cleanup
-        let old_event = Ok(Some(now - chrono::Duration::hours(3)));
-        let result = determine_cleanup_action(true, AgentType::Unknown, old_event, now);
-        assert_eq!(result, Some(SessionCleanupReason::TtlExpired));
-    }
-
-    #[test]
-    fn test_cleanup_decision_within_ttl_keeps_session() {
-        let now = Utc::now();
-        // Editor TTL is 8 hours; event 1 hour ago is within threshold
-        let recent_event = Ok(Some(now - chrono::Duration::hours(1)));
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, recent_event, now);
-        assert_eq!(result, None, "Session within TTL should be kept");
-    }
-
-    #[test]
-    fn test_cleanup_decision_cli_within_ttl() {
-        let now = Utc::now();
-        // CLI TTL is 2 hours; event 30 minutes ago is within threshold
-        let recent_event = Ok(Some(now - chrono::Duration::minutes(30)));
-        let result = determine_cleanup_action(true, AgentType::Unknown, recent_event, now);
-        assert_eq!(result, None, "CLI session within TTL should be kept");
-    }
-
-    #[test]
-    fn test_cleanup_decision_no_events_orphaned() {
-        let now = Utc::now();
-        let result = determine_cleanup_action(true, AgentType::Cursor, Ok(None), now);
-        assert_eq!(result, Some(SessionCleanupReason::NoEvents));
-    }
-
-    #[test]
-    fn test_cleanup_decision_query_error_keeps_session() {
-        let now = Utc::now();
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, Err("jj not found".to_string()), now);
-        assert_eq!(result, None, "Query failure should not trigger cleanup");
-    }
-
-    #[test]
-    fn test_cleanup_decision_editor_vs_cli_ttl_boundary() {
-        let now = Utc::now();
-        // Event 3 hours ago: within editor TTL (8h) but past CLI TTL (2h)
-        let event_3h_ago = Ok(Some(now - chrono::Duration::hours(3)));
-
-        let editor_result = determine_cleanup_action(true, AgentType::ClaudeCode, event_3h_ago.clone(), now);
-        assert_eq!(editor_result, None, "Editor agent within 8h TTL should be kept");
-
-        let cli_result = determine_cleanup_action(true, AgentType::Unknown, event_3h_ago, now);
-        assert_eq!(cli_result, Some(SessionCleanupReason::TtlExpired), "CLI agent past 2h TTL should be cleaned");
     }
 
     #[test]
@@ -2415,56 +2235,6 @@ mod tests {
         let result = parse_event_timestamp(description);
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
-    }
-
-    // ========================================================================
-    // determine_cleanup_action integration tests with parse_event_timestamp
-    // ========================================================================
-
-    #[test]
-    fn test_cleanup_ttl_expired_via_event_timestamp() {
-        let now = Utc::now();
-        // Simulate event description from 10 hours ago
-        let old_timestamp = (now - chrono::Duration::hours(10)).to_rfc3339();
-        let description = format!("event=prompt\ntimestamp={}\n", old_timestamp);
-        let parsed = parse_event_timestamp(&description);
-
-        // Editor agent: 8h TTL, 10h elapsed -> should expire
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, parsed, now);
-        assert_eq!(result, Some(SessionCleanupReason::TtlExpired));
-    }
-
-    #[test]
-    fn test_cleanup_within_ttl_via_event_timestamp() {
-        let now = Utc::now();
-        // Simulate event description from 1 hour ago
-        let recent_timestamp = (now - chrono::Duration::hours(1)).to_rfc3339();
-        let description = format!("event=prompt\ntimestamp={}\n", recent_timestamp);
-        let parsed = parse_event_timestamp(&description);
-
-        // Editor agent: 8h TTL, 1h elapsed -> should keep
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, parsed, now);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_cleanup_no_events_orphaned() {
-        let now = Utc::now();
-        // Empty description = no events
-        let parsed = parse_event_timestamp("");
-
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, parsed, now);
-        assert_eq!(result, Some(SessionCleanupReason::NoEvents));
-    }
-
-    #[test]
-    fn test_cleanup_query_error_keeps_session() {
-        let now = Utc::now();
-        // Simulate parse error (missing timestamp field)
-        let parsed = parse_event_timestamp("event=prompt\nno_timestamp_here\n");
-
-        let result = determine_cleanup_action(true, AgentType::ClaudeCode, parsed, now);
-        assert_eq!(result, None, "Query errors should keep session (transient failure)");
     }
 
     #[test]

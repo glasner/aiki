@@ -59,6 +59,7 @@ fn validate_sources(sources: &[String]) -> Result<()> {
 ///
 /// Returns the sources with "prompt" replaced, or an error if resolution fails.
 fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<String>> {
+    use crate::global;
     use crate::history::get_latest_prompt_change_id;
     use crate::session::find_active_session;
 
@@ -72,14 +73,28 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
     let session =
         find_active_session(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
 
-    // Get the latest prompt's change_id for this session
-    let prompt_change_id = get_latest_prompt_change_id(cwd, &session.session_id)?
-        .ok_or(AikiError::NoPromptEventsForSession)?;
+    // Get the latest prompt's change_id for this session.
+    // Conversation history is stored in the global JJ repo at ~/.aiki/, not the project repo.
+    // The prompt event may not be written yet (hook fires concurrently with event recording),
+    // so retry a few times with backoff before giving up.
+    let global_dir = global::global_aiki_dir();
+    let mut prompt_change_id = None;
+    for attempt in 0..10 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+        }
+        if let Some(id) = get_latest_prompt_change_id(&global_dir, &session.session_id)? {
+            prompt_change_id = Some(id);
+            break;
+        }
+    }
+
+    let change_id = prompt_change_id.ok_or(AikiError::NoPromptEventsForSession)?;
 
     // Replace "prompt" with "prompt:<change_id>"
     for source in &mut sources {
         if source == "prompt" {
-            *source = format!("prompt:{}", prompt_change_id);
+            *source = format!("prompt:{}", change_id);
         }
     }
 
@@ -1705,11 +1720,11 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
 
 /// Query changes that have a task ID in their provenance
 fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> {
-    use std::process::Command;
+    use crate::jj::jj_cmd;
 
     // Query JJ for changes with this task ID in their description
     // Format: change_id timestamp (first line only)
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .current_dir(cwd)
         .args([
             "log",
@@ -1718,6 +1733,7 @@ fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> 
             "--no-graph",
             "-T",
             r#"change_id ++ " " ++ author.timestamp().format("%Y-%m-%dT%H:%M:%S") ++ "\n""#,
+            "--ignore-working-copy",
         ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query changes: {}", e)))?;
@@ -1752,11 +1768,11 @@ fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> 
 
 /// Get the diff for a specific change
 fn get_change_diff(cwd: &Path, change_id: &str) -> Result<String> {
-    use std::process::Command;
+    use crate::jj::jj_cmd;
 
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .current_dir(cwd)
-        .args(["diff", "-r", change_id, "--color=never"])
+        .args(["diff", "-r", change_id, "--color=never", "--ignore-working-copy"])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
 
@@ -2452,9 +2468,9 @@ fn create_from_template(
 /// Returns the change_id of the current working copy (`@` in jj terms).
 /// This is captured when creating tasks from templates for historical template lookup.
 fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
-    use std::process::Command;
+    use crate::jj::jj_cmd;
 
-    let output = Command::new("jj")
+    let output = jj_cmd()
         .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
         .current_dir(cwd)
         .output()
