@@ -12,7 +12,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use super::types::{AgentType, ConversationEvent, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
+use super::types::{AgentType, ConversationEvent, ConversationSummary, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
 
 /// Configuration for JJ write retry logic
 const MAX_RETRIES: u32 = 3;
@@ -501,6 +501,91 @@ pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
     }
 
     Ok(events)
+}
+
+/// List conversations with summary information
+///
+/// Returns a list of conversation summaries, sorted by most recent activity first.
+/// Only sessions that have a `SessionStart` event are included.
+/// Defaults to returning at most 10 results if `limit` is `None`.
+#[allow(dead_code)] // Part of history API
+pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<ConversationSummary>> {
+    let events = read_events(cwd)?;
+
+    // Group events by session_id
+    let mut sessions: HashMap<String, Vec<&ConversationEvent>> = HashMap::new();
+    for event in &events {
+        let session_id = match event {
+            ConversationEvent::Prompt { session_id, .. }
+            | ConversationEvent::Response { session_id, .. }
+            | ConversationEvent::SessionStart { session_id, .. }
+            | ConversationEvent::SessionEnd { session_id, .. }
+            | ConversationEvent::Autoreply { session_id, .. } => session_id,
+        };
+        sessions.entry(session_id.clone()).or_default().push(event);
+    }
+
+    let mut summaries: Vec<ConversationSummary> = Vec::new();
+
+    for (_session_id, session_events) in &sessions {
+        // Find the SessionStart event
+        let session_start = session_events.iter().find(|e| {
+            matches!(e, ConversationEvent::SessionStart { .. })
+        });
+
+        let session_start = match session_start {
+            Some(s) => s,
+            None => continue, // Skip sessions without a SessionStart event
+        };
+
+        let (session_id, agent_type, started_at, repo_id) = match session_start {
+            ConversationEvent::SessionStart {
+                session_id,
+                agent_type,
+                timestamp,
+                repo_id,
+                ..
+            } => (session_id.clone(), agent_type.clone(), *timestamp, repo_id.clone()),
+            _ => unreachable!(),
+        };
+
+        // Count Prompt events as turn_count
+        let turn_count = session_events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::Prompt { .. }))
+            .count() as u32;
+
+        // Find the latest event timestamp
+        let last_activity = session_events
+            .iter()
+            .map(|e| match e {
+                ConversationEvent::Prompt { timestamp, .. }
+                | ConversationEvent::Response { timestamp, .. }
+                | ConversationEvent::SessionStart { timestamp, .. }
+                | ConversationEvent::SessionEnd { timestamp, .. }
+                | ConversationEvent::Autoreply { timestamp, .. } => *timestamp,
+            })
+            .max()
+            .unwrap_or(started_at);
+
+        summaries.push(ConversationSummary {
+            session_id,
+            agent_type,
+            started_at,
+            turn_count,
+            last_activity,
+            repo_id,
+        });
+    }
+
+    // Sort by last_activity descending (most recent first)
+    summaries.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
+    // Apply limit (default to 10)
+    let limit = limit.unwrap_or(10);
+    summaries.truncate(limit);
+
+    Ok(summaries)
 }
 
 /// Escape a string value for metadata storage
