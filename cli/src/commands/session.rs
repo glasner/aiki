@@ -1,3 +1,4 @@
+use crate::provenance::AgentType;
 use crate::error::Result;
 use crate::global;
 use crate::history;
@@ -35,6 +36,68 @@ fn format_timestamp(dt: &chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+fn format_time_only(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    dt.format("%H:%M").to_string()
+}
+
+fn format_duration_between(
+    start: &chrono::DateTime<chrono::Utc>,
+    end: &chrono::DateTime<chrono::Utc>,
+) -> String {
+    let secs = (*end - *start).num_seconds().max(0);
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m == 0 {
+            format!("{}h", h)
+        } else {
+            format!("{}h{}m", h, m)
+        }
+    }
+}
+
+const SEPARATOR_WIDTH: usize = 50;
+
+struct SessionRow {
+    session_id: String,
+    agent_type: AgentType,
+    pid: Option<u32>,
+    turns: String,
+    started: String,
+    last_activity: String,
+    status: &'static str,
+}
+
+fn print_session_table(rows: &[SessionRow]) {
+    println!(
+        "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
+        "SESSION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
+    );
+
+    for row in rows {
+        let agent_display = match row.pid {
+            Some(pid) => format!("{} ({})", row.agent_type, pid),
+            None => row.agent_type.to_string(),
+        };
+
+        println!(
+            "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
+            row.session_id, agent_display, row.turns, row.started, row.last_activity, row.status
+        );
+    }
+
+    let count = rows.len();
+    println!(
+        "\n{} session{}",
+        count,
+        if count == 1 { "" } else { "s" }
+    );
+}
+
 fn run_list(active: bool, limit: usize) -> Result<()> {
     session::prune_dead_pid_sessions();
     let active_sessions = session::list_all_sessions()?;
@@ -54,49 +117,44 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
             .map(|c| (c.session_id.as_str(), c))
             .collect();
 
-        println!(
-            "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-            "SESSION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
-        );
+        let rows: Vec<SessionRow> = active_sessions
+            .iter()
+            .take(limit)
+            .map(|s| {
+                let agent_type = AgentType::from_str(&s.agent).unwrap_or(AgentType::Unknown);
+                let conv = conv_map.get(s.session_id.as_str());
 
-        for s in active_sessions.iter().take(limit) {
-            let agent_display = match s.parent_pid {
-                Some(pid) => format!("{} ({})", s.agent, pid),
-                None => s.agent.clone(),
-            };
+                let turns = conv
+                    .map(|c| c.turn_count.to_string())
+                    .unwrap_or_else(|| "-".to_string());
 
-            let conv = conv_map.get(s.session_id.as_str());
+                let started = if let Some(c) = conv {
+                    format_timestamp(&c.started_at)
+                } else if let Some(dot_pos) = s.started_at.find('.') {
+                    s.started_at[..dot_pos].to_string()
+                } else if let Some(plus_pos) = s.started_at.find('+') {
+                    s.started_at[..plus_pos].to_string()
+                } else {
+                    s.started_at.clone()
+                };
 
-            let turns = conv
-                .map(|c| c.turn_count.to_string())
-                .unwrap_or_else(|| "-".to_string());
+                let last_activity = conv
+                    .map(|c| format_timestamp(&c.last_activity))
+                    .unwrap_or_else(|| "-".to_string());
 
-            let started = if let Some(c) = conv {
-                format_timestamp(&c.started_at)
-            } else if let Some(dot_pos) = s.started_at.find('.') {
-                s.started_at[..dot_pos].to_string()
-            } else if let Some(plus_pos) = s.started_at.find('+') {
-                s.started_at[..plus_pos].to_string()
-            } else {
-                s.started_at.clone()
-            };
+                SessionRow {
+                    session_id: s.session_id.clone(),
+                    agent_type,
+                    pid: s.parent_pid,
+                    turns,
+                    started,
+                    last_activity,
+                    status: "active",
+                }
+            })
+            .collect();
 
-            let last_activity = conv
-                .map(|c| format_timestamp(&c.last_activity))
-                .unwrap_or_else(|| "-".to_string());
-
-            println!(
-                "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-                s.session_id, agent_display, turns, started, last_activity, "active"
-            );
-        }
-
-        let count = active_sessions.len();
-        println!(
-            "\n{} session{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
+        print_session_table(&rows);
     } else {
         // Default: show all sessions from JJ history
         let aiki_dir = global::global_aiki_dir();
@@ -113,46 +171,30 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
             .map(|s| (s.session_id.clone(), s))
             .collect();
 
-        println!(
-            "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-            "SESSION", "AGENT", "TURNS", "STARTED", "LAST ACTIVITY", "STATUS"
-        );
+        let rows: Vec<SessionRow> = conversations
+            .iter()
+            .map(|conv| {
+                let active_session = active_map.get(&conv.session_id);
 
-        for conv in &conversations {
-            let active_session = active_map.get(&conv.session_id);
+                let (pid, status) = if let Some(session_info) = active_session {
+                    (session_info.parent_pid, "active")
+                } else {
+                    (None, "ended")
+                };
 
-            let agent_display = if let Some(session_info) = active_session {
-                match session_info.parent_pid {
-                    Some(pid) => format!("{} ({})", conv.agent_type, pid),
-                    None => conv.agent_type.to_string(),
+                SessionRow {
+                    session_id: conv.session_id.clone(),
+                    agent_type: conv.agent_type,
+                    pid,
+                    turns: conv.turn_count.to_string(),
+                    started: format_timestamp(&conv.started_at),
+                    last_activity: format_timestamp(&conv.last_activity),
+                    status,
                 }
-            } else {
-                conv.agent_type.to_string()
-            };
+            })
+            .collect();
 
-            let status = if active_session.is_some() {
-                "active"
-            } else {
-                "ended"
-            };
-
-            println!(
-                "{:<38}  {:<20}  {:<7}  {:<20}  {:<20}  {}",
-                conv.session_id,
-                agent_display,
-                conv.turn_count,
-                format_timestamp(&conv.started_at),
-                format_timestamp(&conv.last_activity),
-                status
-            );
-        }
-
-        let count = conversations.len();
-        println!(
-            "\n{} session{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
+        print_session_table(&rows);
     }
 
     Ok(())
@@ -196,15 +238,52 @@ fn run_show(id: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Display events chronologically
+    // Extract session metadata for the header
+    let session_start = matching.iter().find(|e| {
+        matches!(e, ConversationEvent::SessionStart { .. })
+    });
+    let session_end = matching.iter().find(|e| {
+        matches!(e, ConversationEvent::SessionEnd { .. })
+    });
+
+    // Print header line: "Session: <agent> · <date> <start>–<end> (<duration>)"
+    if let Some(ConversationEvent::SessionStart {
+        timestamp: start_ts,
+        agent_type,
+        ..
+    }) = session_start
+    {
+        let date = start_ts.format("%Y-%m-%d").to_string();
+        let start_time = format_time_only(start_ts);
+
+        let end_part = if let Some(ConversationEvent::SessionEnd {
+            timestamp: end_ts, ..
+        }) = session_end
+        {
+            let duration = format_duration_between(start_ts, end_ts);
+            format!(
+                "\u{2013}{} ({})",
+                format_time_only(end_ts),
+                duration
+            )
+        } else {
+            String::from(" (active)")
+        };
+
+        println!(
+            "Session: {} \u{00b7} {} {}{}",
+            agent_type, date, start_time, end_part
+        );
+    }
+
+    // Group events by turn number for display
+    let mut last_turn: Option<u32> = None;
+    let mut last_prompt_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+
     for event in &matching {
         match event {
-            ConversationEvent::SessionStart {
-                timestamp,
-                agent_type,
-                ..
-            } => {
-                println!("[{}] Session started ({})", format_timestamp(timestamp), agent_type);
+            ConversationEvent::SessionStart { .. } | ConversationEvent::SessionEnd { .. } => {
+                // Already handled in header; skip
             }
             ConversationEvent::Prompt {
                 timestamp,
@@ -212,36 +291,48 @@ fn run_show(id: &str) -> Result<()> {
                 content,
                 ..
             } => {
+                // Print turn separator when turn number changes
+                if last_turn != Some(*turn) {
+                    println!(
+                        "\n\u{2500}\u{2500} Turn {} {}",
+                        turn,
+                        "\u{2500}".repeat(SEPARATOR_WIDTH - 9 - turn.to_string().len())
+                    );
+                    last_turn = Some(*turn);
+                }
+                last_prompt_ts = Some(*timestamp);
+
                 println!(
-                    "[{}] Turn {} (prompt):\n{}",
-                    format_timestamp(timestamp),
-                    turn,
-                    content
+                    "\n  \u{1f9d1}\u{200d}\u{1f4bb} prompt  ({})",
+                    format_time_only(timestamp)
                 );
+                for line in content.lines() {
+                    println!("  {}", line);
+                }
             }
             ConversationEvent::Response {
                 timestamp,
-                turn,
-                summary,
+                content,
                 files_written,
                 ..
             } => {
+                let elapsed = last_prompt_ts
+                    .map(|pt| format!(", {}", format_duration_between(&pt, timestamp)))
+                    .unwrap_or_default();
+
                 println!(
-                    "[{}] Turn {} (response):",
-                    format_timestamp(timestamp),
-                    turn,
+                    "\n  \u{1f916} response  ({}{})",
+                    format_time_only(timestamp),
+                    elapsed
                 );
-                if let Some(s) = summary {
-                    println!("{}", s);
+                if let Some(s) = content {
+                    for line in s.lines() {
+                        println!("  {}", line);
+                    }
                 }
                 if !files_written.is_empty() {
-                    println!("Files: {}", files_written.join(", "));
+                    println!("  Files: {}", files_written.join(", "));
                 }
-            }
-            ConversationEvent::SessionEnd {
-                timestamp, reason, ..
-            } => {
-                println!("[{}] Session ended ({})", format_timestamp(timestamp), reason);
             }
             ConversationEvent::Autoreply {
                 timestamp,
@@ -249,15 +340,28 @@ fn run_show(id: &str) -> Result<()> {
                 content,
                 ..
             } => {
+                if last_turn != Some(*turn) {
+                    println!(
+                        "\n\u{2500}\u{2500} Turn {} {}",
+                        turn,
+                        "\u{2500}".repeat(SEPARATOR_WIDTH - 9 - turn.to_string().len())
+                    );
+                    last_turn = Some(*turn);
+                }
+
                 println!(
-                    "[{}] Turn {} (autoreply):\n{}",
-                    format_timestamp(timestamp),
-                    turn,
-                    content
+                    "\n  \u{1f504} autoreply  ({})",
+                    format_time_only(timestamp)
                 );
+                for line in content.lines() {
+                    println!("  {}", line);
+                }
             }
         }
     }
+
+    // Footer separator
+    println!("\n{}", "\u{2500}".repeat(SEPARATOR_WIDTH));
 
     Ok(())
 }
