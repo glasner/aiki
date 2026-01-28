@@ -91,7 +91,8 @@ Files to modify:
         /// ACP integration point (proxy for ACP protocol agents)
         #[command(hide = true)]
         Acp {
-            agent_type: String,
+            #[arg(long)]
+            agent: String,
             #[arg(short, long)]
             bin: Option<String>,
             #[arg(last = true)]
@@ -99,9 +100,17 @@ Files to modify:
         },
         /// OTel integration point (Codex - reads HTTP/OTLP from stdin)
         #[command(hide = true)]
-        Otel,
+        Otel {
+            #[arg(long, default_value = "codex")]
+            agent: String,
+        },
     }
     ```
+    
+    **Note**: All three commands now use `--agent` flag for consistency:
+    - `stdin`: requires `--agent` and `--event`
+    - `acp`: requires `--agent`, optional `--bin`
+    - `otel`: `--agent` defaults to "codex"
 
 - `cli/src/commands/init.rs`
   - Merge `run_install()` logic from `hooks.rs` into init
@@ -120,23 +129,29 @@ Files to modify:
   - Update comments to clarify this is the stdin integration point
 
 - `cli/src/commands/acp.rs`
-  - Move `run()` function to `hooks.rs` as `run_acp()`
-  - Or keep file separate but called from hooks command
+  - Change function signature from `run(agent_type: String, ...)` to `run(agent: String, ...)`
+  - Update argument name: `agent_type` → `agent` throughout the function
+  - Keep file separate but called from hooks command
   - Update comments to clarify this is the ACP integration point
 
 - `cli/src/commands/otel_receive.rs`
-  - Move `run()` function to `hooks.rs` as `run_otel()`
-  - Or keep file separate but called from hooks command
+  - Change function signature from `run()` to `run(agent: String)`
+  - Add `agent` parameter (will default to "codex" in CLI arg parsing)
+  - Keep file separate but called from hooks command
   - Update comments to clarify this is the OTel integration point
+  - Note: The agent parameter allows future extensibility for non-Codex OTel sources
 
 - `cli/src/config.rs`
   - Update hook installation to use `aiki hooks stdin` instead of `aiki hooks handle`
   - Update OTel receiver installation to use `aiki hooks otel` instead of `aiki otel-receive`
+  - Update ACP invocations to use `aiki hooks acp --agent` instead of `aiki acp`
   - Update patterns like:
     - `aiki hooks handle --agent claude-code --event SessionStart`
     - → `aiki hooks stdin --agent claude-code --event SessionStart`
+    - `aiki acp claude-code`
+    - → `aiki hooks acp --agent claude-code`
     - `aiki otel-receive`
-    - → `aiki hooks otel`
+    - → `aiki hooks otel --agent codex` (or just `aiki hooks otel` using default)
 
 **2. Rename Flow Types to Hook Types**
 
@@ -336,8 +351,8 @@ aiki hooks acp claude-code
 
 # Integration points (hidden, called by installed hooks/services)
 aiki hooks stdin --agent claude-code --event SessionStart  # Claude Code, Cursor
-aiki hooks acp claude-code                                  # ACP agents
-aiki hooks otel                                             # Codex OTel receiver
+aiki hooks acp --agent claude-code                          # ACP agents
+aiki hooks otel --agent codex                               # Codex OTel receiver
 
 # Future: manage user-defined hooks
 aiki hooks list
@@ -389,6 +404,160 @@ aiki hooks add myorg/custom
 - `aiki hooks stdin` - Claude Code, Cursor (JSON via stdin)
 - `aiki hooks acp` - ACP protocol proxy for ACP-based agents
 - `aiki hooks otel` - Codex OTel receiver (HTTP/OTLP via stdin)
+
+## Signature Changes Summary
+
+### Command Signature Changes
+
+| Old Command | New Command | Key Changes |
+|-------------|-------------|-------------|
+| `aiki hooks handle --agent X --event Y` | `aiki hooks stdin --agent X --event Y` | Command rename only, signature unchanged |
+| `aiki acp <agent>` | `aiki hooks acp --agent <agent>` | Positional arg → `--agent` flag |
+| `aiki otel-receive` | `aiki hooks otel --agent codex` | Added `--agent` flag (defaults to "codex") |
+
+### Code Changes Required
+
+**1. CLI Argument Parsing (`cli/src/main.rs`)**
+```rust
+// OLD
+Acp {
+    agent_type: String,  // positional
+    ...
+}
+Otel,  // no args
+
+// NEW
+Acp {
+    #[arg(long)]
+    agent: String,  // named flag
+    ...
+}
+Otel {
+    #[arg(long, default_value = "codex")]
+    agent: String,  // named flag with default
+}
+```
+
+**2. Function Signatures**
+
+`cli/src/commands/acp.rs`:
+```rust
+// OLD
+pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()>
+
+// NEW
+pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()>
+// Also update all uses of `agent_type` variable inside function → `agent`
+```
+
+`cli/src/commands/otel_receive.rs`:
+```rust
+// OLD
+pub fn run() -> Result<()>
+
+// NEW
+pub fn run(agent: String) -> Result<()>
+// The `agent` parameter enables future extensibility (other OTel sources)
+// For now, it will always be "codex" from the CLI default
+```
+
+**3. Command Dispatch (`cli/src/main.rs`)**
+```rust
+// OLD
+Commands::Acp { agent_type, bin, agent_args } => {
+    commands::acp::run(agent_type, bin, agent_args)
+}
+Commands::OtelReceive => {
+    commands::otel_receive::run()
+}
+
+// NEW
+Commands::Hooks { command } => match command {
+    HooksCommands::Acp { agent, bin, agent_args } => {
+        commands::acp::run(agent, bin, agent_args)
+    }
+    HooksCommands::Otel { agent } => {
+        commands::otel_receive::run(agent)
+    }
+    ...
+}
+```
+
+**4. Installation Code (`cli/src/config.rs`)**
+
+Search for all command generation strings and update:
+- `aiki acp` → `aiki hooks acp --agent`
+- `aiki otel-receive` → `aiki hooks otel` (or `--agent codex`)
+
+**Specific locations to update:**
+
+a) **Launchd plist template** (`generate_launchd_plist()` function):
+```xml
+<!-- OLD -->
+<string>otel-receive</string>
+
+<!-- NEW -->
+<string>hooks</string>
+<string>otel</string>
+<string>--agent</string>
+<string>codex</string>
+```
+
+b) **Systemd service template** (`generate_systemd_service()` function):
+```ini
+# OLD
+ExecStart={} otel-receive
+
+# NEW
+ExecStart={} hooks otel --agent codex
+```
+
+c) **File paths** (stay the same for backwards compatibility):
+- `com.aiki.otel-receive.plist` ✓ (keep name)
+- `aiki-otel-receive.socket` ✓ (keep name)
+- `aiki-otel-receive@.service` ✓ (keep name)
+- `/tmp/aiki-otel-receive.err` ✓ (keep log path)
+
+d) **Function names** (internal, can stay the same):
+- `install_otel_receiver()` ✓
+- `restart_otel_receiver()` ✓
+- `is_otel_receiver_installed()` ✓
+
+e) **Other locations to check:**
+- Git hook installation templates
+- Agent config file generation
+- Help text and comments
+
+**5. Documentation Updates**
+
+Files to search and update:
+- `README.md` - Update command examples
+- `AGENTS.md` - If it shows command examples
+- Any config examples in `cli/src/config.rs` comments
+- Help text in command definitions
+
+### Testing Checklist
+
+After changes, verify:
+- [ ] `aiki hooks stdin --agent claude-code --event SessionStart` works
+- [ ] `aiki hooks acp --agent claude-code` works (new signature)
+- [ ] `aiki hooks otel` works (uses default agent)
+- [ ] `aiki hooks otel --agent codex` works (explicit agent)
+- [ ] `aiki init` generates correct hook commands
+- [ ] `aiki doctor` validates correct hook commands
+- [ ] **OTel receiver systemd service** uses correct command:
+  - [ ] Linux: Check `~/.config/systemd/user/aiki-otel-receive@.service`
+  - [ ] Verify `ExecStart` line: `aiki hooks otel --agent codex`
+  - [ ] Test: `systemctl --user restart aiki-otel-receive.socket`
+- [ ] **OTel receiver launchd service** uses correct command:
+  - [ ] macOS: Check `~/Library/LaunchAgents/com.aiki.otel-receive.plist`
+  - [ ] Verify `ProgramArguments`: `hooks`, `otel`, `--agent`, `codex`
+  - [ ] Test: `launchctl unload/load ~/Library/LaunchAgents/com.aiki.otel-receive.plist`
+- [ ] **Codex integration** works end-to-end:
+  - [ ] Codex sends OTel to port 19876
+  - [ ] Aiki receives and processes the data
+  - [ ] Hooks fire correctly from OTel events
+- [ ] Old commands fail with helpful error (removed, suggest new command)
 
 ## Open Questions
 
