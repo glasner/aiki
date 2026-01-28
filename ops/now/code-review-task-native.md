@@ -132,7 +132,7 @@ The default review template covers general code quality:
 
 - **`review`** (default) - General code quality, functionality, security, and performance
   - Subtasks: Digest code changes, Review code
-  - Bundled in binary at `cli/src/tasks/templates/builtin/review.md`
+  - Resolved from `.aiki/templates/aiki/review.md`
 
 **Custom templates:**
 - Users can create custom templates in `.aiki/templates/{namespace}/` (e.g., `.aiki/templates/myorg/`)
@@ -168,7 +168,7 @@ aiki review --changes @
 ```
 
 This internally executes:
-1. `task_add_with_children()` - Creates parent task + 2 subtasks atomically (digest, review)
+1. `create_task_from_template()` - Creates parent task + 2 subtasks atomically from the review template (digest, review)
 2. `aiki task run xqrmnpst --background` - Starts the review task and returns immediately
 3. Returns task ID to caller for later processing
 
@@ -196,7 +196,7 @@ instructions: |
   Code review orchestration task
   
   This task coordinates review steps.
-metadata:
+data:
   task_id: xqrmnpst
   changes: [zxywtuvs]
 ---
@@ -230,7 +230,7 @@ instructions: |
   - What files were changed
   - What functionality was added/modified
   - The scope and intent of the changes
-metadata:
+data:
   task_id: xqrmnpst
   changes: [zxywtuvs]
 ---
@@ -264,7 +264,7 @@ instructions: |
     "<description of issue, impact, and suggested fix>"
 
   Add comments as you find issues, don't wait until the end.
-metadata:
+data:
   task_id: xqrmnpst
   changes: [zxywtuvs]
 ---
@@ -293,7 +293,7 @@ context:
 type: review
 instructions: |
   Code review orchestration task
-metadata:
+data:
   task_id: xqrmnpst
   template: review
 scope_files:
@@ -450,7 +450,7 @@ scope:
     - path: src/auth.ts
     - path: src/middleware.ts
 source: task:xqrmnpst
-metadata:
+data:
   blocks: [mxsl]  # Blocks originating task if review was of task changes
 ---
 ```
@@ -514,7 +514,7 @@ source: comment:d5e6f7g8
 ```
 
 **Note**:
-- Parent task + all child tasks created atomically in one operation using `task_add_with_children()`
+- Parent task + all child tasks created atomically in one operation via the template system (`create_task_from_template()`)
 - No draft flag needed since all tasks are created together
 - Each child task carries structured `data` from the original comment (file, line, severity, category)
 - `instructions` contains the human-readable comment text
@@ -697,12 +697,12 @@ aiki review --template myorg/custom-review | aiki fix
 ```
 
 **Behavior (default, blocking):**
-1. Creates review task with children using `task_add_with_children()` (assignee: codex)
+1. Creates review task with subtasks via `create_task_from_template()` using the review template (assignee: codex)
 2. Calls `aiki task run <task_id>` to start the review (waits for completion)
 3. Outputs task ID to stdout, structured result to stderr
 
 **Behavior (--background):**
-1. Creates review task with children using `task_add_with_children()` (assignee: codex)
+1. Creates review task with subtasks via `create_task_from_template()` using the review template (assignee: codex)
 2. Calls `aiki task run <task_id> --background` to start the review
 3. Returns immediately — outputs task ID to stdout, status to stderr
 
@@ -871,7 +871,7 @@ Continue with your current work - the review runs in parallel.
 
 ```yaml
 # Simple session review (default: all closed tasks)
-response.received:
+turn.completed:
   - review: {}
 
 # Review completed task
@@ -994,8 +994,8 @@ Followup tasks created from `--loop` reviews include:
 # Top-level fields (not nested in metadata)
 source: task:xqrmnpst
 
-# Metadata for loop control
-metadata:
+# Data for loop control
+data:
   review_loop_enabled: true
   review_loop_parent: xqrmnpst  # Original review task
   review_loop_iteration: 1
@@ -1015,12 +1015,12 @@ name: "review-loop"
 version: "1"
 
 task.closed:
-  - if: $event.task.metadata.review_loop_enabled == true
+  - if: $event.task.data.review_loop_enabled == true
     then:
       - log: "Review loop followup completed, re-reviewing..."
       - review:
-          task_id: $event.task.metadata.review_loop_task_id
-          template: $event.task.metadata.review_loop_template
+          task_id: $event.task.data.review_loop_task_id
+          template: $event.task.data.review_loop_template
           from: codex
 
 review.closed:
@@ -1102,7 +1102,7 @@ review.closed:
 name: "session-review"
 version: "1"
 
-response.received:
+turn.completed:
   - if: $event.session.modified_files_count > 5
     then:
       - log: "Running session review before commit..."
@@ -1146,8 +1146,8 @@ shell.permission_asked:
 The task run command uses the `AgentRuntime` abstraction from [run-task.md](../done/run-task.md) to spawn agent sessions.
 
 **AgentRuntime Interface** (see run-task.md for implementation):
-- `spawn_blocking(options)` - Run agent and wait for completion
-- `spawn_background(options)` - Start agent and return immediately
+- `spawn_blocking(options)` - Run agent and wait for completion (implemented)
+- `spawn_background(options)` - Start agent and return immediately (not yet implemented — needs to be added to trait)
 - Returns session result (completed/stopped/failed) or background task handle
 
 ### Task Run Command (with --background)
@@ -1178,7 +1178,7 @@ The `aiki fix` command is **template-driven** rather than hardcoded logic. This 
 
 **Behavior:**
 1. Wrapper around template system: `aiki fix <task_id>` → `aiki task add --template aiki/fix --source task:<task_id>`
-2. Template system loads `aiki/fix` template (bundled in binary)
+2. Template system loads `aiki/fix` template (resolved from `.aiki/templates/aiki/fix.md`)
 3. If no comments: print "approved" message and exit 0
 4. If comments found:
    - Template uses `subtasks.from: source.comments` to iterate over comments
@@ -1198,7 +1198,7 @@ The `aiki fix` command is **template-driven** rather than hardcoded logic. This 
 - Current item exposes `{text}` (comment body) and `{data.*}` (structured fields)
 - Parent context via `parent.*` prefix (e.g., `{parent.source.name}`)
 
-**Template:** `cli/src/tasks/templates/builtin/fix.md`
+**Template:** `.aiki/templates/aiki/fix.md`
 ```markdown
 ---
 version: 1.0.0
@@ -1252,13 +1252,12 @@ pub fn fix(task_id: String) -> Result<()> {
 
 **Template Loading:**
 - Templates use namespace prefixes: `aiki/review` or `myorg/custom-review`
-- Built-in templates bundled in binary at `cli/src/tasks/templates/builtin/{name}.md`
+- Built-in templates in `.aiki/templates/aiki/{name}.md`
 - Custom templates in `.aiki/templates/{namespace}/{name}.md` (e.g., `.aiki/templates/myorg/custom-review.md`)
-- Default template is `aiki/review` (bundled in binary)
+- Default template is `aiki/review` (resolved from `.aiki/templates/aiki/review.md`)
 
 **Helper Functions:**
-- `task_add_with_children()` - Atomically create parent + all child tasks (see task-change-linkage.md)
-- `create_task_from_template()` - Load template, resolve variables, create tasks with iteration support
+- `create_task_from_template()` - Load template, resolve variables, and atomically create parent + all child tasks. Templates define subtasks in markdown with `# Subtasks` sections, and the template resolver creates them atomically. There is no separate `task_add_with_children()` function.
 
 ---
 
@@ -1351,7 +1350,7 @@ All with the same infrastructure.
 
 ### Prerequisites (Implemented)
 
-The following infrastructure from [run-task.md](../done/run-task.md) and [task-change-linkage.md](../done/task-change-linkage.md) is required:
+The following infrastructure from [run-task.md](../done/run-task.md), [task-change-linkage.md](../done/task-change-linkage.md), and [task-templates.md](../done/task-templates.md) is required:
 
 | Component | Status | Document |
 |-----------|--------|----------|
@@ -1361,20 +1360,36 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 | `aiki task run <id>` | Implemented | run-task.md |
 | `sources` field on tasks | Implemented | task-change-linkage.md |
 | `task=` in provenance | Implemented | task-change-linkage.md |
+| `Template resolver` | Implemented | task-templates.md |
+| `Template types/parsing` | Implemented | task-templates.md |
+| `.aiki/templates/` discovery | Implemented | task-templates.md |
+| `spawn_background()` on AgentRuntime | Not implemented | (this plan, Phase 2) |
+| `task.closed` flow event | Not implemented | (this plan) |
+| `review.started` flow event | Not implemented | (this plan) |
+| `review.closed` flow event | Not implemented | (this plan) |
 
 ### Phase 1: Task Infrastructure
 
 **Deliverables:**
-- Add `--children` flag to `aiki task add` (accepts heredoc input)
-- Implement `task_add_with_children()` helper function
+- Add `--children` flag to `aiki task add` (accepts heredoc input) — **Note:** May be superseded by template system which handles parent+subtask creation via `aiki task add --template <name>`. Consider whether direct `--children` flag is still needed or if templates cover all use cases.
+- Implement `create_task_from_template()` in the template resolver (atomic parent+subtask creation is handled by the template system, not a separate helper)
 - Atomically create parent + all child tasks in one operation
 - Add `type` field to TaskEvent schema
 - Add `sources` field to TaskEvent::Created (for lineage tracking)
+- Add `data: HashMap<String, String>` field to `TaskComment` struct
+- Add `--data key=value` flag to `aiki task comment` command
+- Store structured data alongside comment text in CommentAdded events
+
+> **Why `data` on TaskComment?** The review comment workflow (Phase 3+) needs structured
+> fields like `file`, `line`, `severity`, and `category` on comments. Currently `TaskComment`
+> only has `text: String` and `timestamp: DateTime<Utc>` — there is no structured data field.
+> Adding `data: HashMap<String, String>` here is a prerequisite for `aiki fix` to extract
+> actionable review findings from comments.
 
 **Files:**
-- `cli/src/tasks/types.rs` - Add `type`, `instructions`, `sources` fields
-- `cli/src/tasks/manager.rs` - Implement `task_add_with_children()`
-- `cli/src/commands/task.rs` - Add `--children` flag
+- `cli/src/tasks/types.rs` - Add `type`, `instructions`, `sources` fields; add `data: HashMap<String, String>` to `TaskComment`
+- `cli/src/tasks/templates/resolver.rs` - Implement `create_task_from_template()` (template system handles atomic parent+subtask creation)
+- `cli/src/commands/task.rs` - Add `--children` flag, add `--data key=value` to `comment` subcommand
 
 ### Phase 2: Async Task Execution
 
@@ -1423,7 +1438,7 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 **Dependencies:**
 - Requires template infrastructure from task-templates.md Phase 1-2
 - Review command populates `{data.scope}` and `{data.files}` variables
-- Uses built-in `aiki/review` template (bundled in binary)
+- Uses built-in `aiki/review` template (resolved from `.aiki/templates/aiki/review.md`)
 
 **Implementation Notes:**
 - `aiki review --changes @` creates task from template with `data.scope="@"`, `data.files="..."`
@@ -1439,9 +1454,14 @@ The following infrastructure from [run-task.md](../done/run-task.md) and [task-c
 - Agent workflow: `aiki wait <id> | aiki fix`
 
 **Files:**
-- `cli/src/flows/actions/review.rs` - Review flow action
-- `cli/src/flows/actions/prompt.rs` - Prompt action for agent instructions
-- `cli/src/flows/events.rs` - Add `review.started` event
+- `cli/src/flows/types.rs` - Add `Review` action variant to `Action` enum
+- `cli/src/flows/engine.rs` - Add `execute_review()` handler
+- `cli/src/events/mod.rs` - Add `ReviewStarted` event variant
+
+**Note: Missing flow events.** The flow actions in this plan reference `task.closed`, `review.started`, and `review.closed` as event triggers, but none of these exist in the current `AikiEvent` enum (`cli/src/events/mod.rs`). Before the review flow actions can work, these events must be:
+1. Added as variants to the `AikiEvent` enum (e.g., `TaskClosed`, `ReviewStarted`, `ReviewClosed`)
+2. Wired into the flow engine's event routing so that flow YAML triggers like `task.closed:` and `review.started:` are matched to the corresponding enum variants
+3. Emitted at the appropriate points: `task.closed` when `task_close()` runs, `review.started` when `aiki review` creates and starts a review task, `review.closed` when a review task reaches a terminal state
 
 ### Phase 6: Review Queries
 
