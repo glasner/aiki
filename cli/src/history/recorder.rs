@@ -13,7 +13,6 @@ use crate::session::AikiSession;
 
 // Size limits per design doc
 const MAX_PROMPT_SIZE: usize = 64 * 1024; // 64KB
-const MAX_SUMMARY_SIZE: usize = 4 * 1024; // 4KB
 const MAX_FILES_LIST: usize = 100;
 
 /// Truncate content with marker if too long (UTF-8 safe)
@@ -124,18 +123,19 @@ pub fn record_response(
     repo_id: Option<&str>,
     event_cwd: Option<&str>,
 ) -> Result<()> {
-    // Create summary (first paragraph, truncated)
-    let summary = response_text
-        .split("\n\n")
-        .next()
-        .map(|p| truncate_with_marker(p.trim(), MAX_SUMMARY_SIZE));
+    // Store full response content (truncated to same limit as prompts)
+    let content = if response_text.trim().is_empty() {
+        None
+    } else {
+        Some(truncate_with_marker(response_text, MAX_PROMPT_SIZE))
+    };
 
     let event = ConversationEvent::Response {
         session_id: session.uuid().to_string(),
         agent_type: session.agent_type(),
         turn,
         files_written: truncate_file_list(files_written),
-        summary,
+        content,
         timestamp,
         repo_id: repo_id.map(String::from),
         cwd: event_cwd.map(String::from),
