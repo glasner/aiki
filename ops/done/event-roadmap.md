@@ -10,15 +10,14 @@ The current event system conflates turn completion with session termination, cau
 Additionally:
 - Event naming (`response.received`, `prompt.submitted`) doesn't clearly convey turn-based semantics
 - Session lifecycle management relies on implicit behavior rather than explicit signals
-- No TTL-based cleanup means stale sessions accumulate indefinitely
+- No cleanup for stale sessions from crashed processes
 
 ## Goals
 
 1. Decouple turn completion from session termination
 2. Introduce turn-based event semantics: `turn.started` / `turn.completed`
 3. Add explicit session end hooks for proper session lifecycle
-4. Implement TTL-based stale session cleanup
-5. Use JJ events as single source of truth for session activity
+4. PID-based stale session cleanup (TTL-based cleanup deferred to `ops/future/ttl-cleanup-for-sessions.md`)
 
 ---
 
@@ -240,28 +239,9 @@ jj log -r 'description("created_turn_id=b2c3d4e5")'
 
 ---
 
-### Phase 2: Session Persistence with TTL Cleanup
+### Phase 2: Session Persistence with PID-Based Cleanup
 
-**Ships with Phase 1 - prevents session accumulation**
-
-All items in this phase ship together. Without TTL cleanup, sessions would accumulate indefinitely since we removed auto-session-end.
-
-#### Decision: Use JJ Events for `last_seen`
-
-**Instead of updating session files on every event**, query `aiki/conversations` branch for latest event timestamp.
-
-**Why JJ events over session files?**
-
-| Criterion | File Updates | JJ Query | Winner |
-|-----------|--------------|----------|--------|
-| Write performance | Fast (~1ms/turn) | None (already writing events) | JJ Query |
-| Read performance | Fast | Slower (~20-50ms) | File Updates |
-| Data consistency | Can drift | Always accurate | JJ Query |
-| Query flexibility | Limited | Rich (JJ revsets) | JJ Query |
-| Code complexity | Higher (locking, parsing) | Lower (reuse existing) | JJ Query |
-| Crash safety | Needs locking | Built-in (JJ transactions) | JJ Query |
-
-**Overall:** JJ Query wins on most criteria. Read performance can be optimized with caching if needed.
+**Ships with Phase 1 - prevents session accumulation from crashed processes**
 
 #### Session File Contents
 
@@ -277,113 +257,34 @@ parent_pid=12345
 ```
 
 **Fields:**
-- `agent` - Agent identifier for TTL threshold selection (e.g., `claude-code`, `cursor`, `acp-cli`) - **required for cleanup**
+- `agent` - Agent identifier (e.g., `claude-code`, `cursor`, `acp-cli`)
 - `external_session_id` - Agent's session ID
-- `session_id` - UUID v5 hash for session identification (renamed from `aiki_session_id` for consistency with JJ change descriptions) - **required for cleanup**
+- `session_id` - UUID v5 hash for session identification (renamed from `aiki_session_id` for consistency with JJ change descriptions)
 - `started_at` - Session creation timestamp
 - `agent_version` - Agent version string
-- `parent_pid` - Process ID for liveness checks - **required for cleanup**
+- `parent_pid` - Process ID for liveness checks
 
 **Removed:** `cwd` field (not needed, can be inferred from repo location)
 
-**No `last_seen` field needed** - computed from JJ events on demand.
-
-#### Finding `last_seen`
-
-Query JJ for latest event per session:
-
-```bash
-jj log -r 'aiki/conversations & description("session_id=<uuid>")' --limit 1
-```
-
-Parse timestamp from change metadata.
-
 #### Stale Session Cleanup
 
-- Keep existing parent PID liveness checks (fast path)
-- Add TTL cleanup with per-agent defaults:
-  - **Editor agents** (Cursor, Claude Code with IDE): **8h**
-  - **CLI agents** (standalone tools): **2h**
-- TTL cleanup logic:
-  1. Check if parent PID is alive (fast - no JJ query needed)
-  2. If alive, query latest event timestamp from `aiki/conversations`
-  3. If `last_seen < now() - TTL`, delete session file (older than threshold)
-- TTL cleanup runs at session start (existing `cleanup_stale_sessions` in `session_started.rs:24`)
-- When TTL cleanup removes a session, emit synthetic `session.ended` event **to history only** (does NOT execute `session.ended` flow section — the agent is disconnected, so context/autoreply actions are meaningless). Reasons:
+- Parent PID liveness checks at session start (`cleanup_stale_sessions` in `session_started.rs:24`)
+- When cleanup removes a session, emit synthetic `session.ended` event **to history only** (does NOT execute `session.ended` flow section — the agent is disconnected, so context/autoreply actions are meaningless)
   - **`pid_dead`** - Parent process no longer alive
-  - **`ttl_expired`** - No activity within TTL threshold
-  - **`no_events`** - Orphaned session (no events found in conversation history)
-- Configuration: hardcoded constants in code (no override for now)
 
-#### Implementation Helpers
-
-```rust
-fn query_latest_event(repo_path: &Path, session_id: &str) -> Result<Option<DateTime<Utc>>> {
-    // jj log -r 'aiki/conversations & description("session_id=<id>")' --limit 1
-    // Parse timestamp from change metadata
-    // Returns:
-    //   Ok(Some(timestamp)) - events found
-    //   Ok(None) - no events found (orphaned session)
-    //   Err(e) - JJ query failed (repo lock, jj not in PATH, etc.)
-}
-
-pub fn cleanup_stale_sessions(repo_path: &Path) {
-    let sessions = scan_session_files(repo_path);
-    
-    for session in sessions {
-        // Fast path: check PID (takes precedence over TTL)
-        if !process_alive(session.parent_pid) {
-            delete_session_file(&session);
-            emit_synthetic_session_ended(&session, "pid_dead");
-            continue;
-        }
-        
-        // Slow path: TTL check via JJ query
-        if let Some(ttl) = get_ttl_threshold(&session.agent) {
-            match query_latest_event(repo_path, &session.id) {
-                Ok(Some(last_event)) if last_event < now() - ttl => {
-                    // Session has events but they're too old
-                    delete_session_file(&session);
-                    emit_synthetic_session_ended(&session, "ttl_expired");
-                }
-                Ok(None) => {
-                    // No events found = orphaned session (created but never used)
-                    delete_session_file(&session);
-                    emit_synthetic_session_ended(&session, "no_events");
-                }
-                Err(e) => {
-                    // JJ query failed - don't delete (could be transient error)
-                    // Log error and skip this session
-                    eprintln!("Warning: Failed to query events for session {}: {}", session.id, e);
-                    // Session will be checked again on next cleanup
-                }
-                Ok(Some(_)) => {
-                    // Session is active (events within TTL)
-                }
-            }
-        }
-    }
-}
-```
+**Future:** TTL-based cleanup for living-but-idle processes deferred to `ops/future/ttl-cleanup-for-sessions.md`
 
 #### Tests
 
-- `query_latest_event` returns correct timestamp from JJ
-- `query_latest_event` returns `None` when no events found for session
-- Session selection prefers session with most recent event when multiple match PID
-- TTL cleanup removes old sessions but keeps active ones
-- TTL cleanup emits synthetic `session.ended` with `reason="ttl_expired"`
 - PID-based cleanup emits synthetic `session.ended` with `reason="pid_dead"`
-- Orphaned session (no events) cleanup emits synthetic `session.ended` with `reason="no_events"`
 - PID-based cleanup is fast (no JJ query needed)
-- Session with dead PID but recent events → still cleaned up (PID takes precedence over TTL)
 - Integration test: full session lifecycle (start → multiple turns → explicit end) verifying session file persists across turns and is cleaned up at end
 
 ---
 
 ### Phase 3: Explicit Session End Hooks
 
-**Ships after Phase 1+2 - proper session lifecycle**
+**Ships after Phase 1 - proper session lifecycle**
 
 These hooks/notifications trigger `session.ended` event explicitly.
 
@@ -396,7 +297,7 @@ These hooks/notifications trigger `session.ended` event explicitly.
   - `cwd` - Working directory
   - `reason` - Termination reason: `clear`, `logout`, `prompt_input_exit`, `other`
 - **Reference:** https://code.claude.com/docs/en/hooks
-- **Note:** `SessionEnd` may not fire on crashes — TTL cleanup handles those cases
+- **Note:** `SessionEnd` may not fire on crashes — PID-based cleanup handles those cases
 
 #### Cursor
 
@@ -406,7 +307,7 @@ These hooks/notifications trigger `session.ended` event explicitly.
   - `duration_ms` - Session duration in milliseconds
   - `is_background_agent` - Whether this was a background agent
 - **Reference:** https://cursor.com/docs/agent/hooks
-- **Note:** `sessionEnd` is fire-and-forget — TTL cleanup handles crash cases
+- **Note:** `sessionEnd` is fire-and-forget — PID-based cleanup handles crash cases
 
 #### ACP Agents
 
@@ -633,19 +534,17 @@ turn.started:
 All questions resolved:
 
 1. **No migration tooling** - Users do find/replace `prompt.submitted:` → `turn.started:` and `response.received:` → `turn.completed:`
-2. **TTL configuration** - Hardcoded constants: 8h (editors), 2h (CLI), no override mechanism for now
-3. **No Phase 4 (message-level tracking)** - Moved to `ops/future/events/individual-agent-responses.md`, defer until user demand proven
-4. **No backward compatibility** - Clean break, `prompt.submitted` and `response.received` flow sections will error
-5. **Separate events (Option A) over field (Option B)** - Better UX, semantic clarity, aligns with agent models
-6. **JJ events for `last_seen`** - Single source of truth, better consistency, acceptable performance
-7. **ACP connection close detection** - Monitor stdin/stdout to emit `session.ended` immediately (don't rely solely on TTL)
-8. **Turn-based semantics** - Both events renamed: `turn.started` / `turn.completed` for perfect symmetry
-9. **Autoreply = new turn** - Each autoreply emits synthetic `turn.started` with `source: autoreply`, maintaining 1:1 `turn.started`/`turn.completed` correspondence
-10. **Turn tracking with explicit turn_id** - Sequential turn number plus deterministic turn_id (uuid_v5 of session_id + turn) in all change/task metadata; enables both human-readable ordering and unique turn references
-11. **TTL cleanup: history only, no flows** - Synthetic `session.ended` from TTL/PID cleanup records to history but does NOT execute `session.ended` flow section (agent is disconnected, context actions are meaningless). Flows only run on explicit session end hooks (Phase 3).
-12. **No session file migration** - Old session files (with `aiki_session_id` field) will be treated as orphans and cleaned up naturally. Acceptable for pre-1.0 tool.
-13. **Hierarchical UUID namespaces** - Refactor session UUID generation: `agent_ns = uuid_v5(AIKI_NAMESPACE, agent_type)`, `session_id = uuid_v5(agent_ns, external_id)`, consistent with `turn_id = uuid_v5(session_id, turn)`
-14. **Cursor resume: accept TTL gap** - If TTL cleanup removes a Cursor session file during inactivity, the next prompt is treated as a new session (consistent with TTL having already "ended" it)
+2. **No Phase 4 (message-level tracking)** - Moved to `ops/future/events/individual-agent-responses.md`, defer until user demand proven
+3. **No backward compatibility** - Clean break, `prompt.submitted` and `response.received` flow sections will error
+4. **Separate events (Option A) over field (Option B)** - Better UX, semantic clarity, aligns with agent models
+5. **ACP connection close detection** - Monitor stdin/stdout to emit `session.ended` immediately
+6. **Turn-based semantics** - Both events renamed: `turn.started` / `turn.completed` for perfect symmetry
+7. **Autoreply = new turn** - Each autoreply emits synthetic `turn.started` with `source: autoreply`, maintaining 1:1 `turn.started`/`turn.completed` correspondence
+8. **Turn tracking with explicit turn_id** - Sequential turn number plus deterministic turn_id (uuid_v5 of session_id + turn) in all change/task metadata; enables both human-readable ordering and unique turn references
+9. **PID cleanup: history only, no flows** - Synthetic `session.ended` from PID cleanup records to history but does NOT execute `session.ended` flow section (agent is disconnected, context actions are meaningless). Flows only run on explicit session end hooks (Phase 3).
+10. **No session file migration** - Old session files (with `aiki_session_id` field) will be treated as orphans and cleaned up naturally. Acceptable for pre-1.0 tool.
+11. **Hierarchical UUID namespaces** - Refactor session UUID generation: `agent_ns = uuid_v5(AIKI_NAMESPACE, agent_type)`, `session_id = uuid_v5(agent_ns, external_id)`, consistent with `turn_id = uuid_v5(session_id, turn)`
+12. **TTL cleanup deferred** - See `ops/future/ttl-cleanup-for-sessions.md`
 
 ---
 
@@ -770,37 +669,28 @@ All questions resolved:
 - [ ] Add tests: flows can filter on `$event.source == 'user'`
 - [ ] Add tests: hook parsing for new tool names (MultiEdit, NotebookEdit, Web*, mcp__*)
 
-### Phase 2: Session Persistence with TTL Cleanup
+### Phase 2: Session Persistence with PID-Based Cleanup
 
 - [ ] Rename session file field: `aiki_session_id` → `session_id` (for consistency with JJ change descriptions)
 - [ ] Remove `cwd` field from session file format (not needed)
 - [ ] Update session file writer in `cli/src/session/mod.rs:43` (remove cwd, rename session_id)
 - [ ] Update session file parser in `cli/src/session/mod.rs:632` (rename session_id)
-- [ ] Session file format already includes `agent` field (used for TTL threshold selection)
+- [ ] Session file format already includes `agent` field
 - [ ] Implement `query_latest_event(repo_path, session_id)` helper
   - [ ] Shell out to `jj log -r 'aiki/conversations & description("session_id=<id>")' --limit 1`
   - [ ] Parse timestamp from change metadata
   - [ ] Return `Option<DateTime<Utc>>` (None if no events found)
 - [ ] Update `cleanup_stale_sessions()` in `session_started.rs:24`
-  - [ ] Fast path: check PID liveness (no JJ query), takes precedence over TTL
-  - [ ] Slow path: query latest event, handle outcomes separately:
-    - [ ] `Ok(Some(timestamp))` - check TTL, delete if expired
-    - [ ] `Ok(None)` - orphaned session, delete with `reason="no_events"`
-    - [ ] `Err(e)` - JJ query failed (transient error), log warning and skip (don't delete)
-  - [ ] Delete session file only for: PID dead, TTL expired, or confirmed orphan
-  - [ ] Emit synthetic `session.ended` to history only (no flow execution) with reason: `pid_dead`, `ttl_expired`, or `no_events`
-- [ ] Add TTL threshold constants: 8h (editors), 2h (CLI) — hardcoded, no override mechanism
+  - [ ] Check PID liveness (no JJ query needed)
+  - [ ] Delete session file for dead PIDs
+  - [ ] Emit synthetic `session.ended` to history only (no flow execution) with reason: `pid_dead`
 - [ ] Update session selection logic: prefer session with most recent event when multiple match PID
-- [ ] Add tests: `query_latest_event` returns correct timestamp
-- [ ] Add tests: `query_latest_event` returns `None` when no events found
-- [ ] Add tests: JJ query succeeds with old timestamp → TTL cleanup removes session (last_seen < now() - TTL)
-- [ ] Add tests: JJ query succeeds with recent timestamp → TTL cleanup does NOT delete (within TTL)
 - [ ] Add tests: PID-based cleanup doesn't query JJ (fast path)
-- [ ] Add tests: Session with dead PID but recent events → still cleaned up (PID precedence)
-- [ ] Add tests: JJ query returns `None` (orphaned session) → cleaned up with `reason="no_events"`
-- [ ] Add tests: JJ query returns `Err` (transient failure) → session NOT deleted (skip cleanup, log warning)
-- [ ] Add tests: Synthetic `session.ended` events recorded with correct reasons (`pid_dead`, `ttl_expired`, `no_events`)
+- [ ] Add tests: Session with dead PID → cleaned up with `reason="pid_dead"`
+- [ ] Add tests: Synthetic `session.ended` events recorded with correct reason
 - [ ] Integration test: Full session lifecycle (start → turns → explicit end → cleanup)
+
+**TTL-based cleanup deferred:** See `ops/future/ttl-cleanup-for-sessions.md`
 
 ### Phase 3: Explicit Session End Hooks
 
@@ -824,7 +714,7 @@ All questions resolved:
 - [ ] Add tests: ACP connection close triggers `session.ended`
 - [ ] Add tests: `session.ended` flow section executes
 - [ ] Add tests: Session files cleaned up on explicit end
-- [ ] Add tests: TTL cleanup still works as fallback (crash scenarios)
+- [ ] Add tests: PID cleanup still works as fallback (crash scenarios)
 
 ---
 
@@ -841,29 +731,8 @@ All questions resolved:
 - `cli/src/events/` - Current event handler implementations
 - `cli/src/flows/types.rs` - Flow type definitions
 - `ops/future/events/individual-agent-responses.md` - Deferred message-level tracking (Phase 4)
+- `ops/future/ttl-cleanup-for-sessions.md` - Deferred TTL-based stale session cleanup
 
-
----
-
-## Performance Estimates
-
-### Per-Turn Overhead
-
-| Approach | Write Cost | Read Cost |
-|----------|-----------|-----------|
-| Session file updates (rejected) | ~1ms × N events/turn | Fast (~1ms) |
-| JJ events (chosen) | 0ms (already writing) | ~20-50ms (only on cleanup) |
-
-**Cleanup frequency:** Once per `session.started` event (infrequent)
-
-**Overall:** JJ approach has lower per-turn cost (no file updates). Query overhead only matters during cleanup, which is infrequent.
-
-### Optimization Strategy
-
-If JJ query performance becomes an issue:
-1. Add in-memory cache: `{ session_id → latest_event_timestamp }`
-2. Refresh cache on new events or periodically
-3. Benchmark to validate actual overhead in real repos
 
 ---
 
@@ -872,7 +741,8 @@ If JJ query performance becomes an issue:
 1. Review and approve this implementation plan
 2. Implement Phase 1 (turn-based events)
 3. Test with real Claude Code and Cursor sessions
-4. Implement Phase 2 (TTL cleanup with JJ events)
+4. Implement Phase 2 (PID-based session cleanup)
 5. Implement Phase 3 (explicit session end hooks)
 6. Delete superseded design documents
 7. Defer Phase 4 until user demand is proven
+8. Defer TTL cleanup until stale-session accumulation is observed (see `ops/future/ttl-cleanup-for-sessions.md`)
