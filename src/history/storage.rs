@@ -694,7 +694,7 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             agent_type,
             turn,
             files_written,
-            summary,
+            content,
             timestamp,
             repo_id,
             cwd,
@@ -704,8 +704,8 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             add_metadata("agent_type", agent_type, &mut lines);
             add_metadata("turn", turn, &mut lines);
             add_metadata_list("files_written", files_written, &mut lines);
-            if let Some(s) = summary {
-                add_metadata_escaped("summary", s, &mut lines);
+            if let Some(c) = content {
+                add_metadata_escaped("content", c, &mut lines);
             }
             add_location_metadata(repo_id, cwd, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
@@ -855,8 +855,10 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             let files_written = parse_list_field(&fields, "files_written");
-            let summary = fields
-                .get("summary")
+            // Read from "content" field, falling back to legacy "summary" field
+            let content = fields
+                .get("content")
+                .or_else(|| fields.get("summary"))
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
 
@@ -865,7 +867,7 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 agent_type,
                 turn,
                 files_written,
-                summary,
+                content,
                 timestamp,
                 repo_id,
                 cwd,
@@ -998,7 +1000,7 @@ mod tests {
             agent_type: AgentType::ClaudeCode,
             turn: 2,
             files_written: vec!["auth.rs".to_string(), "tests.rs".to_string()],
-            summary: Some("Updated auth module".to_string()),
+            content: Some("Updated auth module\n\nMore details here.".to_string()),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -1010,7 +1012,8 @@ mod tests {
         assert!(block.contains("event=response"));
         assert!(block.contains("turn=2"));
         assert!(block.contains("files_written=auth.rs"));
-        assert!(block.contains("summary=Updated auth module"));
+        assert!(!block.contains("summary="));
+        assert!(block.contains("content=Updated auth module%0A%0AMore details here."));
     }
 
     #[test]
@@ -1122,13 +1125,13 @@ timestamp=2026-01-09T10:30:00Z
                 session_id,
                 turn,
                 files_written,
-                summary,
+                content,
                 ..
             } => {
                 assert_eq!(session_id, "sess123");
                 assert_eq!(turn, 3);
                 assert_eq!(files_written, vec!["auth.rs", "tests.rs"]);
-                assert_eq!(summary, Some("Updated auth".to_string()));
+                assert_eq!(content, Some("Updated auth".to_string()));
             }
             _ => panic!("Expected Response event"),
         }
@@ -1251,7 +1254,7 @@ timestamp=2026-01-09T10:30:00Z
             agent_type: AgentType::ClaudeCode,
             turn: 4,
             files_written: vec!["b.rs".to_string()],
-            summary: Some("Summary text".to_string()),
+            content: Some("Summary text\n\nFull response with details.".to_string()),
             timestamp: Utc::now(),
             repo_id: Some("abc123".to_string()),
             cwd: Some("/path/to/project".to_string()),
@@ -1260,28 +1263,28 @@ timestamp=2026-01-09T10:30:00Z
         let block = event_to_metadata_block(&original);
         let start = block.find(METADATA_START).unwrap() + METADATA_START.len();
         let end = block.find(METADATA_END).unwrap();
-        let content = &block[start..end];
+        let block_content = &block[start..end];
 
-        let parsed = parse_metadata_block(content).expect("Should parse");
+        let parsed = parse_metadata_block(block_content).expect("Should parse");
 
         match (original, parsed) {
             (
                 ConversationEvent::Response {
                     turn: turn1,
                     files_written: fw1,
-                    summary: s1,
+                    content: c1,
                     ..
                 },
                 ConversationEvent::Response {
                     turn: turn2,
                     files_written: fw2,
-                    summary: s2,
+                    content: c2,
                     ..
                 },
             ) => {
                 assert_eq!(turn1, turn2);
                 assert_eq!(fw1, fw2);
-                assert_eq!(s1, s2);
+                assert_eq!(c1, c2);
             }
             _ => panic!("Event type mismatch"),
         }

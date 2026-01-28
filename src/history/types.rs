@@ -62,8 +62,8 @@ pub enum ConversationEvent {
         turn: u32,
         /// Files written/modified during this response
         files_written: Vec<String>,
-        /// Summary of the response (first paragraph)
-        summary: Option<String>,
+        /// Full response text
+        content: Option<String>,
         timestamp: DateTime<Utc>,
         /// Stable repository identifier (from repo-id file)
         repo_id: Option<String>,

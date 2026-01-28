@@ -115,6 +115,9 @@ pub struct PostToolUsePayload {
 struct StopPayload {
     session_id: String,
     cwd: String,
+    /// Path to JSONL transcript file containing the full conversation
+    #[serde(default)]
+    transcript_path: Option<String>,
 }
 
 /// SessionEnd hook payload
@@ -770,14 +773,77 @@ fn build_web_completed_event(payload: PostToolUsePayload, tool: ClaudeTool) -> A
 
 /// Build turn.completed event (maps from Stop hook)
 fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
+    let response = payload
+        .transcript_path
+        .as_deref()
+        .and_then(|path| extract_last_assistant_response(path))
+        .unwrap_or_default();
+
     AikiEvent::TurnCompleted(AikiTurnCompletedPayload {
         session: create_session(&payload.session_id, &payload.cwd),
         cwd: PathBuf::from(&payload.cwd),
         timestamp: chrono::Utc::now(),
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
-        response: String::new(),
+        response,
         modified_files: vec![],
     })
+}
+
+/// Extract the last assistant response text from a Claude Code JSONL transcript file.
+///
+/// The transcript is a JSONL file where each line is a JSON object. Assistant entries
+/// have `"type": "assistant"` with a `message.content` array containing blocks like
+/// `{"type": "text", "text": "..."}`. We find the last assistant entry and concatenate
+/// all text blocks.
+fn extract_last_assistant_response(path: &str) -> Option<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            debug_log(|| format!("Failed to read transcript file '{}': {}", path, e));
+            return None;
+        }
+    };
+
+    // Walk lines in reverse to find the last assistant entry
+    for line in content.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        if entry.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+
+        // Extract text from message.content array
+        let Some(content_arr) = entry
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+
+        let text: String = content_arr
+            .iter()
+            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+            // Skip streaming placeholder entries that Claude Code writes before the real response
+            .filter(|t| *t != "(no content)")
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    debug_log(|| format!("No assistant response found in transcript '{}'", path));
+    None
 }
 
 /// Build session.ended event (maps from SessionEnd hook)
