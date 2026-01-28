@@ -1,8 +1,4 @@
-1
-94changed
-11
-
-3# Aiki - AI Code Provenance Tracking
+# Aiki - AI Code Provenance Tracking
 
 Aiki automatically tracks which AI agents contributed to your codebase, providing transparent attribution for AI-generated code changes.
 
@@ -11,7 +7,11 @@ Aiki automatically tracks which AI agents contributed to your codebase, providin
 - **Automatic Provenance Tracking**: Records AI agent changes in Jujutsu (jj) change descriptions
 - **Line-Level Attribution**: See which AI agent wrote each line of code with `aiki blame`
 - **Git Co-Author Attribution**: Automatically adds `Co-authored-by:` lines to Git commits for AI contributors
-- **Multi-Editor Support**: Seamless integration with Claude Code and Cursor via hooks
+- **Multi-Editor Support**: Claude Code, Cursor, Codex, and Zed (via ACP proxy)
+- **Task Management**: Event-sourced task system designed for AI agent workflows
+- **Session History**: Conversation tracking with prompt/response timeline
+- **Flow Engine**: Declarative YAML-based automation for all editor events
+- **Cryptographic Signing**: GPG/SSH signatures for tamper-proof provenance
 
 ## Quick Start
 
@@ -49,73 +49,6 @@ This will:
 - Configure Claude Code hooks (global user hooks in `~/.claude/settings.json`)
 - Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
 - Offer to automatically restart editors if they're running
-
-### Commit Signing
-
-Aiki automatically configures cryptographic signing for all AI-attributed changes to provide tamper-proof provenance.
-
-**Automatic Setup During Init:**
-
-During `aiki init`, Aiki detects your existing signing keys in priority order:
-1. Git signing configuration (if already set up)
-2. GPG keys (industry standard)
-3. SSH keys (simpler alternative)
-
-If keys are found, signing is configured automatically. If not, you'll be prompted:
-
-```bash
-⚠ No signing keys detected
-
-Commit signing provides cryptographic proof of AI authorship.
-
-What would you like to do?
-  1. Generate new signing key (recommended)
-  2. I have a key, let me specify it manually
-  3. Skip signing for now
-Choice [1]:
-```
-
-**Setting Up Signing Later:**
-
-If you skipped signing during init, you can set it up anytime:
-
-```bash
-aiki doctor --fix
-```
-
-The doctor command will detect missing signing configuration and offer to set it up interactively.
-
-**Why Signing Matters:**
-
-- **Tamper-proof**: Cryptographically proves AI-attributed changes haven't been altered
-- **Enterprise compliance**: Meets SOX, PCI-DSS, ISO 27001 audit requirements
-- **Supply chain security**: Provides verifiable authorship for AI-generated code
-- **Automatic**: Once configured, works transparently on every change
-
-**Supported Backends:**
-
-- **GPG**: Maximum compatibility, works with existing GPG infrastructure (auto-generates RSA 4096-bit keys)
-- **SSH**: Simpler setup, auto-generates ed25519 keys (requires JJ 0.12+)
-
-**Key Generation:**
-
-The wizard can automatically generate keys for you:
-- **GPG**: Creates a 4096-bit RSA key with 2-year expiration
-- **SSH**: Creates an ed25519 key at `~/.ssh/id_ed25519_aiki`
-
-Or you can specify an existing key manually during setup.
-
-**Check Signing Status:**
-
-```bash
-aiki doctor
-```
-
-The doctor command checks:
-- Whether signing is configured
-- Whether your signing key is accessible
-- Which backend you're using (GPG/SSH)
-- Offers to set up signing with `--fix` if not configured
 
 ### Check Configuration Health
 
@@ -181,7 +114,23 @@ Output with signature verification:
 - **⚠** - No signature (unsigned change)
 - **?** - Unknown signature status
 
-**Note:** Verification is slower than regular blame as it checks each change's signature. Use `--verify` when you need to ensure changes haven't been tampered with.
+### View AI Authors
+
+```bash
+# Show all AI authors for working copy changes (default)
+aiki authors
+
+# Show authors for Git staged changes
+aiki authors --changes=staged
+
+# Git trailer format (for commit messages)
+aiki authors --format=git --changes=staged
+Co-authored-by: Claude Code <claude-code@anthropic.ai>
+Co-authored-by: Cursor <cursor@cursor.sh>
+
+# JSON format (for tooling)
+aiki authors --format=json
+```
 
 ### Automatic Git Co-Author Attribution
 
@@ -195,44 +144,9 @@ git commit -m "Add main function"
 # Co-authored-by: Claude Code <claude-code@anthropic.ai>
 ```
 
-These co-author lines appear in:
-- `git log` output
-- GitHub commit history
-- Git blame annotations
-
-### View AI Authors
-
-You can view which AI agents contributed to your changes:
-
-```bash
-# Show all AI authors for working copy changes (default)
-aiki authors
-Claude Code <claude-code@anthropic.ai>
-Cursor <cursor@cursor.sh>
-
-# Show authors for Git staged changes
-aiki authors --changes=staged
-Claude Code <claude-code@anthropic.ai>
-Cursor <cursor@cursor.sh>
-
-# Git trailer format (for commit messages)
-aiki authors --format=git --changes=staged
-Co-authored-by: Claude Code <claude-code@anthropic.ai>
-Co-authored-by: Cursor <cursor@cursor.sh>
-
-# JSON format (for tooling)
-aiki authors --format=json
-[
-  {"name":"Claude Code","email":"claude-code@anthropic.ai","agent_type":"ClaudeCode"},
-  {"name":"Cursor","email":"cursor@cursor.sh","agent_type":"Cursor"}
-]
-```
-
-**Note:** The `authors` command always shows all AI contributors. Use `blame --agent <type>` to filter by specific editor.
+These co-author lines appear in `git log`, GitHub commit history, and Git blame annotations.
 
 ### Verify Cryptographic Signatures
-
-Verify the cryptographic signature and provenance metadata on a change:
 
 ```bash
 # Verify the working copy change (default)
@@ -245,54 +159,56 @@ aiki verify abc123
 aiki verify @-
 ```
 
-Example output for a verified change:
-
-```
-Verifying change abc123...
-
-Signature:
-  ✓ Valid GPG signature
-  Signer: John Doe <user@example.com>
-  Key ID: 4ED556E9729E000F
-
-Provenance:
-  ✓ Metadata present and valid
-  Agent: Claude Code
-  Session: claude-session-abc123
-  Tool: Edit
-  Confidence: High
-
-Result: VERIFIED ✓
-```
-
-Example output for an unsigned change:
-
-```
-Verifying change abc123...
-
-Signature:
-  ⚠ Not signed
-
-Provenance:
-  ✓ Metadata present and valid
-  Agent: Claude Code
-  Session: claude-session-abc123
-
-Result: UNVERIFIED (no signature)
-```
-
 **Signature Status:**
-- **VERIFIED ✓**: Valid signature + AI provenance metadata
+- **VERIFIED**: Valid signature + AI provenance metadata
 - **SIGNED**: Valid signature but no AI metadata (not an AI change)
-- **FAILED ✗**: Invalid or tampered signature
+- **FAILED**: Invalid or tampered signature
 - **UNVERIFIED**: Change has AI metadata but no signature
 - **NOT AN AI CHANGE**: No signature and no AI metadata
 
-**Note:** Verification uses JJ's native signature verification, which supports GPG, SSH, and GPG-SM backends.
+### Task Management
 
-### Advanced Commands
+Aiki includes an event-sourced task system designed for AI agent workflows. Tasks persist across context compaction and provide structured work tracking.
 
-#### Install Global Hooks
+```bash
+# View ready tasks
+aiki task
+
+# Create and start a task
+aiki task start "Implement login validation" --source prompt
+
+# Add progress notes
+aiki task comment <id> "Added email format check"
+
+# Close when done
+aiki task close <id> --comment "Validation complete"
+```
+
+**Task features:**
+- **Priorities**: P0 (urgent) through P3 (low)
+- **Parent/subtask relationships**: Hierarchical task decomposition with `.0`, `.1`, `.2` suffixes
+- **Source tracking**: Lineage via `file:`, `task:`, `comment:`, `issue:`, `prompt:` sources
+- **Assignees**: Assign to agents (`claude-code`, `codex`, `cursor`, `gemini`) or `human`
+- **Won't-do outcomes**: Mark declined tasks with `--wont-do`
+- **Agent execution**: `aiki task run <id>` spawns an agent to work on a task
+
+Task data is event-sourced and stored on the `aiki/tasks` branch in JJ.
+
+### Session History
+
+Aiki records conversation history across AI agent sessions:
+
+```bash
+# List all sessions with conversation summaries
+aiki session list
+
+# Show detailed session timeline with prompts and responses
+aiki session show <id>
+```
+
+Session data is event-sourced and stored on the `aiki/conversations` branch in the global JJ repo at `~/.aiki/`.
+
+### Install Global Hooks
 
 Install Aiki hooks globally for all editors and repositories:
 
@@ -300,20 +216,9 @@ Install Aiki hooks globally for all editors and repositories:
 aiki hooks install
 ```
 
-This is an alternative to `aiki init` that:
-- Installs global Git hooks for all repositories
-- Configures Claude Code hooks globally
-- Configures Cursor hooks globally
-- Automatically detects and offers to restart running editors
+This is an alternative to `aiki init` that configures all editors globally. Individual repositories will be automatically initialized on first use.
 
-**When to use:**
-- Setting up Aiki for the first time across all projects
-- After reinstalling or updating Aiki
-- When hooks become misconfigured
-
-**Note:** After running `aiki hooks install`, individual repositories will be automatically initialized when you first use them with Claude Code or Cursor.
-
-#### ACP Proxy Server
+### ACP Proxy Server
 
 Run Aiki as an ACP (Agent Client Protocol) bidirectional proxy:
 
@@ -328,100 +233,75 @@ aiki acp claude-code --bin /path/to/custom-agent
 aiki acp cursor -- --verbose --debug
 ```
 
-The ACP proxy allows Aiki to:
-- Intercept communication between IDEs (Zed, Neovim) and AI agents
-- Track tool calls and file changes in real-time
-- Record provenance with both client (IDE) and agent information
-- Support future IDE integrations without custom hooks
+The ACP proxy intercepts communication between IDEs (Zed, Neovim) and AI agents, tracking tool calls and file changes in real-time.
 
 **Supported agents:** `claude-code`, `cursor`, `codex`
 
-
 ### Benchmark Performance
-
-Test and compare the performance of different Aiki workflows:
 
 ```bash
 # Run the core workflow benchmark
 aiki benchmark aiki/core
 ```
 
-This benchmarks the complete Aiki workflow:
-- Repository initialization with Git and Jujutsu
-- SessionStart event (fires during `aiki init`)
-- PreFileChange event (fires before file modifications)
-- PostFileChange events (fires on each file edit)
-- Total execution time
+Benchmarks the complete Aiki workflow: repository init, SessionStart, PreFileChange, and PostFileChange events. Compares results to previous runs with per-event timing breakdowns. Results persist in `.aiki/benchmarks/`.
 
-Example output:
+## Commit Signing
 
-```
-Running benchmark: aiki/core
+Aiki automatically configures cryptographic signing for all AI-attributed changes.
 
-Phase 1: Repository Setup
-  ✓ Git init: 35.1ms
-  ✓ JJ init: 48.2ms
+During `aiki init`, Aiki detects your existing signing keys in priority order:
+1. Git signing configuration (if already set up)
+2. GPG keys (industry standard)
+3. SSH keys (simpler alternative)
 
-Phase 2: Aiki Setup
-  ✓ SessionStart: 104.5ms
+If no keys are found, you'll be prompted to generate one or skip.
 
-Phase 3: File Operations (10 iterations)
-  ✓ File edit 1
-    PostFileChange: 2.3ms
-  ✓ File edit 2
-    PostFileChange: 2.2ms
-  ...
+**Supported backends:**
+- **GPG**: Maximum compatibility, auto-generates RSA 4096-bit keys with 2-year expiration
+- **SSH**: Simpler setup, auto-generates ed25519 keys at `~/.ssh/id_ed25519_aiki`
 
-Event Timing:
-  SessionStart (1 occurrences):
-    Median: 104.5ms
-    Range: 104.5ms - 104.5ms
-  PostFileChange (10 occurrences):
-    Median: 2.3ms
-    Range: 2.2ms - 3.0ms
-
-Total benchmark time: 402ms
-
-Comparison to Previous Run:
-  Previous total: 367ms
-  Current total:  402ms
-  Change: +35ms (+9.5%) 🔴 (slower)
-
-  Event-level comparison:
-    SessionStart:
-      Previous: 99.7ms (median)
-      Current:  104.5ms (median)
-      Change:   +4.8ms (+4.8%) 🔴 (slower)
-    PostFileChange:
-      Previous: 2.3ms (median)
-      Current:  2.3ms (median)
-      Change:   +0.0ms (+0.0%) 🟢 (no change)
-```
-
-**Features:**
-
-- **Event-level timing**: Shows performance for each hook event (SessionStart, PreFileChange, PostFileChange)
-- **Millisecond precision**: All timings displayed in milliseconds for accuracy
-- **Statistical metrics**: Shows median, min, max, and count for each event type
-- **Performance comparison**: Compares current run to previous with % change indicators
-- **Result persistence**: Stores results in `.aiki/benchmarks/{flow}/` with:
-  - `results.txt` - Human-readable benchmark report
-  - `metrics.json` - Machine-readable event timing data
-
-**Running multiple iterations:**
-
-```bash
-# Run 10 benchmark iterations for statistical reliability
-for i in {1..10}; do aiki benchmark aiki/core; done
-```
-
-This helps identify performance variations and ensures consistent timing measurements across runs.
+Set up signing later with `aiki doctor --fix`.
 
 ## How It Works
 
+### Unified Event System
+
+Aiki's core is a unified event system with 17 event types spanning the full lifecycle of AI agent interactions:
+
+| Category | Events |
+|----------|--------|
+| **Session** | `session.started`, `session.resumed`, `session.ended` |
+| **Turn** | `turn.started`, `turn.completed` |
+| **File Changes** | `change.permission_asked`, `change.completed` |
+| **Reads** | `read.permission_asked`, `read.completed` |
+| **Shell** | `shell.permission_asked`, `shell.completed` |
+| **Web** | `web.permission_asked`, `web.completed` |
+| **MCP** | `mcp.permission_asked`, `mcp.completed` |
+| **Git** | `commit.message_started` |
+
+Each editor integration translates its native hook format into these unified events. Events are then routed through the flow engine for processing.
+
+### Flow Engine
+
+Flows are declarative YAML workflows that react to events. A bundled core flow (`aiki/core`) handles all provenance recording, and users can extend behavior with custom flows.
+
+**Flow capabilities:**
+- **Actions**: `shell`, `jj`, `context` (inject into agent prompts), `autoreply`, `commit_message`, `log`, `task_run`
+- **Control flow**: `if`/`else`, `switch`/`case`
+- **Variables**: Event variables (`$event.*`), let bindings, environment variables, JSON field access
+- **Composition**: `before`/`after` chaining with cycle detection
+- **Failure handling**: Per-action `on_failure` with `continue`, `stop`, or `block` (reject the editor operation)
+- **Built-in functions**: Native Rust functions for complex operations (edit classification, metadata generation, co-author extraction)
+
+**Flow locations:**
+- Bundled core flow (embedded in binary, always runs)
+- `.aiki/flows/` - Project-specific flows
+- `~/.aiki/flows/` - User global flows
+
 ### Provenance Tracking
 
-Aiki uses hooks to automatically record metadata when AI agents edit files. This metadata is stored in Jujutsu change descriptions using the `[aiki]...[/aiki]` format:
+Metadata is stored in Jujutsu change descriptions using `[aiki]...[/aiki]` blocks:
 
 ```
 [aiki]
@@ -435,69 +315,38 @@ coauthor=User Name <user@email.com>
 [/aiki]
 ```
 
-For human changes (when users modify files before or during AI edits), Aiki creates metadata blocks with `author_type=human`:
-
-```
-[aiki]
-author=User Name <user@email.com>
-author_type=human
-session=claude-session-abc123
-[/aiki]
-```
-
-### Line-Level Attribution
-
-The `aiki blame` command uses Jujutsu's built-in annotation capabilities to trace each line back to its originating change, then extracts the AI agent information from the change description.
+When users modify files during AI sessions, Aiki detects the human edits and separates them into distinct changes with `author_type=human`.
 
 ### Git Integration
 
-The `prepare-commit-msg` Git hook:
-1. Analyzes staged changes to identify modified line ranges
-2. Uses blame logic to attribute those lines to AI agents
-3. Formats attributions as `Co-authored-by:` lines
-4. Appends them to the commit message
-
-The hook chains to any previously configured hooks, so it won't interfere with existing Git workflows.
+The `prepare-commit-msg` Git hook analyzes staged changes, attributes modified lines to AI agents via blame, and appends `Co-authored-by:` lines to the commit message. It chains to any previously configured hooks.
 
 ## Editor Support
 
-Aiki currently supports:
-
 ### Zed (via Agent Client Protocol)
 - **Integration type**: ACP bidirectional proxy
-- **Configuration**: Agent servers in `~/.config/zed/settings.json` (macOS) or `~/.config/zed/settings.json` (Linux)
-- **Installation**: Automatic during `aiki init`
-- **Agent binaries**: Automatically uses Zed's installed agents (no separate installation needed)
 - **Supported agents**: Claude Code, Codex, Gemini
-- **Requirements**: 
-  - Zed editor installed
-  - Agent enabled in Zed (create a thread with the agent once to trigger installation)
-  - Node.js 18+ (for Node.js-based agents like Claude Code)
-- **Scope**: Configured once globally, works for all projects
-
-**How it works**: When you use an AI agent in Zed, Aiki acts as a transparent proxy, observing tool calls and automatically recording provenance metadata in your Jujutsu changes.
-
-**Setup verification**: Run `aiki doctor` to check if Zed and agent binaries are properly detected.
+- **Requirements**: Zed installed, agent enabled in Zed, Node.js 18+ (for Node.js-based agents)
+- **Installation**: Automatic during `aiki init`
 
 ### Claude Code (Standalone)
-- **Hook type**: SessionStart and PostToolUse hooks
+- **Hook type**: SessionStart, PostToolUse, and other lifecycle hooks
 - **Configuration**: Global user-level in `~/.claude/settings.json`
 - **Installation**: Automatic during `aiki init`
-- **Scope**: Configured once globally, works for all projects
 
 ### Cursor
 - **Hook type**: `afterFileEdit` hooks
 - **Configuration**: Global user-level in `~/.cursor/hooks.json`
 - **Installation**: Automatic during `aiki init`
-- **Scope**: Configured once globally, works for all projects
+
+### Codex
+- **Integration type**: OpenTelemetry trace parsing
+- **Hook type**: OTel receiver (`aiki otel-receive`)
+- **Installation**: Automatic during `aiki init`
 
 ### Hook Preservation
 
-Aiki preserves existing hooks:
-- **Claude Code**: Preserves existing marketplace configs and plugin settings
-- **Cursor**: Appends to hook arrays, so existing `afterFileEdit` hooks continue to work
-
-Since both editors use global hooks, you only need to restart your editors once after your first `aiki init` - subsequent projects will automatically have full Aiki support.
+Aiki preserves existing hooks for all editors. Since hooks are global, you only need to restart editors once after your first `aiki init`.
 
 ## Architecture
 
@@ -509,48 +358,68 @@ Aiki is built on **Jujutsu (jj)**, not Git. Key concepts:
 
 While Aiki tracks changes in Jujutsu, it provides Git integration for broader compatibility.
 
-For more details, see [CLAUDE.md](CLAUDE.md) for terminology guidelines and [ops/phase-1.md](ops/phase-1.md) for implementation details.
+### Storage
+
+- **Provenance**: `[aiki]` blocks in JJ change descriptions (per-repository)
+- **Tasks**: Event-sourced on `aiki/tasks` branch (per-repository)
+- **Sessions**: Event-sourced on `aiki/conversations` branch (global `~/.aiki/`)
+- **Config**: `.aiki/` directory (per-repository) and `~/.aiki/` (global)
 
 ## Project Structure
 
 ```
 aiki/
-├── cli/                      # Main Rust CLI application
+├── cli/                          # Main Rust CLI application
 │   ├── src/
-│   │   ├── commands/        # CLI command implementations
-│   │   │   ├── init.rs      # Repository initialization
-│   │   │   ├── doctor.rs    # Health checks and diagnostics
-│   │   │   ├── blame.rs     # Line-level attribution
-│   │   │   ├── authors.rs   # AI author extraction
-│   │   │   ├── verify.rs    # Signature verification
-│   │   │   ├── benchmark.rs # Performance testing
-│   │   │   ├── hooks.rs     # Hook management
-│   │   │   └── acp.rs       # ACP proxy server (Phase 6)
-│   │   ├── flows/           # Flow execution system
-│   │   ├── blame.rs         # Blame logic module
-│   │   ├── authors.rs       # Authors logic module
-│   │   ├── verify.rs        # Verification logic module
-│   │   ├── provenance.rs    # Metadata parsing
-│   │   ├── error.rs         # Error types
-│   │   └── main.rs          # CLI entry point
+│   │   ├── commands/            # CLI command implementations
+│   │   │   ├── init.rs          # Repository initialization
+│   │   │   ├── doctor.rs        # Health checks and diagnostics
+│   │   │   ├── blame.rs         # Line-level attribution
+│   │   │   ├── authors.rs       # AI author extraction
+│   │   │   ├── verify.rs        # Signature verification
+│   │   │   ├── session.rs       # Session history commands
+│   │   │   ├── task.rs          # Task management commands
+│   │   │   ├── benchmark.rs     # Performance testing
+│   │   │   ├── hooks.rs         # Hook management
+│   │   │   └── acp.rs           # ACP proxy server
+│   │   ├── editors/             # Editor integrations
+│   │   │   ├── claude_code/     # Claude Code hooks
+│   │   │   ├── cursor/          # Cursor hooks
+│   │   │   ├── codex/           # Codex OTel integration
+│   │   │   ├── acp/             # ACP proxy protocol
+│   │   │   └── zed.rs           # Zed editor detection
+│   │   ├── events/              # Unified event system (17 event types)
+│   │   ├── flows/               # Flow engine
+│   │   │   ├── core/            # Bundled core flow + native functions
+│   │   │   ├── engine.rs        # Flow execution
+│   │   │   ├── types.rs         # Flow, Statement, Action types
+│   │   │   ├── composer.rs      # Flow composition
+│   │   │   └── variables.rs     # Variable resolution
+│   │   ├── tasks/               # Task system
+│   │   ├── history/             # Session/conversation recording
+│   │   ├── session/             # Session lifecycle management
+│   │   ├── signing/             # Cryptographic signing
+│   │   ├── agents/              # Agent type detection
+│   │   ├── jj/                  # Jujutsu integration
+│   │   ├── provenance.rs        # Metadata parsing
+│   │   ├── blame.rs             # Blame logic
+│   │   ├── authors.rs           # Authors logic
+│   │   ├── verify.rs            # Verification logic
+│   │   ├── event_bus.rs         # Event routing/dispatch
+│   │   ├── error.rs             # Error types
+│   │   └── main.rs              # CLI entry point
 │   └── templates/
 │       └── prepare-commit-msg.sh  # Git hook template
-└── ops/                      # Planning and architecture docs
-    ├── done/                # Completed phases
-    │   ├── phase-1.md       # Claude Code provenance
-    │   ├── phase-2.md       # Cursor support
-    │   ├── phase-4.md       # Cryptographic signing
-    │   └── phase-6.md       # ACP support
-    └── ROADMAP.md           # Long-term vision
+└── ops/                          # Planning and architecture docs
+    ├── done/                    # Completed phases
+    ├── now/                     # Active work
+    ├── next/                    # Upcoming work
+    └── ROADMAP.md               # Long-term vision
 ```
-
-## Development Status
-
-See [ops/ROADMAP.md](ops/ROADMAP.md) and [ops/phase-4.md](ops/phase-4.md) for the complete roadmap.
 
 ## Contributing
 
-This is currently an early-stage project. Contributions are welcome! Please see the [ops/](ops/) directory for architecture documentation.
+Contributions are welcome! See the [ops/](ops/) directory for architecture documentation and [CLAUDE.md](CLAUDE.md) for terminology guidelines.
 
 ## License
 
