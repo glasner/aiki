@@ -2021,6 +2021,148 @@ async fn test_large_repo_performance() {
 
 **Recommendation:** Start with Option C. Build the server, prove it works, then propose to JJ.
 
+---
+
+## Research: Existing JJ Community Plans & Discussions
+
+### Key Finding: Google Already Has This
+
+From the [JJ Development Roadmap](https://jj-vcs.github.io/jj/latest/roadmap/):
+
+> **Google has an internal Jujutsu server backed by a database.** This server allows commits and repos (operation logs) to be stored in the cloud (i.e. the database). Working copies can still be stored locally.
+>
+> In order to reduce latency, there is a **local daemon process that caches reads and writes**. It also prefetches objects it thinks the client might ask for next. It also helps with write latency by **optimistically answering write requests** (it therefore needs to know the server's hashing scheme so it can return the right IDs).
+>
+> We (the project, not necessarily Google) **want to provide a similar experience for all users**. We would therefore like to create a similar server and daemon.
+
+**This validates our entire design direction.** Google has already built what we're designing. The JJ project wants to open-source it.
+
+### JJ Roadmap Alignment
+
+| JJ Roadmap Item | Our Design | Alignment |
+|-----------------|------------|-----------|
+| Open-source cloud-based repos | Aiki Cloud / JJ Remote Server | ✅ Direct match |
+| RPC API for tools | Our protocol design | ✅ Complementary |
+| Local daemon for caching | Client proxy with cache | ✅ Same approach |
+| VFS for large repos | Out of scope (future) | - |
+
+### Operation Log: Already Designed for Distributed Sync
+
+From [JJ Concurrency Docs](https://jj-vcs.github.io/jj/latest/technical/concurrency/):
+
+> The most important piece in the lock-free design is the "operation log". That is what allows us to detect and merge divergent operations.
+
+Key points that validate our design:
+
+1. **Operations are content-addressed** (like Git commits) - safe to write without locking
+2. **Automatic 3-way merge** of divergent operation heads - already implemented
+3. **Designed for distributed filesystems** - "Unlike other DVCSs, Jujutsu treats concurrent edits the same whether they're made locally or remotely"
+4. **View objects** contain snapshot of refs at each operation - exactly what we need to sync
+
+**Implication:** JJ's operation log is *already* designed for the sync semantics we need. We're not inventing new concepts - we're exposing existing JJ capabilities over the network.
+
+### Discussion #2425: "Remote-Backed Commit Store"
+
+From [Working branches and the JJ "way"](https://github.com/martinvonz/jj/discussions/2425):
+
+> With a remote-backed commit store (with a local layer), you'd never have to push at all unless interacting with git repos — "that'd be basically a **jj-aware server**."
+
+This is exactly what we're proposing. The community has discussed this idea.
+
+### RPC API Design Doc
+
+The JJ team has a [design doc for the RPC API](https://docs.google.com/document/d/1rOKvutee5TVYpFhh_UDNZDxfUKyrJ8rjCNpFaNHOHwU/edit):
+
+> One problem with writing tools using the Rust API is that they will only work with the backends they were compiled with... We want to provide an **RPC API** for tools that want to work with an unknown build of jj.
+>
+> The RPC API will probably be at a **higher abstraction level** than the Rust API.
+
+**Implication:** Our protocol should consider compatibility with JJ's planned RPC API.
+
+### Native Backend Status
+
+From various discussions:
+
+> The native backend is currently very naive and slow. The git backend is used not only because of GitHub, but because it's just a much better backend so far, mostly thanks to the packfile format.
+
+> In the longer term, the hope is that clearer transactional semantics will make it possible for a native jj backend to do things that are hard to do with the git backend.
+
+**Implication:** The native backend exists but isn't optimized. However, the *storage abstraction* is solid. Our server can use Git packfiles for efficient storage (like JJ does internally).
+
+### Issue #5685: Library Reliability for Servers
+
+From [Improve jj library's reliability](https://github.com/jj-vcs/jj/issues/5685):
+
+> In their specific use case, a custom heads implementation involved an RPC call that could fail, leading to an unavoidable panic.
+
+**Implication:** Others are already using jj-lib in server contexts. We should contribute to improving library reliability.
+
+### Issue #3577: Generalized Hook Support with gRPC
+
+From [FR: Generalized hook support](https://github.com/jj-vcs/jj/issues/3577):
+
+> Hook binaries would be passed a file descriptor with a connection to the **jj grpc server**.
+
+**Implication:** The community is thinking about gRPC integration. Our protocol could align with this.
+
+### What's NOT in JJ Yet (Our Opportunity)
+
+Based on research, these are gaps we'd be filling:
+
+| Gap | Status | Our Solution |
+|-----|--------|--------------|
+| Native remote protocol | Not implemented | jj:// protocol |
+| Public cloud server | Google's is internal | Aiki Cloud |
+| Operation log sync over network | Only shared filesystem | HTTP/WebSocket push/fetch |
+| Cross-machine change ID stability | Broken via Git roundtrip | Native protocol preserves IDs |
+
+### Community Sentiment
+
+From [Lobsters discussion](https://lobste.rs/s/rojoz1/jujutsu_jj_git_compatible_vcs):
+
+> jj has two backends: the native backend and the git backend. While the native backend is tested for use in jj, given the world of tooling and hosting options out there, it's assumed that you'll be using the git backend.
+
+The community accepts Git as the practical backend for now, but there's appetite for native solutions.
+
+### Recommendations Based on Research
+
+1. **Engage with JJ maintainers early** - They want to open-source Google's cloud backend. We could collaborate rather than duplicate.
+
+2. **Align with planned RPC API** - Our protocol should be compatible with or build on JJ's RPC plans.
+
+3. **Use Git packfiles for storage** - JJ already does this internally. Don't reinvent object storage.
+
+4. **Leverage existing operation log merge** - JJ's 3-way merge of views is battle-tested at Google scale.
+
+5. **Contribute improvements upstream** - Issues like #5685 show others need jj-lib to be server-ready.
+
+6. **Start with local daemon** - Google's architecture has a local daemon for latency. This matches our "client proxy with cache" design.
+
+### Strategic Options (Updated)
+
+**Option A: Wait for JJ to open-source Google's server**
+- Pro: No duplication of effort
+- Con: Unknown timeline, may never happen publicly
+- Risk: We're blocked on JJ team's priorities
+
+**Option B: Build compatible implementation, propose to JJ**
+- Pro: We control timeline, can contribute upstream
+- Con: More effort, risk of divergence
+- Opportunity: **Become the de facto JJ cloud solution**
+
+**Option C: Build Aiki-specific layer on top**
+- Pro: Ship faster, Aiki-specific features
+- Con: Not reusable by broader JJ community
+- Risk: Maintenance burden if JJ releases official solution
+
+**Recommendation:** Option B. Build a server that:
+1. Implements our protocol using jj-lib internally
+2. Uses Git packfiles for efficient storage
+3. Could be contributed to JJ project
+4. Has Aiki-specific extensions (provenance, tasks) as optional layers
+
+---
+
 ### Why This Beats "GitHub for Agents"
 
 The previous design (Aiki Cloud) was:
