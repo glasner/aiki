@@ -765,74 +765,1242 @@ Deliverables:
 - Conflict resolution semantics
 - Reference implementation in Rust
 
-#### Phase 2: Server Implementation (8 weeks)
+##### Week 1-2: Core Protocol Design
 
-```rust
-// Minimal JJ remote server
-struct JJRemoteServer {
-    store: ContentAddressedStore,  // Trees, blobs, commits
-    ops: OperationStore,           // Operation log
-    refs: RefStore,                // Bookmarks, heads
+**Wire Format (Protobuf)**
+
+```protobuf
+syntax = "proto3";
+package jj.remote.v1;
+
+// === Core Identifiers ===
+
+message ChangeId {
+  bytes id = 1;  // 32 bytes, hex-encoded in UI
 }
 
-impl JJRemoteServer {
-    async fn handle_push(&self, req: PushRequest) -> PushResponse {
-        // Validate operations form valid chain
-        // Store objects
-        // Append operations
-        // Update refs
+message CommitId {
+  bytes id = 1;  // SHA-256 hash
+}
+
+message OperationId {
+  bytes id = 1;  // SHA-256 hash of operation content
+}
+
+message TreeId {
+  bytes id = 1;
+}
+
+message BlobId {
+  bytes id = 1;
+}
+
+// === Repository State ===
+
+message RepoView {
+  repeated ChangeId head_ids = 1;
+  map<string, ChangeId> bookmarks = 2;  // name -> change_id
+  map<string, ChangeId> tags = 3;
+  repeated OperationId op_heads = 4;
+}
+
+message Change {
+  ChangeId change_id = 1;
+  repeated CommitId commit_ids = 2;  // History of commits for this change
+  string description = 3;
+  repeated ChangeId parent_ids = 4;
+}
+
+message Commit {
+  CommitId commit_id = 1;
+  TreeId tree_id = 2;
+  repeated CommitId parent_ids = 3;
+  Signature author = 4;
+  Signature committer = 5;
+  string description = 6;  // May differ from Change description
+}
+
+message Signature {
+  string name = 1;
+  string email = 2;
+  Timestamp timestamp = 3;
+}
+
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+  int32 tz_offset_minutes = 3;
+}
+
+message TreeEntry {
+  string name = 1;
+  oneof value {
+    BlobId blob_id = 2;
+    TreeId subtree_id = 3;
+    ConflictId conflict_id = 4;
+  }
+  bool executable = 5;
+  bool symlink = 6;
+}
+
+message Tree {
+  TreeId tree_id = 1;
+  repeated TreeEntry entries = 2;
+}
+
+// === Operations ===
+
+message Operation {
+  OperationId id = 1;
+  repeated OperationId parent_ids = 2;
+  OperationMetadata metadata = 3;
+  RepoView view = 4;  // State after this operation
+
+  oneof mutation {
+    CreateChange create_change = 10;
+    UpdateChange update_change = 11;
+    AbandonChange abandon_change = 12;
+    SetBookmark set_bookmark = 13;
+    DeleteBookmark delete_bookmark = 14;
+    SetTag set_tag = 15;
+    // ... more mutation types
+  }
+}
+
+message OperationMetadata {
+  Timestamp timestamp = 1;
+  string hostname = 2;
+  string username = 3;
+  string description = 4;  // Human-readable description of operation
+  map<string, string> tags = 5;  // Extensible metadata
+}
+
+message CreateChange {
+  ChangeId change_id = 1;
+  repeated ChangeId parent_ids = 2;
+  CommitId initial_commit_id = 3;
+}
+
+message UpdateChange {
+  ChangeId change_id = 1;
+  optional string new_description = 2;
+  optional CommitId new_commit_id = 3;
+  repeated ChangeId new_parent_ids = 4;
+}
+
+message AbandonChange {
+  ChangeId change_id = 1;
+}
+
+message SetBookmark {
+  string name = 1;
+  ChangeId target = 2;
+}
+
+message DeleteBookmark {
+  string name = 1;
+}
+
+// === RPC Messages ===
+
+message GetRefsRequest {}
+message GetRefsResponse {
+  RepoView view = 1;
+}
+
+message FetchOpsRequest {
+  repeated OperationId known_ops = 1;  // Client's current op heads
+  uint32 max_ops = 2;  // Limit for pagination
+}
+
+message FetchOpsResponse {
+  repeated Operation operations = 1;
+  bool has_more = 2;
+}
+
+message FetchObjectsRequest {
+  repeated ChangeId change_ids = 1;
+  repeated CommitId commit_ids = 2;
+  repeated TreeId tree_ids = 3;
+  repeated BlobId blob_ids = 4;
+}
+
+message FetchObjectsResponse {
+  repeated Change changes = 1;
+  repeated Commit commits = 2;
+  repeated Tree trees = 3;
+  map<string, bytes> blobs = 4;  // blob_id (hex) -> content
+}
+
+message PushRequest {
+  repeated Operation operations = 1;
+  repeated Change changes = 2;
+  repeated Commit commits = 3;
+  repeated Tree trees = 4;
+  map<string, bytes> blobs = 5;
+
+  // Expected state (for optimistic concurrency)
+  repeated OperationId expected_op_heads = 6;
+}
+
+message PushResponse {
+  bool success = 1;
+  optional PushConflict conflict = 2;
+  repeated OperationId new_op_heads = 3;
+}
+
+message PushConflict {
+  enum ConflictType {
+    STALE_OP_HEAD = 0;      // Remote has newer ops
+    BOOKMARK_CONFLICT = 1;  // Bookmark moved
+    PERMISSION_DENIED = 2;
+  }
+  ConflictType type = 1;
+  string message = 2;
+  repeated OperationId current_op_heads = 3;  // Actual remote state
+}
+```
+
+##### Week 3: Authentication Model
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Authentication Flow                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Option A: API Key (simple, for agents)                         │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Authorization: Bearer <api_key>                         │   │
+│  │  X-Aiki-Agent-Id: <agent_uuid>                          │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  Option B: SSH Keys (for developers)                            │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  jj+ssh://cloud.aiki.dev/user/repo                      │   │
+│  │  Uses ~/.ssh/id_ed25519 or ssh-agent                    │   │
+│  │  Server validates against authorized_keys               │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  Option C: OAuth (for web-based flows)                          │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  jj auth login cloud.aiki.dev                           │   │
+│  │  Opens browser → OAuth flow → stores token locally      │   │
+│  │  Token stored in ~/.jj/credentials.toml                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  Permission Model:                                               │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  repo:read   - Fetch operations and objects             │   │
+│  │  repo:write  - Push operations                          │   │
+│  │  repo:admin  - Manage permissions, delete repo          │   │
+│  │  bookmark:*  - Per-bookmark write permissions           │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+##### Week 4: Conflict Resolution Semantics
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Conflict Scenarios                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Scenario 1: Divergent Operation Heads                          │
+│  ─────────────────────────────────────                          │
+│  Machine A: op_1 → op_2                                         │
+│  Machine B: op_1 → op_3                                         │
+│                                                                  │
+│  Resolution: Both op_2 and op_3 become op heads.                │
+│  On fetch, client creates merge operation:                      │
+│                                                                  │
+│       op_2 ──┐                                                  │
+│              ├──► op_4 (merge)                                  │
+│       op_3 ──┘                                                  │
+│                                                                  │
+│  If op_2 and op_3 modified same file → conflict in working copy │
+│  If op_2 and op_3 modified different files → auto-merge         │
+│                                                                  │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│  Scenario 2: Bookmark Moved                                     │
+│  ──────────────────────────                                     │
+│  Machine A: bookmark 'main' → change_X                          │
+│  Machine B: bookmark 'main' → change_Y                          │
+│                                                                  │
+│  Resolution options:                                             │
+│  a) Last-writer-wins (default)                                  │
+│  b) Reject push, require explicit --force                       │
+│  c) Create conflict marker bookmark                             │
+│                                                                  │
+│  Default: (b) Reject, show divergent state:                     │
+│  $ jj push                                                      │
+│  Error: bookmark 'main' has diverged                            │
+│    local:  main → change_X                                      │
+│    remote: main → change_Y                                      │
+│  Use 'jj push --force' to overwrite, or 'jj fetch' first        │
+│                                                                  │
+│  ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│  Scenario 3: Change Description Conflict                        │
+│  ───────────────────────────────────────                        │
+│  Machine A: describe change_X "Fix: auth bug"                   │
+│  Machine B: describe change_X "Fix: login bug"                  │
+│                                                                  │
+│  Resolution: Last-writer-wins for descriptions.                 │
+│  Both descriptions are in op log for history.                   │
+│  UI can show "description changed from X to Y"                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Phase 2: Server Implementation (8 weeks)
+
+##### Week 5-6: Storage Backend
+
+```rust
+//! Server storage architecture
+
+use std::path::PathBuf;
+use tokio::sync::RwLock;
+
+/// Content-addressed store for immutable objects
+pub trait ObjectStore: Send + Sync {
+    async fn get_commit(&self, id: &CommitId) -> Result<Option<Commit>>;
+    async fn get_tree(&self, id: &TreeId) -> Result<Option<Tree>>;
+    async fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>>;
+
+    async fn put_commit(&self, commit: &Commit) -> Result<CommitId>;
+    async fn put_tree(&self, tree: &Tree) -> Result<TreeId>;
+    async fn put_blob(&self, content: &[u8]) -> Result<BlobId>;
+
+    /// Check which objects exist (for negotiation)
+    async fn has_objects(&self, ids: &ObjectIds) -> Result<ObjectIds>;
+}
+
+/// Store for mutable data (changes, operations)
+pub trait MetadataStore: Send + Sync {
+    // Changes
+    async fn get_change(&self, id: &ChangeId) -> Result<Option<Change>>;
+    async fn put_change(&self, change: &Change) -> Result<()>;
+    async fn list_changes(&self) -> Result<Vec<ChangeId>>;
+
+    // Operations
+    async fn get_operation(&self, id: &OperationId) -> Result<Option<Operation>>;
+    async fn put_operation(&self, op: &Operation) -> Result<()>;
+    async fn get_op_heads(&self) -> Result<Vec<OperationId>>;
+    async fn set_op_heads(&self, heads: &[OperationId]) -> Result<()>;
+
+    // Refs (bookmarks, tags)
+    async fn get_refs(&self) -> Result<RepoView>;
+    async fn update_refs(&self, updates: &RefUpdates) -> Result<()>;
+}
+
+/// Storage backend options
+pub enum StorageBackend {
+    /// Local filesystem (for single-server deployment)
+    /// Objects: content-addressed files in objects/
+    /// Metadata: SQLite database
+    LocalFs {
+        root: PathBuf,
+    },
+
+    /// Cloud storage (for scalable deployment)
+    /// Objects: S3/GCS/R2
+    /// Metadata: PostgreSQL
+    Cloud {
+        object_store: Box<dyn ObjectStore>,
+        metadata_store: Box<dyn MetadataStore>,
+    },
+
+    /// Git backend (reuse existing Git infrastructure)
+    /// Objects: Git packfiles (via gitoxide)
+    /// Metadata: Custom refs + loose files
+    GitBacked {
+        git_dir: PathBuf,
+    },
+}
+
+// Concrete implementations
+
+/// S3-compatible object store
+pub struct S3ObjectStore {
+    client: aws_sdk_s3::Client,
+    bucket: String,
+    prefix: String,
+}
+
+/// PostgreSQL metadata store
+pub struct PostgresMetadataStore {
+    pool: sqlx::PgPool,
+}
+
+// SQL schema for metadata
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS changes (
+    id BYTEA PRIMARY KEY,
+    data BYTEA NOT NULL,  -- Protobuf-encoded Change
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS operations (
+    id BYTEA PRIMARY KEY,
+    parent_ids BYTEA[] NOT NULL,
+    data BYTEA NOT NULL,  -- Protobuf-encoded Operation
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS op_heads (
+    repo_id UUID NOT NULL,
+    op_id BYTEA NOT NULL,
+    PRIMARY KEY (repo_id, op_id)
+);
+
+CREATE TABLE IF NOT EXISTS refs (
+    repo_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    ref_type VARCHAR(20) NOT NULL,  -- 'bookmark', 'tag'
+    target_change_id BYTEA NOT NULL,
+    PRIMARY KEY (repo_id, name, ref_type)
+);
+
+CREATE INDEX idx_operations_parents ON operations USING GIN (parent_ids);
+"#;
+```
+
+##### Week 7-8: HTTP API Server
+
+```rust
+//! HTTP API server using axum
+
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
+use std::sync::Arc;
+
+pub struct ServerState {
+    pub repos: Arc<dyn RepoManager>,
+    pub auth: Arc<dyn AuthProvider>,
+}
+
+pub fn create_router(state: ServerState) -> Router {
+    Router::new()
+        // Repository management
+        .route("/api/v1/repos", post(create_repo))
+        .route("/api/v1/repos/:owner/:name", get(get_repo_info))
+
+        // JJ Remote Protocol
+        .route("/api/v1/repos/:owner/:name/refs", get(get_refs))
+        .route("/api/v1/repos/:owner/:name/ops", get(fetch_ops))
+        .route("/api/v1/repos/:owner/:name/objects", post(fetch_objects))
+        .route("/api/v1/repos/:owner/:name/push", post(push))
+
+        // Blob streaming (large files)
+        .route("/api/v1/repos/:owner/:name/blobs/:id", get(get_blob))
+
+        .with_state(Arc::new(state))
+}
+
+async fn get_refs(
+    State(state): State<Arc<ServerState>>,
+    Path((owner, name)): Path<(String, String)>,
+    auth: AuthenticatedUser,
+) -> Result<Json<GetRefsResponse>, ApiError> {
+    let repo = state.repos.get(&owner, &name).await?;
+    auth.require_permission(&repo, Permission::Read)?;
+
+    let view = repo.metadata.get_refs().await?;
+    Ok(Json(GetRefsResponse { view }))
+}
+
+async fn fetch_ops(
+    State(state): State<Arc<ServerState>>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<FetchOpsParams>,
+    auth: AuthenticatedUser,
+) -> Result<Json<FetchOpsResponse>, ApiError> {
+    let repo = state.repos.get(&owner, &name).await?;
+    auth.require_permission(&repo, Permission::Read)?;
+
+    // Find operations the client doesn't have
+    let client_ops: HashSet<_> = params.known_ops.iter().collect();
+    let all_ops = repo.metadata.list_ops_since(&params.known_ops).await?;
+
+    let missing_ops: Vec<_> = all_ops
+        .into_iter()
+        .filter(|op| !client_ops.contains(&op.id))
+        .take(params.max_ops.unwrap_or(1000) as usize)
+        .collect();
+
+    Ok(Json(FetchOpsResponse {
+        operations: missing_ops,
+        has_more: all_ops.len() > params.max_ops.unwrap_or(1000) as usize,
+    }))
+}
+
+async fn push(
+    State(state): State<Arc<ServerState>>,
+    Path((owner, name)): Path<(String, String)>,
+    auth: AuthenticatedUser,
+    Json(req): Json<PushRequest>,
+) -> Result<Json<PushResponse>, ApiError> {
+    let repo = state.repos.get(&owner, &name).await?;
+    auth.require_permission(&repo, Permission::Write)?;
+
+    // Optimistic concurrency check
+    let current_heads = repo.metadata.get_op_heads().await?;
+    if current_heads != req.expected_op_heads {
+        return Ok(Json(PushResponse {
+            success: false,
+            conflict: Some(PushConflict {
+                conflict_type: ConflictType::StaleOpHead,
+                message: "Remote has newer operations".into(),
+                current_op_heads: current_heads,
+            }),
+            new_op_heads: vec![],
+        }));
     }
 
-    async fn handle_fetch(&self, req: FetchRequest) -> FetchResponse {
-        // Find ops since requested point
-        // Collect referenced objects
-        // Return bundle
+    // Store objects (content-addressed, idempotent)
+    for (id, blob) in &req.blobs {
+        repo.objects.put_blob(blob).await?;
     }
+    for tree in &req.trees {
+        repo.objects.put_tree(tree).await?;
+    }
+    for commit in &req.commits {
+        repo.objects.put_commit(commit).await?;
+    }
+
+    // Store changes and operations
+    for change in &req.changes {
+        repo.metadata.put_change(change).await?;
+    }
+
+    // Validate operation chain
+    validate_operation_chain(&req.operations, &current_heads)?;
+
+    for op in &req.operations {
+        repo.metadata.put_operation(op).await?;
+    }
+
+    // Update op heads
+    let new_heads = compute_new_heads(&current_heads, &req.operations);
+    repo.metadata.set_op_heads(&new_heads).await?;
+
+    // Broadcast to connected clients (WebSocket)
+    state.broadcast_ops(&owner, &name, &req.operations).await;
+
+    Ok(Json(PushResponse {
+        success: true,
+        conflict: None,
+        new_op_heads: new_heads,
+    }))
+}
+```
+
+##### Week 9-10: WebSocket for Real-time Sync
+
+```rust
+//! WebSocket handler for real-time operation streaming
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use futures::{SinkExt, StreamExt};
+use tokio::sync::broadcast;
+
+pub struct RepoSubscription {
+    pub owner: String,
+    pub name: String,
+    pub tx: broadcast::Sender<Operation>,
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+    Path((owner, name)): Path<(String, String)>,
+    auth: AuthenticatedUser,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, state, owner, name, auth))
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<ServerState>,
+    owner: String,
+    name: String,
+    auth: AuthenticatedUser,
+) {
+    let (mut sender, mut receiver) = socket.split();
+
+    // Subscribe to operations for this repo
+    let mut rx = state.subscribe_to_repo(&owner, &name);
+
+    // Send operations to client
+    let send_task = tokio::spawn(async move {
+        while let Ok(op) = rx.recv().await {
+            let msg = serde_json::to_string(&WsMessage::Operation(op)).unwrap();
+            if sender.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Receive messages from client
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            match msg {
+                Message::Text(text) => {
+                    // Handle client messages (e.g., request specific ops)
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    // Wait for either task to complete
+    tokio::select! {
+        _ = send_task => {}
+        _ = recv_task => {}
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum WsMessage {
+    Operation(Operation),
+    RefUpdate { name: String, old: ChangeId, new: ChangeId },
+    Ping,
+    Pong,
 }
 ```
 
 #### Phase 3: Client Implementation (6 weeks)
 
-Modify jj-lib to support remote protocol:
+##### Week 11-12: RemoteBackend Trait
 
 ```rust
-// New trait in jj-lib
-trait RemoteBackend {
-    fn fetch_refs(&self) -> Result<RemoteRefs>;
-    fn fetch_ops_since(&self, op_id: &OperationId) -> Result<Vec<Operation>>;
-    fn fetch_objects(&self, ids: &[ObjectId]) -> Result<Vec<Object>>;
-    fn push(&self, bundle: PushBundle) -> Result<PushResult>;
+//! Client-side remote protocol implementation
+
+use async_trait::async_trait;
+use reqwest::Client;
+use url::Url;
+
+/// Trait for remote backends (pluggable implementations)
+#[async_trait]
+pub trait RemoteBackend: Send + Sync {
+    /// Get current refs (bookmarks, tags, heads)
+    async fn fetch_refs(&self) -> Result<RepoView>;
+
+    /// Fetch operations since known heads
+    async fn fetch_ops_since(&self, known: &[OperationId]) -> Result<Vec<Operation>>;
+
+    /// Fetch specific objects
+    async fn fetch_objects(&self, ids: &ObjectIds) -> Result<Objects>;
+
+    /// Push operations and objects
+    async fn push(&self, bundle: PushBundle) -> Result<PushResult>;
+
+    /// Subscribe to real-time updates (returns stream)
+    async fn subscribe(&self) -> Result<Box<dyn Stream<Item = Operation>>>;
 }
 
-// Implementations
-struct HttpRemote { ... }   // jj://host/repo
-struct SshRemote { ... }    // jj+ssh://host/repo
-struct LocalRemote { ... }  // /path/to/repo (for testing)
+/// HTTP(S) remote implementation
+pub struct HttpRemote {
+    client: Client,
+    base_url: Url,
+    auth: AuthMethod,
+}
+
+impl HttpRemote {
+    pub fn new(url: &str, auth: AuthMethod) -> Result<Self> {
+        let base_url = Url::parse(url)?;
+        let client = Client::builder()
+            .user_agent("jj-remote/0.1")
+            .build()?;
+
+        Ok(Self { client, base_url, auth })
+    }
+}
+
+#[async_trait]
+impl RemoteBackend for HttpRemote {
+    async fn fetch_refs(&self) -> Result<RepoView> {
+        let url = self.base_url.join("refs")?;
+        let resp = self.client
+            .get(url)
+            .header("Authorization", self.auth.header())
+            .send()
+            .await?;
+
+        let body: GetRefsResponse = resp.json().await?;
+        Ok(body.view)
+    }
+
+    async fn fetch_ops_since(&self, known: &[OperationId]) -> Result<Vec<Operation>> {
+        let url = self.base_url.join("ops")?;
+        let resp = self.client
+            .get(url)
+            .query(&[("known", &serialize_op_ids(known))])
+            .header("Authorization", self.auth.header())
+            .send()
+            .await?;
+
+        let body: FetchOpsResponse = resp.json().await?;
+        Ok(body.operations)
+    }
+
+    async fn push(&self, bundle: PushBundle) -> Result<PushResult> {
+        let url = self.base_url.join("push")?;
+        let resp = self.client
+            .post(url)
+            .header("Authorization", self.auth.header())
+            .json(&PushRequest::from(bundle))
+            .send()
+            .await?;
+
+        let body: PushResponse = resp.json().await?;
+        if body.success {
+            Ok(PushResult::Success { new_heads: body.new_op_heads })
+        } else {
+            Ok(PushResult::Conflict(body.conflict.unwrap()))
+        }
+    }
+
+    async fn subscribe(&self) -> Result<Box<dyn Stream<Item = Operation>>> {
+        let ws_url = self.base_url
+            .to_string()
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+
+        let (ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
+        let stream = ws.map(|msg| {
+            // Parse WebSocket messages into Operations
+            // ...
+        });
+
+        Ok(Box::new(stream))
+    }
+}
+
+/// SSH remote implementation
+pub struct SshRemote {
+    session: ssh2::Session,
+    repo_path: String,
+}
+
+#[async_trait]
+impl RemoteBackend for SshRemote {
+    // Similar implementation using SSH channels
+    // Protocol is the same, just different transport
+}
 ```
 
-#### Phase 4: CLI Integration (2 weeks)
+##### Week 13-14: Integration with jj-lib
 
-```bash
-# New commands
-jj remote add <name> <url>
-jj remote remove <name>
-jj remote list
+```rust
+//! Integration with jj-lib's existing abstractions
 
-jj fetch [<remote>]
-jj push [<remote>] [-b <bookmark>]
-jj pull [<remote>]  # fetch + merge
+use jj_lib::repo::Repo;
+use jj_lib::workspace::Workspace;
+
+/// Extension trait for Repo to add remote operations
+pub trait RepoRemoteExt {
+    fn add_remote(&mut self, name: &str, url: &str) -> Result<()>;
+    fn remove_remote(&mut self, name: &str) -> Result<()>;
+    fn list_remotes(&self) -> Result<Vec<RemoteInfo>>;
+    fn get_remote(&self, name: &str) -> Result<Box<dyn RemoteBackend>>;
+}
+
+impl RepoRemoteExt for Repo {
+    fn add_remote(&mut self, name: &str, url: &str) -> Result<()> {
+        let config_path = self.repo_path().join("remotes.toml");
+        let mut config: RemotesConfig = load_or_default(&config_path)?;
+
+        config.remotes.insert(name.to_string(), RemoteConfig {
+            url: url.to_string(),
+            push_bookmark: None,
+            fetch_bookmark: None,
+        });
+
+        save(&config_path, &config)?;
+        Ok(())
+    }
+
+    fn get_remote(&self, name: &str) -> Result<Box<dyn RemoteBackend>> {
+        let config = self.get_remote_config(name)?;
+        let url = &config.url;
+
+        // Dispatch based on URL scheme
+        if url.starts_with("jj://") || url.starts_with("https://") {
+            let auth = self.get_auth_for_remote(name)?;
+            Ok(Box::new(HttpRemote::new(url, auth)?))
+        } else if url.starts_with("jj+ssh://") {
+            Ok(Box::new(SshRemote::connect(url)?))
+        } else if url.starts_with("/") || url.starts_with("file://") {
+            Ok(Box::new(LocalRemote::new(url)?))
+        } else {
+            Err(anyhow!("Unknown remote URL scheme: {}", url))
+        }
+    }
+}
+
+/// High-level fetch operation
+pub async fn fetch(repo: &mut Repo, remote_name: &str) -> Result<FetchResult> {
+    let remote = repo.get_remote(remote_name)?;
+
+    // 1. Get remote refs
+    let remote_view = remote.fetch_refs().await?;
+
+    // 2. Find missing operations
+    let local_ops = repo.op_heads();
+    let missing_ops = remote.fetch_ops_since(&local_ops).await?;
+
+    if missing_ops.is_empty() {
+        return Ok(FetchResult::UpToDate);
+    }
+
+    // 3. Fetch objects referenced by missing operations
+    let needed_objects = collect_object_ids(&missing_ops);
+    let objects = remote.fetch_objects(&needed_objects).await?;
+
+    // 4. Import objects into local store
+    for commit in objects.commits {
+        repo.store().write_commit(&commit)?;
+    }
+    for tree in objects.trees {
+        repo.store().write_tree(&tree)?;
+    }
+    for (id, blob) in objects.blobs {
+        repo.store().write_blob(&id, &blob)?;
+    }
+
+    // 5. Import operations
+    for op in missing_ops {
+        repo.op_store().write_operation(&op)?;
+    }
+
+    // 6. Merge op heads if diverged
+    let new_heads = repo.op_heads();
+    if new_heads.len() > 1 {
+        let merge_op = create_merge_operation(repo, &new_heads)?;
+        repo.op_store().write_operation(&merge_op)?;
+        repo.set_op_heads(&[merge_op.id])?;
+    }
+
+    Ok(FetchResult::Updated {
+        ops_imported: missing_ops.len(),
+        new_head: repo.op_heads()[0].clone(),
+    })
+}
+
+/// High-level push operation
+pub async fn push(
+    repo: &Repo,
+    remote_name: &str,
+    options: PushOptions,
+) -> Result<PushResult> {
+    let remote = repo.get_remote(remote_name)?;
+
+    // 1. Get remote state
+    let remote_view = remote.fetch_refs().await?;
+
+    // 2. Find local operations to push
+    let local_heads = repo.op_heads();
+    let remote_heads = remote_view.op_heads;
+
+    let ops_to_push = find_ops_to_push(repo, &local_heads, &remote_heads)?;
+
+    if ops_to_push.is_empty() {
+        return Ok(PushResult::UpToDate);
+    }
+
+    // 3. Collect objects referenced by operations
+    let objects = collect_objects_for_ops(repo, &ops_to_push)?;
+
+    // 4. Build push bundle
+    let bundle = PushBundle {
+        operations: ops_to_push,
+        changes: objects.changes,
+        commits: objects.commits,
+        trees: objects.trees,
+        blobs: objects.blobs,
+        expected_op_heads: remote_heads,
+    };
+
+    // 5. Push to remote
+    match remote.push(bundle).await? {
+        PushResult::Success { new_heads } => {
+            // Update remote tracking refs
+            repo.set_remote_heads(remote_name, &new_heads)?;
+            Ok(PushResult::Success { new_heads })
+        }
+        PushResult::Conflict(conflict) => {
+            if options.force {
+                // Retry with force
+                // ...
+            } else {
+                Ok(PushResult::Conflict(conflict))
+            }
+        }
+    }
+}
 ```
 
-### Total Effort
+##### Week 15-16: CLI Commands
 
-| Phase | Weeks | Notes |
-|-------|-------|-------|
-| Protocol spec | 4 | Critical for ecosystem |
-| Server | 8 | Aiki hosts this |
-| Client (jj-lib) | 6 | Requires JJ maintainer buy-in |
-| CLI | 2 | Straightforward |
-| Testing | 4 | Edge cases, conflicts |
-| **Total** | **24 weeks** | ~6 months |
+```rust
+//! CLI commands for remote operations
+
+use clap::{Parser, Subcommand};
+
+#[derive(Subcommand)]
+pub enum RemoteCommands {
+    /// Add a new remote
+    Add {
+        /// Name for the remote
+        name: String,
+        /// URL of the remote repository
+        url: String,
+    },
+
+    /// Remove a remote
+    Remove {
+        /// Name of the remote to remove
+        name: String,
+    },
+
+    /// List configured remotes
+    List,
+
+    /// Show remote details
+    Show {
+        /// Name of the remote
+        name: String,
+    },
+
+    /// Set remote URL
+    SetUrl {
+        /// Name of the remote
+        name: String,
+        /// New URL
+        url: String,
+    },
+}
+
+#[derive(Parser)]
+pub struct FetchArgs {
+    /// Remote to fetch from (default: origin)
+    #[arg(default_value = "origin")]
+    remote: String,
+
+    /// Fetch all remotes
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Parser)]
+pub struct PushArgs {
+    /// Remote to push to (default: origin)
+    #[arg(default_value = "origin")]
+    remote: String,
+
+    /// Bookmark to push
+    #[arg(short, long)]
+    bookmark: Option<String>,
+
+    /// Push all bookmarks
+    #[arg(long)]
+    all: bool,
+
+    /// Force push (overwrite remote state)
+    #[arg(short, long)]
+    force: bool,
+
+    /// Delete remote bookmark
+    #[arg(short, long)]
+    delete: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct PullArgs {
+    /// Remote to pull from (default: origin)
+    #[arg(default_value = "origin")]
+    remote: String,
+
+    /// Rebase local changes instead of merge
+    #[arg(long)]
+    rebase: bool,
+}
+
+// Implementation
+
+pub fn cmd_remote_add(name: &str, url: &str) -> Result<()> {
+    let workspace = Workspace::load_current()?;
+    let mut repo = workspace.repo_mut();
+
+    repo.add_remote(name, url)?;
+
+    println!("Added remote '{}' at {}", name, url);
+    Ok(())
+}
+
+pub async fn cmd_fetch(args: FetchArgs) -> Result<()> {
+    let workspace = Workspace::load_current()?;
+    let mut repo = workspace.repo_mut();
+
+    let remotes = if args.all {
+        repo.list_remotes()?
+    } else {
+        vec![repo.get_remote_info(&args.remote)?]
+    };
+
+    for remote_info in remotes {
+        print!("Fetching from '{}'...", remote_info.name);
+        std::io::stdout().flush()?;
+
+        match fetch(&mut repo, &remote_info.name).await? {
+            FetchResult::UpToDate => {
+                println!(" up to date");
+            }
+            FetchResult::Updated { ops_imported, new_head } => {
+                println!(" {} operation(s) imported", ops_imported);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn cmd_push(args: PushArgs) -> Result<()> {
+    let workspace = Workspace::load_current()?;
+    let repo = workspace.repo();
+
+    let options = PushOptions {
+        force: args.force,
+        bookmark: args.bookmark,
+        all_bookmarks: args.all,
+        delete: args.delete,
+    };
+
+    print!("Pushing to '{}'...", args.remote);
+    std::io::stdout().flush()?;
+
+    match push(&repo, &args.remote, options).await? {
+        PushResult::UpToDate => {
+            println!(" up to date");
+        }
+        PushResult::Success { new_heads } => {
+            println!(" done");
+        }
+        PushResult::Conflict(conflict) => {
+            println!(" FAILED");
+            eprintln!("Error: {}", conflict.message);
+            match conflict.conflict_type {
+                ConflictType::StaleOpHead => {
+                    eprintln!("Remote has newer changes. Run 'jj fetch' first.");
+                }
+                ConflictType::BookmarkConflict => {
+                    eprintln!("Bookmark has diverged. Use --force to overwrite.");
+                }
+                _ => {}
+            }
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn cmd_pull(args: PullArgs) -> Result<()> {
+    // Fetch
+    let fetch_args = FetchArgs {
+        remote: args.remote.clone(),
+        all: false,
+    };
+    cmd_fetch(fetch_args).await?;
+
+    // Merge or rebase
+    let workspace = Workspace::load_current()?;
+    let mut repo = workspace.repo_mut();
+
+    if args.rebase {
+        // Rebase local changes on top of remote
+        // ...
+    } else {
+        // Merge (already handled by fetch if ops diverged)
+    }
+
+    Ok(())
+}
+```
+
+#### Phase 4: Testing & Hardening (4 weeks)
+
+##### Week 17-18: Test Suite
+
+```rust
+//! Integration tests for JJ remote protocol
+
+#[tokio::test]
+async fn test_basic_push_fetch() {
+    // Setup: two local repos with a shared server
+    let server = TestServer::start().await;
+    let repo_a = TestRepo::new("repo_a");
+    let repo_b = TestRepo::new("repo_b");
+
+    // Add same remote to both
+    repo_a.add_remote("origin", &server.url()).unwrap();
+    repo_b.add_remote("origin", &server.url()).unwrap();
+
+    // Create change in repo_a
+    repo_a.create_file("hello.txt", "Hello, world!");
+    let change_id = repo_a.describe("Add greeting");
+
+    // Push from repo_a
+    let result = push(&repo_a, "origin", Default::default()).await.unwrap();
+    assert!(matches!(result, PushResult::Success { .. }));
+
+    // Fetch in repo_b
+    let result = fetch(&mut repo_b, "origin").await.unwrap();
+    assert!(matches!(result, FetchResult::Updated { ops_imported: 1, .. }));
+
+    // Verify change exists in repo_b with same change_id
+    let change = repo_b.get_change(&change_id).unwrap();
+    assert_eq!(change.description, "Add greeting");
+
+    // Verify file content
+    let content = repo_b.read_file(&change_id, "hello.txt").unwrap();
+    assert_eq!(content, "Hello, world!");
+}
+
+#[tokio::test]
+async fn test_concurrent_push_conflict() {
+    let server = TestServer::start().await;
+    let repo_a = TestRepo::with_remote("origin", &server.url());
+    let repo_b = TestRepo::with_remote("origin", &server.url());
+
+    // Both start from same state
+    repo_a.create_file("file.txt", "initial");
+    push(&repo_a, "origin", Default::default()).await.unwrap();
+    fetch(&mut repo_b, "origin").await.unwrap();
+
+    // Both make changes
+    repo_a.edit_file("file.txt", "from A");
+    repo_b.edit_file("file.txt", "from B");
+
+    // A pushes first - succeeds
+    let result = push(&repo_a, "origin", Default::default()).await.unwrap();
+    assert!(matches!(result, PushResult::Success { .. }));
+
+    // B pushes - should conflict
+    let result = push(&repo_b, "origin", Default::default()).await.unwrap();
+    assert!(matches!(result, PushResult::Conflict(PushConflict {
+        conflict_type: ConflictType::StaleOpHead,
+        ..
+    })));
+
+    // B fetches, resolves, pushes again
+    fetch(&mut repo_b, "origin").await.unwrap();
+    // (resolve conflict)
+    let result = push(&repo_b, "origin", Default::default()).await.unwrap();
+    assert!(matches!(result, PushResult::Success { .. }));
+}
+
+#[tokio::test]
+async fn test_description_with_aiki_metadata() {
+    let server = TestServer::start().await;
+    let repo_a = TestRepo::with_remote("origin", &server.url());
+    let repo_b = TestRepo::with_remote("origin", &server.url());
+
+    // Create change with [aiki] metadata
+    repo_a.create_file("main.rs", "fn main() {}");
+    let description = r#"Add main function
+
+[aiki]
+agent=claude-code
+session=sess_abc123
+confidence=high
+[/aiki]"#;
+    let change_id = repo_a.describe(description);
+
+    // Push
+    push(&repo_a, "origin", Default::default()).await.unwrap();
+
+    // Fetch in repo_b
+    fetch(&mut repo_b, "origin").await.unwrap();
+
+    // Verify metadata preserved
+    let change = repo_b.get_change(&change_id).unwrap();
+    assert!(change.description.contains("[aiki]"));
+    assert!(change.description.contains("agent=claude-code"));
+    assert!(change.description.contains("session=sess_abc123"));
+}
+
+#[tokio::test]
+async fn test_large_repo_performance() {
+    let server = TestServer::start().await;
+    let repo = TestRepo::with_remote("origin", &server.url());
+
+    // Create 10,000 files
+    for i in 0..10_000 {
+        repo.create_file(&format!("file_{}.txt", i), &format!("content {}", i));
+    }
+    repo.describe("Add many files");
+
+    // Measure push time
+    let start = Instant::now();
+    push(&repo, "origin", Default::default()).await.unwrap();
+    let push_duration = start.elapsed();
+
+    // Should complete in reasonable time (< 30 seconds)
+    assert!(push_duration < Duration::from_secs(30));
+
+    // Measure fetch time
+    let repo_b = TestRepo::with_remote("origin", &server.url());
+    let start = Instant::now();
+    fetch(&mut repo_b, "origin").await.unwrap();
+    let fetch_duration = start.elapsed();
+
+    assert!(fetch_duration < Duration::from_secs(30));
+}
+```
+
+##### Week 19-20: Edge Cases & Documentation
+
+**Edge cases to handle:**
+1. Network failures mid-push (retry logic, idempotency)
+2. Server restart during WebSocket connection
+3. Very large files (streaming, chunking)
+4. Many small operations (batching)
+5. Clock skew between machines
+6. Repository corruption recovery
+7. Backwards compatibility with older clients
+
+**Documentation:**
+1. Protocol specification document
+2. Server deployment guide
+3. Client integration guide
+4. Migration guide from `jj git push/fetch`
+5. Troubleshooting guide
+
+### Total Timeline Summary
+
+| Phase | Weeks | Key Deliverables |
+|-------|-------|------------------|
+| Protocol Specification | 4 | Protobuf schemas, auth model, conflict semantics |
+| Server Implementation | 6 | HTTP API, storage backend, WebSocket |
+| Client Implementation | 6 | RemoteBackend trait, jj-lib integration, CLI |
+| Testing & Hardening | 4 | Test suite, edge cases, documentation |
+| **Total** | **20** | Production-ready native JJ remotes |
+
+### Next Steps
+
+1. **Week 0**: Draft RFC for JJ community discussion
+2. **Week 1**: Begin protocol specification
+3. **Ongoing**: Engage with JJ maintainers on design decisions
 
 ### Relationship to JJ Upstream
 
