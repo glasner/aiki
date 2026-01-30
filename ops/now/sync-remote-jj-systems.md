@@ -516,6 +516,374 @@ session=session-xyz
 
 ---
 
+## Deep Dive: Native JJ Remotes (The Real Solution)
+
+### The Insight
+
+Git didn't become ubiquitous because of GitHub. Git became ubiquitous because **git itself** has native remote support. GitHub just provided hosting.
+
+```bash
+# Git's killer feature: native remote protocol
+git remote add origin git@github.com:user/repo.git
+git push origin main
+git fetch origin
+```
+
+JJ currently piggybacks on Git remotes via `jj git push/fetch`. But this only syncs the **Git layer**, not JJ's native concepts:
+
+| Concept | Syncs via Git? | Problem |
+|---------|---------------|---------|
+| File content | ✅ Yes | - |
+| Git commits | ✅ Yes | - |
+| **Change IDs** | ❌ No | Regenerated on import |
+| **Operation log** | ❌ No | Local only |
+| **Change descriptions** | ⚠️ Partial | Only if committed to Git |
+| **Bookmarks** | ⚠️ Partial | Maps to Git branches |
+
+**What we want: native JJ remotes that sync JJ-native concepts.**
+
+### What "JJ Remotes" Would Look Like
+
+```bash
+# Native JJ remote support (doesn't exist yet)
+jj remote add origin jj://cloud.aiki.dev/user/repo
+jj push origin @
+jj fetch origin
+jj pull origin  # fetch + merge
+```
+
+What syncs:
+- ✅ Change IDs (stable across machines)
+- ✅ Change descriptions (including `[aiki]` metadata)
+- ✅ Operation log (full history)
+- ✅ Bookmarks (native, not mapped to Git branches)
+- ✅ File content (via content-addressed store)
+
+### Protocol Design: JJ Remote Protocol
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    JJ Remote Protocol (v1)                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Transport: HTTPS + optional SSH                                │
+│  Encoding: Protobuf or MessagePack                              │
+│  Auth: API keys, SSH keys, or OAuth                             │
+│                                                                  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │                    Endpoints                               │  │
+│  ├───────────────────────────────────────────────────────────┤  │
+│  │                                                            │  │
+│  │  GET  /refs                                                │  │
+│  │       → { bookmarks: [...], tags: [...], heads: [...] }   │  │
+│  │                                                            │  │
+│  │  GET  /ops?since=<op_id>                                  │  │
+│  │       → [Operation, Operation, ...]                       │  │
+│  │                                                            │  │
+│  │  GET  /changes/<change_id>                                │  │
+│  │       → { change_id, commit_ids: [...], description }     │  │
+│  │                                                            │  │
+│  │  GET  /commits/<commit_id>                                │  │
+│  │       → { tree_id, parent_ids, ... }                      │  │
+│  │                                                            │  │
+│  │  GET  /trees/<tree_id>                                    │  │
+│  │       → { entries: [{ name, blob_id, mode }, ...] }       │  │
+│  │                                                            │  │
+│  │  GET  /blobs/<blob_id>                                    │  │
+│  │       → <raw bytes>                                        │  │
+│  │                                                            │  │
+│  │  POST /push                                                │  │
+│  │       ← { ops: [...], changes: [...], commits: [...],     │  │
+│  │           trees: [...], blobs: [...] }                    │  │
+│  │       → { ok: true } or { conflict: ... }                 │  │
+│  │                                                            │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Data Model: What Gets Synced
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    JJ Repository Structure                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Operation Log (append-only)                                    │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  op_001 → op_002 → op_003 → ... → op_head               │   │
+│  │                                                          │   │
+│  │  Each operation records:                                 │   │
+│  │  - Parent operation(s)                                   │   │
+│  │  - Mutation (what changed)                               │   │
+│  │  - Timestamp, hostname, user                             │   │
+│  │  - View (snapshot of refs at that point)                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  View (current state)                                           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  heads: [change_A, change_B, ...]                       │   │
+│  │  bookmarks: { main: change_X, feature: change_Y }       │   │
+│  │  tags: { v1.0: change_Z }                               │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  Changes (mutable, identified by stable change_id)              │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  change_A:                                               │   │
+│  │    change_id: "abc123..."  (STABLE - never changes)     │   │
+│  │    commit_ids: ["def456..."]  (changes on rewrite)      │   │
+│  │    description: "Fix bug\n\n[aiki]\nagent=claude\n..."  │   │
+│  │    parents: [change_B]                                   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  Commits (immutable, content-addressed)                         │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  commit_def456:                                          │   │
+│  │    tree_id: "789abc..."                                  │   │
+│  │    parent_commit_ids: [...]                              │   │
+│  │    author, committer, etc.                               │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  Trees + Blobs (immutable, content-addressed)                   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Same as Git - content-addressed storage                 │   │
+│  │  Can literally use Git packfiles for efficiency          │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### The Key Insight: Operations Are The Unit of Sync
+
+Git syncs **commits**. JJ should sync **operations**.
+
+```
+Machine A                          Machine B
+    │                                  │
+    │  op_001: create change_X         │
+    │  op_002: describe change_X       │
+    │  op_003: create change_Y         │
+    │                                  │
+    │ ─────── jj push ───────────────► │
+    │                                  │  (imports operations)
+    │                                  │  op_001, op_002, op_003
+    │                                  │
+    │                                  │  op_004: rebase change_Y
+    │                                  │
+    │ ◄─────── jj fetch ────────────── │
+    │                                  │
+    │  (imports op_004)                │
+    │  change_Y now rebased here too   │
+```
+
+**Why this works:**
+- Operations are append-only (like Git commits)
+- Operations can have multiple heads (like Git branches)
+- Merge = reconcile divergent operation heads
+- Change IDs remain stable because they're part of the operation
+
+### Sync Semantics
+
+#### Push
+
+```rust
+fn push(local: &Repo, remote: &Remote) -> Result<()> {
+    // 1. Find operations remote doesn't have
+    let remote_ops = remote.fetch_op_heads()?;
+    let missing_ops = local.ops_not_in(&remote_ops);
+
+    // 2. Collect all objects referenced by missing ops
+    let mut objects = ObjectSet::new();
+    for op in &missing_ops {
+        objects.extend(op.referenced_changes());
+        objects.extend(op.referenced_commits());
+        objects.extend(op.referenced_trees());
+        objects.extend(op.referenced_blobs());
+    }
+
+    // 3. Push objects then operations
+    remote.push_objects(&objects)?;
+    remote.push_ops(&missing_ops)?;
+
+    Ok(())
+}
+```
+
+#### Fetch
+
+```rust
+fn fetch(local: &mut Repo, remote: &Remote) -> Result<()> {
+    // 1. Get remote operation heads
+    let remote_ops = remote.fetch_op_heads()?;
+    let missing_ops = remote.ops_not_in(&local.op_heads())?;
+
+    // 2. Fetch operations (with referenced objects)
+    for op in missing_ops {
+        let objects = remote.fetch_objects_for_op(&op)?;
+        local.import_objects(&objects)?;
+        local.import_op(&op)?;
+    }
+
+    // 3. If divergent, create merge operation
+    if local.op_heads().len() > 1 {
+        local.merge_op_heads()?;
+    }
+
+    Ok(())
+}
+```
+
+#### Conflicts
+
+What happens when two machines make conflicting changes?
+
+```
+Machine A: op_001 → op_002 (edit file.rs)
+Machine B: op_001 → op_003 (also edit file.rs)
+
+After sync:
+           ┌─ op_002 (A's edit)
+op_001 ───┤
+           └─ op_003 (B's edit)
+                    ↓
+              op_004 (merge)
+```
+
+JJ already handles this! Conflicts become first-class citizens in the working copy. The user resolves them, and resolution becomes a new operation.
+
+### Implementation Path
+
+#### Phase 1: Protocol Specification (4 weeks)
+
+Deliverables:
+- Wire protocol spec (protobuf schemas)
+- Authentication model
+- Conflict resolution semantics
+- Reference implementation in Rust
+
+#### Phase 2: Server Implementation (8 weeks)
+
+```rust
+// Minimal JJ remote server
+struct JJRemoteServer {
+    store: ContentAddressedStore,  // Trees, blobs, commits
+    ops: OperationStore,           // Operation log
+    refs: RefStore,                // Bookmarks, heads
+}
+
+impl JJRemoteServer {
+    async fn handle_push(&self, req: PushRequest) -> PushResponse {
+        // Validate operations form valid chain
+        // Store objects
+        // Append operations
+        // Update refs
+    }
+
+    async fn handle_fetch(&self, req: FetchRequest) -> FetchResponse {
+        // Find ops since requested point
+        // Collect referenced objects
+        // Return bundle
+    }
+}
+```
+
+#### Phase 3: Client Implementation (6 weeks)
+
+Modify jj-lib to support remote protocol:
+
+```rust
+// New trait in jj-lib
+trait RemoteBackend {
+    fn fetch_refs(&self) -> Result<RemoteRefs>;
+    fn fetch_ops_since(&self, op_id: &OperationId) -> Result<Vec<Operation>>;
+    fn fetch_objects(&self, ids: &[ObjectId]) -> Result<Vec<Object>>;
+    fn push(&self, bundle: PushBundle) -> Result<PushResult>;
+}
+
+// Implementations
+struct HttpRemote { ... }   // jj://host/repo
+struct SshRemote { ... }    // jj+ssh://host/repo
+struct LocalRemote { ... }  // /path/to/repo (for testing)
+```
+
+#### Phase 4: CLI Integration (2 weeks)
+
+```bash
+# New commands
+jj remote add <name> <url>
+jj remote remove <name>
+jj remote list
+
+jj fetch [<remote>]
+jj push [<remote>] [-b <bookmark>]
+jj pull [<remote>]  # fetch + merge
+```
+
+### Total Effort
+
+| Phase | Weeks | Notes |
+|-------|-------|-------|
+| Protocol spec | 4 | Critical for ecosystem |
+| Server | 8 | Aiki hosts this |
+| Client (jj-lib) | 6 | Requires JJ maintainer buy-in |
+| CLI | 2 | Straightforward |
+| Testing | 4 | Edge cases, conflicts |
+| **Total** | **24 weeks** | ~6 months |
+
+### Relationship to JJ Upstream
+
+**Option A: Contribute to JJ core**
+- Best for ecosystem
+- JJ maintainers must approve design
+- Slower, but sustainable
+
+**Option B: Fork or extension**
+- Faster to ship
+- Risk of divergence
+- May not get upstream adoption
+
+**Option C: Hybrid**
+- Build server + protocol ourselves
+- Propose client changes to JJ upstream
+- If rejected, maintain as extension
+
+**Recommendation:** Start with Option C. Build the server, prove it works, then propose to JJ.
+
+### Why This Beats "GitHub for Agents"
+
+The previous design (Aiki Cloud) was:
+- A **layer on top of Git** for coordination
+- Git still handles file sync
+- Metadata syncs separately
+
+Native JJ remotes are:
+- **Fundamental infrastructure** like Git itself
+- Everything syncs natively
+- No split between "code sync" and "metadata sync"
+
+```
+GitHub for Agents (v1)           Native JJ Remotes (v2)
+─────────────────────────        ─────────────────────────
+      Aiki Cloud                       Aiki Cloud
+   (tasks, provenance)               (hosting only)
+          │                                │
+          ▼                                ▼
+      Git Remote                       JJ Remote
+   (files, commits)               (everything syncs)
+          │                                │
+          ▼                                ▼
+    Local .git/                       Local .jj/
+    Local .jj/                    (single source of truth)
+```
+
+**The JJ remote approach is cleaner because there's one sync mechanism, not two.**
+
+---
+
 ## Deep Dive: Option 2 - Shared JJ Repository Server
 
 ### Why This Is The Ideal Solution
