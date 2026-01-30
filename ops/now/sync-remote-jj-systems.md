@@ -1,5 +1,91 @@
 # Sync Remote JJ Systems for Centralized Control Plane
 
+## Vision: GitHub for Agents
+
+**What GitHub did for human developers, Aiki does for AI agents.**
+
+GitHub transformed software development by providing:
+- Central place to store and share code
+- Collaboration primitives (PRs, issues, reviews, discussions)
+- Identity and attribution (who contributed what)
+- Complete audit trail (git history)
+- Discoverability (repos, packages, developers)
+
+**Aiki as "GitHub for Agents" provides:**
+- Central place for agents to push work and coordinate
+- Agent collaboration primitives (tasks, handoffs, reviews)
+- Agent identity and provenance (who wrote what, when, how confident)
+- Complete audit trail (JJ change history with `[aiki]` metadata)
+- Agent discoverability (which agents, what capabilities, track records)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     AIKI CLOUD (v0)                              │
+│           "GitHub for Agents" - Centralized Control Plane        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                    Agent Registry                        │   │
+│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐       │   │
+│   │  │ Claude  │ │ Cursor  │ │ Copilot │ │ Custom  │       │   │
+│   │  │  Code   │ │  Agent  │ │   X     │ │ Agent   │       │   │
+│   │  └─────────┘ └─────────┘ └─────────┘ └─────────┘       │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                  Coordination Layer                      │   │
+│   │  • Task assignment & handoffs                            │   │
+│   │  • Real-time status (WebSocket)                          │   │
+│   │  • Conflict detection                                    │   │
+│   │  • Review gates                                          │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                  Provenance Layer                        │   │
+│   │  • Change attribution (agent, session, confidence)       │   │
+│   │  • Cross-repo provenance queries                         │   │
+│   │  • Audit trail & compliance                              │   │
+│   │  • Quality metrics per agent                             │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                   Storage Layer                          │   │
+│   │  • Git remotes (code)                                    │   │
+│   │  • JJ metadata (changes, descriptions)                   │   │
+│   │  • Tasks branch sync                                     │   │
+│   │  • Blob storage (artifacts, logs)                        │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+           ▲              ▲              ▲              ▲
+           │              │              │              │
+     ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
+     │ Dev       │  │ CI/CD     │  │ Review    │  │ Prod      │
+     │ Machine   │  │ Runner    │  │ Agent     │  │ Server    │
+     │ (Claude)  │  │ (Codex)   │  │ (Aiki)    │  │ (Custom)  │
+     └───────────┘  └───────────┘  └───────────┘  └───────────┘
+```
+
+### Why "GitHub for Agents" Wins
+
+1. **Network effects**: More agents → more value → more agents
+2. **Data moat**: Provenance data across millions of agent sessions
+3. **Platform lock-in**: Agents integrate with Aiki, not just Git
+4. **Enterprise value**: Governance, compliance, audit trails
+5. **Pricing leverage**: Per-agent-seat, per-repo, per-API-call
+
+### Competitive Landscape
+
+| Player | Focus | Gap |
+|--------|-------|-----|
+| GitHub Copilot | Code completion | No agent coordination |
+| Cursor | IDE-integrated agent | Single-machine only |
+| Devin | Autonomous agent | No provenance/audit |
+| Replit Agent | Cloud dev environment | No multi-agent |
+| **Aiki Cloud** | Agent coordination + provenance | This is the gap |
+
+---
+
 ## Problem Statement
 
 For commercial success, Aiki needs a centralized control plane that can coordinate AI agents across multiple remote machines. The biggest blocker: **how do we sync our JJ-based provenance and task systems across machines?**
@@ -731,6 +817,386 @@ If JJ adds native server support, our effort would be wasted. Better to:
 - Build the lightweight hybrid first (Option 5)
 - Monitor JJ development
 - Contribute to JJ if we need server mode
+
+---
+
+## Aiki Cloud MVP: The v0
+
+### What Ships in v0
+
+**Core thesis:** Ship the minimum that enables multi-machine agent coordination with provenance. Everything else can wait.
+
+#### Must Have (MVP)
+
+1. **Agent Registration**
+   - Agents authenticate with API key
+   - Track agent type, version, capabilities
+   - Assign globally unique agent IDs
+
+2. **Session Tracking**
+   - Register session start/end
+   - Track which agent, which repo, which machine
+   - Real-time session status
+
+3. **Task Sync**
+   - Push/pull tasks to central store
+   - Task assignment to specific agents
+   - Task state visible across all agents
+
+4. **Provenance Ingestion**
+   - Accept `[aiki]` metadata on push
+   - Index by repo, agent, session, file
+   - Query: "who wrote this code?"
+
+5. **Git Integration**
+   - Webhook on push to trigger provenance ingestion
+   - Read Git commits, extract trailers
+   - Link Git SHAs to provenance records
+
+#### Nice to Have (v0.1+)
+
+- Web dashboard
+- Agent quality metrics
+- Review workflows
+- Conflict detection
+- Multi-repo support
+
+### API Design (v0)
+
+```yaml
+# OpenAPI 3.0 sketch
+openapi: 3.0.0
+info:
+  title: Aiki Cloud API
+  version: 0.1.0
+  description: GitHub for Agents - Centralized Control Plane
+
+paths:
+  # === Agent Registry ===
+  /api/v1/agents:
+    post:
+      summary: Register a new agent
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_type: { type: string, example: "claude-code" }
+                version: { type: string, example: "1.0.32" }
+                capabilities: { type: array, items: { type: string } }
+      responses:
+        201:
+          description: Agent registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: string, format: uuid }
+                  api_key: { type: string }
+
+  # === Sessions ===
+  /api/v1/sessions:
+    post:
+      summary: Start a new agent session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_id: { type: string, format: uuid }
+                repo_url: { type: string }
+                machine_id: { type: string }
+      responses:
+        201:
+          description: Session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id: { type: string }
+
+  /api/v1/sessions/{session_id}:
+    patch:
+      summary: Update session (heartbeat, status)
+    delete:
+      summary: End session
+
+  # === Tasks ===
+  /api/v1/repos/{repo}/tasks:
+    get:
+      summary: List tasks for a repo
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, in_progress, completed] }
+        - name: assigned_to
+          in: query
+          schema: { type: string, format: uuid }
+    post:
+      summary: Create a new task
+
+  /api/v1/repos/{repo}/tasks/{task_id}:
+    get:
+      summary: Get task details
+    patch:
+      summary: Update task (status, assignee, comments)
+
+  /api/v1/repos/{repo}/tasks/{task_id}/claim:
+    post:
+      summary: Claim a task for an agent
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_id: { type: string, format: uuid }
+                session_id: { type: string }
+
+  # === Provenance ===
+  /api/v1/repos/{repo}/provenance:
+    post:
+      summary: Ingest provenance record
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commit_sha: { type: string }
+                change_id: { type: string }
+                agent_id: { type: string, format: uuid }
+                session_id: { type: string }
+                files: { type: array, items: { type: string } }
+                confidence: { type: string, enum: [low, medium, high] }
+                metadata: { type: object }
+
+  /api/v1/repos/{repo}/provenance/query:
+    post:
+      summary: Query provenance
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file_path: { type: string }
+                commit_sha: { type: string }
+                agent_id: { type: string }
+                since: { type: string, format: date-time }
+
+  # === Real-time ===
+  /api/v1/ws:
+    get:
+      summary: WebSocket for real-time events
+      description: |
+        Events streamed:
+        - session.started
+        - session.ended
+        - task.created
+        - task.claimed
+        - task.completed
+        - provenance.ingested
+```
+
+### Data Model
+
+```sql
+-- Core entities for Aiki Cloud
+
+-- Agents (registered AI coding assistants)
+CREATE TABLE agents (
+    id UUID PRIMARY KEY,
+    agent_type VARCHAR(50) NOT NULL,  -- 'claude-code', 'cursor', etc.
+    version VARCHAR(20),
+    api_key_hash VARCHAR(64) NOT NULL,
+    capabilities JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ
+);
+
+-- Sessions (agent working sessions)
+CREATE TABLE sessions (
+    id VARCHAR(64) PRIMARY KEY,
+    agent_id UUID REFERENCES agents(id),
+    repo_url VARCHAR(500) NOT NULL,
+    machine_id VARCHAR(100),
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    status VARCHAR(20) DEFAULT 'active'
+);
+
+-- Tasks (work items for agents)
+CREATE TABLE tasks (
+    id VARCHAR(32) PRIMARY KEY,  -- aiki task ID format
+    repo_url VARCHAR(500) NOT NULL,
+    content TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    priority VARCHAR(10) DEFAULT 'p2',
+    assigned_to UUID REFERENCES agents(id),
+    assigned_session VARCHAR(64) REFERENCES sessions(id),
+    parent_id VARCHAR(32) REFERENCES tasks(id),
+    source JSONB,  -- { type: 'file', path: 'ops/now/plan.md' }
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Task comments
+CREATE TABLE task_comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id VARCHAR(32) REFERENCES tasks(id),
+    agent_id UUID REFERENCES agents(id),
+    session_id VARCHAR(64) REFERENCES sessions(id),
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Provenance records
+CREATE TABLE provenance (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repo_url VARCHAR(500) NOT NULL,
+    commit_sha VARCHAR(40) NOT NULL,
+    change_id VARCHAR(64),  -- JJ change ID (local to originating machine)
+    agent_id UUID REFERENCES agents(id),
+    session_id VARCHAR(64) REFERENCES sessions(id),
+    file_path VARCHAR(1000) NOT NULL,
+    confidence VARCHAR(10),
+    method VARCHAR(20),  -- 'hook', 'manual', 'inferred'
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for common queries
+CREATE INDEX idx_provenance_repo_file ON provenance(repo_url, file_path);
+CREATE INDEX idx_provenance_commit ON provenance(commit_sha);
+CREATE INDEX idx_provenance_agent ON provenance(agent_id);
+CREATE INDEX idx_tasks_repo_status ON tasks(repo_url, status);
+CREATE INDEX idx_sessions_agent ON sessions(agent_id);
+```
+
+### CLI Integration
+
+The `aiki` CLI gets new commands for cloud sync:
+
+```bash
+# Configure cloud connection
+aiki cloud login                    # Authenticate with Aiki Cloud
+aiki cloud status                   # Show connection status
+
+# Sync operations
+aiki sync                           # Pull + push tasks and provenance
+aiki sync push                      # Push local state to cloud
+aiki sync pull                      # Pull cloud state to local
+
+# Auto-sync mode (background daemon)
+aiki sync watch                     # Continuous sync in background
+
+# Task operations (enhanced for cloud)
+aiki task list --cloud              # Show tasks from cloud (not just local)
+aiki task claim <id>                # Claim a task from cloud
+aiki task handoff <id> --to <agent> # Hand off task to another agent
+```
+
+### Sync Protocol
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Sync Protocol Flow                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Local Machine                        Aiki Cloud                │
+│       │                                    │                     │
+│       │  1. POST /sessions (start)         │                     │
+│       │ ─────────────────────────────────► │                     │
+│       │                                    │                     │
+│       │  2. GET /tasks (pull)              │                     │
+│       │ ─────────────────────────────────► │                     │
+│       │  ◄───────────────────────────────  │                     │
+│       │     [task list]                    │                     │
+│       │                                    │                     │
+│       │  3. Agent does work locally        │                     │
+│       │     (creates changes in JJ)        │                     │
+│       │                                    │                     │
+│       │  4. git push origin main           │                     │
+│       │ ─────────────────────────────────► │  (Git remote)      │
+│       │                                    │                     │
+│       │  5. POST /provenance (sync)        │                     │
+│       │ ─────────────────────────────────► │                     │
+│       │     [commit_sha, change_id,        │                     │
+│       │      agent_id, files, metadata]    │                     │
+│       │                                    │                     │
+│       │  6. PATCH /tasks/{id} (update)     │                     │
+│       │ ─────────────────────────────────► │                     │
+│       │                                    │                     │
+│       │  7. WebSocket: task.claimed        │                     │
+│       │  ◄─────────────────────────────── │  (to other agents) │
+│       │                                    │                     │
+│       │  8. DELETE /sessions (end)         │                     │
+│       │ ─────────────────────────────────► │                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Infrastructure (v0)
+
+Keep it simple:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Aiki Cloud Infrastructure                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                   Load Balancer                          │   │
+│   │              (Cloudflare / AWS ALB)                      │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                   API Server (Rust)                      │   │
+│   │   • axum for HTTP                                        │   │
+│   │   • tokio-tungstenite for WebSocket                     │   │
+│   │   • sqlx for PostgreSQL                                  │   │
+│   │   • 2-3 instances for HA                                │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│   ┌──────────────────┐   ┌──────────────────┐                  │
+│   │   PostgreSQL     │   │   Redis          │                  │
+│   │   (RDS / Neon)   │   │   (session cache,│                  │
+│   │                  │   │    pub/sub)      │                  │
+│   └──────────────────┘   └──────────────────┘                  │
+│                                                                  │
+│   Estimated monthly cost (low traffic): $50-100                 │
+│   Estimated monthly cost (production): $300-500                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Development Timeline
+
+| Phase | Scope | Duration |
+|-------|-------|----------|
+| **v0.0** | API design, data model, CLI skeleton | 2 weeks |
+| **v0.1** | Agent registration, session tracking | 2 weeks |
+| **v0.2** | Task sync (CRUD, claim, handoff) | 3 weeks |
+| **v0.3** | Provenance ingestion, basic queries | 3 weeks |
+| **v0.4** | WebSocket real-time events | 2 weeks |
+| **v0.5** | CLI integration, `aiki sync` | 2 weeks |
+| **v0.6** | Git webhook integration | 1 week |
+| **v0.7** | Testing, docs, hardening | 2 weeks |
+| **Total** | MVP ready for beta | **~17 weeks** |
+
+### Success Metrics for v0
+
+- [ ] Two machines can share tasks in real-time
+- [ ] Provenance survives git push/pull cycle
+- [ ] Agent A sees changes from Agent B within 5 seconds
+- [ ] 99.9% API uptime
+- [ ] <100ms P95 latency for task operations
+- [ ] 5+ beta users running multi-agent workflows
 
 ---
 
