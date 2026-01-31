@@ -209,9 +209,9 @@ To manually validate the fix under a real ACP session:
    ```bash
    # Build aiki with the fix
    cd cli && cargo build
-   
+
    # Start ACP proxy with your agent
-   ./target/debug/aiki acp claude-code
+   ./target/debug/aiki hooks acp --agent claude-code
    ```
 
 2. **Test scenario**:

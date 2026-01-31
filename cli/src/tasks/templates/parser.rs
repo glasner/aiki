@@ -29,6 +29,41 @@ use super::types::{
     SubtaskFrontmatter, TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter,
 };
 
+/// Errors that can occur when extracting YAML frontmatter
+#[derive(Debug)]
+pub enum FrontmatterError {
+    /// YAML parsing failed
+    Yaml(serde_yaml::Error),
+    /// Frontmatter started with `---` but no closing `---` found
+    Unterminated,
+}
+
+impl std::fmt::Display for FrontmatterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrontmatterError::Yaml(e) => write!(f, "{}", e),
+            FrontmatterError::Unterminated => {
+                write!(f, "Unterminated frontmatter: found opening '---' but no closing '---'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FrontmatterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FrontmatterError::Yaml(e) => Some(e),
+            FrontmatterError::Unterminated => None,
+        }
+    }
+}
+
+impl From<serde_yaml::Error> for FrontmatterError {
+    fn from(e: serde_yaml::Error) -> Self {
+        FrontmatterError::Yaml(e)
+    }
+}
+
 /// Parse a template from markdown content
 ///
 /// # Arguments
@@ -39,8 +74,12 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
     // Extract frontmatter if present
     let (frontmatter, body) = extract_frontmatter(content, file_path)?;
 
+    // Check if subtasks should be dynamically generated from a data source
+    let has_subtasks_source = frontmatter.subtasks.is_some();
+
     // Parse the markdown body
-    let (parent, subtasks) = parse_markdown_body(&body, file_path)?;
+    let (parent, subtasks, subtask_template_content) =
+        parse_markdown_body_with_mode(&body, file_path, has_subtasks_source)?;
 
     // Build the template
     let mut template = TaskTemplate::new(name);
@@ -54,17 +93,64 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
     };
     template.parent = parent;
     template.subtasks = subtasks;
+    template.subtasks_source = frontmatter.subtasks;
+    template.subtask_template = subtask_template_content;
 
     Ok(template)
 }
 
-/// Extract YAML frontmatter from markdown content
+/// Extract YAML frontmatter from content (generic over frontmatter type)
+///
+/// Returns `Ok((Some(frontmatter), body))` if frontmatter is present and valid.
+/// Returns `Ok((None, content))` if no frontmatter delimiters are found.
+/// Returns `Err(FrontmatterError::Yaml)` if YAML is malformed.
+/// Returns `Err(FrontmatterError::Unterminated)` if opening `---` found but no closing `---`.
+///
+/// This ensures users get clear error messages when their frontmatter is invalid,
+/// rather than silently treating it as no frontmatter.
+pub fn extract_yaml_frontmatter<T>(
+    content: &str,
+) -> std::result::Result<(Option<T>, String), FrontmatterError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let content = content.trim_start();
+
+    // Check for frontmatter delimiter
+    if !content.starts_with("---") {
+        return Ok((None, content.to_string()));
+    }
+
+    // Find the closing delimiter
+    let after_first = &content[3..];
+    let after_first = after_first.trim_start_matches(['\n', '\r']);
+    let end_idx = after_first
+        .find("\n---")
+        .or_else(|| after_first.find("\r\n---"));
+
+    match end_idx {
+        Some(idx) => {
+            let yaml_content = &after_first[..idx];
+            let body_start = idx + 4; // Skip "\n---"
+            let body = after_first[body_start..].trim_start_matches(['\n', '\r']);
+
+            // Parse YAML - return error if malformed
+            let fm = serde_yaml::from_str::<T>(yaml_content)?;
+            Ok((Some(fm), body.to_string()))
+        }
+        None => {
+            // No closing delimiter found - error, not silent ignore
+            Err(FrontmatterError::Unterminated)
+        }
+    }
+}
+
+/// Extract YAML frontmatter from markdown content (with error reporting)
 fn extract_frontmatter(content: &str, file_path: &str) -> Result<(TemplateFrontmatter, String)> {
     let content = content.trim_start();
 
     // Check for frontmatter delimiter
     if !content.starts_with("---") {
-        // No frontmatter, return defaults and full content
         return Ok((TemplateFrontmatter::default(), content.to_string()));
     }
 
@@ -80,7 +166,7 @@ fn extract_frontmatter(content: &str, file_path: &str) -> Result<(TemplateFrontm
             let body_start = idx + 4; // Skip "\n---"
             let body = after_first[body_start..].trim_start_matches(['\n', '\r']);
 
-            // Parse YAML
+            // Parse YAML with error reporting
             let frontmatter: TemplateFrontmatter =
                 serde_yaml::from_str(yaml_content).map_err(|e| {
                     AikiError::TemplateFrontmatterInvalid {
@@ -92,14 +178,33 @@ fn extract_frontmatter(content: &str, file_path: &str) -> Result<(TemplateFrontm
             Ok((frontmatter, body.to_string()))
         }
         None => {
-            // No closing delimiter found, treat as no frontmatter
-            Ok((TemplateFrontmatter::default(), content.to_string()))
+            // No closing delimiter found - error
+            Err(AikiError::TemplateFrontmatterInvalid {
+                file: file_path.to_string(),
+                details: "Unterminated frontmatter: found opening '---' but no closing '---'".to_string(),
+            })
         }
     }
 }
 
 /// Parse the markdown body into parent task and subtasks
-fn parse_markdown_body(body: &str, file_path: &str) -> Result<(TaskDefinition, Vec<TaskDefinition>)> {
+fn parse_markdown_body(
+    body: &str,
+    file_path: &str,
+) -> Result<(TaskDefinition, Vec<TaskDefinition>)> {
+    let (parent, subtasks, _) = parse_markdown_body_with_mode(body, file_path, false)?;
+    Ok((parent, subtasks))
+}
+
+/// Parse the markdown body with optional subtask template extraction mode
+///
+/// When `extract_template` is true (frontmatter has `subtasks` field), the `# Subtasks` section
+/// is extracted as a raw template string instead of being parsed into static subtask definitions.
+fn parse_markdown_body_with_mode(
+    body: &str,
+    file_path: &str,
+    extract_template: bool,
+) -> Result<(TaskDefinition, Vec<TaskDefinition>, Option<String>)> {
     let lines: Vec<&str> = body.lines().collect();
 
     // Find the first h1 heading (# Task Name)
@@ -114,20 +219,28 @@ fn parse_markdown_body(body: &str, file_path: &str) -> Result<(TaskDefinition, V
 
     let parent = TaskDefinition {
         name: task_name,
+        task_type: None, // Set from frontmatter by resolver
         instructions: parent_instructions,
         priority: None,
         assignee: None,
+        sources: Vec::new(),
         data: Default::default(),
     };
 
-    // Parse subtasks if # Subtasks marker exists
-    let subtasks = if let Some(marker_idx) = subtasks_marker_idx {
-        parse_subtasks(&lines, marker_idx + 1, file_path)?
+    // Handle subtasks based on mode
+    if let Some(marker_idx) = subtasks_marker_idx {
+        if extract_template {
+            // Extract the raw subtask template content (everything after "# Subtasks")
+            let template_content = extract_subtask_template_section(&lines, marker_idx + 1);
+            Ok((parent, Vec::new(), Some(template_content)))
+        } else {
+            // Parse static subtasks normally
+            let subtasks = parse_subtasks(&lines, marker_idx + 1, file_path)?;
+            Ok((parent, subtasks, None))
+        }
     } else {
-        Vec::new()
-    };
-
-    Ok((parent, subtasks))
+        Ok((parent, Vec::new(), None))
+    }
 }
 
 /// Find the first h1 heading in the markdown
@@ -167,8 +280,25 @@ fn extract_instructions(lines: &[&str], start: usize, end: usize) -> String {
     lines[start..end].join("\n").trim().to_string()
 }
 
+/// Extract the entire subtask template section as raw content
+///
+/// When `subtasks` frontmatter is present, the `# Subtasks` section contains a TEMPLATE
+/// for each item, not static subtask definitions. This function extracts the entire
+/// section (including the h2 heading template) as raw content for later template expansion.
+fn extract_subtask_template_section(lines: &[&str], start_idx: usize) -> String {
+    if start_idx >= lines.len() {
+        return String::new();
+    }
+
+    lines[start_idx..].join("\n").trim().to_string()
+}
+
 /// Parse subtasks from lines after the # Subtasks marker
-fn parse_subtasks(lines: &[&str], start_idx: usize, file_path: &str) -> Result<Vec<TaskDefinition>> {
+fn parse_subtasks(
+    lines: &[&str],
+    start_idx: usize,
+    file_path: &str,
+) -> Result<Vec<TaskDefinition>> {
     let mut subtasks = Vec::new();
     let mut current_subtask: Option<(String, usize)> = None; // (name, start_line)
 
@@ -205,57 +335,27 @@ fn parse_single_subtask(name: &str, lines: &[&str], file_path: &str) -> Result<T
 
     Ok(TaskDefinition {
         name: name.to_string(),
+        task_type: None, // Subtasks inherit type from parent
         instructions,
         priority: frontmatter.priority,
         assignee: frontmatter.assignee,
+        sources: frontmatter.sources,
         data: frontmatter.data,
     })
 }
 
 /// Extract optional frontmatter from subtask content
-fn extract_subtask_frontmatter(lines: &[&str], file_path: &str) -> Result<(SubtaskFrontmatter, String)> {
-    if lines.is_empty() {
-        return Ok((SubtaskFrontmatter::default(), String::new()));
-    }
-
-    // Find first non-blank line
-    let first_content_idx = lines.iter().position(|l| !l.trim().is_empty());
-    let first_content_idx = match first_content_idx {
-        Some(idx) => idx,
-        None => return Ok((SubtaskFrontmatter::default(), String::new())),
-    };
-
-    // Check if first content line is frontmatter delimiter
-    if lines[first_content_idx].trim() != "---" {
-        // No frontmatter, return all lines as instructions
-        return Ok((SubtaskFrontmatter::default(), lines.join("\n").trim().to_string()));
-    }
-
-    // Find closing delimiter
-    let after_first = &lines[first_content_idx + 1..];
-    let close_idx = after_first.iter().position(|l| l.trim() == "---");
-
-    match close_idx {
-        Some(idx) => {
-            let yaml_lines = &after_first[..idx];
-            let yaml_content = yaml_lines.join("\n");
-            let instructions_lines = &after_first[idx + 1..];
-
-            let frontmatter: SubtaskFrontmatter =
-                serde_yaml::from_str(&yaml_content).map_err(|e| {
-                    AikiError::TemplateFrontmatterInvalid {
-                        file: file_path.to_string(),
-                        details: format!("Subtask frontmatter error: {}", e),
-                    }
-                })?;
-
-            Ok((frontmatter, instructions_lines.join("\n").trim().to_string()))
-        }
-        None => {
-            // No closing delimiter, treat all as instructions
-            Ok((SubtaskFrontmatter::default(), lines.join("\n").trim().to_string()))
-        }
-    }
+fn extract_subtask_frontmatter(
+    lines: &[&str],
+    file_path: &str,
+) -> Result<(SubtaskFrontmatter, String)> {
+    let content = lines.join("\n");
+    let (frontmatter, body) = extract_yaml_frontmatter::<SubtaskFrontmatter>(&content)
+        .map_err(|e| AikiError::TemplateFrontmatterInvalid {
+            file: file_path.to_string(),
+            details: e.to_string(),
+        })?;
+    Ok((frontmatter.unwrap_or_default(), body.trim().to_string()))
 }
 
 #[cfg(test)]
@@ -283,7 +383,9 @@ Instructions here.
         assert!(template.parent.instructions.contains("Do something"));
         assert_eq!(template.subtasks.len(), 1);
         assert_eq!(template.subtasks[0].name, "Do the work");
-        assert!(template.subtasks[0].instructions.contains("Instructions here"));
+        assert!(template.subtasks[0]
+            .instructions
+            .contains("Instructions here"));
     }
 
     #[test]
@@ -408,9 +510,22 @@ Content.
     #[test]
     fn test_extract_frontmatter_no_closing() {
         let content = "---\nversion: 1.0\n\n# Task\n\nContent.";
-        let (fm, body) = extract_frontmatter(content, "test.md").unwrap();
-        // When no closing delimiter, treat as no frontmatter
-        assert!(fm.version.is_none());
+        let result = extract_frontmatter(content, "test.md");
+        // When no closing delimiter, error instead of silently ignoring
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unterminated frontmatter"));
+    }
+
+    #[test]
+    fn test_extract_yaml_frontmatter_no_closing() {
+        let content = "---\nkey: value\n\n# Body content";
+        let result = extract_yaml_frontmatter::<SubtaskFrontmatter>(content);
+        // When no closing delimiter, error instead of silently ignoring
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, FrontmatterError::Unterminated));
+        assert!(err.to_string().contains("Unterminated frontmatter"));
     }
 
     #[test]
@@ -443,10 +558,166 @@ Subtask instructions.
         let template = parse_template(content, "test", "test.md").unwrap();
         // The h2 before # Subtasks should be part of parent instructions
         assert!(template.parent.instructions.contains("Section in parent"));
-        assert!(template.parent.instructions.contains("This h2 is part of the parent"));
+        assert!(template
+            .parent
+            .instructions
+            .contains("This h2 is part of the parent"));
 
         // Only one subtask should exist
         assert_eq!(template.subtasks.len(), 1);
         assert_eq!(template.subtasks[0].name, "Real subtask");
+    }
+
+    #[test]
+    fn test_parse_with_subtasks_frontmatter_extracts_template() {
+        let content = r#"---
+version: 1.0.0
+subtasks: source.comments
+---
+
+# Followup: {source.name}
+
+Fix all issues identified in review.
+
+# Subtasks
+
+## Fix: {data.file}:{data.line}
+
+**Severity**: {data.severity}
+**Category**: {data.category}
+
+{text}
+"#;
+
+        let template = parse_template(content, "followup", "followup.md").unwrap();
+
+        // Should have subtasks_source set
+        assert_eq!(
+            template.subtasks_source,
+            Some("source.comments".to_string())
+        );
+
+        // Should NOT have static subtasks parsed
+        assert!(
+            template.subtasks.is_empty(),
+            "subtasks should be empty when subtasks_source is set"
+        );
+
+        // Should have raw subtask template content
+        assert!(template.subtask_template.is_some());
+        let subtask_template = template.subtask_template.unwrap();
+
+        // Should include the h2 heading template
+        assert!(
+            subtask_template.contains("## Fix: {data.file}:{data.line}"),
+            "subtask_template should include the h2 heading"
+        );
+
+        // Should include the body content
+        assert!(
+            subtask_template.contains("**Severity**: {data.severity}"),
+            "subtask_template should include the body"
+        );
+        assert!(
+            subtask_template.contains("{text}"),
+            "subtask_template should include variable placeholders"
+        );
+
+        // Parent task should still be parsed normally
+        assert_eq!(template.parent.name, "Followup: {source.name}");
+        assert!(template
+            .parent
+            .instructions
+            .contains("Fix all issues identified"));
+    }
+
+    #[test]
+    fn test_parse_without_subtasks_frontmatter_parses_static_subtasks() {
+        let content = r#"---
+version: 1.0.0
+---
+
+# Review task
+
+Review the code.
+
+# Subtasks
+
+## Check formatting
+
+Verify formatting is correct.
+
+## Check logic
+
+Verify logic is correct.
+"#;
+
+        let template = parse_template(content, "review", "review.md").unwrap();
+
+        // Should NOT have subtasks_source set
+        assert!(
+            template.subtasks_source.is_none(),
+            "subtasks_source should be None when not in frontmatter"
+        );
+
+        // Should NOT have subtask template
+        assert!(
+            template.subtask_template.is_none(),
+            "subtask_template should be None when subtasks_source is not set"
+        );
+
+        // Should have static subtasks parsed
+        assert_eq!(template.subtasks.len(), 2);
+        assert_eq!(template.subtasks[0].name, "Check formatting");
+        assert_eq!(template.subtasks[1].name, "Check logic");
+        assert!(template.subtasks[0]
+            .instructions
+            .contains("Verify formatting"));
+        assert!(template.subtasks[1].instructions.contains("Verify logic"));
+    }
+
+    #[test]
+    fn test_subtasks_source_stored_from_frontmatter() {
+        let content = r#"---
+subtasks: review.findings
+---
+
+# Task
+
+Instructions.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(
+            template.subtasks_source,
+            Some("review.findings".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subtask_template_no_subtasks_section() {
+        // When subtasks frontmatter is set but there's no # Subtasks section
+        let content = r#"---
+subtasks: source.comments
+---
+
+# Task
+
+Just instructions, no subtasks section.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+
+        // subtasks_source should still be set
+        assert_eq!(
+            template.subtasks_source,
+            Some("source.comments".to_string())
+        );
+
+        // But subtask_template should be None (no section to extract)
+        assert!(
+            template.subtask_template.is_none(),
+            "subtask_template should be None when no # Subtasks section exists"
+        );
     }
 }

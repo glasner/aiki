@@ -146,15 +146,15 @@ use std::thread;
 /// - Record provenance with both client_name and agent_type
 ///
 /// # Arguments
-/// * `agent_type` - The agent type for provenance tracking (e.g., "claude-code", "cursor")
-/// * `bin` - Optional custom binary path (defaults to derived from agent_type)
+/// * `agent` - The agent type for provenance tracking (e.g., "claude-code", "cursor")
+/// * `bin` - Optional custom binary path (defaults to derived from agent)
 /// * `agent_args` - Optional arguments to pass to the agent executable
-pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()> {
+pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Result<()> {
     // Install panic hook to diagnose crashes - writes to both file and stderr
     crate::utils::panic::install_acp_panic_hook();
 
-    // Validate agent_type matches our enum
-    let validated_agent_type = parse_agent_type(&agent_type)?;
+    // Validate agent matches our enum
+    let validated_agent_type = parse_agent_type(&agent)?;
 
     // Resolve agent binary: use --bin flag if provided, otherwise detect from Zed or PATH
     let (command, command_args) = if let Some(custom_bin) = bin {
@@ -163,12 +163,15 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
         (custom_bin, agent_args)
     } else {
         // Auto-detect using Zed detection with PATH fallback
-        let resolved = zed_detection::resolve_agent_binary(&agent_type)?;
+        let resolved = zed_detection::resolve_agent_binary(&agent)?;
         let cmd = resolved.command();
         let mut args = resolved.args();
         args.extend(agent_args);
         (cmd, args)
     };
+
+    // Clone agent name before it gets shadowed by the child process variable
+    let agent_clone = agent.clone();
 
     // Create channel for metadata communication
     // IDE→Agent thread will send discovered metadata
@@ -262,7 +265,6 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
     // Thread 2: IDE → Agent (intercept and modify)
     // This thread discovers metadata and sends it via channel
     let metadata_tx_clone = metadata_tx.clone();
-    let agent_type_clone = agent_type.clone();
     let agent_stdin_for_ide = Arc::clone(&agent_stdin_shared);
     let ide_to_agent_thread = thread::spawn(move || -> Result<()> {
         let stdin = io::stdin();
@@ -294,12 +296,12 @@ pub fn run(agent_type: String, bin: Option<String>, agent_args: Vec<String>) -> 
                                         if let Some(ref ver) = client_info.version {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' version '{}' connecting to agent '{}'",
-                                                client_info.name, ver, agent_type_clone
+                                                client_info.name, ver, agent_clone
                                             );
                                         } else {
                                             eprintln!(
                                                 "ACP Proxy: Detected client '{}' connecting to agent '{}'",
-                                                client_info.name, agent_type_clone
+                                                client_info.name, agent_clone
                                             );
                                         }
                                     }

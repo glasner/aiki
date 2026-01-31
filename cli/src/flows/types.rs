@@ -3,10 +3,10 @@ use std::collections::HashMap;
 
 use crate::flows::context::TextLines;
 
-/// Flow control statement - top level unit of execution
+/// Hook control statement - top level unit of execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum FlowStatement {
+pub enum HookStatement {
     /// Conditional if/then/else
     If(IfStatement),
     /// Switch/case statement
@@ -23,11 +23,11 @@ pub struct IfStatement {
     pub condition: String,
 
     /// Statements to execute if condition is true
-    pub then: Vec<FlowStatement>,
+    pub then: Vec<HookStatement>,
 
     /// Optional statements to execute if condition is false
     #[serde(default, rename = "else")]
-    pub else_: Option<Vec<FlowStatement>>,
+    pub else_: Option<Vec<HookStatement>>,
 }
 
 /// Switch/case statement
@@ -38,11 +38,11 @@ pub struct SwitchStatement {
     pub expression: String,
 
     /// Map of case values to statements
-    pub cases: HashMap<String, Vec<FlowStatement>>,
+    pub cases: HashMap<String, Vec<HookStatement>>,
 
     /// Optional default case if no cases match
     #[serde(default)]
-    pub default: Option<Vec<FlowStatement>>,
+    pub default: Option<Vec<HookStatement>>,
 }
 
 /// Strongly-typed shortcuts for on_failure behavior
@@ -51,7 +51,7 @@ pub struct SwitchStatement {
 pub enum OnFailureShortcut {
     /// Continue: Log failure and continue execution (default)
     Continue,
-    /// Stop: Add failure and stop flow silently
+    /// Stop: Add failure and stop hook silently
     Stop,
     /// Block: Add failure and block operation with exit code 2
     Block,
@@ -64,7 +64,7 @@ pub enum OnFailure {
     /// Shortcut: "continue", "stop", or "block"
     Shortcut(OnFailureShortcut),
     /// Full statements list for complex failure handling
-    Statements(Vec<FlowStatement>),
+    Statements(Vec<HookStatement>),
 }
 
 impl Default for OnFailure {
@@ -73,29 +73,29 @@ impl Default for OnFailure {
     }
 }
 
-/// A complete flow definition
+/// A complete hook definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Flow {
-    /// Flow name
+pub struct Hook {
+    /// Hook name
     pub name: String,
 
     /// Optional description
     #[serde(default)]
     pub description: Option<String>,
 
-    /// Flow version
+    /// Hook version
     #[serde(default = "default_version")]
     pub version: String,
 
     // ========================================================================
-    // Flow Composition (Milestone 1.3)
+    // Hook Composition (Milestone 1.3)
     // ========================================================================
-    /// Flows to run before this flow's actions (in order)
+    /// Hooks to run before this hook's actions (in order)
     /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
     #[serde(default)]
     pub before: Vec<String>,
 
-    /// Flows to run after this flow's actions (in order)
+    /// Hooks to run after this hook's actions (in order)
     /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
     #[serde(default)]
     pub after: Vec<String>,
@@ -105,37 +105,37 @@ pub struct Flow {
     // ========================================================================
     /// session.started event handler (new agent session began)
     #[serde(rename = "session.started", default)]
-    pub session_started: Vec<FlowStatement>,
+    pub session_started: Vec<HookStatement>,
 
     /// session.resumed event handler (continuing a previous session)
     #[serde(rename = "session.resumed", default)]
-    pub session_resumed: Vec<FlowStatement>,
+    pub session_resumed: Vec<HookStatement>,
 
     /// session.ended event handler (agent session terminated)
     #[serde(rename = "session.ended", default)]
-    pub session_ended: Vec<FlowStatement>,
+    pub session_ended: Vec<HookStatement>,
 
     // ========================================================================
     // Turn Lifecycle Events
     // ========================================================================
     /// turn.started event handler (turn began - user prompt or autoreply)
     #[serde(rename = "turn.started", default)]
-    pub turn_started: Vec<FlowStatement>,
+    pub turn_started: Vec<HookStatement>,
 
     /// turn.completed event handler (turn ended - agent finished processing)
     #[serde(rename = "turn.completed", default)]
-    pub turn_completed: Vec<FlowStatement>,
+    pub turn_completed: Vec<HookStatement>,
 
     // ========================================================================
     // Read Operation Events
     // ========================================================================
     /// read.permission_asked event handler (agent is about to read a file)
     #[serde(rename = "read.permission_asked", default)]
-    pub read_permission_asked: Vec<FlowStatement>,
+    pub read_permission_asked: Vec<HookStatement>,
 
     /// read.completed event handler (agent finished reading a file)
     #[serde(rename = "read.completed", default)]
-    pub read_completed: Vec<FlowStatement>,
+    pub read_completed: Vec<HookStatement>,
 
     // ========================================================================
     // Change Operation Events (Unified mutations: write, delete, move)
@@ -144,13 +144,13 @@ pub struct Flow {
     /// Unified handler for write, delete, and move operations.
     /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
     #[serde(rename = "change.permission_asked", default)]
-    pub change_permission_asked: Vec<FlowStatement>,
+    pub change_permission_asked: Vec<HookStatement>,
 
     /// change.completed event handler (agent finished mutating files)
     /// Unified handler for write, delete, and move operations.
     /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
     #[serde(rename = "change.completed", default)]
-    pub change_completed: Vec<FlowStatement>,
+    pub change_completed: Vec<HookStatement>,
 
     // ========================================================================
     // Shell Command Events
@@ -158,11 +158,11 @@ pub struct Flow {
     /// shell.permission_asked event handler (agent is about to execute a shell command)
     /// This is the autonomous review wedge - intercept git commit, run review, provide feedback
     #[serde(rename = "shell.permission_asked", default)]
-    pub shell_permission_asked: Vec<FlowStatement>,
+    pub shell_permission_asked: Vec<HookStatement>,
 
     /// shell.completed event handler (shell command completed)
     #[serde(rename = "shell.completed", default)]
-    pub shell_completed: Vec<FlowStatement>,
+    pub shell_completed: Vec<HookStatement>,
 
     // ========================================================================
     // Web Access Events
@@ -170,50 +170,61 @@ pub struct Flow {
     /// web.permission_asked event handler (agent is about to make a web request)
     /// Operations: fetch, search
     #[serde(rename = "web.permission_asked", default)]
-    pub web_permission_asked: Vec<FlowStatement>,
+    pub web_permission_asked: Vec<HookStatement>,
 
     /// web.completed event handler (web request completed)
     #[serde(rename = "web.completed", default)]
-    pub web_completed: Vec<FlowStatement>,
+    pub web_completed: Vec<HookStatement>,
 
     // ========================================================================
     // MCP Tool Events
     // ========================================================================
     /// mcp.permission_asked event handler (agent is about to call an MCP tool)
     #[serde(rename = "mcp.permission_asked", default)]
-    pub mcp_permission_asked: Vec<FlowStatement>,
+    pub mcp_permission_asked: Vec<HookStatement>,
 
     /// mcp.completed event handler (MCP tool call completed)
     #[serde(rename = "mcp.completed", default)]
-    pub mcp_completed: Vec<FlowStatement>,
+    pub mcp_completed: Vec<HookStatement>,
 
     // ========================================================================
     // Commit Integration Events
     // ========================================================================
     /// commit.message_started event handler (Git's prepare-commit-msg hook)
     #[serde(rename = "commit.message_started", default)]
-    pub commit_message_started: Vec<FlowStatement>,
+    pub commit_message_started: Vec<HookStatement>,
+
+    // ========================================================================
+    // Task Lifecycle Events
+    // ========================================================================
+    /// task.started event handler (task transitioned to in_progress)
+    #[serde(rename = "task.started", default)]
+    pub task_started: Vec<HookStatement>,
+
+    /// task.closed event handler (task transitioned to closed)
+    #[serde(rename = "task.closed", default)]
+    pub task_closed: Vec<HookStatement>,
 
     // ========================================================================
     // Legacy
     // ========================================================================
     /// Stop event handler (legacy - kept for compatibility)
     #[serde(rename = "Stop", default)]
-    pub stop: Vec<FlowStatement>,
+    pub stop: Vec<HookStatement>,
 }
 
 fn default_version() -> String {
     "1".to_string()
 }
 
-/// Continue flow execution action (generates Failure and continues)
+/// Continue hook execution action (generates Failure and continues)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContinueAction {
     #[serde(rename = "continue")]
     pub failure: String,
 }
 
-/// Stop flow execution action (generates Failure and stops silently)
+/// Stop hook execution action (generates Failure and stops silently)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StopAction {
     #[serde(rename = "stop")]
@@ -227,7 +238,7 @@ pub struct BlockAction {
     pub failure: String,
 }
 
-/// An action to execute in a flow (no flow control)
+/// An action to execute in a hook (no hook control)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Action {
@@ -249,9 +260,11 @@ pub enum Action {
     CommitMessage(CommitMessageAction),
     /// Run a task by spawning an agent session
     TaskRun(TaskRunAction),
-    /// Continue flow execution (generates Failure and returns FailedContinue)
+    /// Create and run a review task
+    Review(ReviewAction),
+    /// Continue hook execution (generates Failure and returns FailedContinue)
     Continue(ContinueAction),
-    /// Stop flow execution (emits warning and stops silently)
+    /// Stop hook execution (emits warning and stops silently)
     Stop(StopAction),
     /// Block editor operation (emits error and blocks with exit 2)
     Block(BlockAction),
@@ -450,4 +463,30 @@ pub struct TaskRunConfig {
     /// Optional agent override (claude-code, codex)
     #[serde(default)]
     pub agent: Option<String>,
+}
+
+/// Review action - creates and runs a code review task
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewAction {
+    /// The review configuration
+    pub review: ReviewConfig,
+
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
+/// Configuration for review action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewConfig {
+    /// Task ID to review (supports variable interpolation)
+    #[serde(default)]
+    pub task_id: Option<String>,
+
+    /// Optional agent override (claude-code, codex)
+    #[serde(default)]
+    pub agent: Option<String>,
+
+    /// Optional template override (default: aiki/review)
+    #[serde(default)]
+    pub template: Option<String>,
 }

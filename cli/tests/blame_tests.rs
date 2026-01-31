@@ -98,7 +98,7 @@ fn test_blame_shows_recorded_change() {
 
     let output = Command::new(&aiki_bin)
         .arg("hooks")
-        .arg("handle")
+        .arg("stdin")
         .arg("--agent")
         .arg("claude-code")
         .arg("--event")
@@ -117,19 +117,19 @@ fn test_blame_shows_recorded_change() {
                 .write_all(hook_input.as_bytes())?;
             child.wait_with_output()
         })
-        .expect("Failed to run aiki hooks handle");
+        .expect("Failed to run aiki hooks stdin");
 
     println!(
-        "hooks handle stdout: {}",
+        "hooks stdin stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     println!(
-        "hooks handle stderr: {}",
+        "hooks stdin stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    println!("hooks handle status: {}", output.status);
+    println!("hooks stdin status: {}", output.status);
 
-    assert!(output.status.success(), "hooks handle should succeed");
+    assert!(output.status.success(), "hooks stdin should succeed");
 
     // The new hooks system uses the flow engine which:
     // 1. Calls aiki/core.build_metadata to generate provenance (author + message)

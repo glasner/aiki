@@ -77,7 +77,7 @@ session_file.create(&payload.cwd)
     |
 history::record_session_start()  // conversation history in aiki/conversations branch
     |
-execute_flow()  // runs flow.yaml actions (e.g., aiki init)
+execute_hook()  // runs hooks.yaml actions (e.g., aiki init)
     |
 returns HookResult { decision: Allow/Block, ... }
 ```
@@ -102,7 +102,7 @@ history::record_session_end()  // conversation history
 
 **1. Agent connects**
 ```
-Agent --TCP--> aiki acp (server process)
+Agent --TCP--> aiki hooks acp (server process)
     |
 commands/acp.rs - bidirectional proxy
     |

@@ -262,6 +262,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         // Valid signature + provenance = verified

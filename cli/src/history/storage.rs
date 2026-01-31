@@ -368,6 +368,63 @@ pub fn get_latest_prompt_change_id(cwd: &Path, session_id: &str) -> Result<Optio
     Ok(change_id)
 }
 
+/// Load a prompt event by its change_id
+///
+/// Returns the prompt content if found, None otherwise.
+/// Used by `--with-source` to expand prompt: source references.
+pub fn get_prompt_by_change_id(cwd: &Path, change_id: &str) -> Result<Option<String>> {
+    // Check if branch exists first
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let bookmarks = String::from_utf8_lossy(&output.stdout);
+    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
+        return Ok(None);
+    }
+
+    // Query for the specific change by ID
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            change_id,
+            "--no-graph",
+            "-T",
+            "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query prompt: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let description = String::from_utf8_lossy(&output.stdout);
+
+    // Parse the metadata block to extract the prompt content
+    if let Some(start_idx) = description.find(METADATA_START) {
+        if let Some(end_idx) = description.find(METADATA_END) {
+            let block = &description[start_idx + METADATA_START.len()..end_idx];
+            if let Some(event) = parse_metadata_block(block) {
+                if let ConversationEvent::Prompt { content, .. } = event {
+                    return Ok(Some(content));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Get the current turn number for a session (from most recent prompt event)
 ///
 /// Returns 0 if no prompt events found (new session).
@@ -447,6 +504,14 @@ pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to list bookmarks: {}",
+            stderr
+        )));
+    }
+
     let bookmarks = String::from_utf8_lossy(&output.stdout);
     if !bookmarks.contains(CONVERSATIONS_BRANCH) {
         // Branch doesn't exist yet, return empty list
@@ -507,7 +572,7 @@ pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
 ///
 /// Returns a list of conversation summaries, sorted by most recent activity first.
 /// Only sessions that have a `SessionStart` event are included.
-/// Defaults to returning at most 10 results if `limit` is `None`.
+/// If `limit` is `None`, returns all conversations; otherwise truncates to the given limit.
 #[allow(dead_code)] // Part of history API
 pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<ConversationSummary>> {
     let events = read_events(cwd)?;
@@ -581,9 +646,10 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
     // Sort by last_activity descending (most recent first)
     summaries.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
 
-    // Apply limit (default to 10)
-    let limit = limit.unwrap_or(10);
-    summaries.truncate(limit);
+    // Apply limit if specified
+    if let Some(limit) = limit {
+        summaries.truncate(limit);
+    }
 
     Ok(summaries)
 }

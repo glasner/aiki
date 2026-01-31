@@ -21,12 +21,18 @@ pub struct TaskTemplate {
     pub defaults: TaskDefaults,
     /// Parent task definition (name and instructions)
     pub parent: TaskDefinition,
-    /// Subtask definitions
+    /// Subtask definitions (static, populated when frontmatter has no `subtasks` field)
     pub subtasks: Vec<TaskDefinition>,
     /// Source file path (for display purposes)
     pub source_path: Option<String>,
     /// Raw template content (for display purposes)
     pub raw_content: Option<String>,
+    /// Data source path for declarative subtask iteration (e.g., "source.comments")
+    /// Populated from frontmatter's `subtasks` field
+    pub subtasks_source: Option<String>,
+    /// Raw subtask template content for iteration (populated when frontmatter has `subtasks` field)
+    /// Contains the entire `# Subtasks` section including the h2 heading template
+    pub subtask_template: Option<String>,
 }
 
 impl TaskTemplate {
@@ -42,6 +48,8 @@ impl TaskTemplate {
             subtasks: Vec::new(),
             source_path: None,
             raw_content: None,
+            subtasks_source: None,
+            subtask_template: None,
         }
     }
 
@@ -75,12 +83,16 @@ pub struct TaskDefaults {
 pub struct TaskDefinition {
     /// Task name (may contain variables like {data.scope})
     pub name: String,
+    /// Task type (e.g., "review", "fix") - enables sugar triggers
+    pub task_type: Option<String>,
     /// Task instructions (markdown content)
     pub instructions: String,
     /// Override priority for this subtask
     pub priority: Option<String>,
     /// Override assignee for this subtask
     pub assignee: Option<String>,
+    /// Sources for this subtask (e.g., "task:abc123")
+    pub sources: Vec<String>,
     /// Additional data specific to this subtask
     pub data: HashMap<String, serde_json::Value>,
 }
@@ -102,6 +114,8 @@ pub struct TemplateFrontmatter {
     /// Default data values
     #[serde(default)]
     pub data: HashMap<String, serde_json::Value>,
+    /// Data source path for declarative subtask iteration (e.g., "source.comments")
+    pub subtasks: Option<String>,
 }
 
 /// YAML frontmatter for subtasks
@@ -111,6 +125,9 @@ pub struct SubtaskFrontmatter {
     pub priority: Option<String>,
     /// Override assignee
     pub assignee: Option<String>,
+    /// Sources for this subtask (e.g., "task:{source.task_id}")
+    #[serde(default)]
+    pub sources: Vec<String>,
     /// Additional data
     #[serde(default)]
     pub data: HashMap<String, serde_json::Value>,
@@ -177,5 +194,27 @@ data:
         let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap_or_default();
         assert!(fm.version.is_none());
         assert!(fm.data.is_empty());
+    }
+
+    #[test]
+    fn test_frontmatter_with_subtasks_data_source() {
+        let yaml = r#"
+version: "1.0.0"
+subtasks: source.comments
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fm.version, Some("1.0.0".to_string()));
+        assert_eq!(fm.subtasks, Some("source.comments".to_string()));
+    }
+
+    #[test]
+    fn test_frontmatter_without_subtasks_defaults_to_none() {
+        let yaml = r#"
+version: "1.0.0"
+description: A template without subtasks field
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fm.version, Some("1.0.0".to_string()));
+        assert!(fm.subtasks.is_none());
     }
 }

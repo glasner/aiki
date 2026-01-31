@@ -65,6 +65,11 @@ impl AikiSessionFile {
             metadata.push_str(&format!("parent_pid={}\n", pid));
         }
 
+        // Add runner_task if this is a runner session (spawned by aiki task run --async)
+        if let Some(task_id) = self.session.runner_task() {
+            metadata.push_str(&format!("runner_task={}\n", task_id));
+        }
+
         metadata.push_str("[/aiki]\n");
 
         // Create sessions directory if it doesn't exist
@@ -284,6 +289,11 @@ pub struct AikiSession {
     /// In ACP mode, this is the `agent_pid` from the session/start message.
     /// Used to match bash commands back to their originating session.
     parent_pid: Option<u32>,
+    /// Task ID if this session was spawned by `aiki task run --async`
+    ///
+    /// Set from AIKI_RUNNER_TASK environment variable.
+    /// Used to terminate background agent processes when tasks are stopped/closed.
+    runner_task: Option<String>,
 }
 
 impl AikiSession {
@@ -356,6 +366,7 @@ impl AikiSession {
             agent_version: agent_version.map(|v| v.into()),
             detection_method,
             parent_pid: None,
+            runner_task: None,
         }
     }
 
@@ -374,6 +385,7 @@ impl AikiSession {
             agent_version: None,
             detection_method: DetectionMethod::Unknown,
             parent_pid: None,
+            runner_task: None,
         }
     }
 
@@ -410,6 +422,7 @@ impl AikiSession {
             DetectionMethod::Hook,
         )
         .with_parent_pid(parent_pid)
+        .with_runner_task_from_env()
     }
 
     /// Generate a deterministic UUID v5 for a session
@@ -481,6 +494,23 @@ impl AikiSession {
         self
     }
 
+    /// Set the runner task ID (for sessions spawned by `aiki task run --async`)
+    #[must_use]
+    pub fn with_runner_task(mut self, task_id: Option<String>) -> Self {
+        self.runner_task = task_id;
+        self
+    }
+
+    /// Capture runner task ID from AIKI_RUNNER_TASK environment variable
+    ///
+    /// This should be called when creating sessions to check if this session
+    /// was spawned by `aiki task run --async`.
+    #[must_use]
+    pub fn with_runner_task_from_env(self) -> Self {
+        let task_id = std::env::var("AIKI_RUNNER_TASK").ok();
+        self.with_runner_task(task_id)
+    }
+
     /// Get the session UUID as a string
     #[must_use]
     pub fn uuid(&self) -> &str {
@@ -527,6 +557,12 @@ impl AikiSession {
     #[must_use]
     pub fn parent_pid(&self) -> Option<u32> {
         self.parent_pid
+    }
+
+    /// Get the runner task ID if this is a runner session
+    #[must_use]
+    pub fn runner_task(&self) -> Option<&str> {
+        self.runner_task.as_deref()
     }
 
     /// Get a session file handle for this session
@@ -765,7 +801,7 @@ pub fn get_parent_pid() -> Option<u32> {
 /// Get all ancestor PIDs from the current process up to init
 ///
 /// Returns a HashSet for O(1) lookup when matching against session files.
-fn get_ancestor_pids() -> HashSet<u32> {
+pub fn get_ancestor_pids() -> HashSet<u32> {
     let mut ancestors = HashSet::new();
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::All, true);
@@ -955,6 +991,82 @@ pub fn find_session_by_ancestor_pid(jj_cwd: impl AsRef<Path>) -> Option<SessionM
     }
 
     best_match.map(|(m, _)| m)
+}
+
+/// Info about a runner session (spawned by `aiki task run --async`)
+#[derive(Debug, Clone)]
+pub struct RunnerSessionInfo {
+    /// Session ID
+    pub session_id: String,
+    /// Task ID this session is running
+    pub task_id: String,
+    /// Process ID of the agent (for termination)
+    pub pid: u32,
+}
+
+/// Find a runner session by task ID
+///
+/// Scans session files for one with `runner_task=<task_id>` and returns
+/// the session info including the PID for process termination.
+///
+/// Returns None if no matching session found.
+pub fn find_runner_session(task_id: &str) -> Option<RunnerSessionInfo> {
+    let sessions_dir = global::global_sessions_dir();
+
+    if !sessions_dir.exists() {
+        return None;
+    }
+
+    let entries = match fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        // Skip non-session files (e.g., .turn state files)
+        if path.extension().is_some() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Parse session file fields
+        let mut runner_task: Option<String> = None;
+        let mut parent_pid: Option<u32> = None;
+        let mut session_id: Option<String> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(val) = line.strip_prefix("runner_task=") {
+                runner_task = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("parent_pid=") {
+                parent_pid = val.parse().ok();
+            } else if let Some(val) = line.strip_prefix("session_id=") {
+                session_id = Some(val.to_string());
+            }
+        }
+
+        // Check if this session matches our task
+        if let (Some(rt), Some(pid), Some(sid)) = (runner_task, parent_pid, session_id) {
+            if rt == task_id {
+                return Some(RunnerSessionInfo {
+                    session_id: sid,
+                    task_id: rt,
+                    pid,
+                });
+            }
+        }
+    }
+
+    None
 }
 
 /// Find an active session by agent type, used when PID matching fails but we
@@ -1319,7 +1431,7 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
 ///
 /// Used during PID cleanup when the agent process is dead.
 /// Dispatches a full `session.ended` event so that history recording,
-/// flow execution, and session file cleanup all happen through the
+/// hook execution, and session file cleanup all happen through the
 /// normal event handling path.
 fn emit_synthetic_session_ended(session_info: &SessionFileInfo, reason: SessionCleanupReason) {
     use crate::cache::debug_log;

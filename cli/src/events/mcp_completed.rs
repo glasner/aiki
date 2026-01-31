@@ -26,7 +26,7 @@ pub struct AikiMcpCompletedPayload {
 /// This event fires after an MCP tool call completes. Can be used to
 /// log tool usage, react to failures, or trigger follow-up actions.
 pub fn handle_mcp_completed(payload: AikiMcpCompletedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
@@ -38,17 +38,17 @@ pub fn handle_mcp_completed(payload: AikiMcpCompletedPayload) -> Result<HookResu
         )
     });
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let _flow_result = execute_hook(
         EventType::McpCompleted,
         &mut state,
-        &core_flow.mcp_completed,
+        &core_hook.mcp_completed,
     )?;
 
     // Extract failures from state

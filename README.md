@@ -194,6 +194,58 @@ aiki task close <id> --comment "Validation complete"
 
 Task data is event-sourced and stored on the `aiki/tasks` branch in JJ.
 
+### Code Review
+
+Aiki includes a review system for AI agents to review each other's work with pipeable commands.
+
+```bash
+# Create and run a code review (waits for completion)
+aiki review
+
+# Review specific task
+aiki review <task-id>
+
+# Review asynchronously (returns immediately)
+aiki review --async
+
+# Agent takes over review in current session
+aiki review --start
+
+# Create followup tasks from review findings and run them
+aiki fix <review-task-id>
+
+# Pipeline: autonomous review + fix
+aiki review | aiki fix
+
+# Pipeline with async review
+aiki review --async | aiki wait | aiki fix
+```
+
+**Review workflow:**
+1. `aiki review` creates a review task with subtasks (digest changes, review code)
+2. An agent (default: codex) executes the review, adding comments for issues found
+3. `aiki fix` reads comments from the completed review and creates followup tasks
+4. Followup tasks are run to address the findings
+
+**Command flags:**
+
+| Flag | Effect |
+|------|--------|
+| (default) | Create + run to completion |
+| `--async` | Create + run async, return immediately |
+| `--start` | Create + start, agent takes over |
+| `--template <name>` | Use custom template |
+| `--agent <name>` | Override agent assignment |
+
+**Query commands:**
+```bash
+# List review tasks
+aiki review list
+
+# Show review details with comments and followups
+aiki review show <id>
+```
+
 ### Session History
 
 Aiki records conversation history across AI agent sessions:
@@ -287,7 +339,7 @@ Each editor integration translates its native hook format into these unified eve
 Flows are declarative YAML workflows that react to events. A bundled core flow (`aiki/core`) handles all provenance recording, and users can extend behavior with custom flows.
 
 **Flow capabilities:**
-- **Actions**: `shell`, `jj`, `context` (inject into agent prompts), `autoreply`, `commit_message`, `log`, `task_run`
+- **Actions**: `shell`, `jj`, `context` (inject into agent prompts), `autoreply`, `commit_message`, `log`, `task.run`, `review`
 - **Control flow**: `if`/`else`, `switch`/`case`
 - **Variables**: Event variables (`$event.*`), let bindings, environment variables, JSON field access
 - **Composition**: `before`/`after` chaining with cycle detection
@@ -379,6 +431,9 @@ aiki/
 │   │   │   ├── verify.rs        # Signature verification
 │   │   │   ├── session.rs       # Session history commands
 │   │   │   ├── task.rs          # Task management commands
+│   │   │   ├── review.rs        # Code review commands
+│   │   │   ├── fix.rs           # Followup task commands
+│   │   │   ├── wait.rs          # Task wait command
 │   │   │   ├── benchmark.rs     # Performance testing
 │   │   │   ├── hooks.rs         # Hook management
 │   │   │   └── acp.rs           # ACP proxy server

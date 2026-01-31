@@ -94,7 +94,7 @@ fn extract_prompt_from_input_messages(
 
 /// Handle a Codex hook event
 ///
-/// Entry point for `aiki hooks handle --agent codex --event <event_name>`
+/// Entry point for `aiki hooks stdin --agent codex --event <event_name>`
 ///
 /// For Codex, the only event dispatched via notify is `agent-turn-complete`.
 /// The JSON payload is passed as a CLI argument (not stdin).

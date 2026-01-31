@@ -123,7 +123,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "startup",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event SessionStart", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event SessionStart", aiki_path),
             "timeout": 10
         }]
     }]);
@@ -133,7 +133,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event UserPromptSubmit", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event UserPromptSubmit", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -143,7 +143,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": tool_matcher,
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event PreToolUse", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event PreToolUse", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -153,7 +153,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": tool_matcher,
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event PostToolUse", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event PostToolUse", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -163,7 +163,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event Stop", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event Stop", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -173,7 +173,7 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": format!("{} hooks handle --agent claude-code --event SessionEnd", aiki_path),
+            "command": format!("{} hooks stdin --agent claude-code --event SessionEnd", aiki_path),
             "timeout": 5
         }]
     }]);
@@ -232,14 +232,14 @@ pub fn install_cursor_hooks_global() -> Result<()> {
         .unwrap_or_default();
 
     let aiki_init_hook = json!({
-        "command": format!("{} hooks handle --agent cursor --event beforeSubmitPrompt", aiki_path)
+        "command": format!("{} hooks stdin --agent cursor --event beforeSubmitPrompt", aiki_path)
     });
 
     // Check if already installed
     let init_already_installed = before_submit.iter().any(|hook| {
         hook.get("command")
             .and_then(|c| c.as_str())
-            .map(|c| c.contains("aiki hooks handle"))
+            .map(|c| c.contains("aiki hooks stdin"))
             .unwrap_or(false)
     });
 
@@ -267,13 +267,13 @@ pub fn install_cursor_hooks_global() -> Result<()> {
             .unwrap_or_default();
 
         let aiki_hook = json!({
-            "command": format!("{} hooks handle --agent cursor --event {}", aiki_path, event_name)
+            "command": format!("{} hooks stdin --agent cursor --event {}", aiki_path, event_name)
         });
 
         let already_installed = existing.iter().any(|hook| {
             hook.get("command")
                 .and_then(|c| c.as_str())
-                .map(|c| c.contains("aiki hooks handle"))
+                .map(|c| c.contains("aiki hooks stdin"))
                 .unwrap_or(false)
         });
 
@@ -305,7 +305,7 @@ pub fn install_cursor_hooks_global() -> Result<()> {
 ///
 /// Adds both OTel receiver config and notify command:
 /// - [otel] section with exporter.otlp-http (struct variant) and log_user_prompt
-/// - notify array with aiki hooks handle command
+/// - notify array with aiki hooks stdin command
 ///
 /// The exporter field is a tagged enum in codex's config:
 /// - Unit variants: "none", "statsig"
@@ -436,7 +436,7 @@ pub fn install_codex_hooks_global() -> Result<()> {
     let notify_cmd = vec![
         toml::Value::String(aiki_path),
         toml::Value::String("hooks".to_string()),
-        toml::Value::String("handle".to_string()),
+        toml::Value::String("stdin".to_string()),
         toml::Value::String("--agent".to_string()),
         toml::Value::String("codex".to_string()),
         toml::Value::String("--event".to_string()),
@@ -670,7 +670,10 @@ fn generate_launchd_plist(aiki_path: &str) -> String {
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
-        <string>otel-receive</string>
+        <string>hooks</string>
+        <string>otel</string>
+        <string>--agent</string>
+        <string>codex</string>
     </array>
 
     <!-- Socket activation: pass incoming connection as stdin -->
@@ -742,7 +745,7 @@ fn generate_systemd_service(aiki_path: &str) -> String {
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={} otel-receive\n\
+         ExecStart={} hooks otel --agent codex\n\
          StandardInput=socket\n\
          StandardOutput=socket\n\
          StandardError=journal\n",

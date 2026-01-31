@@ -5,7 +5,7 @@
 //!
 //! - `DEBUG_ENABLED`: Whether debug mode is enabled (checked once)
 //! - `AIKI_BINARY_PATH`: Path to the aiki binary (resolved once)
-//! - `get_core_flow()`: The parsed core flow YAML (parsed once)
+//! - `get_core_hook()`: The parsed core hook YAML (parsed once)
 //!
 //! ## Design Constraints
 //!
@@ -15,7 +15,7 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use crate::flows::types::Flow;
+use crate::flows::types::Hook;
 
 /// Debug mode flag - checked once per process.
 ///
@@ -39,8 +39,8 @@ pub static AIKI_BINARY_PATH: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Cached core flow (parsed once per process).
-static CORE_FLOW: OnceLock<Flow> = OnceLock::new();
+/// Cached core hook (parsed once per process).
+static CORE_HOOK: OnceLock<Hook> = OnceLock::new();
 
 /// Debug logging helper with lazy evaluation.
 ///
@@ -69,20 +69,20 @@ where
     }
 }
 
-/// Get the cached core flow (parsed once per process).
+/// Get the cached core hook (parsed once per process).
 ///
-/// The core flow is embedded in the binary and handles all event types.
+/// The core hook is embedded in the binary and handles all event types.
 /// This function parses the YAML only on first access, then returns
 /// a reference to the cached result.
 ///
 /// # Panics
 ///
-/// Panics if the bundled core flow YAML fails to parse. This should never
+/// Panics if the bundled core hook YAML fails to parse. This should never
 /// happen in production since the YAML is embedded and known-good.
 #[must_use]
-pub fn get_core_flow() -> &'static Flow {
-    CORE_FLOW.get_or_init(|| {
-        crate::flows::load_core_flow_uncached().expect("Failed to parse bundled core flow")
+pub fn get_core_hook() -> &'static Hook {
+    CORE_HOOK.get_or_init(|| {
+        crate::flows::load_core_hook_uncached().expect("Failed to parse bundled core hook")
     })
 }
 
@@ -147,17 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn test_get_core_flow_returns_valid_flow() {
-        let flow = get_core_flow();
-        assert_eq!(flow.name, "Aiki Core");
-        assert_eq!(flow.version, "1");
+    fn test_get_core_hook_returns_valid_hook() {
+        let hook = get_core_hook();
+        assert_eq!(hook.name, "Aiki Core");
+        assert_eq!(hook.version, "1");
     }
 
     #[test]
-    fn test_get_core_flow_is_cached() {
+    fn test_get_core_hook_is_cached() {
         // Multiple calls should return the same reference
-        let flow1 = get_core_flow();
-        let flow2 = get_core_flow();
-        assert!(std::ptr::eq(flow1, flow2));
+        let hook1 = get_core_hook();
+        let hook2 = get_core_hook();
+        assert!(std::ptr::eq(hook1, hook2));
     }
 }

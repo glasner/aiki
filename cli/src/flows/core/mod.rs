@@ -1,4 +1,4 @@
-//! Built-in functions for the aiki/core flow namespace
+//! Built-in functions for the aiki/core hook namespace
 //!
 //! This module contains native Rust implementations of functions that can be called
 //! from flow definitions using the function call syntax.

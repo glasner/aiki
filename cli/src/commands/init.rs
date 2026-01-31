@@ -255,6 +255,63 @@ pub fn run(quiet: bool) -> Result<()> {
         }
     }
 
+    // Install agent integrations (Claude Code, Cursor, Codex hooks)
+    if !quiet {
+        println!("\nInstalling agent integrations...");
+    }
+
+    match config::install_global_git_hooks() {
+        Ok(()) => {
+            if !quiet {
+                println!("✓ Global Git hooks installed");
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                println!("⚠ Failed to install global Git hooks: {}", e);
+            }
+        }
+    }
+
+    match config::install_claude_code_hooks_global() {
+        Ok(()) => {
+            if !quiet {
+                println!("✓ Claude Code hooks installed");
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                println!("⚠ Failed to install Claude Code hooks: {}", e);
+            }
+        }
+    }
+
+    match config::install_cursor_hooks_global() {
+        Ok(()) => {
+            if !quiet {
+                println!("✓ Cursor hooks installed");
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                println!("⚠ Failed to install Cursor hooks: {}", e);
+            }
+        }
+    }
+
+    match config::install_codex_hooks_global() {
+        Ok(()) => {
+            if !quiet {
+                println!("✓ Codex hooks installed");
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                println!("⚠ Failed to install Codex hooks: {}", e);
+            }
+        }
+    }
+
     // Ensure AGENTS.md has task system instructions
     if !quiet {
         println!("\nConfiguring agent instructions...");

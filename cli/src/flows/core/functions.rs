@@ -1,4 +1,4 @@
-//! Built-in functions for the aiki/core flow namespace
+//! Built-in functions for the aiki/core hook namespace
 //!
 //! This module contains native Rust implementations of functions that can be called
 //! from flow definitions using the function call syntax.
@@ -102,6 +102,28 @@ fn get_in_progress_tasks_for_session(cwd: &Path, session_id: &str) -> Vec<String
     manager::get_in_progress_task_ids_for_session(&tasks, session_id)
 }
 
+/// Get the prompt change_id for a session
+///
+/// Queries the conversation history to find the latest prompt's JJ change_id.
+/// Returns None if lookup fails (graceful degradation).
+fn get_prompt_change_id_for_session(session_id: &str) -> Option<String> {
+    use crate::global;
+    use crate::history;
+
+    match history::get_latest_prompt_change_id(&global::global_aiki_dir(), session_id) {
+        Ok(change_id) => change_id,
+        Err(e) => {
+            debug_log(|| {
+                format!(
+                    "[flows/core] Failed to get prompt change_id for session {}: {}",
+                    session_id, e
+                )
+            });
+            None
+        }
+    }
+}
+
 // =============================================================================
 // Metadata Generation Functions
 // =============================================================================
@@ -135,11 +157,16 @@ pub fn build_write_metadata(
     };
 
     // Get in-progress tasks for this session
-    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+    // Note: Tasks are stored with the session UUID (not external_id), so we must use uuid() here
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.uuid());
 
-    // Create provenance record from change event with task IDs
-    let mut provenance =
-        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
+    // Get prompt change_id for this session (if available)
+    let prompt_change_id = get_prompt_change_id_for_session(event.session.uuid());
+
+    // Create provenance record from change event with task IDs and prompt
+    let mut provenance = ProvenanceRecord::from_change_completed_event(event)
+        .with_tasks(task_ids)
+        .with_prompt_change_id(prompt_change_id);
 
     // Check if we have overlapping user edits and should add coauthor
     if let Some(ctx) = context {
@@ -203,10 +230,15 @@ pub fn build_delete_metadata(
     };
 
     // Get in-progress tasks for this session
-    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+    // Note: Tasks are stored with the session UUID (not external_id), so we must use uuid() here
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.uuid());
 
-    let provenance =
-        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
+    // Get prompt change_id for this session (if available)
+    let prompt_change_id = get_prompt_change_id_for_session(event.session.uuid());
+
+    let provenance = ProvenanceRecord::from_change_completed_event(event)
+        .with_tasks(task_ids)
+        .with_prompt_change_id(prompt_change_id);
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
@@ -254,10 +286,15 @@ pub fn build_move_metadata(
     };
 
     // Get in-progress tasks for this session
-    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+    // Note: Tasks are stored with the session UUID (not external_id), so we must use uuid() here
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.uuid());
 
-    let provenance =
-        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
+    // Get prompt change_id for this session (if available)
+    let prompt_change_id = get_prompt_change_id_for_session(event.session.uuid());
+
+    let provenance = ProvenanceRecord::from_change_completed_event(event)
+        .with_tasks(task_ids)
+        .with_prompt_change_id(prompt_change_id);
     let message = provenance.to_description();
     let author = event.session.agent_type().git_author();
 
@@ -581,10 +618,15 @@ pub fn prepare_separation_change(event: &AikiChangeCompletedPayload) -> Result<A
     }
 
     // Get in-progress tasks for this session
-    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.external_id());
+    // Note: Tasks are stored with the session UUID (not external_id), so we must use uuid() here
+    let task_ids = get_in_progress_tasks_for_session(&event.cwd, event.session.uuid());
 
-    let provenance =
-        ProvenanceRecord::from_change_completed_event(event).with_tasks(task_ids);
+    // Get prompt change_id for this session (if available)
+    let prompt_change_id = get_prompt_change_id_for_session(event.session.uuid());
+
+    let provenance = ProvenanceRecord::from_change_completed_event(event)
+        .with_tasks(task_ids)
+        .with_prompt_change_id(prompt_change_id);
     let ai_message = provenance.to_description();
     let ai_author = event.session.agent_type().git_author();
 

@@ -49,6 +49,7 @@ enum Commands {
         fix: bool,
     },
     /// Manage Aiki hooks
+    #[command(hide = true)]
     Hooks {
         #[command(subcommand)]
         command: HooksCommands,
@@ -80,19 +81,6 @@ enum Commands {
         #[arg(default_value = "@")]
         revision: String,
     },
-    /// ACP proxy for IDE-agent communication
-    Acp {
-        /// Agent type for provenance (e.g., "claude-code", "cursor", "gemini")
-        agent_type: String,
-
-        /// Optional custom binary path (defaults to derived from agent_type)
-        #[arg(short, long)]
-        bin: Option<String>,
-
-        /// Optional arguments to pass to the agent executable
-        #[arg(last = true)]
-        agent_args: Vec<String>,
-    },
     /// Run end-to-end performance benchmark
     Benchmark {
         /// Number of edits to simulate (default: 50)
@@ -109,14 +97,38 @@ enum Commands {
         #[command(subcommand)]
         command: Option<commands::task::TaskCommands>,
     },
-    /// OTel receiver for Codex (socket-activated, reads HTTP from stdin)
-    #[command(name = "otel-receive", hide = true)]
-    OtelReceive,
     /// Dispatch Aiki events (internal use)
     #[command(hide = true)]
     Event {
         #[command(subcommand)]
         command: EventCommands,
+    },
+    /// Wait for a task to reach terminal state
+    Wait {
+        /// Task ID to wait for (reads from stdin if not provided)
+        task_id: Option<String>,
+    },
+    /// Create and run followup tasks from review comments
+    Fix {
+        /// Task ID to read comments from (reads from stdin if not provided)
+        task_id: Option<String>,
+        /// Run followup task asynchronously
+        #[arg(long = "async")]
+        run_async: bool,
+        /// Start task and return control to calling agent
+        #[arg(long)]
+        start: bool,
+        /// Task template to use (default: aiki/fix)
+        #[arg(long)]
+        template: Option<String>,
+        /// Agent for task assignment (default: claude-code)
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Create and run code review tasks
+    Review {
+        #[command(subcommand)]
+        command: Option<commands::review::ReviewCommands>,
     },
 }
 
@@ -129,20 +141,31 @@ enum EventCommands {
 
 #[derive(Subcommand)]
 enum HooksCommands {
-    /// Install global hooks for AI editors
-    Install,
-    /// Handle vendor event (called by all hooks)
+    /// Stdin integration point (Claude Code, Cursor - reads JSON from stdin)
     #[command(hide = true)]
-    Handle {
-        /// Agent type (e.g., claude-code, cursor, codex)
+    Stdin {
         #[arg(long)]
         agent: String,
-        /// Vendor event name (e.g., SessionStart, PostToolUse, beforeSubmitPrompt, afterFileEdit)
         #[arg(long)]
         event: String,
-        /// JSON payload (used by Codex notify, passed as trailing CLI argument)
         #[arg(trailing_var_arg = true)]
         payload: Vec<String>,
+    },
+    /// ACP integration point (proxy for ACP protocol agents)
+    #[command(hide = true)]
+    Acp {
+        #[arg(long)]
+        agent: String,
+        #[arg(short, long)]
+        bin: Option<String>,
+        #[arg(last = true)]
+        agent_args: Vec<String>,
+    },
+    /// OTel integration point (Codex - reads HTTP/OTLP from stdin)
+    #[command(hide = true)]
+    Otel {
+        #[arg(long, default_value = "codex")]
+        agent: String,
     },
 }
 
@@ -160,10 +183,15 @@ fn run() -> Result<()> {
         Commands::Init { quiet } => commands::init::run(quiet),
         Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Hooks { command } => match command {
-            HooksCommands::Install => commands::hooks::run_install(),
-            HooksCommands::Handle { agent, event, payload } => {
+            HooksCommands::Stdin { agent, event, payload } => {
                 let payload_str = if payload.is_empty() { None } else { Some(payload.join(" ")) };
-                commands::hooks::run_handle(agent, event, payload_str)
+                commands::hooks::run_stdin(agent, event, payload_str)
+            }
+            HooksCommands::Acp { agent, bin, agent_args } => {
+                commands::acp::run(agent, bin, agent_args)
+            }
+            HooksCommands::Otel { agent } => {
+                commands::otel_receive::run(agent)
             }
         },
         Commands::Blame {
@@ -173,17 +201,20 @@ fn run() -> Result<()> {
         } => commands::blame::run(file, agent, verify),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Verify { revision } => commands::verify::run(revision),
-        Commands::Acp {
-            agent_type,
-            bin,
-            agent_args,
-        } => commands::acp::run(agent_type, bin, agent_args),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Session { command } => commands::session::run(command),
         Commands::Task { command } => commands::task::run(command),
-        Commands::OtelReceive => commands::otel_receive::run(),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
+        Commands::Wait { task_id } => commands::wait::run(task_id),
+        Commands::Fix {
+            task_id,
+            run_async,
+            start,
+            template,
+            agent,
+        } => commands::fix::run(task_id, run_async, start, template, agent),
+        Commands::Review { command } => commands::review::run(command),
     }
 }

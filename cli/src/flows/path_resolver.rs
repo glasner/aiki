@@ -6,7 +6,7 @@
 //! - `../` - Relative to parent directory
 //! - `/` - Absolute path
 //!
-//! For flow-specific resolution ({namespace}/{name}), use [`FlowResolver`](super::flow_resolver::FlowResolver).
+//! For flow-specific resolution ({namespace}/{name}), use [`HookResolver`](super::hook_resolver::HookResolver).
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -200,7 +200,7 @@ mod tests {
     /// Create a test project with .aiki/ directory
     fn create_test_project() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks")).unwrap();
         fs::create_dir_all(temp_dir.path().join("docs")).unwrap();
         fs::create_dir_all(temp_dir.path().join("src")).unwrap();
         temp_dir
@@ -309,8 +309,8 @@ mod tests {
         let temp_dir = create_test_project();
         let resolver = PathResolver::with_start_dir(temp_dir.path()).unwrap();
 
-        let resolved = resolver.resolve_tilde("~/.aiki/flows/my-flow.yml");
-        assert!(resolved.ends_with(".aiki/flows/my-flow.yml"));
+        let resolved = resolver.resolve_tilde("~/.aiki/hooks/my-flow.yml");
+        assert!(resolved.ends_with(".aiki/hooks/my-flow.yml"));
         assert!(resolved.starts_with(resolver.home_dir()));
     }
 
