@@ -28,7 +28,7 @@ fn build_session_start_output(response: &HookResult) -> HookCommandOutput {
     let json_value = if let Some(ctx) = combined {
         // Has context - include systemMessage and hookSpecificOutput
         json!({
-            "systemMessage": "合 aiki initialized",
+            "systemMessage": "\x1b[38;2;204;85;0m合\x1b[0m aiki initialized",
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": ctx

@@ -28,7 +28,7 @@ pub struct AikiReadPermissionAskedPayload {
 /// This event fires when the agent requests permission to read files.
 /// It allows flows to gate reads of sensitive files (secrets, .env, etc.).
 pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
@@ -39,17 +39,17 @@ pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> 
         )
     });
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = execute_hook(
         EventType::ReadPermissionAsked,
         &mut state,
-        &core_flow.read_permission_asked,
+        &core_hook.read_permission_asked,
     )?;
 
     // Extract failures from state
@@ -57,14 +57,14 @@ pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> 
 
     // read.permission_asked is gateable - can block sensitive file reads
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: None,
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => Ok(HookResult {
+        HookOutcome::FailedBlock => Ok(HookResult {
             context: None,
             decision: Decision::Block,
             failures,

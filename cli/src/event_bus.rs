@@ -46,6 +46,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             AikiEvent::McpCompleted(_) => "mcp.completed",
             // Git integration
             AikiEvent::CommitMessageStarted(_) => "commit.message_started",
+            // Task lifecycle
+            AikiEvent::TaskStarted(_) => "task.started",
+            AikiEvent::TaskClosed(_) => "task.closed",
             // Fallback
             AikiEvent::Unsupported => "unsupported",
         };
@@ -121,6 +124,10 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
 
         // Git integration
         AikiEvent::CommitMessageStarted(e) => events::handle_commit_message_started(e),
+
+        // Task lifecycle
+        AikiEvent::TaskStarted(e) => events::handle_task_started(e),
+        AikiEvent::TaskClosed(e) => events::handle_task_closed(e),
 
         // Fallback
         AikiEvent::Unsupported => return Ok(HookResult::success()),

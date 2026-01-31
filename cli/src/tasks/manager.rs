@@ -46,6 +46,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
             TaskEvent::Created {
                 task_id,
                 name,
+                task_type,
                 priority,
                 assignee,
                 sources,
@@ -60,6 +61,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                     Task {
                         id: task_id.clone(),
                         name: name.clone(),
+                        task_type: task_type.clone(),
                         status: TaskStatus::Open,
                         priority: *priority,
                         assignee: assignee.clone(),
@@ -71,6 +73,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         created_at: *timestamp,
                         started_at: None,
                         claimed_by_session: None,
+                        last_session_id: None,
                         stopped_reason: None,
                         closed_outcome: None,
                         comments: Vec::new(),
@@ -83,6 +86,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         task.status = TaskStatus::InProgress;
                         task.stopped_reason = None;
                         task.claimed_by_session = session_id.clone();
+                        task.last_session_id = session_id.clone();
                         task.started_at = Some(*timestamp);
                     }
                 }
@@ -119,12 +123,15 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
             TaskEvent::CommentAdded {
                 task_ids,
                 text,
+                data,
                 timestamp,
             } => {
                 for task_id in task_ids {
                     if let Some(task) = tasks.get_mut(task_id) {
                         task.comments.push(TaskComment {
+                            id: None, // Change ID not available in this code path
                             text: text.clone(),
+                            data: data.clone(),
                             timestamp: *timestamp,
                         });
                     }
@@ -145,6 +152,154 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         task.priority = *new_priority;
                     }
                     // Handle assignee: Some(Some(a)) = assign, Some(None) = unassign
+                    if let Some(new_assignee) = assignee {
+                        task.assignee = new_assignee.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    tasks
+}
+
+/// Materialize task views from an event stream with change IDs
+///
+/// Like `materialize_tasks`, but accepts `EventWithId` to populate comment IDs.
+/// This is needed when generating followup tasks that need to reference specific comments
+/// via `source: comment:<change_id>`.
+#[must_use]
+pub fn materialize_tasks_with_ids(
+    events: &[super::storage::EventWithId],
+) -> HashMap<String, Task> {
+    let mut tasks: HashMap<String, Task> = HashMap::new();
+
+    for event_with_id in events {
+        let super::storage::EventWithId { change_id, event } = event_with_id;
+
+        match event {
+            TaskEvent::Created {
+                task_id,
+                name,
+                task_type,
+                priority,
+                assignee,
+                sources,
+                template,
+                working_copy,
+                instructions,
+                data,
+                timestamp,
+            } => {
+                tasks.insert(
+                    task_id.clone(),
+                    Task {
+                        id: task_id.clone(),
+                        name: name.clone(),
+                        task_type: task_type.clone(),
+                        status: TaskStatus::Open,
+                        priority: *priority,
+                        assignee: assignee.clone(),
+                        sources: sources.clone(),
+                        template: template.clone(),
+                        working_copy: working_copy.clone(),
+                        instructions: instructions.clone(),
+                        data: data.clone(),
+                        created_at: *timestamp,
+                        started_at: None,
+                        claimed_by_session: None,
+                        last_session_id: None,
+                        stopped_reason: None,
+                        closed_outcome: None,
+                        comments: Vec::new(),
+                    },
+                );
+            }
+            TaskEvent::Started {
+                task_ids,
+                session_id,
+                timestamp,
+                stopped,
+                ..
+            } => {
+                for task_id in task_ids {
+                    if let Some(task) = tasks.get_mut(task_id) {
+                        task.status = TaskStatus::InProgress;
+                        task.stopped_reason = None;
+                        task.claimed_by_session = session_id.clone();
+                        task.last_session_id = session_id.clone();
+                        task.started_at = Some(*timestamp);
+                    }
+                }
+                for stopped_id in stopped {
+                    if let Some(task) = tasks.get_mut(stopped_id) {
+                        task.status = TaskStatus::Stopped;
+                        task.stopped_reason =
+                            Some(format!("Preempted by task {}", task_ids.join(", ")));
+                        task.claimed_by_session = None;
+                    }
+                }
+            }
+            TaskEvent::Stopped {
+                task_ids, reason, ..
+            } => {
+                for task_id in task_ids {
+                    if let Some(task) = tasks.get_mut(task_id) {
+                        task.status = TaskStatus::Stopped;
+                        task.stopped_reason = reason.clone();
+                        task.claimed_by_session = None;
+                    }
+                }
+            }
+            TaskEvent::Closed {
+                task_ids, outcome, ..
+            } => {
+                for task_id in task_ids {
+                    if let Some(task) = tasks.get_mut(task_id) {
+                        task.status = TaskStatus::Closed;
+                        task.closed_outcome = Some(*outcome);
+                        task.claimed_by_session = None;
+                    }
+                }
+            }
+            TaskEvent::Reopened { task_id, .. } => {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::Open;
+                    task.closed_outcome = None;
+                    task.claimed_by_session = None;
+                }
+            }
+            TaskEvent::CommentAdded {
+                task_ids,
+                text,
+                data,
+                timestamp,
+            } => {
+                for task_id in task_ids {
+                    if let Some(task) = tasks.get_mut(task_id) {
+                        task.comments.push(TaskComment {
+                            id: Some(change_id.clone()), // Include the change_id as comment ID
+                            text: text.clone(),
+                            data: data.clone(),
+                            timestamp: *timestamp,
+                        });
+                    }
+                }
+            }
+            TaskEvent::Updated {
+                task_id,
+                name,
+                priority,
+                assignee,
+                ..
+            } => {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    if let Some(new_name) = name {
+                        task.name = new_name.clone();
+                    }
+                    if let Some(new_priority) = priority {
+                        task.priority = *new_priority;
+                    }
                     if let Some(new_assignee) = assignee {
                         task.assignee = new_assignee.clone();
                     }
@@ -523,6 +678,7 @@ mod tests {
         TaskEvent::Created {
             task_id: task_id.to_string(),
             name: name.to_string(),
+            task_type: None,
             priority,
             assignee: None,
             sources: Vec::new(),
@@ -1111,6 +1267,7 @@ mod tests {
         let now = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "task_c".to_string(),
                 name: "Task C".to_string(),
                 priority: TaskPriority::P2,
@@ -1123,6 +1280,7 @@ mod tests {
                 timestamp: now,
             },
             TaskEvent::Created {
+                task_type: None,
                 task_id: "task_a".to_string(),
                 name: "Task A".to_string(),
                 priority: TaskPriority::P2,
@@ -1135,6 +1293,7 @@ mod tests {
                 timestamp: now,
             },
             TaskEvent::Created {
+                task_type: None,
                 task_id: "task_b".to_string(),
                 name: "Task B".to_string(),
                 priority: TaskPriority::P2,
@@ -1459,6 +1618,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1495,6 +1655,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1509,11 +1670,13 @@ mod tests {
             TaskEvent::CommentAdded {
                 task_ids: vec!["a1b2".to_string()],
                 text: "First comment".to_string(),
+                data: std::collections::HashMap::new(),
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             TaskEvent::CommentAdded {
                 task_ids: vec!["a1b2".to_string()],
                 text: "Second comment".to_string(),
+                data: std::collections::HashMap::new(),
                 timestamp: base_time + chrono::Duration::seconds(2),
             },
         ];
@@ -1531,6 +1694,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Original name".to_string(),
                 priority: TaskPriority::P2,
@@ -1563,6 +1727,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1595,6 +1760,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Original".to_string(),
                 priority: TaskPriority::P2,
@@ -1628,6 +1794,7 @@ mod tests {
         let events = vec![
             // Create task
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1651,6 +1818,7 @@ mod tests {
             TaskEvent::CommentAdded {
                 task_ids: vec!["a1b2".to_string()],
                 text: "Working on this".to_string(),
+                data: std::collections::HashMap::new(),
                 timestamp: base_time + chrono::Duration::seconds(2),
             },
             // Close task
@@ -1690,6 +1858,7 @@ mod tests {
         let base_time = Utc::now();
         let events = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1715,6 +1884,7 @@ mod tests {
         // Now add reopened event
         let events_with_reopen = vec![
             TaskEvent::Created {
+                task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
                 priority: TaskPriority::P2,
@@ -1763,6 +1933,7 @@ mod tests {
         let events = vec![TaskEvent::CommentAdded {
             task_ids: vec!["nonexistent".to_string()],
             text: "Comment".to_string(),
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         }];
 
@@ -1794,6 +1965,7 @@ mod tests {
         TaskEvent::Created {
             task_id: task_id.to_string(),
             name: name.to_string(),
+            task_type: None,
             priority,
             assignee: assignee.map(|s| s.to_string()),
             sources: Vec::new(),

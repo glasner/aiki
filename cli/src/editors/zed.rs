@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
-/// Configure Zed editor to use aiki acp proxy
+/// Configure Zed editor to use aiki hooks acp proxy
 pub fn configure_zed() -> Result<()> {
     let home = dirs::home_dir().context("Could not find home directory")?;
     let zed_settings = home.join(".config/zed/settings.json");
@@ -42,15 +42,15 @@ pub fn configure_zed() -> Result<()> {
         json!({
             "claude": {
                 "command": "aiki",
-                "args": ["acp", "claude-code"]
+                "args": ["hooks", "acp", "--agent", "claude-code"]
             },
             "codex": {
                 "command": "aiki",
-                "args": ["acp", "codex"]
+                "args": ["hooks", "acp", "--agent", "codex"]
             },
             "gemini": {
                 "command": "aiki",
-                "args": ["acp", "gemini"]
+                "args": ["hooks", "acp", "--agent", "gemini"]
             }
         }),
     );
@@ -63,7 +63,7 @@ pub fn configure_zed() -> Result<()> {
     Ok(())
 }
 
-/// Check if Zed is configured to use aiki acp proxy
+/// Check if Zed is configured to use aiki hooks acp proxy
 pub fn is_zed_configured() -> Result<bool> {
     let home = dirs::home_dir().context("Could not find home directory")?;
     let zed_settings = home.join(".config/zed/settings.json");

@@ -160,6 +160,97 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
     Ok(events)
 }
 
+/// Event with its JJ change_id
+#[derive(Debug, Clone)]
+pub struct EventWithId {
+    /// The JJ change_id of the commit containing this event
+    pub change_id: String,
+    /// The parsed event
+    pub event: TaskEvent,
+}
+
+/// Read all task events with their change_ids from the aiki/tasks branch
+///
+/// This is used when we need to track which JJ change each event came from,
+/// particularly for generating comment IDs (source: comment:<change_id>).
+pub fn read_events_with_ids(cwd: &Path) -> Result<Vec<EventWithId>> {
+    // Check if branch exists first
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
+
+    let bookmarks = String::from_utf8_lossy(&output.stdout);
+    if !bookmarks.contains(TASKS_BRANCH) {
+        // Branch doesn't exist yet, return empty list
+        return Ok(Vec::new());
+    }
+
+    // Read all changes on the branch with their change_ids, oldest first
+    // Template outputs: change_id followed by description, separated by markers
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &format!("root()..{}", TASKS_BRANCH),
+            "--no-graph",
+            "-T",
+            "\"---CHANGE-ID:\" ++ change_id ++ \"---\\n\" ++ description ++ \"\\n---EVENT-SEPARATOR---\\n\"",
+            "--reversed",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read task events: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to read task events: {}",
+            stderr
+        )));
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mut events = Vec::new();
+
+    // Split by our separator and parse each entry
+    for entry in output_str.split("---EVENT-SEPARATOR---") {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        // Extract change_id from the entry
+        let change_id = if let Some(start) = entry.find("---CHANGE-ID:") {
+            if let Some(end) = entry[start + 13..].find("---") {
+                Some(entry[start + 13..start + 13 + end].to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let Some(change_id) = change_id else {
+            continue;
+        };
+
+        // Look for metadata block
+        if let Some(start_idx) = entry.find(METADATA_START) {
+            if let Some(end_idx) = entry.find(METADATA_END) {
+                let block = &entry[start_idx + METADATA_START.len()..end_idx];
+                if let Some(event) = parse_metadata_block(block) {
+                    events.push(EventWithId { change_id, event });
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+
 /// Escape a string value for metadata storage
 /// Encodes characters that would break key=value parsing: %, =, \n, \r
 fn escape_metadata_value(value: &str) -> String {
@@ -225,6 +316,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Created {
             task_id,
             name,
+            task_type,
             priority,
             assignee,
             sources,
@@ -237,6 +329,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("event", "created", &mut lines);
             add_metadata("task_id", task_id, &mut lines);
             add_metadata_escaped("name", name, &mut lines);
+            if let Some(task_type) = task_type {
+                add_metadata("type", task_type, &mut lines);
+            }
             add_metadata("priority", priority, &mut lines);
             if let Some(assignee) = assignee {
                 add_metadata("assignee", assignee, &mut lines);
@@ -326,6 +421,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::CommentAdded {
             task_ids,
             text,
+            data,
             timestamp,
         } => {
             add_metadata("event", "comment_added", &mut lines);
@@ -333,6 +429,10 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             add_metadata_escaped("text", text, &mut lines);
+            // Add data= lines (key:value pairs)
+            for (key, value) in data {
+                add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Updated {
@@ -394,6 +494,11 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
         "created" => {
             let task_id = fields.get("task_id")?.first()?.to_string();
             let name = unescape_metadata_value(fields.get("name")?.first()?);
+            // Parse task_type
+            let task_type = fields
+                .get("type")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             let priority = fields
                 .get("priority")
                 .and_then(|v| v.first())
@@ -440,6 +545,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Created {
                 task_id,
                 name,
+                task_type,
                 priority,
                 assignee,
                 sources,
@@ -535,10 +641,24 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .map(|s| s.to_string())
                 .collect();
             let text = unescape_metadata_value(fields.get("text")?.first()?);
+            // Parse data (multiple data= lines with key:value format)
+            let data = fields
+                .get("data")
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|s| {
+                            let s = unescape_metadata_value(s);
+                            let (key, value) = s.split_once(':')?;
+                            Some((key.to_string(), value.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             Some(TaskEvent::CommentAdded {
                 task_ids,
                 text,
+                data,
                 timestamp,
             })
         }
@@ -583,6 +703,7 @@ mod tests {
         let event = TaskEvent::Created {
             task_id: "a1b2".to_string(),
             name: "Fix auth bug".to_string(),
+            task_type: None,
             priority: TaskPriority::P2,
             assignee: Some("claude-code".to_string()),
             sources: Vec::new(),
@@ -710,6 +831,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
             name: "Test task".to_string(),
+            task_type: None,
             priority: TaskPriority::P1,
             assignee: None,
             sources: Vec::new(),
@@ -1063,6 +1185,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
             name: "Fix bug = critical\nSee issue #123".to_string(),
+            task_type: None,
             priority: TaskPriority::P1,
             assignee: None,
             sources: Vec::new(),
@@ -1103,6 +1226,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::CommentAdded {
             task_ids: vec!["a1b2".to_string()],
             text: "This is a comment with\nmultiple lines\nand = signs".to_string(),
+            data: std::collections::HashMap::new(),
             timestamp: Utc::now(),
         };
 
@@ -1119,6 +1243,53 @@ timestamp=2026-01-09T10:30:00Z
                 TaskEvent::CommentAdded { text: text2, .. },
             ) => {
                 assert_eq!(text1, text2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_comment_added_with_data() {
+        use std::collections::HashMap;
+
+        let mut data = HashMap::new();
+        data.insert("file".to_string(), "src/auth.ts".to_string());
+        data.insert("line".to_string(), "42".to_string());
+        data.insert("severity".to_string(), "error".to_string());
+        data.insert("category".to_string(), "quality".to_string());
+
+        let original = TaskEvent::CommentAdded {
+            task_ids: vec!["xqrmnpst".to_string()],
+            text: "Potential null pointer dereference".to_string(),
+            data,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::CommentAdded {
+                    task_ids: ids1,
+                    text: text1,
+                    data: data1,
+                    ..
+                },
+                TaskEvent::CommentAdded {
+                    task_ids: ids2,
+                    text: text2,
+                    data: data2,
+                    ..
+                },
+            ) => {
+                assert_eq!(ids1, ids2);
+                assert_eq!(text1, text2);
+                assert_eq!(data1, data2);
             }
             _ => panic!("Event type mismatch"),
         }
@@ -1457,6 +1628,7 @@ timestamp=2026-01-09T10:30:00Z
         let event = TaskEvent::CommentAdded {
             task_ids: vec!["a1b2".to_string()],
             text: "This is a comment".to_string(),
+            data: std::collections::HashMap::new(),
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

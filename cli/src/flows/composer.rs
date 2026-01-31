@@ -1,9 +1,9 @@
 //! Flow composition with before/after orchestration and cycle detection.
 //!
-//! This module provides the [`FlowComposer`] struct which orchestrates:
-//! - Before flow execution (runs before this flow's actions)
-//! - This flow's action execution (delegated to FlowEngine)
-//! - After flow execution (runs after this flow's actions)
+//! This module provides the [`HookComposer`] struct which orchestrates:
+//! - Before hook execution (runs before this flow's actions)
+//! - This flow's action execution (delegated to HookEngine)
+//! - After hook execution (runs after this flow's actions)
 //! - Cycle detection using a runtime call stack
 //!
 //! # Architecture
@@ -11,18 +11,18 @@
 //! ```text
 //! User triggers event (e.g., change.completed)
 //!     ↓
-//! FlowComposer.compose_flow("my-workflow.yml", state)
+//! HookComposer.compose_hook("my-workflow.yml", state)
 //!     ↓
-//!     Loads flow via FlowLoader
+//!     Loads flow via HookLoader
 //!     Checks call stack for cycles
 //!     ↓
 //!     Executes before flows (each gets fresh variable context, shares event state)
 //!     ↓
-//!     Executes this flow's actions via FlowEngine (fresh variable context, shares event state)
+//!     Executes this flow's actions via HookEngine (fresh variable context, shares event state)
 //!     ↓
 //!     Executes after flows (each gets fresh variable context, shares event state)
 //!     ↓
-//!     Returns FlowResult
+//!     Returns HookOutcome
 //! ```
 //!
 //! # Isolation Model
@@ -34,10 +34,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::engine::{FlowEngine, FlowResult};
-use super::loader::FlowLoader;
+use super::engine::{HookEngine, HookOutcome};
+use super::loader::HookLoader;
 use super::state::AikiState;
-use super::types::{Flow, FlowStatement};
+use super::types::{Hook, HookStatement};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 
@@ -62,37 +62,41 @@ pub enum EventType {
     McpPermissionAsked,
     McpCompleted,
     CommitMessageStarted,
+    TaskStarted,
+    TaskClosed,
 }
 
 impl EventType {
     /// Get the statements for this event type from a Flow.
     #[must_use]
-    pub fn get_statements<'a>(&self, flow: &'a Flow) -> &'a [FlowStatement] {
+    pub fn get_statements<'a>(&self, hook: &'a Hook) -> &'a [HookStatement] {
         match self {
-            EventType::SessionStarted => &flow.session_started,
-            EventType::SessionResumed => &flow.session_resumed,
-            EventType::SessionEnded => &flow.session_ended,
-            EventType::TurnStarted => &flow.turn_started,
-            EventType::TurnCompleted => &flow.turn_completed,
-            EventType::ReadPermissionAsked => &flow.read_permission_asked,
-            EventType::ReadCompleted => &flow.read_completed,
-            EventType::ChangePermissionAsked => &flow.change_permission_asked,
-            EventType::ChangeCompleted => &flow.change_completed,
-            EventType::ShellPermissionAsked => &flow.shell_permission_asked,
-            EventType::ShellCompleted => &flow.shell_completed,
-            EventType::WebPermissionAsked => &flow.web_permission_asked,
-            EventType::WebCompleted => &flow.web_completed,
-            EventType::McpPermissionAsked => &flow.mcp_permission_asked,
-            EventType::McpCompleted => &flow.mcp_completed,
-            EventType::CommitMessageStarted => &flow.commit_message_started,
+            EventType::SessionStarted => &hook.session_started,
+            EventType::SessionResumed => &hook.session_resumed,
+            EventType::SessionEnded => &hook.session_ended,
+            EventType::TurnStarted => &hook.turn_started,
+            EventType::TurnCompleted => &hook.turn_completed,
+            EventType::ReadPermissionAsked => &hook.read_permission_asked,
+            EventType::ReadCompleted => &hook.read_completed,
+            EventType::ChangePermissionAsked => &hook.change_permission_asked,
+            EventType::ChangeCompleted => &hook.change_completed,
+            EventType::ShellPermissionAsked => &hook.shell_permission_asked,
+            EventType::ShellCompleted => &hook.shell_completed,
+            EventType::WebPermissionAsked => &hook.web_permission_asked,
+            EventType::WebCompleted => &hook.web_completed,
+            EventType::McpPermissionAsked => &hook.mcp_permission_asked,
+            EventType::McpCompleted => &hook.mcp_completed,
+            EventType::CommitMessageStarted => &hook.commit_message_started,
+            EventType::TaskStarted => &hook.task_started,
+            EventType::TaskClosed => &hook.task_closed,
         }
     }
 }
 
-/// Orchestrates flow composition and delegates action execution to FlowEngine.
+/// Orchestrates flow composition and delegates action execution to HookEngine.
 ///
-/// FlowComposer handles:
-/// - Flow loading via FlowLoader (with caching)
+/// HookComposer handles:
+/// - Flow loading via HookLoader (with caching)
 /// - Cycle detection via call stack (using canonical paths)
 /// - Before/after flow orchestration
 /// - Event type routing
@@ -100,29 +104,29 @@ impl EventType {
 /// # Example
 ///
 /// ```rust,ignore
-/// use aiki::flows::composer::{FlowComposer, EventType};
+/// use aiki::flows::composer::{HookComposer, EventType};
 ///
-/// let mut loader = FlowLoader::new()?;
-/// let mut composer = FlowComposer::new(&mut loader);
+/// let mut loader = HookLoader::new()?;
+/// let mut composer = HookComposer::new(&mut loader);
 ///
 /// // Compose and execute a flow
-/// let result = composer.compose_flow(
+/// let result = composer.compose_hook(
 ///     "aiki/my-workflow",
 ///     EventType::ChangeCompleted,
 ///     &mut state,
 /// )?;
 /// ```
-pub struct FlowComposer<'a> {
-    loader: &'a mut FlowLoader,
+pub struct HookComposer<'a> {
+    loader: &'a mut HookLoader,
     call_stack: Vec<PathBuf>,
 }
 
-impl<'a> FlowComposer<'a> {
-    /// Create a new FlowComposer with a FlowLoader.
+impl<'a> HookComposer<'a> {
+    /// Create a new HookComposer with a HookLoader.
     ///
     /// The loader is borrowed mutably because loading flows may update its cache.
     #[must_use]
-    pub fn new(loader: &'a mut FlowLoader) -> Self {
+    pub fn new(loader: &'a mut HookLoader) -> Self {
         Self {
             loader,
             call_stack: Vec::new(),
@@ -132,7 +136,7 @@ impl<'a> FlowComposer<'a> {
     /// Compose and execute a flow atomically (before → this flow → after).
     ///
     /// This is the main entry point for flow composition. It:
-    /// 1. Loads the flow via FlowLoader
+    /// 1. Loads the flow via HookLoader
     /// 2. Checks for circular dependencies
     /// 3. Executes before flows (each atomically)
     /// 4. Executes this flow's actions for the given event type
@@ -146,26 +150,26 @@ impl<'a> FlowComposer<'a> {
     ///
     /// # Returns
     ///
-    /// The combined [`FlowResult`] from all executed flows.
+    /// The combined [`HookOutcome`] from all executed flows.
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - `AikiError::CircularFlowDependency` if a cycle is detected
-    /// - `AikiError::FlowNotFound` if a flow file doesn't exist
-    /// - Other errors from flow execution
-    pub fn compose_flow(
+    /// - `AikiError::CircularHookDependency` if a cycle is detected
+    /// - `AikiError::HookNotFound` if a flow file doesn't exist
+    /// - Other errors from hook execution
+    pub fn compose_hook(
         &mut self,
         flow_path: &str,
         event_type: EventType,
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
-        // Load the flow (FlowLoader uses FlowResolver which returns canonical paths)
-        let (flow, canonical_path) = self.loader.load(flow_path)?;
+    ) -> Result<HookOutcome> {
+        // Load the flow (HookLoader uses HookResolver which returns canonical paths)
+        let (hook, canonical_path) = self.loader.load(flow_path)?;
 
         // Check for circular dependency
         if self.call_stack.contains(&canonical_path) {
-            return Err(AikiError::CircularFlowDependency {
+            return Err(AikiError::CircularHookDependency {
                 path: flow_path.to_string(),
                 canonical_path: canonical_path.display().to_string(),
                 stack: self
@@ -178,7 +182,7 @@ impl<'a> FlowComposer<'a> {
 
         debug_log(|| {
             format!(
-                "Composing flow: {} (canonical: {})",
+                "Composing hook: {} (canonical: {})",
                 flow_path,
                 canonical_path.display()
             )
@@ -187,8 +191,8 @@ impl<'a> FlowComposer<'a> {
         // Push canonical path onto call stack for cycle detection
         self.call_stack.push(canonical_path.clone());
 
-        // Execute the flow composition
-        let result = self.execute_composed_flow(&flow, &canonical_path, event_type, state);
+        // Execute the hook composition
+        let result = self.execute_composed_flow(&hook, &canonical_path, event_type, state);
 
         // Pop from call stack (even on error)
         self.call_stack.pop();
@@ -199,7 +203,7 @@ impl<'a> FlowComposer<'a> {
     /// Compose and execute a flow from an absolute file path.
     ///
     /// This is used for loading flows that aren't in the standard namespace structure,
-    /// such as .aiki/flows/default.yml.
+    /// such as .aiki/hooks/default.yml.
     ///
     /// # Arguments
     ///
@@ -210,21 +214,21 @@ impl<'a> FlowComposer<'a> {
     /// # Errors
     ///
     /// Returns:
-    /// - `AikiError::CircularFlowDependency` if a cycle is detected
-    /// - `AikiError::FlowNotFound` if the file doesn't exist
-    /// - Other errors from flow execution
-    pub fn compose_flow_from_path(
+    /// - `AikiError::CircularHookDependency` if a cycle is detected
+    /// - `AikiError::HookNotFound` if the file doesn't exist
+    /// - Other errors from hook execution
+    pub fn compose_hook_from_path(
         &mut self,
         file_path: &Path,
         event_type: EventType,
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
-        // Load the flow directly from the file path
-        let (flow, canonical_path) = self.loader.load_from_file_path(file_path)?;
+    ) -> Result<HookOutcome> {
+        // Load the hook directly from the file path
+        let (hook, canonical_path) = self.loader.load_from_file_path(file_path)?;
 
         // Check for circular dependency
         if self.call_stack.contains(&canonical_path) {
-            return Err(AikiError::CircularFlowDependency {
+            return Err(AikiError::CircularHookDependency {
                 path: file_path.display().to_string(),
                 canonical_path: canonical_path.display().to_string(),
                 stack: self
@@ -237,7 +241,7 @@ impl<'a> FlowComposer<'a> {
 
         debug_log(|| {
             format!(
-                "Composing flow from path: {} (canonical: {})",
+                "Composing hook from path: {} (canonical: {})",
                 file_path.display(),
                 canonical_path.display()
             )
@@ -246,8 +250,8 @@ impl<'a> FlowComposer<'a> {
         // Push canonical path onto call stack for cycle detection
         self.call_stack.push(canonical_path.clone());
 
-        // Execute the flow composition
-        let result = self.execute_composed_flow(&flow, &canonical_path, event_type, state);
+        // Execute the hook composition
+        let result = self.execute_composed_flow(&hook, &canonical_path, event_type, state);
 
         // Pop from call stack (even on error)
         self.call_stack.pop();
@@ -257,15 +261,15 @@ impl<'a> FlowComposer<'a> {
 
     /// Execute a composed flow (before → this flow → after).
     ///
-    /// This is separated from compose_flow to ensure call_stack is always popped.
+    /// This is separated from compose_hook to ensure call_stack is always popped.
     fn execute_composed_flow(
         &mut self,
-        flow: &Flow,
+        hook: &Hook,
         canonical_path: &Path,
         event_type: EventType,
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
-        let mut overall_result = FlowResult::Success;
+    ) -> Result<HookOutcome> {
+        let mut overall_result = HookOutcome::Success;
 
         // Variable isolation: each flow starts with a fresh variable context.
         // This ensures before flows don't see variables from the caller.
@@ -273,17 +277,17 @@ impl<'a> FlowComposer<'a> {
         state.clear_variables();
 
         // 1. Execute before flows (each atomically, each clears their own variables on entry)
-        for before_path in &flow.before {
+        for before_path in &hook.before {
             debug_log(|| format!("  Before: {}", before_path));
-            let result = self.compose_flow(before_path, event_type, state)?;
+            let result = self.compose_hook(before_path, event_type, state)?;
 
             // Before flow failures abort the workflow
             match result {
-                FlowResult::Success => {}
-                FlowResult::FailedContinue => {
-                    overall_result = FlowResult::FailedContinue;
+                HookOutcome::Success => {}
+                HookOutcome::FailedContinue => {
+                    overall_result = HookOutcome::FailedContinue;
                 }
-                FlowResult::FailedStop | FlowResult::FailedBlock => {
+                HookOutcome::FailedStop | HookOutcome::FailedBlock => {
                     // Before flow failure - abort entire workflow
                     debug_log(|| {
                         format!(
@@ -297,7 +301,7 @@ impl<'a> FlowComposer<'a> {
         }
 
         // 2. Execute this flow's actions (if any for this event)
-        let statements = event_type.get_statements(flow);
+        let statements = event_type.get_statements(hook);
         if !statements.is_empty() {
             debug_log(|| {
                 format!(
@@ -311,22 +315,22 @@ impl<'a> FlowComposer<'a> {
             state.clear_variables();
 
             // Set flow name for self.* resolution using the canonical path
-            // Extract flow identifier from path (e.g., "/project/.aiki/flows/aiki/quick-lint.yml" -> "aiki/quick-lint")
-            state.flow_name = Some(Self::extract_flow_identifier(canonical_path));
+            // Extract flow identifier from path (e.g., "/project/.aiki/hooks/aiki/quick-lint.yml" -> "aiki/quick-lint")
+            state.hook_name = Some(Self::extract_flow_identifier(canonical_path));
 
-            let result = FlowEngine::execute_statements(statements, state)?;
+            let result = HookEngine::execute_statements(statements, state)?;
 
             match result {
-                FlowResult::Success => {}
-                FlowResult::FailedContinue => {
-                    overall_result = FlowResult::FailedContinue;
+                HookOutcome::Success => {}
+                HookOutcome::FailedContinue => {
+                    overall_result = HookOutcome::FailedContinue;
                 }
-                FlowResult::FailedStop | FlowResult::FailedBlock => {
+                HookOutcome::FailedStop | HookOutcome::FailedBlock => {
                     // Main flow failure - don't run after flows
                     debug_log(|| {
                         format!(
                             "  Flow '{}' failed with {:?}, skipping after flows",
-                            flow.name, result
+                            hook.name, result
                         )
                     });
                     return Ok(result);
@@ -335,17 +339,17 @@ impl<'a> FlowComposer<'a> {
         }
 
         // 3. Execute after flows (each atomically)
-        for after_path in &flow.after {
+        for after_path in &hook.after {
             debug_log(|| format!("  After: {}", after_path));
-            let result = self.compose_flow(after_path, event_type, state)?;
+            let result = self.compose_hook(after_path, event_type, state)?;
 
             // After flow failures are honored - allows validation logic in after flows
             match result {
-                FlowResult::Success => {}
-                FlowResult::FailedContinue => {
-                    overall_result = FlowResult::FailedContinue;
+                HookOutcome::Success => {}
+                HookOutcome::FailedContinue => {
+                    overall_result = HookOutcome::FailedContinue;
                 }
-                FlowResult::FailedStop | FlowResult::FailedBlock => {
+                HookOutcome::FailedStop | HookOutcome::FailedBlock => {
                     // After flow wants to stop or block - honor it
                     debug_log(|| {
                         format!(
@@ -363,7 +367,7 @@ impl<'a> FlowComposer<'a> {
 
     /// Get the current call stack depth.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowComposer API
+    #[allow(dead_code)] // Part of HookComposer API
     pub fn depth(&self) -> usize {
         self.call_stack.len()
     }
@@ -372,7 +376,7 @@ impl<'a> FlowComposer<'a> {
     ///
     /// This is a helper for testing cycle detection.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowComposer API
+    #[allow(dead_code)] // Part of HookComposer API
     pub fn is_in_stack(&self, path: &Path) -> bool {
         self.call_stack.contains(&path.to_path_buf())
     }
@@ -380,18 +384,18 @@ impl<'a> FlowComposer<'a> {
     /// Extract flow identifier from canonical path for self.* resolution.
     ///
     /// Converts paths like:
-    /// - `/project/.aiki/flows/aiki/quick-lint.yml` → `aiki/quick-lint`
-    /// - `/project/.aiki/flows/eslint/check.yml` → `eslint/check`
-    /// - `/project/.aiki/flows/helpers/lint.yml` → `helpers/lint`
+    /// - `/project/.aiki/hooks/aiki/quick-lint.yml` → `aiki/quick-lint`
+    /// - `/project/.aiki/hooks/eslint/check.yml` → `eslint/check`
+    /// - `/project/.aiki/hooks/helpers/lint.yml` → `helpers/lint`
     ///
     /// Falls back to filename without extension if pattern doesn't match.
     fn extract_flow_identifier(canonical_path: &Path) -> String {
         // Convert to string for pattern matching
         let path_str = canonical_path.to_string_lossy();
 
-        // Look for ".aiki/flows/" pattern and extract everything after it
-        if let Some(flows_idx) = path_str.find(".aiki/flows/") {
-            let after_flows = &path_str[flows_idx + ".aiki/flows/".len()..];
+        // Look for ".aiki/hooks/" pattern and extract everything after it
+        if let Some(flows_idx) = path_str.find(".aiki/hooks/") {
+            let after_flows = &path_str[flows_idx + ".aiki/hooks/".len()..];
             // Remove .yml or .yaml extension
             let without_ext = after_flows
                 .strip_suffix(".yml")
@@ -422,10 +426,10 @@ mod tests {
     fn create_test_project() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
         // Create namespaces - aiki is just another namespace
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/aiki")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/eslint")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/prettier")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/helpers")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/aiki")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/eslint")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/prettier")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/helpers")).unwrap();
         temp_dir
     }
 
@@ -508,64 +512,64 @@ version: "1"
     #[test]
     fn test_compose_simple_flow() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/simple.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/simple.yml");
         create_flow_file(&flow_path, "Simple Flow", &[], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/simple", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/simple", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
-    fn test_compose_flow_with_before() {
+    fn test_compose_hook_with_before() {
         let temp_dir = create_test_project();
 
         // Create base flow (no dependencies)
-        let base_path = temp_dir.path().join(".aiki/flows/aiki/base.yml");
+        let base_path = temp_dir.path().join(".aiki/hooks/aiki/base.yml");
         create_flow_file(&base_path, "Base Flow", &[], &[], true);
 
         // Create main flow (depends on base)
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         create_flow_file(&main_path, "Main Flow", &["aiki/base"], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
-    fn test_compose_flow_with_after() {
+    fn test_compose_hook_with_after() {
         let temp_dir = create_test_project();
 
         // Create cleanup flow (no dependencies)
-        let cleanup_path = temp_dir.path().join(".aiki/flows/aiki/cleanup.yml");
+        let cleanup_path = temp_dir.path().join(".aiki/hooks/aiki/cleanup.yml");
         create_flow_file(&cleanup_path, "Cleanup Flow", &[], &[], true);
 
         // Create main flow (has after)
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         create_flow_file(&main_path, "Main Flow", &[], &["aiki/cleanup"], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
@@ -573,26 +577,26 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create level 0 flow (no dependencies)
-        let level0_path = temp_dir.path().join(".aiki/flows/aiki/level0.yml");
+        let level0_path = temp_dir.path().join(".aiki/hooks/aiki/level0.yml");
         create_flow_file(&level0_path, "Level 0", &[], &[], true);
 
         // Create level 1 flow (depends on level 0)
-        let level1_path = temp_dir.path().join(".aiki/flows/aiki/level1.yml");
+        let level1_path = temp_dir.path().join(".aiki/hooks/aiki/level1.yml");
         create_flow_file(&level1_path, "Level 1", &["aiki/level0"], &[], true);
 
         // Create level 2 flow (depends on level 1)
-        let level2_path = temp_dir.path().join(".aiki/flows/aiki/level2.yml");
+        let level2_path = temp_dir.path().join(".aiki/hooks/aiki/level2.yml");
         create_flow_file(&level2_path, "Level 2", &["aiki/level1"], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/level2", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/level2", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
@@ -600,22 +604,22 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create flow-a (depends on flow-b)
-        let flow_a_path = temp_dir.path().join(".aiki/flows/aiki/flow-a.yml");
+        let flow_a_path = temp_dir.path().join(".aiki/hooks/aiki/flow-a.yml");
         create_flow_file(&flow_a_path, "Flow A", &["aiki/flow-b"], &[], true);
 
         // Create flow-b (depends on flow-a - circular!)
-        let flow_b_path = temp_dir.path().join(".aiki/flows/aiki/flow-b.yml");
+        let flow_b_path = temp_dir.path().join(".aiki/hooks/aiki/flow-b.yml");
         create_flow_file(&flow_b_path, "Flow B", &["aiki/flow-a"], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
-        let result = composer.compose_flow("aiki/flow-a", EventType::ChangeCompleted, &mut state);
+        let result = composer.compose_hook("aiki/flow-a", EventType::ChangeCompleted, &mut state);
 
         assert!(matches!(
             result,
-            Err(AikiError::CircularFlowDependency { .. })
+            Err(AikiError::CircularHookDependency { .. })
         ));
     }
 
@@ -624,18 +628,18 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create flow that references itself
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/self-ref.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/self-ref.yml");
         create_flow_file(&flow_path, "Self Reference", &["aiki/self-ref"], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
-        let result = composer.compose_flow("aiki/self-ref", EventType::ChangeCompleted, &mut state);
+        let result = composer.compose_hook("aiki/self-ref", EventType::ChangeCompleted, &mut state);
 
         assert!(matches!(
             result,
-            Err(AikiError::CircularFlowDependency { .. })
+            Err(AikiError::CircularHookDependency { .. })
         ));
     }
 
@@ -643,14 +647,14 @@ version: "1"
     fn test_flow_not_found() {
         let temp_dir = create_test_project();
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result =
-            composer.compose_flow("aiki/nonexistent", EventType::ChangeCompleted, &mut state);
+            composer.compose_hook("aiki/nonexistent", EventType::ChangeCompleted, &mut state);
 
-        assert!(matches!(result, Err(AikiError::FlowNotFound { .. })));
+        assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
     }
 
     #[test]
@@ -658,11 +662,11 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create simple flow
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/simple.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/simple.yml");
         create_flow_file(&flow_path, "Simple Flow", &[], &[], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let composer = HookComposer::new(&mut loader);
 
         // Initially depth should be 0
         assert_eq!(composer.depth(), 0);
@@ -681,16 +685,16 @@ commit.message_started:
   - log: "Commit message started"
 "#;
 
-        let flow: Flow = serde_yaml::from_str(yaml).unwrap();
+        let hook: Hook = serde_yaml::from_str(yaml).unwrap();
 
         // Check each event type returns correct statements
-        assert_eq!(EventType::SessionStarted.get_statements(&flow).len(), 1);
-        assert_eq!(EventType::ChangeCompleted.get_statements(&flow).len(), 1);
+        assert_eq!(EventType::SessionStarted.get_statements(&hook).len(), 1);
+        assert_eq!(EventType::ChangeCompleted.get_statements(&hook).len(), 1);
         assert_eq!(
-            EventType::CommitMessageStarted.get_statements(&flow).len(),
+            EventType::CommitMessageStarted.get_statements(&hook).len(),
             1
         );
-        assert!(EventType::TurnStarted.get_statements(&flow).is_empty());
+        assert!(EventType::TurnStarted.get_statements(&hook).is_empty());
     }
 
     #[test]
@@ -698,55 +702,55 @@ commit.message_started:
         let temp_dir = create_test_project();
 
         // Create pre flow
-        let pre_path = temp_dir.path().join(".aiki/flows/aiki/pre.yml");
+        let pre_path = temp_dir.path().join(".aiki/hooks/aiki/pre.yml");
         create_flow_file(&pre_path, "Pre Flow", &[], &[], true);
 
         // Create post flow
-        let post_path = temp_dir.path().join(".aiki/flows/aiki/post.yml");
+        let post_path = temp_dir.path().join(".aiki/hooks/aiki/post.yml");
         create_flow_file(&post_path, "Post Flow", &[], &[], true);
 
         // Create main flow with both before and after
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         create_flow_file(&main_path, "Main Flow", &["aiki/pre"], &["aiki/post"], true);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
     fn test_extract_flow_identifier() {
         // Test aiki namespace
-        let path = PathBuf::from("/project/.aiki/flows/aiki/quick-lint.yml");
+        let path = PathBuf::from("/project/.aiki/hooks/aiki/quick-lint.yml");
         assert_eq!(
-            FlowComposer::extract_flow_identifier(&path),
+            HookComposer::extract_flow_identifier(&path),
             "aiki/quick-lint"
         );
 
         // Test other namespace
-        let path = PathBuf::from("/home/user/code/.aiki/flows/eslint/check.yml");
-        assert_eq!(FlowComposer::extract_flow_identifier(&path), "eslint/check");
+        let path = PathBuf::from("/home/user/code/.aiki/hooks/eslint/check.yml");
+        assert_eq!(HookComposer::extract_flow_identifier(&path), "eslint/check");
 
         // Test nested paths
-        let path = PathBuf::from("/project/.aiki/flows/helpers/lint/core.yml");
+        let path = PathBuf::from("/project/.aiki/hooks/helpers/lint/core.yml");
         assert_eq!(
-            FlowComposer::extract_flow_identifier(&path),
+            HookComposer::extract_flow_identifier(&path),
             "helpers/lint/core"
         );
 
         // Test .yaml extension
-        let path = PathBuf::from("/project/.aiki/flows/aiki/test.yaml");
-        assert_eq!(FlowComposer::extract_flow_identifier(&path), "aiki/test");
+        let path = PathBuf::from("/project/.aiki/hooks/aiki/test.yaml");
+        assert_eq!(HookComposer::extract_flow_identifier(&path), "aiki/test");
 
         // Test fallback for non-standard paths
         let path = PathBuf::from("/some/random/path/flow.yml");
-        assert_eq!(FlowComposer::extract_flow_identifier(&path), "flow");
+        assert_eq!(HookComposer::extract_flow_identifier(&path), "flow");
     }
 
     // =========================================================================
@@ -844,15 +848,15 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create before flow
-        let before_path = temp_dir.path().join(".aiki/flows/aiki/before.yml");
+        let before_path = temp_dir.path().join(".aiki/hooks/aiki/before.yml");
         create_logging_flow(&before_path, "Before Flow", "BEFORE", &[], &[]);
 
         // Create after flow
-        let after_path = temp_dir.path().join(".aiki/flows/aiki/after.yml");
+        let after_path = temp_dir.path().join(".aiki/hooks/aiki/after.yml");
         create_logging_flow(&after_path, "After Flow", "AFTER", &[], &[]);
 
         // Create main flow with before and after
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         create_logging_flow(
             &main_path,
             "Main Flow",
@@ -861,15 +865,15 @@ version: "1"
             &["aiki/after"],
         );
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Verify execution order
         let log_path = temp_dir.path().join("execution_log.txt");
@@ -887,26 +891,26 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create level 0 (innermost before)
-        let level0_path = temp_dir.path().join(".aiki/flows/aiki/level0.yml");
+        let level0_path = temp_dir.path().join(".aiki/hooks/aiki/level0.yml");
         create_logging_flow(&level0_path, "Level 0", "L0", &[], &[]);
 
         // Create level 1 (has before: level0)
-        let level1_path = temp_dir.path().join(".aiki/flows/aiki/level1.yml");
+        let level1_path = temp_dir.path().join(".aiki/hooks/aiki/level1.yml");
         create_logging_flow(&level1_path, "Level 1", "L1", &["aiki/level0"], &[]);
 
         // Create level 2 (has before: level1)
-        let level2_path = temp_dir.path().join(".aiki/flows/aiki/level2.yml");
+        let level2_path = temp_dir.path().join(".aiki/hooks/aiki/level2.yml");
         create_logging_flow(&level2_path, "Level 2", "L2", &["aiki/level1"], &[]);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/level2", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/level2", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Verify execution order: L0 -> L1 -> L2
         let log_path = temp_dir.path().join("execution_log.txt");
@@ -924,12 +928,12 @@ version: "1"
         let temp_dir = create_test_project();
 
         // Create before flow that sets $my_var via shell output capture
-        let before_path = temp_dir.path().join(".aiki/flows/aiki/before.yml");
+        let before_path = temp_dir.path().join(".aiki/hooks/aiki/before.yml");
         create_shell_var_flow(&before_path, "Before Flow", "my_var", "from_before", &[]);
 
         // Create main flow that checks $my_var then sets its own
         // If isolation works, main should NOT see before's $my_var
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         let main_content = r#"name: Main Flow
 version: "1"
 before:
@@ -942,15 +946,15 @@ change.completed:
 "#;
         fs::write(&main_path, main_content).unwrap();
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Verify variable isolation
         let log_path = temp_dir.path().join("var_log.txt");
@@ -985,7 +989,7 @@ change.completed:
         let temp_dir = create_test_project();
 
         // Create a before flow that tries to read $caller_var
-        let before_path = temp_dir.path().join(".aiki/flows/aiki/before.yml");
+        let before_path = temp_dir.path().join(".aiki/hooks/aiki/before.yml");
         let before_content = r#"name: Before Flow
 version: "1"
 change.completed:
@@ -994,7 +998,7 @@ change.completed:
         fs::write(&before_path, before_content).unwrap();
 
         // Create main flow that sets $caller_var via shell
-        let main_path = temp_dir.path().join(".aiki/flows/aiki/main.yml");
+        let main_path = temp_dir.path().join(".aiki/hooks/aiki/main.yml");
         let main_content = r#"name: Main Flow
 version: "1"
 before:
@@ -1006,18 +1010,18 @@ change.completed:
 "#;
         fs::write(&main_path, main_content).unwrap();
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let mut composer = FlowComposer::new(&mut loader);
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut composer = HookComposer::new(&mut loader);
         let mut state = create_test_state(&temp_dir);
 
         // Pre-set a variable in state to simulate a "caller" having variables
         state.set_variable("caller_var".to_string(), "from_caller".to_string());
 
         let result = composer
-            .compose_flow("aiki/main", EventType::ChangeCompleted, &mut state)
+            .compose_hook("aiki/main", EventType::ChangeCompleted, &mut state)
             .unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Verify isolation: before flow should NOT see caller's variable
         let log_path = temp_dir.path().join("var_log.txt");

@@ -2,11 +2,11 @@
 //!
 //! Spawns Claude Code sessions using the `claude` CLI in non-interactive mode.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions};
+use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle};
 use crate::agents::AgentType;
-use crate::error::Result;
+use crate::error::{AikiError, Result};
 
 /// Runtime for Claude Code agent
 pub struct ClaudeCodeRuntime;
@@ -69,6 +69,42 @@ impl AgentRuntime for ClaudeCodeRuntime {
             }
             Err(e) => Ok(AgentSessionResult::failed(format!(
                 "Failed to spawn claude: {}",
+                e
+            ))),
+        }
+    }
+
+    fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle> {
+        // Build the task prompt - simple instruction to start the task
+        let prompt = format!(
+            "Run `aiki task start {}` to begin working on this task.",
+            options.task_id
+        );
+
+        // Spawn claude process detached from parent
+        // Uses --print for non-interactive mode and --dangerously-skip-permissions
+        // The process runs independently and continues after parent exits
+        let child = Command::new("claude")
+            .current_dir(&options.cwd)
+            .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Pass task ID so session system can track this as a runner session
+            .env("AIKI_RUNNER_TASK", &options.task_id)
+            // Detach stdin/stdout/stderr so process runs independently
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        match child {
+            Ok(child) => {
+                let pid = child.id();
+                Ok(BackgroundHandle {
+                    pid,
+                    task_id: options.task_id.clone(),
+                })
+            }
+            Err(e) => Err(AikiError::AgentSpawnFailed(format!(
+                "Failed to spawn claude in background: {}",
                 e
             ))),
         }

@@ -64,7 +64,7 @@ pub fn run(fix: bool) -> Result<()> {
         println!("  ✓ Git hooks installed (~/.aiki/githooks/)");
     } else {
         println!("  ✗ Git hooks missing");
-        println!("    → Run: aiki hooks install");
+        println!("    → Run: aiki init or aiki doctor --fix");
         issues_found += 1;
     }
 
@@ -445,11 +445,11 @@ fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool> {
     Ok(input == "y" || input == "yes")
 }
 
-/// Check if a command string invokes aiki hooks handle with specific agent/event
+/// Check if a command string invokes aiki hooks stdin with specific agent/event
 ///
 /// Matches commands like:
-/// - `aiki hooks handle --agent claude-code --event session.started`
-/// - `/path/to/aiki.exe hooks handle --agent cursor --event beforeSubmitPrompt`
+/// - `aiki hooks stdin --agent claude-code --event session.started`
+/// - `/path/to/aiki.exe hooks stdin --agent cursor --event beforeSubmitPrompt`
 ///
 /// If expected_agent or expected_event is Some, validates those flags are present.
 fn is_aiki_hooks_command_with_params(
@@ -460,22 +460,22 @@ fn is_aiki_hooks_command_with_params(
     // Split command into words
     let words: Vec<&str> = cmd.split_whitespace().collect();
 
-    // Look for pattern: <something-ending-with-aiki> hooks handle
-    let mut found_hooks_handle = false;
+    // Look for pattern: <something-ending-with-aiki> hooks stdin
+    let mut found_hooks_stdin = false;
     for (i, word) in words.iter().enumerate() {
         // Check if this word is the aiki binary (with or without path, with or without .exe)
         let is_aiki_binary = word.ends_with("aiki") || word.ends_with("aiki.exe");
 
         if is_aiki_binary {
-            // Check if followed by "hooks handle"
-            if i + 2 < words.len() && words[i + 1] == "hooks" && words[i + 2] == "handle" {
-                found_hooks_handle = true;
+            // Check if followed by "hooks stdin"
+            if i + 2 < words.len() && words[i + 1] == "hooks" && words[i + 2] == "stdin" {
+                found_hooks_stdin = true;
                 break;
             }
         }
     }
 
-    if !found_hooks_handle {
+    if !found_hooks_stdin {
         return false;
     }
 
@@ -573,8 +573,8 @@ fn check_claude_code_hooks(settings_path: &std::path::Path) -> bool {
 /// Check if Cursor hooks are properly configured
 ///
 /// Returns true if ~/.cursor/hooks.json exists AND contains both:
-/// - hooks.beforeSubmitPrompt with aiki hooks handle command
-/// - hooks.afterFileEdit with aiki hooks handle command
+/// - hooks.beforeSubmitPrompt with aiki hooks stdin command
+/// - hooks.afterFileEdit with aiki hooks stdin command
 fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
     if !hooks_path.exists() {
         return false;
@@ -595,7 +595,7 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
         None => return false,
     };
 
-    // Helper to check if an array contains an aiki hooks handle command with specific agent/event
+    // Helper to check if an array contains an aiki hooks stdin command with specific agent/event
     let has_aiki_hook_with_params =
         |arr: &serde_json::Value, agent: &str, event: &str| -> bool {
             arr.as_array()
@@ -633,7 +633,7 @@ fn check_cursor_hooks(hooks_path: &std::path::Path) -> bool {
 ///
 /// Returns true if ~/.codex/config.toml exists AND contains both:
 /// - [otel] section with aiki endpoint (127.0.0.1:19876)
-/// - notify array with aiki hooks handle command
+/// - notify array with aiki hooks stdin command
 fn check_codex_hooks(config_path: &std::path::Path) -> bool {
     if !config_path.exists() {
         return false;
@@ -702,35 +702,35 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event SessionStart"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event SessionStart"
                     }]
                 }],
                 "UserPromptSubmit": [{
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event UserPromptSubmit"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event UserPromptSubmit"
                     }]
                 }],
                 "PreToolUse": [{
                     "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event PreToolUse"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event PreToolUse"
                     }]
                 }],
                 "PostToolUse": [{
                     "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event PostToolUse"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event PostToolUse"
                     }]
                 }],
                 "Stop": [{
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event Stop"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event Stop"
                     }]
                 }]
             }
@@ -749,7 +749,7 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event session.started"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event session.started"
                     }]
                 }]
             }
@@ -768,7 +768,7 @@ mod tests {
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event afterFileEdit"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -794,7 +794,7 @@ mod tests {
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks handle --agent claude-code --event afterFileEdit"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -817,25 +817,25 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeSubmitPrompt"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event beforeSubmitPrompt"
                 }],
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event afterFileEdit"
                 }],
                 "beforeShellExecution": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeShellExecution"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event beforeShellExecution"
                 }],
                 "afterShellExecution": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event afterShellExecution"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event afterShellExecution"
                 }],
                 "beforeMCPExecution": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeMCPExecution"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event beforeMCPExecution"
                 }],
                 "afterMCPExecution": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event afterMCPExecution"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event afterMCPExecution"
                 }],
                 "stop": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event stop"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event stop"
                 }]
             }
         });
@@ -851,7 +851,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event beforeSubmitPrompt"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event beforeSubmitPrompt"
                 }]
             }
         });
@@ -867,7 +867,7 @@ mod tests {
             "version": 1,
             "hooks": {
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event afterFileEdit"
                 }]
             }
         });
@@ -886,7 +886,7 @@ mod tests {
                     "command": "/path/to/some-other-tool"
                 }],
                 "afterFileEdit": [{
-                    "command": "/path/to/aiki hooks handle --agent cursor --event afterFileEdit"
+                    "command": "/path/to/aiki hooks stdin --agent cursor --event afterFileEdit"
                 }]
             }
         });
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_check_cursor_hooks_generic_aiki_not_enough() {
-        // Ensure just "aiki" without "hooks handle" doesn't match
+        // Ensure just "aiki" without "hooks stdin" doesn't match
         let mut file = NamedTempFile::new().unwrap();
         let hooks = serde_json::json!({
             "version": 1,
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_basic() {
         assert!(is_aiki_hooks_command_with_params(
-            "aiki hooks handle --agent claude-code --event session.started",
+            "aiki hooks stdin --agent claude-code --event session.started",
             Some("claude-code"),
             Some("session.started")
         ));
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_with_exe() {
         assert!(is_aiki_hooks_command_with_params(
-            "aiki.exe hooks handle --agent claude-code --event session.started",
+            "aiki.exe hooks stdin --agent claude-code --event session.started",
             Some("claude-code"),
             Some("session.started")
         ));
@@ -944,7 +944,7 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_with_path() {
         assert!(is_aiki_hooks_command_with_params(
-            "/usr/local/bin/aiki hooks handle --agent cursor --event beforeSubmitPrompt",
+            "/usr/local/bin/aiki hooks stdin --agent cursor --event beforeSubmitPrompt",
             Some("cursor"),
             Some("beforeSubmitPrompt")
         ));
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_with_path_and_exe() {
         assert!(is_aiki_hooks_command_with_params(
-            "C:\\Program Files\\aiki.exe hooks handle --agent claude-code --event afterFileEdit",
+            "C:\\Program Files\\aiki.exe hooks stdin --agent claude-code --event afterFileEdit",
             Some("claude-code"),
             Some("afterFileEdit")
         ));
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn test_is_aiki_hooks_command_relative_path() {
         assert!(is_aiki_hooks_command_with_params(
-            "./aiki hooks handle --agent cursor --event afterFileEdit",
+            "./aiki hooks stdin --agent cursor --event afterFileEdit",
             Some("cursor"),
             Some("afterFileEdit")
         ));
@@ -972,7 +972,7 @@ mod tests {
     fn test_is_aiki_hooks_command_wrong_agent() {
         // Should fail: command has claude-code but we expect cursor
         assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks handle --agent claude-code --event session.started",
+            "aiki hooks stdin --agent claude-code --event session.started",
             Some("cursor"),
             Some("session.started")
         ));
@@ -982,7 +982,7 @@ mod tests {
     fn test_is_aiki_hooks_command_wrong_event() {
         // Should fail: command has session.started but we expect change.completed
         assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks handle --agent claude-code --event session.started",
+            "aiki hooks stdin --agent claude-code --event session.started",
             Some("claude-code"),
             Some("change.completed")
         ));
@@ -992,7 +992,7 @@ mod tests {
     fn test_is_aiki_hooks_command_missing_agent() {
         // Should fail: no --agent flag
         assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks handle --event session.started",
+            "aiki hooks stdin --event session.started",
             Some("claude-code"),
             Some("session.started")
         ));
@@ -1002,7 +1002,7 @@ mod tests {
     fn test_is_aiki_hooks_command_missing_event() {
         // Should fail: no --event flag
         assert!(!is_aiki_hooks_command_with_params(
-            "aiki hooks handle --agent claude-code",
+            "aiki hooks stdin --agent claude-code",
             Some("claude-code"),
             Some("session.started")
         ));
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[test]
     fn test_is_aiki_hooks_command_not_hooks_handle() {
-        // Should fail: not "hooks handle"
+        // Should fail: not "hooks stdin"
         assert!(!is_aiki_hooks_command_with_params(
             "aiki init --agent claude-code --event session.started",
             Some("claude-code"),
@@ -1022,7 +1022,7 @@ mod tests {
     fn test_is_aiki_hooks_command_no_params_check() {
         // Should pass with no param requirements
         assert!(is_aiki_hooks_command_with_params(
-            "aiki hooks handle",
+            "aiki hooks stdin",
             None,
             None
         ));
@@ -1037,35 +1037,35 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki.exe hooks handle --agent claude-code --event SessionStart"
+                        "command": "aiki.exe hooks stdin --agent claude-code --event SessionStart"
                     }]
                 }],
                 "UserPromptSubmit": [{
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki.exe hooks handle --agent claude-code --event UserPromptSubmit"
+                        "command": "aiki.exe hooks stdin --agent claude-code --event UserPromptSubmit"
                     }]
                 }],
                 "PreToolUse": [{
                     "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki.exe hooks handle --agent claude-code --event PreToolUse"
+                        "command": "aiki.exe hooks stdin --agent claude-code --event PreToolUse"
                     }]
                 }],
                 "PostToolUse": [{
                     "matcher": "Edit|Write|Bash",
                     "hooks": [{
                         "type": "command",
-                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event PostToolUse"
+                        "command": "C:\\Users\\foo\\aiki.exe hooks stdin --agent claude-code --event PostToolUse"
                     }]
                 }],
                 "Stop": [{
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": "C:\\Users\\foo\\aiki.exe hooks handle --agent claude-code --event Stop"
+                        "command": "C:\\Users\\foo\\aiki.exe hooks stdin --agent claude-code --event Stop"
                     }]
                 }]
             }
@@ -1082,25 +1082,25 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event beforeSubmitPrompt"
+                    "command": "aiki.exe hooks stdin --agent cursor --event beforeSubmitPrompt"
                 }],
                 "afterFileEdit": [{
-                    "command": "./aiki.exe hooks handle --agent cursor --event afterFileEdit"
+                    "command": "./aiki.exe hooks stdin --agent cursor --event afterFileEdit"
                 }],
                 "beforeShellExecution": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event beforeShellExecution"
+                    "command": "aiki.exe hooks stdin --agent cursor --event beforeShellExecution"
                 }],
                 "afterShellExecution": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event afterShellExecution"
+                    "command": "aiki.exe hooks stdin --agent cursor --event afterShellExecution"
                 }],
                 "beforeMCPExecution": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event beforeMCPExecution"
+                    "command": "aiki.exe hooks stdin --agent cursor --event beforeMCPExecution"
                 }],
                 "afterMCPExecution": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event afterMCPExecution"
+                    "command": "aiki.exe hooks stdin --agent cursor --event afterMCPExecution"
                 }],
                 "stop": [{
-                    "command": "aiki.exe hooks handle --agent cursor --event stop"
+                    "command": "aiki.exe hooks stdin --agent cursor --event stop"
                 }]
             }
         });
@@ -1118,14 +1118,14 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki hooks handle --agent cursor --event session.started"
+                        "command": "aiki hooks stdin --agent cursor --event session.started"
                     }]
                 }],
                 "PostToolUse": [{
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": "aiki hooks handle --agent claude-code --event afterFileEdit"
+                        "command": "aiki hooks stdin --agent claude-code --event afterFileEdit"
                     }]
                 }]
             }
@@ -1143,10 +1143,10 @@ mod tests {
             "version": 1,
             "hooks": {
                 "beforeSubmitPrompt": [{
-                    "command": "aiki hooks handle --agent cursor --event session.started"
+                    "command": "aiki hooks stdin --agent cursor --event session.started"
                 }],
                 "afterFileEdit": [{
-                    "command": "aiki hooks handle --agent cursor --event afterFileEdit"
+                    "command": "aiki hooks stdin --agent cursor --event afterFileEdit"
                 }]
             }
         });

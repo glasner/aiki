@@ -12,6 +12,9 @@ pub struct VariableResolver {
     // Lazy environment variable lookup function
     // Called on-demand when a $VAR is not found in variables
     env_lookup: Option<Box<dyn Fn(&str) -> Option<String>>>,
+    // Lazy variables - computed on first access
+    // Uses interior mutability pattern to allow taking the closure
+    lazy_variables: HashMap<String, Option<Box<dyn FnOnce() -> String>>>,
 }
 
 impl VariableResolver {
@@ -24,6 +27,7 @@ impl VariableResolver {
             cache_valid: false,
             json_variables: HashMap::new(),
             env_lookup: None,
+            lazy_variables: HashMap::new(),
         }
     }
 
@@ -32,7 +36,7 @@ impl VariableResolver {
     /// This enables lazy per-key lookup of environment variables instead of
     /// eagerly collecting all env vars into a HashMap. This ensures that
     /// runtime `std::env::set_var` / `remove_var` mutations are immediately
-    /// visible during flow execution.
+    /// visible during hook execution.
     ///
     /// # Example
     ///
@@ -44,6 +48,31 @@ impl VariableResolver {
         F: Fn(&str) -> Option<String> + 'static,
     {
         self.env_lookup = Some(Box::new(lookup));
+    }
+
+    /// Register a lazy variable that computes its value on first access
+    ///
+    /// The compute function is called only when the variable is actually
+    /// resolved. After computation, the value is cached for subsequent
+    /// accesses.
+    ///
+    /// Use this for expensive computations that may not be needed.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// resolver.add_lazy_var("event.task.files", || {
+    ///     let files = expensive_jj_query();
+    ///     files.join(" ")
+    /// });
+    /// ```
+    pub fn add_lazy_var<F>(&mut self, key: impl Into<String>, compute: F)
+    where
+        F: FnOnce() -> String + 'static,
+    {
+        self.lazy_variables
+            .insert(key.into(), Some(Box::new(compute)));
+        self.cache_valid = false; // Invalidate cache since we have a new potential variable
     }
 
     /// Add a variable
@@ -127,6 +156,7 @@ impl VariableResolver {
         if self.cached_patterns.is_empty()
             && self.json_variables.is_empty()
             && self.env_lookup.is_none()
+            && self.lazy_variables.is_empty()
         {
             return result;
         }
@@ -148,9 +178,46 @@ impl VariableResolver {
             }
         }
 
+        // Lazy variable resolution: compute values on first access
+        result = self.resolve_lazy_vars(&result);
+
         // Lazy env var lookup: resolve remaining $VAR patterns via env_lookup
         if let Some(ref lookup) = self.env_lookup {
             result = self.resolve_env_vars_lazy(&result, lookup);
+        }
+
+        result
+    }
+
+    /// Resolve lazy variables - compute on first access and cache
+    ///
+    /// Finds $var.path patterns that match lazy variables and computes them.
+    /// After computation, the value is cached in `variables` for subsequent access.
+    fn resolve_lazy_vars(&mut self, input: &str) -> String {
+        let mut result = input.to_string();
+
+        // Find lazy variables that appear in the input and need to be resolved
+        // We need to collect keys first to avoid borrow issues
+        let keys_to_resolve: Vec<String> = self
+            .lazy_variables
+            .keys()
+            .filter(|key| {
+                let pattern = format!("${}", key);
+                result.contains(&pattern) && self.lazy_variables.get(*key).map(|v| v.is_some()).unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        // Resolve each lazy variable
+        for key in keys_to_resolve {
+            if let Some(Some(compute)) = self.lazy_variables.remove(&key) {
+                let value = compute();
+                let pattern = format!("${}", key);
+                result = result.replace(&pattern, &value);
+                // Cache the computed value for future use
+                self.variables.insert(key, value);
+                self.cache_valid = false; // Invalidate cache since we added a variable
+            }
         }
 
         result
@@ -543,5 +610,104 @@ mod tests {
             resolver2.resolve("Value: $AIKI_TEST_LAZY_VAR"),
             "Value: $AIKI_TEST_LAZY_VAR"
         );
+    }
+
+    #[test]
+    fn test_lazy_var_not_computed_until_accessed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut resolver = VariableResolver::new();
+        let was_called = Arc::new(AtomicBool::new(false));
+        let was_called_clone = Arc::clone(&was_called);
+
+        resolver.add_lazy_var("expensive.value", move || {
+            was_called_clone.store(true, Ordering::SeqCst);
+            "computed_value".to_string()
+        });
+
+        // Lazy var not accessed yet - should not be computed
+        assert!(!was_called.load(Ordering::SeqCst));
+
+        // Resolve a different variable - lazy var should still not be computed
+        let _ = resolver.resolve("no lazy vars here");
+        assert!(!was_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_lazy_var_computed_when_accessed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut resolver = VariableResolver::new();
+        let was_called = Arc::new(AtomicBool::new(false));
+        let was_called_clone = Arc::clone(&was_called);
+
+        resolver.add_lazy_var("event.task.files", move || {
+            was_called_clone.store(true, Ordering::SeqCst);
+            "file1.rs file2.rs".to_string()
+        });
+
+        // Access the lazy var
+        let result = resolver.resolve("Files: $event.task.files");
+        assert!(was_called.load(Ordering::SeqCst));
+        assert_eq!(result, "Files: file1.rs file2.rs");
+    }
+
+    #[test]
+    fn test_lazy_var_cached_after_first_access() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut resolver = VariableResolver::new();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+
+        resolver.add_lazy_var("event.task.changes", move || {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            "change1 change2".to_string()
+        });
+
+        // First access - should compute
+        let result1 = resolver.resolve("Changes: $event.task.changes");
+        assert_eq!(result1, "Changes: change1 change2");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second access - should use cached value, not recompute
+        let result2 = resolver.resolve("Again: $event.task.changes");
+        assert_eq!(result2, "Again: change1 change2");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, not 2
+    }
+
+    #[test]
+    fn test_lazy_var_multiple_vars() {
+        let mut resolver = VariableResolver::new();
+
+        resolver.add_lazy_var("event.task.files", || "file1.rs file2.rs".to_string());
+        resolver.add_lazy_var("event.task.changes", || "abc123 def456".to_string());
+
+        let result = resolver.resolve("Files: $event.task.files, Changes: $event.task.changes");
+        assert_eq!(result, "Files: file1.rs file2.rs, Changes: abc123 def456");
+    }
+
+    #[test]
+    fn test_lazy_var_with_regular_vars() {
+        let mut resolver = VariableResolver::new();
+
+        resolver.add_var("event.task.id", "task-123");
+        resolver.add_var("event.task.name", "My Task");
+        resolver.add_lazy_var("event.task.files", || "modified.rs".to_string());
+
+        let result = resolver.resolve("Task $event.task.id ($event.task.name): $event.task.files");
+        assert_eq!(result, "Task task-123 (My Task): modified.rs");
+    }
+
+    #[test]
+    fn test_lazy_var_undefined() {
+        let mut resolver = VariableResolver::new();
+
+        // Don't add the lazy var, just try to resolve it
+        let result = resolver.resolve("Files: $event.task.files");
+        assert_eq!(result, "Files: $event.task.files");
     }
 }

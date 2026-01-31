@@ -38,7 +38,7 @@ pub struct AikiTurnStartedPayload {
 /// Returns context via `response.context` and failures via `response.failures`,
 /// with graceful degradation on errors.
 pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     // Load turn state from JJ history
     // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
@@ -102,21 +102,21 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
         debug_log(|| format!("Failed to record prompt: {}", e));
     }
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = match execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = match execute_hook(
         EventType::TurnStarted,
         &mut state,
-        &core_flow.turn_started,
+        &core_hook.turn_started,
     ) {
         Ok(result) => result,
         Err(e) => {
-            // Flow execution failed - log warning and use original prompt
+            // Hook execution failed - log warning and use original prompt
             eprintln!("turn.started flow failed: {}", e);
             eprintln!("Continuing with original prompt...\n");
             // Return built context (already initialized with original prompt)
@@ -133,14 +133,14 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
 
     // Return response based on flow result (build context string)
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: state.build_context(),
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => {
+        HookOutcome::FailedBlock => {
             // Block the prompt - return exit code 2
             Ok(HookResult {
                 context: None,

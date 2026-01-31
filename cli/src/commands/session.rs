@@ -14,9 +14,9 @@ pub enum SessionCommands {
         /// Show only active sessions (with running agent process)
         #[arg(long)]
         active: bool,
-        /// Maximum number of sessions to show (default: 10)
-        #[arg(long, default_value = "10")]
-        limit: usize,
+        /// Maximum number of sessions to show (default: all)
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Show turns for a specific session
     Show {
@@ -98,7 +98,7 @@ fn print_session_table(rows: &[SessionRow]) {
     );
 }
 
-fn run_list(active: bool, limit: usize) -> Result<()> {
+fn run_list(active: bool, limit: Option<usize>) -> Result<()> {
     session::prune_dead_pid_sessions();
     let active_sessions = session::list_all_sessions()?;
 
@@ -117,10 +117,13 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
             .map(|c| (c.session_id.as_str(), c))
             .collect();
 
-        let rows: Vec<SessionRow> = active_sessions
-            .iter()
-            .take(limit)
-            .map(|s| {
+        let iter = active_sessions.iter();
+        let rows: Vec<SessionRow> = match limit {
+            Some(n) => iter.take(n).collect::<Vec<_>>(),
+            None => iter.collect(),
+        }
+        .into_iter()
+        .map(|s| {
                 let agent_type = AgentType::from_str(&s.agent).unwrap_or(AgentType::Unknown);
                 let conv = conv_map.get(s.session_id.as_str());
 
@@ -158,7 +161,7 @@ fn run_list(active: bool, limit: usize) -> Result<()> {
     } else {
         // Default: show all sessions from JJ history
         let aiki_dir = global::global_aiki_dir();
-        let conversations = history::storage::list_conversations(&aiki_dir, Some(limit))?;
+        let conversations = history::storage::list_conversations(&aiki_dir, limit)?;
 
         if conversations.is_empty() {
             println!("No sessions found");

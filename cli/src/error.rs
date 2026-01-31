@@ -53,7 +53,7 @@ pub enum AikiError {
     )]
     UnknownAssignee(String),
 
-    // Flow execution errors
+    // Hook execution errors
     #[error("Invalid let syntax: '{0}'. Expected 'variable = expression'")]
     InvalidLetSyntax(String),
 
@@ -128,26 +128,26 @@ pub enum AikiError {
     #[error("Failed to write config file: {0}")]
     ConfigWriteFailed(String),
 
-    // Flow composition errors (Milestone 1.3)
+    // Hook composition errors (Milestone 1.3)
     #[error("Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}")]
     NotInAikiProject { searched_from: PathBuf },
 
     #[error("Invalid path: '{path}'. {reason}")]
     InvalidPath { path: String, reason: String },
 
-    #[error("Invalid flow path: '{path}'. {reason}")]
-    InvalidFlowPath { path: String, reason: String },
+    #[error("Invalid hook path: '{path}'. {reason}")]
+    InvalidHookPath { path: String, reason: String },
 
-    #[error("Flow not found: '{path}'. Resolved to: {resolved_path}")]
-    FlowNotFound {
+    #[error("Hook not found: '{path}'. Resolved to: {resolved_path}")]
+    HookNotFound {
         path: String,
         resolved_path: String,
         #[source]
         source: std::io::Error,
     },
 
-    #[error("Circular flow dependency detected: '{path}' (canonical: {canonical_path})\n\nFlow execution chain:\n{}", format_call_stack(.stack))]
-    CircularFlowDependency {
+    #[error("Circular hook dependency detected: '{path}' (canonical: {canonical_path})\n\nHook execution chain:\n{}", format_call_stack(.stack))]
+    CircularHookDependency {
         path: String,
         canonical_path: String,
         stack: Vec<String>,
@@ -209,8 +209,14 @@ Alternatively, install the agent globally:
     #[error("Task '{0}' is already closed")]
     TaskAlreadyClosed(String),
 
+    #[error("Invalid outcome: '{0}'. Valid values: {}", .1.join(", "))]
+    InvalidOutcome(String, Vec<String>),
+
     #[error("Invalid task source: '{0}'. Sources must have a prefix: 'file:', 'task:', 'comment:', 'issue:', or 'prompt:'")]
     InvalidTaskSource(String),
+
+    #[error("Invalid --data format: '{0}'. Expected: --data key=value")]
+    InvalidDataFormat(String),
 
     #[error("Task '{0}' has no assignee and no --agent specified")]
     TaskNoAssignee(String),
@@ -254,6 +260,16 @@ Alternatively, install the agent globally:
 
     #[error("No templates directory found at: {path}")]
     TemplatesDirectoryNotFound { path: String },
+
+    #[error("Unknown data source: '{0}'. Supported values: 'source.comments'")]
+    UnknownDataSource(String),
+
+    #[error("{0}")]
+    MissingSourceTask(String),
+
+    // Review system errors
+    #[error("Nothing to review - no closed tasks in session")]
+    NothingToReview,
 
     // Generic wrapper for underlying errors
     #[error(transparent)]
@@ -313,8 +329,8 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_flow_path() {
-        let err = AikiError::InvalidFlowPath {
+    fn test_invalid_hook_path() {
+        let err = AikiError::InvalidHookPath {
             path: "invalid".to_string(),
             reason: "Must start with aiki/, vendor/, @/, ./, ../, or /".to_string(),
         };
@@ -323,10 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn test_circular_flow_dependency() {
-        let err = AikiError::CircularFlowDependency {
+    fn test_circular_hook_dependency() {
+        let err = AikiError::CircularHookDependency {
             path: "aiki/flow-a".to_string(),
-            canonical_path: "/project/.aiki/flows/aiki/flow-a.yml".to_string(),
+            canonical_path: "/project/.aiki/hooks/aiki/flow-a.yml".to_string(),
             stack: vec![
                 "my-workflow.yml".to_string(),
                 "aiki/flow-a.yml".to_string(),
@@ -334,7 +350,7 @@ mod tests {
             ],
         };
         let msg = err.to_string();
-        assert!(msg.contains("Circular flow dependency"));
+        assert!(msg.contains("Circular hook dependency"));
         assert!(msg.contains("aiki/flow-a"));
         assert!(msg.contains("my-workflow.yml"));
         assert!(msg.contains("→"));

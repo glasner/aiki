@@ -43,12 +43,18 @@
 //! aiki task template list
 //! ```
 
+pub mod data_source;
 pub mod parser;
 pub mod resolver;
 pub mod types;
 pub mod variables;
 
-pub use parser::parse_template;
-pub use resolver::{find_templates_dir, list_templates, load_template, load_template_file, TemplateInfo};
+pub use data_source::{parse_data_source, resolve_data_source, DataSource};
+pub use parser::{extract_yaml_frontmatter, parse_template, FrontmatterError};
+pub use resolver::{
+    convert_data, create_review_task_from_template, create_tasks_from_template,
+    find_templates_dir, get_working_copy_change_id, list_templates, load_template,
+    load_template_file, parse_priority, TemplateInfo,
+};
 pub use types::{TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
 pub use variables::{coerce_to_string, coerce_value, find_variables, substitute, substitute_with_template_name, VariableContext};
