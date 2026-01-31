@@ -37,7 +37,7 @@ pub struct AikiTurnCompletedPayload {
 /// Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
 /// across turns and are only ended explicitly (via session end hooks or TTL cleanup).
 pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     // Query the Prompt event for this session's current turn info
     // This replaces reading from TurnState, getting turn/source from history instead
@@ -102,21 +102,21 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
     let payload_session = payload.session.clone();
     let payload_turn_number = payload.turn.number;
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = match execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let _flow_result = match execute_hook(
         EventType::TurnCompleted,
         &mut state,
-        &core_flow.turn_completed,
+        &core_hook.turn_completed,
     ) {
         Ok(result) => result,
         Err(e) => {
-            // Flow execution failed - log warning and skip autoreply
+            // Hook execution failed - log warning and skip autoreply
             eprintln!("\nturn.completed flow failed: {}", e);
             eprintln!("No autoreply generated.\n");
             return Ok(HookResult {

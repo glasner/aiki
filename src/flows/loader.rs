@@ -1,19 +1,19 @@
 //! Flow loading with path resolution and caching.
 //!
-//! This module provides the [`FlowLoader`] struct which handles:
-//! - Path resolution via [`FlowResolver`](super::flow_resolver::FlowResolver)
-//! - YAML parsing via [`FlowParser`](super::parser::FlowParser)
+//! This module provides the [`HookLoader`] struct which handles:
+//! - Path resolution via [`HookResolver`](super::hook_resolver::HookResolver)
+//! - YAML parsing via [`HookParser`](super::parser::HookParser)
 //! - Flow caching by canonical path (avoids reloading the same file)
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use aiki::flows::loader::FlowLoader;
+//! use aiki::flows::loader::HookLoader;
 //!
-//! let mut loader = FlowLoader::new()?;
+//! let mut loader = HookLoader::new()?;
 //!
 //! // Load a flow (automatically cached)
-//! let (flow, canonical_path) = loader.load("aiki/quick-lint")?;
+//! let (hook, canonical_path) = loader.load("aiki/quick-lint")?;
 //!
 //! // Loading the same flow again returns cached version
 //! let (flow2, _) = loader.load("aiki/quick-lint")?;
@@ -23,15 +23,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::flow_resolver::FlowResolver;
-use super::parser::FlowParser;
-use super::types::Flow;
+use super::hook_resolver::HookResolver;
+use super::parser::HookParser;
+use super::types::Hook;
 use crate::error::{AikiError, Result};
 
 /// Flow loader with path resolution and caching.
 ///
-/// The loader resolves flow paths using [`FlowResolver`], parses the YAML using
-/// [`FlowParser`], and caches flows by their canonical path to avoid redundant
+/// The loader resolves flow paths using [`HookResolver`], parses the YAML using
+/// [`HookParser`], and caches flows by their canonical path to avoid redundant
 /// file reads and parsing.
 ///
 /// # Caching
@@ -41,26 +41,26 @@ use crate::error::{AikiError, Result};
 /// - The cache persists for the lifetime of the loader
 /// - Use [`clear_cache`](Self::clear_cache) to reset if needed
 #[derive(Debug)]
-pub struct FlowLoader {
-    resolver: FlowResolver,
-    cache: HashMap<PathBuf, Flow>,
+pub struct HookLoader {
+    resolver: HookResolver,
+    cache: HashMap<PathBuf, Hook>,
 }
 
-impl FlowLoader {
-    /// Create a new FlowLoader by discovering project root.
+impl HookLoader {
+    /// Create a new HookLoader by discovering project root.
     ///
     /// # Errors
     ///
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
-    #[allow(dead_code)] // Part of FlowLoader API
+    #[allow(dead_code)] // Part of HookLoader API
     pub fn new() -> Result<Self> {
         Ok(Self {
-            resolver: FlowResolver::new()?,
+            resolver: HookResolver::new()?,
             cache: HashMap::new(),
         })
     }
 
-    /// Create a new FlowLoader starting search from a specific directory.
+    /// Create a new HookLoader starting search from a specific directory.
     ///
     /// This is useful for testing or when you need to load flows from
     /// a directory other than the current working directory.
@@ -70,14 +70,14 @@ impl FlowLoader {
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
     pub fn with_start_dir(start_dir: &Path) -> Result<Self> {
         Ok(Self {
-            resolver: FlowResolver::with_start_dir(start_dir)?,
+            resolver: HookResolver::with_start_dir(start_dir)?,
             cache: HashMap::new(),
         })
     }
 
     /// Load a flow and return both the flow and its canonical path.
     ///
-    /// The canonical path is used by [`FlowComposer`](super::composer::FlowComposer)
+    /// The canonical path is used by [`HookComposer`](super::composer::HookComposer)
     /// for cycle detection. Caching is done by canonical path to avoid loading
     /// the same file multiple times.
     ///
@@ -87,36 +87,36 @@ impl FlowLoader {
     ///
     /// # Returns
     ///
-    /// A tuple of (Flow, canonical PathBuf). The canonical path is always absolute
+    /// A tuple of (Hook, canonical PathBuf). The canonical path is always absolute
     /// and resolved (no symlinks).
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - `AikiError::InvalidFlowPath` if path is not in {namespace}/{name} format
-    /// - `AikiError::FlowNotFound` if the file doesn't exist
+    /// - `AikiError::InvalidHookPath` if path is not in {namespace}/{name} format
+    /// - `AikiError::HookNotFound` if the file doesn't exist
     /// - `AikiError::Other` if YAML parsing fails
-    pub fn load(&mut self, path: &str) -> Result<(Flow, PathBuf)> {
+    pub fn load(&mut self, path: &str) -> Result<(Hook, PathBuf)> {
         // Resolve to canonical path
         let canonical_path = self.resolver.resolve(path)?;
 
         // Check cache (by canonical path)
-        if let Some(flow) = self.cache.get(&canonical_path) {
-            return Ok((flow.clone(), canonical_path));
+        if let Some(hook) = self.cache.get(&canonical_path) {
+            return Ok((hook.clone(), canonical_path));
         }
 
-        // Load and parse flow file
-        let flow = self.load_from_file(&canonical_path, path)?;
+        // Load and parse hook file
+        let hook = self.load_from_file(&canonical_path, path)?;
 
-        // Cache by canonical path and return both flow and path
-        self.cache.insert(canonical_path.clone(), flow.clone());
-        Ok((flow, canonical_path))
+        // Cache by canonical path and return both hook and path
+        self.cache.insert(canonical_path.clone(), hook.clone());
+        Ok((hook, canonical_path))
     }
 
     /// Load a flow from an absolute file path.
     ///
     /// This is used for loading flows that aren't in the standard namespace structure,
-    /// such as .aiki/flows/default.yml.
+    /// such as .aiki/hooks/default.yml.
     ///
     /// # Arguments
     ///
@@ -124,99 +124,99 @@ impl FlowLoader {
     ///
     /// # Returns
     ///
-    /// A tuple of (Flow, canonical PathBuf). The canonical path is always absolute
+    /// A tuple of (Hook, canonical PathBuf). The canonical path is always absolute
     /// and resolved (no symlinks).
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - `AikiError::FlowNotFound` if the file doesn't exist
+    /// - `AikiError::HookNotFound` if the file doesn't exist
     /// - `AikiError::Other` if YAML parsing fails
-    pub fn load_from_file_path(&mut self, file_path: &Path) -> Result<(Flow, PathBuf)> {
+    pub fn load_from_file_path(&mut self, file_path: &Path) -> Result<(Hook, PathBuf)> {
         // Canonicalize the path
         let canonical_path = file_path
             .canonicalize()
-            .map_err(|e| AikiError::FlowNotFound {
+            .map_err(|e| AikiError::HookNotFound {
                 path: file_path.display().to_string(),
                 resolved_path: file_path.display().to_string(),
                 source: e,
             })?;
 
         // Check cache (by canonical path)
-        if let Some(flow) = self.cache.get(&canonical_path) {
-            return Ok((flow.clone(), canonical_path));
+        if let Some(hook) = self.cache.get(&canonical_path) {
+            return Ok((hook.clone(), canonical_path));
         }
 
-        // Load and parse flow file
-        let flow = self.load_from_file(&canonical_path, &file_path.display().to_string())?;
+        // Load and parse hook file
+        let hook = self.load_from_file(&canonical_path, &file_path.display().to_string())?;
 
-        // Cache by canonical path and return both flow and path
-        self.cache.insert(canonical_path.clone(), flow.clone());
-        Ok((flow, canonical_path))
+        // Cache by canonical path and return both hook and path
+        self.cache.insert(canonical_path.clone(), hook.clone());
+        Ok((hook, canonical_path))
     }
 
     /// Load a flow from the core system (bundled in binary).
     ///
-    /// This returns the core flow without caching since it's already
+    /// This returns the core hook without caching since it's already
     /// statically compiled into the binary.
     ///
     /// # Returns
     ///
-    /// A reference to the cached core flow.
+    /// A reference to the cached core hook.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowLoader API
-    pub fn load_core_flow() -> &'static Flow {
-        super::bundled::load_core_flow()
+    #[allow(dead_code)] // Part of HookLoader API
+    pub fn load_core_hook() -> &'static Hook {
+        super::bundled::load_core_hook()
     }
 
     /// Clear the flow cache.
     ///
     /// This is useful for testing or when you need to reload flows
     /// that may have changed on disk.
-    #[allow(dead_code)] // Part of FlowLoader API
+    #[allow(dead_code)] // Part of HookLoader API
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }
 
     /// Get the number of cached flows.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowLoader API
+    #[allow(dead_code)] // Part of HookLoader API
     pub fn cache_size(&self) -> usize {
         self.cache.len()
     }
 
     /// Get the project root directory.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowLoader API
+    #[allow(dead_code)] // Part of HookLoader API
     pub fn project_root(&self) -> &Path {
         self.resolver.project_root()
     }
 
     /// Get the home directory.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowLoader API
+    #[allow(dead_code)] // Part of HookLoader API
     pub fn home_dir(&self) -> &Path {
         self.resolver.home_dir()
     }
 
-    /// Get the default flows directory for this project.
+    /// Get the default hooks directory for this project.
     ///
-    /// Returns `{project_root}/.aiki/flows`.
+    /// Returns `{project_root}/.aiki/hooks`.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowLoader API
-    pub fn default_flows_dir(&self) -> PathBuf {
-        self.resolver.project_root().join(".aiki/flows")
+    #[allow(dead_code)] // Part of HookLoader API
+    pub fn default_hooks_dir(&self) -> PathBuf {
+        self.resolver.project_root().join(".aiki/hooks")
     }
 
     /// Load and parse a flow from a file path.
-    fn load_from_file(&self, path: &Path, original_path: &str) -> Result<Flow> {
-        let contents = fs::read_to_string(path).map_err(|e| AikiError::FlowNotFound {
+    fn load_from_file(&self, path: &Path, original_path: &str) -> Result<Hook> {
+        let contents = fs::read_to_string(path).map_err(|e| AikiError::HookNotFound {
             path: original_path.to_string(),
             resolved_path: path.display().to_string(),
             source: e,
         })?;
 
-        FlowParser::parse_str(&contents).map_err(|e| {
+        HookParser::parse_str(&contents).map_err(|e| {
             AikiError::Other(anyhow::anyhow!(
                 "Failed to parse flow '{}' ({}): {}",
                 original_path,
@@ -236,9 +236,9 @@ mod tests {
     /// Create a test project with .aiki/ directory structure
     fn create_test_project() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/aiki")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/eslint")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/helpers")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/aiki")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/eslint")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/helpers")).unwrap();
         temp_dir
     }
 
@@ -286,13 +286,13 @@ version: "1"
     #[test]
     fn test_load_simple_flow() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/simple.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/simple.yml");
         create_flow_file(&flow_path, "Simple Flow", &[], &[]);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let (flow, canonical) = loader.load("aiki/simple").unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let (hook, canonical) = loader.load("aiki/simple").unwrap();
 
-        assert_eq!(flow.name, "Simple Flow");
+        assert_eq!(hook.name, "Simple Flow");
         assert_eq!(
             canonical.canonicalize().unwrap(),
             flow_path.canonicalize().unwrap()
@@ -302,7 +302,7 @@ version: "1"
     #[test]
     fn test_load_flow_with_before_after() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/composed.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/composed.yml");
         create_flow_file(
             &flow_path,
             "Composed Flow",
@@ -310,24 +310,24 @@ version: "1"
             &["aiki/cleanup"],
         );
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
-        let (flow, _) = loader.load("aiki/composed").unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+        let (hook, _) = loader.load("aiki/composed").unwrap();
 
-        assert_eq!(flow.name, "Composed Flow");
-        assert_eq!(flow.before.len(), 2);
-        assert_eq!(flow.before[0], "aiki/base");
-        assert_eq!(flow.before[1], "./helpers/lint.yml");
-        assert_eq!(flow.after.len(), 1);
-        assert_eq!(flow.after[0], "aiki/cleanup");
+        assert_eq!(hook.name, "Composed Flow");
+        assert_eq!(hook.before.len(), 2);
+        assert_eq!(hook.before[0], "aiki/base");
+        assert_eq!(hook.before[1], "./helpers/lint.yml");
+        assert_eq!(hook.after.len(), 1);
+        assert_eq!(hook.after[0], "aiki/cleanup");
     }
 
     #[test]
     fn test_load_caching() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/cached.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/cached.yml");
         create_flow_file(&flow_path, "Cached Flow", &[], &[]);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
 
         // First load
         assert_eq!(loader.cache_size(), 0);
@@ -345,10 +345,10 @@ version: "1"
     #[test]
     fn test_clear_cache() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/clearable.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/clearable.yml");
         create_flow_file(&flow_path, "Clearable Flow", &[], &[]);
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
 
         // Load and verify cache
         loader.load("aiki/clearable").unwrap();
@@ -366,36 +366,36 @@ version: "1"
     #[test]
     fn test_load_flow_not_found() {
         let temp_dir = create_test_project();
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
 
         let result = loader.load("aiki/nonexistent");
-        assert!(matches!(result, Err(AikiError::FlowNotFound { .. })));
+        assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
     }
 
     #[test]
     fn test_load_invalid_yaml() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/invalid.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/invalid.yml");
         fs::write(&flow_path, "invalid: yaml: content: [").unwrap();
 
-        let mut loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
         let result = loader.load("aiki/invalid");
 
         assert!(matches!(result, Err(AikiError::Other(_))));
     }
 
     #[test]
-    fn test_default_flows_dir() {
+    fn test_default_hooks_dir() {
         let temp_dir = create_test_project();
-        let loader = FlowLoader::with_start_dir(temp_dir.path()).unwrap();
+        let loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
 
-        let flows_dir = loader.default_flows_dir();
-        assert_eq!(flows_dir, temp_dir.path().join(".aiki/flows"));
+        let hooks_dir = loader.default_hooks_dir();
+        assert_eq!(hooks_dir, temp_dir.path().join(".aiki/hooks"));
     }
 
     #[test]
-    fn test_load_core_flow() {
-        let core = FlowLoader::load_core_flow();
+    fn test_load_core_hook() {
+        let core = HookLoader::load_core_hook();
         assert_eq!(core.name, "Aiki Core");
     }
 }

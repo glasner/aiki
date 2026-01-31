@@ -107,6 +107,8 @@ pub enum TaskEvent {
     Created {
         task_id: String,
         name: String,
+        /// Task type (e.g., "review", "fix") - enables sugar triggers like review.started
+        task_type: Option<String>,
         priority: TaskPriority,
         assignee: Option<String>,
         /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
@@ -155,6 +157,7 @@ pub enum TaskEvent {
     CommentAdded {
         task_ids: Vec<String>,
         text: String,
+        data: HashMap<String, String>,
         timestamp: DateTime<Utc>,
     },
     /// Task was updated
@@ -171,8 +174,12 @@ pub enum TaskEvent {
 /// A comment on a task
 #[derive(Debug, Clone)]
 pub struct TaskComment {
+    /// Unique identifier for this comment (JJ change_id of the CommentAdded event)
+    /// Used for `source: comment:<id>` references in followup tasks
+    pub id: Option<String>,
     pub text: String,
     pub timestamp: DateTime<Utc>,
+    pub data: HashMap<String, String>,
 }
 
 /// Materialized task view (computed from events)
@@ -180,6 +187,8 @@ pub struct TaskComment {
 pub struct Task {
     pub id: String,
     pub name: String,
+    /// Task type (e.g., "review", "fix") - enables sugar triggers like review.started
+    pub task_type: Option<String>,
     pub status: TaskStatus,
     pub priority: TaskPriority,
     pub assignee: Option<String>,
@@ -198,6 +207,8 @@ pub struct Task {
     pub started_at: Option<DateTime<Utc>>,
     /// Session that claimed this task (if in progress)
     pub claimed_by_session: Option<String>,
+    /// Session ID that last worked on this task (persists even after close)
+    pub last_session_id: Option<String>,
     /// Latest stop reason (if stopped)
     pub stopped_reason: Option<String>,
     /// Closure outcome (if closed)

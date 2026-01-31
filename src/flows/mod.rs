@@ -3,24 +3,25 @@ pub mod composer;
 pub mod context;
 pub mod core;
 mod engine;
-pub mod flow_resolver;
+pub mod hook_resolver;
 pub mod loader;
 pub mod path_resolver;
 mod parser;
 mod state;
+mod sugar;
 pub mod types;
 mod variables;
 
-pub use bundled::{load_core_flow, load_core_flow_uncached};
+pub use bundled::{load_core_hook, load_core_hook_uncached};
 #[allow(unused_imports)]
-pub use composer::{EventType, FlowComposer};
+pub use composer::{EventType, HookComposer};
 #[allow(unused_imports)]
 pub use context::{ContextAssembler, ContextChunk, TextLines};
-pub use engine::{FlowEngine, FlowResult};
+pub use engine::{HookEngine, HookOutcome};
 #[allow(unused_imports)]
-pub use flow_resolver::FlowResolver;
+pub use hook_resolver::HookResolver;
 #[allow(unused_imports)]
-pub use loader::FlowLoader;
+pub use loader::HookLoader;
 #[allow(unused_imports)]
 pub use path_resolver::PathResolver;
 pub use state::AikiState;

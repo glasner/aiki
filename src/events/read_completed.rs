@@ -22,7 +22,7 @@ pub struct AikiReadCompletedPayload {
 /// This event fires after a file read operation completes.
 /// Currently a no-op since reads don't need provenance tracking.
 pub fn handle_read_completed(payload: AikiReadCompletedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
@@ -33,17 +33,17 @@ pub fn handle_read_completed(payload: AikiReadCompletedPayload) -> Result<HookRe
         )
     });
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let _flow_result = execute_hook(
         EventType::ReadCompleted,
         &mut state,
-        &core_flow.read_completed,
+        &core_hook.read_completed,
     )?;
 
     // Extract failures from state

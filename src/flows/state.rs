@@ -9,13 +9,13 @@ pub struct ActionResult {
     pub stderr: String,
 }
 
-/// Aiki execution state for flow processing
+/// Aiki execution state for hook processing
 ///
-/// This holds the mutable state that accumulates during flow execution:
+/// This holds the mutable state that accumulates during hook execution:
 /// - The original triggering event (immutable)
 /// - Let-bound variables computed during execution
 /// - Metadata about action results
-/// - Current flow context
+/// - Current hook context
 /// - Prompt assembler (for PrePrompt events)
 #[derive(Debug, Clone)]
 pub struct AikiState {
@@ -28,8 +28,8 @@ pub struct AikiState {
     /// Structured metadata for variables (stores ActionResult for each variable)
     variable_metadata: HashMap<String, ActionResult>,
 
-    /// Current flow name (e.g., "aiki/core") for self references
-    pub flow_name: Option<String>,
+    /// Current hook name (e.g., "aiki/core") for self references
+    pub hook_name: Option<String>,
 
     /// Context assembler for events that build messages
     /// - session.started: accumulates context for session initialization
@@ -37,7 +37,7 @@ pub struct AikiState {
     /// - turn.completed: accumulates autoreply content
     context_assembler: Option<crate::flows::context::ContextAssembler>,
 
-    /// Failure messages emitted by the flow
+    /// Failure messages emitted by the hook
     failures: Vec<crate::events::result::Failure>,
 }
 
@@ -70,7 +70,7 @@ impl AikiState {
             event,
             let_vars: HashMap::new(),
             variable_metadata: HashMap::new(),
-            flow_name: None,
+            hook_name: None,
             context_assembler,
             failures: Vec::new(),
         }
@@ -175,8 +175,8 @@ impl AikiState {
 
     /// Clear all let-bound variables and their metadata.
     ///
-    /// Used by FlowComposer to provide variable isolation between composed flows.
-    /// Each flow starts with a fresh variable context.
+    /// Used by HookComposer to provide variable isolation between composed hooks.
+    /// Each hook starts with a fresh variable context.
     pub fn clear_variables(&mut self) {
         self.let_vars.clear();
         self.variable_metadata.clear();

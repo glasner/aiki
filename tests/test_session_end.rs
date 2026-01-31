@@ -7,8 +7,8 @@ use aiki::events::result::HookResult;
 /// 3. turn.completed does NOT auto-trigger session.ended (sessions persist across turns)
 use aiki::events::{AikiTurnCompletedPayload, TurnSource};
 use aiki::flows::context::ContextAssembler;
-use aiki::flows::types::{Action, ContextAction, ContextContent, FlowStatement};
-use aiki::flows::{AikiState, FlowEngine};
+use aiki::flows::types::{Action, ContextAction, ContextContent, HookStatement};
+use aiki::flows::{AikiState, HookEngine};
 use aiki::provenance::{AgentType, DetectionMethod};
 use aiki::session::AikiSession;
 use chrono::Utc;
@@ -101,8 +101,8 @@ fn test_build_context_returns_some_with_chunks() {
         on_failure: Default::default(),
     });
 
-    let statements = vec![FlowStatement::Action(action)];
-    FlowEngine::execute_statements(&statements, &mut state).unwrap();
+    let statements = vec![HookStatement::Action(action)];
+    HookEngine::execute_statements(&statements, &mut state).unwrap();
 
     // Now build_context should return Some
     let context = state.build_context();

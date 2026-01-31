@@ -2,9 +2,9 @@
 //!
 //! This module handles resolution of flow paths with namespacing:
 //! - `{namespace}/*` - Namespaced flows (e.g., `aiki/*`, `eslint/*`, `prettier/*`)
-//!   - Searches project `.aiki/flows/{namespace}/` first, then `~/.aiki/flows/{namespace}/`
+//!   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`
 //!
-//! All top-level directories in `.aiki/flows/` are treated as namespaces.
+//! All top-level directories in `.aiki/hooks/` are treated as namespaces.
 //!
 //! # Canonicalization
 //!
@@ -12,9 +12,9 @@
 //! detection works correctly regardless of how a flow is referenced:
 //!
 //! ```text
-//! ./flow-a.yml         → /project/.aiki/flows/flow-a.yml
-//! ../flows/flow-a.yml  → /project/.aiki/flows/flow-a.yml
-//! @/.aiki/flows/flow-a.yml → /project/.aiki/flows/flow-a.yml
+//! ./flow-a.yml         → /project/.aiki/hooks/flow-a.yml
+//! ../flows/flow-a.yml  → /project/.aiki/hooks/flow-a.yml
+//! @/.aiki/hooks/flow-a.yml → /project/.aiki/hooks/flow-a.yml
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -26,16 +26,16 @@ use crate::error::{AikiError, Result};
 ///
 /// Resolves flow paths to canonical absolute paths. Supports:
 /// - `{namespace}/{name}` - Namespaced flows (e.g., `aiki/*`, `eslint/*`, `prettier/*`)
-///   - All top-level directories in `.aiki/flows/` are treated as namespaces
+///   - All top-level directories in `.aiki/hooks/` are treated as namespaces
 ///   - `aiki` is just another namespace, not a special case
-///   - Searches project `.aiki/flows/{namespace}/` first, then `~/.aiki/flows/{namespace}/`
+///   - Searches project `.aiki/hooks/{namespace}/` first, then `~/.aiki/hooks/{namespace}/`
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use aiki::flows::flow_resolver::FlowResolver;
+/// use aiki::flows::hook_resolver::HookResolver;
 ///
-/// let resolver = FlowResolver::new()?;
+/// let resolver = HookResolver::new()?;
 ///
 /// // Resolve aiki namespaced flow (tries project, then user)
 /// let path = resolver.resolve("aiki/quick-lint")?;
@@ -44,24 +44,24 @@ use crate::error::{AikiError, Result};
 /// let path = resolver.resolve("eslint/check-rules")?;
 /// ```
 #[derive(Debug, Clone)]
-pub struct FlowResolver {
+pub struct HookResolver {
     path_resolver: PathResolver,
 }
 
-impl FlowResolver {
-    /// Create a new FlowResolver by discovering project root.
+impl HookResolver {
+    /// Create a new HookResolver by discovering project root.
     ///
     /// # Errors
     ///
     /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
-    #[allow(dead_code)] // Part of FlowResolver API
+    #[allow(dead_code)] // Part of HookResolver API
     pub fn new() -> Result<Self> {
         Ok(Self {
             path_resolver: PathResolver::new()?,
         })
     }
 
-    /// Create a new FlowResolver starting search from a specific directory.
+    /// Create a new HookResolver starting search from a specific directory.
     ///
     /// This is useful for testing or when you need to resolve paths from
     /// a directory other than the current working directory.
@@ -77,14 +77,14 @@ impl FlowResolver {
 
     /// Get the discovered project root directory.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowResolver API
+    #[allow(dead_code)] // Part of HookResolver API
     pub fn project_root(&self) -> &Path {
         self.path_resolver.project_root()
     }
 
     /// Get the home directory.
     #[must_use]
-    #[allow(dead_code)] // Part of FlowResolver API
+    #[allow(dead_code)] // Part of HookResolver API
     pub fn home_dir(&self) -> &Path {
         self.path_resolver.home_dir()
     }
@@ -104,19 +104,19 @@ impl FlowResolver {
     ///
     /// | Format | Search Order |
     /// |--------|--------------|
-    /// | `{namespace}/{name}` | 1. Project `.aiki/flows/{namespace}/{name}.yml`<br>2. User `~/.aiki/flows/{namespace}/{name}.yml` |
+    /// | `{namespace}/{name}` | 1. Project `.aiki/hooks/{namespace}/{name}.yml`<br>2. User `~/.aiki/hooks/{namespace}/{name}.yml` |
     ///
-    /// All top-level directories in `.aiki/flows/` are treated as namespaces.
+    /// All top-level directories in `.aiki/hooks/` are treated as namespaces.
     /// Examples: `aiki/quick-lint`, `eslint/check-rules`, `prettier/format`, `mycompany/workflows`
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - `AikiError::InvalidFlowPath` if path is empty or not in `{namespace}/{name}` format
-    /// - `AikiError::FlowNotFound` if the resolved file doesn't exist
+    /// - `AikiError::InvalidHookPath` if path is empty or not in `{namespace}/{name}` format
+    /// - `AikiError::HookNotFound` if the resolved file doesn't exist
     pub fn resolve(&self, path: &str) -> Result<PathBuf> {
         if path.is_empty() {
-            return Err(AikiError::InvalidFlowPath {
+            return Err(AikiError::InvalidHookPath {
                 path: path.to_string(),
                 reason: "Path cannot be empty".to_string(),
             });
@@ -126,7 +126,7 @@ impl FlowResolver {
         // Extract namespace and name
         let parts: Vec<&str> = path.splitn(2, '/').collect();
         if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-            return Err(AikiError::InvalidFlowPath {
+            return Err(AikiError::InvalidHookPath {
                 path: path.to_string(),
                 reason:
                     "Flow path must be in format {namespace}/{name} with non-empty namespace and name"
@@ -142,7 +142,7 @@ impl FlowResolver {
         // This ensures consistent paths regardless of symlinks or path variations
         resolved
             .canonicalize()
-            .map_err(|e| AikiError::FlowNotFound {
+            .map_err(|e| AikiError::HookNotFound {
                 path: path.to_string(),
                 resolved_path: resolved.display().to_string(),
                 source: e,
@@ -151,12 +151,12 @@ impl FlowResolver {
 
     /// Resolve a namespaced flow path.
     ///
-    /// All top-level directories in `.aiki/flows/` are treated as namespaces.
+    /// All top-level directories in `.aiki/hooks/` are treated as namespaces.
     /// Examples: `aiki`, `eslint`, `prettier`, `typescript`, `mycompany`
     ///
     /// Search order:
-    /// 1. `{project}/.aiki/flows/{namespace}/{name}.yml`
-    /// 2. `~/.aiki/flows/{namespace}/{name}.yml`
+    /// 1. `{project}/.aiki/hooks/{namespace}/{name}.yml`
+    /// 2. `~/.aiki/hooks/{namespace}/{name}.yml`
     ///
     /// # Arguments
     ///
@@ -167,7 +167,7 @@ impl FlowResolver {
         let project_path = self
             .path_resolver
             .project_root()
-            .join(".aiki/flows")
+            .join(".aiki/hooks")
             .join(namespace)
             .join(name);
         let project_path = Self::add_yml_extension(&project_path);
@@ -180,7 +180,7 @@ impl FlowResolver {
         let user_path = self
             .path_resolver
             .home_dir()
-            .join(".aiki/flows")
+            .join(".aiki/hooks")
             .join(namespace)
             .join(name);
         let user_path = Self::add_yml_extension(&user_path);
@@ -211,10 +211,10 @@ mod tests {
     fn create_test_project() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
         // Create namespaces - aiki is just another namespace
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/aiki")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/eslint")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/prettier")).unwrap();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/helpers")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/aiki")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/eslint")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/prettier")).unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/helpers")).unwrap();
         fs::create_dir_all(temp_dir.path().join("docs")).unwrap();
         temp_dir
     }
@@ -232,10 +232,10 @@ version: "1"
     #[test]
     fn test_resolve_aiki_flow_project_first() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/quick-lint.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/quick-lint.yml");
         create_flow_file(&flow_path, "Quick Lint");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
         let resolved = resolver.resolve("aiki/quick-lint").unwrap();
 
         // Should resolve to project flow
@@ -248,10 +248,10 @@ version: "1"
     #[test]
     fn test_resolve_aiki_flow_adds_yml_extension() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/quick-lint.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/quick-lint.yml");
         create_flow_file(&flow_path, "Quick Lint");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         // Should work without .yml extension
         let resolved = resolver.resolve("aiki/quick-lint").unwrap();
@@ -261,10 +261,10 @@ version: "1"
     #[test]
     fn test_resolve_eslint_namespaced_flow() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/eslint/check-rules.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/eslint/check-rules.yml");
         create_flow_file(&flow_path, "ESLint Check");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
         let resolved = resolver.resolve("eslint/check-rules").unwrap();
 
         assert_eq!(
@@ -276,10 +276,10 @@ version: "1"
     #[test]
     fn test_resolve_prettier_namespaced_flow() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/prettier/format.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/prettier/format.yml");
         create_flow_file(&flow_path, "Prettier Format");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
         let resolved = resolver.resolve("prettier/format").unwrap();
 
         assert_eq!(
@@ -291,39 +291,39 @@ version: "1"
     #[test]
     fn test_resolve_empty_path_error() {
         let temp_dir = create_test_project();
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         let result = resolver.resolve("");
-        assert!(matches!(result, Err(AikiError::InvalidFlowPath { .. })));
+        assert!(matches!(result, Err(AikiError::InvalidHookPath { .. })));
     }
 
     #[test]
     fn test_resolve_invalid_format_error() {
         let temp_dir = create_test_project();
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         // Path without slash is invalid (must be {namespace}/{name})
         let result = resolver.resolve("invalid-path-no-slash");
-        assert!(matches!(result, Err(AikiError::InvalidFlowPath { .. })));
+        assert!(matches!(result, Err(AikiError::InvalidHookPath { .. })));
     }
 
     #[test]
     fn test_resolve_flow_not_found_error() {
         let temp_dir = create_test_project();
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         let result = resolver.resolve("aiki/nonexistent");
-        assert!(matches!(result, Err(AikiError::FlowNotFound { .. })));
+        assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
     }
 
     #[test]
     fn test_nested_aiki_flow_path() {
         let temp_dir = create_test_project();
-        fs::create_dir_all(temp_dir.path().join(".aiki/flows/aiki/checks")).unwrap();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/checks/lint.yml");
+        fs::create_dir_all(temp_dir.path().join(".aiki/hooks/aiki/checks")).unwrap();
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/checks/lint.yml");
         create_flow_file(&flow_path, "Nested Lint");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
         let resolved = resolver.resolve("aiki/checks/lint").unwrap();
 
         assert_eq!(
@@ -335,10 +335,10 @@ version: "1"
     #[test]
     fn test_flow_with_yml_extension_not_doubled() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/test.yml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/test.yml");
         create_flow_file(&flow_path, "Test Flow");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         // Should work with explicit .yml extension
         let resolved = resolver.resolve("aiki/test.yml").unwrap();
@@ -351,10 +351,10 @@ version: "1"
     #[test]
     fn test_flow_with_yaml_extension() {
         let temp_dir = create_test_project();
-        let flow_path = temp_dir.path().join(".aiki/flows/aiki/test.yaml");
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/test.yaml");
         create_flow_file(&flow_path, "Test Flow");
 
-        let resolver = FlowResolver::with_start_dir(temp_dir.path()).unwrap();
+        let resolver = HookResolver::with_start_dir(temp_dir.path()).unwrap();
 
         // Should work with .yaml extension
         let resolved = resolver.resolve("aiki/test.yaml").unwrap();

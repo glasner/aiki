@@ -2,11 +2,11 @@
 //!
 //! Spawns Codex sessions using the `codex` CLI in non-interactive mode.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions};
+use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle};
 use crate::agents::AgentType;
-use crate::error::Result;
+use crate::error::{AikiError, Result};
 
 /// Runtime for Codex agent
 pub struct CodexRuntime;
@@ -68,6 +68,41 @@ impl AgentRuntime for CodexRuntime {
             }
             Err(e) => Ok(AgentSessionResult::failed(format!(
                 "Failed to spawn codex: {}",
+                e
+            ))),
+        }
+    }
+
+    fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle> {
+        // Build the task prompt - simple instruction to start the task
+        let prompt = format!(
+            "Run `aiki task start {}` to begin working on this task.",
+            options.task_id
+        );
+
+        // Spawn codex process detached from parent
+        // The process runs independently and continues after parent exits
+        let child = Command::new("codex")
+            .current_dir(&options.cwd)
+            .args(["exec", &prompt])
+            // Pass task ID so session system can track this as a runner session
+            .env("AIKI_RUNNER_TASK", &options.task_id)
+            // Detach stdin/stdout/stderr so process runs independently
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        match child {
+            Ok(child) => {
+                let pid = child.id();
+                Ok(BackgroundHandle {
+                    pid,
+                    task_id: options.task_id.clone(),
+                })
+            }
+            Err(e) => Err(AikiError::AgentSpawnFailed(format!(
+                "Failed to spawn codex in background: {}",
                 e
             ))),
         }

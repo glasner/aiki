@@ -230,6 +230,52 @@ fn test_task_close_wont_do() {
         .stdout(predicate::str::contains(r#"outcome="wont_do""#));
 }
 
+#[test]
+fn test_task_close_with_outcome_done() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add and start a task
+    aiki_task(temp_dir.path(), &["add", "Task with explicit done"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+
+    // Close with --outcome done (explicit)
+    aiki_task(temp_dir.path(), &["close", "--outcome", "done", "--comment", "Done explicitly"])
+        .success()
+        .stdout(predicate::str::contains(r#"outcome="done""#));
+}
+
+#[test]
+fn test_task_close_with_outcome_wont_do() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add and start a task
+    aiki_task(temp_dir.path(), &["add", "Task with outcome wont_do"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+
+    // Close with --outcome wont_do
+    aiki_task(temp_dir.path(), &["close", "--outcome", "wont_do", "--comment", "Won't do via outcome"])
+        .success()
+        .stdout(predicate::str::contains(r#"outcome="wont_do""#));
+}
+
+#[test]
+fn test_task_close_with_invalid_outcome() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add and start a task
+    aiki_task(temp_dir.path(), &["add", "Task with invalid outcome"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+
+    // Close with invalid --outcome should fail
+    aiki_task(temp_dir.path(), &["close", "--outcome", "invalid", "--comment", "Bad outcome"])
+        .failure()
+        .stderr(predicate::str::contains("Invalid outcome: 'invalid'"))
+        .stderr(predicate::str::contains("done, wont_do"));
+}
+
 // ============================================================================
 // Phase 2: Hierarchical Tasks Tests
 // ============================================================================
@@ -607,6 +653,87 @@ fn test_task_comment() {
 }
 
 #[test]
+fn test_task_comment_with_data() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task
+    aiki_task(temp_dir.path(), &["add", "Task with structured comment"]).success();
+
+    // Get the task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
+    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
+    let task_id = &stdout[id_start..id_end];
+
+    // Add a comment with structured data
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "comment",
+            "Potential null pointer dereference",
+            "--id",
+            task_id,
+            "--data",
+            "file=src/auth.ts",
+            "--data",
+            "line=42",
+            "--data",
+            "severity=error",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains(r#"cmd="comment""#))
+    .stdout(predicate::str::contains("comment_added"));
+
+    // Verify task show displays the comment
+    aiki_task(temp_dir.path(), &["show", task_id])
+        .success()
+        .stdout(predicate::str::contains("Potential null pointer dereference"));
+
+    // Verify the data fields are persisted in jj task events
+    // Read the events from the aiki/tasks branch via jj log
+    let output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "root()..aiki/tasks",
+            "--no-graph",
+            "-T",
+            "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .expect("Failed to run jj log");
+
+    let contents = String::from_utf8_lossy(&output.stdout);
+
+    // Check that all data fields are stored in the event
+    assert!(
+        contents.contains("data=file:src/auth.ts"),
+        "Should contain file data field, got: {}",
+        contents
+    );
+    assert!(
+        contents.contains("data=line:42"),
+        "Should contain line data field, got: {}",
+        contents
+    );
+    assert!(
+        contents.contains("data=severity:error"),
+        "Should contain severity data field, got: {}",
+        contents
+    );
+}
+
+#[test]
 fn test_task_start_reopen() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
@@ -816,4 +943,450 @@ fn test_task_add_invalid_parent() {
     )
     .failure()
     .stderr(predicate::str::contains("Task not found"));
+}
+
+#[test]
+fn test_parent_auto_starts_when_all_subtasks_closed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent task
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Parent task"])
+        .output()
+        .expect("Failed to add parent task");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
+    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
+    let parent_id = &stdout[id_start..id_end];
+
+    // Create two subtasks
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Subtask 1", "--parent", parent_id])
+        .output()
+        .expect("Failed to add subtask 1");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Subtask 2", "--parent", parent_id])
+        .output()
+        .expect("Failed to add subtask 2");
+
+    // Start parent (which auto-creates .0 planning task)
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", parent_id])
+        .output()
+        .expect("Failed to start parent");
+
+    // Close the planning task
+    let planning_id = format!("{}.0", parent_id);
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &planning_id, "--comment", "Reviewed"])
+        .output()
+        .expect("Failed to close planning task");
+
+    // Start and close subtask 1
+    let subtask1_id = format!("{}.1", parent_id);
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &subtask1_id])
+        .output()
+        .expect("Failed to start subtask 1");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "close", &subtask1_id, "--comment", "Done"])
+        .output()
+        .expect("Failed to close subtask 1");
+
+    // Start and close subtask 2 - this should trigger parent auto-start
+    let subtask2_id = format!("{}.2", parent_id);
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "start", &subtask2_id])
+        .output()
+        .expect("Failed to start subtask 2");
+
+    // Close subtask 2 and verify parent auto-starts
+    aiki_task(
+        temp_dir.path(),
+        &["close", &subtask2_id, "--comment", "All done"],
+    )
+    .success()
+    .stdout(predicate::str::contains("auto-started"))
+    .stdout(predicate::str::contains(&format!("id: {}", parent_id)));
+}
+
+// ============================================================================
+// Declarative Subtasks (Template with subtasks: source.comments)
+// ============================================================================
+
+/// Helper to create a template file for testing
+fn create_template(
+    templates_dir: &std::path::Path,
+    namespace: &str,
+    name: &str,
+    content: &str,
+) {
+    let ns_dir = templates_dir.join(namespace);
+    std::fs::create_dir_all(&ns_dir).expect("Failed to create namespace directory");
+    let file_path = ns_dir.join(format!("{}.md", name));
+    std::fs::write(&file_path, content).expect("Failed to write template file");
+}
+
+#[test]
+fn test_template_add_creates_static_subtasks() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a template with static subtasks
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "static-review",
+        r#"---
+version: 1.0.0
+description: Review with static subtasks
+---
+
+# Review: {data.scope}
+
+Review the code in {data.scope}.
+
+# Subtasks
+
+## Analyze code
+
+Look at the code structure.
+
+## Write summary
+
+Document your findings.
+"#,
+    );
+
+    // Create task from template
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "--template",
+            "test/static-review",
+            "--data",
+            "scope=src/auth.rs",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains(r#"cmd="add""#))
+    .stdout(predicate::str::contains(r#"name="Review: src/auth.rs""#));
+
+    // List should show the parent and subtasks
+    aiki_task(temp_dir.path(), &["list", "--all"])
+        .success()
+        .stdout(predicate::str::contains(r#"name="Review: src/auth.rs""#))
+        .stdout(predicate::str::contains(r#"name="Analyze code""#))
+        .stdout(predicate::str::contains(r#"name="Write summary""#));
+}
+
+#[test]
+fn test_template_add_with_dynamic_subtasks() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a template with dynamic subtasks (source.comments)
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "followup",
+        r#"---
+version: 1.0.0
+description: Followup with dynamic subtasks from comments
+subtasks: source.comments
+---
+
+# Followup: {data.scope}
+
+Fix all issues identified in the review.
+
+# Subtasks
+
+## Fix: {data.file}
+
+{text}
+"#,
+    );
+
+    // Create a source task
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Code review"])
+        .output()
+        .expect("Failed to add source task");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
+    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
+    let source_task_id = stdout[id_start..id_end].to_string();
+
+    // Add comments to the source task with structured data
+    // Comment 1: file=auth.rs
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
+            "task",
+            "comment",
+            "--id",
+            &source_task_id,
+            "Missing null check",
+            "--data",
+            "file=auth.rs",
+        ])
+        .output()
+        .expect("Failed to add comment 1");
+
+    // Comment 2: file=utils.rs
+    Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args([
+            "task",
+            "comment",
+            "--id",
+            &source_task_id,
+            "Unused import",
+            "--data",
+            "file=utils.rs",
+        ])
+        .output()
+        .expect("Failed to add comment 2");
+
+    // Create task from template with --source task:<id>
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "--template",
+            "test/followup",
+            "--data",
+            "scope=auth-module",
+            "--source",
+            &format!("task:{}", source_task_id),
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains(r#"cmd="add""#))
+    .stdout(predicate::str::contains(r#"name="Followup: auth-module""#));
+
+    // List should show the parent and dynamically created subtasks
+    let output = aiki_task(temp_dir.path(), &["list", "--all"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_output = String::from_utf8_lossy(&output);
+
+    assert!(
+        list_output.contains(r#"name="Followup: auth-module""#),
+        "Should have parent task"
+    );
+    assert!(
+        list_output.contains(r#"name="Fix: auth.rs""#),
+        "Should have subtask for auth.rs"
+    );
+    assert!(
+        list_output.contains(r#"name="Fix: utils.rs""#),
+        "Should have subtask for utils.rs"
+    );
+}
+
+#[test]
+fn test_template_dynamic_subtasks_requires_source() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a template with dynamic subtasks
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "dynamic",
+        r#"---
+version: 1.0.0
+subtasks: source.comments
+---
+
+# Task
+
+Do work.
+
+# Subtasks
+
+## Fix
+
+{text}
+"#,
+    );
+
+    // Creating without --source task:<id> should fail
+    aiki_task(temp_dir.path(), &["add", "--template", "test/dynamic"])
+        .failure()
+        .stderr(predicate::str::contains("require"));
+}
+
+#[test]
+fn test_template_unknown_data_source_fails() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a template with unknown data source
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "unknown-source",
+        r#"---
+version: 1.0.0
+subtasks: source.unknown_source
+---
+
+# Task
+
+Do work.
+
+# Subtasks
+
+## Fix
+
+{text}
+"#,
+    );
+
+    // Create a source task
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Source task"])
+        .output()
+        .expect("Failed to add source task");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
+    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
+    let source_task_id = stdout[id_start..id_end].to_string();
+
+    // Creating with unknown data source should fail
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "--template",
+            "test/unknown-source",
+            "--source",
+            &format!("task:{}", source_task_id),
+        ],
+    )
+    .failure()
+    .stderr(predicate::str::contains("Unknown data source"));
+}
+
+#[test]
+fn test_template_static_subtasks_honor_frontmatter_sources() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a source task to reference
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Original review"])
+        .output()
+        .expect("Failed to add source task");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
+    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
+    let source_task_id = stdout[id_start..id_end].to_string();
+
+    // Create a template with static subtasks that have frontmatter sources
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "followup-static",
+        &format!(r#"---
+version: 1.0.0
+description: Followup with static subtasks that have sources
+---
+
+# Followup: {{data.scope}}
+
+Fix issues identified in the review.
+
+# Subtasks
+
+## Fix auth issue
+---
+sources:
+  - task:{}
+---
+
+Fix the authentication bug.
+
+## Fix validation issue
+---
+sources:
+  - task:{}
+---
+
+Fix the validation issue.
+"#, source_task_id, source_task_id),
+    );
+
+    // Create task from template
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "--template",
+            "test/followup-static",
+            "--data",
+            "scope=auth-module",
+        ],
+    )
+    .success();
+
+    // Show the subtasks to verify sources are included
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--all"])
+        .output()
+        .expect("Failed to list tasks");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Get the ID of one of the subtasks
+    let subtask_id_start = stdout.find(r#"name="Fix auth issue""#);
+    assert!(subtask_id_start.is_some(), "Should have subtask 'Fix auth issue'");
+
+    // Find a subtask ID
+    let subtask_search_start = stdout.find(r#"name="Fix auth issue""#).unwrap();
+    let before_subtask = &stdout[..subtask_search_start];
+    let last_id_start = before_subtask.rfind(r#"id=""#).unwrap() + 4;
+    let last_id_end = before_subtask[last_id_start..].find('"').unwrap() + last_id_start;
+    let subtask_id = &before_subtask[last_id_start..last_id_end];
+
+    // Show the subtask to verify it has the source
+    let show_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", subtask_id])
+        .output()
+        .expect("Failed to show subtask");
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+
+    // The subtask should have both the frontmatter source and the parent task source
+    // The new format is <source type="task" id="..."/>
+    assert!(
+        show_stdout.contains(&format!(r#"<source type="task" id="{}"/>"#, source_task_id)),
+        "Subtask should have source from frontmatter. Output: {}",
+        show_stdout
+    );
 }

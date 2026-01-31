@@ -19,7 +19,7 @@ pub struct AikiSessionEndedPayload {
 /// Executes the session.ended flow section for user-defined cleanup actions,
 /// then cleans up the session file and records session end to history.
 pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| format!("Session ended by {:?}", payload.session.agent_type()));
 
@@ -38,17 +38,17 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
         debug_log(|| format!("Failed to record session end: {}", e));
     }
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload (clone needed for session.end() call below)
     let mut state = AikiState::new(payload.clone());
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = execute_hook(
         EventType::SessionEnded,
         &mut state,
-        &core_flow.session_ended,
+        &core_hook.session_ended,
     )?;
 
     // Clean up session file (always happens, regardless of flow result)
@@ -59,16 +59,16 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
     // Extract failures from state
     let failures = state.take_failures();
 
-    // Translate FlowResult to HookResult
+    // Translate HookOutcome to HookResult
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: None,
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => Ok(HookResult {
+        HookOutcome::FailedBlock => Ok(HookResult {
             context: None,
             decision: Decision::Block,
             failures,

@@ -12,6 +12,7 @@ use std::path::Path;
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
+use crate::events::{AikiEvent, AikiTaskClosedPayload, AikiTaskStartedPayload, TaskEventPayload};
 use std::collections::HashSet;
 
 use crate::tasks::{
@@ -99,6 +100,57 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
     }
 
     Ok(sources)
+}
+
+/// Parse --data key=value arguments into a HashMap
+///
+/// If `coerce` is true, values are type-coerced (booleans/numbers normalized).
+/// If `coerce` is false, values are stored verbatim.
+fn parse_data_flags(
+    args: &[String],
+    coerce: bool,
+) -> Result<std::collections::HashMap<String, String>> {
+    use crate::tasks::templates::coerce_to_string;
+
+    let mut data = std::collections::HashMap::new();
+    for arg in args {
+        let (key, value) = arg
+            .split_once('=')
+            .ok_or_else(|| AikiError::InvalidDataFormat(arg.clone()))?;
+        let value = if coerce {
+            coerce_to_string(value)
+        } else {
+            value.to_string()
+        };
+        data.insert(key.to_string(), value);
+    }
+    Ok(data)
+}
+
+/// Infer task type from task properties
+///
+/// Looks at task name and sources to determine type:
+/// - "review" if task name contains "review" or has task: source (follow-up)
+/// - "bug" if task name contains "fix" or "bug"
+/// - "feature" otherwise (default)
+fn infer_task_type(task: &Task) -> String {
+    let name_lower = task.name.to_lowercase();
+
+    // Check name patterns
+    if name_lower.contains("review") {
+        return "review".to_string();
+    }
+    if name_lower.contains("fix") || name_lower.contains("bug") {
+        return "bug".to_string();
+    }
+
+    // Check sources for task: prefix (indicates follow-up/review)
+    if task.sources.iter().any(|s| s.starts_with("task:")) {
+        return "review".to_string();
+    }
+
+    // Default to feature
+    "feature".to_string()
 }
 
 /// Template subcommands for `aiki task template`
@@ -281,6 +333,10 @@ pub enum TaskCommands {
         /// Create blocker task(s) (assigned to human). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
         blocked: Vec<String>,
+
+        /// Force stop even if task is claimed by another session (for orchestrator cleanup)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Close task(s) as done
@@ -289,7 +345,11 @@ pub enum TaskCommands {
         #[arg(value_name = "ID")]
         ids: Vec<String>,
 
-        /// Mark as won't do instead of done
+        /// Closure outcome: done (default), wont_do
+        #[arg(long, default_value = "done")]
+        outcome: String,
+
+        /// Shortcut for --outcome wont_do
         #[arg(long)]
         wont_do: bool,
 
@@ -306,6 +366,10 @@ pub enum TaskCommands {
         /// Show full diffs for all changes made during this task
         #[arg(long)]
         diff: bool,
+
+        /// Expand source references (task: name+instructions, file: content, prompt: text, comment: text+data)
+        #[arg(long)]
+        with_source: bool,
     },
 
     /// Update task details
@@ -355,6 +419,10 @@ pub enum TaskCommands {
         /// Task ID to comment on (defaults to current in-progress task)
         #[arg(long)]
         id: Option<String>,
+
+        /// Add structured data to the comment. Can be specified multiple times.
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
     },
 
     /// Run a task by spawning an agent session
@@ -370,6 +438,36 @@ pub enum TaskCommands {
         /// Override assignee agent (claude-code, codex)
         #[arg(long)]
         agent: Option<String>,
+
+        /// Run asynchronously (spawn agent and return immediately)
+        #[arg(long = "async", short = 'a')]
+        run_async: bool,
+    },
+
+    /// Show diff of changes made while working on a task
+    ///
+    /// Shows the net result of all changes made during a task (baseline → final).
+    /// Uses jj revsets to derive the baseline from provenance metadata.
+    ///
+    /// Examples:
+    ///   aiki task diff abc123...     # Full diff for task
+    ///   aiki task diff abc123 -s     # Summary (file paths with +/- counts)
+    ///   aiki task diff abc123 --stat # Histogram of changes
+    Diff {
+        /// Task ID to show diff for (required)
+        id: String,
+
+        /// Show summary (file paths with +/- counts)
+        #[arg(short = 's', long)]
+        summary: bool,
+
+        /// Show histogram of changes
+        #[arg(long)]
+        stat: bool,
+
+        /// Show only changed file names
+        #[arg(long)]
+        name_only: bool,
     },
 }
 
@@ -446,13 +544,15 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             id,
             reason,
             blocked,
-        } => run_stop(&cwd, id, reason, blocked),
+            force,
+        } => run_stop(&cwd, id, reason, blocked, force),
         TaskCommands::Close {
             ids,
+            outcome,
             wont_do,
             comment,
-        } => run_close(&cwd, ids, wont_do, comment),
-        TaskCommands::Show { id, diff } => run_show(&cwd, id, diff),
+        } => run_close(&cwd, ids, &outcome, wont_do, comment),
+        TaskCommands::Show { id, diff, with_source } => run_show(&cwd, id, diff, with_source),
         TaskCommands::Update {
             id,
             p0,
@@ -463,8 +563,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             assignee,
             unassign,
         } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign),
-        TaskCommands::Comment { text, id } => run_comment(&cwd, text, id),
-        TaskCommands::Run { id, agent } => run_run(&cwd, id, agent),
+        TaskCommands::Comment { text, id, data } => run_comment(&cwd, text, id, data),
+        TaskCommands::Run { id, agent, run_async } => run_run(&cwd, id, agent, run_async),
+        TaskCommands::Diff {
+            id,
+            summary,
+            stat,
+            name_only,
+        } => run_diff(&cwd, id, summary, stat, name_only),
     }
 }
 
@@ -874,6 +980,7 @@ fn run_add(
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
+        task_type: None,
         priority,
         assignee: effective_assignee.clone(),
         sources: sources.clone(),
@@ -890,6 +997,7 @@ fn run_add(
     let new_task = Task {
         id: task_id,
         name,
+        task_type: None,
         priority,
         status: TaskStatus::Open,
         assignee: effective_assignee,
@@ -901,6 +1009,7 @@ fn run_add(
         created_at: timestamp,
         started_at: None,
         claimed_by_session: None,
+        last_session_id: None,
         stopped_reason: None,
         closed_outcome: None,
         comments: Vec::new(),
@@ -1022,6 +1131,7 @@ fn run_start(
         let create_event = TaskEvent::Created {
             task_id: task_id.clone(),
             name: description.clone(),
+            task_type: None,
             priority,
             assignee: None,
             sources: sources.clone(),
@@ -1037,6 +1147,7 @@ fn run_start(
         let new_task = Task {
             id: task_id.clone(),
             name: description.clone(),
+            task_type: None,
             status: TaskStatus::Open,
             priority,
             assignee: None,
@@ -1048,6 +1159,7 @@ fn run_start(
             created_at: timestamp,
             started_at: None,
             claimed_by_session: None,
+            last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
             comments: Vec::new(),
@@ -1128,6 +1240,7 @@ fn run_start(
                 let planning_event = TaskEvent::Created {
                     task_id: planning_id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
+                    task_type: None,
                     priority: TaskPriority::default(),
                     assignee: None,
                     sources: Vec::new(),
@@ -1143,6 +1256,7 @@ fn run_start(
                 let task = Task {
                     id: planning_id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
+                    task_type: None,
                     status: TaskStatus::Open,
                     priority: TaskPriority::default(),
                     assignee: None,
@@ -1154,6 +1268,7 @@ fn run_start(
                     created_at: timestamp,
                     started_at: None,
                     claimed_by_session: None,
+                    last_session_id: None,
                     stopped_reason: None,
                     closed_outcome: None,
                     comments: Vec::new(),
@@ -1208,6 +1323,30 @@ fn run_start(
         stopped: current_in_progress_ids.clone(),
     };
     write_event(cwd, &start_event)?;
+
+    // Emit task.started flow events for each started task
+    for task_id in &actual_ids_to_start {
+        if let Some(task) = find_task(&tasks, task_id) {
+            let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
+                task: TaskEventPayload {
+                    id: task.id.clone(),
+                    name: task.name.clone(),
+                    task_type: infer_task_type(&task),
+                    status: "in_progress".to_string(),
+                    assignee: task.assignee.clone(),
+                    outcome: None,
+                    source: task.sources.first().cloned(),
+                    files: None,
+                    changes: None,
+                },
+                cwd: cwd.to_path_buf(),
+                timestamp,
+            });
+
+            // Dispatch event (fire-and-forget, don't block on failure)
+            let _ = crate::event_bus::dispatch(task_event);
+        }
+    }
 
     // Update task statuses
     for task in &mut stopped_tasks {
@@ -1308,6 +1447,7 @@ fn run_stop(
     id: Option<String>,
     reason: Option<String>,
     blocked: Vec<String>,
+    force: bool,
 ) -> Result<()> {
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
@@ -1352,6 +1492,27 @@ fn run_stop(
     // Get the task before stopping (for output)
     let mut stopped_task = tasks.get(&task_id).expect("Task should exist").clone();
 
+    // Session ownership guard: only owning session can stop (unless --force)
+    if let Some(ref claimed_session) = stopped_task.claimed_by_session {
+        if !force {
+            use crate::session::find_active_session;
+            let is_owner = find_active_session(cwd)
+                .map(|m| &m.session_id == claimed_session)
+                .unwrap_or(false);
+
+            if !is_owner {
+                let xml = XmlBuilder::new("stop")
+                    .error()
+                    .build_error(&format!(
+                        "Task '{}' is claimed by another session. Use --force to override.",
+                        task_id
+                    ));
+                println!("{}", xml);
+                return Ok(());
+            }
+        }
+    }
+
     // Stop the task (batch operation with single task)
     // Store first blocked reason in event (for backward compatibility)
     let stop_event = TaskEvent::Stopped {
@@ -1370,6 +1531,7 @@ fn run_stop(
         let blocker_event = TaskEvent::Created {
             task_id: blocker_id.clone(),
             name: blocked_reason.clone(),
+            task_type: None,
             priority: TaskPriority::P0, // Blockers are high priority
             assignee: Some("human".to_string()),
             sources: Vec::new(),
@@ -1387,6 +1549,7 @@ fn run_stop(
             Task {
                 id: blocker_id,
                 name: blocked_reason.clone(),
+                task_type: None,
                 status: TaskStatus::Open,
                 priority: TaskPriority::P0,
                 assignee: Some("human".to_string()),
@@ -1398,6 +1561,7 @@ fn run_stop(
                 created_at: timestamp,
                 started_at: None,
                 claimed_by_session: None,
+                last_session_id: None,
                 stopped_reason: None,
                 closed_outcome: None,
                 comments: Vec::new(),
@@ -1471,9 +1635,28 @@ fn run_stop(
 }
 
 /// Close task(s) as done
-fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String>) -> Result<()> {
+fn run_close(
+    cwd: &Path,
+    ids: Vec<String>,
+    outcome_str: &str,
+    wont_do: bool,
+    comment: Option<String>,
+) -> Result<()> {
     use crate::tasks::manager::{all_subtasks_closed, get_all_unclosed_descendants};
     use std::io::Read;
+
+    // Validate outcome (unless --wont_do is used, which overrides)
+    if !wont_do {
+        match outcome_str {
+            "done" | "wont_do" => {}
+            _ => {
+                return Err(AikiError::InvalidOutcome(
+                    outcome_str.to_string(),
+                    vec!["done".to_string(), "wont_do".to_string()],
+                ));
+            }
+        }
+    }
 
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
@@ -1542,7 +1725,8 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         ));
     }
 
-    let outcome = if wont_do {
+    // --wont_do flag overrides --outcome for backwards compatibility
+    let outcome = if wont_do || outcome_str == "wont_do" {
         TaskOutcome::WontDo
     } else {
         TaskOutcome::Done
@@ -1568,6 +1752,7 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         let cascade_comment = TaskEvent::CommentAdded {
             task_ids: cascade_ids,
             text: "Closed with parent".to_string(),
+            data: std::collections::HashMap::new(),
             timestamp: comment_timestamp,
         };
         write_event(cwd, &cascade_comment)?;
@@ -1578,6 +1763,7 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         let explicit_comment = TaskEvent::CommentAdded {
             task_ids: explicit_ids,
             text: comment.clone(),
+            data: std::collections::HashMap::new(),
             timestamp: comment_timestamp,
         };
         write_event(cwd, &explicit_comment)?;
@@ -1590,6 +1776,35 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
         timestamp: close_timestamp,
     };
     write_event(cwd, &close_event)?;
+
+    // Note: We intentionally do NOT terminate background processes on close.
+    // Close is called by the agent when it finishes work gracefully.
+    // Use `aiki task stop` to forcibly terminate a running agent.
+
+    // Emit task.closed flow events for each closed task
+    for task_id in &ids_to_close {
+        if let Some(task) = tasks.get(task_id) {
+            let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
+                task: TaskEventPayload {
+                    id: task.id.clone(),
+                    name: task.name.clone(),
+                    task_type: infer_task_type(task),
+                    status: "closed".to_string(),
+                    assignee: task.assignee.clone(),
+                    outcome: Some(outcome.to_string()),
+                    source: task.sources.first().cloned(),
+                    // TODO: Implement lazy loading for files/changes (see ops/now/lazy-load-payloads.md)
+                    files: None,
+                    changes: None,
+                },
+                cwd: cwd.to_path_buf(),
+                timestamp: close_timestamp,
+            });
+
+            // Dispatch event (fire-and-forget, don't block on failure)
+            let _ = crate::event_bus::dispatch(task_event);
+        }
+    }
 
     // Update closed tasks status in local state
     for task in &mut closed_tasks {
@@ -1627,14 +1842,33 @@ fn run_close(cwd: &Path, ids: Vec<String>, wont_do: bool, comment: Option<String
 
                 // Auto-start the parent for review/finalization
                 // Note: session_id is None since close doesn't have session context
+                let auto_start_timestamp = chrono::Utc::now();
                 let start_event = TaskEvent::Started {
                     task_ids: vec![parent_id.clone()],
                     agent_type: "claude-code".to_string(),
                     session_id: None,
-                    timestamp: chrono::Utc::now(),
+                    timestamp: auto_start_timestamp,
                     stopped: Vec::new(),
                 };
                 write_event(cwd, &start_event)?;
+
+                // Emit task.started flow event for auto-started parent
+                let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
+                    task: TaskEventPayload {
+                        id: parent.id.clone(),
+                        name: parent.name.clone(),
+                        task_type: infer_task_type(parent),
+                        status: "in_progress".to_string(),
+                        assignee: parent.assignee.clone(),
+                        outcome: None,
+                        source: parent.sources.first().cloned(),
+                        files: None,
+                        changes: None,
+                    },
+                    cwd: cwd.to_path_buf(),
+                    timestamp: auto_start_timestamp,
+                });
+                let _ = crate::event_bus::dispatch(task_event);
 
                 parent.status = TaskStatus::InProgress;
                 parent.claimed_by_session = None;
@@ -1789,8 +2023,218 @@ struct ChangeInfo {
     timestamp: Option<String>,
 }
 
+/// Parsed source reference types
+enum SourceRef {
+    Task { id: String },
+    Prompt { id: String },
+    File { path: String },
+    Comment { id: String },
+    Unknown { raw: String },
+}
+
+/// Parse a source string into a typed reference
+fn parse_source(source: &str) -> SourceRef {
+    if let Some((source_type, id)) = source.split_once(':') {
+        match source_type {
+            "task" => SourceRef::Task { id: id.to_string() },
+            "prompt" => SourceRef::Prompt { id: id.to_string() },
+            "file" => SourceRef::File { path: id.to_string() },
+            "comment" => SourceRef::Comment { id: id.to_string() },
+            _ => SourceRef::Unknown { raw: source.to_string() },
+        }
+    } else {
+        SourceRef::Unknown { raw: source.to_string() }
+    }
+}
+
+/// Format a source reference as XML
+///
+/// When `expand` is false, returns minimal XML: `<source type="task" id="..."/>`
+/// When `expand` is true, includes full content from the source.
+fn format_source(
+    cwd: &Path,
+    source: &str,
+    tasks: &std::collections::HashMap<String, Task>,
+    expand: bool,
+) -> String {
+    use crate::tasks::xml::escape_xml;
+
+    let parsed = parse_source(source);
+
+    match parsed {
+        SourceRef::Task { id } => {
+            if expand {
+                // Look up the task and include its name + instructions
+                if let Some(task) = tasks.get(&id) {
+                    let mut xml = format!(
+                        "\n    <source type=\"task\" id=\"{}\">",
+                        escape_xml(&id)
+                    );
+                    xml.push_str(&format!(
+                        "\n      <name>{}</name>",
+                        escape_xml(&task.name)
+                    ));
+                    if let Some(ref instructions) = task.instructions {
+                        xml.push_str(&format!(
+                            "\n      <instructions>{}</instructions>",
+                            escape_xml(instructions)
+                        ));
+                    }
+                    // Show nested sources as minimal refs (not recursively expanded)
+                    for nested_source in &task.sources {
+                        let nested_parsed = parse_source(nested_source);
+                        xml.push_str(&format_source_minimal(&nested_parsed));
+                    }
+                    xml.push_str("\n    </source>");
+                    xml
+                } else {
+                    format!(
+                        "\n    <source type=\"task\" id=\"{}\" error=\"not_found\"/>",
+                        escape_xml(&id)
+                    )
+                }
+            } else {
+                format!(
+                    "\n    <source type=\"task\" id=\"{}\"/>",
+                    escape_xml(&id)
+                )
+            }
+        }
+        SourceRef::Prompt { id } => {
+            if expand {
+                // Load prompt from global aiki history repo
+                use crate::global::global_aiki_dir;
+                use crate::history::get_prompt_by_change_id;
+
+                let global_repo = global_aiki_dir();
+                match get_prompt_by_change_id(&global_repo, &id) {
+                    Ok(Some(content)) => {
+                        format!(
+                            "\n    <source type=\"prompt\" id=\"{}\">\n      <text><![CDATA[{}]]></text>\n    </source>",
+                            escape_xml(&id),
+                            content
+                        )
+                    }
+                    _ => {
+                        format!(
+                            "\n    <source type=\"prompt\" id=\"{}\" error=\"not_found\"/>",
+                            escape_xml(&id)
+                        )
+                    }
+                }
+            } else {
+                format!(
+                    "\n    <source type=\"prompt\" id=\"{}\"/>",
+                    escape_xml(&id)
+                )
+            }
+        }
+        SourceRef::File { path } => {
+            if expand {
+                // Try to read the file content
+                let full_path = cwd.join(&path);
+                match std::fs::read_to_string(&full_path) {
+                    Ok(content) => {
+                        format!(
+                            "\n    <source type=\"file\" path=\"{}\">\n      <content><![CDATA[{}]]></content>\n    </source>",
+                            escape_xml(&path),
+                            content
+                        )
+                    }
+                    Err(_) => {
+                        format!(
+                            "\n    <source type=\"file\" path=\"{}\" error=\"not_found\"/>",
+                            escape_xml(&path)
+                        )
+                    }
+                }
+            } else {
+                format!(
+                    "\n    <source type=\"file\" path=\"{}\"/>",
+                    escape_xml(&path)
+                )
+            }
+        }
+        SourceRef::Comment { id } => {
+            if expand {
+                // Comment IDs are in format "task_id:comment_index"
+                // Try to parse and look up the comment
+                if let Some((task_id, index_str)) = id.split_once(':') {
+                    if let Ok(index) = index_str.parse::<usize>() {
+                        if let Some(task) = tasks.get(task_id) {
+                            if let Some(comment) = task.comments.get(index) {
+                                let mut xml = format!(
+                                    "\n    <source type=\"comment\" id=\"{}\" task_id=\"{}\">",
+                                    escape_xml(&id),
+                                    escape_xml(task_id)
+                                );
+                                xml.push_str(&format!(
+                                    "\n      <text>{}</text>",
+                                    escape_xml(&comment.text)
+                                ));
+                                if !comment.data.is_empty() {
+                                    xml.push_str("\n      <data>");
+                                    for (key, value) in &comment.data {
+                                        xml.push_str(&format!(
+                                            "\n        <field key=\"{}\">{}</field>",
+                                            escape_xml(key),
+                                            escape_xml(value)
+                                        ));
+                                    }
+                                    xml.push_str("\n      </data>");
+                                }
+                                xml.push_str("\n    </source>");
+                                return xml;
+                            }
+                        }
+                    }
+                }
+                // Could not find or parse comment
+                format!(
+                    "\n    <source type=\"comment\" id=\"{}\" error=\"not_found\"/>",
+                    escape_xml(&id)
+                )
+            } else {
+                format!(
+                    "\n    <source type=\"comment\" id=\"{}\"/>",
+                    escape_xml(&id)
+                )
+            }
+        }
+        SourceRef::Unknown { raw } => {
+            format!(
+                "\n    <source type=\"unknown\" raw=\"{}\"/>",
+                escape_xml(&raw)
+            )
+        }
+    }
+}
+
+/// Format a source reference as minimal XML (for nested sources)
+fn format_source_minimal(source: &SourceRef) -> String {
+    use crate::tasks::xml::escape_xml;
+
+    match source {
+        SourceRef::Task { id } => {
+            format!("\n      <source type=\"task\" id=\"{}\"/>", escape_xml(id))
+        }
+        SourceRef::Prompt { id } => {
+            format!("\n      <source type=\"prompt\" id=\"{}\"/>", escape_xml(id))
+        }
+        SourceRef::File { path } => {
+            format!("\n      <source type=\"file\" path=\"{}\"/>", escape_xml(path))
+        }
+        SourceRef::Comment { id } => {
+            format!("\n      <source type=\"comment\" id=\"{}\"/>", escape_xml(id))
+        }
+        SourceRef::Unknown { raw } => {
+            format!("\n      <source type=\"unknown\" raw=\"{}\"/>", escape_xml(raw))
+        }
+    }
+}
+
 /// Show task details (including subtasks for parent tasks)
-fn run_show(cwd: &Path, id: Option<String>, show_diff: bool) -> Result<()> {
+fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
     use crate::tasks::xml::escape_xml;
 
@@ -1846,11 +2290,9 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool) -> Result<()> {
 
     // Add sources if any
     if !task.sources.is_empty() {
-        content.push_str("\n    <sources>");
         for source in &task.sources {
-            content.push_str(&format!("\n      <source>{}</source>", escape_xml(source)));
+            content.push_str(&format_source(cwd, source, &tasks, with_source));
         }
-        content.push_str("\n    </sources>");
     }
 
     // Add subtasks section if this is a parent
@@ -1889,6 +2331,21 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool) -> Result<()> {
             ));
         }
         content.push_str("\n    </comments>");
+    }
+
+    // Add files_changed summary for closed tasks
+    if task.status == TaskStatus::Closed {
+        if let Some(files) = get_task_changed_files(cwd, &task_id)? {
+            let total_files = files.len();
+            content.push_str(&format!("\n    <files_changed total=\"{}\">", total_files));
+            for path in &files {
+                content.push_str(&format!(
+                    "\n      <file path=\"{}\" />",
+                    escape_xml(path)
+                ));
+            }
+            content.push_str("\n    </files_changed>");
+        }
     }
 
     // Query changes for this task
@@ -1940,6 +2397,240 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool) -> Result<()> {
 
     println!("{}", xml);
     Ok(())
+}
+
+/// Show diff of changes made while working on a task
+///
+/// Shows the net result (baseline → final) of all task work.
+/// Uses jj revsets to derive baseline from provenance metadata.
+fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) -> Result<()> {
+    use crate::jj::jj_cmd;
+
+    // Verify task exists
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+    if find_task(&tasks, &id).is_none() {
+        return Err(AikiError::TaskNotFound(id));
+    }
+
+    // Build revset pattern for task
+    // For parent tasks with subtasks, match task=<id> AND task=<id>.* (subtasks)
+    let pattern = build_task_revset_pattern(&id);
+
+    // Check if any changes exist for this task
+    let check_output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &pattern,
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query changes: {}", e)))?;
+
+    // Distinguish between jj failure and empty results
+    if !check_output.status.success() {
+        let stderr = String::from_utf8_lossy(&check_output.stderr);
+        // "Revset resolved to no revisions" is not an error - just means no matches
+        if !stderr.contains("no revisions") {
+            return Err(AikiError::JjCommandFailed(format!(
+                "jj log failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    if String::from_utf8_lossy(&check_output.stdout).trim().is_empty() {
+        println!(
+            "No changes found for task {}.\n\n\
+             The task exists but has no associated code changes in jj history.\n\
+             This may happen if:\n\
+             - Task has no code changes yet\n\
+             - Changes were made without aiki provenance tracking",
+            id
+        );
+        return Ok(());
+    }
+
+    // Build revset expressions for baseline and final
+    // - roots(pattern) = earliest changes for task
+    // - parents(roots(...)) = state before task started (baseline)
+    // - heads(pattern) = latest changes for task (final)
+    let from_revset = format!("parents(roots({}))", pattern);
+    let to_revset = format!("heads({})", pattern);
+
+    // Build jj diff command
+    let mut cmd = jj_cmd();
+    cmd.current_dir(cwd)
+        .arg("diff")
+        .arg("--from")
+        .arg(&from_revset)
+        .arg("--to")
+        .arg(&to_revset)
+        .arg("--ignore-working-copy");
+
+    // Add format options
+    if summary {
+        cmd.arg("--summary");
+    } else if stat {
+        cmd.arg("--stat");
+    } else if name_only {
+        // jj doesn't have --name-only but we can use -T to just print names
+        // Actually, use --summary and filter to just paths
+        // For now, use --summary which gives similar output
+        cmd.arg("--summary");
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Handle "no common ancestor" case
+        if stderr.contains("no common ancestor") || stderr.contains("empty") {
+            println!("Warning: Task changes have no common baseline - showing full content");
+        } else {
+            return Err(AikiError::JjCommandFailed(format!(
+                "jj diff failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    // Output jj's native format directly (no XML wrapper)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if name_only && !summary && !stat {
+        // Parse --summary output to extract just file names
+        for line in stdout.lines() {
+            // Summary format: "M path/to/file" or "A path/to/file"
+            let line = line.trim();
+            if line.len() > 2 {
+                // Skip status char and space
+                let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                if parts.len() == 2 {
+                    println!("{}", parts[1]);
+                }
+            }
+        }
+    } else {
+        print!("{}", stdout);
+    }
+
+    Ok(())
+}
+
+/// Build revset pattern for a task, including subtasks
+///
+/// For task ID "abc123", this matches:
+/// - description("task=abc123") - the task itself
+/// - description("task=abc123.") - any subtasks (abc123.1, abc123.2, etc.)
+fn build_task_revset_pattern(task_id: &str) -> String {
+    format!(
+        "description(substring:\"task={}\") | description(substring:\"task={}.\")",
+        task_id, task_id
+    )
+}
+
+/// Get list of files changed during a task
+///
+/// Uses jj diff --summary with revset-based baseline/final approach.
+/// Returns None if no changes found, otherwise returns list of file paths.
+fn get_task_changed_files(cwd: &Path, task_id: &str) -> Result<Option<Vec<String>>> {
+    use crate::jj::jj_cmd;
+
+    let pattern = build_task_revset_pattern(task_id);
+
+    // Check if any changes exist for this task
+    let check_output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &pattern,
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query changes: {}", e)))?;
+
+    // Distinguish between jj failure and empty results
+    if !check_output.status.success() {
+        let stderr = String::from_utf8_lossy(&check_output.stderr);
+        if !stderr.contains("no revisions") {
+            return Err(AikiError::JjCommandFailed(format!(
+                "jj log failed: {}",
+                stderr.trim()
+            )));
+        }
+        return Ok(None);
+    }
+
+    if String::from_utf8_lossy(&check_output.stdout).trim().is_empty() {
+        return Ok(None);
+    }
+
+    // Build revset expressions for baseline and final
+    let from_revset = format!("parents(roots({}))", pattern);
+    let to_revset = format!("heads({})", pattern);
+
+    // Run jj diff --summary to get file paths
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "diff",
+            "--from",
+            &from_revset,
+            "--to",
+            &to_revset,
+            "--summary",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files = parse_diff_summary_files(&stdout);
+
+    if files.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(files))
+    }
+}
+
+/// Parse jj diff --summary output to extract file paths
+///
+/// Example output:
+/// ```
+/// M src/auth.ts
+/// A src/new_file.ts
+/// D src/old_file.ts
+/// ```
+fn parse_diff_summary_files(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            // Format: "M path/to/file" - status char, space, path
+            if line.len() > 2 && line.chars().nth(1) == Some(' ') {
+                Some(line[2..].to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Update task details
@@ -2069,8 +2760,11 @@ fn run_update(
 }
 
 /// Add a comment to a task
-fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
+fn run_comment(cwd: &Path, text: String, id: Option<String>, data_args: Vec<String>) -> Result<()> {
     use crate::tasks::xml::escape_xml;
+
+    // Parse data arguments (verbatim, no coercion for comment metadata)
+    let data = parse_data_flags(&data_args, false)?;
 
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
@@ -2101,6 +2795,7 @@ fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
     let event = TaskEvent::CommentAdded {
         task_ids: vec![task_id.clone()],
         text: text.clone(),
+        data,
         timestamp,
     };
     write_event(cwd, &event)?;
@@ -2130,7 +2825,9 @@ fn run_comment(cwd: &Path, text: String, id: Option<String>) -> Result<()> {
 }
 
 /// Run a task by spawning an agent session
-fn run_run(cwd: &Path, id: String, agent: Option<String>) -> Result<()> {
+fn run_run(cwd: &Path, id: String, agent: Option<String>, run_async: bool) -> Result<()> {
+    use crate::tasks::runner::run_task_async_with_xml;
+
     // Parse and validate agent override if provided
     let agent_override = if let Some(ref agent_str) = agent {
         match AgentType::from_str(agent_str) {
@@ -2147,8 +2844,12 @@ fn run_run(cwd: &Path, id: String, agent: Option<String>) -> Result<()> {
         options = options.with_agent(agent_type);
     }
 
-    // Run the task with XML output
-    run_task_with_xml(cwd, &id, options)
+    // Run the task with XML output - async or blocking
+    if run_async {
+        run_task_async_with_xml(cwd, &id, options)
+    } else {
+        run_task_with_xml(cwd, &id, options)
+    }
 }
 
 /// Handle template subcommands (list, show)
@@ -2268,7 +2969,10 @@ fn create_from_template(
     p3: bool,
 ) -> Result<String> {
     use crate::agents::Assignee;
-    use crate::tasks::templates::{coerce_to_string, find_templates_dir, load_template, substitute_with_template_name, VariableContext};
+    use crate::tasks::templates::{
+        create_tasks_from_template, find_templates_dir, load_template, parse_data_source,
+        resolve_data_source, substitute_with_template_name, VariableContext,
+    };
 
     // Validate source prefixes
     validate_sources(sources)?;
@@ -2276,16 +2980,8 @@ fn create_from_template(
     // Resolve "prompt" source to actual prompt change_id
     let sources = resolve_prompt_sources(cwd, sources.to_vec())?;
 
-    // Parse data arguments into HashMap with type coercion
-    // "true"/"false" → boolean string, numeric strings normalized
-    let mut data: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for arg in data_args {
-        let (key, value) = arg.split_once('=').ok_or_else(|| {
-            AikiError::InvalidTaskSource(format!("Invalid --data format: '{}'. Use: --data key=value", arg))
-        })?;
-        // Apply type coercion: normalizes booleans and numbers
-        data.insert(key.to_string(), coerce_to_string(value));
-    }
+    // Parse data arguments (with type coercion for template variable substitution)
+    let mut data = parse_data_flags(data_args, true)?;
 
     // Find and load template
     let templates_dir = find_templates_dir(cwd)?;
@@ -2367,6 +3063,7 @@ fn create_from_template(
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_name.clone(),
+        task_type: template.parent.task_type.clone(),
         priority,
         assignee: assignee.clone(),
         sources: sources.clone(),
@@ -2378,27 +3075,183 @@ fn create_from_template(
     };
     write_event(cwd, &create_event)?;
 
-    // Create subtasks
-    for (i, subtask_def) in template.subtasks.iter().enumerate() {
-        // Generate subtask ID first (only depends on parent ID and index)
-        let subtask_id = generate_child_id(&task_id, i + 1);
+    // Create subtasks - either dynamic (from data source) or static (from template)
+    if let Some(ref subtasks_source_str) = template.subtasks_source {
+        // Dynamic subtasks: iterate over a data source (e.g., comments from a task)
+        create_dynamic_subtasks(
+            cwd,
+            &template,
+            template_name,
+            subtasks_source_str,
+            &sources,
+            &task_id,
+            &ctx,
+            priority,
+            &assignee,
+            &data,
+            timestamp,
+        )?;
+    } else {
+        // Static subtasks: use predefined subtasks from template
+        create_static_subtasks(
+            cwd,
+            &template,
+            template_name,
+            &task_id,
+            &sources,
+            priority,
+            &assignee,
+            &data,
+            timestamp,
+        )?;
+    }
+
+    Ok(task_id)
+}
+
+/// Create dynamic subtasks by iterating over a data source
+fn create_dynamic_subtasks(
+    cwd: &Path,
+    template: &crate::tasks::templates::TaskTemplate,
+    template_name: &str,
+    subtasks_source_str: &str,
+    sources: &[String],
+    parent_id: &str,
+    parent_ctx: &crate::tasks::templates::VariableContext,
+    parent_priority: TaskPriority,
+    parent_assignee: &Option<String>,
+    parent_data: &std::collections::HashMap<String, String>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    use crate::tasks::templates::{create_tasks_from_template, parse_data_source, resolve_data_source};
+
+    // Parse the data source specification (e.g., "source.comments")
+    let data_source = parse_data_source(subtasks_source_str)?;
+
+    // Find the task ID from sources (look for task: prefix)
+    let source_task_id = sources
+        .iter()
+        .find_map(|s| s.strip_prefix("task:"))
+        .ok_or_else(|| {
+            AikiError::MissingSourceTask(
+                "Dynamic subtasks require --source task:<id> to specify data source".to_string(),
+            )
+        })?;
+
+    // Materialize tasks to get the source task's comments
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+
+    // Resolve the data source (e.g., fetch comments from the source task)
+    let data_items = resolve_data_source(&data_source, source_task_id, &tasks)?;
+
+    // Build context with parent.* builtins for subtask variable substitution
+    // This allows templates to reference parent values via {parent.id}, {parent.data.key}, etc.
+    let mut ctx_with_parent = parent_ctx.clone();
+    ctx_with_parent.set_builtin("parent.id", parent_id);
+    if let Some(ref a) = parent_assignee {
+        ctx_with_parent.set_builtin("parent.assignee", a);
+    }
+    ctx_with_parent.set_builtin("parent.priority", parent_priority.to_string());
+    for (key, value) in parent_data {
+        ctx_with_parent.set_builtin(&format!("parent.data.{}", key), value);
+    }
+    if let Some(source) = sources.first() {
+        ctx_with_parent.set_builtin("parent.source", source);
+    }
+
+    // Use the template resolver to create subtask definitions
+    let (_, subtask_defs) = create_tasks_from_template(template, &ctx_with_parent, Some(data_items))?;
+
+    // Create events for each subtask
+    for (i, subtask_def) in subtask_defs.iter().enumerate() {
+        let subtask_id = generate_child_id(parent_id, i + 1);
 
         // Determine subtask priority (override or inherit)
         let subtask_priority = if let Some(ref p) = subtask_def.priority {
-            TaskPriority::from_str(p).unwrap_or(priority)
+            TaskPriority::from_str(p).unwrap_or(parent_priority)
         } else {
-            priority
+            parent_priority
         };
 
         // Determine subtask assignee (override or inherit)
         let subtask_assignee = if let Some(ref a) = subtask_def.assignee {
             Some(a.clone())
         } else {
-            assignee.clone()
+            parent_assignee.clone()
+        };
+
+        // Build subtask data: start with parent data, then merge subtask-specific data
+        let mut subtask_data = parent_data.clone();
+        for (key, value) in &subtask_def.data {
+            let value_str = match value {
+                serde_json::Value::String(s) => s.clone(),
+                _ => value.to_string(),
+            };
+            subtask_data.insert(key.clone(), value_str);
+        }
+
+        // Build subtask sources: subtask frontmatter sources + parent task reference
+        let mut subtask_sources = subtask_def.sources.clone();
+        subtask_sources.push(format!("task:{}", parent_id));
+
+        let subtask_event = TaskEvent::Created {
+            task_id: subtask_id,
+            name: subtask_def.name.clone(),
+            task_type: None, // Subtasks inherit type from parent context
+            priority: subtask_priority,
+            assignee: subtask_assignee,
+            sources: subtask_sources,
+            template: Some(template.template_id()),
+            working_copy: None,
+            instructions: if subtask_def.instructions.is_empty() {
+                None
+            } else {
+                Some(subtask_def.instructions.clone())
+            },
+            data: subtask_data,
+            timestamp,
+        };
+        write_event(cwd, &subtask_event)?;
+    }
+
+    Ok(())
+}
+
+/// Create static subtasks from template definitions
+fn create_static_subtasks(
+    cwd: &Path,
+    template: &crate::tasks::templates::TaskTemplate,
+    template_name: &str,
+    parent_id: &str,
+    sources: &[String],
+    parent_priority: TaskPriority,
+    parent_assignee: &Option<String>,
+    parent_data: &std::collections::HashMap<String, String>,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    use crate::tasks::templates::substitute_with_template_name;
+
+    for (i, subtask_def) in template.subtasks.iter().enumerate() {
+        // Generate subtask ID first (only depends on parent ID and index)
+        let subtask_id = generate_child_id(parent_id, i + 1);
+
+        // Determine subtask priority (override or inherit)
+        let subtask_priority = if let Some(ref p) = subtask_def.priority {
+            TaskPriority::from_str(p).unwrap_or(parent_priority)
+        } else {
+            parent_priority
+        };
+
+        // Determine subtask assignee (override or inherit)
+        let subtask_assignee = if let Some(ref a) = subtask_def.assignee {
+            Some(a.clone())
+        } else {
+            parent_assignee.clone()
         };
 
         // Merge data: parent data + subtask frontmatter data (subtask wins on conflict)
-        let mut subtask_data = data.clone();
+        let mut subtask_data = parent_data.clone();
         for (key, value) in &subtask_def.data {
             // Convert serde_json::Value to string
             let value_str = match value {
@@ -2410,7 +3263,7 @@ fn create_from_template(
 
         // Build subtask-specific context for variable substitution
         // Subtask context uses subtask's data/assignee/priority, with parent.* prefix for parent values
-        let mut subtask_ctx = VariableContext::new();
+        let mut subtask_ctx = crate::tasks::templates::VariableContext::new();
         for (key, value) in &subtask_data {
             subtask_ctx.set_data(key, value);
         }
@@ -2424,12 +3277,12 @@ fn create_from_template(
             subtask_ctx.set_builtin("type", t);
         }
         // Parent context accessible via parent.* prefix
-        subtask_ctx.set_builtin("parent.id", &task_id);
-        if let Some(ref a) = assignee {
+        subtask_ctx.set_builtin("parent.id", parent_id);
+        if let Some(ref a) = parent_assignee {
             subtask_ctx.set_builtin("parent.assignee", a);
         }
-        subtask_ctx.set_builtin("parent.priority", priority.to_string());
-        for (key, value) in &data {
+        subtask_ctx.set_builtin("parent.priority", parent_priority.to_string());
+        for (key, value) in parent_data {
             subtask_ctx.set_builtin(&format!("parent.data.{}", key), value);
         }
         if let Some(source) = sources.first() {
@@ -2445,12 +3298,20 @@ fn create_from_template(
             None
         };
 
+        // Build subtask sources: subtask frontmatter sources (with variable substitution) + parent task reference
+        let mut subtask_sources: Vec<String> = subtask_def.sources
+            .iter()
+            .map(|s| substitute_with_template_name(s, &subtask_ctx, Some(template_name)))
+            .collect::<Result<Vec<_>>>()?;
+        subtask_sources.push(format!("task:{}", parent_id));
+
         let subtask_event = TaskEvent::Created {
             task_id: subtask_id,
             name: subtask_name,
+            task_type: None, // Subtasks inherit type from parent context
             priority: subtask_priority,
             assignee: subtask_assignee,
-            sources: vec![format!("task:{}", task_id)],
+            sources: subtask_sources,
             template: Some(template.template_id()),
             working_copy: None, // Inherit from parent (captured once)
             instructions: subtask_instructions,
@@ -2460,7 +3321,7 @@ fn create_from_template(
         write_event(cwd, &subtask_event)?;
     }
 
-    Ok(task_id)
+    Ok(())
 }
 
 /// Get the current working copy change_id from JJ
@@ -2488,3 +3349,44 @@ fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_task_revset_pattern() {
+        let pattern = build_task_revset_pattern("abc123");
+        assert!(pattern.contains("task=abc123"));
+        assert!(pattern.contains("task=abc123."));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_basic() {
+        let output = r#"M src/auth.ts
+A src/new_file.ts
+D src/old_file.ts
+"#;
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], "src/auth.ts");
+        assert_eq!(files[1], "src/new_file.ts");
+        assert_eq!(files[2], "src/old_file.ts");
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_single() {
+        let output = "M path/to/file.rs\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], "path/to/file.rs");
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_empty() {
+        let output = "";
+        let files = parse_diff_summary_files(output);
+        assert!(files.is_empty());
+    }
+}

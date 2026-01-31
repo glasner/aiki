@@ -333,7 +333,7 @@ fn test_git_hooks_installation() -> Result<()> {
         hooks_path
     );
 
-    // Verify global hook exists (hooks should be installed via `aiki hooks install`)
+    // Verify global hook exists (hooks should be installed via `aiki init`)
     let home_dir = dirs::home_dir().expect("home directory should exist");
     let global_hook_file = home_dir.join(".aiki/githooks/prepare-commit-msg");
     if global_hook_file.exists() {
@@ -494,7 +494,7 @@ fn test_hook_template_embedded() -> Result<()> {
 
     if !hook_file.exists() {
         // Skip test if global hooks not installed
-        eprintln!("Skipping test: global hooks not installed. Run `aiki hooks install` first.");
+        eprintln!("Skipping test: global hooks not installed. Run `aiki init` first.");
         return Ok(());
     }
 

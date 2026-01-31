@@ -20,35 +20,35 @@ pub struct AikiCommitMessageStartedPayload {
 pub fn handle_commit_message_started(
     payload: AikiCommitMessageStartedPayload,
 ) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| "Preparing commit message");
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = execute_hook(
         EventType::CommitMessageStarted,
         &mut state,
-        &core_flow.commit_message_started,
+        &core_hook.commit_message_started,
     )?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: None,
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => {
+        HookOutcome::FailedBlock => {
             // Block the commit
             Ok(HookResult {
                 context: None,

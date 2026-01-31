@@ -193,3 +193,15 @@ commit.message_started:
 # This section is for user-defined cleanup actions
 session.ended:
   # Empty by default - can be customized in user flows
+
+# ==============================================================================
+# Task Lifecycle Events
+# ==============================================================================
+
+# task.started: Handle actions when a task is started (transitions to in_progress)
+task.started:
+  # Empty by default - can be customized in user flows
+
+# task.closed: Handle actions when a task is closed
+task.closed:
+  # Empty by default - can be customized in user flows

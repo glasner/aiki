@@ -21,7 +21,7 @@ pub struct AikiShellPermissionAskedPayload {
 pub fn handle_shell_permission_asked(
     payload: AikiShellPermissionAskedPayload,
 ) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
@@ -32,17 +32,17 @@ pub fn handle_shell_permission_asked(
         )
     });
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = execute_hook(
         EventType::ShellPermissionAsked,
         &mut state,
-        &core_flow.shell_permission_asked,
+        &core_hook.shell_permission_asked,
     )?;
 
     // Extract failures from state
@@ -50,14 +50,14 @@ pub fn handle_shell_permission_asked(
 
     // shell.permission_asked is gateable - can block based on flow result
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: None,
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => Ok(HookResult {
+        HookOutcome::FailedBlock => Ok(HookResult {
             context: None,
             decision: Decision::Block,
             failures,

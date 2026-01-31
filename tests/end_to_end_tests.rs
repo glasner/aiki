@@ -83,8 +83,8 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     )
     .unwrap();
 
-    // Step 9: Call aiki hooks handle (simulates Claude Code PostToolUse hook)
-    // The new hook system uses the event bus and flow engine for provenance recording.
+    // Step 9: Call aiki hooks stdin (simulates Claude Code PostToolUse hook)
+    // The hook system uses the event bus and flow engine for provenance recording.
     let hook_input = serde_json::json!({
         "session_id": "test-session-e2e",
         "transcript_path": "/path/to/transcript.json",
@@ -104,7 +104,7 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     let mut hooks_cmd = Command::cargo_bin("aiki").unwrap();
     let output = hooks_cmd
         .arg("hooks")
-        .arg("handle")
+        .arg("stdin")
         .arg("--agent")
         .arg("claude-code")
         .arg("--event")
@@ -112,22 +112,22 @@ fn test_complete_workflow_init_to_provenance_tracking() {
         .write_stdin(serde_json::to_string(&hook_input).unwrap())
         .current_dir(repo_path)
         .output()
-        .expect("Failed to run hooks handle");
+        .expect("Failed to run hooks stdin");
 
     let elapsed = start.elapsed();
 
-    // Debug: Print hooks handle output
+    // Debug: Print hooks stdin output
     println!(
-        "hooks handle stdout: {}",
+        "hooks stdin stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
     println!(
-        "hooks handle stderr: {}",
+        "hooks stdin stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    println!("hooks handle status: {}", output.status);
+    println!("hooks stdin status: {}", output.status);
 
-    assert!(output.status.success(), "hooks handle should succeed");
+    assert!(output.status.success(), "hooks stdin should succeed");
 
     println!(
         "⏱️  Hook execution time: {:.2}ms",
@@ -271,7 +271,7 @@ fn test_complete_workflow_init_to_provenance_tracking() {
     println!("  ✓ JJ repository initialized");
     println!("  ✓ Git hooks configured to use global hooks");
     println!("  ✓ File was edited: test.rs");
-    println!("  ✓ hooks handle completed successfully");
+    println!("  ✓ hooks stdin completed successfully");
     println!("  ✓ Provenance metadata embedded in parent change description");
     println!("  ✓ Metadata format validated");
     println!("  ✓ File content verified: {:?}", final_content.trim());

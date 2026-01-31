@@ -1,5 +1,5 @@
 /// Tests for YAML parsing of new flow statement syntax
-use aiki::flows::types::{Action, Flow, FlowStatement};
+use aiki::flows::types::{Action, Hook, HookStatement};
 
 #[test]
 fn test_parse_flow_with_statements() {
@@ -16,14 +16,14 @@ session.started:
       - shell: "echo 'New session'"
 "#;
 
-    let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+    let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(flow.name, "test-flow");
-    assert_eq!(flow.session_started.len(), 1);
+    assert_eq!(hook.name, "test-flow");
+    assert_eq!(hook.session_started.len(), 1);
 
     // Verify it's an if statement
-    match &flow.session_started[0] {
-        FlowStatement::If(if_stmt) => {
+    match &hook.session_started[0] {
+        HookStatement::If(if_stmt) => {
             assert_eq!(if_stmt.condition, "$SESSION_ID != ''");
             assert_eq!(if_stmt.then.len(), 1);
             assert!(if_stmt.else_.is_some());
@@ -49,12 +49,12 @@ turn.started:
       - log: "Unknown"
 "#;
 
-    let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+    let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(flow.turn_started.len(), 1);
+    assert_eq!(hook.turn_started.len(), 1);
 
-    match &flow.turn_started[0] {
-        FlowStatement::Switch(switch_stmt) => {
+    match &hook.turn_started[0] {
+        HookStatement::Switch(switch_stmt) => {
             assert_eq!(switch_stmt.expression, "$agent_type");
             assert_eq!(switch_stmt.cases.len(), 2);
             assert!(switch_stmt.cases.contains_key("claude"));
@@ -81,13 +81,13 @@ change.completed:
             - log: "Python file"
 "#;
 
-    let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+    let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.change_completed[0] {
-        FlowStatement::If(if_stmt) => {
+    match &hook.change_completed[0] {
+        HookStatement::If(if_stmt) => {
             assert_eq!(if_stmt.then.len(), 1);
             match &if_stmt.then[0] {
-                FlowStatement::Switch(_) => {
+                HookStatement::Switch(_) => {
                     // Success - found nested switch
                 }
                 _ => panic!("Expected nested Switch statement"),
@@ -113,15 +113,15 @@ session.ended:
           - stop: "Fatal"
 "#;
 
-    let flow: Flow = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+    let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &flow.session_ended[0] {
-        FlowStatement::Action(Action::Shell(shell_action)) => {
+    match &hook.session_ended[0] {
+        HookStatement::Action(Action::Shell(shell_action)) => {
             match &shell_action.on_failure {
                 aiki::flows::types::OnFailure::Statements(stmts) => {
                     assert_eq!(stmts.len(), 1);
                     match &stmts[0] {
-                        FlowStatement::If(_) => {
+                        HookStatement::If(_) => {
                             // Success
                         }
                         _ => panic!("Expected If in on_failure"),

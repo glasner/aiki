@@ -301,6 +301,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: name.to_string(),
+            task_type: None,
             status,
             priority,
             assignee: None,
@@ -312,6 +313,7 @@ mod tests {
             created_at: Utc::now(),
             started_at: None,
             claimed_by_session: None,
+            last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
             comments: Vec::new(),

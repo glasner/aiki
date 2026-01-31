@@ -76,6 +76,10 @@ pub struct ProvenanceRecord {
     /// Ordered by start time (most recently started first)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<String>,
+    /// JJ change_id of the prompt that triggered this turn
+    /// Allows looking up the full prompt text via history::get_prompt_by_change_id()
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_change_id: Option<String>,
 }
 
 impl ProvenanceRecord {
@@ -112,6 +116,7 @@ impl ProvenanceRecord {
             turn_source: event.turn.source.clone(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         }
     }
 
@@ -119,6 +124,13 @@ impl ProvenanceRecord {
     #[must_use]
     pub fn with_tasks(mut self, tasks: Vec<String>) -> Self {
         self.tasks = tasks;
+        self
+    }
+
+    /// Set the prompt change_id for this change
+    #[must_use]
+    pub fn with_prompt_change_id(mut self, prompt_change_id: Option<String>) -> Self {
+        self.prompt_change_id = prompt_change_id;
         self
     }
 
@@ -224,6 +236,11 @@ impl ProvenanceRecord {
             lines.push(format!("turn_source={}", self.turn_source));
         }
 
+        // Add prompt change_id (allows looking up the prompt that triggered this turn)
+        if let Some(ref prompt_id) = self.prompt_change_id {
+            lines.push(format!("prompt={}", prompt_id));
+        }
+
         if let Some(ref coauthor) = self.coauthor {
             lines.push(format!("coauthor={}", coauthor));
         }
@@ -321,6 +338,7 @@ impl ProvenanceRecord {
         let client_version = metadata.get("client_version").cloned();
         let agent_version = metadata.get("agent_version").cloned();
         let coauthor = metadata.get("coauthor").cloned();
+        let prompt_change_id = metadata.get("prompt").cloned();
 
         // Parse turn tracking fields (optional, default to 0/"")
         let turn = metadata
@@ -348,6 +366,7 @@ impl ProvenanceRecord {
             turn_source,
             coauthor,
             tasks,
+            prompt_change_id,
         }))
     }
 }
@@ -376,6 +395,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -412,6 +432,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -443,6 +464,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -476,6 +498,7 @@ mod tests {
                 turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
+                prompt_change_id: None,
             };
 
             let description = record.to_description();
@@ -510,6 +533,7 @@ mod tests {
                 turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
+                prompt_change_id: None,
             };
 
             let description = record.to_description();
@@ -546,6 +570,7 @@ mod tests {
                 turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
+                prompt_change_id: None,
             };
 
             let description = record.to_description();
@@ -580,6 +605,7 @@ mod tests {
                 turn_source: String::new(),
                 coauthor: None,
                 tasks: Vec::new(),
+                prompt_change_id: None,
             };
 
             let description = record.to_description();
@@ -608,6 +634,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -642,6 +669,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -678,6 +706,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -709,6 +738,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         // Test JSON serialization
@@ -799,6 +829,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = original.to_description();
@@ -863,6 +894,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -908,6 +940,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = original.to_description();
@@ -940,6 +973,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -985,6 +1019,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = original.to_description();
@@ -1021,6 +1056,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: vec!["abc123".to_string()],
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -1047,6 +1083,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: vec!["task1".to_string(), "task2".to_string(), "task3".to_string()],
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -1082,6 +1119,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         let description = record.to_description();
@@ -1161,6 +1199,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: vec!["task-alpha".to_string(), "task-beta".to_string()],
+            prompt_change_id: None,
         };
 
         let description = original.to_description();
@@ -1195,6 +1234,7 @@ mod tests {
             turn_source: String::new(),
             coauthor: None,
             tasks: Vec::new(),
+            prompt_change_id: None,
         };
 
         // Use with_tasks to add task IDs

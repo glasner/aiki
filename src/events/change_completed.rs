@@ -1,4 +1,10 @@
 use super::prelude::*;
+use super::Turn;
+use crate::global;
+use crate::history;
+use crate::history::TurnSource;
+use crate::session::turn_state::generate_turn_id;
+
 // ============================================================================
 // EditDetail Type (shared by write operations)
 // ============================================================================
@@ -342,30 +348,60 @@ pub struct AikiChangeCompletedPayload {
 ///
 /// This is the core provenance tracking event for file mutations.
 /// Records metadata about the file changes in the JJ change description.
-pub fn handle_change_completed(payload: AikiChangeCompletedPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+pub fn handle_change_completed(mut payload: AikiChangeCompletedPayload) -> Result<HookResult> {
+    use super::prelude::execute_hook;
+
+    // Look up current turn info from conversation history
+    // This populates turn metadata (number, id, source) for provenance tracking
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    // Defensive fallback: if history lookup fails, use defaults (turn=0, source=User)
+    if !payload.turn.is_known() {
+        let (turn_number, source) =
+            match history::get_current_turn_info(&global::global_aiki_dir(), payload.session.uuid())
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    debug_log(|| {
+                        format!(
+                            "History lookup failed for session {}, using defaults (turn=0): {}",
+                            payload.session.uuid(),
+                            e
+                        )
+                    });
+                    (0, TurnSource::User)
+                }
+            };
+        if turn_number > 0 {
+            payload.turn = Turn::new(
+                turn_number,
+                generate_turn_id(payload.session.uuid(), turn_number),
+                source.to_string(),
+            );
+        }
+    }
 
     debug_log(|| {
         format!(
-            "change.completed ({}) event from {:?}, session: {}, tool: {}",
+            "change.completed ({}) event from {:?}, session: {}, tool: {}, turn: {}",
             payload.operation.operation_name(),
             payload.session.agent_type(),
             payload.session.external_id(),
-            payload.tool_name
+            payload.tool_name,
+            payload.turn.number
         )
     });
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let _flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let _flow_result = execute_hook(
         EventType::ChangeCompleted,
         &mut state,
-        &core_flow.change_completed,
+        &core_hook.change_completed,
     )?;
 
     // Extract failures from state

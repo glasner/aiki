@@ -9,30 +9,30 @@ use crate::events::AikiEvent;
 use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
-    FlowStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure, OnFailureShortcut,
-    SelfAction, ShellAction, SwitchStatement, TaskRunAction,
+    HookStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure, OnFailureShortcut,
+    ReviewAction, SelfAction, ShellAction, SwitchStatement, TaskRunAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
 use crate::flows::context::ContextChunk;
 
-/// Result of flow execution
+/// Result of hook execution
 #[derive(Debug, Clone)]
-pub enum FlowResult {
+pub enum HookOutcome {
     /// All actions succeeded
     Success,
-    /// Action failed with on_failure: continue (logged, flow continued)
+    /// Action failed with on_failure: continue (logged, hook continued)
     FailedContinue,
-    /// Action failed with on_failure: stop (silent failure, flow stopped)
+    /// Action failed with on_failure: stop (silent failure, hook stopped)
     FailedStop,
     /// Action failed with on_failure: block (block editor operation)
     FailedBlock,
 }
 
-/// Executes flow actions
-pub struct FlowEngine;
+/// Executes hook actions
+pub struct HookEngine;
 
-impl FlowEngine {
+impl HookEngine {
     /// Create a variable resolver with consistent variable availability
     ///
     /// Makes variables available both with and without `event.` prefix:
@@ -334,6 +334,49 @@ impl FlowEngine {
             crate::events::AikiEvent::Unsupported => {
                 // No event-specific variables for unsupported events
             }
+
+            // Task lifecycle events
+            crate::events::AikiEvent::TaskStarted(e) => {
+                // Task info is nested under event.task.*
+                resolver.add_var("event.task.id".to_string(), e.task.id.clone());
+                resolver.add_var("event.task.name".to_string(), e.task.name.clone());
+                resolver.add_var("event.task.type".to_string(), e.task.task_type.clone());
+                resolver.add_var("event.task.status".to_string(), e.task.status.clone());
+                if let Some(ref assignee) = e.task.assignee {
+                    resolver.add_var("event.task.assignee".to_string(), assignee.clone());
+                }
+            }
+            crate::events::AikiEvent::TaskClosed(e) => {
+                // Task info is nested under event.task.*
+                resolver.add_var("event.task.id".to_string(), e.task.id.clone());
+                resolver.add_var("event.task.name".to_string(), e.task.name.clone());
+                resolver.add_var("event.task.type".to_string(), e.task.task_type.clone());
+                resolver.add_var("event.task.status".to_string(), e.task.status.clone());
+                if let Some(ref assignee) = e.task.assignee {
+                    resolver.add_var("event.task.assignee".to_string(), assignee.clone());
+                }
+                if let Some(ref outcome) = e.task.outcome {
+                    resolver.add_var("event.task.outcome".to_string(), outcome.clone());
+                }
+                if let Some(ref source) = e.task.source {
+                    resolver.add_var("event.task.source".to_string(), source.clone());
+                }
+
+                // Register lazy provenance variables - only query JJ when accessed
+                let cwd = e.cwd.clone();
+                let task_id = e.task.id.clone();
+                resolver.add_lazy_var("event.task.changes", move || {
+                    let changes = crate::jj::get_changes_for_task(&cwd, &task_id);
+                    changes.join(" ")
+                });
+
+                let cwd2 = e.cwd.clone();
+                let task_id2 = e.task.id.clone();
+                resolver.add_lazy_var("event.task.files", move || {
+                    let files = crate::jj::get_files_for_task(&cwd2, &task_id2);
+                    files.join(" ")
+                });
+            }
         }
 
         // Add agent type as event.agent_type
@@ -364,9 +407,9 @@ impl FlowEngine {
     ///
     /// Returns the flow result.
     pub fn execute_statements(
-        statements: &[FlowStatement],
+        statements: &[HookStatement],
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
+    ) -> Result<HookOutcome> {
         let mut had_continue_failure = false;
 
         for statement in statements {
@@ -374,36 +417,36 @@ impl FlowEngine {
 
             // Handle flow control results
             match result {
-                FlowResult::Success => {
+                HookOutcome::Success => {
                     // Continue to next statement
                 }
-                FlowResult::FailedContinue => {
+                HookOutcome::FailedContinue => {
                     had_continue_failure = true;
                     // Continue to next statement
                 }
-                FlowResult::FailedStop => {
-                    return Ok(FlowResult::FailedStop);
+                HookOutcome::FailedStop => {
+                    return Ok(HookOutcome::FailedStop);
                 }
-                FlowResult::FailedBlock => {
-                    return Ok(FlowResult::FailedBlock);
+                HookOutcome::FailedBlock => {
+                    return Ok(HookOutcome::FailedBlock);
                 }
             }
         }
 
         // All actions completed
         if had_continue_failure {
-            Ok(FlowResult::FailedContinue)
+            Ok(HookOutcome::FailedContinue)
         } else {
-            Ok(FlowResult::Success)
+            Ok(HookOutcome::Success)
         }
     }
 
     /// Execute a single statement
-    fn execute_statement(statement: &FlowStatement, state: &mut AikiState) -> Result<FlowResult> {
+    fn execute_statement(statement: &HookStatement, state: &mut AikiState) -> Result<HookOutcome> {
         match statement {
-            FlowStatement::If(if_stmt) => Self::execute_if(if_stmt, state),
-            FlowStatement::Switch(switch_stmt) => Self::execute_switch(switch_stmt, state),
-            FlowStatement::Action(action) => {
+            HookStatement::If(if_stmt) => Self::execute_if(if_stmt, state),
+            HookStatement::Switch(switch_stmt) => Self::execute_switch(switch_stmt, state),
+            HookStatement::Action(action) => {
                 // Execute the action
                 let result = Self::execute_action(action, state)?;
 
@@ -414,7 +457,7 @@ impl FlowEngine {
                 if !result.success {
                     Self::handle_action_failure(action, &result, state)
                 } else {
-                    Ok(FlowResult::Success)
+                    Ok(HookOutcome::Success)
                 }
             }
         }
@@ -434,6 +477,7 @@ impl FlowEngine {
                 Self::execute_commit_message(commit_msg_action, state)
             }
             Action::TaskRun(task_run_action) => Self::execute_task_run(task_run_action, state),
+            Action::Review(review_action) => Self::execute_review(review_action, state),
             Action::Continue(continue_action) => Self::execute_continue(continue_action, state),
             Action::Stop(stop_action) => Self::execute_stop(stop_action, state),
             Action::Block(block_action) => Self::execute_block(block_action, state),
@@ -445,7 +489,7 @@ impl FlowEngine {
         action: &Action,
         result: &ActionResult,
         state: &mut AikiState,
-    ) -> Result<FlowResult> {
+    ) -> Result<HookOutcome> {
         let on_failure_behavior = match action {
             Action::Shell(shell_action) => &shell_action.on_failure,
             Action::Jj(jj_action) => &jj_action.on_failure,
@@ -455,10 +499,11 @@ impl FlowEngine {
             Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
             Action::TaskRun(task_run_action) => &task_run_action.on_failure,
-            Action::Log(_) => return Ok(FlowResult::Success),
-            Action::Continue(_) => return Ok(FlowResult::FailedContinue),
-            Action::Stop(_) => return Ok(FlowResult::FailedStop),
-            Action::Block(_) => return Ok(FlowResult::FailedBlock),
+            Action::Review(review_action) => &review_action.on_failure,
+            Action::Log(_) => return Ok(HookOutcome::Success),
+            Action::Continue(_) => return Ok(HookOutcome::FailedContinue),
+            Action::Stop(_) => return Ok(HookOutcome::FailedStop),
+            Action::Block(_) => return Ok(HookOutcome::FailedBlock),
         };
 
         let failure_text = if !result.stderr.is_empty() {
@@ -472,15 +517,15 @@ impl FlowEngine {
                 OnFailureShortcut::Continue => {
                     eprintln!("[aiki] Action failed but continuing: {}", failure_text);
                     state.add_failure(crate::events::result::Failure(failure_text));
-                    Ok(FlowResult::FailedContinue)
+                    Ok(HookOutcome::FailedContinue)
                 }
                 OnFailureShortcut::Stop => {
                     state.add_failure(crate::events::result::Failure(failure_text));
-                    Ok(FlowResult::FailedStop)
+                    Ok(HookOutcome::FailedStop)
                 }
                 OnFailureShortcut::Block => {
                     state.add_failure(crate::events::result::Failure(failure_text));
-                    Ok(FlowResult::FailedBlock)
+                    Ok(HookOutcome::FailedBlock)
                 }
             },
             OnFailure::Statements(on_failure_statements) => {
@@ -490,7 +535,7 @@ impl FlowEngine {
                         failure_text
                     );
                     state.add_failure(crate::events::result::Failure(failure_text));
-                    return Ok(FlowResult::FailedContinue);
+                    return Ok(HookOutcome::FailedContinue);
                 }
 
                 let failures_before = state.failures().len();
@@ -515,7 +560,7 @@ impl FlowEngine {
 
                 // Translate Success to FailedContinue since we had a failure but handled it
                 Ok(match callback_result {
-                    FlowResult::Success => FlowResult::FailedContinue,
+                    HookOutcome::Success => HookOutcome::FailedContinue,
                     other => other,
                 })
             }
@@ -566,6 +611,9 @@ impl FlowEngine {
             }
             Action::TaskRun(_) => {
                 // task.run actions don't produce storable results
+            }
+            Action::Review(_) => {
+                // review actions don't produce storable results
             }
             Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
                 // Flow control actions add messages and control execution flow
@@ -804,6 +852,74 @@ impl FlowEngine {
                 exit_code: Some(1),
                 stdout: String::new(),
                 stderr: e.to_string(),
+            }),
+        }
+    }
+
+    /// Execute a review action - creates and runs a code review task
+    ///
+    /// This is a thin wrapper around `aiki review`. Internally,
+    /// `review: { task_id: X, template: Y }` is equivalent to
+    /// `aiki review X --template Y --async`. Flows always use async mode.
+    fn execute_review(action: &ReviewAction, state: &mut AikiState) -> Result<ActionResult> {
+        use crate::commands::review::{create_review, CreateReviewParams};
+        use crate::tasks::runner::{task_run_async, TaskRunOptions};
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(state);
+
+        // Resolve optional task_id for scope
+        let task_id = action.review.task_id.as_ref().map(|id| resolver.resolve(id));
+
+        // Resolve optional agent override
+        let agent_override = action.review.agent.as_ref().map(|a| resolver.resolve(a));
+
+        // Resolve optional template name
+        let template = action.review.template.as_ref().map(|t| resolver.resolve(t));
+
+        // Get cwd from state
+        let cwd = state.cwd();
+
+        // Create review task using shared logic (same as CLI)
+        let result = match create_review(&cwd, CreateReviewParams {
+            task_id,
+            agent_override,
+            template,
+        }) {
+            Ok(r) => r,
+            Err(AikiError::NothingToReview) => {
+                // No tasks to review - this is a success case for flows
+                return Ok(ActionResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: "Nothing to review - no closed tasks in session.".to_string(),
+                });
+            }
+            Err(e) => {
+                return Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: format!("Failed to create review task: {}", e),
+                });
+            }
+        };
+
+        // Run the review task asynchronously (flows can't block)
+        let options = TaskRunOptions::new();
+        match task_run_async(&cwd, &result.review_task_id, options) {
+            Ok(_handle) => Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: format!("Review task {} started", result.review_task_id),
+                stderr: String::new(),
+            }),
+            Err(e) => Ok(ActionResult {
+                success: false,
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: format!("Failed to start review task: {}", e),
             }),
         }
     }
@@ -1212,7 +1328,7 @@ impl FlowEngine {
     /// 2. Variable aliasing: `let desc = $description`
 
     /// Execute a conditional if/then/else statement
-    fn execute_if(stmt: &IfStatement, state: &mut AikiState) -> Result<FlowResult> {
+    fn execute_if(stmt: &IfStatement, state: &mut AikiState) -> Result<HookOutcome> {
         let condition_result = Self::evaluate_condition(&stmt.condition, state)?;
 
         debug_log(|| {
@@ -1230,14 +1346,14 @@ impl FlowEngine {
             else_statements
         } else {
             debug_log(|| "[flows] No else branch, condition false - no-op");
-            return Ok(FlowResult::Success);
+            return Ok(HookOutcome::Success);
         };
 
         Self::execute_statements(statements_to_execute, state)
     }
 
     /// Execute a switch/case statement
-    fn execute_switch(stmt: &SwitchStatement, state: &mut AikiState) -> Result<FlowResult> {
+    fn execute_switch(stmt: &SwitchStatement, state: &mut AikiState) -> Result<HookOutcome> {
         let mut resolver = Self::create_resolver(state);
         let switch_value = resolver.resolve(&stmt.expression);
 
@@ -1266,7 +1382,7 @@ impl FlowEngine {
                     switch_value
                 )
             });
-            return Ok(FlowResult::Success);
+            return Ok(HookOutcome::Success);
         };
 
         Self::execute_statements(statements_to_execute, state)
@@ -1553,17 +1669,17 @@ impl FlowEngine {
                 .strip_prefix("self.")
                 .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
 
-            // Get current flow name from context
-            let flow_name = state.flow_name.as_ref().ok_or_else(|| {
+            // Get current hook name from context
+            let hook_name = state.hook_name.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Cannot use 'self.{}' - no flow context available",
+                    "Cannot use 'self.{}' - no hook context available",
                     function_name
                 )
             })?;
 
-            // Convert flow name (e.g., "aiki/core") to module.function
-            // Extract module from flow name: aiki/core -> core
-            let module = flow_name.split('/').last().unwrap_or(flow_name);
+            // Convert hook name (e.g., "aiki/core") to module.function
+            // Extract module from hook name: aiki/core -> core
+            let module = hook_name.split('/').last().unwrap_or(hook_name);
             format!("aiki/{}.{}", module, function_name)
         } else {
             function_path.to_string()
@@ -1740,17 +1856,17 @@ impl FlowEngine {
                 .strip_prefix("self.")
                 .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
 
-            // Get current flow name from state
-            let flow_name = state.flow_name.as_ref().ok_or_else(|| {
+            // Get current hook name from state
+            let hook_name = state.hook_name.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Cannot use 'self.{}' - no flow context available",
+                    "Cannot use 'self.{}' - no hook context available",
                     function_name
                 )
             })?;
 
-            // Convert flow name (e.g., "aiki/core") to module.function
-            // Extract module from flow name: aiki/core -> core
-            let module = flow_name.split('/').last().unwrap_or(flow_name);
+            // Convert hook name (e.g., "aiki/core") to module.function
+            // Extract module from hook name: aiki/core -> core
+            let module = hook_name.split('/').last().unwrap_or(hook_name);
             format!("aiki/{}.{}", module, function_name)
         } else {
             function_path.to_string()
@@ -2104,13 +2220,13 @@ mod tests {
         })
     }
 
-    // Helper function for tests that still use Action lists (wraps them in FlowStatements)
-    fn execute_actions(actions: &[Action], state: &mut AikiState) -> Result<FlowResult> {
-        let statements: Vec<FlowStatement> = actions
+    // Helper function for tests that still use Action lists (wraps them in HookStatements)
+    fn execute_actions(actions: &[Action], state: &mut AikiState) -> Result<HookOutcome> {
+        let statements: Vec<HookStatement> = actions
             .iter()
-            .map(|action| FlowStatement::Action(action.clone()))
+            .map(|action| HookStatement::Action(action.clone()))
             .collect();
-        FlowEngine::execute_statements(&statements, state)
+        HookEngine::execute_statements(&statements, state)
     }
 
     #[test]
@@ -2147,7 +2263,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event());
 
-        let result = FlowEngine::execute_log(&action, &mut state).unwrap();
+        let result = HookEngine::execute_log(&action, &mut state).unwrap();
         assert!(result.success);
     }
 
@@ -2160,7 +2276,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_log(&action, &mut state).unwrap();
+        let result = HookEngine::execute_log(&action, &mut state).unwrap();
         assert!(result.success);
     }
 
@@ -2175,7 +2291,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event());
 
-        let result = FlowEngine::execute_shell(&action, &mut state).unwrap();
+        let result = HookEngine::execute_shell(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test"));
     }
@@ -2191,7 +2307,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_shell(&action, &mut state).unwrap();
+        let result = HookEngine::execute_shell(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test.rs"));
     }
@@ -2218,7 +2334,7 @@ mod tests {
         let mut state = AikiState::new(create_test_event());
 
         let result = execute_actions(&actions, &mut state).unwrap();
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
@@ -2240,7 +2356,7 @@ mod tests {
 
         let result = execute_actions(&actions, &mut state).unwrap();
         // Should return FailedContinue since first action failed but flow continued
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
     }
 
     #[test]
@@ -2249,7 +2365,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // This command fails
                 timeout: None,
-                on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Stop(
+                on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Stop(
                     crate::flows::types::StopAction {
                         failure: "Action failed".to_string(),
                     },
@@ -2267,26 +2383,26 @@ mod tests {
 
         let result = execute_actions(&actions, &mut state).unwrap();
         // Should return FailedStop since action failed with on_failure: stop
-        assert!(matches!(result, FlowResult::FailedStop));
+        assert!(matches!(result, HookOutcome::FailedStop));
     }
 
     #[test]
     fn test_is_valid_variable_name() {
         // Valid names
-        assert!(FlowEngine::is_valid_variable_name("description"));
-        assert!(FlowEngine::is_valid_variable_name("desc"));
-        assert!(FlowEngine::is_valid_variable_name("_private"));
-        assert!(FlowEngine::is_valid_variable_name("var123"));
-        assert!(FlowEngine::is_valid_variable_name("my_var"));
-        assert!(FlowEngine::is_valid_variable_name("CamelCase"));
+        assert!(HookEngine::is_valid_variable_name("description"));
+        assert!(HookEngine::is_valid_variable_name("desc"));
+        assert!(HookEngine::is_valid_variable_name("_private"));
+        assert!(HookEngine::is_valid_variable_name("var123"));
+        assert!(HookEngine::is_valid_variable_name("my_var"));
+        assert!(HookEngine::is_valid_variable_name("CamelCase"));
 
         // Invalid names
-        assert!(!FlowEngine::is_valid_variable_name(""));
-        assert!(!FlowEngine::is_valid_variable_name("123var")); // starts with number
-        assert!(!FlowEngine::is_valid_variable_name("my-var")); // contains hyphen
-        assert!(!FlowEngine::is_valid_variable_name("my.var")); // contains dot
-        assert!(!FlowEngine::is_valid_variable_name("my var")); // contains space
-        assert!(!FlowEngine::is_valid_variable_name("$var")); // starts with $
+        assert!(!HookEngine::is_valid_variable_name(""));
+        assert!(!HookEngine::is_valid_variable_name("123var")); // starts with number
+        assert!(!HookEngine::is_valid_variable_name("my-var")); // contains hyphen
+        assert!(!HookEngine::is_valid_variable_name("my.var")); // contains dot
+        assert!(!HookEngine::is_valid_variable_name("my var")); // contains space
+        assert!(!HookEngine::is_valid_variable_name("$var")); // starts with $
     }
 
     #[test]
@@ -2298,7 +2414,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
+        let result = HookEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -2313,7 +2429,7 @@ mod tests {
         let event = create_test_event();
         let mut state = AikiState::new(event);
 
-        let result = FlowEngine::execute_let(&action, &mut state);
+        let result = HookEngine::execute_let(&action, &mut state);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -2341,7 +2457,7 @@ mod tests {
             let event = create_test_event();
             let mut state = AikiState::new(event);
 
-            let result = FlowEngine::execute_let(&action, &mut state);
+            let result = HookEngine::execute_let(&action, &mut state);
             assert!(result.is_err(), "Should reject: {}", let_str);
             assert!(
                 result.unwrap_err().to_string().contains("Invalid variable"),
@@ -2360,7 +2476,7 @@ mod tests {
 
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
-        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
+        let result = HookEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert_eq!(result.stdout, "test.rs");
     }
@@ -2381,7 +2497,7 @@ mod tests {
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = execute_actions(&actions, &mut state).unwrap();
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Check that the variable was stored
         assert_eq!(state.get_variable("desc"), Some(&"test.rs".to_string()));
@@ -2400,7 +2516,7 @@ mod tests {
         let mut state = AikiState::new(event);
 
         let result = execute_actions(&actions, &mut state).unwrap();
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Check that the variable was stored
         assert!(state.get_variable("result").is_some());
@@ -2465,10 +2581,10 @@ mod tests {
 
         let event = create_test_event();
         let mut state = AikiState::new(event);
-        state.flow_name = Some("aiki/core".to_string());
+        state.hook_name = Some("aiki/core".to_string());
 
         // This should succeed because ChangeCompletedPayload has session and tool_name
-        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
+        let result = HookEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         // Result is JSON with author and message fields
         assert!(result.stdout.contains("author"));
@@ -2575,9 +2691,9 @@ mod tests {
 
         let event = create_test_event();
         let mut state = AikiState::new(event);
-        state.flow_name = Some("aiki/core".to_string());
+        state.hook_name = Some("aiki/core".to_string());
 
-        let result = FlowEngine::execute_let(&action, &mut state).unwrap();
+        let result = HookEngine::execute_let(&action, &mut state).unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("author"));
         assert!(result.stdout.contains("message"));
@@ -2594,12 +2710,12 @@ mod tests {
         let event = create_test_event();
         let mut state = AikiState::new(event);
 
-        let result = FlowEngine::execute_let(&action, &mut state);
+        let result = HookEngine::execute_let(&action, &mut state);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("no flow context available"));
+            .contains("no hook context available"));
     }
 
     #[test]
@@ -2620,7 +2736,7 @@ mod tests {
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = execute_actions(&actions, &mut state).unwrap();
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
 
         // Check that the variable was stored
         assert!(state.get_variable("my_var").is_some());
@@ -2651,7 +2767,7 @@ mod tests {
         // Should succeed (we don't validate jj commands in tests)
         assert!(matches!(
             result,
-            FlowResult::Success | FlowResult::FailedContinue
+            HookOutcome::Success | HookOutcome::FailedContinue
         ));
     }
 
@@ -2671,7 +2787,7 @@ mod tests {
         let mut state = AikiState::new(create_test_event_with_file("test.rs"));
 
         let result = execute_actions(&actions, &mut state).unwrap();
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
     }
 
     #[test]
@@ -2679,7 +2795,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowEngine::append_trailer(content, trailer);
+        let result = HookEngine::append_trailer(content, trailer);
 
         // Should have blank line before trailer
         assert!(
@@ -2697,7 +2813,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.\n";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowEngine::append_trailer(content, trailer);
+        let result = HookEngine::append_trailer(content, trailer);
 
         // Should add blank line since content doesn't end with blank line
         assert!(
@@ -2711,7 +2827,7 @@ mod tests {
         let content = "Commit title\n\nCommit body.\n\nSigned-off-by: Author <author@example.com>";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowEngine::append_trailer(content, trailer);
+        let result = HookEngine::append_trailer(content, trailer);
 
         // Should NOT add blank line before second trailer (trailers stay together)
         assert!(
@@ -2725,7 +2841,7 @@ mod tests {
         let content = "Commit title\n\nCommit body text.\n\n";
         let trailer = "Co-authored-by: Test <test@example.com>";
 
-        let result = FlowEngine::append_trailer(content, trailer);
+        let result = HookEngine::append_trailer(content, trailer);
 
         // Should not add another blank line since one already exists
         assert!(
@@ -2742,14 +2858,14 @@ mod tests {
     fn test_if_condition_true_executes_then_branch() {
         let statements = vec![
             // Set a variable using log action (which doesn't require function namespace)
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("status".to_string()),
             })),
             // Conditional that should execute then branch
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$status == true".to_string(),
-                then: vec![FlowStatement::Action(Action::Log(LogAction {
+                then: vec![HookStatement::Action(Action::Log(LogAction {
                     log: "then branch executed".to_string(),
                     alias: Some("result".to_string()),
                 }))],
@@ -2758,9 +2874,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         assert_eq!(
             state.get_variable("result"),
             Some(&"then branch executed".to_string())
@@ -2771,18 +2887,18 @@ mod tests {
     fn test_if_condition_false_executes_else_branch() {
         let statements = vec![
             // Set a variable using log action
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "false".to_string(),
                 alias: Some("status".to_string()),
             })),
             // Conditional that should execute else branch
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$status == true".to_string(),
-                then: vec![FlowStatement::Action(Action::Log(LogAction {
+                then: vec![HookStatement::Action(Action::Log(LogAction {
                     log: "then branch executed".to_string(),
                     alias: Some("result".to_string()),
                 }))],
-                else_: Some(vec![FlowStatement::Action(Action::Log(LogAction {
+                else_: Some(vec![HookStatement::Action(Action::Log(LogAction {
                     log: "else branch executed".to_string(),
                     alias: Some("result".to_string()),
                 }))]),
@@ -2790,9 +2906,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         assert_eq!(
             state.get_variable("result"),
             Some(&"else branch executed".to_string())
@@ -2802,13 +2918,13 @@ mod tests {
     #[test]
     fn test_if_condition_false_no_else_branch() {
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "false".to_string(),
                 alias: Some("status".to_string()),
             })),
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$status == true".to_string(),
-                then: vec![FlowStatement::Action(Action::Log(LogAction {
+                then: vec![HookStatement::Action(Action::Log(LogAction {
                     log: "then branch executed".to_string(),
                     alias: Some("result".to_string()),
                 }))],
@@ -2817,9 +2933,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         // result should not be set since neither branch executed
         assert!(state.get_variable("result").is_none());
     }
@@ -2836,7 +2952,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        state.flow_name = Some("aiki/core".to_string());
+        state.hook_name = Some("aiki/core".to_string());
 
         let _result = execute_actions(&actions, &mut state).unwrap();
 
@@ -2846,19 +2962,19 @@ mod tests {
     #[test]
     fn test_if_nested_conditionals() {
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("outer".to_string()),
             })),
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("inner".to_string()),
             })),
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$outer == true".to_string(),
-                then: vec![FlowStatement::If(IfStatement {
+                then: vec![HookStatement::If(IfStatement {
                     condition: "$inner == true".to_string(),
-                    then: vec![FlowStatement::Action(Action::Log(LogAction {
+                    then: vec![HookStatement::Action(Action::Log(LogAction {
                         log: "nested then executed".to_string(),
                         alias: Some("result".to_string()),
                     }))],
@@ -2869,9 +2985,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         assert_eq!(
             state.get_variable("result"),
             Some(&"nested then executed".to_string())
@@ -2892,12 +3008,12 @@ mod tests {
         );
 
         // Test equality
-        assert!(FlowEngine::evaluate_condition("$test == value", &mut state).unwrap());
-        assert!(!FlowEngine::evaluate_condition("$test == other", &mut state).unwrap());
+        assert!(HookEngine::evaluate_condition("$test == value", &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition("$test == other", &mut state).unwrap());
 
         // Test inequality
-        assert!(!FlowEngine::evaluate_condition("$test != value", &mut state).unwrap());
-        assert!(FlowEngine::evaluate_condition("$test != other", &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition("$test != value", &mut state).unwrap());
+        assert!(HookEngine::evaluate_condition("$test != other", &mut state).unwrap());
     }
 
     #[test]
@@ -2914,7 +3030,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowEngine::evaluate_condition("$empty", &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition("$empty", &mut state).unwrap());
 
         // Non-empty string is truthy
         state.store_action_result(
@@ -2926,7 +3042,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowEngine::evaluate_condition("$nonempty", &mut state).unwrap());
+        assert!(HookEngine::evaluate_condition("$nonempty", &mut state).unwrap());
 
         // "false" literal is falsy
         state.store_action_result(
@@ -2938,7 +3054,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(!FlowEngine::evaluate_condition("$false_str", &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition("$false_str", &mut state).unwrap());
 
         // "true" literal is truthy
         state.store_action_result(
@@ -2950,7 +3066,7 @@ mod tests {
                 stderr: String::new(),
             },
         );
-        assert!(FlowEngine::evaluate_condition("$true_str", &mut state).unwrap());
+        assert!(HookEngine::evaluate_condition("$true_str", &mut state).unwrap());
     }
 
     #[test]
@@ -2959,11 +3075,11 @@ mod tests {
 
         // Test string literals with quotes
         assert_eq!(
-            FlowEngine::resolve_condition_value("\"hello\"", &mut state).unwrap(),
+            HookEngine::resolve_condition_value("\"hello\"", &mut state).unwrap(),
             "hello"
         );
         assert_eq!(
-            FlowEngine::resolve_condition_value("'world'", &mut state).unwrap(),
+            HookEngine::resolve_condition_value("'world'", &mut state).unwrap(),
             "world"
         );
     }
@@ -2975,25 +3091,25 @@ mod tests {
         let mut cases = HashMap::new();
         cases.insert(
             "ExactMatch".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "exact match case".to_string(),
                 alias: Some("result".to_string()),
             }))],
         );
         cases.insert(
             "PartialMatch".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "partial match case".to_string(),
                 alias: Some("result".to_string()),
             }))],
         );
 
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "ExactMatch".to_string(),
                 alias: Some("status".to_string()),
             })),
-            FlowStatement::Switch(SwitchStatement {
+            HookStatement::Switch(SwitchStatement {
                 expression: "$status".to_string(),
                 cases,
                 default: None,
@@ -3001,9 +3117,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         assert_eq!(
             state.get_variable("result"),
             Some(&"exact match case".to_string())
@@ -3017,21 +3133,21 @@ mod tests {
         let mut cases = HashMap::new();
         cases.insert(
             "ExactMatch".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "exact match case".to_string(),
                 alias: Some("result".to_string()),
             }))],
         );
 
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "NoMatch".to_string(),
                 alias: Some("status".to_string()),
             })),
-            FlowStatement::Switch(SwitchStatement {
+            HookStatement::Switch(SwitchStatement {
                 expression: "$status".to_string(),
                 cases,
-                default: Some(vec![FlowStatement::Action(Action::Log(LogAction {
+                default: Some(vec![HookStatement::Action(Action::Log(LogAction {
                     log: "default case".to_string(),
                     alias: Some("result".to_string()),
                 }))]),
@@ -3039,9 +3155,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         assert_eq!(
             state.get_variable("result"),
             Some(&"default case".to_string())
@@ -3055,18 +3171,18 @@ mod tests {
         let mut cases = HashMap::new();
         cases.insert(
             "ExactMatch".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "exact match case".to_string(),
                 alias: Some("result".to_string()),
             }))],
         );
 
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "NoMatch".to_string(),
                 alias: Some("status".to_string()),
             })),
-            FlowStatement::Switch(SwitchStatement {
+            HookStatement::Switch(SwitchStatement {
                 expression: "$status".to_string(),
                 cases,
                 default: None,
@@ -3074,10 +3190,10 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         // No match and no default = success (no-op)
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         // result variable should not be set
         assert!(state.get_variable("result").is_none());
     }
@@ -3089,14 +3205,14 @@ mod tests {
         let mut cases = HashMap::new();
         cases.insert(
             "true".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "all exact match".to_string(),
                 alias: Some("result".to_string()),
             }))],
         );
         cases.insert(
             "false".to_string(),
-            vec![FlowStatement::Action(Action::Log(LogAction {
+            vec![HookStatement::Action(Action::Log(LogAction {
                 log: "not all exact match".to_string(),
                 alias: Some("result".to_string()),
             }))],
@@ -3104,11 +3220,11 @@ mod tests {
 
         // Create a simple JSON object to test field access
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "{\"all_exact_match\": \"true\"}".to_string(),
                 alias: Some("detection".to_string()),
             })),
-            FlowStatement::Switch(SwitchStatement {
+            HookStatement::Switch(SwitchStatement {
                 expression: "$detection.all_exact_match".to_string(),
                 cases,
                 default: None,
@@ -3116,9 +3232,9 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
-        assert!(matches!(result, FlowResult::Success));
+        assert!(matches!(result, HookOutcome::Success));
         // Note: Variable resolver will parse the JSON and extract the field
         // The actual result depends on the resolver implementation
     }
@@ -3128,20 +3244,20 @@ mod tests {
         // Simulate the PreFileChange flow: `jj diff -r @ --name-only` returns file names
         let statements = vec![
             // Simulate jj diff output with files using echo
-            FlowStatement::Action(Action::Shell(ShellAction {
+            HookStatement::Action(Action::Shell(ShellAction {
                 shell: "echo 'src/main.rs\nsrc/lib.rs'".to_string(),
                 timeout: None,
                 on_failure: OnFailure::default(),
                 alias: Some("changed_files".to_string()),
             })),
             // If there are changed files (non-empty), execute the then branch
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$changed_files".to_string(),
-                then: vec![FlowStatement::Action(Action::Log(LogAction {
+                then: vec![HookStatement::Action(Action::Log(LogAction {
                     log: "User has changes to stash".to_string(),
                     alias: Some("stash_result".to_string()),
                 }))],
-                else_: Some(vec![FlowStatement::Action(Action::Log(LogAction {
+                else_: Some(vec![HookStatement::Action(Action::Log(LogAction {
                     log: "No changes to stash".to_string(),
                     alias: Some("stash_result".to_string()),
                 }))]),
@@ -3149,7 +3265,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let _result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let _result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         // Should execute the then branch because changed_files is non-empty
         assert_eq!(
@@ -3163,19 +3279,19 @@ mod tests {
         // Simulate jj diff with no changes (empty output)
         let statements = vec![
             // Simulate empty jj diff output using true (which produces no output)
-            FlowStatement::Action(Action::Shell(ShellAction {
+            HookStatement::Action(Action::Shell(ShellAction {
                 shell: "true".to_string(), // Exits 0 but produces no output
                 timeout: None,
                 on_failure: OnFailure::default(),
                 alias: Some("changed_files".to_string()),
             })),
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$changed_files".to_string(),
-                then: vec![FlowStatement::Action(Action::Log(LogAction {
+                then: vec![HookStatement::Action(Action::Log(LogAction {
                     log: "Should not execute".to_string(),
                     alias: Some("result".to_string()),
                 }))],
-                else_: Some(vec![FlowStatement::Action(Action::Log(LogAction {
+                else_: Some(vec![HookStatement::Action(Action::Log(LogAction {
                     log: "No changes detected".to_string(),
                     alias: Some("result".to_string()),
                 }))]),
@@ -3183,7 +3299,7 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let _result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let _result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         // Should execute the else branch because changed_files is empty
         assert_eq!(state.get_variable("result").unwrap(), "No changes detected");
@@ -3209,7 +3325,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Second action should still execute
         assert_eq!(
@@ -3225,7 +3341,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // Fails
                 timeout: None,
-                on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Stop(
+                on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Stop(
                     crate::flows::types::StopAction {
                         failure: "Shell command failed".to_string(),
                     },
@@ -3242,7 +3358,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedStop
-        assert!(matches!(result, FlowResult::FailedStop));
+        assert!(matches!(result, HookOutcome::FailedStop));
 
         // Second action should NOT execute
         assert!(state.get_variable("result").is_none());
@@ -3255,7 +3371,7 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // Fails
                 timeout: None,
-                on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Block(
+                on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Block(
                     crate::flows::types::BlockAction {
                         failure: "Action failed with block".to_string(),
                     },
@@ -3272,7 +3388,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Second action should NOT execute
         assert!(state.get_variable("result").is_none());
@@ -3305,7 +3421,7 @@ mod tests {
         })];
 
         let mut state = AikiState::new(event);
-        state.flow_name = Some("aiki/core".to_string());
+        state.hook_name = Some("aiki/core".to_string());
 
         let result = execute_actions(&actions, &mut state);
 
@@ -3334,7 +3450,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedStop
-        assert!(matches!(result, FlowResult::FailedStop));
+        assert!(matches!(result, HookOutcome::FailedStop));
 
         // First action should execute
         assert_eq!(
@@ -3373,7 +3489,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // First action should execute
         assert_eq!(
@@ -3412,7 +3528,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue (standalone continue action records a failure)
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Both actions should execute
         assert_eq!(
@@ -3438,11 +3554,11 @@ mod tests {
             Action::Shell(ShellAction {
                 shell: "false".to_string(), // This fails
                 timeout: None,
-                on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Shell(
+                on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Shell(
                     ShellAction {
                         shell: "false".to_string(), // This also fails
                         timeout: None,
-                        on_failure: OnFailure::Statements(vec![FlowStatement::Action(
+                        on_failure: OnFailure::Statements(vec![HookStatement::Action(
                             Action::Block(crate::flows::types::BlockAction {
                                 failure: "Nested failure handler executed".to_string(),
                             }),
@@ -3462,7 +3578,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock from nested handler
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Action after first shell should NOT execute
         assert!(state.get_variable("after").is_none());
@@ -3490,7 +3606,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedStop from the stop action
-        assert!(matches!(result, FlowResult::FailedStop));
+        assert!(matches!(result, HookOutcome::FailedStop));
 
         // Default messages should be added for both actions
         assert_eq!(state.failures().len(), 2);
@@ -3511,7 +3627,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Default message should be added
         assert_eq!(state.failures().len(), 1);
@@ -3527,7 +3643,7 @@ mod tests {
         let actions = vec![Action::Shell(ShellAction {
             shell: "false".to_string(),
             timeout: None,
-            on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Block(
+            on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Block(
                 crate::flows::types::BlockAction {
                     failure: "Blocking after failure".to_string(),
                 },
@@ -3542,25 +3658,25 @@ mod tests {
         eprintln!("Failures: {:?}", state.failures());
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
     }
 
     #[test]
     fn test_nested_action_on_failure_in_if_branch() {
         // Test that actions nested inside if branches execute their own on_failure handlers
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("condition".to_string()),
             })),
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$condition == true".to_string(),
                 then: vec![
                     // This shell action should fail and trigger its own on_failure (continue)
-                    FlowStatement::Action(Action::Shell(ShellAction {
+                    HookStatement::Action(Action::Shell(ShellAction {
                         shell: "false".to_string(),
                         timeout: None,
-                        on_failure: OnFailure::Statements(vec![FlowStatement::Action(
+                        on_failure: OnFailure::Statements(vec![HookStatement::Action(
                             Action::Continue(crate::flows::types::ContinueAction {
                                 failure: "Nested shell failed but continuing".to_string(),
                             }),
@@ -3573,14 +3689,14 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Nested if on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
 
         // The nested shell fails but its on_failure handler (continue action) executes successfully
         // Successful on_failure handlers return FailedContinue (handled the failure, continuing)
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Verify the failure message was added
         let failures = state.failures();
@@ -3593,20 +3709,20 @@ mod tests {
     fn test_nested_action_on_failure_in_switch_case() {
         // Test that actions nested inside switch cases execute their own on_failure handlers
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "case1".to_string(),
                 alias: Some("value".to_string()),
             })),
-            FlowStatement::Switch(SwitchStatement {
+            HookStatement::Switch(SwitchStatement {
                 expression: "$value".to_string(),
                 cases: vec![(
                     "case1".to_string(),
                     vec![
                         // This shell action should fail and trigger its own on_failure (block)
-                        FlowStatement::Action(Action::Shell(ShellAction {
+                        HookStatement::Action(Action::Shell(ShellAction {
                             shell: "false".to_string(),
                             timeout: None,
-                            on_failure: OnFailure::Statements(vec![FlowStatement::Action(
+                            on_failure: OnFailure::Statements(vec![HookStatement::Action(
                                 Action::Block(crate::flows::types::BlockAction {
                                     failure: "Nested shell in switch blocked".to_string(),
                                 }),
@@ -3622,14 +3738,14 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Nested switch on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
 
         // The nested shell fails and its on_failure handler (block) stops execution
         // So the overall flow should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Verify the block message was added
         let failures = state.failures();
@@ -3642,24 +3758,24 @@ mod tests {
     fn test_deeply_nested_on_failure_handlers() {
         // Test that deeply nested actions (if inside if) execute their on_failure handlers
         let statements = vec![
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("outer_condition".to_string()),
             })),
-            FlowStatement::Action(Action::Log(LogAction {
+            HookStatement::Action(Action::Log(LogAction {
                 log: "true".to_string(),
                 alias: Some("inner_condition".to_string()),
             })),
-            FlowStatement::If(IfStatement {
+            HookStatement::If(IfStatement {
                 condition: "$outer_condition == true".to_string(),
-                then: vec![FlowStatement::If(IfStatement {
+                then: vec![HookStatement::If(IfStatement {
                     condition: "$inner_condition == true".to_string(),
                     then: vec![
                         // Deeply nested shell with its own on_failure
-                        FlowStatement::Action(Action::Shell(ShellAction {
+                        HookStatement::Action(Action::Shell(ShellAction {
                             shell: "false".to_string(),
                             timeout: None,
-                            on_failure: OnFailure::Statements(vec![FlowStatement::Action(
+                            on_failure: OnFailure::Statements(vec![HookStatement::Action(
                                 Action::Continue(crate::flows::types::ContinueAction {
                                     failure: "Deeply nested failure".to_string(),
                                 }),
@@ -3674,14 +3790,14 @@ mod tests {
         ];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Deeply nested on_failure result: {:?}", result);
         eprintln!("Failures: {:?}", state.failures());
 
         // The deeply nested shell fails and its on_failure handler (continue action) executes
         // Continue actions should return FailedContinue to match shortcut behavior
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Verify the failure message was added
         let failures = state.failures();
@@ -3693,12 +3809,12 @@ mod tests {
     #[test]
     fn test_if_branch_propagates_failed_continue() {
         // Test that FailedContinue inside an if branch is properly propagated
-        // This is a regression test for the bug where FlowResult::FailedContinue
+        // This is a regression test for the bug where HookOutcome::FailedContinue
         // was converted to ActionResult { success: true }, causing the parent
         // execute_statements to not track the failure
-        let statements = vec![FlowStatement::If(IfStatement {
+        let statements = vec![HookStatement::If(IfStatement {
             condition: "true".to_string(),
-            then: vec![FlowStatement::Action(Action::Shell(ShellAction {
+            then: vec![HookStatement::Action(Action::Shell(ShellAction {
                 shell: "false".to_string(),
                 timeout: None,
                 on_failure: OnFailure::default(), // No on_failure handler, should default to continue
@@ -3708,14 +3824,14 @@ mod tests {
         })];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("If branch with failing shell result: {:?}", result);
 
         // The shell failed and had no on_failure, so the if branch should have FailedContinue
         // which should propagate up to the parent execute_statements
         assert!(
-            matches!(result, FlowResult::FailedContinue),
+            matches!(result, HookOutcome::FailedContinue),
             "Expected FailedContinue but got {:?}",
             result
         );
@@ -3729,7 +3845,7 @@ mod tests {
         let mut cases = HashMap::new();
         cases.insert(
             "test".to_string(),
-            vec![FlowStatement::Action(Action::Shell(ShellAction {
+            vec![HookStatement::Action(Action::Shell(ShellAction {
                 shell: "false".to_string(),
                 timeout: None,
                 on_failure: OnFailure::default(), // No on_failure handler, should default to continue
@@ -3737,21 +3853,21 @@ mod tests {
             }))],
         );
 
-        let statements = vec![FlowStatement::Switch(SwitchStatement {
+        let statements = vec![HookStatement::Switch(SwitchStatement {
             expression: "test".to_string(),
             cases,
             default: None,
         })];
 
         let mut state = AikiState::new(create_test_event());
-        let result = FlowEngine::execute_statements(&statements, &mut state).unwrap();
+        let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
 
         eprintln!("Switch branch with failing shell result: {:?}", result);
 
         // The shell failed and had no on_failure, so the switch case should have FailedContinue
         // which should propagate up to the parent execute_statements
         assert!(
-            matches!(result, FlowResult::FailedContinue),
+            matches!(result, HookOutcome::FailedContinue),
             "Expected FailedContinue but got {:?}",
             result
         );
@@ -3795,7 +3911,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue (failure occurred but flow continued)
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Subsequent action should execute
         assert_eq!(
@@ -3809,13 +3925,13 @@ mod tests {
 
     #[test]
     fn test_on_failure_explicit_continue_action() {
-        // Test that on_failure: [continue: "message"] produces the same FlowResult as shortcut form
+        // Test that on_failure: [continue: "message"] produces the same HookOutcome as shortcut form
         // This verifies the fix for the inconsistency where explicit actions returned Success
         let actions = vec![
             Action::Shell(ShellAction {
                 shell: "false".to_string(),
                 timeout: None,
-                on_failure: OnFailure::Statements(vec![FlowStatement::Action(Action::Continue(
+                on_failure: OnFailure::Statements(vec![HookStatement::Action(Action::Continue(
                     crate::flows::types::ContinueAction {
                         failure: "Explicit continue message".to_string(),
                     },
@@ -3834,7 +3950,7 @@ mod tests {
         // Should return FailedContinue (same as shortcut form)
         // The explicit continue action should behave identically to on_failure: continue
         assert!(
-            matches!(result, FlowResult::FailedContinue),
+            matches!(result, HookOutcome::FailedContinue),
             "Expected FailedContinue but got {:?}. Explicit continue actions should match shortcut behavior.",
             result
         );
@@ -3873,7 +3989,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedStop
-        assert!(matches!(result, FlowResult::FailedStop));
+        assert!(matches!(result, HookOutcome::FailedStop));
 
         // Subsequent action should NOT execute
         assert!(state.get_variable("after").is_none());
@@ -3902,7 +4018,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Subsequent action should NOT execute
         assert!(state.get_variable("after").is_none());
@@ -3931,7 +4047,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue (empty list treated as continue)
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Subsequent action should execute
         assert_eq!(
@@ -3956,7 +4072,7 @@ mod tests {
                 timeout: None,
                 on_failure: OnFailure::Statements(vec![
                     // First try to recover with another shell
-                    FlowStatement::Action(Action::Shell(ShellAction {
+                    HookStatement::Action(Action::Shell(ShellAction {
                         shell: "false".to_string(), // This also fails
                         timeout: None,
                         on_failure: OnFailure::Shortcut(OnFailureShortcut::Block), // Use shortcut
@@ -3975,7 +4091,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedBlock from nested shortcut
-        assert!(matches!(result, FlowResult::FailedBlock));
+        assert!(matches!(result, HookOutcome::FailedBlock));
 
         // Subsequent action should NOT execute
         assert!(state.get_variable("after").is_none());
@@ -4004,7 +4120,7 @@ mod tests {
         let result = execute_actions(&actions, &mut state).unwrap();
 
         // Should return FailedContinue (default is continue)
-        assert!(matches!(result, FlowResult::FailedContinue));
+        assert!(matches!(result, HookOutcome::FailedContinue));
 
         // Subsequent action should execute
         assert_eq!(
@@ -4022,11 +4138,11 @@ mod tests {
         state.set_variable("count".to_string(), "5".to_string());
 
         // 5 > 3 should be true
-        let result = FlowEngine::evaluate_condition("$count > 3", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count > 3", &mut state).unwrap();
         assert!(result, "5 > 3 should be true");
 
         // 5 > 10 should be false
-        let result = FlowEngine::evaluate_condition("$count > 10", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count > 10", &mut state).unwrap();
         assert!(!result, "5 > 10 should be false");
     }
 
@@ -4036,11 +4152,11 @@ mod tests {
         state.set_variable("count".to_string(), "5".to_string());
 
         // 5 < 10 should be true
-        let result = FlowEngine::evaluate_condition("$count < 10", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count < 10", &mut state).unwrap();
         assert!(result, "5 < 10 should be true");
 
         // 5 < 3 should be false
-        let result = FlowEngine::evaluate_condition("$count < 3", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count < 3", &mut state).unwrap();
         assert!(!result, "5 < 3 should be false");
     }
 
@@ -4050,15 +4166,15 @@ mod tests {
         state.set_variable("count".to_string(), "5".to_string());
 
         // 5 >= 5 should be true
-        let result = FlowEngine::evaluate_condition("$count >= 5", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count >= 5", &mut state).unwrap();
         assert!(result, "5 >= 5 should be true");
 
         // 5 >= 3 should be true
-        let result = FlowEngine::evaluate_condition("$count >= 3", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count >= 3", &mut state).unwrap();
         assert!(result, "5 >= 3 should be true");
 
         // 5 >= 10 should be false
-        let result = FlowEngine::evaluate_condition("$count >= 10", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count >= 10", &mut state).unwrap();
         assert!(!result, "5 >= 10 should be false");
     }
 
@@ -4068,15 +4184,15 @@ mod tests {
         state.set_variable("count".to_string(), "5".to_string());
 
         // 5 <= 5 should be true
-        let result = FlowEngine::evaluate_condition("$count <= 5", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count <= 5", &mut state).unwrap();
         assert!(result, "5 <= 5 should be true");
 
         // 5 <= 10 should be true
-        let result = FlowEngine::evaluate_condition("$count <= 10", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count <= 10", &mut state).unwrap();
         assert!(result, "5 <= 10 should be true");
 
         // 5 <= 3 should be false
-        let result = FlowEngine::evaluate_condition("$count <= 3", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$count <= 3", &mut state).unwrap();
         assert!(!result, "5 <= 3 should be false");
     }
 
@@ -4086,11 +4202,11 @@ mod tests {
         state.set_variable("value".to_string(), "3.14".to_string());
 
         // 3.14 > 3.0 should be true
-        let result = FlowEngine::evaluate_condition("$value > 3.0", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$value > 3.0", &mut state).unwrap();
         assert!(result, "3.14 > 3.0 should be true");
 
         // 3.14 < 3.2 should be true
-        let result = FlowEngine::evaluate_condition("$value < 3.2", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$value < 3.2", &mut state).unwrap();
         assert!(result, "3.14 < 3.2 should be true");
     }
 
@@ -4100,7 +4216,7 @@ mod tests {
         state.set_variable("text".to_string(), "not_a_number".to_string());
 
         // Should return error for non-numeric value
-        let result = FlowEngine::evaluate_condition("$text > 5", &mut state);
+        let result = HookEngine::evaluate_condition("$text > 5", &mut state);
         assert!(result.is_err(), "Comparing non-numeric value should error");
         assert!(result.unwrap_err().to_string().contains("not a number"));
     }
@@ -4111,11 +4227,11 @@ mod tests {
         state.set_variable("event".to_string(), r#"{"file_count": 3}"#.to_string());
 
         // $event.file_count > 1 should be true
-        let result = FlowEngine::evaluate_condition("$event.file_count > 1", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$event.file_count > 1", &mut state).unwrap();
         assert!(result, "$event.file_count (3) > 1 should be true");
 
         // $event.file_count > 5 should be false
-        let result = FlowEngine::evaluate_condition("$event.file_count > 5", &mut state).unwrap();
+        let result = HookEngine::evaluate_condition("$event.file_count > 5", &mut state).unwrap();
         assert!(!result, "$event.file_count (3) > 5 should be false");
     }
 }

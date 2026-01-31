@@ -18,7 +18,7 @@ pub struct AikiSessionStartPayload {
 /// Also records the session start to conversation history (if not opted out).
 /// Creates session file for PID-based session detection.
 pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookResult> {
-    use super::prelude::execute_flow;
+    use super::prelude::execute_hook;
 
     debug_log(|| format!("Session started by {:?}", payload.session.agent_type()));
 
@@ -47,31 +47,31 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
         debug_log(|| format!("Failed to record session start: {}", e));
     }
 
-    // Load core flow for fallback
-    let core_flow = crate::flows::load_core_flow();
+    // Load core hook for fallback
+    let core_hook = crate::flows::load_core_hook();
 
     // Build execution state from payload
     let mut state = AikiState::new(payload);
 
-    // Execute flow via FlowComposer (with fallback to bundled core flow)
-    let flow_result = execute_flow(
+    // Execute hook via HookComposer (with fallback to bundled core hook)
+    let flow_result = execute_hook(
         EventType::SessionStarted,
         &mut state,
-        &core_flow.session_started,
+        &core_hook.session_started,
     )?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
     match flow_result {
-        FlowResult::Success | FlowResult::FailedContinue | FlowResult::FailedStop => {
+        HookOutcome::Success | HookOutcome::FailedContinue | HookOutcome::FailedStop => {
             Ok(HookResult {
                 context: state.build_context(),
                 decision: Decision::Allow,
                 failures,
             })
         }
-        FlowResult::FailedBlock => Ok(HookResult {
+        HookOutcome::FailedBlock => Ok(HookResult {
             context: None,
             decision: Decision::Block,
             failures,

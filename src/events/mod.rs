@@ -148,6 +148,16 @@ pub enum AikiEvent {
     CommitMessageStarted(AikiCommitMessageStartedPayload),
 
     // ========================================================================
+    // Task Lifecycle Events
+    // ========================================================================
+    /// Task started - task transitioned to in_progress state
+    #[serde(rename = "task.started")]
+    TaskStarted(AikiTaskStartedPayload),
+    /// Task closed - task reached closed state
+    #[serde(rename = "task.closed")]
+    TaskClosed(AikiTaskClosedPayload),
+
+    // ========================================================================
     // Fallback
     // ========================================================================
     /// Unsupported event (unknown events or non-file tools that don't require processing)
@@ -184,6 +194,9 @@ impl AikiEvent {
             Self::McpCompleted(e) => &e.cwd,
             // Commit integration
             Self::CommitMessageStarted(e) => &e.cwd,
+            // Task lifecycle
+            Self::TaskStarted(e) => &e.cwd,
+            Self::TaskClosed(e) => &e.cwd,
             // Fallback
             Self::Unsupported => Path::new("."),
         }
@@ -217,6 +230,9 @@ impl AikiEvent {
             Self::McpCompleted(e) => e.session.agent_type(),
             // Commit integration
             Self::CommitMessageStarted(e) => e.agent_type,
+            // Task lifecycle (tasks don't have a session, so use Unknown)
+            Self::TaskStarted(_) => AgentType::Unknown,
+            Self::TaskClosed(_) => AgentType::Unknown,
             // Fallback
             Self::Unsupported => AgentType::Unknown,
         }
@@ -260,6 +276,10 @@ mod mcp_permission_asked;
 // Commit integration
 mod commit_message_started;
 
+// Task lifecycle
+mod task_closed;
+mod task_started;
+
 // ============================================================================
 // Re-exports
 // ============================================================================
@@ -301,6 +321,10 @@ pub use mcp_permission_asked::*;
 
 // Commit integration
 pub use commit_message_started::*;
+
+// Task lifecycle
+pub use task_closed::*;
+pub use task_started::*;
 
 // ============================================================================
 // From Trait Implementations (enables vendor .into() pattern)
@@ -401,5 +425,17 @@ impl From<AikiMcpPermissionAskedPayload> for AikiEvent {
 impl From<AikiMcpCompletedPayload> for AikiEvent {
     fn from(payload: AikiMcpCompletedPayload) -> Self {
         AikiEvent::McpCompleted(payload)
+    }
+}
+
+impl From<AikiTaskStartedPayload> for AikiEvent {
+    fn from(payload: AikiTaskStartedPayload) -> Self {
+        AikiEvent::TaskStarted(payload)
+    }
+}
+
+impl From<AikiTaskClosedPayload> for AikiEvent {
+    fn from(payload: AikiTaskClosedPayload) -> Self {
+        AikiEvent::TaskClosed(payload)
     }
 }

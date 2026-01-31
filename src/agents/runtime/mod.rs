@@ -14,6 +14,18 @@ use std::path::Path;
 
 use super::AgentType;
 
+/// Handle for a background agent process
+///
+/// Returned when spawning an agent in background mode. Contains the PID
+/// and task ID for later management (e.g., stopping the process).
+#[derive(Debug, Clone)]
+pub struct BackgroundHandle {
+    /// Process ID of the spawned agent
+    pub pid: u32,
+    /// Task ID being worked on
+    pub task_id: String,
+}
+
 /// Result of an agent session
 #[derive(Debug, Clone)]
 pub enum AgentSessionResult {
@@ -122,6 +134,17 @@ pub trait AgentRuntime {
     /// 2. Waits for the agent to complete
     /// 3. Returns the session result
     fn spawn_blocking(&self, options: &AgentSpawnOptions) -> Result<AgentSessionResult>;
+
+    /// Spawns an agent session in the background
+    ///
+    /// This is a non-blocking operation that:
+    /// 1. Spawns the agent process detached from the parent
+    /// 2. Returns immediately with a handle containing the PID
+    /// 3. The agent runs until task completion
+    ///
+    /// The background process is fully detached and will continue running
+    /// even after the parent process exits.
+    fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle>;
 }
 
 /// Get the appropriate runtime for an agent type
