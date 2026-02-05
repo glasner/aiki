@@ -44,6 +44,8 @@ pub enum AgentSessionResult {
         /// Error description
         error: String,
     },
+    /// User detached from monitoring, but agent continues running in background
+    Detached,
 }
 
 impl AgentSessionResult {
@@ -71,6 +73,12 @@ impl AgentSessionResult {
         }
     }
 
+    /// Create a detached result (user disconnected, agent continues)
+    #[must_use]
+    pub fn detached() -> Self {
+        Self::Detached
+    }
+
     /// Check if the session completed successfully
     #[must_use]
     #[allow(dead_code)] // Part of AgentSessionResult API
@@ -83,6 +91,13 @@ impl AgentSessionResult {
     #[allow(dead_code)] // Part of AgentSessionResult API
     pub fn is_failed(&self) -> bool {
         matches!(self, Self::Failed { .. })
+    }
+
+    /// Check if the user detached (agent continues in background)
+    #[must_use]
+    #[allow(dead_code)] // Part of AgentSessionResult API
+    pub fn is_detached(&self) -> bool {
+        matches!(self, Self::Detached)
     }
 }
 
@@ -167,14 +182,22 @@ mod tests {
         let completed = AgentSessionResult::completed("Task done");
         assert!(completed.is_completed());
         assert!(!completed.is_failed());
+        assert!(!completed.is_detached());
 
         let stopped = AgentSessionResult::stopped("Needs input");
         assert!(!stopped.is_completed());
         assert!(!stopped.is_failed());
+        assert!(!stopped.is_detached());
 
         let failed = AgentSessionResult::failed("Crashed");
         assert!(!failed.is_completed());
         assert!(failed.is_failed());
+        assert!(!failed.is_detached());
+
+        let detached = AgentSessionResult::detached();
+        assert!(!detached.is_completed());
+        assert!(!detached.is_failed());
+        assert!(detached.is_detached());
     }
 
     #[test]

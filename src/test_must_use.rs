@@ -5,7 +5,7 @@ use crate::events::{
     AikiChangeCompletedPayload, AikiEvent, AikiSessionStartPayload, ChangeOperation, WriteOperation,
 };
 use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::AikiSession;
+use crate::session::{AikiSession, SessionMode};
 use std::path::PathBuf;
 
 #[test]
@@ -15,7 +15,7 @@ fn test_must_use_warning_compilation() {
         AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session,
@@ -33,7 +33,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::ClaudeCode,
         "session-1".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event1 = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: session1,
@@ -46,7 +46,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event2 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session: session2,
@@ -67,7 +67,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::Cursor,
         "session-2".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event3 = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: session3,
@@ -80,7 +80,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::ClaudeCode,
         "session-3".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event4 = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: session4,
@@ -94,7 +94,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::ClaudeCode,
         "session-123".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event5 = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
         session: session5,
@@ -114,7 +114,7 @@ fn test_impl_asref_path_ergonomics() {
         AgentType::Cursor,
         "session-4".to_string(),
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
     let _event6 = AikiEvent::SessionStarted(AikiSessionStartPayload {
         session: session6,

@@ -1005,13 +1005,14 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 
 /// Get the size of the ready task queue for a specific agent
 ///
-/// Returns the number of open, unblocked tasks visible to the given agent.
-/// When agent is provided, filters to show only tasks assigned to that agent
-/// or unassigned tasks. This is used for context injection in flows.
+/// Returns the number of open, unblocked tasks visible to the given agent,
+/// filtered by the current scope (same as `aiki task list`).
+/// This is used for context injection in flows.
 pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
     let tasks = crate::tasks::manager::materialize_tasks(&events);
-    let ready = crate::tasks::manager::get_ready_queue_for_agent(&tasks, agent);
+    let scope_set = crate::tasks::manager::get_current_scope_set(&tasks);
+    let ready = crate::tasks::manager::get_ready_queue_for_agent_scoped(&tasks, &scope_set, agent);
 
     Ok(ActionResult {
         success: true,
@@ -1069,7 +1070,7 @@ mod tests {
     use super::*;
     use crate::events::{ChangeOperation, EditDetail, WriteOperation};
     use crate::provenance::AgentType;
-    use crate::session::AikiSession;
+    use crate::session::{AikiSession, SessionMode};
     use tempfile::TempDir;
 
     // =========================================================================
@@ -1085,7 +1086,7 @@ mod tests {
             AgentType::ClaudeCode,
             "test".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
+            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
         );
         AikiChangeCompletedPayload {
             session,
@@ -1111,7 +1112,7 @@ mod tests {
             AgentType::ClaudeCode,
             "test-session-123".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
+            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
         );
         let event = AikiChangeCompletedPayload {
             session,
@@ -1159,7 +1160,7 @@ mod tests {
             AgentType::Cursor,
             "cursor-session".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
+            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
         );
         let event = AikiChangeCompletedPayload {
             session,

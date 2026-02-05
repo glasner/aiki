@@ -21,6 +21,7 @@ pub mod signing;
 pub mod tasks;
 pub mod tools;
 pub mod utils;
+pub mod validation;
 pub mod verify;
 
 #[cfg(test)]

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 // Re-export AgentType from canonical location
 pub use crate::agents::AgentType;
+// Re-export SessionMode for history tracking
+pub use crate::session::SessionMode;
 
 /// Source of a turn (user prompt or autoreply)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +81,8 @@ pub enum ConversationEvent {
         repo_id: Option<String>,
         /// Current working directory where the event occurred
         cwd: Option<String>,
+        /// Session mode (background or interactive)
+        session_mode: Option<SessionMode>,
     },
     /// Session ended
     SessionEnd {
@@ -139,6 +143,8 @@ pub struct ConversationSummary {
     pub turn_count: u32,
     pub last_activity: DateTime<Utc>,
     pub repo_id: Option<String>,
+    /// Session mode (background or interactive), if known from SessionStart event
+    pub session_mode: Option<SessionMode>,
 }
 
 #[cfg(test)]

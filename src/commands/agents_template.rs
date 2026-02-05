@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.8";
+pub const AIKI_BLOCK_VERSION: &str = "1.9";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.8">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.9">
 
 ## ⛔ STOP - Read This First
 
@@ -75,7 +75,7 @@ aiki task start <task-id>
 
 ### First Action Rule
 
-**Before doing any substantive work, create and start a task.** This includes:
+**Before modifying any files, create and start a task.** This includes:
 - Code reviews (`review @file`)
 - Document reviews (`review @doc.md`)
 - Bug investigations
@@ -91,9 +91,14 @@ aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
 
 ### When to Use Tasks
 
-- Any work beyond a quick one-liner or immediate response
+- **Any file modification** - writing, editing, or deleting files (no exceptions)
 - Any multi-step change, investigation, or review
 - Anything that could carry over across sessions
+
+**When tasks are NOT needed:**
+- Answering questions without modifying files
+- Reading files to understand the codebase
+- Running read-only commands (git status, ls, etc.)
 
 ### Progress Updates
 
@@ -116,6 +121,35 @@ aiki task close <task-id> --comment "Completed: authentication with JWT tokens, 
 - Other agents can see what's been done if they take over
 - User can track progress on long tasks
 - Creates a record of your thought process and approach
+
+### Code Reviews
+
+**When asked to review a task's changes, use `aiki review --start`:**
+
+```bash
+# Review a specific task's changes (you perform the review)
+aiki review <task-id> --start
+```
+
+**When to use `aiki review --start`:**
+- User asks you to review work done on a task
+- User says "review task X" or provides a task ID to review
+- You want to check the code changes associated with a completed task
+
+**How it works:**
+1. `aiki review <task-id> --start` creates a review task and you perform the review
+2. You'll see instructions to run `aiki task diff` and examine the changes
+3. Add comments for any issues found using `aiki task comment`
+4. Close the review task when done
+
+**The `--start` flag means you perform the review yourself** (vs. spawning a background agent).
+
+**After reviewing**, if you found issues, run `aiki fix` to create followup tasks:
+```bash
+aiki fix <review-task-id>
+```
+
+**Note:** `aiki review` without a task ID reviews all closed tasks in the current session.
 
 ### Quick Reference
 

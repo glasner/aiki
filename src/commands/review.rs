@@ -24,31 +24,9 @@ use crate::tasks::{
     reassign_task, start_task_core, Task, TaskStatus,
 };
 
-/// Review subcommands
+/// Review subcommands (for list and show only)
 #[derive(Subcommand)]
-pub enum ReviewCommands {
-    /// Create and run a review (default when no subcommand)
-    Create {
-        /// Task ID to review (reviews all closed tasks in session if not specified)
-        task_id: Option<String>,
-
-        /// Run review asynchronously (return immediately)
-        #[arg(long = "async")]
-        run_async: bool,
-
-        /// Start review and return control to calling agent
-        #[arg(long)]
-        start: bool,
-
-        /// Task template to use (default: aiki/review)
-        #[arg(long)]
-        template: Option<String>,
-
-        /// Agent for review assignment (default: opposite of task worker)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-
+pub enum ReviewSubcommands {
     /// List review tasks
     List {
         /// Show all reviews (not just open)
@@ -63,27 +41,56 @@ pub enum ReviewCommands {
     },
 }
 
+/// Arguments for the review command (top-level create args)
+#[derive(clap::Args)]
+pub struct ReviewArgs {
+    /// Task ID to review (reviews all closed tasks in session if not specified)
+    pub task_id: Option<String>,
+
+    /// Run review asynchronously (return immediately)
+    #[arg(long = "async")]
+    pub run_async: bool,
+
+    /// Start review and return control to calling agent
+    #[arg(long)]
+    pub start: bool,
+
+    /// Task template to use (default: aiki/review)
+    #[arg(long)]
+    pub template: Option<String>,
+
+    /// Agent for review assignment (default: opposite of task worker)
+    #[arg(long)]
+    pub agent: Option<String>,
+
+    /// Subcommand (list or show)
+    #[command(subcommand)]
+    pub subcommand: Option<ReviewSubcommands>,
+}
+
 /// Run the review command
-pub fn run(command: Option<ReviewCommands>) -> Result<()> {
+pub fn run(args: ReviewArgs) -> Result<()> {
     let cwd = env::current_dir().map_err(|_| {
         AikiError::InvalidArgument("Failed to get current directory".to_string())
     })?;
 
-    match command {
-        None => {
-            // Default: create review for session
-            run_review(&cwd, None, false, false, None, None)
-        }
-        Some(ReviewCommands::Create {
-            task_id,
-            run_async,
-            start,
-            template,
-            agent,
-        }) => run_review(&cwd, task_id, run_async, start, template, agent),
-        Some(ReviewCommands::List { all }) => list_reviews(&cwd, all),
-        Some(ReviewCommands::Show { task_id }) => show_review(&cwd, &task_id),
+    // If a subcommand is provided, dispatch to it
+    if let Some(subcommand) = args.subcommand {
+        return match subcommand {
+            ReviewSubcommands::List { all } => list_reviews(&cwd, all),
+            ReviewSubcommands::Show { task_id } => show_review(&cwd, &task_id),
+        };
     }
+
+    // Otherwise, run the create/review flow with top-level args
+    run_review(
+        &cwd,
+        args.task_id,
+        args.run_async,
+        args.start,
+        args.template,
+        args.agent,
+    )
 }
 
 /// Parameters for creating a review task

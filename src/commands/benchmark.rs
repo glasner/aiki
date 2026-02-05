@@ -774,13 +774,14 @@ fn run_command(cwd: &PathBuf, program: &str, args: &[&str]) -> Result<()> {
 
 fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Result<()> {
     use crate::provenance::{AgentType, DetectionMethod};
-    use crate::session::AikiSession;
+    use crate::session::{AikiSession, SessionMode};
 
     let session = AikiSession::new(
         AgentType::ClaudeCode,
         session_id,
         Some(version),
         DetectionMethod::Hook,
+        SessionMode::Interactive,
     );
 
     session.file().create()?;

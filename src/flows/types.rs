@@ -238,6 +238,21 @@ pub struct BlockAction {
     pub failure: String,
 }
 
+/// Session end action - terminates the current session gracefully
+///
+/// Used for task-driven sessions that should auto-end when their driving task closes.
+/// Sends SIGTERM to the parent process (the agent) after a short delay to allow
+/// the hook to complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEndAction {
+    /// Reason for ending (logged)
+    #[serde(rename = "session.end")]
+    pub reason: String,
+
+    #[serde(default)]
+    pub on_failure: OnFailure,
+}
+
 /// An action to execute in a hook (no hook control)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -268,6 +283,8 @@ pub enum Action {
     Stop(StopAction),
     /// Block editor operation (emits error and blocks with exit 2)
     Block(BlockAction),
+    /// End the current session gracefully (for task-driven sessions)
+    SessionEnd(SessionEndAction),
 }
 
 /// Shell command action

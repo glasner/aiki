@@ -12,7 +12,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use super::types::{AgentType, ConversationEvent, ConversationSummary, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
+use super::types::{AgentType, ConversationEvent, ConversationSummary, SessionMode, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
 
 /// Configuration for JJ write retry logic
 const MAX_RETRIES: u32 = 3;
@@ -603,14 +603,15 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
             None => continue, // Skip sessions without a SessionStart event
         };
 
-        let (session_id, agent_type, started_at, repo_id) = match session_start {
+        let (session_id, agent_type, started_at, repo_id, session_mode) = match session_start {
             ConversationEvent::SessionStart {
                 session_id,
                 agent_type,
                 timestamp,
                 repo_id,
+                session_mode,
                 ..
-            } => (session_id.clone(), agent_type.clone(), *timestamp, repo_id.clone()),
+            } => (session_id.clone(), agent_type.clone(), *timestamp, repo_id.clone(), *session_mode),
             _ => unreachable!(),
         };
 
@@ -640,6 +641,7 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
             turn_count,
             last_activity,
             repo_id,
+            session_mode,
         });
     }
 
@@ -782,10 +784,14 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
             timestamp,
             repo_id,
             cwd,
+            session_mode,
         } => {
             add_metadata("event", "session_start", &mut lines);
             add_metadata("session", session_id, &mut lines);
             add_metadata("agent_type", agent_type, &mut lines);
+            if let Some(mode) = session_mode {
+                add_metadata("session_mode", mode.to_string(), &mut lines);
+            }
             add_location_metadata(repo_id, cwd, &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -946,6 +952,10 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 .and_then(|v| v.first())
                 .and_then(|s| AgentType::from_str(s))
                 .unwrap_or(AgentType::Unknown);
+            let session_mode = fields
+                .get("session_mode")
+                .and_then(|v| v.first())
+                .and_then(|s| SessionMode::from_str(s));
 
             Some(ConversationEvent::SessionStart {
                 session_id,
@@ -953,6 +963,7 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
                 timestamp,
                 repo_id,
                 cwd,
+                session_mode,
             })
         }
         "session_end" => {

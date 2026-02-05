@@ -10,7 +10,7 @@ use aiki::flows::context::ContextAssembler;
 use aiki::flows::types::{Action, ContextAction, ContextContent, HookStatement};
 use aiki::flows::{AikiState, HookEngine};
 use aiki::provenance::{AgentType, DetectionMethod};
-use aiki::session::AikiSession;
+use aiki::session::{AikiSession, SessionMode};
 use chrono::Utc;
 use std::path::PathBuf;
 
@@ -53,7 +53,7 @@ fn test_build_context_returns_none_when_empty() {
         AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {
@@ -81,7 +81,7 @@ fn test_build_context_returns_some_with_chunks() {
         AgentType::ClaudeCode,
         "test-session",
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {
@@ -164,7 +164,7 @@ fn test_turn_completed_does_not_trigger_session_ended() {
         AgentType::ClaudeCode,
         "test-no-autoreply",
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
 
     // Create a turn.completed event
@@ -228,7 +228,7 @@ fn test_documented_behavior() {
         AgentType::ClaudeCode,
         "doc-test",
         None::<&str>,
-        DetectionMethod::Hook,
+        DetectionMethod::Hook, SessionMode::Interactive,
     );
 
     let event = AikiTurnCompletedPayload {

@@ -1,0 +1,398 @@
+//! Real-time status monitoring for task execution
+//!
+//! Provides live terminal visualization of task progress during sync execution.
+//! Shows subtasks and comments as they're created by the working agent.
+
+use std::collections::HashMap;
+use std::io::{stderr, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use crossterm::{
+    cursor::{MoveToColumn, MoveUp},
+    terminal::{Clear, ClearType},
+    ExecutableCommand,
+};
+
+use super::id::is_direct_child_of;
+use super::storage::read_events;
+use super::types::{Task, TaskStatus};
+use super::manager::materialize_tasks;
+use crate::error::Result;
+
+/// Default polling interval in milliseconds
+const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+
+/// Reason for monitor to stop
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonitorExitReason {
+    /// Task reached terminal state (closed or stopped)
+    TaskCompleted,
+    /// User pressed Ctrl+C to detach
+    UserDetached,
+    /// Agent process exited without task reaching terminal state
+    AgentExited,
+}
+
+/// Status symbols for task visualization
+const SYMBOL_COMPLETED: &str = "✓";
+const SYMBOL_IN_PROGRESS: &str = "▶";
+const SYMBOL_PENDING: &str = "○";
+const SYMBOL_STOPPED: &str = "✗";
+const SYMBOL_COMMENT: &str = "💬";
+
+/// Monitor for real-time task status updates
+pub struct StatusMonitor {
+    /// The root task being monitored
+    task_id: String,
+    /// Number of events at last poll (to detect changes)
+    last_event_count: usize,
+    /// Polling interval
+    poll_interval: Duration,
+    /// When monitoring started (for elapsed time)
+    start_time: Instant,
+    /// Number of lines rendered in last update (for clearing)
+    last_rendered_lines: usize,
+    /// Flag to track if we've already rendered initial state
+    has_rendered: bool,
+    /// Atomic flag to signal when to stop (for Ctrl+C handling)
+    stop_flag: Arc<AtomicBool>,
+    /// Optional PID of the agent process to monitor for unexpected exit
+    agent_pid: Option<u32>,
+}
+
+impl StatusMonitor {
+    /// Create a new status monitor for a task
+    #[must_use]
+    pub fn new(task_id: &str) -> Self {
+        let poll_interval_ms = std::env::var("AIKI_STATUS_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+
+        Self {
+            task_id: task_id.to_string(),
+            last_event_count: 0,
+            poll_interval: Duration::from_millis(poll_interval_ms),
+            start_time: Instant::now(),
+            last_rendered_lines: 0,
+            has_rendered: false,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            agent_pid: None,
+        }
+    }
+
+    /// Set the agent process ID to monitor for unexpected exits
+    #[must_use]
+    pub fn with_agent_pid(mut self, pid: u32) -> Self {
+        self.agent_pid = Some(pid);
+        self
+    }
+
+    /// Get a clone of the stop flag for signal handling
+    #[must_use]
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop_flag)
+    }
+
+    /// Poll for new events and update display if state changed
+    ///
+    /// Returns Ok(true) if task reached terminal state (closed/stopped)
+    pub fn poll_and_display(&mut self, cwd: &Path) -> Result<bool> {
+        let events = read_events(cwd)?;
+        let tasks = materialize_tasks(&events);
+
+        // Find the root task
+        let root_task = match tasks.get(&self.task_id) {
+            Some(task) => task,
+            None => return Ok(false), // Task not found yet, keep waiting
+        };
+
+        // Check if we should update display (new events since last poll)
+        let should_render = events.len() != self.last_event_count || !self.has_rendered;
+
+        if should_render {
+            self.last_event_count = events.len();
+            self.render_task_tree(&tasks, root_task)?;
+            self.has_rendered = true;
+        }
+
+        // Check if task reached terminal state
+        let is_terminal = matches!(root_task.status, TaskStatus::Closed | TaskStatus::Stopped);
+
+        Ok(is_terminal)
+    }
+
+    /// Monitor until task completion, detach, or agent exit
+    ///
+    /// Returns the reason why monitoring stopped.
+    pub fn monitor_until_complete(&mut self, cwd: &Path) -> Result<MonitorExitReason> {
+        // Initial render
+        let _ = self.poll_and_display(cwd);
+
+        loop {
+            // Check stop flag (Ctrl+C)
+            if self.stop_flag.load(Ordering::Relaxed) {
+                self.render_detach_message()?;
+                return Ok(MonitorExitReason::UserDetached);
+            }
+
+            // Sleep for poll interval
+            std::thread::sleep(self.poll_interval);
+
+            // Check if agent process exited unexpectedly
+            if let Some(pid) = self.agent_pid {
+                if !is_process_alive(pid) {
+                    // Agent exited - do one final poll to check task status
+                    match self.poll_and_display(cwd) {
+                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
+                        _ => return Ok(MonitorExitReason::AgentExited),
+                    }
+                }
+            }
+
+            // Poll and update display
+            match self.poll_and_display(cwd) {
+                Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
+                Ok(false) => continue,
+                Err(e) => {
+                    // Log error but continue monitoring
+                    eprintln!("\nError polling task: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Render the task tree to stderr
+    fn render_task_tree(&mut self, tasks: &HashMap<String, Task>, root_task: &Task) -> Result<()> {
+        let mut stderr = stderr();
+
+        // Clear previous render (move up and clear lines)
+        if self.last_rendered_lines > 0 {
+            for _ in 0..self.last_rendered_lines {
+                stderr.execute(MoveUp(1))?;
+                stderr.execute(Clear(ClearType::CurrentLine))?;
+            }
+            stderr.execute(MoveToColumn(0))?;
+        }
+
+        let mut lines = Vec::new();
+
+        // Render root task
+        let root_line = self.format_task_line(root_task, "", true);
+        lines.push(root_line);
+
+        // Get subtasks (direct children)
+        let subtasks = self.get_sorted_subtasks(tasks, &root_task.id);
+        let subtask_count = subtasks.len();
+
+        for (idx, subtask) in subtasks.iter().enumerate() {
+            let is_last = idx == subtask_count - 1;
+            let prefix = if is_last { "└─ " } else { "├─ " };
+            let child_prefix = if is_last { "   " } else { "│  " };
+
+            let task_line = self.format_task_line(subtask, prefix, false);
+            lines.push(task_line);
+
+            // Show latest comment for in-progress or recently closed subtasks
+            if let Some(latest_comment) = subtask.comments.last() {
+                let comment_line = format!(
+                    "{}└─ {} {}",
+                    child_prefix,
+                    SYMBOL_COMMENT,
+                    truncate_comment(&latest_comment.text, 60)
+                );
+                lines.push(comment_line);
+            }
+        }
+
+        // Add footer
+        lines.push(String::new());
+        lines.push("[Ctrl+C to detach]".to_string());
+
+        // Render all lines
+        for line in &lines {
+            writeln!(stderr, "{}", line)?;
+        }
+        stderr.flush()?;
+
+        self.last_rendered_lines = lines.len();
+
+        Ok(())
+    }
+
+    /// Format a single task line with status symbol and elapsed time
+    fn format_task_line(&self, task: &Task, prefix: &str, is_root: bool) -> String {
+        let symbol = match task.status {
+            TaskStatus::Closed => SYMBOL_COMPLETED,
+            TaskStatus::InProgress => SYMBOL_IN_PROGRESS,
+            TaskStatus::Open => SYMBOL_PENDING,
+            TaskStatus::Stopped => SYMBOL_STOPPED,
+        };
+
+        let elapsed = if is_root || task.status == TaskStatus::InProgress {
+            format!(" [{}]", self.format_elapsed())
+        } else {
+            String::new()
+        };
+
+        let id_suffix = if is_root {
+            format!(" ({}...)", &task.id[..8.min(task.id.len())])
+        } else {
+            String::new()
+        };
+
+        // Truncate name to fit in typical terminal width
+        let max_name_len = 50;
+        let name = if task.name.len() > max_name_len {
+            format!("{}...", &task.name[..max_name_len - 3])
+        } else {
+            task.name.clone()
+        };
+
+        format!("{}{} {}{}{}", prefix, symbol, name, id_suffix, elapsed)
+    }
+
+    /// Format elapsed time as human-readable string
+    fn format_elapsed(&self) -> String {
+        let elapsed = self.start_time.elapsed();
+        let secs = elapsed.as_secs();
+
+        if secs < 60 {
+            format!("{}s", secs)
+        } else if secs < 3600 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        }
+    }
+
+    /// Get sorted subtasks for a parent task
+    fn get_sorted_subtasks<'a>(&self, tasks: &'a HashMap<String, Task>, parent_id: &str) -> Vec<&'a Task> {
+        let mut subtasks: Vec<&Task> = tasks
+            .values()
+            .filter(|t| is_direct_child_of(&t.id, parent_id))
+            .collect();
+
+        // Sort by creation time
+        subtasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        subtasks
+    }
+
+    /// Render detach message when Ctrl+C is pressed
+    fn render_detach_message(&self) -> Result<()> {
+        let mut stderr = stderr();
+        writeln!(stderr)?;
+        writeln!(
+            stderr,
+            "Detached. Task {} still running. Use `aiki task show {}` to check status.",
+            &self.task_id[..8.min(self.task_id.len())],
+            self.task_id
+        )?;
+        stderr.flush()?;
+        Ok(())
+    }
+}
+
+/// Check if a process is still alive
+///
+/// Uses kill with signal 0 on Unix, which checks if the process exists
+/// without actually sending a signal.
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    // SAFETY: kill with signal 0 is safe - it just checks if process exists
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0
+}
+
+/// Check if a process is still alive (non-Unix stub)
+#[cfg(not(unix))]
+fn is_process_alive(_pid: u32) -> bool {
+    // On non-Unix platforms, assume process is alive
+    // (we can't reliably check without platform-specific code)
+    true
+}
+
+/// Truncate a comment for display
+fn truncate_comment(text: &str, max_len: usize) -> String {
+    // Take first line only
+    let first_line = text.lines().next().unwrap_or("");
+
+    if first_line.len() > max_len {
+        format!("{}...", &first_line[..max_len - 3])
+    } else {
+        first_line.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_comment_short() {
+        let result = truncate_comment("Short comment", 60);
+        assert_eq!(result, "Short comment");
+    }
+
+    #[test]
+    fn test_truncate_comment_long() {
+        let long = "A".repeat(80);
+        let result = truncate_comment(&long, 60);
+        assert_eq!(result.len(), 60);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_comment_multiline() {
+        let multiline = "First line\nSecond line\nThird line";
+        let result = truncate_comment(multiline, 60);
+        assert_eq!(result, "First line");
+    }
+
+    #[test]
+    fn test_status_monitor_new() {
+        let monitor = StatusMonitor::new("test-task-id");
+        assert_eq!(monitor.task_id, "test-task-id");
+        assert_eq!(monitor.last_event_count, 0);
+        assert!(!monitor.has_rendered);
+        assert!(monitor.agent_pid.is_none());
+    }
+
+    #[test]
+    fn test_status_monitor_with_agent_pid() {
+        let monitor = StatusMonitor::new("test-task-id").with_agent_pid(12345);
+        assert_eq!(monitor.agent_pid, Some(12345));
+    }
+
+    #[test]
+    fn test_monitor_exit_reason_eq() {
+        assert_eq!(MonitorExitReason::TaskCompleted, MonitorExitReason::TaskCompleted);
+        assert_eq!(MonitorExitReason::UserDetached, MonitorExitReason::UserDetached);
+        assert_eq!(MonitorExitReason::AgentExited, MonitorExitReason::AgentExited);
+        assert_ne!(MonitorExitReason::TaskCompleted, MonitorExitReason::UserDetached);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_process_alive_current_process() {
+        // Current process should be alive
+        let pid = std::process::id();
+        assert!(is_process_alive(pid));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_is_process_alive_invalid_pid() {
+        // Very high PID that almost certainly doesn't exist
+        // (typically PIDs are limited to ~32k or 4M)
+        let result = is_process_alive(u32::MAX - 1);
+        // Could be false (doesn't exist) or we might get EPERM
+        // Just ensure it doesn't panic
+        let _ = result;
+    }
+}

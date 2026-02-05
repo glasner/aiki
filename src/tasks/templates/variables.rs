@@ -2,9 +2,18 @@
 //!
 //! Provides safe, single-pass variable substitution with these guarantees:
 //! - Single-pass evaluation: Variables are substituted once, values are never re-evaluated
-//! - No recursion: Values containing {braces} are inserted as literal text
-//! - Safe by design: Substitution happens after frontmatter parsing
+//! - No recursion: Values containing {{braces}} are inserted as literal text
+//! - Safe by design: Substitution happens after frontmatter and conditional parsing
 //! - Deterministic: Same inputs always produce same output
+//!
+//! # Syntax
+//!
+//! Uses Tera-style double-brace syntax for variables:
+//! - `{{var}}` - Substitute built-in variable
+//! - `{{data.key}}` - Substitute data variable
+//! - `{{source}}` - Substitute source variable
+//! - `{{parent.key}}` - Substitute parent task variable (in subtasks)
+//! - `{{item.key}}` - Substitute iteration item variable (in dynamic subtasks)
 
 use crate::error::{AikiError, Result};
 use std::collections::HashMap;
@@ -192,12 +201,11 @@ impl VariableContext {
 
 /// Substitute variables in text using the given context
 ///
-/// # Substitution Rules
+/// # Substitution Rules (Tera-style syntax)
 ///
-/// - `{var}` - Substitute built-in variable
-/// - `{data.key}` - Substitute data variable
-/// - `{source}` - Substitute source variable
-/// - `{{` and `}}` - Escape to literal `{` and `}`
+/// - `{{var}}` - Substitute built-in variable
+/// - `{{data.key}}` - Substitute data variable
+/// - `{{source}}` - Substitute source variable
 ///
 /// # Errors
 ///
@@ -207,6 +215,8 @@ pub fn substitute(text: &str, ctx: &VariableContext) -> Result<String> {
 }
 
 /// Substitute variables with template name for better error messages
+///
+/// Uses Tera-style `{{var}}` syntax for variable substitution.
 pub fn substitute_with_template_name(
     text: &str,
     ctx: &VariableContext,
@@ -218,53 +228,60 @@ pub fn substitute_with_template_name(
     while let Some(c) = chars.next() {
         if c == '{' {
             if chars.peek() == Some(&'{') {
-                // Escaped brace: {{ -> {
-                chars.next();
-                result.push('{');
-            } else {
-                // Start of variable reference
+                // Start of variable reference: {{
+                chars.next(); // consume second {
+
+                // Read until }}
                 let mut var_ref = String::new();
                 let mut found_close = false;
 
-                for c2 in chars.by_ref() {
+                while let Some(c2) = chars.next() {
                     if c2 == '}' {
-                        found_close = true;
-                        break;
+                        if chars.peek() == Some(&'}') {
+                            chars.next(); // consume second }
+                            found_close = true;
+                            break;
+                        }
+                        // Single }, not end of variable
+                        var_ref.push(c2);
+                    } else {
+                        var_ref.push(c2);
                     }
-                    var_ref.push(c2);
                 }
 
+                let var_ref = var_ref.trim();
+
                 if !found_close {
-                    // Unclosed brace, treat as literal
-                    result.push('{');
-                    result.push_str(&var_ref);
+                    // Unclosed variable, treat as literal text
+                    result.push_str("{{");
+                    result.push_str(var_ref);
                 } else if var_ref.is_empty() {
-                    // Empty variable reference: {} -> {}
-                    result.push_str("{}");
+                    // Empty variable reference: {{}} -> {{}}
+                    result.push_str("{{}}");
                 } else {
                     // Resolve variable
-                    match ctx.resolve(&var_ref) {
+                    match ctx.resolve(var_ref) {
                         Some(value) => result.push_str(&value),
                         None => {
                             let hint = if var_ref.starts_with("data.") {
                                 format!(
                                     "Use: --data {}=<value>",
-                                    var_ref.strip_prefix("data.").unwrap_or(&var_ref)
+                                    var_ref.strip_prefix("data.").unwrap_or(var_ref)
                                 )
                             } else if var_ref.starts_with("source.") {
                                 format!(
                                     "Variable 'source.{}' requires --source with a valid source string (e.g., --source task:<id>)",
-                                    var_ref.strip_prefix("source.").unwrap_or(&var_ref)
+                                    var_ref.strip_prefix("source.").unwrap_or(var_ref)
                                 )
                             } else if var_ref.starts_with("parent.") {
                                 format!(
                                     "Variable 'parent.{}' is only available in subtask templates",
-                                    var_ref.strip_prefix("parent.").unwrap_or(&var_ref)
+                                    var_ref.strip_prefix("parent.").unwrap_or(var_ref)
                                 )
                             } else if var_ref.starts_with("item.") {
                                 format!(
                                     "Variable 'item.{}' is only available in dynamic subtask templates (when iterating over a data source)",
-                                    var_ref.strip_prefix("item.").unwrap_or(&var_ref)
+                                    var_ref.strip_prefix("item.").unwrap_or(var_ref)
                                 )
                             } else if var_ref == "source" {
                                 "Use: --source <value>".to_string()
@@ -277,21 +294,15 @@ pub fn substitute_with_template_name(
                                 .unwrap_or_default();
 
                             return Err(AikiError::TemplateVariableNotFound {
-                                variable: var_ref,
+                                variable: var_ref.to_string(),
                                 hint,
                                 template_info,
                             });
                         }
                     }
                 }
-            }
-        } else if c == '}' {
-            if chars.peek() == Some(&'}') {
-                // Escaped brace: }} -> }
-                chars.next();
-                result.push('}');
             } else {
-                // Single closing brace, keep as-is
+                // Single opening brace, keep as-is
                 result.push(c);
             }
         } else {
@@ -303,6 +314,8 @@ pub fn substitute_with_template_name(
 }
 
 /// Find all variable references in text (for validation)
+///
+/// Finds all `{{var}}` patterns and returns the variable names.
 pub fn find_variables(text: &str) -> Vec<String> {
     let mut vars = Vec::new();
     let mut chars = text.chars().peekable();
@@ -310,28 +323,30 @@ pub fn find_variables(text: &str) -> Vec<String> {
     while let Some(c) = chars.next() {
         if c == '{' {
             if chars.peek() == Some(&'{') {
-                // Escaped brace, skip
-                chars.next();
-            } else {
-                // Start of variable reference
+                // Start of variable: {{
+                chars.next(); // consume second {
+
                 let mut var_ref = String::new();
                 let mut found_close = false;
 
-                for c2 in chars.by_ref() {
+                while let Some(c2) = chars.next() {
                     if c2 == '}' {
-                        found_close = true;
-                        break;
+                        if chars.peek() == Some(&'}') {
+                            chars.next(); // consume second }
+                            found_close = true;
+                            break;
+                        }
+                        var_ref.push(c2);
+                    } else {
+                        var_ref.push(c2);
                     }
-                    var_ref.push(c2);
                 }
 
+                let var_ref = var_ref.trim().to_string();
                 if found_close && !var_ref.is_empty() {
                     vars.push(var_ref);
                 }
             }
-        } else if c == '}' && chars.peek() == Some(&'}') {
-            // Escaped brace, skip
-            chars.next();
         }
     }
 
@@ -348,7 +363,7 @@ mod tests {
         ctx.set_builtin("assignee", "claude-code");
         ctx.set_builtin("priority", "p1");
 
-        let result = substitute("Assigned to: {assignee}, Priority: {priority}", &ctx).unwrap();
+        let result = substitute("Assigned to: {{assignee}}, Priority: {{priority}}", &ctx).unwrap();
         assert_eq!(result, "Assigned to: claude-code, Priority: p1");
     }
 
@@ -358,7 +373,7 @@ mod tests {
         ctx.set_data("scope", "@");
         ctx.set_data("files", "src/auth.rs, src/crypto.rs");
 
-        let result = substitute("Review {data.scope} (files: {data.files})", &ctx).unwrap();
+        let result = substitute("Review {{data.scope}} (files: {{data.files}})", &ctx).unwrap();
         assert_eq!(result, "Review @ (files: src/auth.rs, src/crypto.rs)");
     }
 
@@ -367,31 +382,15 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("file:ops/now/feature.md");
 
-        let result = substitute("Build from {source}", &ctx).unwrap();
+        let result = substitute("Build from {{source}}", &ctx).unwrap();
         assert_eq!(result, "Build from file:ops/now/feature.md");
-    }
-
-    #[test]
-    fn test_substitute_escape_braces() {
-        let ctx = VariableContext::new();
-
-        let result = substitute("Use {{data.foo}} syntax for variables", &ctx).unwrap();
-        assert_eq!(result, "Use {data.foo} syntax for variables");
-    }
-
-    #[test]
-    fn test_substitute_escape_both_braces() {
-        let ctx = VariableContext::new();
-
-        let result = substitute("{{escaped}} and }}trailing}}", &ctx).unwrap();
-        assert_eq!(result, "{escaped} and }trailing}");
     }
 
     #[test]
     fn test_substitute_missing_variable() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Hello {data.missing}", &ctx);
+        let result = substitute("Hello {{data.missing}}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("data.missing"));
@@ -401,27 +400,36 @@ mod tests {
     #[test]
     fn test_substitute_no_recursion() {
         let mut ctx = VariableContext::new();
-        ctx.set_data("value", "{data.other}");
+        ctx.set_data("value", "{{data.other}}");
 
-        let result = substitute("Result: {data.value}", &ctx).unwrap();
+        let result = substitute("Result: {{data.value}}", &ctx).unwrap();
         // The value should be literal, not recursively evaluated
-        assert_eq!(result, "Result: {data.other}");
+        assert_eq!(result, "Result: {{data.other}}");
     }
 
     #[test]
-    fn test_substitute_empty_braces() {
+    fn test_substitute_empty_double_braces() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Empty {} braces", &ctx).unwrap();
-        assert_eq!(result, "Empty {} braces");
+        let result = substitute("Empty {{}} braces", &ctx).unwrap();
+        assert_eq!(result, "Empty {{}} braces");
     }
 
     #[test]
-    fn test_substitute_unclosed_brace() {
+    fn test_substitute_unclosed_double_brace() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Unclosed {brace", &ctx).unwrap();
-        assert_eq!(result, "Unclosed {brace");
+        let result = substitute("Unclosed {{brace", &ctx).unwrap();
+        assert_eq!(result, "Unclosed {{brace");
+    }
+
+    #[test]
+    fn test_substitute_single_brace_preserved() {
+        let ctx = VariableContext::new();
+
+        // Single braces are now just literal text (not variables)
+        let result = substitute("Single {brace} preserved", &ctx).unwrap();
+        assert_eq!(result, "Single {brace} preserved");
     }
 
     #[test]
@@ -434,13 +442,14 @@ mod tests {
 
     #[test]
     fn test_find_variables() {
-        let vars = find_variables("Review {data.scope} assigned to {assignee} from {source}");
+        let vars = find_variables("Review {{data.scope}} assigned to {{assignee}} from {{source}}");
         assert_eq!(vars, vec!["data.scope", "assignee", "source"]);
     }
 
     #[test]
-    fn test_find_variables_with_escapes() {
-        let vars = find_variables("{{escaped}} and {real} and {{also_escaped}}");
+    fn test_find_variables_single_brace_ignored() {
+        // Single braces are not variables anymore
+        let vars = find_variables("{single} and {{real}} and {also_single}");
         assert_eq!(vars, vec!["real"]);
     }
 
@@ -526,7 +535,7 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("task:parent123");
 
-        let result = substitute("Child of task:{source.task_id}", &ctx).unwrap();
+        let result = substitute("Child of task:{{source.task_id}}", &ctx).unwrap();
         assert_eq!(result, "Child of task:parent123");
     }
 
@@ -551,7 +560,7 @@ mod tests {
     fn test_substitute_source_data_missing() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Task ID: {source.task_id}", &ctx);
+        let result = substitute("Task ID: {{source.task_id}}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("source.task_id"));
@@ -577,7 +586,7 @@ mod tests {
         ctx.set_parent("id", "abc123");
         ctx.set_parent("name", "Review Code");
 
-        let result = substitute("Subtask of {parent.name} (id: {parent.id})", &ctx).unwrap();
+        let result = substitute("Subtask of {{parent.name}} (id: {{parent.id}})", &ctx).unwrap();
         assert_eq!(result, "Subtask of Review Code (id: abc123)");
     }
 
@@ -585,7 +594,7 @@ mod tests {
     fn test_substitute_parent_data_missing() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Parent: {parent.id}", &ctx);
+        let result = substitute("Parent: {{parent.id}}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("parent.id"));
@@ -614,7 +623,7 @@ mod tests {
         ctx.set_item("file", "src/main.rs");
         ctx.set_item("line", "123");
 
-        let result = substitute("Fix: {item.file}:{item.line} - {item.text}", &ctx).unwrap();
+        let result = substitute("Fix: {{item.file}}:{{item.line}} - {{item.text}}", &ctx).unwrap();
         assert_eq!(result, "Fix: src/main.rs:123 - Missing null check");
     }
 
@@ -622,11 +631,21 @@ mod tests {
     fn test_substitute_item_data_missing() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Item: {item.text}", &ctx);
+        let result = substitute("Item: {{item.text}}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("item.text"));
         assert!(err.to_string().contains("dynamic subtask templates"));
+    }
+
+    #[test]
+    fn test_substitute_with_whitespace() {
+        let mut ctx = VariableContext::new();
+        ctx.set_data("name", "World");
+
+        // Whitespace inside {{ }} should be trimmed
+        let result = substitute("Hello {{ data.name }}!", &ctx).unwrap();
+        assert_eq!(result, "Hello World!");
     }
 
     #[test]

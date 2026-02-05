@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::provenance::AgentType;
-use crate::session::AikiSession;
+use crate::session::{AikiSession, SessionMode};
 
 /// Create a session for Claude Code events
 ///
@@ -63,6 +63,7 @@ mod tests {
             session_id,
             agent_version.clone(),
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
 
         // Verify session was created
