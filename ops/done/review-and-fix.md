@@ -245,7 +245,7 @@ Focus on:
 
 For each issue found, add a comment using `aiki task comment` with structured data:
 
-aiki task comment --id <parent.id> \
+aiki task comment <parent.id> \
   --data file=<path> --data line=<line> \
   --data severity=high|medium|low \
   --data category=bug|quality|security|performance|ux \
@@ -438,7 +438,7 @@ instructions: |
 
   For each issue found, add a comment using `aiki task comment` with structured data:
 
-  aiki task comment --id <task-id> \
+  aiki task comment <task-id> \
     --data file=<path> --data line=<line> \
     --data severity=high|medium|low \
     --data category=bug|quality|security|performance|ux \
@@ -554,7 +554,7 @@ data:
 
 **CLI for adding structured comments:**
 ```bash
-aiki task comment --id xqrmnpst.2 \
+aiki task comment xqrmnpst.2 \
   --data file=src/auth.ts --data line=42 \
   --data severity=high --data category=quality \
   "Potential null pointer dereference when accessing user.name."

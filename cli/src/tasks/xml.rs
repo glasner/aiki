@@ -106,10 +106,16 @@ impl XmlBuilder {
         } else {
             ctx.push_str("    <in_progress>\n");
             for task in in_progress {
+                let type_attr = task
+                    .task_type
+                    .as_ref()
+                    .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+                    .unwrap_or_default();
                 ctx.push_str(&format!(
-                    r#"      <task id="{}" name="{}"/>"#,
+                    r#"      <task id="{}" name="{}"{}/>"#,
                     task.id,
-                    escape_xml(&task.name)
+                    escape_xml(&task.name),
+                    type_attr
                 ));
                 ctx.push('\n');
             }
@@ -122,11 +128,17 @@ impl XmlBuilder {
         ctx.push('\n');
 
         for task in ready_queue.iter().take(5) {
+            let type_attr = task
+                .task_type
+                .as_ref()
+                .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+                .unwrap_or_default();
             ctx.push_str(&format!(
-                r#"      <task id="{}" name="{}" priority="{}"/>"#,
+                r#"      <task id="{}" name="{}" priority="{}"{}/>"#,
                 task.id,
                 escape_xml(&task.name),
-                task.priority
+                task.priority,
+                type_attr
             ));
             ctx.push('\n');
         }
@@ -148,6 +160,10 @@ pub fn format_task(task: &Task, include_body: bool) -> String {
         task.priority
     );
 
+    if let Some(ref task_type) = task.task_type {
+        xml.push_str(&format!(r#" type="{}""#, escape_xml(task_type)));
+    }
+
     if let Some(ref assignee) = task.assignee {
         xml.push_str(&format!(r#" assignee="{}""#, escape_xml(assignee)));
     }
@@ -165,11 +181,17 @@ pub fn format_task(task: &Task, include_body: bool) -> String {
 /// Format a task element with body content
 #[must_use]
 pub fn format_task_with_body(task: &Task, body: Option<&str>) -> String {
+    let type_attr = task
+        .task_type
+        .as_ref()
+        .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+        .unwrap_or_default();
     let mut xml = format!(
-        r#"    <task id="{}" priority="{}" name="{}""#,
+        r#"    <task id="{}" priority="{}" name="{}"{}"#,
         task.id,
         task.priority,
         escape_xml(&task.name),
+        type_attr,
     );
 
     if let Some(body) = body {
@@ -200,6 +222,9 @@ pub fn format_task_list(tasks: &[&Task]) -> String {
             escape_xml(&task.name),
             task.priority
         );
+        if let Some(ref task_type) = task.task_type {
+            task_xml.push_str(&format!(r#" type="{}""#, escape_xml(task_type)));
+        }
         if let Some(ref assignee) = task.assignee {
             task_xml.push_str(&format!(r#" assignee="{}""#, escape_xml(assignee)));
         }
@@ -224,6 +249,9 @@ pub fn format_added(tasks: &[&Task]) -> String {
             escape_xml(&task.name),
             task.priority
         );
+        if let Some(ref task_type) = task.task_type {
+            task_xml.push_str(&format!(r#" type="{}""#, escape_xml(task_type)));
+        }
         if let Some(ref assignee) = task.assignee {
             task_xml.push_str(&format!(r#" assignee="{}""#, escape_xml(assignee)));
         }
@@ -260,10 +288,16 @@ pub fn format_stopped(tasks: &[&Task], reason: Option<&str>) -> String {
     xml.push_str(">\n");
 
     for task in tasks {
+        let type_attr = task
+            .task_type
+            .as_ref()
+            .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+            .unwrap_or_default();
         xml.push_str(&format!(
-            r#"    <task id="{}" name="{}"/>"#,
+            r#"    <task id="{}" name="{}"{}/>"#,
             task.id,
-            escape_xml(&task.name)
+            escape_xml(&task.name),
+            type_attr
         ));
         xml.push('\n');
     }
@@ -279,10 +313,16 @@ pub fn format_closed(tasks: &[&Task], outcome: &str) -> String {
     xml.push('\n');
 
     for task in tasks {
+        let type_attr = task
+            .task_type
+            .as_ref()
+            .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+            .unwrap_or_default();
         xml.push_str(&format!(
-            r#"    <task id="{}" name="{}"/>"#,
+            r#"    <task id="{}" name="{}"{}/>"#,
             task.id,
-            escape_xml(&task.name)
+            escape_xml(&task.name),
+            type_attr
         ));
         xml.push('\n');
     }

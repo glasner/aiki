@@ -39,6 +39,10 @@ pub struct AikiState {
 
     /// Failure messages emitted by the hook
     failures: Vec<crate::events::result::Failure>,
+
+    /// PIDs to send SIGTERM to after all hooks complete
+    /// Used by session.end action to defer termination until hooks are done
+    pending_session_ends: Vec<u32>,
 }
 
 impl AikiState {
@@ -73,6 +77,7 @@ impl AikiState {
             hook_name: None,
             context_assembler,
             failures: Vec::new(),
+            pending_session_ends: Vec::new(),
         }
     }
 
@@ -181,6 +186,48 @@ impl AikiState {
         self.let_vars.clear();
         self.variable_metadata.clear();
     }
+
+    /// Register a PID to receive SIGTERM after hooks complete
+    ///
+    /// Used by session.end action to defer termination until all hooks are done.
+    /// This ensures hooks can finish their work before the session is terminated.
+    pub fn add_pending_session_end(&mut self, pid: u32) {
+        self.pending_session_ends.push(pid);
+    }
+
+    /// Execute all pending session terminations
+    ///
+    /// Sends SIGTERM to all registered PIDs. Called after all hooks complete.
+    /// This is synchronous - the termination happens before returning.
+    #[cfg(unix)]
+    pub fn execute_pending_session_ends(&mut self) {
+        use crate::cache::debug_log;
+
+        for pid in self.pending_session_ends.drain(..) {
+            debug_log(|| format!("Sending SIGTERM to session PID {}", pid));
+            // SAFETY: libc::kill is safe to call with any pid value
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+    }
+
+    /// Execute all pending session terminations (non-Unix stub)
+    #[cfg(not(unix))]
+    pub fn execute_pending_session_ends(&mut self) {
+        use crate::cache::debug_log;
+
+        if !self.pending_session_ends.is_empty() {
+            debug_log(|| "session.end: SIGTERM not supported on this platform".to_string());
+            self.pending_session_ends.clear();
+        }
+    }
+
+    /// Check if there are pending session terminations
+    #[must_use]
+    pub fn has_pending_session_ends(&self) -> bool {
+        !self.pending_session_ends.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -218,13 +265,13 @@ mod tests {
             AikiChangeCompletedPayload, AikiEvent, ChangeOperation, WriteOperation,
         };
         use crate::provenance::AgentType;
-        use crate::session::AikiSession;
+        use crate::session::{AikiSession, SessionMode};
 
         let session = AikiSession::new(
             AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
-            crate::provenance::DetectionMethod::Hook,
+            crate::provenance::DetectionMethod::Hook, SessionMode::Interactive,
         );
         let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,

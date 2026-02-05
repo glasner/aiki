@@ -30,7 +30,7 @@ aiki task close <id> --comment "Created plan at ops/now/rename.md"
 
 **Leave progress comments during long tasks:**
 ```bash
-aiki task comment --id <task-id> "Completed phase 1, now working on phase 2"
+aiki task comment <task-id> "Completed phase 1, now working on phase 2"
 ```
 
 **When closing tasks, summarize your work:**
@@ -95,9 +95,9 @@ aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
 aiki task start "Implement user authentication system"
 
 # As you make progress, add comments
-aiki task comment --id <task-id> "Completed database schema design"
-aiki task comment --id <task-id> "Implemented password hashing"
-aiki task comment --id <task-id> "Added login endpoint, now testing"
+aiki task comment <task-id> "Completed database schema design"
+aiki task comment <task-id> "Implemented password hashing"
+aiki task comment <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
 aiki task close <task-id> --comment "Completed: authentication with JWT tokens, password hashing, and session management"
@@ -130,7 +130,7 @@ aiki task start <id1> <id2> <id3>
 aiki task stop --reason "Blocked on X"
 
 # Add a comment (without closing)
-aiki task comment --id <task-id> "Progress update: ..."
+aiki task comment <task-id> "Progress update: ..."
 
 # Show task details including comments
 aiki task show <task-id>

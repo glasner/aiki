@@ -1,5 +1,6 @@
 pub mod turn_state;
 
+use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::global;
 use crate::provenance::{AgentType, DetectionMethod};
@@ -8,6 +9,34 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use sysinfo::{Pid, ProcessesToUpdate, System};
+
+/// Session mode - background vs interactive
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SessionMode {
+    /// Background session created by `aiki task run`
+    Background,
+    /// Interactive session (user working directly in agent)
+    Interactive,
+}
+
+impl SessionMode {
+    /// Convert to string for metadata storage
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            SessionMode::Background => "background",
+            SessionMode::Interactive => "interactive",
+        }
+    }
+
+    /// Parse from metadata string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "background" => Some(SessionMode::Background),
+            "interactive" => Some(SessionMode::Interactive),
+            _ => None,
+        }
+    }
+}
 
 /// Reason a session was cleaned up
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,14 +89,17 @@ impl AikiSessionFile {
             metadata.push_str(&format!("agent_version={}\n", version));
         }
 
+        // Add mode (background vs interactive)
+        metadata.push_str(&format!("mode={}\n", self.session.mode().to_string()));
+
         // Add parent_pid for PID-based session detection
         if let Some(pid) = self.session.parent_pid() {
             metadata.push_str(&format!("parent_pid={}\n", pid));
         }
 
-        // Add runner_task if this is a runner session (spawned by aiki task run --async)
-        if let Some(task_id) = self.session.runner_task() {
-            metadata.push_str(&format!("runner_task={}\n", task_id));
+        // Add task if this is a task-driven session (spawned by aiki spec or aiki task run --async)
+        if let Some(task_id) = self.session.task() {
+            metadata.push_str(&format!("task={}\n", task_id));
         }
 
         metadata.push_str("[/aiki]\n");
@@ -164,26 +196,19 @@ impl AikiSessionFile {
         }
 
         // Insert parent_pid before [/aiki] closing tag
-        let new_content = content.replace(
-            "[/aiki]\n",
-            &format!("parent_pid={}\n[/aiki]\n", pid),
-        );
+        let new_content = content.replace("[/aiki]\n", &format!("parent_pid={}\n[/aiki]\n", pid));
 
         // Write atomically via temp file
         let tmp_path = self.path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp_path).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e))
-        })?;
-        file.write_all(new_content.as_bytes()).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e))
-        })?;
-        file.sync_all().map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e))
-        })?;
+        let mut file = fs::File::create(&tmp_path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
+        file.write_all(new_content.as_bytes())
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e)))?;
 
-        fs::rename(&tmp_path, &self.path).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e))
-        })?;
+        fs::rename(&tmp_path, &self.path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e)))?;
 
         Ok(())
     }
@@ -228,26 +253,19 @@ impl AikiSessionFile {
         }
 
         // Insert repo before [/aiki] closing tag
-        let new_content = content.replace(
-            "[/aiki]\n",
-            &format!("{}\n[/aiki]\n", repo_line),
-        );
+        let new_content = content.replace("[/aiki]\n", &format!("{}\n[/aiki]\n", repo_line));
 
         // Write atomically via temp file
         let tmp_path = self.path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp_path).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e))
-        })?;
-        file.write_all(new_content.as_bytes()).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e))
-        })?;
-        file.sync_all().map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e))
-        })?;
+        let mut file = fs::File::create(&tmp_path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
+        file.write_all(new_content.as_bytes())
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e)))?;
 
-        fs::rename(&tmp_path, &self.path).map_err(|e| {
-            AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e))
-        })?;
+        fs::rename(&tmp_path, &self.path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e)))?;
 
         Ok(())
     }
@@ -283,17 +301,20 @@ pub struct AikiSession {
     client_version: Option<String>,
     /// Integration type - how Aiki is integrated with the agent (Hook vs ACP)
     detection_method: DetectionMethod,
+    /// Session mode - background (task runner) vs interactive (user-driven)
+    mode: SessionMode,
     /// Parent process ID of the agent (for PID-based session detection)
     ///
     /// In hook mode, this is the parent of the hook process (the agent).
     /// In ACP mode, this is the `agent_pid` from the session/start message.
     /// Used to match bash commands back to their originating session.
     parent_pid: Option<u32>,
-    /// Task ID if this session was spawned by `aiki task run --async`
+    /// Task ID driving this session (if any)
     ///
-    /// Set from AIKI_RUNNER_TASK environment variable.
-    /// Used to terminate background agent processes when tasks are stopped/closed.
-    runner_task: Option<String>,
+    /// Set from AIKI_TASK environment variable.
+    /// Used for task-driven sessions spawned by `aiki spec` or `aiki task run --async`.
+    /// When the driving task closes, interactive sessions auto-end.
+    task: Option<String>,
 }
 
 impl AikiSession {
@@ -353,6 +374,7 @@ impl AikiSession {
         external_id: impl Into<String>,
         agent_version: Option<impl Into<String>>,
         detection_method: DetectionMethod,
+        mode: SessionMode,
     ) -> Self {
         let external_id = external_id.into();
         let uuid = Self::generate_uuid(agent_type, &external_id);
@@ -365,8 +387,9 @@ impl AikiSession {
             client_version: None,
             agent_version: agent_version.map(|v| v.into()),
             detection_method,
+            mode,
             parent_pid: None,
-            runner_task: None,
+            task: None,
         }
     }
 
@@ -375,7 +398,7 @@ impl AikiSession {
     /// Used when we already have the final UUID and don't need to re-generate it.
     /// This is the case during TTL cleanup when reading session files.
     #[must_use]
-    pub fn from_uuid(uuid: String, agent_type: AgentType) -> Self {
+    pub fn from_uuid(uuid: String, agent_type: AgentType, mode: SessionMode) -> Self {
         Self {
             uuid,
             agent_type,
@@ -384,8 +407,9 @@ impl AikiSession {
             client_version: None,
             agent_version: None,
             detection_method: DetectionMethod::Unknown,
+            mode,
             parent_pid: None,
-            runner_task: None,
+            task: None,
         }
     }
 
@@ -393,6 +417,9 @@ impl AikiSession {
     ///
     /// Convenience constructor that automatically sets `DetectionMethod::Hook`
     /// and captures the parent process ID for PID-based session detection.
+    /// Mode is determined by `AIKI_SESSION_MODE` env var:
+    /// - "background" → Background mode (for `aiki task run --async`)
+    /// - anything else → Interactive mode (default, for `aiki spec` and normal sessions)
     ///
     /// # Examples
     /// ```
@@ -415,14 +442,22 @@ impl AikiSession {
         // Capture parent PID - the agent that spawned this hook process
         let parent_pid = get_parent_pid();
 
+        // Determine mode from AIKI_SESSION_MODE env var
+        // "background" → Background, anything else → Interactive
+        let mode = match std::env::var("AIKI_SESSION_MODE").as_deref() {
+            Ok("background") => SessionMode::Background,
+            _ => SessionMode::Interactive,
+        };
+
         Self::new(
             agent_type,
             external_id,
             agent_version,
             DetectionMethod::Hook,
+            mode,
         )
         .with_parent_pid(parent_pid)
-        .with_runner_task_from_env()
+        .with_task_from_env()
     }
 
     /// Generate a deterministic UUID v5 for a session
@@ -494,21 +529,29 @@ impl AikiSession {
         self
     }
 
-    /// Set the runner task ID (for sessions spawned by `aiki task run --async`)
+    /// Set the task ID driving this session
+    ///
+    /// Used for sessions spawned by `aiki spec` or `aiki task run --async`.
     #[must_use]
-    pub fn with_runner_task(mut self, task_id: Option<String>) -> Self {
-        self.runner_task = task_id;
+    pub fn with_task(mut self, task_id: Option<String>) -> Self {
+        self.task = task_id;
         self
     }
 
-    /// Capture runner task ID from AIKI_RUNNER_TASK environment variable
+    /// Capture task ID from AIKI_TASK environment variable
     ///
     /// This should be called when creating sessions to check if this session
-    /// was spawned by `aiki task run --async`.
+    /// was spawned by a workflow command (e.g., `aiki spec`, `aiki task run --async`).
     #[must_use]
-    pub fn with_runner_task_from_env(self) -> Self {
-        let task_id = std::env::var("AIKI_RUNNER_TASK").ok();
-        self.with_runner_task(task_id)
+    pub fn with_task_from_env(self) -> Self {
+        let task_id = std::env::var("AIKI_TASK").ok();
+        debug_log(|| {
+            format!(
+                "with_task_from_env: AIKI_TASK={:?}",
+                task_id
+            )
+        });
+        self.with_task(task_id)
     }
 
     /// Get the session UUID as a string
@@ -553,16 +596,22 @@ impl AikiSession {
         &self.detection_method
     }
 
+    /// Get the session mode (background vs interactive)
+    #[must_use]
+    pub fn mode(&self) -> SessionMode {
+        self.mode
+    }
+
     /// Get the parent process ID
     #[must_use]
     pub fn parent_pid(&self) -> Option<u32> {
         self.parent_pid
     }
 
-    /// Get the runner task ID if this is a runner session
+    /// Get the task ID if this is a task-driven session
     #[must_use]
-    pub fn runner_task(&self) -> Option<&str> {
-        self.runner_task.as_deref()
+    pub fn task(&self) -> Option<&str> {
+        self.task.as_deref()
     }
 
     /// Get a session file handle for this session
@@ -605,6 +654,7 @@ pub fn count_sessions() -> Result<usize> {
 pub struct SessionInfo {
     pub session_id: String,
     pub agent: String,
+    pub mode: SessionMode,
     pub started_at: String,
     pub parent_pid: Option<u32>,
     pub repos: Vec<String>,
@@ -618,8 +668,9 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
         return Ok(Vec::new());
     }
 
-    let entries = fs::read_dir(&sessions_dir)
-        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to read sessions directory: {}", e)))?;
+    let entries = fs::read_dir(&sessions_dir).map_err(|e| {
+        AikiError::Other(anyhow::anyhow!("Failed to read sessions directory: {}", e))
+    })?;
 
     let mut sessions = Vec::new();
 
@@ -636,6 +687,7 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
 
         let mut agent = String::new();
         let mut session_id = String::new();
+        let mut mode: Option<SessionMode> = None;
         let mut started_at = String::new();
         let mut parent_pid: Option<u32> = None;
         let mut repos = Vec::new();
@@ -650,6 +702,8 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
                 if session_id.is_empty() {
                     session_id = val.to_string();
                 }
+            } else if let Some(val) = line.strip_prefix("mode=") {
+                mode = SessionMode::from_str(val);
             } else if let Some(val) = line.strip_prefix("started_at=") {
                 started_at = val.to_string();
             } else if let Some(val) = line.strip_prefix("parent_pid=") {
@@ -671,6 +725,7 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
         sessions.push(SessionInfo {
             session_id,
             agent,
+            mode: mode.unwrap_or(SessionMode::Interactive), // Default to interactive for old sessions
             started_at,
             parent_pid,
             repos,
@@ -756,10 +811,7 @@ pub fn get_current_agent_type(repo_path: impl AsRef<Path>) -> Option<AgentType> 
 /// This allows precise session lookup even when multiple sessions are active.
 #[allow(dead_code)] // Part of session API
 /// Check if a session is active by looking for its session file
-pub fn has_active_session(
-    agent_type: AgentType,
-    external_session_id: &str,
-) -> bool {
+pub fn has_active_session(agent_type: AgentType, external_session_id: &str) -> bool {
     let uuid = AikiSession::generate_uuid(agent_type, external_session_id);
     let session_file = global::global_sessions_dir().join(&uuid);
     session_file.exists()
@@ -771,12 +823,14 @@ pub fn end_session(
     agent_type: AgentType,
     external_session_id: impl Into<String>,
     detection_method: DetectionMethod,
+    mode: SessionMode,
 ) -> Result<()> {
     let session = AikiSession::new(
         agent_type,
         external_session_id,
         None::<&str>,
         detection_method,
+        mode,
     );
     session.file().delete()?;
     Ok(())
@@ -993,27 +1047,37 @@ pub fn find_session_by_ancestor_pid(jj_cwd: impl AsRef<Path>) -> Option<SessionM
     best_match.map(|(m, _)| m)
 }
 
-/// Info about a runner session (spawned by `aiki task run --async`)
+/// Info about a task-driven session (spawned by `aiki spec` or `aiki task run --async`)
 #[derive(Debug, Clone)]
-pub struct RunnerSessionInfo {
+pub struct TaskSessionInfo {
     /// Session ID
     pub session_id: String,
-    /// Task ID this session is running
+    /// Task ID driving this session
     pub task_id: String,
     /// Process ID of the agent (for termination)
     pub pid: u32,
+    /// Session mode (interactive or background)
+    pub mode: SessionMode,
 }
 
-/// Find a runner session by task ID
+/// Find a task-driven session by task ID
 ///
-/// Scans session files for one with `runner_task=<task_id>` and returns
+/// Scans session files for one with `task=<task_id>` and returns
 /// the session info including the PID for process termination.
 ///
 /// Returns None if no matching session found.
-pub fn find_runner_session(task_id: &str) -> Option<RunnerSessionInfo> {
+pub fn find_task_session(task_id: &str) -> Option<TaskSessionInfo> {
     let sessions_dir = global::global_sessions_dir();
 
+    debug_log(|| {
+        format!(
+            "find_task_session: looking for task={} in {:?}",
+            task_id, sessions_dir
+        )
+    });
+
     if !sessions_dir.exists() {
+        debug_log(|| "find_task_session: sessions dir does not exist".to_string());
         return None;
     }
 
@@ -1022,6 +1086,7 @@ pub fn find_runner_session(task_id: &str) -> Option<RunnerSessionInfo> {
         Err(_) => return None,
     };
 
+    let mut sessions_checked = 0;
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if !path.is_file() {
@@ -1033,39 +1098,59 @@ pub fn find_runner_session(task_id: &str) -> Option<RunnerSessionInfo> {
             continue;
         }
 
+        sessions_checked += 1;
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
         // Parse session file fields
-        let mut runner_task: Option<String> = None;
+        let mut session_task: Option<String> = None;
         let mut parent_pid: Option<u32> = None;
         let mut session_id: Option<String> = None;
+        let mut mode: Option<SessionMode> = None;
 
         for line in content.lines() {
             let line = line.trim();
-            if let Some(val) = line.strip_prefix("runner_task=") {
-                runner_task = Some(val.to_string());
+            if let Some(val) = line.strip_prefix("task=") {
+                session_task = Some(val.to_string());
             } else if let Some(val) = line.strip_prefix("parent_pid=") {
                 parent_pid = val.parse().ok();
             } else if let Some(val) = line.strip_prefix("session_id=") {
                 session_id = Some(val.to_string());
+            } else if let Some(val) = line.strip_prefix("mode=") {
+                mode = SessionMode::from_str(val);
             }
         }
 
         // Check if this session matches our task
-        if let (Some(rt), Some(pid), Some(sid)) = (runner_task, parent_pid, session_id) {
-            if rt == task_id {
-                return Some(RunnerSessionInfo {
+        if let (Some(st), Some(pid), Some(sid)) =
+            (session_task.clone(), parent_pid, session_id.clone())
+        {
+            debug_log(|| {
+                format!(
+                    "find_task_session: session {} has task={}, looking for {}",
+                    sid, st, task_id
+                )
+            });
+            if st == task_id {
+                debug_log(|| format!("find_task_session: FOUND match! pid={}", pid));
+                return Some(TaskSessionInfo {
                     session_id: sid,
-                    task_id: rt,
+                    task_id: st,
                     pid,
+                    mode: mode.unwrap_or(SessionMode::Interactive),
                 });
             }
         }
     }
 
+    debug_log(|| {
+        format!(
+            "find_task_session: checked {} sessions, no match found",
+            sessions_checked
+        )
+    });
     None
 }
 
@@ -1201,6 +1286,7 @@ pub fn find_active_session(jj_cwd: impl AsRef<Path>) -> Option<SessionMatch> {
                     &session.external_session_id,
                     None::<&str>,
                     DetectionMethod::Hook,
+                    SessionMode::Interactive,
                 ),
             };
             if let Err(e) = session_file.update_parent_pid(codex_pid) {
@@ -1350,7 +1436,10 @@ fn parse_event_timestamp(description: &str) -> std::result::Result<Option<DateTi
 /// - `Ok(Some(timestamp))` - events found, latest timestamp returned
 /// - `Ok(None)` - no events found (orphaned session)
 /// - `Err(e)` - JJ query failed (repo lock, jj not in PATH, etc.)
-fn query_latest_event(repo_path: &Path, session_id: &str) -> std::result::Result<Option<DateTime<Utc>>, String> {
+fn query_latest_event(
+    repo_path: &Path,
+    session_id: &str,
+) -> std::result::Result<Option<DateTime<Utc>>, String> {
     use crate::jj::jj_cmd;
 
     // Query JJ for latest event in this session
@@ -1361,10 +1450,15 @@ fn query_latest_event(repo_path: &Path, session_id: &str) -> std::result::Result
         .args([
             "log",
             "-r",
-            &format!("::aiki/conversations & description(\"session={}\")", session_id),
-            "--limit", "1",
+            &format!(
+                "::aiki/conversations & description(\"session={}\")",
+                session_id
+            ),
+            "--limit",
+            "1",
             "--no-graph",
-            "--template", "description ++ \"\\n\"",
+            "--template",
+            "description ++ \"\\n\"",
             "--ignore-working-copy",
         ])
         .current_dir(repo_path)
@@ -1390,6 +1484,7 @@ struct SessionFileInfo {
     agent_type: Option<AgentType>,
     session_id: Option<String>,
     external_session_id: Option<String>,
+    mode: Option<SessionMode>,
     parent_pid: Option<u32>,
 }
 
@@ -1398,6 +1493,7 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
     let mut agent_type: Option<AgentType> = None;
     let mut session_id: Option<String> = None;
     let mut external_session_id: Option<String> = None;
+    let mut mode: Option<SessionMode> = None;
     let mut parent_pid: Option<u32> = None;
 
     for line in content.lines() {
@@ -1415,6 +1511,8 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
             }
         } else if let Some(val) = line.strip_prefix("external_session_id=") {
             external_session_id = Some(val.to_string());
+        } else if let Some(val) = line.strip_prefix("mode=") {
+            mode = SessionMode::from_str(val);
         }
     }
 
@@ -1423,6 +1521,7 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
         agent_type,
         session_id,
         external_session_id,
+        mode,
         parent_pid,
     })
 }
@@ -1442,18 +1541,24 @@ fn emit_synthetic_session_ended(session_info: &SessionFileInfo, reason: SessionC
         SessionCleanupReason::PidDead => "pid_dead",
     };
 
-    debug_log(|| format!(
-        "Synthetic session.ended: session={}, reason={}",
-        session_info.session_id.as_deref().unwrap_or("unknown"),
-        reason_str
-    ));
+    debug_log(|| {
+        format!(
+            "Synthetic session.ended: session={}, reason={}",
+            session_info.session_id.as_deref().unwrap_or("unknown"),
+            reason_str
+        )
+    });
 
-    let (Some(session_id), Some(agent_type)) = (&session_info.session_id, session_info.agent_type) else {
-        debug_log(|| "Cannot emit synthetic session.ended: missing session_id or agent_type".to_string());
+    let (Some(session_id), Some(agent_type)) = (&session_info.session_id, session_info.agent_type)
+    else {
+        debug_log(|| {
+            "Cannot emit synthetic session.ended: missing session_id or agent_type".to_string()
+        });
         return;
     };
 
-    let session = AikiSession::from_uuid(session_id.clone(), agent_type);
+    let mode = session_info.mode.unwrap_or(SessionMode::Interactive);
+    let session = AikiSession::from_uuid(session_id.clone(), agent_type, mode);
     let cwd = global::global_aiki_dir();
 
     let event = AikiEvent::SessionEnded(AikiSessionEndedPayload {
@@ -1467,7 +1572,6 @@ fn emit_synthetic_session_ended(session_info: &SessionFileInfo, reason: SessionC
         debug_log(|| format!("Failed to dispatch synthetic session.ended: {}", e));
     }
 }
-
 
 /// Remove session files whose parent PID is dead.
 ///
@@ -1588,11 +1692,8 @@ mod tests {
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create a session and write its file
-        let session = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "claude-session-abc123",
-            None::<&str>,
-        );
+        let session =
+            AikiSession::for_hook(AgentType::ClaudeCode, "claude-session-abc123", None::<&str>);
         session.file().create().unwrap();
 
         // Verify session file was created using the global API
@@ -1606,7 +1707,10 @@ mod tests {
         assert!(content.contains("external_session_id=claude-session-abc123"));
         assert!(content.contains(&format!("session_id={}", session.uuid())));
         assert!(content.contains("started_at="));
-        assert!(!content.contains("cwd="), "cwd field should not be in session file");
+        assert!(
+            !content.contains("cwd="),
+            "cwd field should not be in session file"
+        );
         assert!(content.ends_with("[/aiki]\n"));
 
         // Verify session count
@@ -1619,19 +1723,13 @@ mod tests {
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session file twice (idempotent via O_EXCL)
-        let session1 = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "claude-session-abc123",
-            None::<&str>,
-        );
+        let session1 =
+            AikiSession::for_hook(AgentType::ClaudeCode, "claude-session-abc123", None::<&str>);
         let created1 = session1.file().create().unwrap();
         assert!(created1); // First create succeeds
 
-        let session2 = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "claude-session-abc123",
-            None::<&str>,
-        );
+        let session2 =
+            AikiSession::for_hook(AgentType::ClaudeCode, "claude-session-abc123", None::<&str>);
         let created2 = session2.file().create().unwrap();
         assert!(!created2); // Second create returns false (already exists)
 
@@ -1653,6 +1751,7 @@ mod tests {
             "codex-session-123",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         // Don't call with_parent_pid - leave it as None
         let session_file = session.file();
@@ -1692,6 +1791,7 @@ mod tests {
             "codex-session-456",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
         session_file.create().unwrap();
@@ -1713,11 +1813,8 @@ mod tests {
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create multiple different sessions
-        let session1 = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "claude-session-1",
-            None::<&str>,
-        );
+        let session1 =
+            AikiSession::for_hook(AgentType::ClaudeCode, "claude-session-1", None::<&str>);
         session1.file().create().unwrap();
 
         let session2 = AikiSession::new(
@@ -1725,6 +1822,7 @@ mod tests {
             "cursor-session-2",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         session2.file().create().unwrap();
 
@@ -1744,12 +1842,14 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session2 = AikiSession::new(
             AgentType::ClaudeCode,
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
 
         assert_eq!(session1.uuid(), session2.uuid());
@@ -1761,6 +1861,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         assert_ne!(session1.uuid(), session3.uuid());
     }
@@ -1787,6 +1888,7 @@ mod tests {
             AgentType::ClaudeCode,
             "claude-session-end-test",
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         )
         .unwrap();
 
@@ -1801,11 +1903,7 @@ mod tests {
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Start
-        let session = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "lifecycle-test",
-            None::<&str>,
-        );
+        let session = AikiSession::for_hook(AgentType::ClaudeCode, "lifecycle-test", None::<&str>);
         session.file().create().unwrap();
 
         // Verify session file exists
@@ -1826,11 +1924,8 @@ mod tests {
 
         // Create same session file 5 times (idempotent via O_EXCL)
         for i in 0..5 {
-            let session = AikiSession::for_hook(
-                AgentType::ClaudeCode,
-                "idempotent-test",
-                None::<&str>,
-            );
+            let session =
+                AikiSession::for_hook(AgentType::ClaudeCode, "idempotent-test", None::<&str>);
             let created = session.file().create().unwrap();
             // Only first create should return true
             assert_eq!(created, i == 0);
@@ -1851,6 +1946,7 @@ mod tests {
             "test-session-with-version",
             Some("2.0.61"),
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
 
         // Write session file
@@ -1880,6 +1976,7 @@ mod tests {
             "test-session-no-version",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
 
         // Write session file
@@ -1913,6 +2010,7 @@ mod tests {
             "test-session-with-pid",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         )
         .with_parent_pid(Some(12345));
 
@@ -1939,6 +2037,7 @@ mod tests {
             "test-session-no-pid",
             None::<&str>,
             DetectionMethod::ACP,
+            SessionMode::Interactive,
         );
 
         // Write session file
@@ -1956,11 +2055,7 @@ mod tests {
     #[test]
     fn test_for_hook_captures_parent_pid() {
         // for_hook should capture the current parent PID
-        let session = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "test-session",
-            None::<&str>,
-        );
+        let session = AikiSession::for_hook(AgentType::ClaudeCode, "test-session", None::<&str>);
 
         // Should have a parent_pid (unless we're init which has no parent)
         // Just verify the method doesn't panic and returns a session
@@ -1975,6 +2070,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::ACP,
+            SessionMode::Interactive,
         )
         .with_parent_pid(Some(99999));
 
@@ -2016,6 +2112,7 @@ mod tests {
                 "matching-session",
                 None::<&str>,
                 DetectionMethod::Hook,
+                SessionMode::Interactive,
             )
             .with_parent_pid(Some(pid));
 
@@ -2044,6 +2141,7 @@ mod tests {
             "non-matching-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         )
         .with_parent_pid(Some(999999));
 
@@ -2065,6 +2163,7 @@ mod tests {
             "stale-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         )
         .with_parent_pid(Some(999999));
 
@@ -2093,6 +2192,7 @@ mod tests {
             "live-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         )
         .with_parent_pid(Some(our_pid));
 
@@ -2115,11 +2215,7 @@ mod tests {
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
 
         // Create session using for_hook (which captures parent PID)
-        let session = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "hook-session",
-            None::<&str>,
-        );
+        let session = AikiSession::for_hook(AgentType::ClaudeCode, "hook-session", None::<&str>);
         session.file().create().unwrap();
 
         // Verify parent_pid is in the session file
@@ -2136,7 +2232,11 @@ mod tests {
     #[test]
     fn test_from_uuid_preserves_uuid() {
         let uuid = "12345678-1234-5678-1234-567812345678".to_string();
-        let session = AikiSession::from_uuid(uuid.clone(), AgentType::ClaudeCode);
+        let session = AikiSession::from_uuid(
+            uuid.clone(),
+            AgentType::ClaudeCode,
+            SessionMode::Interactive,
+        );
         assert_eq!(session.uuid(), &uuid);
         assert_eq!(session.agent_type(), AgentType::ClaudeCode);
     }
@@ -2149,11 +2249,16 @@ mod tests {
             "test-ext-id",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let original_uuid = original.uuid().to_string();
 
         // from_uuid with the generated UUID should preserve it
-        let reconstructed = AikiSession::from_uuid(original_uuid.clone(), AgentType::ClaudeCode);
+        let reconstructed = AikiSession::from_uuid(
+            original_uuid.clone(),
+            AgentType::ClaudeCode,
+            SessionMode::Interactive,
+        );
         assert_eq!(reconstructed.uuid(), &original_uuid);
 
         // But new() with the UUID as external_id would generate a different UUID
@@ -2162,8 +2267,13 @@ mod tests {
             &original_uuid,
             None::<&str>,
             DetectionMethod::Unknown,
+            SessionMode::Interactive,
         );
-        assert_ne!(rehashed.uuid(), &original_uuid, "new() should rehash the UUID");
+        assert_ne!(
+            rehashed.uuid(),
+            &original_uuid,
+            "new() should rehash the UUID"
+        );
     }
 
     #[test]
@@ -2229,7 +2339,10 @@ mod tests {
         fs::write(sessions_dir.join("uuid-b"), &b_content).unwrap();
 
         let result = find_session_by_ancestor_pid(repo_path);
-        assert!(result.is_some(), "Should find at least one matching session");
+        assert!(
+            result.is_some(),
+            "Should find at least one matching session"
+        );
         let session = result.unwrap();
         // Without JJ, both sessions have UNIX_EPOCH timestamps, so either may be returned
         assert!(
@@ -2248,6 +2361,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         session.file().create().unwrap();
 
@@ -2255,8 +2369,14 @@ mod tests {
         let content = fs::read_to_string(&session_file).unwrap();
 
         // Should use new field name
-        assert!(content.contains("session_id="), "Should use session_id field");
-        assert!(!content.contains("aiki_session_id="), "Should not use old field name");
+        assert!(
+            content.contains("session_id="),
+            "Should use session_id field"
+        );
+        assert!(
+            !content.contains("aiki_session_id="),
+            "Should not use old field name"
+        );
         assert!(!content.contains("cwd="), "Should not include cwd field");
     }
 
@@ -2266,7 +2386,8 @@ mod tests {
 
     #[test]
     fn test_parse_event_timestamp_rfc3339() {
-        let description = "[aiki]\nevent=prompt\nsession=sess123\ntimestamp=2026-01-23T12:00:00Z\n[/aiki]\n";
+        let description =
+            "[aiki]\nevent=prompt\nsession=sess123\ntimestamp=2026-01-23T12:00:00Z\n[/aiki]\n";
         let result = parse_event_timestamp(description);
         assert!(result.is_ok());
         let ts = result.unwrap().unwrap();
@@ -2395,6 +2516,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
 
@@ -2412,6 +2534,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
         session_file.create().unwrap();
@@ -2430,6 +2553,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
         session_file.create().unwrap();
@@ -2456,6 +2580,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
         session_file.create().unwrap();
@@ -2482,6 +2607,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
         session_file.create().unwrap();
@@ -2504,6 +2630,7 @@ mod tests {
             "test-session",
             None::<&str>,
             DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let session_file = session.file();
 

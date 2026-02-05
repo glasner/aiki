@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload};
 use crate::provenance::{AgentType, DetectionMethod};
-use crate::session::{AikiSession, AikiSessionFile};
+use crate::session::{AikiSession, AikiSessionFile, SessionMode};
 use chrono::Utc;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -60,10 +60,7 @@ pub fn run(agent: String) -> Result<()> {
 
     // Decompress if gzip (or if payload starts with gzip magic bytes)
     let body_is_gzip = body_looks_gzipped(&request.body);
-    let wants_gzip = request
-        .content_encoding
-        .iter()
-        .any(|enc| enc == "gzip");
+    let wants_gzip = request.content_encoding.iter().any(|enc| enc == "gzip");
     if body_is_gzip && !wants_gzip {
         debug_log(|| "Body looks gzipped but Content-Encoding is missing gzip".to_string());
     }
@@ -280,9 +277,8 @@ fn read_chunked_body(reader: &mut impl Read) -> io::Result<Vec<u8>> {
             ));
         }
 
-        let size = usize::from_str_radix(size_str, 16).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Invalid chunk size")
-        })?;
+        let size = usize::from_str_radix(size_str, 16)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid chunk size"))?;
 
         if size == 0 {
             // Consume trailer headers (if any), then final CRLF
@@ -417,7 +413,11 @@ fn get_unix_socket_peer_pid() -> Option<u32> {
 
     #[cfg(target_os = "linux")]
     {
-        let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
         let mut len: libc::socklen_t = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
         let ret = unsafe {
             libc::getsockopt(
@@ -468,7 +468,8 @@ fn get_tcp_peer_pid() -> Option<u32> {
     // Use lsof to find which process owns this ephemeral port
     let output = match std::process::Command::new("lsof")
         .args([
-            "-i", &format!("TCP@127.0.0.1:{}", peer_port),
+            "-i",
+            &format!("TCP@127.0.0.1:{}", peer_port),
             "-sTCP:ESTABLISHED",
             "-t",
         ])
@@ -532,7 +533,10 @@ fn resolve_codex_info_from_socket() -> Option<SocketPeerInfo> {
         if name.contains("codex") {
             let cwd = process.cwd().map(|p| p.to_path_buf());
             debug_log(|| format!("OTel: peer PID {} is codex, cwd={:?}", peer_pid, cwd));
-            return Some(SocketPeerInfo { codex_pid: peer_pid, cwd });
+            return Some(SocketPeerInfo {
+                codex_pid: peer_pid,
+                cwd,
+            });
         }
     }
 
@@ -552,8 +556,18 @@ fn resolve_codex_info_from_socket() -> Option<SocketPeerInfo> {
             let name = parent_process.name().to_string_lossy().to_lowercase();
             if name.contains("codex") {
                 let cwd = parent_process.cwd().map(|p| p.to_path_buf());
-                debug_log(|| format!("OTel: found codex ancestor at PID {} (peer was {}), cwd={:?}", parent_pid.as_u32(), peer_pid, cwd));
-                return Some(SocketPeerInfo { codex_pid: parent_pid.as_u32(), cwd });
+                debug_log(|| {
+                    format!(
+                        "OTel: found codex ancestor at PID {} (peer was {}), cwd={:?}",
+                        parent_pid.as_u32(),
+                        peer_pid,
+                        cwd
+                    )
+                });
+                return Some(SocketPeerInfo {
+                    codex_pid: parent_pid.as_u32(),
+                    cwd,
+                });
             }
         }
 
@@ -576,17 +590,21 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
             // Resolve Codex PID and cwd from socket peer if OTel didn't provide them.
             // This avoids the .jsonl race condition for cwd and gives us PID for session tracking.
             let socket_info = if context.agent_pid.is_none() || context.cwd.is_none() {
-                debug_log(|| format!(
-                    "OTel: missing pid={} cwd={}, trying socket peer",
-                    context.agent_pid.is_none(),
-                    context.cwd.is_none()
-                ));
+                debug_log(|| {
+                    format!(
+                        "OTel: missing pid={} cwd={}, trying socket peer",
+                        context.agent_pid.is_none(),
+                        context.cwd.is_none()
+                    )
+                });
                 resolve_codex_info_from_socket()
             } else {
                 None
             };
 
-            let cwd = context.cwd.clone()
+            let cwd = context
+                .cwd
+                .clone()
                 .or_else(|| socket_info.as_ref().and_then(|i| i.cwd.clone()))
                 .or_else(|| lookup_cwd_from_codex_session(&conversation_id));
             let cwd = match cwd {
@@ -620,9 +638,16 @@ fn process_event(event: CodexOtelEvent, context: &CodexOtelContext) {
             maybe_emit_turn_started(&conversation_id, context, &cwd, prompt.unwrap_or_default());
         }
 
-        CodexOtelEvent::ToolResult { conversation_id, .. } => {
+        CodexOtelEvent::ToolResult {
+            conversation_id, ..
+        } => {
             // Modified files come from JJ file tracking, not OTel
-            debug_log(|| format!("OTel: tool_result: conv={} (ignored, files from JJ)", conversation_id));
+            debug_log(|| {
+                format!(
+                    "OTel: tool_result: conv={} (ignored, files from JJ)",
+                    conversation_id
+                )
+            });
         }
 
         CodexOtelEvent::Unknown { event_name } => {
@@ -637,7 +662,9 @@ fn maybe_emit_session_started(
     cwd: &PathBuf,
     socket_info: Option<SocketPeerInfo>,
 ) {
-    let agent_pid = context.agent_pid.or(socket_info.as_ref().map(|i| i.codex_pid));
+    let agent_pid = context
+        .agent_pid
+        .or(socket_info.as_ref().map(|i| i.codex_pid));
 
     // Check if session already started via session file existence
     let session = AikiSession::new(
@@ -645,6 +672,7 @@ fn maybe_emit_session_started(
         conversation_id,
         context.agent_version.as_deref(),
         DetectionMethod::Hook,
+        SessionMode::Interactive,
     )
     .with_parent_pid(agent_pid);
 
@@ -687,6 +715,7 @@ fn maybe_emit_turn_started(
         conversation_id,
         context.agent_version.as_deref(),
         DetectionMethod::Hook,
+        SessionMode::Interactive,
     )
     .with_parent_pid(context.agent_pid);
 
@@ -788,7 +817,12 @@ fn lookup_cwd_from_codex_session(conversation_id: &str) -> Option<PathBuf> {
         .map(PathBuf::from);
 
     if let Some(ref c) = cwd {
-        debug_log(|| format!("OTel: resolved cwd from Codex session file: {}", c.display()));
+        debug_log(|| {
+            format!(
+                "OTel: resolved cwd from Codex session file: {}",
+                c.display()
+            )
+        });
     }
 
     cwd
@@ -828,7 +862,10 @@ fn find_file_with_suffix_retry(dir: &std::path::Path, suffix: &str) -> Option<Pa
 /// Searches in reverse-sorted order (newest date directories first) to find
 /// the most recent match quickly.
 fn find_file_with_suffix(dir: &std::path::Path, suffix: &str) -> Option<PathBuf> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .collect();
     // Sort descending so newest date directories are checked first
     entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
 

@@ -98,21 +98,24 @@ Uses jj revsets to derive baseline from provenance metadata - no stored state ne
 
 ### Output Format
 
-**Pure diff output** - no XML wrapper, just jj's native output.
+**Pure diff output** - no XML wrapper, git unified diff format with 5 lines of context.
 
-**Default format**:
-```
-Modified regular file src/auth.ts:
-   40   40: function validateUser(user) {
-   41   41:   if (!user) {
-   42     +:     throw new Error('User is null');
-   43     +:   }
-   44   42:   return user.name;
-   45   43: }
+**Default format** (git format with `--git --context 5`):
+```diff
+diff --git a/src/auth.ts b/src/auth.ts
+index abc123..def456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -38,8 +38,10 @@ import { logger } from './utils';
 
-Modified regular file src/middleware.ts:
-   10     +: import { validateUser } from './auth';
-   ...
+ export const AUTH_TIMEOUT = 30000;
+
+ function validateUser(user) {
+   if (!user) {
++    throw new Error('User is null');
++  }
+   return user.name;
+ }
 ```
 
 **Summary format** (`--summary`):

@@ -261,6 +261,9 @@ Alternatively, install the agent globally:
     #[error("No templates directory found at: {path}")]
     TemplatesDirectoryNotFound { path: String },
 
+    #[error("Template processing failed: {details}")]
+    TemplateProcessingFailed { details: String },
+
     #[error("Unknown data source: '{0}'. Supported values: 'source.comments'")]
     UnknownDataSource(String),
 

@@ -58,6 +58,7 @@ pub fn record_session_start(
         timestamp,
         repo_id: repo_id.map(String::from),
         cwd: event_cwd.map(String::from),
+        session_mode: Some(session.mode()),
     };
 
     write_event(jj_cwd, &event)?;

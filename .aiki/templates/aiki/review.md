@@ -3,47 +3,23 @@ version: 1.0.0
 type: review
 ---
 
-# Review: Work from {scope.name} (task:{scope.id})
+# Review: {{scope.name}}
 
-This task coordinates review steps as subtasks.
+Review the code changes from task `{{scope.id}}`.
 
-# Subtasks
+## 1. Understand the changes
 
-## Digest code changes
+Run these commands to understand the intent of the task and what was modified:
 
-Examine the code changes to understand what was modified.
+```bash
+aiki task show {{scope.id}} --with-source  # Understand intent
+aiki task diff {{scope.id}}                 # View all code changes
+```
 
-Commands to use:
-1. `aiki task show {scope} --with-source` - Understand the task and its intent
-2. `aiki task diff {scope}` - View all code changes for the task
+Leave a comment on the task to explain your understanding of the changes.
 
-The `--with-source` flag expands source references to show why the task exists.
-The `diff` command shows the net result of all task work (not individual changes).
+## 2. Review for changes for issues and leave a comment for each finding
 
-## Review code
+## 3. Close the review
 
-Review the code changes for bugs, quality, security, performance, and user experience.
-
-If you haven't already, run:
-- `aiki task diff {scope}` - View all code changes for the task
-
-Focus on:
-- **Bugs**: Logic errors, edge cases, correctness
-- **Quality**: Error handling, resource leaks, null checks, code clarity
-- **Security**: SQL injection, XSS, auth issues, data exposure, crypto misuse
-- **Performance**: Inefficient algorithms, unnecessary operations, resource usage
-- **User Experience**: UI/UX, accessibility, usability
-
-If you find any issues, create a followup task with `aiki task` and leave a comment with structured data for each finding:
-
-`aiki task comment --id <parent.id> \
-  --data file=<path> --data line=<line> \
-  --data severity=high|medium|low \
-  --data category=bug|quality|security|performance|ux \
-  "<description of issue, impact, and suggested fix>"`
-
-Add comments as you find issues, don't wait until the end.
-
-Your final response should just be:
-
-<followup_task id={id}>
+When done, close this task with a comment of "Review complete (n issues found)"

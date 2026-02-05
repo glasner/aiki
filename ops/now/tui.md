@@ -1,5 +1,8 @@
 # TUI: Kanban Board for Headless Agents
 
+**Related Documents**:
+- [Workflow Commands](workflow-commands.md) - `aiki spec`, `aiki plan`, `aiki build` commands
+
 ## Command
 
 ```bash
@@ -21,6 +24,7 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 ## Core Concepts
 
 **Specs as Source**: Markdown files in the target directory represent planned work:
+- Sorted alphabetically
 - Expand to see tasks spawned from the spec
 - Kick off `aiki build <spec>` directly from TUI
 - Track which specs have active agents
@@ -40,12 +44,22 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 | Completed | Tasks with `status: completed` |
 
 **Task Types** (shown as card prefix):
-- `[build]` - task has `type: build` (from `aiki build`)
+- `[build]` - task has `type: build` (from `aiki build`) - autonomous, headless
 - `[review]` - task has `type: review` (from `aiki review`)
 - `[fix]` - task has `source: task:*` (followup from review)
 - No prefix for generic tasks (e.g., planning, editing)
 
-**Spec Visibility**: A spec disappears from the Specs column when any `type:build` task exists for it. Edit tasks (interactive planning) don't affect spec visibility.
+**Spec sessions** (`type: spec`) don't show as task cards. Instead, spec files in the Specs column show `●` suffix when they have an active spec session.
+
+**How spec session indicator works:**
+- TUI queries for open tasks with `type: spec`
+- Matches `source: file:<path>` to spec files in the directory
+- If a match exists, shows `●` suffix on the spec file
+- Rationale: Spec sessions are collaborative/interactive, not autonomous
+- The spec file *is* the artifact - keeping it in Specs column is more intuitive
+- Avoids confusion between "agent working autonomously" vs "user speccing interactively"
+
+**Spec Visibility**: A spec disappears from the Specs column when any `type:build` task exists for it. Spec tasks (interactive planning) don't affect spec visibility.
 
 **Grouping by Spec**: Tasks in Pending/In Progress/Completed are grouped under their source spec. Expand a spec group to see individual tasks.
 
@@ -131,8 +145,8 @@ $ aiki ops/now
 ├────────────────┼─────────────────┼─────────────────────┼────────────────────┤
 │                │                 │                     │                    │
 │ tui.md         │ plugin phase 1  │ ▾ git-diffs.md      │ task-events        │
-│ codex-events   │ plugin phase 2  │   [build] 12m ●     │   [build] ✓        │
-│                │                 │   [review] 3m ●     │   [review] ✓       │
+│ auth.md ●      │ plugin phase 2  │   [build] 12m ●     │   [build] ✓        │
+│ codex-events   │                 │   [review] 3m ●     │   [review] ✓       │
 │                │ tasks-compact   │                     │                    │
 │                │                 │ ▸ review-fix.md     │ lazy-load          │
 │                │                 │   [build] 8m ● ◀────│── selected         │
@@ -163,21 +177,21 @@ Legend:  ● running   ✓ done   ✗ failed   ▸ collapsed   ▾ expanded
 
 When user presses `e` on a spec:
 
-1. TUI suspends (restore terminal to normal mode)
-2. Launch Claude with spec as context and initial prompt:
-   ```bash
-   claude @<spec-path> -p "Let's continue planning in @<spec-path>"
-   ```
-3. User works interactively with Claude
-4. Claude uses `aiki task` per CLAUDE.md to track any work
-5. On exit (user quits Claude), TUI resumes and refreshes
-6. Any new tasks spawned by the session appear in appropriate columns
+1. Check if there's an active `type: spec` task for that file
+2. If yes: attach to the session (similar to `f` for follow)
+3. If no: launch `aiki spec <file>` to start new session
+4. TUI suspends (restore terminal to normal mode)
+5. User works interactively with agent
+6. Agent uses `aiki task` per CLAUDE.md to track any work
+7. On exit (user quits session), TUI resumes and refreshes
+8. Any new tasks spawned by the session appear in appropriate columns
 
 **Why this approach:**
-- Minimal - just launches Claude with context, no special modes
-- Claude follows existing CLAUDE.md instructions for task tracking
+- Minimal - just launches `aiki spec` which handles session management
+- Agent follows existing CLAUDE.md instructions for task tracking
 - Suspend/resume pattern is familiar (like lazygit opening $EDITOR)
 - Long sessions are fine - user can quit TUI if they prefer
+- Session resumption automatically handled by `aiki spec`
 
 ### `b` - Build (Headless Agent)
 
@@ -237,10 +251,24 @@ When user presses `s` on a running agent:
 
 ## Open Questions
 
-1. **Session storage format**: Is current format suitable for tailing? Need streaming?
-2. **Event bus integration**: Can TUI subscribe to events directly?
-3. **Multi-agent coordination**: How to show dependencies between agents?
-4. **Persistence**: Should TUI state (collapsed columns, filters) persist?
+### Resolved
+
+1. ~~**Column design**: Status-based vs workflow-based?~~ → **Status-based** (Specs | Pending | In Progress | Completed)
+2. ~~**Spec visibility**: When does a spec leave the Specs column?~~ → When any `type:build` task exists for it
+3. ~~**Task types**: How to show build vs review vs fix?~~ → Infer from task data, show as card prefix `[build]`, `[review]`, `[fix]`
+4. ~~**Workflow commands**: Do `aiki spec`, `aiki plan`, `aiki build` exist?~~ → Yes, see [workflow-commands.md](workflow-commands.md)
+5. ~~**`e` key behavior**: How does it work with spec sessions?~~ → Check for active `type: spec` task, attach if exists, else launch `aiki spec <file>`
+6. ~~**Spec session indicator**: How to show active spec sessions?~~ → Show `●` suffix on spec files with active `type: spec` tasks
+
+### Open
+
+7. **Card display**: What info shows on collapsed vs expanded cards? Duration, progress %, agent name?
+8. **Session attachment (`f` key)**: How does follow/attach work technically? Tail session log file? Subscribe to event stream?
+9. **Session storage format**: Is current format suitable for tailing? Need streaming?
+10. **Event bus integration**: Can TUI subscribe to events directly?
+11. **Multi-agent coordination**: How to show dependencies between agents?
+12. **Persistence**: Should TUI state (collapsed columns, filters) persist?
+13. **Task type field**: Does `type` field exist on tasks? Need to add it for `build`/`review`/`spec` distinction?
 
 ## Inspiration
 

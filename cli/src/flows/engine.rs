@@ -1,10 +1,11 @@
-use anyhow::Context;
 use crate::jj::jj_cmd;
+use anyhow::Context;
 use std::process::Command;
 use std::time::Duration;
 
 use crate::cache::debug_log;
 use crate::events::AikiEvent;
+use crate::validation::is_valid_flow_identifier;
 
 use super::state::{ActionResult, AikiState};
 use super::types::{
@@ -401,6 +402,42 @@ impl HookEngine {
         // This ensures runtime set_var/remove_var mutations are immediately visible
         resolver.set_env_lookup(|name| std::env::var(name).ok());
 
+        // Add session variables for task.closed events
+        // These look up the session driven by the closed task
+        if let crate::events::AikiEvent::TaskClosed(e) = &state.event {
+            let task_id = e.task.id.clone();
+
+            debug_log(|| format!("task.closed: event.task.id={}", task_id));
+
+            // Lazy lookup of session info for this task
+            let task_id_for_session = task_id.clone();
+            resolver.add_lazy_var("session.task.id", move || {
+                let result = if let Some(session_info) =
+                    crate::session::find_task_session(&task_id_for_session)
+                {
+                    session_info.task_id
+                } else {
+                    String::new()
+                };
+                debug_log(|| format!("task.closed: $session.task.id resolved to '{}'", result));
+                result
+            });
+
+            let task_id_for_mode = task_id;
+            resolver.add_lazy_var("session.mode", move || {
+                // Read the session file to get the actual mode
+                let result = if let Some(session_info) =
+                    crate::session::find_task_session(&task_id_for_mode)
+                {
+                    session_info.mode.to_string().to_string()
+                } else {
+                    String::new()
+                };
+                debug_log(|| format!("task.closed: $session.mode resolved to '{}'", result));
+                result
+            });
+        }
+
         resolver
     }
     /// Execute a list of statements sequentially
@@ -481,6 +518,9 @@ impl HookEngine {
             Action::Continue(continue_action) => Self::execute_continue(continue_action, state),
             Action::Stop(stop_action) => Self::execute_stop(stop_action, state),
             Action::Block(block_action) => Self::execute_block(block_action, state),
+            Action::SessionEnd(session_end_action) => {
+                Self::execute_session_end(session_end_action, state)
+            }
         }
     }
 
@@ -504,6 +544,7 @@ impl HookEngine {
             Action::Continue(_) => return Ok(HookOutcome::FailedContinue),
             Action::Stop(_) => return Ok(HookOutcome::FailedStop),
             Action::Block(_) => return Ok(HookOutcome::FailedBlock),
+            Action::SessionEnd(session_end_action) => &session_end_action.on_failure,
         };
 
         let failure_text = if !result.stderr.is_empty() {
@@ -618,6 +659,9 @@ impl HookEngine {
             Action::Continue(_) | Action::Stop(_) | Action::Block(_) => {
                 // Flow control actions add messages and control execution flow
                 // No need to store results
+            }
+            Action::SessionEnd(_) => {
+                // session.end actions don't produce storable results
             }
         }
     }
@@ -869,7 +913,11 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve optional task_id for scope
-        let task_id = action.review.task_id.as_ref().map(|id| resolver.resolve(id));
+        let task_id = action
+            .review
+            .task_id
+            .as_ref()
+            .map(|id| resolver.resolve(id));
 
         // Resolve optional agent override
         let agent_override = action.review.agent.as_ref().map(|a| resolver.resolve(a));
@@ -881,11 +929,14 @@ impl HookEngine {
         let cwd = state.cwd();
 
         // Create review task using shared logic (same as CLI)
-        let result = match create_review(&cwd, CreateReviewParams {
-            task_id,
-            agent_override,
-            template,
-        }) {
+        let result = match create_review(
+            &cwd,
+            CreateReviewParams {
+                task_id,
+                agent_override,
+                template,
+            },
+        ) {
             Ok(r) => r,
             Err(AikiError::NothingToReview) => {
                 // No tasks to review - this is a success case for flows
@@ -1008,6 +1059,70 @@ impl HookEngine {
         })
     }
 
+    /// Execute a session.end action - terminates the current session gracefully
+    ///
+    /// This action is used for task-driven sessions that should auto-end when their
+    /// driving task closes. It spawns a thread that waits briefly then sends SIGTERM
+    /// to the parent process (the agent), allowing the hook to complete first.
+    fn execute_session_end(
+        action: &crate::flows::types::SessionEndAction,
+        state: &mut AikiState,
+    ) -> Result<ActionResult> {
+        use crate::cache::debug_log;
+
+        // Create variable resolver
+        let mut resolver = Self::create_resolver(state);
+
+        // Resolve variables in reason text
+        let reason = resolver.resolve(&action.reason);
+
+        debug_log(|| format!("session.end: {}", reason));
+
+        // Get the session's parent PID (the agent process)
+        let parent_pid = match &state.event {
+            crate::events::AikiEvent::TaskClosed(e) => {
+                // For task.closed events, we need to find the session that matches the task
+                // Look up the session for this task
+                if let Some(session_info) = crate::session::find_task_session(&e.task.id) {
+                    Some(session_info.pid)
+                } else {
+                    debug_log(|| {
+                        format!("session.end: No task session found for task {}", e.task.id)
+                    });
+                    None
+                }
+            }
+            _ => {
+                debug_log(|| "session.end: Can only be used in task.closed events".to_string());
+                None
+            }
+        };
+
+        if let Some(pid) = parent_pid {
+            // Defer SIGTERM until after all hooks complete
+            // The actual termination happens in execute_pending_session_ends()
+            // which is called by the event handler after hook execution
+            debug_log(|| format!("session.end: Deferring SIGTERM to PID {}", pid));
+            state.add_pending_session_end(pid);
+
+            Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        } else {
+            // No parent PID found - log warning but don't fail
+            debug_log(|| "session.end: No parent PID available, skipping termination".to_string());
+            Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
     /// Execute a context action
     ///
     /// This action accumulates context that will be prepended to prompts/autoreplies.
@@ -1018,9 +1133,7 @@ impl HookEngine {
         // Verify this is an event type that supports context injection
         if !matches!(
             &state.event,
-            AikiEvent::SessionStarted(_)
-                | AikiEvent::TurnStarted(_)
-                | AikiEvent::TurnCompleted(_)
+            AikiEvent::SessionStarted(_) | AikiEvent::TurnStarted(_) | AikiEvent::TurnCompleted(_)
         ) {
             return Err(AikiError::Other(anyhow::anyhow!(
                 "context action can only be used in session.started, turn.started, or turn.completed events"
@@ -1389,9 +1502,40 @@ impl HookEngine {
     }
 
     /// Evaluate a condition expression
-    /// Supports: ==, !=, >, <, >=, <=, JSON field access ($var.field)
+    /// Supports: ==, !=, >, <, >=, <=, &&, ||, JSON field access ($var.field)
     fn evaluate_condition(condition: &str, state: &mut AikiState) -> Result<bool> {
         let condition = condition.trim();
+
+        // Handle logical AND (&&) - evaluate both sides and return true only if both are true
+        // We split on " && " to avoid matching && inside strings
+        if let Some(pos) = condition.find(" && ") {
+            let left = condition[..pos].trim();
+            let right = condition[pos + 4..].trim();
+            debug_log(|| format!("[flows] AND: evaluating left side: '{}'", left));
+            let left_result = Self::evaluate_condition(left, state)?;
+            debug_log(|| format!("[flows] AND: left side = {}", left_result));
+            // Short-circuit: if left is false, don't evaluate right
+            if !left_result {
+                debug_log(|| "[flows] AND: short-circuit - left is false".to_string());
+                return Ok(false);
+            }
+            debug_log(|| format!("[flows] AND: evaluating right side: '{}'", right));
+            let right_result = Self::evaluate_condition(right, state)?;
+            debug_log(|| format!("[flows] AND: right side = {}", right_result));
+            return Ok(right_result);
+        }
+
+        // Handle logical OR (||) - evaluate both sides and return true if either is true
+        if let Some(pos) = condition.find(" || ") {
+            let left = condition[..pos].trim();
+            let right = condition[pos + 4..].trim();
+            let left_result = Self::evaluate_condition(left, state)?;
+            // Short-circuit: if left is true, don't evaluate right
+            if left_result {
+                return Ok(true);
+            }
+            return Self::evaluate_condition(right, state);
+        }
 
         // Parse comparison operators (order matters: check >= before >, <= before <)
         if let Some(pos) = condition.find(">=") {
@@ -1415,6 +1559,16 @@ impl HookEngine {
             let right = condition[pos + 2..].trim();
             let left_val = Self::resolve_condition_value(left, state)?;
             let right_val = Self::resolve_condition_value(right, state)?;
+            debug_log(|| {
+                format!(
+                    "[flows] EQ: '{}' == '{}' ? {} (left='{}', right='{}')",
+                    left,
+                    right,
+                    left_val == right_val,
+                    left_val,
+                    right_val
+                )
+            });
             return Ok(left_val == right_val);
         }
 
@@ -1588,7 +1742,7 @@ impl HookEngine {
         let expression = parts[1].trim();
 
         // Validate variable name
-        if !Self::is_valid_variable_name(variable_name) {
+        if !is_valid_flow_identifier(variable_name) {
             return Err(AikiError::InvalidVariableName(variable_name.to_string()));
         }
 
@@ -1602,27 +1756,6 @@ impl HookEngine {
             // Mode 1: Function call
             Self::execute_let_function(variable_name, expression, state)
         }
-    }
-
-    /// Validate variable name (must start with letter/underscore, contain only alphanumeric/underscore)
-    fn is_valid_variable_name(name: &str) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-
-        let mut chars = name.chars();
-        let first = match chars.next() {
-            Some(c) => c,
-            None => return false, // Impossible due to is_empty() check, but be defensive
-        };
-
-        // First character must be letter or underscore
-        if !first.is_alphabetic() && first != '_' {
-            return false;
-        }
-
-        // Remaining characters must be alphanumeric or underscore
-        chars.all(|c| c.is_alphanumeric() || c == '_')
     }
 
     /// Execute a let binding for variable aliasing: `let desc = $description`
@@ -2174,7 +2307,7 @@ mod tests {
     use super::*;
     use crate::events::{AikiChangeCompletedPayload, ChangeOperation, WriteOperation};
     use crate::provenance::AgentType;
-    use crate::session::AikiSession;
+    use crate::session::{AikiSession, SessionMode};
 
     // Helper to create a simple test event
     fn create_test_event() -> AikiEvent {
@@ -2183,6 +2316,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
@@ -2205,6 +2339,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
@@ -2389,20 +2524,20 @@ mod tests {
     #[test]
     fn test_is_valid_variable_name() {
         // Valid names
-        assert!(HookEngine::is_valid_variable_name("description"));
-        assert!(HookEngine::is_valid_variable_name("desc"));
-        assert!(HookEngine::is_valid_variable_name("_private"));
-        assert!(HookEngine::is_valid_variable_name("var123"));
-        assert!(HookEngine::is_valid_variable_name("my_var"));
-        assert!(HookEngine::is_valid_variable_name("CamelCase"));
+        assert!(is_valid_flow_identifier("description"));
+        assert!(is_valid_flow_identifier("desc"));
+        assert!(is_valid_flow_identifier("_private"));
+        assert!(is_valid_flow_identifier("var123"));
+        assert!(is_valid_flow_identifier("my_var"));
+        assert!(is_valid_flow_identifier("CamelCase"));
 
         // Invalid names
-        assert!(!HookEngine::is_valid_variable_name(""));
-        assert!(!HookEngine::is_valid_variable_name("123var")); // starts with number
-        assert!(!HookEngine::is_valid_variable_name("my-var")); // contains hyphen
-        assert!(!HookEngine::is_valid_variable_name("my.var")); // contains dot
-        assert!(!HookEngine::is_valid_variable_name("my var")); // contains space
-        assert!(!HookEngine::is_valid_variable_name("$var")); // starts with $
+        assert!(!is_valid_flow_identifier(""));
+        assert!(!is_valid_flow_identifier("123var")); // starts with number
+        assert!(!is_valid_flow_identifier("my-var")); // contains hyphen
+        assert!(!is_valid_flow_identifier("my.var")); // contains dot
+        assert!(!is_valid_flow_identifier("my var")); // contains space
+        assert!(!is_valid_flow_identifier("$var")); // starts with $
     }
 
     #[test]
@@ -3404,6 +3539,7 @@ mod tests {
             "test-session".to_string(),
             None::<&str>,
             crate::provenance::DetectionMethod::Hook,
+            SessionMode::Interactive,
         );
         let event = AikiEvent::TurnStarted(AikiTurnStartedPayload {
             session,

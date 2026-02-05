@@ -16,6 +16,7 @@ pub mod hooks;
 pub mod init;
 pub mod otel_receive;
 pub mod review;
+pub mod spec;
 
 pub mod task;
 pub mod verify;

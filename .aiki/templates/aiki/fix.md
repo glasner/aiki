@@ -1,17 +1,24 @@
 ---
 version: 1.0.0
-subtasks: source.comments
 ---
 
-# Followup: {source.name} (task:{source.id})
+# Followup: {{source.name}}
 
-Please close all subtasks once they are either fixed or declined. It is fine to mark them as "wont_do" if you think the proposal is either out of scope or introduces too much complexity for the benefits gained.
+Review task `{{source.id}}` found issues that need to be addressed.
 
-# Subtasks
+## Instructions
 
-## Fix: {item.category} - {item.severity} Severity Finding
+1. Read the review comments to understand what issues were found:
+   ```bash
+   aiki task show {{source.id}}
+   ```
+🛑 Do NOT edit code before reading following:
 
-**File**: {item.file}:{item.line}
-**Category**: {item.category}
+2. Create a subtask for EACH issue found (use your current task ID as parent):
+   ```bash
+   aiki task add --parent {{id}} "Fix: <brief description of issue>"
+   ```
 
-{item.text}
+3. Work through each subtask, closing as you go:
+   - Close with `--comment` when fixed
+   - Close with `--wont-do --comment` if out of scope or adds too much complexity

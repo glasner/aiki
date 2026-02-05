@@ -400,7 +400,7 @@ data:
   scope: "@"
 ---
 
-# Review: {data.scope}
+# Review: {{data.scope}}
 
 Review the changes.
 
@@ -422,7 +422,7 @@ Review for issues.
         assert_eq!(template.defaults.task_type, Some("review".to_string()));
         assert_eq!(template.defaults.assignee, Some("claude-code".to_string()));
         assert_eq!(template.defaults.priority, Some("p1".to_string()));
-        assert_eq!(template.parent.name, "Review: {data.scope}");
+        assert_eq!(template.parent.name, "Review: {{data.scope}}");
         assert_eq!(template.subtasks.len(), 2);
         assert_eq!(template.subtasks[0].name, "Digest code");
         assert_eq!(template.subtasks[1].name, "Review code");
@@ -575,18 +575,18 @@ version: 1.0.0
 subtasks: source.comments
 ---
 
-# Followup: {source.name}
+# Followup: {{source.name}}
 
 Fix all issues identified in review.
 
 # Subtasks
 
-## Fix: {data.file}:{data.line}
+## Fix: {{data.file}}:{{data.line}}
 
-**Severity**: {data.severity}
-**Category**: {data.category}
+**Severity**: {{data.severity}}
+**Category**: {{data.category}}
 
-{text}
+{{text}}
 "#;
 
         let template = parse_template(content, "followup", "followup.md").unwrap();
@@ -609,22 +609,22 @@ Fix all issues identified in review.
 
         // Should include the h2 heading template
         assert!(
-            subtask_template.contains("## Fix: {data.file}:{data.line}"),
+            subtask_template.contains("## Fix: {{data.file}}:{{data.line}}"),
             "subtask_template should include the h2 heading"
         );
 
         // Should include the body content
         assert!(
-            subtask_template.contains("**Severity**: {data.severity}"),
+            subtask_template.contains("**Severity**: {{data.severity}}"),
             "subtask_template should include the body"
         );
         assert!(
-            subtask_template.contains("{text}"),
+            subtask_template.contains("{{text}}"),
             "subtask_template should include variable placeholders"
         );
 
         // Parent task should still be parsed normally
-        assert_eq!(template.parent.name, "Followup: {source.name}");
+        assert_eq!(template.parent.name, "Followup: {{source.name}}");
         assert!(template
             .parent
             .instructions

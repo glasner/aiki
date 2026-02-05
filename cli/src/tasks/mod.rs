@@ -12,6 +12,7 @@ use std::path::Path;
 pub mod id;
 pub mod manager;
 pub mod runner;
+pub mod status_monitor;
 pub mod storage;
 pub mod templates;
 pub mod types;

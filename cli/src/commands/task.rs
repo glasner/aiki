@@ -19,10 +19,11 @@ use crate::tasks::{
     generate_child_id, generate_task_id, get_next_subtask_number, is_task_id,
     manager::{
         find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
-        get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, ScopeSet,
+        get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
+        ScopeSet,
     },
     runner::{run_task_with_xml, TaskRunOptions},
-    storage::{read_events, write_event},
+    storage::{read_events, read_events_with_ids, write_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     xml::{format_added, format_closed, format_started, format_stopped, format_task_list},
     XmlBuilder,
@@ -71,8 +72,7 @@ fn resolve_prompt_sources(cwd: &Path, mut sources: Vec<String>) -> Result<Vec<St
     }
 
     // Find the current session via PID or agent-type detection
-    let session =
-        find_active_session(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
+    let session = find_active_session(cwd).ok_or(AikiError::NoActiveSessionForPromptSource)?;
 
     // Get the latest prompt's change_id for this session.
     // Conversation history is stored in the global JJ repo at ~/.aiki/, not the project repo.
@@ -413,12 +413,11 @@ pub enum TaskCommands {
 
     /// Add a comment to a task
     Comment {
+        /// Task ID to comment on (defaults to current in-progress task)
+        id: Option<String>,
+
         /// Comment text (required)
         text: String,
-
-        /// Task ID to comment on (defaults to current in-progress task)
-        #[arg(long)]
-        id: Option<String>,
 
         /// Add structured data to the comment. Can be specified multiple times.
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
@@ -526,7 +525,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
-        } => run_add(&cwd, name, template, data, parent, assignee, source, p0, p1, p2, p3),
+        } => run_add(
+            &cwd, name, template, data, parent, assignee, source, p0, p1, p2, p3,
+        ),
         TaskCommands::Start {
             ids,
             template,
@@ -539,7 +540,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p3,
             source,
             assignee,
-        } => run_start(&cwd, ids, template, data, reopen, reason, p0, p1, p2, p3, source, assignee),
+        } => run_start(
+            &cwd, ids, template, data, reopen, reason, p0, p1, p2, p3, source, assignee,
+        ),
         TaskCommands::Stop {
             id,
             reason,
@@ -552,7 +555,11 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             wont_do,
             comment,
         } => run_close(&cwd, ids, &outcome, wont_do, comment),
-        TaskCommands::Show { id, diff, with_source } => run_show(&cwd, id, diff, with_source),
+        TaskCommands::Show {
+            id,
+            diff,
+            with_source,
+        } => run_show(&cwd, id, diff, with_source),
         TaskCommands::Update {
             id,
             p0,
@@ -563,8 +570,12 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             assignee,
             unassign,
         } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign),
-        TaskCommands::Comment { text, id, data } => run_comment(&cwd, text, id, data),
-        TaskCommands::Run { id, agent, run_async } => run_run(&cwd, id, agent, run_async),
+        TaskCommands::Comment { id, text, data } => run_comment(&cwd, id, text, data),
+        TaskCommands::Run {
+            id,
+            agent,
+            run_async,
+        } => run_run(&cwd, id, agent, run_async),
         TaskCommands::Diff {
             id,
             summary,
@@ -712,7 +723,7 @@ fn run_list(
     // - "aiki/review@1.0.0" only matches "aiki/review@1.0.0"
     let matches_template = |task: &Task| -> bool {
         match (&filter_template, &task.template) {
-            (None, _) => true, // No filter applied
+            (None, _) => true,        // No filter applied
             (Some(_), None) => false, // Filter applied but task has no template
             (Some(query), Some(task_template)) => {
                 // Exact match
@@ -744,78 +755,82 @@ fn run_list(
     };
 
     // Get list of tasks based on filters (for display in content)
-    let list_tasks: Vec<&Task> =
-        if all || has_status_filters || has_explicit_assignee_filters || filter_source.is_some() || filter_template.is_some() {
-            // Show tasks with filters applied
-            let mut all_tasks: Vec<_> = tasks.values().collect();
-            all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
+    let list_tasks: Vec<&Task> = if all
+        || has_status_filters
+        || has_explicit_assignee_filters
+        || filter_source.is_some()
+        || filter_template.is_some()
+    {
+        // Show tasks with filters applied
+        let mut all_tasks: Vec<_> = tasks.values().collect();
+        all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
 
-            // Apply status filters if active
-            let filtered_by_status: Vec<_> = if has_status_filters {
-                all_tasks
-                    .into_iter()
-                    .filter(|t| {
-                        (filter_open && t.status == TaskStatus::Open)
-                            || (filter_in_progress && t.status == TaskStatus::InProgress)
-                            || (filter_stopped && t.status == TaskStatus::Stopped)
-                            || (filter_closed && t.status == TaskStatus::Closed)
-                    })
-                    .collect()
-            } else {
-                all_tasks
-            };
-
-            // Apply explicit assignee filters if active
-            let filtered_by_assignee: Vec<_> = if has_explicit_assignee_filters {
-                filtered_by_status
-                    .into_iter()
-                    .filter(|t| matches_explicit_filter(t))
-                    .collect()
-            } else {
-                filtered_by_status
-            };
-
-            // Apply source filter if active
-            let filtered_by_source: Vec<_> = if filter_source.is_some() {
-                filtered_by_assignee
-                    .into_iter()
-                    .filter(|t| matches_source(t))
-                    .collect()
-            } else {
-                filtered_by_assignee
-            };
-
-            // Apply template filter if active
-            let filtered_by_template: Vec<_> = if filter_template.is_some() {
-                filtered_by_source
-                    .into_iter()
-                    .filter(|t| matches_template(t))
-                    .collect()
-            } else {
-                filtered_by_source
-            };
-
-            // Apply auto visibility filter (unless --all is specified or explicit filter is used)
-            // This ensures status filters still respect assignee visibility
-            // Also apply session filtering
-            let filtered_by_visibility: Vec<_> = if !all && !has_explicit_assignee_filters {
-                filtered_by_template
-                    .into_iter()
-                    .filter(|t| is_auto_visible(t))
-                    .collect()
-            } else {
-                filtered_by_template
-            };
-
-            // Apply session filtering
-            filtered_by_visibility
+        // Apply status filters if active
+        let filtered_by_status: Vec<_> = if has_status_filters {
+            all_tasks
                 .into_iter()
-                .filter(|t| matches_session(t))
+                .filter(|t| {
+                    (filter_open && t.status == TaskStatus::Open)
+                        || (filter_in_progress && t.status == TaskStatus::InProgress)
+                        || (filter_stopped && t.status == TaskStatus::Stopped)
+                        || (filter_closed && t.status == TaskStatus::Closed)
+                })
                 .collect()
         } else {
-            // Default: show ready queue (same as context)
-            ready_queue.clone()
+            all_tasks
         };
+
+        // Apply explicit assignee filters if active
+        let filtered_by_assignee: Vec<_> = if has_explicit_assignee_filters {
+            filtered_by_status
+                .into_iter()
+                .filter(|t| matches_explicit_filter(t))
+                .collect()
+        } else {
+            filtered_by_status
+        };
+
+        // Apply source filter if active
+        let filtered_by_source: Vec<_> = if filter_source.is_some() {
+            filtered_by_assignee
+                .into_iter()
+                .filter(|t| matches_source(t))
+                .collect()
+        } else {
+            filtered_by_assignee
+        };
+
+        // Apply template filter if active
+        let filtered_by_template: Vec<_> = if filter_template.is_some() {
+            filtered_by_source
+                .into_iter()
+                .filter(|t| matches_template(t))
+                .collect()
+        } else {
+            filtered_by_source
+        };
+
+        // Apply auto visibility filter (unless --all is specified or explicit filter is used)
+        // This ensures status filters still respect assignee visibility
+        // Also apply session filtering
+        let filtered_by_visibility: Vec<_> = if !all && !has_explicit_assignee_filters {
+            filtered_by_template
+                .into_iter()
+                .filter(|t| is_auto_visible(t))
+                .collect()
+        } else {
+            filtered_by_template
+        };
+
+        // Apply session filtering
+        filtered_by_visibility
+            .into_iter()
+            .filter(|t| matches_session(t))
+            .collect()
+    } else {
+        // Default: show ready queue (same as context)
+        ready_queue.clone()
+    };
 
     // Get in-progress tasks, filtered by:
     // 1. Explicit assignee filter (--for/--unassigned) if specified
@@ -872,14 +887,26 @@ fn run_add(
             ));
         }
 
-        let task_id = create_from_template(cwd, template, &data_args, &sources, assignee_arg.as_deref(), p0, p1, false, p3)?;
+        let task_id = create_from_template(
+            cwd,
+            template,
+            &data_args,
+            &sources,
+            assignee_arg.as_deref(),
+            p0,
+            p1,
+            false,
+            p3,
+        )?;
 
         // Read events to get the task we just created
         let events = read_events(cwd)?;
         let tasks = materialize_tasks(&events);
         let in_progress = get_in_progress(&tasks);
 
-        let task = tasks.get(&task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
+        let task = tasks
+            .get(&task_id)
+            .ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
 
         // Get scope set and ready queue
         let scope_set = get_current_scope_set(&tasks);
@@ -906,9 +933,11 @@ fn run_add(
     }
 
     // Manual task creation requires a name
-    let name = name.ok_or_else(|| AikiError::InvalidArgument(
-        "Task name required. Either provide a name or use --template".to_string()
-    ))?;
+    let name = name.ok_or_else(|| {
+        AikiError::InvalidArgument(
+            "Task name required. Either provide a name or use --template".to_string(),
+        )
+    })?;
 
     // Validate and normalize assignee if provided
     // This converts aliases like "claude" → "claude-code", "me" → "human"
@@ -1068,15 +1097,38 @@ fn run_start(
     sources: Vec<String>,
     assignee_arg: Option<String>,
 ) -> Result<()> {
-    use crate::session::find_active_session;
     use crate::agents::Assignee;
+    use crate::session::find_active_session;
 
     // If --template is provided, create from template and start
     if let Some(ref template) = template_name {
         // Create task from template first
-        let task_id = create_from_template(cwd, template, &data_args, &sources, assignee_arg.as_deref(), p0, p1, false, p3)?;
+        let task_id = create_from_template(
+            cwd,
+            template,
+            &data_args,
+            &sources,
+            assignee_arg.as_deref(),
+            p0,
+            p1,
+            false,
+            p3,
+        )?;
         // Now start that task - recursive call with just the task ID
-        return run_start(cwd, vec![task_id], None, Vec::new(), false, None, false, false, false, false, Vec::new(), None);
+        return run_start(
+            cwd,
+            vec![task_id],
+            None,
+            Vec::new(),
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            Vec::new(),
+            None,
+        );
     }
 
     // Validate source prefixes (if any sources provided for quick-start)
@@ -1501,12 +1553,10 @@ fn run_stop(
                 .unwrap_or(false);
 
             if !is_owner {
-                let xml = XmlBuilder::new("stop")
-                    .error()
-                    .build_error(&format!(
-                        "Task '{}' is claimed by another session. Use --force to override.",
-                        task_id
-                    ));
+                let xml = XmlBuilder::new("stop").error().build_error(&format!(
+                    "Task '{}' is claimed by another session. Use --force to override.",
+                    task_id
+                ));
                 println!("{}", xml);
                 return Ok(());
             }
@@ -1721,7 +1771,8 @@ fn run_close(
     // Always require a comment when closing tasks - ensures work is documented
     if comment_text.is_none() {
         return Err(AikiError::TaskCommentRequired(
-            "Closing tasks requires a comment. Please summarize your work with --comment.".to_string()
+            "Closing tasks requires a comment. Please summarize your work with --comment."
+                .to_string(),
         ));
     }
 
@@ -1956,6 +2007,10 @@ fn run_close(
 fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> {
     use crate::jj::jj_cmd;
 
+    // Use the same revset pattern as task diff to ensure consistency
+    // This filters out task lifecycle events on aiki/tasks branch
+    let pattern = build_task_revset_pattern(task_id);
+
     // Query JJ for changes with this task ID in their description
     // Format: change_id timestamp (first line only)
     let output = jj_cmd()
@@ -1963,7 +2018,7 @@ fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> 
         .args([
             "log",
             "-r",
-            &format!("description(substring:\"task={}\")", task_id),
+            &pattern,
             "--no-graph",
             "-T",
             r#"change_id ++ " " ++ author.timestamp().format("%Y-%m-%dT%H:%M:%S") ++ "\n""#,
@@ -2001,12 +2056,23 @@ fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> 
 }
 
 /// Get the diff for a specific change
+///
+/// Uses git format with 5 lines of context for better agent comprehension.
 fn get_change_diff(cwd: &Path, change_id: &str) -> Result<String> {
     use crate::jj::jj_cmd;
 
     let output = jj_cmd()
         .current_dir(cwd)
-        .args(["diff", "-r", change_id, "--color=never", "--ignore-working-copy"])
+        .args([
+            "diff",
+            "-r",
+            change_id,
+            "--color=never",
+            "--ignore-working-copy",
+            "--git",
+            "--context",
+            "5",
+        ])
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
 
@@ -2038,12 +2104,18 @@ fn parse_source(source: &str) -> SourceRef {
         match source_type {
             "task" => SourceRef::Task { id: id.to_string() },
             "prompt" => SourceRef::Prompt { id: id.to_string() },
-            "file" => SourceRef::File { path: id.to_string() },
+            "file" => SourceRef::File {
+                path: id.to_string(),
+            },
             "comment" => SourceRef::Comment { id: id.to_string() },
-            _ => SourceRef::Unknown { raw: source.to_string() },
+            _ => SourceRef::Unknown {
+                raw: source.to_string(),
+            },
         }
     } else {
-        SourceRef::Unknown { raw: source.to_string() }
+        SourceRef::Unknown {
+            raw: source.to_string(),
+        }
     }
 }
 
@@ -2066,14 +2138,9 @@ fn format_source(
             if expand {
                 // Look up the task and include its name + instructions
                 if let Some(task) = tasks.get(&id) {
-                    let mut xml = format!(
-                        "\n    <source type=\"task\" id=\"{}\">",
-                        escape_xml(&id)
-                    );
-                    xml.push_str(&format!(
-                        "\n      <name>{}</name>",
-                        escape_xml(&task.name)
-                    ));
+                    let mut xml =
+                        format!("\n    <source type=\"task\" id=\"{}\">", escape_xml(&id));
+                    xml.push_str(&format!("\n      <name>{}</name>", escape_xml(&task.name)));
                     if let Some(ref instructions) = task.instructions {
                         xml.push_str(&format!(
                             "\n      <instructions>{}</instructions>",
@@ -2094,10 +2161,7 @@ fn format_source(
                     )
                 }
             } else {
-                format!(
-                    "\n    <source type=\"task\" id=\"{}\"/>",
-                    escape_xml(&id)
-                )
+                format!("\n    <source type=\"task\" id=\"{}\"/>", escape_xml(&id))
             }
         }
         SourceRef::Prompt { id } => {
@@ -2123,10 +2187,7 @@ fn format_source(
                     }
                 }
             } else {
-                format!(
-                    "\n    <source type=\"prompt\" id=\"{}\"/>",
-                    escape_xml(&id)
-                )
+                format!("\n    <source type=\"prompt\" id=\"{}\"/>", escape_xml(&id))
             }
         }
         SourceRef::File { path } => {
@@ -2219,16 +2280,28 @@ fn format_source_minimal(source: &SourceRef) -> String {
             format!("\n      <source type=\"task\" id=\"{}\"/>", escape_xml(id))
         }
         SourceRef::Prompt { id } => {
-            format!("\n      <source type=\"prompt\" id=\"{}\"/>", escape_xml(id))
+            format!(
+                "\n      <source type=\"prompt\" id=\"{}\"/>",
+                escape_xml(id)
+            )
         }
         SourceRef::File { path } => {
-            format!("\n      <source type=\"file\" path=\"{}\"/>", escape_xml(path))
+            format!(
+                "\n      <source type=\"file\" path=\"{}\"/>",
+                escape_xml(path)
+            )
         }
         SourceRef::Comment { id } => {
-            format!("\n      <source type=\"comment\" id=\"{}\"/>", escape_xml(id))
+            format!(
+                "\n      <source type=\"comment\" id=\"{}\"/>",
+                escape_xml(id)
+            )
         }
         SourceRef::Unknown { raw } => {
-            format!("\n      <source type=\"unknown\" raw=\"{}\"/>", escape_xml(raw))
+            format!(
+                "\n      <source type=\"unknown\" raw=\"{}\"/>",
+                escape_xml(raw)
+            )
         }
     }
 }
@@ -2238,8 +2311,8 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
     use crate::tasks::manager::get_subtasks;
     use crate::tasks::xml::escape_xml;
 
-    let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let events = read_events_with_ids(cwd)?;
+    let tasks = materialize_tasks_with_ids(&events);
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to show
@@ -2280,12 +2353,18 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
     };
 
     // Build task XML content
+    let type_attr = task
+        .task_type
+        .as_ref()
+        .map(|t| format!(" type=\"{}\"", escape_xml(t)))
+        .unwrap_or_default();
     let mut content = format!(
-        "  <task id=\"{}\" name=\"{}\" status=\"{}\" priority=\"{}\">",
+        "  <task id=\"{}\" name=\"{}\" status=\"{}\" priority=\"{}\"{}>",
         escape_xml(&task.id),
         escape_xml(&task.name),
         task.status,
-        task.priority
+        task.priority,
+        type_attr
     );
 
     // Add sources if any
@@ -2293,6 +2372,14 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
         for source in &task.sources {
             content.push_str(&format_source(cwd, source, &tasks, with_source));
         }
+    }
+
+    // Add instructions if present
+    if let Some(ref instructions) = task.instructions {
+        content.push_str(&format!(
+            "\n    <instructions><![CDATA[{}]]></instructions>",
+            instructions
+        ));
     }
 
     // Add subtasks section if this is a parent
@@ -2324,11 +2411,26 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
     if !task.comments.is_empty() {
         content.push_str("\n    <comments>");
         for comment in &task.comments {
+            // Build id attribute if present
+            let id_attr = comment
+                .id
+                .as_ref()
+                .map(|id| format!(" id=\"{}\"", escape_xml(id)))
+                .unwrap_or_default();
+            // Build data.* attributes from comment.data
+            let data_attrs: String = comment
+                .data
+                .iter()
+                .map(|(k, v)| format!(" data.{}=\"{}\"", escape_xml(k), escape_xml(v)))
+                .collect();
             content.push_str(&format!(
-                "\n      <comment timestamp=\"{}\">{}</comment>",
+                "\n      <comment timestamp=\"{}\"{}{}>{}",
                 comment.timestamp.to_rfc3339(),
+                id_attr,
+                data_attrs,
                 escape_xml(&comment.text)
             ));
+            content.push_str("</comment>");
         }
         content.push_str("\n    </comments>");
     }
@@ -2339,10 +2441,7 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
             let total_files = files.len();
             content.push_str(&format!("\n    <files_changed total=\"{}\">", total_files));
             for path in &files {
-                content.push_str(&format!(
-                    "\n      <file path=\"{}\" />",
-                    escape_xml(path)
-                ));
+                content.push_str(&format!("\n      <file path=\"{}\" />", escape_xml(path)));
             }
             content.push_str("\n    </files_changed>");
         }
@@ -2444,7 +2543,10 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
         }
     }
 
-    if String::from_utf8_lossy(&check_output.stdout).trim().is_empty() {
+    if String::from_utf8_lossy(&check_output.stdout)
+        .trim()
+        .is_empty()
+    {
         println!(
             "No changes found for task {}.\n\n\
              The task exists but has no associated code changes in jj history.\n\
@@ -2483,6 +2585,11 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
         // Actually, use --summary and filter to just paths
         // For now, use --summary which gives similar output
         cmd.arg("--summary");
+    } else {
+        // Default: Use git format with 5 lines of context for better agent comprehension.
+        // Git diff format is more recognizable to AI agents trained on GitHub/GitLab diffs,
+        // and 5 lines of context helps understand surrounding code structure.
+        cmd.arg("--git").arg("--context").arg("5");
     }
 
     let output = cmd
@@ -2528,11 +2635,14 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 /// Build revset pattern for a task, including subtasks
 ///
 /// For task ID "abc123", this matches:
-/// - description("task=abc123") - the task itself
-/// - description("task=abc123.") - any subtasks (abc123.1, abc123.2, etc.)
+/// - description(substring:"task=abc123") - the task itself (provenance metadata)
+/// - description(substring:"task=abc123.") - any subtasks (abc123.1, abc123.2, etc.)
+///
+/// Excludes `::aiki/tasks` to filter out task lifecycle events (which contain
+/// `stopped_task=<id>`, `task_id=<id>`, etc.) that live on a separate branch.
 fn build_task_revset_pattern(task_id: &str) -> String {
     format!(
-        "description(substring:\"task={}\") | description(substring:\"task={}.\")",
+        "(description(substring:\"task={}\") | description(substring:\"task={}.\")) ~ ::aiki/tasks",
         task_id, task_id
     )
 }
@@ -2573,7 +2683,10 @@ fn get_task_changed_files(cwd: &Path, task_id: &str) -> Result<Option<Vec<String
         return Ok(None);
     }
 
-    if String::from_utf8_lossy(&check_output.stdout).trim().is_empty() {
+    if String::from_utf8_lossy(&check_output.stdout)
+        .trim()
+        .is_empty()
+    {
         return Ok(None);
     }
 
@@ -2760,7 +2873,7 @@ fn run_update(
 }
 
 /// Add a comment to a task
-fn run_comment(cwd: &Path, text: String, id: Option<String>, data_args: Vec<String>) -> Result<()> {
+fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<String>) -> Result<()> {
     use crate::tasks::xml::escape_xml;
 
     // Parse data arguments (verbatim, no coercion for comment metadata)
@@ -2862,8 +2975,9 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
         Ok(dir) => dir,
         Err(_) => {
             // No templates directory found - show helpful message
-            let xml = XmlBuilder::new("template")
-                .build_error("No templates directory found. Create .aiki/templates/ to add templates.");
+            let xml = XmlBuilder::new("template").build_error(
+                "No templates directory found. Create .aiki/templates/ to add templates.",
+            );
             println!("{}", xml);
             return Ok(());
         }
@@ -2903,7 +3017,10 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
             // Build XML output showing template details
             let mut content = String::new();
             content.push_str("  <template>\n");
-            content.push_str(&format!("    <name>{}</name>\n", escape_xml(&template.name)));
+            content.push_str(&format!(
+                "    <name>{}</name>\n",
+                escape_xml(&template.name)
+            ));
 
             // Show source location
             if let Some(ref path) = template.source_path {
@@ -2914,7 +3031,10 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
                 content.push_str(&format!("    <version>{}</version>\n", escape_xml(v)));
             }
             if let Some(ref desc) = template.description {
-                content.push_str(&format!("    <description>{}</description>\n", escape_xml(desc)));
+                content.push_str(&format!(
+                    "    <description>{}</description>\n",
+                    escape_xml(desc)
+                ));
             }
             if let Some(ref t) = template.defaults.task_type {
                 content.push_str(&format!("    <type>{}</type>\n", escape_xml(t)));
@@ -2927,13 +3047,19 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
             }
 
             // Show parent task name
-            content.push_str(&format!("    <parent_name>{}</parent_name>\n", escape_xml(&template.parent.name)));
+            content.push_str(&format!(
+                "    <parent_name>{}</parent_name>\n",
+                escape_xml(&template.parent.name)
+            ));
 
             // Show subtasks
             if !template.subtasks.is_empty() {
                 content.push_str("    <subtasks>\n");
                 for subtask in &template.subtasks {
-                    content.push_str(&format!("      <subtask name=\"{}\" />\n", escape_xml(&subtask.name)));
+                    content.push_str(&format!(
+                        "      <subtask name=\"{}\" />\n",
+                        escape_xml(&subtask.name)
+                    ));
                 }
                 content.push_str("    </subtasks>\n");
             }
@@ -3041,7 +3167,8 @@ fn create_from_template(
     }
 
     // Substitute variables in parent task name
-    let parent_name = substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
+    let parent_name =
+        substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
 
     // Generate task ID
     let task_id = generate_task_id(&parent_name);
@@ -3054,7 +3181,11 @@ fn create_from_template(
 
     // Substitute variables in parent instructions
     let parent_instructions = if !template.parent.instructions.is_empty() {
-        Some(substitute_with_template_name(&template.parent.instructions, &ctx, Some(template_name))?)
+        Some(substitute_with_template_name(
+            &template.parent.instructions,
+            &ctx,
+            Some(template_name),
+        )?)
     } else {
         None
     };
@@ -3123,7 +3254,9 @@ fn create_dynamic_subtasks(
     parent_data: &std::collections::HashMap<String, String>,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    use crate::tasks::templates::{create_tasks_from_template, parse_data_source, resolve_data_source};
+    use crate::tasks::templates::{
+        create_tasks_from_template, parse_data_source, resolve_data_source,
+    };
 
     // Parse the data source specification (e.g., "source.comments")
     let data_source = parse_data_source(subtasks_source_str)?;
@@ -3161,7 +3294,8 @@ fn create_dynamic_subtasks(
     }
 
     // Use the template resolver to create subtask definitions
-    let (_, subtask_defs) = create_tasks_from_template(template, &ctx_with_parent, Some(data_items))?;
+    let (_, subtask_defs) =
+        create_tasks_from_template(template, &ctx_with_parent, Some(data_items))?;
 
     // Create events for each subtask
     for (i, subtask_def) in subtask_defs.iter().enumerate() {
@@ -3277,29 +3411,35 @@ fn create_static_subtasks(
             subtask_ctx.set_builtin("type", t);
         }
         // Parent context accessible via parent.* prefix
-        subtask_ctx.set_builtin("parent.id", parent_id);
+        subtask_ctx.set_parent("id", parent_id);
         if let Some(ref a) = parent_assignee {
-            subtask_ctx.set_builtin("parent.assignee", a);
+            subtask_ctx.set_parent("assignee", a);
         }
-        subtask_ctx.set_builtin("parent.priority", parent_priority.to_string());
+        subtask_ctx.set_parent("priority", parent_priority.to_string());
         for (key, value) in parent_data {
-            subtask_ctx.set_builtin(&format!("parent.data.{}", key), value);
+            subtask_ctx.set_parent(&format!("data.{}", key), value);
         }
         if let Some(source) = sources.first() {
             subtask_ctx.set_source(source);
-            subtask_ctx.set_builtin("parent.source", source);
+            subtask_ctx.set_parent("source", source);
         }
 
         // Substitute variables in subtask name and instructions using subtask context
-        let subtask_name = substitute_with_template_name(&subtask_def.name, &subtask_ctx, Some(template_name))?;
+        let subtask_name =
+            substitute_with_template_name(&subtask_def.name, &subtask_ctx, Some(template_name))?;
         let subtask_instructions = if !subtask_def.instructions.is_empty() {
-            Some(substitute_with_template_name(&subtask_def.instructions, &subtask_ctx, Some(template_name))?)
+            Some(substitute_with_template_name(
+                &subtask_def.instructions,
+                &subtask_ctx,
+                Some(template_name),
+            )?)
         } else {
             None
         };
 
         // Build subtask sources: subtask frontmatter sources (with variable substitution) + parent task reference
-        let mut subtask_sources: Vec<String> = subtask_def.sources
+        let mut subtask_sources: Vec<String> = subtask_def
+            .sources
             .iter()
             .map(|s| substitute_with_template_name(s, &subtask_ctx, Some(template_name)))
             .collect::<Result<Vec<_>>>()?;

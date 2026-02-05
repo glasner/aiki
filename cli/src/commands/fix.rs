@@ -1,10 +1,10 @@
-//! Fix command for creating and running followup tasks from review comments
+//! Fix command for creating followup tasks from review comments
 //!
 //! This module provides the `aiki fix` command which:
 //! - Reads a task ID (from argument or stdin for piping)
-//! - Checks the task for comments with structured metadata
+//! - Checks the task for comments
 //! - If no comments: succeeds with "approved" message (review passed)
-//! - If comments found: creates followup task with subtasks from template
+//! - If comments found: creates followup task (agent creates subtasks from comments)
 //! - Runs the followup task (default: completion, --async: async, --start: hand off)
 
 use std::env;
@@ -20,7 +20,7 @@ use crate::tasks::templates::{
 };
 use crate::tasks::xml::{escape_xml, XmlBuilder};
 use crate::tasks::{
-    find_task, generate_child_id, generate_task_id, get_current_scope_set, get_in_progress,
+    find_task, generate_task_id, get_current_scope_set, get_in_progress,
     get_ready_queue_for_scope_set, materialize_tasks, materialize_tasks_with_ids,
     read_events, read_events_with_ids, reassign_task, start_task_core,
     write_event, Task, TaskComment, TaskEvent, TaskPriority,
@@ -113,11 +113,13 @@ fn run_fix(
     let review_task = find_task(&tasks, task_id)
         .ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
 
-    // Get comments from the review task
-    let comments = &review_task.comments;
+    // Get all comments from the review task
+    // Note: closing a review requires a comment, so 1 comment = just the closing comment (no issues)
+    // More than 1 comment means there are issues to fix
+    let comments: Vec<TaskComment> = review_task.comments.clone();
 
-    // If no comments, output "approved" message and succeed
-    if comments.is_empty() {
+    // If only the closing comment (or no comments), output "approved" message and succeed
+    if comments.len() <= 1 {
         output_approved(task_id)?;
         return Ok(());
     }
@@ -129,9 +131,9 @@ fn run_fix(
     // Determine assignee for followup task
     let assignee = determine_followup_assignee(agent_type, reviewed_task);
 
-    // Create followup task with subtasks from comments using template
+    // Create followup task from template (agent will create subtasks from comments)
     let template = template_name.as_deref().unwrap_or("aiki/fix");
-    let followup_id = create_followup_task_from_template(cwd, review_task, &assignee, comments, template)?;
+    let followup_id = create_followup_task_from_template(cwd, review_task, &assignee, template)?;
 
     // Re-read tasks to include newly created followup task
     let events = read_events(cwd)?;
@@ -148,12 +150,12 @@ fn run_fix(
         }
         // Start task using core logic (validates, auto-stops, emits events)
         start_task_core(cwd, &[followup_id.clone()])?;
-        output_followup_started(&followup_id, review_task, comments, &in_progress, &ready)?;
+        output_followup_started(&followup_id, review_task, &comments, &in_progress, &ready)?;
     } else if run_async {
         // Run async and return immediately
         let options = TaskRunOptions::new();
         task_run_async(cwd, &followup_id, options)?;
-        output_followup_async(&followup_id, comments)?;
+        output_followup_async(&followup_id, &comments)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", followup_id);
@@ -162,7 +164,7 @@ fn run_fix(
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &followup_id, options)?;
-        output_followup_completed(&followup_id, comments)?;
+        output_followup_completed(&followup_id, &comments)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", followup_id);
@@ -203,19 +205,16 @@ fn output_followup_started(
     ));
 
     for (i, comment) in comments.iter().enumerate() {
-        let file = comment.data.get("file").map(|s| s.as_str()).unwrap_or("unknown");
-        let line = comment.data.get("line").map(|s| s.as_str()).unwrap_or("?");
-        let category = comment.data.get("category").map(|s| s.as_str()).unwrap_or("issue");
-        let severity = comment.data.get("severity").map(|s| s.as_str()).unwrap_or("medium");
-
+        // Truncate long comments for display
+        let display_text = if comment.text.len() > 60 {
+            format!("{}...", &comment.text[..57])
+        } else {
+            comment.text.clone()
+        };
         content.push_str(&format!(
-            "    {}. Fix: {} in {} ({})\n       File: {}:{}\n",
+            "    {}. {}\n",
             i + 1,
-            escape_xml(category),
-            escape_xml(file),
-            escape_xml(severity),
-            escape_xml(file),
-            escape_xml(line)
+            escape_xml(&display_text)
         ));
     }
 
@@ -295,12 +294,11 @@ fn determine_followup_assignee(agent_override: Option<AgentType>, reviewed_task:
     Some("claude-code".to_string())
 }
 
-/// Create followup task with subtasks from template
+/// Create followup task from template (agent creates subtasks)
 fn create_followup_task_from_template(
     cwd: &Path,
     source_task: &Task,
     assignee: &Option<String>,
-    comments: &[TaskComment],
     template_name: &str,
 ) -> Result<String> {
     let timestamp = chrono::Utc::now();
@@ -318,9 +316,9 @@ fn create_followup_task_from_template(
     variables.set_source_data("name", &source_task.name);
     variables.set_source_data("id", &source_task.id);
 
-    // Create tasks from template with comments as data source
-    let (parent_def, subtask_defs) =
-        create_tasks_from_template(&template, &variables, Some(comments.to_vec()))?;
+    // Create task from template (no subtasks - agent will create them)
+    let (parent_def, _subtask_defs) =
+        create_tasks_from_template(&template, &variables, None)?;
 
     // Generate parent task ID from the resolved name
     let parent_id = generate_task_id(&parent_def.name);
@@ -347,73 +345,7 @@ fn create_followup_task_from_template(
     };
     write_event(cwd, &parent_event)?;
 
-    // Create subtasks
-    // Note: subtask_defs are created in the same order as comments, so we can
-    // use the index to correlate with the original comment's ID
-    for (i, subtask_def) in subtask_defs.iter().enumerate() {
-        let subtask_id = generate_child_id(&parent_id, i + 1);
-
-        // Derive priority from severity if present in subtask data
-        let severity = subtask_def
-            .data
-            .get("severity")
-            .and_then(|v| v.as_str())
-            .unwrap_or("medium");
-        let subtask_priority = match subtask_def.priority.as_ref().and_then(|p| parse_priority(p)) {
-            Some(p) => p,
-            None => derive_priority_from_severity(severity, source_task.priority),
-        };
-
-        // Subtask sources: link to source task and specific comment
-        let mut subtask_sources = subtask_def.sources.clone();
-        if !subtask_sources.iter().any(|s| s.starts_with("task:")) {
-            subtask_sources.push(format!("task:{}", source_task.id));
-        }
-        // Add comment ID to sources if available (enables traceability to specific comment)
-        if let Some(comment) = comments.get(i) {
-            if let Some(ref comment_id) = comment.id {
-                subtask_sources.push(format!("comment:{}", comment_id));
-            }
-        }
-
-        let subtask_event = TaskEvent::Created {
-            task_id: subtask_id,
-            name: subtask_def.name.clone(),
-            task_type: None, // Followup subtasks don't have a special type
-            priority: subtask_priority,
-            assignee: subtask_def.assignee.clone().or_else(|| assignee.clone()),
-            sources: subtask_sources,
-            template: None,
-            working_copy: working_copy.clone(),
-            instructions: Some(subtask_def.instructions.clone()),
-            data: convert_data(&subtask_def.data),
-            timestamp,
-        };
-        write_event(cwd, &subtask_event)?;
-    }
-
     Ok(parent_id)
-}
-
-/// Parse priority string to TaskPriority
-fn parse_priority(s: &str) -> Option<TaskPriority> {
-    match s.to_lowercase().as_str() {
-        "p0" => Some(TaskPriority::P0),
-        "p1" => Some(TaskPriority::P1),
-        "p2" => Some(TaskPriority::P2),
-        "p3" => Some(TaskPriority::P3),
-        _ => None,
-    }
-}
-
-/// Derive priority from severity relative to source task priority
-fn derive_priority_from_severity(severity: &str, source_priority: TaskPriority) -> TaskPriority {
-    match severity {
-        "high" => source_priority,
-        "medium" => lower_priority(source_priority),
-        "low" => lower_priority(lower_priority(source_priority)),
-        _ => source_priority,
-    }
 }
 
 /// Convert serde_json::Value HashMap to String HashMap for TaskEvent
@@ -429,16 +361,6 @@ fn convert_data(
             (k.clone(), value_str)
         })
         .collect()
-}
-
-/// Lower priority by one level (P0 -> P1 -> P2 -> P3, P3 stays P3)
-fn lower_priority(priority: TaskPriority) -> TaskPriority {
-    match priority {
-        TaskPriority::P0 => TaskPriority::P1,
-        TaskPriority::P1 => TaskPriority::P2,
-        TaskPriority::P2 => TaskPriority::P3,
-        TaskPriority::P3 => TaskPriority::P3,
-    }
 }
 
 /// Returns the change_id of the current working copy (`@` in jj terms).

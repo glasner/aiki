@@ -1,4 +1,4 @@
-<aiki version="1.8">
+<aiki version="1.9">
 
 ## ⛔ STOP - Read This First
 
@@ -30,7 +30,7 @@ aiki task close <id> --comment "Created plan at ops/now/rename.md"
 
 **Leave progress comments during long tasks:**
 ```bash
-aiki task comment --id <task-id> "Completed phase 1, now working on phase 2"
+aiki task comment <task-id> "Completed phase 1, now working on phase 2"
 ```
 
 **When closing tasks, summarize your work:**
@@ -66,7 +66,7 @@ aiki task start <task-id>
 
 ### First Action Rule
 
-**Before doing any work, create and start a task.** This includes:
+**Before modifying any files, create and start a task.** This includes:
 - Code reviews (`review @file`)
 - Document reviews (`review @doc.md`)
 - Bug investigations
@@ -84,9 +84,14 @@ Using `--source prompt` links the task to the user's request that triggered it.
 
 ### When to Use Tasks
 
-- Any work beyond a quick one-liner or immediate response
+- **Any file modification** - writing, editing, or deleting files (no exceptions)
 - Any multi-step change, investigation, or review
 - Anything that could carry over across sessions
+
+**When tasks are NOT needed:**
+- Answering questions without modifying files
+- Reading files to understand the codebase
+- Running read-only commands (git status, ls, etc.)
 
 ### Progress Updates
 
@@ -97,9 +102,9 @@ Using `--source prompt` links the task to the user's request that triggered it.
 aiki task start "Implement user authentication system"
 
 # As you make progress, add comments
-aiki task comment --id <task-id> "Completed database schema design"
-aiki task comment --id <task-id> "Implemented password hashing"
-aiki task comment --id <task-id> "Added login endpoint, now testing"
+aiki task comment <task-id> "Completed database schema design"
+aiki task comment <task-id> "Implemented password hashing"
+aiki task comment <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
 aiki task close <task-id> --comment "Completed: authentication with JWT tokens, password hashing, and session management"
@@ -109,6 +114,35 @@ aiki task close <task-id> --comment "Completed: authentication with JWT tokens, 
 - Other agents can see what's been done if they take over
 - User can track progress on long tasks
 - Creates a record of your thought process and approach
+
+### Code Reviews
+
+**When asked to review a task's changes, use `aiki review --start`:**
+
+```bash
+# Review a specific task's changes (you perform the review)
+aiki review <task-id> --start
+```
+
+**When to use `aiki review --start`:**
+- User asks you to review work done on a task
+- User says "review task X" or provides a task ID to review
+- You want to check the code changes associated with a completed task
+
+**How it works:**
+1. `aiki review <task-id> --start` creates a review task and you perform the review
+2. You'll see instructions to run `aiki task diff` and examine the changes
+3. Add comments for any issues found using `aiki task comment`
+4. Close the review task when done
+
+**The `--start` flag means you perform the review yourself** (vs. spawning a background agent).
+
+**After reviewing**, if you found issues, run `aiki fix` to create followup tasks:
+```bash
+aiki fix <review-task-id>
+```
+
+**Note:** `aiki review` without a task ID reviews all closed tasks in the current session.
 
 ### Quick Reference
 
@@ -135,7 +169,7 @@ aiki task start <id1> <id2> <id3>
 aiki task stop --reason "Blocked on X"
 
 # Add a comment (without closing)
-aiki task comment --id <task-id> "Progress update: ..."
+aiki task comment <task-id> "Progress update: ..."
 
 # Show task details including comments
 aiki task show <task-id>

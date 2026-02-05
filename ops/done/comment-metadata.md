@@ -43,12 +43,11 @@ struct TaskComment {
 Add `--data key=value` flag to `aiki task comment`:
 
 ```bash
-aiki task comment --id xqrmnpst \
+aiki task comment xqrmnpst "Potential null pointer dereference when accessing user.name." \
   --data file=src/auth.ts \
   --data line=42 \
   --data severity=error \
-  --data category=quality \
-  "Potential null pointer dereference when accessing user.name."
+  --data category=quality
 ```
 
 **Flag behavior:**

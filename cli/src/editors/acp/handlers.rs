@@ -12,8 +12,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 
 use agent_client_protocol::{
-    SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolKind,
+    SessionUpdate, ToolCall, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde_json::json;
 
@@ -187,16 +186,26 @@ pub fn extract_autoreply(response: &HookResult) -> Option<String> {
 ///
 /// In ACP mode, `agent_pid` can be provided by the agent in the session/start message.
 /// This enables PID-based session detection for subprocesses spawned by the agent.
+/// Mode is determined by `AIKI_SESSION_MODE` env var:
+/// - "background" → Background mode
+/// - anything else → Interactive mode (default)
 pub fn create_session(
     agent_type: AgentType,
     session_id: impl Into<String>,
     agent_version: Option<&str>,
 ) -> AikiSession {
+    use crate::session::SessionMode;
+    // Determine mode from AIKI_SESSION_MODE env var
+    let mode = match std::env::var("AIKI_SESSION_MODE").as_deref() {
+        Ok("background") => SessionMode::Background,
+        _ => SessionMode::Interactive,
+    };
     AikiSession::new(
         agent_type,
         session_id,
         agent_version,
         crate::provenance::DetectionMethod::ACP,
+        mode,
     )
 }
 
@@ -204,17 +213,27 @@ pub fn create_session(
 ///
 /// When `agent_pid` is provided, it's stored in the session file to enable
 /// PID-based session detection for subprocesses spawned by the agent.
+/// Mode is determined by `AIKI_SESSION_MODE` env var:
+/// - "background" → Background mode
+/// - anything else → Interactive mode (default)
 pub fn create_session_with_pid(
     agent_type: AgentType,
     session_id: impl Into<String>,
     agent_version: Option<&str>,
     agent_pid: Option<u32>,
 ) -> AikiSession {
+    use crate::session::SessionMode;
+    // Determine mode from AIKI_SESSION_MODE env var
+    let mode = match std::env::var("AIKI_SESSION_MODE").as_deref() {
+        Ok("background") => SessionMode::Background,
+        _ => SessionMode::Interactive,
+    };
     AikiSession::new(
         agent_type,
         session_id,
         agent_version,
         crate::provenance::DetectionMethod::ACP,
+        mode,
     )
     .with_parent_pid(agent_pid)
 }

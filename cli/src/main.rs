@@ -20,6 +20,7 @@ mod signing;
 mod tasks;
 mod tools;
 mod utils;
+mod validation;
 mod verify;
 
 use clap::{Parser, Subcommand};
@@ -126,9 +127,18 @@ enum Commands {
         agent: Option<String>,
     },
     /// Create and run code review tasks
-    Review {
-        #[command(subcommand)]
-        command: Option<commands::review::ReviewCommands>,
+    Review(commands::review::ReviewArgs),
+    /// Interactive spec authoring with AI agent
+    Spec {
+        /// Path to spec file or description text (variadic - quotes optional)
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Spec template to use (default: aiki/spec)
+        #[arg(long)]
+        template: Option<String>,
+        /// Agent for spec session (default: claude-code)
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 
@@ -183,16 +193,24 @@ fn run() -> Result<()> {
         Commands::Init { quiet } => commands::init::run(quiet),
         Commands::Doctor { fix } => commands::doctor::run(fix),
         Commands::Hooks { command } => match command {
-            HooksCommands::Stdin { agent, event, payload } => {
-                let payload_str = if payload.is_empty() { None } else { Some(payload.join(" ")) };
+            HooksCommands::Stdin {
+                agent,
+                event,
+                payload,
+            } => {
+                let payload_str = if payload.is_empty() {
+                    None
+                } else {
+                    Some(payload.join(" "))
+                };
                 commands::hooks::run_stdin(agent, event, payload_str)
             }
-            HooksCommands::Acp { agent, bin, agent_args } => {
-                commands::acp::run(agent, bin, agent_args)
-            }
-            HooksCommands::Otel { agent } => {
-                commands::otel_receive::run(agent)
-            }
+            HooksCommands::Acp {
+                agent,
+                bin,
+                agent_args,
+            } => commands::acp::run(agent, bin, agent_args),
+            HooksCommands::Otel { agent } => commands::otel_receive::run(agent),
         },
         Commands::Blame {
             file,
@@ -215,6 +233,11 @@ fn run() -> Result<()> {
             template,
             agent,
         } => commands::fix::run(task_id, run_async, start, template, agent),
-        Commands::Review { command } => commands::review::run(command),
+        Commands::Review(args) => commands::review::run(args),
+        Commands::Spec {
+            args,
+            template,
+            agent,
+        } => commands::spec::run(args, template, agent),
     }
 }

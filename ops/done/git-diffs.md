@@ -1,7 +1,7 @@
 # Git-Format Diffs with Extended Context
 
 **Date**: 2026-01-30
-**Status**: Ready for Implementation
+**Status**: Implemented
 **Purpose**: Change diff output format to git format with 5 lines of context for better agent comprehension
 
 **Related Documents**:
@@ -122,11 +122,12 @@ fn add_diff_format_args(cmd: &mut Command) -> &mut Command {
 
 Locations that generate diffs:
 
-| Location | File | Purpose |
-|----------|------|---------|
-| `aiki task diff` | `commands/task.rs:2466` | Task diff output |
-| `get_task_diff_files()` | `commands/task.rs:2542` | File change detection |
-| Flow event payloads | Various | Event data for flows |
+| Location | File | Purpose | Status |
+|----------|------|---------|--------|
+| `aiki task diff` | `commands/task.rs:2466` | Task diff output | ✅ Done |
+| `get_change_diff()` | `commands/task.rs:2004` | Per-change diff in `task show --diff` | ✅ Done |
+| `get_task_changed_files()` | `commands/task.rs:2549` | File change detection | N/A (uses `--summary`) |
+| `run_jj_diff_summary()` | `jj/diff.rs:169` | Delete/move detection | N/A (uses `--summary`) |
 
 **Note**: `jj diff --summary` calls (for file path detection) don't need these flags since they only output file status, not actual diffs.
 

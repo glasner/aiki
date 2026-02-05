@@ -418,7 +418,7 @@ mod tests {
     use super::*;
     use crate::events::{AikiChangeCompletedPayload, AikiEvent, ChangeOperation, WriteOperation};
     use crate::provenance::{AgentType, DetectionMethod};
-    use crate::session::AikiSession;
+    use crate::session::{AikiSession, SessionMode};
     use std::fs;
     use tempfile::TempDir;
 
@@ -492,7 +492,7 @@ version: "1"
             AgentType::ClaudeCode,
             "test-session".to_string(),
             None::<&str>,
-            DetectionMethod::Hook,
+            DetectionMethod::Hook, SessionMode::Interactive,
         );
         let event = AikiEvent::ChangeCompleted(AikiChangeCompletedPayload {
             session,
