@@ -91,9 +91,19 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
     }
 
     // Get current in-progress tasks to auto-stop
+    // But exclude parent tasks when starting their subtasks
+    let parent_ids_to_preserve: std::collections::HashSet<String> = task_ids
+        .iter()
+        .filter_map(|id| {
+            // If this is a subtask (contains '.'), preserve its parent
+            id.rsplit_once('.').map(|(parent, _)| parent.to_string())
+        })
+        .collect();
+
     let current_in_progress_ids: Vec<String> = get_in_progress(&tasks)
         .iter()
         .map(|t| t.id.clone())
+        .filter(|id| !parent_ids_to_preserve.contains(id))
         .collect();
 
     // Get tasks for result

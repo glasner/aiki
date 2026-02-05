@@ -66,8 +66,46 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    // Move the bookmark forward to point at the newly created change
-    // Filter to only the task change (has [aiki-task] in description), not the working copy
+    // Get the change_id of the newly created child
+    // Using --limit 1 ensures we get only the most recent child even if there are
+    // multiple (e.g., from a previous failed bookmark update)
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &format!(
+                "children({}) & description(substring:\"{}\")",
+                TASKS_BRANCH, METADATA_START
+            ),
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--limit",
+            "1",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::JjCommandFailed(format!("Failed to get new task change_id: {}", e))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to get new task change_id: {}",
+            stderr
+        )));
+    }
+
+    let new_change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if new_change_id.is_empty() {
+        return Err(AikiError::JjCommandFailed(
+            "Failed to find newly created task change".to_string(),
+        ));
+    }
+
+    // Move the bookmark forward to point at the newly created change using its specific change_id
     let result = jj_cmd()
         .current_dir(cwd)
         .args([
@@ -75,10 +113,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
             "set",
             TASKS_BRANCH,
             "-r",
-            &format!(
-                "children({}) & description(substring:\"{}\")",
-                TASKS_BRANCH, METADATA_START
-            ),
+            &new_change_id,
             "--ignore-working-copy",
         ])
         .output()

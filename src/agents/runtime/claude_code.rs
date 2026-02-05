@@ -4,7 +4,7 @@
 
 use std::process::{Command, Stdio};
 
-use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle};
+use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild};
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 
@@ -123,6 +123,46 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
             }
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn claude in background: {}",
+                e
+            ))),
+        }
+    }
+
+    fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild> {
+        // Build the task prompt with clear instructions for autonomous work
+        let prompt = format!(
+            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
+
+WORKFLOW:
+1. Run `aiki task start {}` to begin
+2. Run `aiki task` to see your task and any subtasks
+3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
+4. Repeat until all subtasks are closed
+
+CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
+            options.task_id, options.task_id
+        );
+
+        // Spawn claude process - keep Child handle for monitoring
+        // Uses --print for non-interactive mode and --dangerously-skip-permissions
+        let child = Command::new("claude")
+            .current_dir(&options.cwd)
+            .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Pass task ID so session system can track this as a task-driven session
+            .env("AIKI_TASK", &options.task_id)
+            // Mark as monitored session for mode detection
+            .env("AIKI_SESSION_MODE", "monitored")
+            // Detach stdin/stdout so process runs independently
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            // Capture stderr so we can report errors when the agent fails
+            .stderr(Stdio::piped())
+            .spawn();
+
+        match child {
+            Ok(child) => Ok(MonitoredChild::new(child, &options.task_id)),
+            Err(e) => Err(AikiError::AgentSpawnFailed(format!(
+                "Failed to spawn claude for monitoring: {}",
                 e
             ))),
         }

@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 
 use crate::agents::{
     get_runtime, AgentSessionResult, AgentSpawnOptions, AgentType, Assignee, BackgroundHandle,
+    MonitoredChild,
 };
 use crate::error::{AikiError, Result};
 use crate::session::find_task_session;
@@ -202,11 +203,12 @@ fn run_with_status_monitor(
     runtime: &dyn crate::agents::AgentRuntime,
     spawn_options: &AgentSpawnOptions,
 ) -> Result<AgentSessionResult> {
-    // Spawn agent in background (non-blocking)
-    let handle = runtime.spawn_background(spawn_options)?;
+    // Spawn agent with child handle for proper exit detection
+    // This properly handles zombie processes by using try_wait() instead of kill(pid, 0)
+    let mut monitored_child = runtime.spawn_monitored(spawn_options)?;
 
-    // Create status monitor with agent PID to detect unexpected exits
-    let mut monitor = StatusMonitor::new(task_id).with_agent_pid(handle.pid);
+    // Create status monitor (no longer needs PID since we check exit ourselves)
+    let mut monitor = StatusMonitor::new(task_id);
     let stop_flag = monitor.stop_flag();
 
     // Set up Ctrl+C handler to signal monitor to stop
@@ -216,14 +218,14 @@ fn run_with_status_monitor(
     });
 
     // Run status monitor until task completes, user detaches, or agent exits
-    let exit_reason = monitor.monitor_until_complete(cwd)?;
+    let exit_reason = monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)?;
 
     match exit_reason {
         MonitorExitReason::UserDetached => {
             // User detached via Ctrl+C - agent continues running in background
             Ok(AgentSessionResult::detached())
         }
-        MonitorExitReason::AgentExited => {
+        MonitorExitReason::AgentExited { stderr } => {
             // Agent exited without task reaching terminal state - check final status
             let events = read_events(cwd)?;
             let tasks = materialize_tasks(&events);
@@ -248,16 +250,25 @@ fn run_with_status_monitor(
                         Ok(AgentSessionResult::Stopped { reason })
                     }
                     _ => {
-                        // Agent crashed without completing task
-                        Ok(AgentSessionResult::Failed {
-                            error: "Agent process exited without completing task".to_string(),
-                        })
+                        // Agent crashed without completing task - include stderr if available
+                        let error = if stderr.trim().is_empty() {
+                            "Agent process exited without completing task".to_string()
+                        } else {
+                            format!(
+                                "Agent process exited without completing task:\n{}",
+                                stderr.trim()
+                            )
+                        };
+                        Ok(AgentSessionResult::Failed { error })
                     }
                 }
             } else {
-                Ok(AgentSessionResult::Failed {
-                    error: "Task not found after agent exit".to_string(),
-                })
+                let error = if stderr.trim().is_empty() {
+                    "Task not found after agent exit".to_string()
+                } else {
+                    format!("Task not found after agent exit:\n{}", stderr.trim())
+                };
+                Ok(AgentSessionResult::Failed { error })
             }
         }
         MonitorExitReason::TaskCompleted => {

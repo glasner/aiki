@@ -1151,7 +1151,9 @@ fn run_start(
     let mut tasks = materialize_tasks(&events);
 
     // Get in-progress task IDs first (to avoid borrow issues)
-    let current_in_progress_ids: Vec<String> = get_in_progress(&tasks)
+    // Note: We collect all IDs here; parent-preservation filtering happens later
+    // once we know which actual IDs we're starting (after quick-start/template handling)
+    let all_in_progress_ids: Vec<String> = get_in_progress(&tasks)
         .iter()
         .map(|t| t.id.clone())
         .collect();
@@ -1333,6 +1335,22 @@ fn run_start(
             new_scope = Some(task_id);
         }
     }
+
+    // Now that we know which IDs we're actually starting, filter out parent tasks
+    // When starting a subtask (id contains '.'), preserve its parent from being auto-stopped
+    let parent_ids_to_preserve: std::collections::HashSet<String> = actual_ids_to_start
+        .iter()
+        .filter_map(|id| {
+            // If this is a subtask (contains '.'), preserve its parent
+            id.rsplit_once('.').map(|(parent, _)| parent.to_string())
+        })
+        .collect();
+
+    let current_in_progress_ids: Vec<String> = all_in_progress_ids
+        .iter()
+        .filter(|id| !parent_ids_to_preserve.contains(*id))
+        .cloned()
+        .collect();
 
     // Get tasks before state changes (for output)
     let mut stopped_tasks: Vec<Task> = current_in_progress_ids

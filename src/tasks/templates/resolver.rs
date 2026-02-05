@@ -481,6 +481,19 @@ fn parse_subtask_template(content: &str) -> Result<Option<ParsedSubtaskTemplate>
     Ok(None)
 }
 
+/// Known collection names that can be used in {% for %} loops
+///
+/// If a template references a collection not in this list, it's an error.
+const KNOWN_COLLECTIONS: &[&str] = &[
+    "source.comments",
+    // Future: "source.files", "data.<array>", etc.
+];
+
+/// Check if a collection name is known/valid
+fn is_known_collection(name: &str) -> bool {
+    KNOWN_COLLECTIONS.contains(&name)
+}
+
 /// Expand loop markers in rendered template content
 ///
 /// This function processes the `<!-- AIKI_LOOP:var:collection -->` markers
@@ -493,6 +506,12 @@ fn parse_subtask_template(content: &str) -> Result<Option<ParsedSubtaskTemplate>
 ///
 /// # Returns
 /// The expanded content with loops replaced by their iterated output
+///
+/// # Errors
+/// Returns an error if:
+/// - A loop references an unknown collection name (typo, unsupported collection)
+/// - Too many loop expansion iterations (infinite loop protection)
+/// - Unclosed loop markers
 pub fn expand_loops(
     content: &str,
     data_sources: &HashMap<String, Vec<TaskComment>>,
@@ -526,6 +545,17 @@ pub fn expand_loops(
         let collection_name = caps.get(2).unwrap().as_str().to_string();
         let content_start = loop_start_match.end();
 
+        // Validate collection name is known
+        if !is_known_collection(&collection_name) {
+            return Err(AikiError::TemplateProcessingFailed {
+                details: format!(
+                    "Unknown collection '{}'. Available collections: {}",
+                    collection_name,
+                    KNOWN_COLLECTIONS.join(", ")
+                ),
+            });
+        }
+
         // Find the matching ENDLOOP marker using stack-based matching
         let rest = &result[content_start..];
         let Some((body_end, else_body, total_end)) = find_matching_endloop(rest)? else {
@@ -537,14 +567,14 @@ pub fn expand_loops(
         let loop_body = &rest[..body_end];
         let full_end = content_start + total_end;
 
-        // Get the data for this collection
+        // Get the data for this collection (known collection, may be empty or absent)
         let items = data_sources.get(&collection_name);
         let expanded = match items {
             Some(items) if !items.is_empty() => {
                 expand_loop_body(&variable_name, loop_body, items)?
             }
             _ => {
-                // Collection is empty or not found, use else body if present
+                // Collection is known but empty or not provided, use else body if present
                 else_body.unwrap_or_default()
             }
         };
@@ -928,6 +958,12 @@ pub fn create_review_task_from_template(
 /// We use this placeholder because the parent ID isn't known until after
 /// template processing (it's generated from the resolved parent name).
 pub const PARENT_ID_PLACEHOLDER: &str = "__AIKI_PARENT_ID_PLACEHOLDER__";
+
+/// Placeholder value for id (task's own ID) during initial template processing
+///
+/// Similar to PARENT_ID_PLACEHOLDER, but for the task's own ID. Used when
+/// a template's instructions reference {{id}} (the task being created).
+pub const ID_PLACEHOLDER: &str = "__AIKI_ID_PLACEHOLDER__";
 
 /// Substitute the parent.id placeholder with the actual parent ID
 ///
@@ -1494,6 +1530,24 @@ No items found.
 
         let result = expand_loops(content, &data_sources).unwrap();
         assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_expand_loops_unknown_collection_errors() {
+        // Unknown collections should error, not silently return empty
+        let content = r#"<!-- AIKI_LOOP:item:source.unknown_collection -->
+## {{item.name}}
+<!-- AIKI_ENDLOOP -->"#;
+
+        let data_sources = HashMap::new();
+
+        let result = expand_loops(content, &data_sources);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown collection"));
+        assert!(msg.contains("source.unknown_collection"));
+        assert!(msg.contains("source.comments")); // Shows available collections
     }
 
     #[test]

@@ -1969,4 +1969,34 @@ Content under heading
         assert!(result.contains("{{item.text}}"));
         assert!(result.contains("AIKI_ENDLOOP"));
     }
+
+    #[test]
+    fn test_conditionals_inside_loops_are_preserved() {
+        // Tests that conditionals inside loop bodies are serialized back to template
+        // syntax (preserved for later evaluation during loop expansion), NOT evaluated
+        // immediately with an empty loop context.
+        //
+        // This is the key fix for: "conditionals inside loop bodies evaluated before
+        // loop expansion"
+        let template = r#"{% for item in source.comments %}
+## {{item.name}}
+{% if item.priority == "high" %}**HIGH PRIORITY**{% endif %}
+{% endfor %}"#;
+
+        let ctx = EvalContext::new();
+        let result = process_conditionals(template, &ctx).unwrap();
+
+        // Should have AIKI_LOOP markers
+        assert!(result.contains("AIKI_LOOP:item:source.comments"), "Missing loop markers");
+        assert!(result.contains("AIKI_ENDLOOP"), "Missing endloop marker");
+
+        // CRITICAL: Conditional should be PRESERVED as {% if %} syntax, NOT evaluated
+        // If evaluated with empty context, it would be gone (falsey)
+        assert!(
+            result.contains("{% if item.priority == \"high\" %}"),
+            "Conditional was evaluated instead of preserved! Got:\n{}", result
+        );
+        assert!(result.contains("**HIGH PRIORITY**"), "Conditional body missing");
+        assert!(result.contains("{% endif %}"), "Conditional endif missing");
+    }
 }

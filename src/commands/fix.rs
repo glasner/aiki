@@ -17,6 +17,7 @@ use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::{
     create_tasks_from_template, find_templates_dir, load_template, VariableContext,
+    ID_PLACEHOLDER,
 };
 use crate::tasks::xml::{escape_xml, XmlBuilder};
 use crate::tasks::{
@@ -316,12 +317,19 @@ fn create_followup_task_from_template(
     variables.set_source_data("name", &source_task.name);
     variables.set_source_data("id", &source_task.id);
 
+    // Set id placeholder - will be substituted after we generate the actual ID
+    // This allows templates to reference {{id}} (the task's own ID)
+    variables.set_builtin("id", ID_PLACEHOLDER);
+
     // Create task from template (no subtasks - agent will create them)
-    let (parent_def, _subtask_defs) =
+    let (mut parent_def, _subtask_defs) =
         create_tasks_from_template(&template, &variables, None)?;
 
     // Generate parent task ID from the resolved name
     let parent_id = generate_task_id(&parent_def.name);
+
+    // Substitute {{id}} placeholder with the actual task ID in instructions
+    parent_def.instructions = parent_def.instructions.replace(ID_PLACEHOLDER, &parent_id);
 
     // Build sources list
     let mut sources = parent_def.sources.clone();
