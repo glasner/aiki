@@ -20,25 +20,29 @@ use super::id::is_direct_child_of;
 use super::storage::read_events;
 use super::types::{Task, TaskStatus};
 use super::manager::materialize_tasks;
+use crate::agents::MonitoredChild;
 use crate::error::Result;
 
 /// Default polling interval in milliseconds
 const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 /// Reason for monitor to stop
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum MonitorExitReason {
     /// Task reached terminal state (closed or stopped)
     TaskCompleted,
     /// User pressed Ctrl+C to detach
     UserDetached,
     /// Agent process exited without task reaching terminal state
-    AgentExited,
+    AgentExited {
+        /// Captured stderr output from the agent (if any)
+        stderr: String,
+    },
 }
 
 /// Status symbols for task visualization
 const SYMBOL_COMPLETED: &str = "✓";
-const SYMBOL_IN_PROGRESS: &str = "▶";
+const SYMBOL_IN_PROGRESS: &str = "●";
 const SYMBOL_PENDING: &str = "○";
 const SYMBOL_STOPPED: &str = "✗";
 const SYMBOL_COMMENT: &str = "💬";
@@ -128,6 +132,9 @@ impl StatusMonitor {
     /// Monitor until task completion, detach, or agent exit
     ///
     /// Returns the reason why monitoring stopped.
+    ///
+    /// **Note:** This version uses `is_process_alive(pid)` which has a known issue
+    /// with zombie processes. Prefer `monitor_until_complete_with_child()` when possible.
     pub fn monitor_until_complete(&mut self, cwd: &Path) -> Result<MonitorExitReason> {
         // Initial render
         let _ = self.poll_and_display(cwd);
@@ -146,9 +153,74 @@ impl StatusMonitor {
             if let Some(pid) = self.agent_pid {
                 if !is_process_alive(pid) {
                     // Agent exited - do one final poll to check task status
+                    // Note: This version can't capture stderr since we only have the PID
                     match self.poll_and_display(cwd) {
                         Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                        _ => return Ok(MonitorExitReason::AgentExited),
+                        _ => return Ok(MonitorExitReason::AgentExited {
+                            stderr: String::new(),
+                        }),
+                    }
+                }
+            }
+
+            // Poll and update display
+            match self.poll_and_display(cwd) {
+                Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
+                Ok(false) => continue,
+                Err(e) => {
+                    // Log error but continue monitoring
+                    eprintln!("\nError polling task: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Monitor until task completion, detach, or agent exit (using MonitoredChild)
+    ///
+    /// This version properly handles zombie processes by using `try_wait()` on the
+    /// child process instead of checking if the PID is alive with `kill(pid, 0)`.
+    ///
+    /// Returns the reason why monitoring stopped.
+    pub fn monitor_until_complete_with_child(
+        &mut self,
+        cwd: &Path,
+        child: &mut MonitoredChild,
+    ) -> Result<MonitorExitReason> {
+        // Initial render
+        let _ = self.poll_and_display(cwd);
+
+        loop {
+            // Check stop flag (Ctrl+C)
+            if self.stop_flag.load(Ordering::Relaxed) {
+                self.render_detach_message()?;
+                return Ok(MonitorExitReason::UserDetached);
+            }
+
+            // Sleep for poll interval
+            std::thread::sleep(self.poll_interval);
+
+            // Check if agent process exited using try_wait()
+            // This properly handles zombie processes by calling wait() internally
+            match child.try_wait() {
+                Ok(Some(_exit_status)) => {
+                    // Agent exited - capture stderr and do one final poll to check task status
+                    let stderr = child.read_stderr();
+                    match self.poll_and_display(cwd) {
+                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
+                        _ => return Ok(MonitorExitReason::AgentExited { stderr }),
+                    }
+                }
+                Ok(None) => {
+                    // Process is still running, continue monitoring
+                }
+                Err(e) => {
+                    // Error checking process status - treat as exited
+                    eprintln!("\nError checking agent status: {}", e);
+                    let stderr = child.read_stderr();
+                    match self.poll_and_display(cwd) {
+                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
+                        _ => return Ok(MonitorExitReason::AgentExited { stderr }),
                     }
                 }
             }
@@ -182,7 +254,7 @@ impl StatusMonitor {
         let mut lines = Vec::new();
 
         // Render root task
-        let root_line = self.format_task_line(root_task, "", true);
+        let root_line = self.format_task_line(root_task, "", None);
         lines.push(root_line);
 
         // Get subtasks (direct children)
@@ -194,16 +266,17 @@ impl StatusMonitor {
             let prefix = if is_last { "└─ " } else { "├─ " };
             let child_prefix = if is_last { "   " } else { "│  " };
 
-            let task_line = self.format_task_line(subtask, prefix, false);
+            let task_line = self.format_task_line(subtask, prefix, Some(idx));
             lines.push(task_line);
 
             // Show latest comment for in-progress or recently closed subtasks
+            // Align comment text with task name (after "├─ ✓ .N) ")
             if let Some(latest_comment) = subtask.comments.last() {
                 let comment_line = format!(
-                    "{}└─ {} {}",
+                    "{}   └─ {} {}",
                     child_prefix,
                     SYMBOL_COMMENT,
-                    truncate_comment(&latest_comment.text, 60)
+                    truncate_comment(&latest_comment.text, 55)
                 );
                 lines.push(comment_line);
             }
@@ -225,7 +298,10 @@ impl StatusMonitor {
     }
 
     /// Format a single task line with status symbol and elapsed time
-    fn format_task_line(&self, task: &Task, prefix: &str, is_root: bool) -> String {
+    ///
+    /// For root tasks, shows full short ID: `[twxlpqwz]`
+    /// For subtasks, shows relative index: `[.1]`, `[.2]`, etc.
+    fn format_task_line(&self, task: &Task, prefix: &str, subtask_index: Option<usize>) -> String {
         let symbol = match task.status {
             TaskStatus::Closed => SYMBOL_COMPLETED,
             TaskStatus::InProgress => SYMBOL_IN_PROGRESS,
@@ -233,16 +309,17 @@ impl StatusMonitor {
             TaskStatus::Stopped => SYMBOL_STOPPED,
         };
 
+        let is_root = subtask_index.is_none();
         let elapsed = if is_root || task.status == TaskStatus::InProgress {
             format!(" [{}]", self.format_elapsed())
         } else {
             String::new()
         };
 
-        let id_suffix = if is_root {
-            format!(" ({}...)", &task.id[..8.min(task.id.len())])
-        } else {
-            String::new()
+        // Root task: short ID; Subtasks: .1), .2), etc.
+        let id_display = match subtask_index {
+            None => format!("[{}]", &task.id[..8.min(task.id.len())]),
+            Some(idx) => format!(".{})", idx + 1),
         };
 
         // Truncate name to fit in typical terminal width
@@ -253,7 +330,7 @@ impl StatusMonitor {
             task.name.clone()
         };
 
-        format!("{}{} {}{}{}", prefix, symbol, name, id_suffix, elapsed)
+        format!("{}{} {} {}{}", prefix, symbol, id_display, name, elapsed)
     }
 
     /// Format elapsed time as human-readable string
@@ -370,11 +447,23 @@ mod tests {
     }
 
     #[test]
-    fn test_monitor_exit_reason_eq() {
-        assert_eq!(MonitorExitReason::TaskCompleted, MonitorExitReason::TaskCompleted);
-        assert_eq!(MonitorExitReason::UserDetached, MonitorExitReason::UserDetached);
-        assert_eq!(MonitorExitReason::AgentExited, MonitorExitReason::AgentExited);
-        assert_ne!(MonitorExitReason::TaskCompleted, MonitorExitReason::UserDetached);
+    fn test_monitor_exit_reason_variants() {
+        // Test that we can construct all variants
+        let _completed = MonitorExitReason::TaskCompleted;
+        let _detached = MonitorExitReason::UserDetached;
+        let _exited = MonitorExitReason::AgentExited {
+            stderr: "test error".to_string(),
+        };
+
+        // Test that AgentExited carries stderr
+        let exit_reason = MonitorExitReason::AgentExited {
+            stderr: "captured error".to_string(),
+        };
+        if let MonitorExitReason::AgentExited { stderr } = exit_reason {
+            assert_eq!(stderr, "captured error");
+        } else {
+            panic!("Expected AgentExited variant");
+        }
     }
 
     #[test]

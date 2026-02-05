@@ -100,7 +100,7 @@ pub use resolver::{
     convert_data, create_review_task_from_template, create_subtasks_from_inline_loops,
     create_tasks_from_template, expand_loops, find_templates_dir, get_working_copy_change_id,
     has_inline_loops, list_templates, load_template, load_template_file, parse_priority,
-    substitute_parent_id, TemplateInfo, PARENT_ID_PLACEHOLDER,
+    substitute_parent_id, TemplateInfo, ID_PLACEHOLDER, PARENT_ID_PLACEHOLDER,
 };
 pub use types::{TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
 pub use variables::{

@@ -10,7 +10,9 @@ pub use claude_code::ClaudeCodeRuntime;
 pub use codex::CodexRuntime;
 
 use crate::error::Result;
+use std::io::Read;
 use std::path::Path;
+use std::process::{Child, ChildStderr, ExitStatus};
 
 use super::AgentType;
 
@@ -24,6 +26,67 @@ pub struct BackgroundHandle {
     pub pid: u32,
     /// Task ID being worked on
     pub task_id: String,
+}
+
+/// Handle for a monitored child process
+///
+/// Unlike `BackgroundHandle`, this keeps the `Child` handle so we can properly
+/// detect when the process exits (including zombie processes). This is used
+/// for real-time status monitoring where we need accurate exit detection.
+pub struct MonitoredChild {
+    /// The child process handle
+    child: Child,
+    /// Stderr handle for capturing error output
+    stderr: Option<ChildStderr>,
+    /// Process ID of the spawned agent
+    pub pid: u32,
+    /// Task ID being worked on
+    pub task_id: String,
+}
+
+impl MonitoredChild {
+    /// Create a new monitored child from a Child process
+    #[must_use]
+    pub fn new(mut child: Child, task_id: impl Into<String>) -> Self {
+        let pid = child.id();
+        // Take stderr handle from child so we can read it later
+        let stderr = child.stderr.take();
+        Self {
+            child,
+            stderr,
+            pid,
+            task_id: task_id.into(),
+        }
+    }
+
+    /// Check if the process has exited without blocking
+    ///
+    /// Returns:
+    /// - `Ok(Some(status))` if the process has exited
+    /// - `Ok(None)` if the process is still running
+    /// - `Err` on error
+    ///
+    /// This properly handles zombie processes by calling `wait()` internally,
+    /// which reaps the zombie when the process has exited.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Read any captured stderr output
+    ///
+    /// Should be called after the process has exited to get error messages.
+    /// Returns an empty string if stderr wasn't captured or is empty.
+    pub fn read_stderr(&mut self) -> String {
+        if let Some(ref mut stderr) = self.stderr {
+            let mut output = String::new();
+            // Read whatever is available in the stderr buffer
+            // This is non-blocking since the process has already exited
+            if stderr.read_to_string(&mut output).is_ok() {
+                return output;
+            }
+        }
+        String::new()
+    }
 }
 
 /// Result of an agent session
@@ -160,6 +223,13 @@ pub trait AgentRuntime {
     /// The background process is fully detached and will continue running
     /// even after the parent process exits.
     fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle>;
+
+    /// Spawns an agent session for monitoring
+    ///
+    /// Similar to `spawn_background`, but keeps the Child handle so we can
+    /// properly detect when the process exits (including zombie processes).
+    /// This should be used when real-time status monitoring is needed.
+    fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild>;
 }
 
 /// Get the appropriate runtime for an agent type
