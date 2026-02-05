@@ -370,6 +370,10 @@ pub enum TaskCommands {
         /// Expand source references (task: name+instructions, file: content, prompt: text, comment: text+data)
         #[arg(long)]
         with_source: bool,
+
+        /// Include instructions in output (hidden by default)
+        #[arg(long)]
+        with_instructions: bool,
     },
 
     /// Update task details
@@ -559,7 +563,8 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             id,
             diff,
             with_source,
-        } => run_show(&cwd, id, diff, with_source),
+            with_instructions,
+        } => run_show(&cwd, id, diff, with_source, with_instructions),
         TaskCommands::Update {
             id,
             p0,
@@ -2325,7 +2330,7 @@ fn format_source_minimal(source: &SourceRef) -> String {
 }
 
 /// Show task details (including subtasks for parent tasks)
-fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) -> Result<()> {
+fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, with_instructions: bool) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
     use crate::tasks::xml::escape_xml;
 
@@ -2392,12 +2397,14 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool) 
         }
     }
 
-    // Add instructions if present
-    if let Some(ref instructions) = task.instructions {
-        content.push_str(&format!(
-            "\n    <instructions><![CDATA[{}]]></instructions>",
-            instructions
-        ));
+    // Add instructions if present and requested
+    if with_instructions {
+        if let Some(ref instructions) = task.instructions {
+            content.push_str(&format!(
+                "\n    <instructions><![CDATA[{}]]></instructions>",
+                instructions
+            ));
+        }
     }
 
     // Add subtasks section if this is a parent
