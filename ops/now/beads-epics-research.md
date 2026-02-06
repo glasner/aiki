@@ -25,7 +25,7 @@ The fundamental issues with markdown plans:
 
 ### The Solution: Hierarchical Issues with Epics
 
-Epics were part of beads' design from the start. Yegge describes the schema design process: **"I left the schema up to Claude, asking only for parent/child pointers (for epics) and blocking-issue pointers."** Claude then designed four dependency link types (later five), making the schema more powerful than GitHub Issues while remaining simple.
+Epics were part of beads' design from the start. Yegge describes the schema design process: **"I left the schema up to Claude, asking only for parent/child pointers (for epics) and blocking-issue pointers."** Claude then designed the dependency types, making the schema more powerful than GitHub Issues while remaining simple.
 
 Epics exist because real projects have natural hierarchical decomposition:
 - A large initiative (epic) breaks into features/tasks
@@ -35,6 +35,10 @@ Epics exist because real projects have natural hierarchical decomposition:
 Without epics, agents couldn't model "Auth System" -> "Login UI" + "JWT middleware" + "Session management". They'd just have a flat list of disconnected tasks.
 
 ## How Epics Work
+
+### Not a Separate Struct
+
+A critical design decision: **epics use the exact same `Issue` struct as all other issue types.** There is no separate `Epic` struct. An epic is simply an `Issue` with `IssueType == "epic"`. This keeps the model simple -- an epic is just an issue that happens to have children.
 
 ### Hierarchical IDs
 
@@ -48,41 +52,102 @@ bd-a3f8.1.1   (Sub-task)
 
 IDs are hash-based to prevent merge collisions in multi-agent/multi-branch workflows.
 
-### Issue Types
+### Issue Types (5 built-in)
 
 ```go
-TypeBug     // Bug reports
-TypeFeature // Feature requests
-TypeTask    // General tasks
-TypeEpic    // Epics (parent containers)
-TypeChore   // Maintenance work
+TypeBug     IssueType = "bug"
+TypeFeature IssueType = "feature"
+TypeTask    IssueType = "task"
+TypeEpic    IssueType = "epic"
+TypeChore   IssueType = "chore"
 ```
 
-An epic is created with: `bd create "Auth System" -t epic -p 1`
+Each type has different lint requirements:
+- **Epic** requires `## Success Criteria`
+- **Task/Feature** requires `## Acceptance Criteria`
+- **Bug** requires `## Steps to Reproduce`
 
-Child tasks are created under it and automatically get `.1`, `.2`, `.3` suffixes.
+### Parent-Child via Dependencies
 
-### Five Dependency Types
+Parent-child is implemented entirely through the dependency system, not through a dedicated field on the Issue struct:
 
-Claude designed these dependency types for the schema:
+```
+dependencies table:
+  issue_id      = child issue ID
+  depends_on_id = parent (epic) ID
+  type          = "parent-child"
+```
 
-| Type | Purpose |
-|------|---------|
-| `DepBlocks` | Standard blocking dependency |
-| `DepRelated` | Related issues (informational) |
-| `DepParentChild` | Epic/subtask hierarchy |
-| `DepDiscoveredFrom` | Provenance -- how work was discovered during agent sessions |
-| `DepConditionalBlocks` | B runs only if A fails |
+The `IssueDetails` struct does add a computed `Parent *string` field for convenience.
 
-The `DepParentChild` type is what gives epics their structure. The `DepDiscoveredFrom` type is unique to beads -- it tracks provenance, giving agents "unprecedented sleuthing and forensics powers when trying to figure out how a train-wreck happened with multiple workers."
+### Dependency Types (19 total, evolved from 4 original)
 
-### Blocking Propagation
+The original 4 types designed by Claude:
 
-A key epic behavior: **when a parent (epic) is blocked, all children are automatically blocked**, even if they have no direct blockers. This prevents agents from working on subtasks of a stalled initiative.
+| Type | Category | Blocks Ready Work? |
+|------|----------|-------------------|
+| `blocks` | Workflow | Yes |
+| `parent-child` | Workflow | Yes |
+| `related` | Association | No |
+| `discovered-from` | Association | No |
 
-### Epic Status
+Later additions in chronological order:
 
-Beads defines a dedicated `EpicStatus` type (separate from regular `Status`) for tracking epic-level progress across all children.
+| Type | Category | Blocks? | When Added |
+|------|----------|---------|------------|
+| `conditional-blocks` | Workflow | Yes | Early (B runs only if A fails) |
+| `relates-to` | Graph link | No | v0.30 |
+| `replies-to` | Graph link | No | v0.30 (conversation threading) |
+| `duplicates` | Graph link | No | v0.30 |
+| `supersedes` | Graph link | No | v0.30 (version chains) |
+| `waits-for` | Workflow | Yes | v0.36 (fanout gate coordination) |
+| `tracks` | Convoy | No | v0.42 (cross-project references) |
+| `authored-by` | Entity (HOP) | No | v0.47 |
+| `assigned-to` | Entity (HOP) | No | v0.47 |
+| `approved-by` | Entity (HOP) | No | v0.47 |
+| `attests` | Entity (HOP) | No | v0.47 (skill attestation) |
+| `until` | Reference | No | Later |
+| `caused-by` | Reference | No | Later (audit trail) |
+| `validates` | Reference | No | Later |
+| `delegated-from` | Delegation | No | Later (completion cascades up) |
+
+Only 4 of 19 types block ready work: `blocks`, `parent-child`, `conditional-blocks`, `waits-for`.
+
+Custom types are also allowed (any string up to 50 chars).
+
+### Blocking Propagation Through Hierarchy
+
+Beads uses a **cached blocking model** with a `blocked_issues_cache` table (rebuilt transactionally). Four blocking mechanisms:
+
+1. **Direct blocks**: A `blocks` dependency from B to open A makes B blocked
+2. **Conditional blocks**: B blocked by `conditional-blocks` until A closes with a failure keyword
+3. **Waits-for gates**: B blocked until all dynamic children of a spawner are closed
+4. **Parent-child propagation (recursive)**: If any descendant is blocked, the blockage cascades UP to the parent via recursive CTE (depth limit: 50 levels)
+
+Note: blockage propagates **upward** (child blocked → parent blocked), not downward as I initially reported. This prevents claiming an epic is "ready" when some of its children are stuck.
+
+### EpicStatus Type
+
+```go
+type EpicStatus struct {
+    Epic             *Issue `json:"epic"`
+    TotalChildren    int    `json:"total_children"`
+    ClosedChildren   int    `json:"closed_children"`
+    EligibleForClose bool   `json:"eligible_for_close"`
+}
+```
+
+`GetEpicsEligibleForClosure()` identifies open epics where all children are closed. This enables auto-closure of epics when all subtasks complete.
+
+### The `discovered-from` Type
+
+During work on an issue, agents naturally discover edge cases, bugs, or refactoring needs. `discovered-from` links the newly created issue back to the issue being worked on when the discovery was made.
+
+Key properties:
+- **Non-blocking** -- does NOT affect the `bd ready` queue
+- **Association type** -- informational, not workflow
+- **Provenance tracking** -- answers "why does this issue exist?"
+- **Excluded from cycle detection** -- can't create problematic cycles
 
 ## Evolution of Beads
 
@@ -98,61 +163,85 @@ Yegge rewrote beads in Go with a git-backed JSONL storage model:
 - Git provides versioning, branching, and merge conflict resolution
 - Background daemon for auto-sync
 
-This solved both the data loss problem (git makes it nearly impossible to lose data permanently) and the performance problem (SQLite for queries, git for durability).
+### Phase 3: Dependency Type Explosion
 
-Yegge's assessment: "AIs cannot seem to stop themselves from writing dodgy TypeScript, whereas it doesn't seem possible to write bad Go code. The worst it ever gets is mediocre."
-
-### Phase 3: Community Ecosystem
-
-Multiple community tools emerged around epics:
-- **beads_viewer** (Go TUI by Jeff Emanuel) -- kanban + graph views with HITS analysis identifying epics
-- **beads_rust** (Rust port by Jeff Emanuel) -- frozen at classic SQLite + JSONL architecture
-- **beads-kanban-ui** -- web kanban with epic/subtask management
-- **bsv** (Rust TUI) -- tree navigation organized by epic/task/subtask
-- **beads-orchestration** -- Claude Code multi-agent system with epic/subtask support
+The dependency system evolved from 4 original types to 19:
+- **v0.30**: Graph link types (`relates-to`, `replies-to`, `duplicates`, `supersedes`) for knowledge graph and conversation threading
+- **v0.36**: `waits-for` for async gate coordination (fanout patterns)
+- **v0.42**: `tracks` for cross-project convoy membership
+- **v0.47**: HOP entity types (`authored-by`, `assigned-to`, `approved-by`, `attests`) for identity/governance
+- **Later**: Reference types (`until`, `caused-by`, `validates`) and delegation (`delegated-from`)
 
 ### Phase 4: Gas Town (Multi-Agent Orchestration)
 
-Yegge built Gas Town on top of beads -- a multi-agent orchestration framework. This represents the evolution from "agents working on individual tasks" to "swarms of agents working on epics." Yegge describes "hurling swarms of Claude Code Opus instances at a big epic, or bug backlog."
+Yegge built Gas Town on top of beads -- a multi-agent orchestration framework. This represents the evolution from "agents working on individual tasks" to "swarms of agents working on epics."
 
-## Key Design Insights
+## Comparison: Beads vs. Aiki
 
-### Agent-First, Not Human-Adapted
+### Provenance: `discovered-from` vs. `--source`
 
-> "Beads feels like it was designed for how agents actually work, not adapted from human workflows. The --json flags everywhere, the discovered-from dependency type, the ready-work detection -- these aren't features bolted onto a human tool. They're primitives for agent cognition."
+Beads' `discovered-from` dependency and aiki's `--source` flag solve the same problem -- **tracing why work exists** -- but with different mechanisms:
 
-### Epics as Organizational Containers
+| Aspect | Beads `discovered-from` | Aiki `--source` |
+|--------|------------------------|-----------------|
+| Mechanism | Dependency edge in graph | Field on task event |
+| Storage | Row in dependencies table | `source=` lines in event metadata |
+| Multiplicity | One edge per relationship | Multiple sources per task (`Vec<String>`) |
+| Queryable | Via dependency graph traversal | Via `aiki task list --source` |
+| Direction | Child → parent (discovered during) | Task → origin (came from) |
+| Types | Single type | Typed prefixes: `file:`, `task:`, `comment:`, `issue:`, `prompt:` |
+| Auto-resolve | No | `--source prompt` auto-resolves to JJ change_id |
 
-Epics serve as more than just grouping -- they're computational units in the dependency graph. The `bd dep tree bd-a3f8e9` command shows the complete hierarchy, and `bd ready` can identify which subtasks within an epic are ready for work based on resolved dependencies.
+Aiki's source system is actually **richer in provenance types** -- it distinguishes between file origins, task origins, comment origins, issue origins, and prompt origins as first-class distinctions, whereas beads uses a single `discovered-from` edge type.
 
-### Real-World Scale
-
-In one session, Yegge generated **128 issues, six main epics, with five sub-epics**, featuring complex interdependencies and parent/child relationships. This demonstrates that epics aren't a theoretical feature -- they're essential for managing real project complexity.
-
-### Pattern: Directory-to-Epic Mapping
-
-One notable usage pattern: treating every directory as an epic and every file as a bead. This "forces" agents to methodically work through each file in a refactoring effort rather than getting lost.
-
-## Relevance to Aiki
-
-Aiki's task system is [documented as heavily inspired by beads](../done/task-system.md#relationship-to-beads). Key differences:
+### Hierarchy
 
 | Aspect | Beads | Aiki |
 |--------|-------|------|
-| Storage | JSONL + SQLite + git | Event-sourced JJ branch |
-| Hierarchy | Dot-notation IDs (`bd-a3f8.1`) | Dot-notation IDs (`parent.1`) |
-| Dependencies | 5 types (blocks, related, parent-child, discovered-from, conditional) | Blocks only (currently) |
-| Types | Bug, Feature, Task, Epic, Chore | No type system (yet) |
-| Output | JSON-first | XML-first |
-| Integration | Standalone binary | Deeply integrated with flows |
-| Provenance | `discovered_from` dependency | JJ change ID linking |
+| ID format | `bd-` + hash + `.N` | 32-char k-z + `.N` |
+| Parent-child | Dependency edge (`parent-child` type) | Encoded in ID (via `get_parent_id()`) |
+| Auto-close | `GetEpicsEligibleForClosure()` | Parent auto-closes when all subtasks close |
+| Scoping | N/A (flat list, filtered) | `ScopeSet` - starting parent scopes view to subtasks only |
 
-The most relevant lessons from beads' epic design for aiki:
-1. **Hierarchical IDs work** -- dot-notation is intuitive and queryable
-2. **Blocking propagation through hierarchy** is essential
-3. **Epics need dedicated status tracking** beyond individual task status
-4. **Agent-first output format matters** -- beads uses JSON, aiki uses XML
-5. **The dependency graph is the key differentiator** over flat task lists
+Aiki's scoping model (starting a parent hides other root tasks and shows only subtasks) has no direct equivalent in beads.
+
+### Task Types
+
+| Aspect | Beads | Aiki |
+|--------|-------|------|
+| Type field | `IssueType` enum (5 built-in) | `task_type: Option<String>` (free-form) |
+| Built-in types | bug, feature, task, epic, chore | None enforced; inferred from name/sources |
+| Type inference | No | Yes (`infer_task_type()`: "review" if name contains review, "bug" if contains fix/bug, etc.) |
+| Lint per type | Yes (different required sections) | No |
+| Flow dispatch | No | Yes (`review.started`, `bug.closed` hooks) |
+
+### Full Comparison Table
+
+| Aspect | Beads | Aiki |
+|--------|-------|------|
+| Storage | JSONL + SQLite + git | Event-sourced JJ branch (no files) |
+| Hierarchy | Dot-notation, dependency-based | Dot-notation, ID-encoded |
+| Dependencies | 19 types (4 blocking) | `blocked_reason` field (no dep graph) |
+| Types | 5 built-in enum | Free-form string, inferred |
+| Provenance | `discovered-from` edge | `--source` with typed prefixes |
+| Output | JSON-first | XML-first |
+| Ready queue | `bd ready` (graph-aware) | `get_ready_queue()` (scope-aware) |
+| Epic status | `EpicStatus` struct | Parent auto-close on all subtasks done |
+| Blocking propagation | Upward recursive CTE, cached | Not implemented (no dep graph) |
+| Templates | No | Yes (with variable substitution) |
+| Flow integration | Standalone binary | Deep (task events trigger hooks) |
+
+### Key Takeaways for Aiki
+
+1. **Aiki's `--source` is already richer than beads' `discovered-from`** -- typed prefixes, auto-resolution, and multi-source support are features beads doesn't have. The source system is a genuine innovation.
+
+2. **The missing piece is a dependency graph.** Beads' power comes from blocking propagation through the hierarchy and `bd ready` computing truly ready work. Aiki has the hierarchy but not the graph-aware blocking.
+
+3. **Epic as a type vs. epic as a pattern.** Beads makes `epic` a first-class type with lint requirements (`## Success Criteria`). Aiki treats any parent task as implicitly epic-like. Both approaches work -- beads is more explicit, aiki is more fluid.
+
+4. **19 dep types may be over-engineered for most use cases.** Only 4 of 19 affect ready work. The HOP entity types and graph links serve Gas Town's multi-agent orchestration needs more than typical single-agent workflows.
+
+5. **Blocking propagates upward, not downward.** This is the right design -- it answers "can I claim this epic is ready?" rather than "should I stop all children because the parent is stuck?"
 
 ---
 
@@ -162,12 +251,13 @@ The most relevant lessons from beads' epic design for aiki:
 - [Beads README](https://github.com/steveyegge/beads/blob/main/README.md)
 - [Beads Quickstart](https://github.com/steveyegge/beads/blob/main/docs/QUICKSTART.md)
 - [Beads Go Package](https://pkg.go.dev/github.com/steveyegge/beads)
+- [Beads CHANGELOG](https://github.com/steveyegge/beads/releases)
+- [Beads Architecture](https://github.com/steveyegge/beads/blob/main/docs/ARCHITECTURE.md)
+- [Beads Graph Links](https://github.com/steveyegge/beads/blob/main/docs/graph-links.md)
+- [Beads FAQ](https://github.com/steveyegge/beads/blob/main/docs/FAQ.md)
 - [Introducing Beads (Medium)](https://steve-yegge.medium.com/introducing-beads-a-coding-agent-memory-system-637d7d92514a)
 - [The Beads Revolution (Medium)](https://steve-yegge.medium.com/the-beads-revolution-how-i-built-the-todo-system-that-ai-agents-actually-want-to-use-228a5f9be2a9)
 - [Beads Best Practices (Medium)](https://steve-yegge.medium.com/beads-best-practices-2db636b9760c)
-- [Beads Blows Up (Medium)](https://steve-yegge.medium.com/beads-blows-up-a0a61bb889b4)
-- [The Future of Coding Agents (Medium)](https://steve-yegge.medium.com/the-future-of-coding-agents-e9451a84207c)
 - [Dicklesworthstone/beads_viewer (GitHub)](https://github.com/Dicklesworthstone/beads_viewer)
-- [Dicklesworthstone/beads_rust (GitHub)](https://github.com/Dicklesworthstone/beads_rust)
-- [Beads Community Tools](https://github.com/steveyegge/beads/blob/main/docs/COMMUNITY_TOOLS.md)
 - [Aiki Task System Design](../done/task-system.md)
+- Aiki source: `cli/src/tasks/types.rs`, `cli/src/tasks/id.rs`, `cli/src/tasks/storage.rs`, `cli/src/tasks/manager.rs`, `cli/src/commands/task.rs`
