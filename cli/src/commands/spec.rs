@@ -7,9 +7,12 @@
 
 use std::env;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
@@ -219,6 +222,97 @@ fn build_user_context(initial_idea: &str, user_text: &str) -> String {
     )
 }
 
+/// Prompt for multi-line text input using crossterm raw mode.
+///
+/// - Enter: submit text
+/// - Shift+Enter: insert newline
+/// - Esc: skip (return None)
+/// - Ctrl+C: skip (return None)
+/// - Backspace: delete character
+///
+/// Returns None if skipped, Some(text) if submitted.
+fn prompt_multiline_input(header: &str) -> Result<Option<String>> {
+    let mut stderr = io::stderr();
+
+    // Print the prompt header
+    eprintln!("\x1b[1m{}\x1b[0m", header);
+    eprintln!("\x1b[2m(Enter to submit, Shift+Enter for newline, Esc to skip)\x1b[0m");
+    eprint!("> ");
+    stderr.flush().ok();
+
+    enable_raw_mode().map_err(|e| {
+        AikiError::InvalidArgument(format!("Failed to enable raw mode: {}", e))
+    })?;
+
+    let mut lines: Vec<String> = vec![String::new()];
+
+    loop {
+        let ev = event::read().map_err(|e| {
+            disable_raw_mode().ok();
+            AikiError::InvalidArgument(format!("Failed to read input: {}", e))
+        })?;
+
+        if let Event::Key(key_event) = ev {
+            // Only react to Press events (not Release/Repeat)
+            if key_event.kind != crossterm::event::KeyEventKind::Press {
+                continue;
+            }
+
+            match (key_event.code, key_event.modifiers) {
+                // Esc: skip
+                (KeyCode::Esc, _) => {
+                    disable_raw_mode().ok();
+                    eprintln!();
+                    return Ok(None);
+                }
+                // Ctrl+C: skip
+                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    disable_raw_mode().ok();
+                    eprintln!();
+                    return Ok(None);
+                }
+                // Shift+Enter: new line
+                (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
+                    lines.push(String::new());
+                    eprint!("\r\n> ");
+                    stderr.flush().ok();
+                }
+                // Enter (without shift): submit
+                (KeyCode::Enter, _) => {
+                    disable_raw_mode().ok();
+                    eprintln!();
+                    let text = lines.join("\n").trim().to_string();
+                    return Ok(if text.is_empty() { None } else { Some(text) });
+                }
+                // Backspace
+                (KeyCode::Backspace, _) => {
+                    if let Some(current_line) = lines.last_mut() {
+                        if !current_line.is_empty() {
+                            current_line.pop();
+                            eprint!("\x08 \x08");
+                            stderr.flush().ok();
+                        } else if lines.len() > 1 {
+                            lines.pop();
+                            let prev = lines.last().unwrap();
+                            eprint!("\x1b[A\r> {}\x1b[K", prev);
+                            stderr.flush().ok();
+                        }
+                    }
+                }
+                // Regular character
+                (KeyCode::Char(c), _) => {
+                    if let Some(current_line) = lines.last_mut() {
+                        current_line.push(c);
+                        eprint!("{}", c);
+                        stderr.flush().ok();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Find a unique path for a spec file, incrementing suffix if needed
 fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
     // Ensure base directory exists
@@ -255,24 +349,45 @@ fn run_spec(
 ) -> Result<()> {
     let timestamp = chrono::Utc::now();
 
-    // Determine spec file path, initial idea, and user-provided guidance text
-    let (spec_path, initial_idea, is_new, user_text) = match &mode {
-        SpecMode::Edit { path, text } => (path.clone(), String::new(), false, text.clone()),
+    // Determine spec file path, initial idea, and args-provided text
+    let (spec_path, is_new, args_idea, args_text) = match &mode {
+        SpecMode::Edit { path, text } => {
+            (path.clone(), false, String::new(), text.clone())
+        }
         SpecMode::CreateAtPath { path, initial_idea, text } => {
-            // Combine initial_idea from filename with any additional text
-            let combined_idea = if text.is_empty() {
-                initial_idea.clone()
-            } else if initial_idea.is_empty() {
-                text.clone()
-            } else {
-                format!("{}: {}", initial_idea, text)
-            };
-            (path.clone(), combined_idea, true, text.clone())
+            (path.clone(), true, initial_idea.clone(), text.clone())
         }
         SpecMode::Autogen { description, slug } => {
             let path = cwd.join("ops/now").join(format!("{}.md", slug));
-            (path, description.clone(), true, String::new())
+            (path, true, description.clone(), String::new())
         }
+    };
+
+    // Prompt for guidance text interactively if:
+    // 1. No text was provided as trailing args
+    // 2. We're running from a terminal (interactive)
+    // 3. Not in autogen mode (where the description already serves as guidance)
+    let user_text = if args_text.is_empty()
+        && !matches!(mode, SpecMode::Autogen { .. })
+        && io::stdin().is_terminal()
+    {
+        let header = if args_idea.is_empty() {
+            format!("Spec: {}", spec_path.display())
+        } else {
+            format!("Spec: {} ({})", spec_path.display(), args_idea)
+        };
+        prompt_multiline_input(&header)?.unwrap_or_default()
+    } else {
+        args_text
+    };
+
+    // Build initial_idea from filename idea + user text
+    let initial_idea = if user_text.is_empty() {
+        args_idea
+    } else if args_idea.is_empty() {
+        user_text.clone()
+    } else {
+        format!("{}: {}", args_idea, user_text)
     };
 
     // Parse agent if provided
