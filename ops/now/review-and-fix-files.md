@@ -7,11 +7,13 @@
 
 **Related Documents**:
 - [Fix Targets Original Task](../now/fix-original-task.md) - Task-targeted fix (prerequisite)
+- [Composable Task Templates](composable-task-templates.md) - Template composition with `{% subtask %}` (prerequisite)
 - [Template Conditionals](../now/template-conditionals.md) - Conditional logic for templates (implemented)
 - [Task Templates](../done/task-templates.md) - Template system (implemented)
 
 **Prerequisites**:
 - Template conditionals (implemented in `cli/src/tasks/templates/conditionals.rs`)
+- Composable task templates (in progress - needed for specialized review templates)
 - Fix targets original task (in progress)
 
 ---
@@ -119,9 +121,9 @@ data:
   task_ids: [abc123, def456]
 ```
 
-### Unified Review Template
+### Unified Review Template with Composable Subtasks
 
-The `aiki/review` template uses conditionals to adapt:
+The `aiki/review` template uses **composable task templates** (via `{% subtask %}`) to delegate to specialized review templates based on target type:
 
 ```markdown
 ---
@@ -136,128 +138,77 @@ Review the target for quality and readiness.
 # Subtasks
 
 ## Understand what you're reviewing
+Identify the target type and review approach.
 
-{% if data.target_type == "file" and data.review_mode == "implementation" %}
-You're reviewing the **current codebase implementation** described in spec `{{data.path}}`.
+{% subtask aiki/review/spec if data.file_type == "spec" and data.review_mode == "document" %}
+{% subtask aiki/review/implementation if data.file_type == "spec" and data.review_mode == "implementation" %}
+{% subtask aiki/review/code if data.target_type == "task" %}
+{% subtask aiki/review/session if data.target_type == "session" %}
 
-First, read the spec to understand what should be implemented:
-1. Read `{{data.path}}` to understand the requirements and design
-2. Identify what files/modules/functions should exist based on the spec
-3. Explore the current codebase to find the relevant implementation
-4. Read the actual code to understand what currently exists
-
-Summarize:
-- What the spec describes
-- What you found in the codebase
-- Whether the current implementation matches the spec
-- What's missing or different from the spec
-{% elif data.target_type == "file" %}
-Read the file at `{{data.path}}` to understand:
-- What is this document about?
-- What problem does it solve?
-- Who is the audience?
-
-Summarize the document's purpose and scope.
-{% elif data.target_type == "task" %}
-Examine the code changes:
-1. `aiki task show {{data.task_id}} --with-source` - Understand intent
-2. `aiki task diff {{data.task_id}}` - View all changes
-
-Summarize:
-- What files were changed
-- What functionality was added/modified
-- The scope and intent of the changes
-{% else %}
-Review all completed work in the session:
-1. List closed tasks: `aiki task list --status closed`
-2. For each task, run `aiki task diff <id>`
-
-Summarize the overall changes made in this session.
-{% endif %}
-
-## Evaluate quality
-
-{% if data.target_type == "file" and data.review_mode == "implementation" %}
-Review the **current implementation against the spec**:
-
-**Spec Coverage:**
-- Does the current codebase fulfill all requirements from the spec?
-- Are there missing features or partial implementations?
-- Are there extra features not in the spec (scope creep)?
-- Is the implementation complete or still in progress?
-
-**Code Quality:**
-- Logic errors and edge cases
-- Incorrect assumptions
-- Missing error handling
-- Resource leaks
-- Code clarity and maintainability
-
-**Security:**
-- Injection vulnerabilities (SQL, command, XSS)
-- Authentication/authorization issues
-- Data exposure risks
-
-**Spec Alignment:**
-- Does the UX match what was specified?
-- Are command syntaxes as designed?
-- Are error messages as defined in the spec?
-- Are acceptance criteria met?
-- Does the implementation follow the spec's architecture?
-{% elif data.target_type == "file" %}
-Review the document for:
-
-**Completeness:**
-- Are all required sections present and filled out?
-- Are there any TODOs or placeholder text?
-- Are open questions documented?
-
-**Clarity:**
-- Are requirements unambiguous?
-- Are there clear acceptance criteria?
-- Could another engineer implement this without asking questions?
-
-**Implementability:**
-- Can this be decomposed into concrete tasks?
-- Are technical details sufficient?
-- Are dependencies identified?
-
-**UX:**
-- Is the user experience considered?
-- Are command syntaxes intuitive?
-- Are error scenarios and messages defined?
-{% else %}
-Review the code for:
-
-**Correctness:**
-- Logic errors and edge cases
-- Incorrect assumptions
-- Missing error handling
-
-**Quality:**
-- Resource leaks
-- Null/undefined checks
-- Code clarity and maintainability
-
-**Security:**
-- Injection vulnerabilities (SQL, command, XSS)
-- Authentication/authorization issues
-- Data exposure risks
-
-**Performance:**
-- Inefficient algorithms
-- Unnecessary operations
-- Resource usage concerns
-{% endif %}
-
-For each issue found, add a comment describing the problem and suggested fix:
-
-```bash
-aiki task comment {{task.parent_id}} "<description of issue and suggested fix>"
+## Provide feedback
+Leave comments on issues found using `aiki task comment`.
 ```
 
-Add comments as you find issues, don't wait until the end.
+**How it works:**
+- The unified template conditionally includes specialized review templates
+- Each specialized template brings its own subtasks with domain-specific evaluation criteria
+- Templates inherit variables from parent context (`data.*`, `source.*`, etc.)
+- Agent sees a nested task tree with appropriate review steps for the target type
+
+**Specialized review templates:**
+
+1. **`aiki/review/spec`** - Review spec documents for completeness, clarity, implementability
+2. **`aiki/review/implementation`** - Review current codebase implementation against a spec
+3. **`aiki/review/code`** - Review code changes from a task (existing behavior)
+4. **`aiki/review/session`** - Review all closed tasks in a session (existing behavior)
+
+Each specialized template is a complete template with its own parent name and subtasks, which get composed into the parent review task tree.
+
+### How Composable Templates Work for Reviews
+
+**Subtask Resolution:**
+
+When the template engine encounters `{% subtask aiki/review/spec if data.file_type == "spec" %}`:
+
+1. Evaluate the condition (`if data.file_type == "spec"`)
+2. If true, load the referenced template (`aiki/review/spec`)
+3. Child template inherits parent's full variable context (`data.*`, `source.*`, etc.)
+4. Resolve the child template's parent name (becomes the composed subtask name)
+5. Create the composed subtask in the task tree
+6. Recursively create the child template's subtasks as sub-subtasks
+
+**Task Tree Example:**
+
+For `aiki review ops/now/feature.md` (spec document), where `aiki/review/spec` has subtasks "Read document" and "Evaluate completeness":
+
 ```
+Review: ops/now/feature.md           (parent)
+├── Understand what you're reviewing (static subtask .0)
+├── Review Spec Document             (composed subtask .1, from {% subtask aiki/review/spec %})
+│   ├── Read document                (spec review subtask .1.1)
+│   └── Evaluate completeness        (spec review subtask .1.2)
+└── Provide feedback                 (static subtask .2)
+```
+
+**Variable Inheritance:**
+
+Child templates inherit all variables from the parent review template:
+
+| Variable | Available in child template |
+|----------|----------------------------|
+| `data.path` | Path to file being reviewed |
+| `data.file_type` | Type of file (e.g., "spec") |
+| `data.review_mode` | "document" or "implementation" |
+| `data.target_name` | Display name of review target |
+| `parent.*` | Points to composed subtask (not top-level review) |
+
+This allows specialized templates to reference context like `{{data.path}}` in their instructions without re-passing variables.
+
+**Benefits:**
+- **Modularity**: Each review type is a separate, reusable template
+- **Clarity**: Main review template is concise (just conditional includes)
+- **Maintainability**: Update spec review logic in one place (`aiki/review/spec`)
+- **Composability**: Can nest reviews or reuse templates in other contexts
 
 ### Review Criteria by Target Type
 
@@ -526,9 +477,23 @@ xqrmnpst
 - When `--implementation` is used with a file target, set `data.review_mode = "implementation"`
 - Agent will explore codebase based on spec content (no task lookup needed)
 
-### Phase 3: Adaptive Review Template
-- Update `aiki/review` template with conditionals
-- Add `review_mode` branches: `document` vs `implementation`
+### Phase 3: Specialized Review Templates
+- Create `.aiki/templates/aiki/review/spec.md` for spec document reviews
+- Create `.aiki/templates/aiki/review/implementation.md` for implementation vs spec reviews
+- Create `.aiki/templates/aiki/review/code.md` for task code reviews (extract existing logic)
+- Create `.aiki/templates/aiki/review/session.md` for session reviews (extract existing logic)
+
+**Template structure:**
+
+Each specialized template should be a complete, standalone template with:
+- Frontmatter (`version`, `type: review`)
+- Parent task name (e.g., `# Review Spec Document`)
+- Subtasks specific to that review type
+- Clear instructions that reference inherited variables (`{{data.path}}`, `{{data.task_id}}`, etc.)
+
+### Phase 3b: Composable Review Template
+- Update `aiki/review` template to use `{% subtask %}` with conditionals
+- Include appropriate specialized template based on `data.file_type` and `data.review_mode`
 - Test with both code and file targets, with and without `--implementation`
 
 ### Phase 4: Fix for File Targets
@@ -567,9 +532,11 @@ xqrmnpst
 ## Future Enhancements
 
 - **Smart file type detection** - Auto-detect specs vs docs vs readmes from path/content
-- **Non-markdown files** - Review code, config, scripts directly
+- **Non-markdown files** - Review code, config, scripts directly (new specialized templates)
 - **Related file detection** - Auto-include tests/docs when reviewing code
 - **Review history tracking** - Quality trends and common issues over time
 - **Batch reviews** - Review multiple files with glob patterns
-- **Per-directory templates** - Different review criteria per codebase section
+- **Per-directory templates** - Different review criteria per codebase section (composable templates make this easy)
 - **Spec quality gate hook** - Block `aiki plan` until spec review passes
+- **Custom review templates** - Users can define their own specialized review templates for domain-specific needs
+- **Review template composition** - Chain multiple specialized reviews (e.g., `{% subtask aiki/review/security %}` + `{% subtask aiki/review/performance %}`)

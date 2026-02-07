@@ -9,6 +9,10 @@
 - [Template Conditionals](../done/template-conditionals.md) - `{% if %}` syntax
 - [Template Loops](../done/template-loops.md) - `{% for %}` syntax
 - [Plan and Build Commands](../done/plan-and-build-commands.md) - Current composition via CLI
+- [Review and Fix Non-Task Targets](review-and-fix-files.md) - Adaptive review workflows using specialized templates
+
+**Future Enhancements**:
+- [Custom Variables for Subtask Templates](../future/custom-variables-for-subtask-templates.md) - `with` clause for passing variables to composed templates
 
 ---
 
@@ -22,36 +26,29 @@ Composable templates let a template reference another complete template as a sub
 
 ## Motivation
 
-### Current workaround: CLI-level composition
+Templates today are standalone: each defines a flat parent + subtasks structure. To reuse template logic, you need to compose templates together.
 
-`build.md` currently composes with `plan.md` by shelling out:
-
-```markdown
-{% if not data.plan %}
-### Create Plan
-No existing plan. Create one using the plan command:
-aiki plan {{data.spec}}
-{% endif %}
-```
-
-Problems with this approach:
-1. **Fragile** — relies on agents correctly parsing CLI output and extracting task IDs
-2. **Opaque** — the template doesn't declare its dependencies; you must read instructions to discover them
-3. **No type safety** — mismatched variables between templates aren't caught until runtime
-4. **Agent-dependent** — the composition logic runs inside the agent's session, not in the template engine
-
-### What composable templates enable
+**Composable templates** let a template reference another complete template as a subtask, creating a nested task tree:
 
 ```markdown
 # Subtasks
 
 {% subtask aiki/plan %}
 
-### Execute Subtasks
-...
+## Execute Subtasks
+Run through each plan subtask.
 ```
 
 The template engine handles creating the nested task tree. The agent sees a subtask called "Plan: feature.md" with its own sub-subtasks already created, ready to work through.
+
+**Conditional inclusion** lets templates adapt based on context:
+
+```markdown
+{% subtask aiki/review/spec if data.file_type == "spec" %}
+{% subtask aiki/review/code if data.file_type == "code" %}
+```
+
+This enables a single `aiki review` command to work across different content types by delegating to specialized templates.
 
 ---
 
@@ -65,65 +62,55 @@ Tera-style block tag, consistent with `{% if %}` and `{% for %}`:
 {% subtask <template-name> %}
 ```
 
-With optional variable overrides:
+With optional inline conditional (Jinja2-style):
 
 ```
-{% subtask <template-name> with key=value, key2=value2 %}
+{% subtask <template-name> if condition %}
 ```
 
-**`with` clause grammar:**
+**Grammar:**
 ```
-with_clause  := "with" assignment ("," assignment)*
-assignment   := identifier "=" value
-value        := quoted_string | variable_ref
-quoted_string := '"' ... '"'
-variable_ref  := identifier ("." identifier)*
+subtask      := "{% subtask" template_name [if_clause] "%}"
+template_name := identifier ("/" identifier)*
+if_clause    := "if" condition
+condition    := <same as {% if %} conditions>
 ```
 
-Values can be string literals (`"auth module"`) or variable references (`data.task_id`, `module.name`). Variable references are resolved against the current context at composition time.
+Composed subtasks inherit all variables from the parent template's context.
 
-### Examples
+### Example: Specialized Review Templates
 
-**Simple composition:**
+Different types of content need different review approaches. Using conditional subtask inclusion, a unified review workflow can delegate to specialized templates:
+
 ```markdown
-# My Workflow
+---
+version: 2.0.0
+type: review
+---
+
+# Review: {{data.target_name}}
+
+Review the target and provide feedback.
 
 # Subtasks
 
-{% subtask aiki/plan %}
+## Understand what you're reviewing
+Identify the target type and review approach.
 
-## Execute the plan
-Run through each plan subtask.
+{% subtask aiki/review/spec if data.file_type == "spec" %}
+{% subtask aiki/review/code if data.file_type == "code" %}
+{% subtask aiki/review/task if data.target_type == "task" %}
 
-{% subtask aiki/review %}
+## Provide feedback
+Leave comments on issues found.
 ```
 
-Creates:
-```
-My Workflow
-├── Plan: feature.md            (from aiki/plan, with its own subtasks)
-├── Execute the plan            (static subtask)
-└── Review: ...                 (from aiki/review, with its own subtasks)
-```
+**How it works:**
+- If reviewing a spec file (`data.file_type == "spec"`), include `aiki/review/spec` subtask (which has spec-specific evaluation criteria)
+- If reviewing code (`data.file_type == "code"`), include `aiki/review/code` subtask (which checks for bugs, style, tests)
+- If reviewing a task (`data.target_type == "task"`), include `aiki/review/task` subtask (which examines task changes)
 
-**With variable overrides:**
-```markdown
-{% subtask aiki/review with scope="auth module", scope_id=data.task_id %}
-```
-
-**Inside loops:**
-```markdown
-{% for module in data.modules %}
-{% subtask aiki/review with scope=module.name %}
-{% endfor %}
-```
-
-**Inside conditionals:**
-```markdown
-{% if data.needs_review %}
-{% subtask aiki/review %}
-{% endif %}
-```
+Each specialized template brings its own subtasks with domain-specific evaluation steps, but they all fit into the same parent review workflow.
 
 ---
 
@@ -192,7 +179,7 @@ Child templates inherit the parent's full `VariableContext`:
 
 | Variable namespace | Behavior |
 |---|---|
-| `data.*` | Inherited. `with` overrides take precedence. |
+| `data.*` | Inherited from parent |
 | `source.*` | Inherited from parent |
 | `parent.*` | Rebound to the **composed subtask**, not the top-level parent |
 | `id` | Set to the child subtask's generated ID |
@@ -203,11 +190,6 @@ Child templates inherit the parent's full `VariableContext`:
 # Parent template sets data.spec = "feature.md"
 {% subtask aiki/plan %}
 # Plan template sees: data.spec = "feature.md" (inherited)
-```
-
-```markdown
-{% subtask aiki/plan with spec="different.md" %}
-# Plan template sees: data.spec = "different.md" (overridden)
 ```
 
 ### Recursion Protection
@@ -221,87 +203,29 @@ Error: `Template cycle detected: aiki/build → aiki/plan → aiki/build`
 
 ---
 
-## Use Cases
+## Use Case: Adaptive Review Workflows
 
-### 1. Build workflow (current pain point)
+The primary use case is **specialized review templates** that adapt based on what's being reviewed:
 
-**Before** (CLI composition):
-```markdown
-### Create Plan
-aiki plan {{data.spec}}
-# Agent must parse output, extract ID, store it...
+**Problem:** Different content types (specs, code, tasks) need different review approaches, but you want a unified `aiki review` command that works for all of them.
+
+**Solution:** Use conditional subtask inclusion to delegate to specialized templates:
+
+```bash
+# Review a spec document
+aiki review ops/now/feature.md
+# → Creates review with aiki/review/spec subtask
+
+# Review task changes
+aiki review xqrmnpst
+# → Creates review with aiki/review/task subtask
+
+# Review code files
+aiki review src/auth.rs
+# → Creates review with aiki/review/code subtask
 ```
 
-**After** (template composition):
-```markdown
-{% subtask aiki/plan %}
-```
-
-### 2. Full development workflow
-
-```markdown
----
-version: 1.0.0
----
-
-# Dev: {{data.spec}}
-
-Complete development workflow: plan, build, review.
-
-# Subtasks
-
-{% subtask aiki/plan %}
-{% subtask aiki/build %}
-{% subtask aiki/review %}
-```
-
-### 3. Organization-specific workflows
-
-```markdown
----
-version: 1.0.0
----
-
-# Feature: {{data.name}}
-
-# Subtasks
-
-{% subtask aiki/spec %}
-
-## Design review
-Get team sign-off on the spec.
-
-{% subtask aiki/plan %}
-{% subtask aiki/build %}
-{% subtask myorg/security-review %}
-{% subtask aiki/review %}
-```
-
-### 4. Conditional composition
-
-```markdown
-# Subtasks
-
-{% subtask aiki/plan %}
-
-{% subtask aiki/build %}
-
-{% if data.needs_security_review %}
-{% subtask myorg/security-review %}
-{% endif %}
-
-{% subtask aiki/review %}
-```
-
-### 5. Loop-based composition
-
-```markdown
-# Subtasks
-
-{% for component in data.components %}
-{% subtask aiki/build with spec=component.spec %}
-{% endfor %}
-```
+The unified `aiki/review` template uses `{% subtask %}` with `if` conditions to include the appropriate specialized template based on `data.file_type` or `data.target_type` set by the CLI.
 
 ---
 
@@ -311,9 +235,9 @@ Get team sign-off on the spec.
 
 **Files:** `cli/src/tasks/templates/conditionals.rs`
 
-- Add `SubtaskRef` token: `{% subtask <name> %}` and `{% subtask <name> with k=v, ... %}`
-- Add `TemplateNode::SubtaskRef { template_name, overrides }` AST node
-- Emit marker during conditional processing: `<!-- AIKI_SUBTASK:template_name:json_overrides -->`
+- Add `SubtaskRef` token: `{% subtask <name> %}` and `{% subtask <name> if condition %}`
+- Add `TemplateNode::SubtaskRef { template_name, condition }` AST node
+- Emit marker during conditional processing: `<!-- AIKI_SUBTASK:template_name -->`
 
 ### Phase 2: Resolver — expand subtask markers
 
@@ -348,7 +272,7 @@ Get team sign-off on the spec.
 | Template not found | `Template 'myorg/missing' not found in {% subtask %} at line N` |
 | Cycle detected | `Template cycle detected: aiki/build → aiki/plan → aiki/build` |
 | Max depth exceeded | `Template composition depth limit (4) exceeded at 'aiki/deep'` |
-| Invalid `with` syntax | `Invalid {% subtask %} syntax at line N. Expected: {% subtask name with key=value %}` |
+| Invalid `if` syntax | `Invalid {% subtask %} syntax at line N. Expected: {% subtask name if condition %}` |
 | Missing required variable | Standard variable-not-found error, but with composition context in the message |
 
 ---
