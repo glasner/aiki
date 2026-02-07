@@ -29,9 +29,9 @@ use crate::tasks::{
 #[derive(Debug, Clone)]
 pub enum SpecMode {
     /// Edit an existing spec file
-    Edit { path: PathBuf },
+    Edit { path: PathBuf, text: String },
     /// Create a new spec at the specified path
-    CreateAtPath { path: PathBuf, initial_idea: String },
+    CreateAtPath { path: PathBuf, initial_idea: String, text: String },
     /// Create a new spec with an auto-generated filename
     Autogen { description: String, slug: String },
 }
@@ -76,6 +76,13 @@ fn determine_mode(cwd: &Path, args: &[String]) -> Result<SpecMode> {
         // Validate path is inside repo
         validate_path_in_repo(cwd, &path)?;
 
+        // Remaining args after the .md path become free-form guidance text
+        let text = if args.len() > 1 {
+            args[1..].join(" ")
+        } else {
+            String::new()
+        };
+
         if path.exists() {
             // Check it's a file, not a directory
             if !path.is_file() {
@@ -85,11 +92,11 @@ fn determine_mode(cwd: &Path, args: &[String]) -> Result<SpecMode> {
                 )));
             }
             // Edit mode
-            Ok(SpecMode::Edit { path })
+            Ok(SpecMode::Edit { path, text })
         } else {
             // Create at path mode - parse initial idea from filename
             let initial_idea = parse_idea_from_filename(&path);
-            Ok(SpecMode::CreateAtPath { path, initial_idea })
+            Ok(SpecMode::CreateAtPath { path, initial_idea, text })
         }
     } else {
         // Autogen mode - join all args as description
@@ -181,6 +188,37 @@ fn generate_slug(description: &str) -> String {
         .join("-")
 }
 
+/// Build a formatted user context block from initial idea and free-form text
+///
+/// Returns a markdown section if there's any user-provided context, or empty string if not.
+fn build_user_context(initial_idea: &str, user_text: &str) -> String {
+    let has_idea = !initial_idea.is_empty();
+    let has_text = !user_text.is_empty();
+
+    if !has_idea && !has_text {
+        return String::new();
+    }
+
+    let mut parts = Vec::new();
+
+    if has_idea && has_text {
+        // Both: idea is the title/topic, text is the guidance
+        parts.push(format!("**Topic:** {}", initial_idea));
+        parts.push(format!("\n**User guidance:**\n> {}", user_text.replace('\n', "\n> ")));
+    } else if has_idea {
+        // Only idea (from filename or description)
+        parts.push(format!("**Topic:** {}", initial_idea));
+    } else {
+        // Only text (edit mode with guidance)
+        parts.push(format!("**User guidance:**\n> {}", user_text.replace('\n', "\n> ")));
+    }
+
+    format!(
+        "\n## User Context\n\n{}\n",
+        parts.join("\n")
+    )
+}
+
 /// Find a unique path for a spec file, incrementing suffix if needed
 fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
     // Ensure base directory exists
@@ -217,13 +255,23 @@ fn run_spec(
 ) -> Result<()> {
     let timestamp = chrono::Utc::now();
 
-    // Determine spec file path and initial idea
-    let (spec_path, initial_idea, is_new) = match &mode {
-        SpecMode::Edit { path } => (path.clone(), String::new(), false),
-        SpecMode::CreateAtPath { path, initial_idea } => (path.clone(), initial_idea.clone(), true),
+    // Determine spec file path, initial idea, and user-provided guidance text
+    let (spec_path, initial_idea, is_new, user_text) = match &mode {
+        SpecMode::Edit { path, text } => (path.clone(), String::new(), false, text.clone()),
+        SpecMode::CreateAtPath { path, initial_idea, text } => {
+            // Combine initial_idea from filename with any additional text
+            let combined_idea = if text.is_empty() {
+                initial_idea.clone()
+            } else if initial_idea.is_empty() {
+                text.clone()
+            } else {
+                format!("{}: {}", initial_idea, text)
+            };
+            (path.clone(), combined_idea, true, text.clone())
+        }
         SpecMode::Autogen { description, slug } => {
             let path = cwd.join("ops/now").join(format!("{}.md", slug));
-            (path, description.clone(), true)
+            (path, description.clone(), true, String::new())
         }
     };
 
@@ -267,6 +315,7 @@ fn run_spec(
             &spec_path,
             &initial_idea,
             is_new,
+            &user_text,
             template_name.as_deref().unwrap_or("aiki/spec"),
             agent_type.as_ref().map(|a| a.as_str().to_string()),
             timestamp,
@@ -379,6 +428,7 @@ fn create_spec_task(
     spec_path: &Path,
     initial_idea: &str,
     is_new: bool,
+    user_text: &str,
     template_name: &str,
     assignee: Option<String>,
     timestamp: chrono::DateTime<chrono::Utc>,
@@ -396,6 +446,11 @@ fn create_spec_task(
     variables.set_data("spec_path", &spec_path.display().to_string());
     variables.set_data("is_new", if is_new { "true" } else { "false" });
     variables.set_data("initial_idea", initial_idea);
+    variables.set_data("user_text", user_text);
+
+    // Compose a formatted user_context block from initial_idea and user_text
+    let user_context = build_user_context(initial_idea, user_text);
+    variables.set_data("user_context", &user_context);
 
     // Set parent.id placeholder - it will be replaced after we generate the actual parent ID
     variables.set_parent("id", PARENT_ID_PLACEHOLDER);
@@ -576,8 +631,37 @@ mod tests {
         let mode = determine_mode(temp_dir.path(), &["existing.md".to_string()]).unwrap();
 
         match mode {
-            SpecMode::Edit { path } => {
+            SpecMode::Edit { path, text } => {
                 assert_eq!(path, spec_path);
+                assert_eq!(text, "");
+            }
+            _ => panic!("Expected Edit mode"),
+        }
+    }
+
+    #[test]
+    fn test_determine_mode_edit_with_text() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let spec_path = temp_dir.path().join("existing.md");
+        fs::write(&spec_path, "# Existing Spec").unwrap();
+
+        let mode = determine_mode(
+            temp_dir.path(),
+            &[
+                "existing.md".to_string(),
+                "add".to_string(),
+                "rate".to_string(),
+                "limiting".to_string(),
+            ],
+        )
+        .unwrap();
+
+        match mode {
+            SpecMode::Edit { path, text } => {
+                assert_eq!(path, spec_path);
+                assert_eq!(text, "add rate limiting");
             }
             _ => panic!("Expected Edit mode"),
         }
@@ -592,9 +676,39 @@ mod tests {
         let mode = determine_mode(temp_dir.path(), &["new-feature.md".to_string()]).unwrap();
 
         match mode {
-            SpecMode::CreateAtPath { path, initial_idea } => {
+            SpecMode::CreateAtPath { path, initial_idea, text } => {
                 assert_eq!(path, temp_dir.path().join("new-feature.md"));
                 assert_eq!(initial_idea, "New Feature");
+                assert_eq!(text, "");
+            }
+            _ => panic!("Expected CreateAtPath mode"),
+        }
+    }
+
+    #[test]
+    fn test_determine_mode_create_at_path_with_text() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        let mode = determine_mode(
+            temp_dir.path(),
+            &[
+                "jwt-auth.md".to_string(),
+                "JWT".to_string(),
+                "auth".to_string(),
+                "with".to_string(),
+                "refresh".to_string(),
+                "tokens".to_string(),
+            ],
+        )
+        .unwrap();
+
+        match mode {
+            SpecMode::CreateAtPath { path, initial_idea, text } => {
+                assert_eq!(path, temp_dir.path().join("jwt-auth.md"));
+                assert_eq!(initial_idea, "Jwt Auth");
+                assert_eq!(text, "JWT auth with refresh tokens");
             }
             _ => panic!("Expected CreateAtPath mode"),
         }
@@ -630,5 +744,33 @@ mod tests {
 
         let result = determine_mode(temp_dir.path(), &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_user_context_empty() {
+        assert_eq!(build_user_context("", ""), "");
+    }
+
+    #[test]
+    fn test_build_user_context_idea_only() {
+        let result = build_user_context("Dark Mode", "");
+        assert!(result.contains("**Topic:** Dark Mode"));
+        assert!(!result.contains("User guidance"));
+    }
+
+    #[test]
+    fn test_build_user_context_text_only() {
+        let result = build_user_context("", "Add rate limiting to the API");
+        assert!(result.contains("**User guidance:**"));
+        assert!(result.contains("> Add rate limiting to the API"));
+        assert!(!result.contains("**Topic:**"));
+    }
+
+    #[test]
+    fn test_build_user_context_both() {
+        let result = build_user_context("JWT Auth", "with refresh tokens and rate limiting");
+        assert!(result.contains("**Topic:** JWT Auth"));
+        assert!(result.contains("**User guidance:**"));
+        assert!(result.contains("> with refresh tokens and rate limiting"));
     }
 }

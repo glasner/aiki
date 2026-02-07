@@ -134,7 +134,9 @@ enum Commands {
     Build(commands::build::BuildArgs),
     /// Interactive spec authoring with AI agent
     Spec {
-        /// Path to spec file or description text (variadic - quotes optional)
+        /// Path to spec file and/or description text (variadic - quotes optional).
+        /// Examples: `aiki spec feature.md`, `aiki spec feature.md add JWT auth`,
+        /// `aiki spec Add user authentication`
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
         /// Spec template to use (default: aiki/spec)
