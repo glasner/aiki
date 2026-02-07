@@ -194,6 +194,26 @@ impl AgentSpawnOptions {
         self.agent_override = Some(agent);
         self
     }
+
+    /// Build the task prompt with instructions for autonomous work
+    #[must_use]
+    pub fn task_prompt(&self) -> String {
+        format!(
+            r#"You are assigned task `{id}`. Work autonomously until ALL work is complete.
+
+SCOPE: ONLY work on task `{id}` and its subtasks. Do NOT start, pick up, or work on any other tasks from the backlog. Ignore the ready queue entirely — it is not your concern. When your task (and all its subtasks) are closed, you are done.
+
+WORKFLOW:
+1. Run `aiki task start {id}` to begin
+2. Run `aiki task show {id}` to read the task details and instructions
+3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
+4. Closing a subtask auto-starts the next one — read the <started> block in the close output for your next task and its instructions
+5. When ALL subtasks are closed, the parent task auto-starts for you to do a final review
+
+CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence. When the parent auto-starts, do a final review and close it. Only stop if you are genuinely blocked on something."#,
+            id = self.task_id
+        )
+    }
 }
 
 /// Trait for agent runtime implementations

@@ -128,6 +128,10 @@ enum Commands {
     },
     /// Create and run code review tasks
     Review(commands::review::ReviewArgs),
+    /// Create an implementation plan from a spec file
+    Plan(commands::plan::PlanArgs),
+    /// Build from a spec file (create plan and execute all subtasks)
+    Build(commands::build::BuildArgs),
     /// Interactive spec authoring with AI agent
     Spec {
         /// Path to spec file or description text (variadic - quotes optional)
@@ -234,6 +238,8 @@ fn run() -> Result<()> {
             agent,
         } => commands::fix::run(task_id, run_async, start, template, agent),
         Commands::Review(args) => commands::review::run(args),
+        Commands::Plan(args) => commands::plan::run(args),
+        Commands::Build(args) => commands::build::run(args),
         Commands::Spec {
             args,
             template,

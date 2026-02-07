@@ -475,6 +475,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             name,
             priority,
             assignee,
+            data,
             timestamp,
         } => {
             add_metadata("event", "updated", &mut lines);
@@ -494,6 +495,11 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 }
             }
             // If assignee is None, we don't write anything (no change)
+            if let Some(data) = data {
+                for (key, value) in data {
+                    add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
+                }
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
     }
@@ -717,11 +723,23 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 }
             });
 
+            // Parse data fields (key:value pairs) - None if no data= lines present
+            let data = fields.get("data").map(|v| {
+                v.iter()
+                    .filter_map(|s| {
+                        let s = unescape_metadata_value(s);
+                        let (key, value) = s.split_once(':')?;
+                        Some((key.to_string(), value.to_string()))
+                    })
+                    .collect()
+            });
+
             Some(TaskEvent::Updated {
                 task_id,
                 name,
                 priority,
                 assignee,
+                data,
                 timestamp,
             })
         }
@@ -1407,6 +1425,7 @@ timestamp=2026-01-09T10:30:00Z
             name: Some("New name".to_string()),
             priority: None,
             assignee: None,
+            data: None,
             timestamp,
         };
 
@@ -1425,6 +1444,7 @@ timestamp=2026-01-09T10:30:00Z
                     priority: p1,
                     assignee: a1,
                     timestamp: t1,
+                    ..
                 },
                 TaskEvent::Updated {
                     task_id: id2,
@@ -1432,6 +1452,7 @@ timestamp=2026-01-09T10:30:00Z
                     priority: p2,
                     assignee: a2,
                     timestamp: t2,
+                    ..
                 },
             ) => {
                 assert_eq!(id1, id2);
@@ -1455,6 +1476,7 @@ timestamp=2026-01-09T10:30:00Z
             name: None,
             priority: Some(TaskPriority::P0),
             assignee: None,
+            data: None,
             timestamp,
         };
 
@@ -1492,6 +1514,7 @@ timestamp=2026-01-09T10:30:00Z
             name: Some("Updated name".to_string()),
             priority: Some(TaskPriority::P1),
             assignee: None,
+            data: None,
             timestamp: Utc::now(),
         };
 
@@ -1529,6 +1552,7 @@ timestamp=2026-01-09T10:30:00Z
             name: Some("Name = special\nwith newlines".to_string()),
             priority: None,
             assignee: None,
+            data: None,
             timestamp: Utc::now(),
         };
 
@@ -1684,6 +1708,7 @@ timestamp=2026-01-09T10:30:00Z
             name: Some("New task name".to_string()),
             priority: Some(TaskPriority::P1),
             assignee: None,
+            data: None,
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

@@ -42,12 +42,12 @@ Creates an implementation plan (task with subtasks) from a spec file. Returns im
 
 ```bash
 aiki plan <spec-path> [options]       # Create plan from spec
-aiki plan show <spec-path>            # Show existing plan
-aiki plan edit <plan-id>              # Edit plan subtasks (future)
+aiki plan show <spec-path-or-plan-id>      # Show existing plan
 ```
 
 **Arguments:**
 - `<spec-path>` - Path to spec file (e.g., `ops/now/my-feature.md`)
+- `<spec-path-or-plan-id>` - Spec file path or plan task ID (32 lowercase letters)
 
 **Options:**
 - `--restart` - Ignore existing plan, create new one from scratch
@@ -74,13 +74,16 @@ aiki plan ops/now/add-auth.md
 # Output: plan_id="xyxkluynlnonltwtprxupswknoquuvnz"
 
 # Review the plan
-aiki task show xyxkluynlnonltwtprxupswknoquuvnz
+aiki plan show xyxkluynlnonltwtprxupswknoquuvnz
 
 # Start working on first subtask
-aiki task start xyxkluynlnonltwtprxupswknoquuvnz.1
+aiki task start xyxkluynlnonltwtprxupswknoquuvnz
 
-# Check plan status
+# Check plan status (by spec path)
 aiki plan show ops/now/add-auth.md
+
+# Check plan status (by plan ID)
+aiki plan show xyxkluynlnonltwtprxupswknoquuvnz
 
 # Create fresh plan (ignore existing)
 aiki plan ops/now/add-auth.md --restart
@@ -101,6 +104,7 @@ Plan created: nzwtoqqrluppzupttosl
   5. Update documentation
 
 Review: aiki task show nzwtoqqrluppzupttosl
+Execute: aiki build nzwtoqqrluppzupttosl
 
 # Step 2: Review and modify if needed
 $ aiki task show nzwtoqqrluppzupttosl
@@ -134,8 +138,8 @@ Plan created: nzwtoqqrluppzupttosl
   4. Write tests
   5. Update documentation
 
-Review: aiki task show nzwtoqqrluppzupttosl
-Start:  aiki task start nzwtoqqrluppzupttosl.1
+Review:  aiki task show nzwtoqqrluppzupttosl
+Execute: aiki build nzwtoqqrluppzupttosl
 ```
 
 ### Existing Plan Handling
@@ -349,17 +353,17 @@ aiki build show ops/now/feature.md
 
 ### Two-Phase Workflow: Plan then Build
 
-If you want to review before executing with `aiki build`:
+If you want to review before executing:
 
 ```bash
-# Phase 1: Create the plan (using aiki plan)
+# Phase 1: Create the plan
 aiki plan ops/now/feature.md
 # Output: plan_id="nzwtoqqrluppzupttosl"
 
-# Phase 2: Review
-aiki task show nzwtoqqrluppzupttosl
+# Phase 2: Review the plan
+aiki plan show nzwtoqqrluppzupttosl
 
-# Phase 3: Execute the plan (using aiki build)
+# Phase 3: Execute the plan
 aiki build nzwtoqqrluppzupttosl
 ```
 
@@ -457,85 +461,61 @@ Choice [1-2]:
 ---
 version: 1.0.0
 type: build
-assignee: claude-code
 ---
 
 # Build: {{data.spec}}
 
-**Overall Goal**: Create or find the implementation plan, then execute all subtasks.
+**Overall Goal**: Execute plan to implement the spec.
 
-## Find or Create Plan
+## Subtasks
 
-{% if data.plan %}
-Plan already exists: {{data.plan}}
-
-Verify the plan task exists and has subtasks.
-{% else %}
-No existing plan. Create one by reading the spec file at `{{data.spec}}`.
-
-**Step 1: Read and understand the spec**
-
-Examine the spec to understand:
-- What is the goal/vision?
-- What are the requirements?
-- What are the constraints?
-- Are there open questions that need resolving?
-
-Identify the implementation steps needed. Each step should be a coherent, testable change.
-
-**Step 2: Create the plan task**
-
-Create the plan task (a container for subtasks):
+{% if not data.plan %}
+### Create Plan
+No existing plan. Create one using the plan command:
 
 ```bash
-aiki task add "Plan: <spec title from the spec file>" \
-  --source task:{{task.id}} \
-  --source file:{{data.spec}} \
-  --data spec={{data.spec}}
+aiki plan {{data.spec}}
 ```
 
-The command outputs the task ID on stdout. Capture this as the plan task ID.
+This command will:
+- Read and analyze the spec file
+- Create a plan task with subtasks
+- Output the plan task ID
 
-**Spec title extraction:** Use the first H1 heading (`# Title`) from the spec file. If no H1 found, use the filename without extension (e.g., `my-feature.md` → "my-feature").
-
-**Step 3: Add implementation subtasks**
-
-For each implementation step identified, create a subtask under the plan task:
+Capture the plan task ID and store it in the task metadata:
 
 ```bash
-aiki task add "<step description>" --parent <plan_task_id>
-```
+# Capture plan ID (from XML output: <aiki_plan plan_id="..."/>)
+PLAN_ID=<extracted-plan-id>
 
-Guidelines for subtasks:
-- Each subtask should be a discrete, actionable step
-- Include enough context in names for the executing agent
-- Order subtasks logically (dependencies first)
+# Store it in build task data for future reference
+aiki task update {{task.id}} --data plan=$PLAN_ID
+```
 {% endif %}
 
-## Execute Subtasks
+### Execute Subtasks
 
 Execute each subtask of the plan task sequentially:
 
 ```bash
-aiki task run <plan_task_id>.1
-aiki task run <plan_task_id>.2
-aiki task run <plan_task_id>.3
+aiki task run <plan_task_id>.<subtask number>)
 ...
 ```
 
-Run them in order. If a subtask fails, stop and report the failure - don't continue.
+Run them in order. If a subtask fails do not continue, stop and report the failure using the following command:
 
-As you complete each subtask, add a progress comment:
 ```bash
-aiki task comment {{task.id}} "Completed subtask N of M"
+aiki task stop {{task.id}} --comment "Failed subtask <subtask_number>: <reason>"
 ```
 
-## Close Build Task
+...
+
+### Close Build Task
 
 When all plan subtasks are complete, close this build task:
 
 ```bash
-aiki task close --comment "Build completed: all N subtasks done. Plan task: <plan_task_id>"
+aiki task close {{task.id}} --comment "Build completed: all N subtasks done. Plan task: <plan_task_id>"
 ```
 ```
 
@@ -641,7 +621,8 @@ Plan Task (persistent)
    - After successful undo: close old plan as `wont_do`, create new plan
 
 4. **Plan show implementation:**
-   - Query for plan task with `data.spec=<spec-path>` (most recent)
+   - If argument is 32 lowercase letters → plan task ID (direct lookup)
+   - Otherwise → spec path (query for plan task with `data.spec=<spec-path>`, most recent)
    - Display plan with subtask status
 
 ### `aiki build` Implementation
@@ -689,9 +670,10 @@ Plan Task (persistent)
 - Task query by `data.<key>=<value>` OR `source: file:<path>` must exist to find tasks by spec path
 - [Template conditionals](template-conditionals.md) must be implemented (for `{% if %}` syntax in build template)
 - [`aiki task undo`](task-undo-command.md) must be implemented for file revert functionality
+- `aiki task update --data <key>=<value>` must be implemented to store plan ID in build task
 - `aiki task update --blocked-by <task-id>` for subtask dependencies (optional for v1)
 
-**Note:** Task data is passed at creation time via `--data key=value` (already supported by `aiki task add`).
+**Note:** Task data can be set at creation time via `aiki task add --data key=value` (already supported) or updated later via `aiki task update --data key=value` (needs implementation).
 
 ---
 

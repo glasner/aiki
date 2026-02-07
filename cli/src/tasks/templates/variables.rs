@@ -82,7 +82,7 @@ pub struct VariableContext {
     /// Source variable (accessible as {source})
     pub source: Option<String>,
     /// Source data variables (accessible as {source.key})
-    /// Populated by parsing the source string (e.g., "task:abc123" → source.task_id = "abc123")
+    /// Populated by parsing the source string (e.g., "task:abc123" → source.id = "abc123")
     pub source_data: HashMap<String, String>,
     /// Parent task variables (accessible as {parent.key})
     /// Used when creating subtasks to reference parent task properties
@@ -122,25 +122,14 @@ impl VariableContext {
         // Format: "prefix:value" (e.g., "task:abc123", "file:ops/now/plan.md")
         if let Some((prefix, value)) = source_str.split_once(':') {
             match prefix {
-                "task" => {
-                    self.source_data.insert("task_id".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), "task".to_string());
+                "task" | "comment" | "issue" | "prompt" => {
+                    self.source_data.insert("id".to_string(), value.to_string());
+                    self.source_data.insert("type".to_string(), prefix.to_string());
                 }
                 "file" => {
+                    self.source_data.insert("id".to_string(), value.to_string());
                     self.source_data.insert("path".to_string(), value.to_string());
                     self.source_data.insert("type".to_string(), "file".to_string());
-                }
-                "comment" => {
-                    self.source_data.insert("comment_id".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), "comment".to_string());
-                }
-                "issue" => {
-                    self.source_data.insert("issue_id".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), "issue".to_string());
-                }
-                "prompt" => {
-                    self.source_data.insert("prompt_id".to_string(), value.to_string());
-                    self.source_data.insert("type".to_string(), "prompt".to_string());
                 }
                 _ => {
                     // Unknown prefix, just store the raw value
@@ -472,7 +461,7 @@ mod tests {
         ctx.set_source("task:abc123xyz");
 
         assert_eq!(ctx.resolve("source"), Some("task:abc123xyz".to_string()));
-        assert_eq!(ctx.resolve("source.task_id"), Some("abc123xyz".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("abc123xyz".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("task".to_string()));
     }
 
@@ -482,6 +471,7 @@ mod tests {
         ctx.set_source("file:ops/now/plan.md");
 
         assert_eq!(ctx.resolve("source"), Some("file:ops/now/plan.md".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("ops/now/plan.md".to_string()));
         assert_eq!(ctx.resolve("source.path"), Some("ops/now/plan.md".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("file".to_string()));
     }
@@ -491,7 +481,7 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("comment:c1a2b3c4");
 
-        assert_eq!(ctx.resolve("source.comment_id"), Some("c1a2b3c4".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("c1a2b3c4".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("comment".to_string()));
     }
 
@@ -500,7 +490,7 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("issue:GH-123");
 
-        assert_eq!(ctx.resolve("source.issue_id"), Some("GH-123".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("GH-123".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("issue".to_string()));
     }
 
@@ -509,7 +499,7 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("prompt:nzwtoqqr");
 
-        assert_eq!(ctx.resolve("source.prompt_id"), Some("nzwtoqqr".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("nzwtoqqr".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("prompt".to_string()));
     }
 
@@ -535,7 +525,7 @@ mod tests {
         let mut ctx = VariableContext::new();
         ctx.set_source("task:parent123");
 
-        let result = substitute("Child of task:{{source.task_id}}", &ctx).unwrap();
+        let result = substitute("Child of task:{{source.id}}", &ctx).unwrap();
         assert_eq!(result, "Child of task:parent123");
     }
 
@@ -545,26 +535,24 @@ mod tests {
 
         // Set source to a task
         ctx.set_source("task:abc123");
-        assert_eq!(ctx.resolve("source.task_id"), Some("abc123".to_string()));
+        assert_eq!(ctx.resolve("source.id"), Some("abc123".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("task".to_string()));
 
-        // Change source to a file - old task_id should be cleared
+        // Change source to a file - old id should update
         ctx.set_source("file:ops/plan.md");
+        assert_eq!(ctx.resolve("source.id"), Some("ops/plan.md".to_string()));
         assert_eq!(ctx.resolve("source.path"), Some("ops/plan.md".to_string()));
         assert_eq!(ctx.resolve("source.type"), Some("file".to_string()));
-        // task_id should no longer exist
-        assert_eq!(ctx.resolve("source.task_id"), None);
     }
 
     #[test]
     fn test_substitute_source_data_missing() {
         let ctx = VariableContext::new();
 
-        let result = substitute("Task ID: {{source.task_id}}", &ctx);
+        let result = substitute("Task ID: {{source.id}}", &ctx);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("source.task_id"));
-        assert!(err.to_string().contains("--source task:<id>"));
+        assert!(err.to_string().contains("source.id"));
     }
 
     #[test]

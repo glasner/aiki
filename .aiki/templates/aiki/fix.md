@@ -2,24 +2,24 @@
 version: 1.0.0
 ---
 
-# Followup: {{source.name}}
+# Followup: Review {{source.id}}
 
-Review task `{{source.id}}` found issues that need to be addressed.
+Review task `{{source.id}}` found issues in the original task `{{parent.id}}`.
 
 ## Instructions
 
 1. Read the review comments to understand what issues were found:
    ```bash
-   aiki task show {{source.id}}
+   aiki task show {{source.id}} --with-source
    ```
-🛑 Do NOT edit code before reading following:
+🛑 Do NOT edit code before reading above.
 
-2. Create a subtask for EACH issue found (use your current task ID as parent):
+2. Create a nested subtask for EACH issue found (use your current task ID as parent):
    ```bash
    aiki task add --parent {{id}} "Fix: <brief description of issue>"
    ```
 
-3. Start and work through each subtask, closing as you go:
+3. Start and work through each nested subtask, closing as you go:
    ```bash
    aiki task start {{id}}.1
    # ... do the work to fix the issue ...
@@ -28,11 +28,11 @@ Review task `{{source.id}}` found issues that need to be addressed.
    - **You MUST start each subtask before working on it**
    - Close with `--comment` when fixed
    - Close with `--wont-do --comment` if out of scope or adds too much complexity
-   - Continue until all subtasks are completed
+   - Continue until all nested subtasks are completed
 
-4. Return to the parent task and close it:
+4. Return to this fix subtask and close it:
    ```bash
-   aiki task close {{id}} --comment "Fixed all issues"
+   aiki task close {{id}} --comment <summary of fix>
    ```
 
-Important: Do NOT return without closing all subtasks and the parent task
+Important: Do NOT return without closing all nested subtasks and this fix subtask.

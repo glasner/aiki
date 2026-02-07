@@ -19,9 +19,8 @@ use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::xml::{escape_xml, XmlBuilder};
 use crate::tasks::{
-    find_task, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_tasks, read_events,
-    reassign_task, start_task_core, Task, TaskStatus,
+    find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
+    materialize_tasks, read_events, reassign_task, start_task_core, Task, TaskStatus,
 };
 
 /// Review subcommands (for list and show only)
@@ -70,9 +69,8 @@ pub struct ReviewArgs {
 
 /// Run the review command
 pub fn run(args: ReviewArgs) -> Result<()> {
-    let cwd = env::current_dir().map_err(|_| {
-        AikiError::InvalidArgument("Failed to get current directory".to_string())
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     // If a subcommand is provided, dispatch to it
     if let Some(subcommand) = args.subcommand {
@@ -133,8 +131,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     let (scope_name, scope_id, worker) = match params.task_id {
         Some(ref id) => {
             // Review specific task - worker is task's assignee
-            let task = find_task(&tasks, id)
-                .ok_or_else(|| AikiError::TaskNotFound(id.clone()))?;
+            let task = find_task(&tasks, id).ok_or_else(|| AikiError::TaskNotFound(id.clone()))?;
             let worker = task.assignee.as_deref();
             (task.name.clone(), id.clone(), worker.map(|s| s.to_string()))
         }
@@ -143,7 +140,10 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
             let (session_id, session_name, session_agent) = match &session {
                 Some(s) => (
                     Some(s.session_id.clone()),
-                    format!("session {}", &s.external_session_id[..8.min(s.external_session_id.len())]),
+                    format!(
+                        "session {}",
+                        &s.external_session_id[..8.min(s.external_session_id.len())]
+                    ),
                     Some(s.agent_type.as_str().to_string()),
                 ),
                 None => (None, "current session".to_string(), None),
@@ -178,12 +178,14 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     };
 
     // Determine assignee for review task
-    let assignee = params.agent_override
+    let assignee = params
+        .agent_override
         .or_else(|| Some(determine_reviewer(worker.as_deref())));
 
     // Create review task with subtasks from template
     let template = params.template.as_deref().unwrap_or("aiki/review");
-    let review_id = create_review_task_from_template(cwd, &scope_name, &scope_id, &assignee, template)?;
+    let review_id =
+        create_review_task_from_template(cwd, &scope_name, &scope_id, &assignee, template)?;
 
     Ok(CreateReviewResult {
         review_task_id: review_id,
@@ -212,11 +214,14 @@ fn run_review(
     };
 
     // Create review task using shared logic
-    let result = match create_review(cwd, CreateReviewParams {
-        task_id,
-        agent_override,
-        template: template_name,
-    }) {
+    let result = match create_review(
+        cwd,
+        CreateReviewParams {
+            task_id,
+            agent_override,
+            template: template_name,
+        },
+    ) {
         Ok(r) => r,
         Err(AikiError::NothingToReview) => {
             // Already output message in create_review
@@ -358,7 +363,12 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
         let outcome_str = review
             .closed_outcome
             .as_ref()
-            .map(|o| format!(" outcome=\"{}\"", escape_xml(&format!("{:?}", o).to_lowercase())))
+            .map(|o| {
+                format!(
+                    " outcome=\"{}\"",
+                    escape_xml(&format!("{:?}", o).to_lowercase())
+                )
+            })
             .unwrap_or_default();
 
         // Count comments with issues
@@ -391,8 +401,8 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
 
-    let task = find_task(&tasks, task_id)
-        .ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+    let task =
+        find_task(&tasks, task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
 
     // Verify it's a review task
     if task.task_type.as_deref() != Some("review") {
@@ -413,7 +423,12 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     let outcome_str = task
         .closed_outcome
         .as_ref()
-        .map(|o| format!(" outcome=\"{}\"", escape_xml(&format!("{:?}", o).to_lowercase())))
+        .map(|o| {
+            format!(
+                " outcome=\"{}\"",
+                escape_xml(&format!("{:?}", o).to_lowercase())
+            )
+        })
         .unwrap_or_default();
 
     // Get assignee
@@ -424,16 +439,14 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         .unwrap_or_default();
 
     // Build content
-    let mut content_lines = vec![
-        format!(
-            "  <review id=\"{}\" status=\"{}\"{}{}>\n    <name>{}</name>",
-            escape_xml(&task.id),
-            status_str,
-            outcome_str,
-            assignee_str,
-            escape_xml(&task.name)
-        ),
-    ];
+    let mut content_lines = vec![format!(
+        "  <review id=\"{}\" status=\"{}\"{}{}>\n    <name>{}</name>",
+        escape_xml(&task.id),
+        status_str,
+        outcome_str,
+        assignee_str,
+        escape_xml(&task.name)
+    )];
 
     // Add sources if any
     if !task.sources.is_empty() {
@@ -448,33 +461,9 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     if !task.comments.is_empty() {
         content_lines.push("    <issues>".to_string());
         for (idx, comment) in task.comments.iter().enumerate() {
-            let mut attrs = Vec::new();
-
-            // Extract structured data
-            if let Some(file) = comment.data.get("file") {
-                attrs.push(format!("file=\"{}\"", escape_xml(file)));
-            }
-            if let Some(line) = comment.data.get("line") {
-                attrs.push(format!("line=\"{}\"", escape_xml(line)));
-            }
-            if let Some(severity) = comment.data.get("severity") {
-                attrs.push(format!("severity=\"{}\"", escape_xml(severity)));
-            }
-            if let Some(category) = comment.data.get("category") {
-                attrs.push(format!("category=\"{}\"", escape_xml(category)));
-            }
-
-            let attrs_str = if attrs.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", attrs.join(" "))
-            };
-
-            // Use index-based ID for display since TaskComment doesn't have an id field
             content_lines.push(format!(
-                "      <issue n=\"{}\"{}>\n        {}\n      </issue>",
+                "      <issue n=\"{}\">\n        {}\n      </issue>",
                 idx + 1,
-                attrs_str,
                 escape_xml(&comment.text)
             ));
         }

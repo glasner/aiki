@@ -5,7 +5,7 @@
 //! - Custom templates: `.aiki/templates/{namespace}/`
 
 use crate::error::{AikiError, Result};
-use crate::tasks::{generate_task_id, write_event, TaskEvent, TaskPriority};
+use crate::tasks::TaskPriority;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,14 +119,14 @@ fn suggest_similar_templates(name: &str, templates_dir: &Path) -> String {
         .collect();
 
     if similar.is_empty() {
-        let all_names: Vec<_> = available.iter().map(|t| format!("    - {}", t.name)).collect();
+        let all_names: Vec<_> = available
+            .iter()
+            .map(|t| format!("    - {}", t.name))
+            .collect();
         if all_names.is_empty() {
             return String::new();
         }
-        return format!(
-            "\n\n  Available templates:\n{}",
-            all_names.join("\n")
-        );
+        return format!("\n\n  Available templates:\n{}", all_names.join("\n"));
     }
 
     let suggestions: Vec<_> = similar
@@ -137,7 +137,10 @@ fn suggest_similar_templates(name: &str, templates_dir: &Path) -> String {
         })
         .collect();
 
-    format!("\n\n  Did you mean one of these?\n{}", suggestions.join("\n"))
+    format!(
+        "\n\n  Did you mean one of these?\n{}",
+        suggestions.join("\n")
+    )
 }
 
 /// List all available templates
@@ -354,11 +357,6 @@ fn create_dynamic_subtasks(
         // Add {item.text} variable from comment.text
         subtask_ctx.set_item("text", &comment.text);
 
-        // Add structured data as {item.*} variables from the comment
-        for (key, value) in &comment.data {
-            subtask_ctx.set_item(key, value);
-        }
-
         // Copy parent data as {data.*} (accessible in subtasks for CLI-provided data)
         for (key, value) in &variables.data {
             subtask_ctx.set_data(key, value);
@@ -368,20 +366,24 @@ fn create_dynamic_subtasks(
         let name = substitute(&parsed.heading, &subtask_ctx)?;
         let instructions = substitute(&parsed.body, &subtask_ctx)?;
 
-        // Start with comment metadata as base data (persisted for later use)
-        let mut data: HashMap<String, serde_json::Value> = comment.data.iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect();
+        // Start with empty data map (no comment metadata)
+        let mut data: HashMap<String, serde_json::Value> = HashMap::new();
 
         // Apply frontmatter if present, with variable substitution
         let (priority, assignee, sources) = if let Some(ref fm) = parsed.frontmatter {
-            let priority = fm.priority.as_ref()
+            let priority = fm
+                .priority
+                .as_ref()
                 .map(|p| substitute(p, &subtask_ctx))
                 .transpose()?;
-            let assignee = fm.assignee.as_ref()
+            let assignee = fm
+                .assignee
+                .as_ref()
                 .map(|a| substitute(a, &subtask_ctx))
                 .transpose()?;
-            let sources: Vec<String> = fm.sources.iter()
+            let sources: Vec<String> = fm
+                .sources
+                .iter()
                 .map(|s| substitute(s, &subtask_ctx))
                 .collect::<Result<Vec<_>>>()?;
             // Substitute variables in frontmatter data values and merge into data
@@ -442,7 +444,7 @@ struct ParsedSubtaskTemplate {
 /// ## Fix: {data.file}:{data.line}
 /// ---
 /// sources:
-///   - task:{source.task_id}
+///   - task:{source.id}
 /// priority: p1
 /// ---
 ///
@@ -463,11 +465,13 @@ fn parse_subtask_template(content: &str) -> Result<Option<ParsedSubtaskTemplate>
                 let after_heading = after_heading.trim_start_matches('\n');
 
                 // Check if there's frontmatter after the heading
-                let (frontmatter, body) = super::parser::extract_yaml_frontmatter::<super::types::SubtaskFrontmatter>(after_heading)
-                    .map_err(|e| AikiError::TemplateFrontmatterInvalid {
-                        file: "(subtask template)".to_string(),
-                        details: e.to_string(),
-                    })?;
+                let (frontmatter, body) = super::parser::extract_yaml_frontmatter::<
+                    super::types::SubtaskFrontmatter,
+                >(after_heading)
+                .map_err(|e| AikiError::TemplateFrontmatterInvalid {
+                    file: "(subtask template)".to_string(),
+                    details: e.to_string(),
+                })?;
 
                 return Ok(Some(ParsedSubtaskTemplate {
                     heading,
@@ -531,9 +535,8 @@ pub fn expand_loops(
         }
 
         // Find the first loop marker
-        let loop_start_pattern = Regex::new(
-            r"<!-- AIKI_LOOP:([a-z_][a-z0-9_]*):([^\s]+) -->\n?"
-        ).expect("Invalid regex");
+        let loop_start_pattern = Regex::new(r"<!-- AIKI_LOOP:([a-z_][a-z0-9_]*):([^\s]+) -->\n?")
+            .expect("Invalid regex");
 
         let Some(caps) = loop_start_pattern.captures(&result) else {
             // No more loops to process
@@ -570,9 +573,7 @@ pub fn expand_loops(
         // Get the data for this collection (known collection, may be empty or absent)
         let items = data_sources.get(&collection_name);
         let expanded = match items {
-            Some(items) if !items.is_empty() => {
-                expand_loop_body(&variable_name, loop_body, items)?
-            }
+            Some(items) if !items.is_empty() => expand_loop_body(&variable_name, loop_body, items)?,
             _ => {
                 // Collection is known but empty or not provided, use else body if present
                 else_body.unwrap_or_default()
@@ -580,9 +581,7 @@ pub fn expand_loops(
         };
 
         // Replace the loop marker with expanded content
-        result = result[..loop_start_match.start()].to_string()
-            + &expanded
-            + &result[full_end..];
+        result = result[..loop_start_match.start()].to_string() + &expanded + &result[full_end..];
     }
 
     Ok(result)
@@ -630,7 +629,8 @@ fn find_matching_endloop(content: &str) -> Result<Option<(usize, Option<String>,
 
                     if let Some(else_end_pos) = trimmed_else.find(LOOP_ELSE_END) {
                         let else_body = trimmed_else[..else_end_pos].to_string();
-                        let total_end = else_start + else_newlines + else_end_pos + LOOP_ELSE_END.len();
+                        let total_end =
+                            else_start + else_newlines + else_end_pos + LOOP_ELSE_END.len();
                         return Ok(Some((body_end, Some(else_body), total_end)));
                     } else {
                         return Err(AikiError::TemplateProcessingFailed {
@@ -644,7 +644,8 @@ fn find_matching_endloop(content: &str) -> Result<Option<(usize, Option<String>,
                 pos += LOOP_END.len();
             }
         } else {
-            pos += 1;
+            // Advance by one character (may be multi-byte for non-ASCII like emojis)
+            pos += content[pos..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
 
@@ -656,12 +657,8 @@ fn find_matching_endloop(content: &str) -> Result<Option<(usize, Option<String>,
 }
 
 /// Expand a loop body for each item in the collection
-fn expand_loop_body(
-    variable_name: &str,
-    body: &str,
-    items: &[TaskComment],
-) -> Result<String> {
-    use super::conditionals::{EvalContext, process_conditionals};
+fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> Result<String> {
+    use super::conditionals::{process_conditionals, EvalContext};
 
     let mut result = String::new();
     let len = items.len();
@@ -678,43 +675,112 @@ fn expand_loop_body(
         ctx.set("loop.length", len.to_string());
 
         // Add item fields to context for conditional evaluation
-        for (field, value) in &item.data {
-            ctx.set(format!("{}.{}", variable_name, field), value.clone());
-        }
         ctx.set(format!("{}.text", variable_name), item.text.clone());
 
         // Process conditionals with the populated context
         // This evaluates {% if %} blocks using the loop variables
-        let iteration_body = process_conditionals(body, &ctx)
-            .map_err(|e| AikiError::TemplateProcessingFailed {
+        let iteration_body =
+            process_conditionals(body, &ctx).map_err(|e| AikiError::TemplateProcessingFailed {
                 details: format!("Error processing conditionals in loop body: {}", e),
             })?;
 
         // Replace remaining variable references after conditional processing
         // process_conditionals leaves variables as {{var}} for later substitution
+        //
+        // IMPORTANT: We must NOT replace variables inside nested loop markers,
+        // as those should be processed when the nested loop is expanded.
+        // Use replace_outside_nested_loops instead of global replace.
         let mut iteration_body = iteration_body;
 
-        // Replace loop metadata variables ({{loop.index}}, {{loop.first}}, etc.)
-        iteration_body = iteration_body.replace("{{loop.index}}", &(index + 1).to_string());
-        iteration_body = iteration_body.replace("{{loop.index0}}", &index.to_string());
-        iteration_body = iteration_body.replace("{{loop.first}}", &(index == 0).to_string());
-        iteration_body = iteration_body.replace("{{loop.last}}", &(index == len - 1).to_string());
-        iteration_body = iteration_body.replace("{{loop.length}}", &len.to_string());
+        // Build replacements map for loop metadata and item variables
+        let mut replacements = Vec::new();
 
-        // Replace item field variables: {{var.field}}
-        for (field, value) in &item.data {
-            let pattern = format!("{{{{{}.{}}}}}", variable_name, field);
-            iteration_body = iteration_body.replace(&pattern, value);
-        }
+        // Loop metadata variables ({{loop.index}}, {{loop.first}}, etc.)
+        replacements.push(("{{loop.index}}".to_string(), (index + 1).to_string()));
+        replacements.push(("{{loop.index0}}".to_string(), index.to_string()));
+        replacements.push(("{{loop.first}}".to_string(), (index == 0).to_string()));
+        replacements.push(("{{loop.last}}".to_string(), (index == len - 1).to_string()));
+        replacements.push(("{{loop.length}}".to_string(), len.to_string()));
 
-        // Replace {{var.text}} with the comment text
+        // {{var.text}} with the comment text
         let text_pattern = format!("{{{{{}.text}}}}", variable_name);
-        iteration_body = iteration_body.replace(&text_pattern, &item.text);
+        replacements.push((text_pattern, item.text.clone()));
+
+        // Apply all replacements, but only outside nested loop markers
+        iteration_body = replace_outside_nested_loops(&iteration_body, &replacements);
 
         result.push_str(&iteration_body);
     }
 
     Ok(result)
+}
+
+/// Replace patterns in content, but only outside nested AIKI_LOOP markers
+///
+/// This prevents outer loop variable substitution from affecting inner loop
+/// placeholders. For example, when expanding an outer loop, we should not
+/// replace `{{loop.index}}` inside a nested `<!-- AIKI_LOOP -->` block.
+fn replace_outside_nested_loops(content: &str, replacements: &[(String, String)]) -> String {
+    const LOOP_START: &str = "<!-- AIKI_LOOP:";
+    const LOOP_END: &str = "<!-- AIKI_ENDLOOP -->";
+
+    let mut result = String::new();
+    let mut pos = 0;
+
+    while pos < content.len() {
+        // Check if we're at the start of a nested loop
+        if content[pos..].starts_with(LOOP_START) {
+            // Find the matching end marker (handling nested loops)
+            let nested_start = pos;
+            let mut depth = 1;
+            let mut search_pos = pos + LOOP_START.len();
+
+            while search_pos < content.len() && depth > 0 {
+                if content[search_pos..].starts_with(LOOP_START) {
+                    depth += 1;
+                    search_pos += LOOP_START.len();
+                } else if content[search_pos..].starts_with(LOOP_END) {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Found matching end - include the end marker in the nested block
+                        search_pos += LOOP_END.len();
+                        break;
+                    }
+                    search_pos += LOOP_END.len();
+                } else {
+                    // Advance by one character (may be multi-byte for non-ASCII like emojis)
+                    search_pos += content[search_pos..]
+                        .chars()
+                        .next()
+                        .map_or(1, |c| c.len_utf8());
+                }
+            }
+
+            // Copy the entire nested loop block unchanged
+            result.push_str(&content[nested_start..search_pos]);
+            pos = search_pos;
+        } else {
+            // Find the next nested loop start (or end of content)
+            let next_loop = content[pos..]
+                .find(LOOP_START)
+                .map(|i| pos + i)
+                .unwrap_or(content.len());
+
+            // Extract the segment before the next nested loop
+            let segment = &content[pos..next_loop];
+
+            // Apply all replacements to this segment
+            let mut replaced_segment = segment.to_string();
+            for (pattern, replacement) in replacements {
+                replaced_segment = replaced_segment.replace(pattern, replacement);
+            }
+
+            result.push_str(&replaced_segment);
+            pos = next_loop;
+        }
+    }
+
+    result
 }
 
 /// Create subtasks from inline loops in template content
@@ -736,10 +802,11 @@ pub fn create_subtasks_from_inline_loops(
 ) -> Result<Vec<TaskDefinition>> {
     // First, process conditionals (which emits loop markers)
     let ctx = super::conditionals::EvalContext::new();
-    let processed = super::conditionals::process_conditionals(content, &ctx)
-        .map_err(|e| AikiError::TemplateProcessingFailed {
+    let processed = super::conditionals::process_conditionals(content, &ctx).map_err(|e| {
+        AikiError::TemplateProcessingFailed {
             details: e.to_string(),
-        })?;
+        }
+    })?;
 
     // Check if there are loop markers to expand
     if !processed.contains("<!-- AIKI_LOOP:") {
@@ -836,11 +903,8 @@ pub fn has_inline_loops(content: &str) -> bool {
 /// Create review task with subtasks from template
 ///
 /// This function is shared between the `aiki review` CLI command and the flow
-/// engine's `review:` action. It:
-/// 1. Loads the specified template
-/// 2. Sets up the variable context with scope information
-/// 3. Creates the parent task and subtasks from the template
-/// 4. Writes all task events to storage
+/// engine's `review:` action. It delegates to the unified `create_from_template`
+/// code path in `commands::task`.
 ///
 /// # Arguments
 /// * `cwd` - The current working directory
@@ -858,99 +922,27 @@ pub fn create_review_task_from_template(
     assignee: &Option<String>,
     template_name: &str,
 ) -> Result<String> {
-    let timestamp = chrono::Utc::now();
-    let working_copy = get_working_copy_change_id(cwd);
+    use crate::commands::task::{create_from_template, TemplateTaskParams};
 
-    // Load the template
-    let templates_dir = find_templates_dir(cwd)?;
-    let template = load_template(template_name, &templates_dir)?;
+    let mut builtins = HashMap::new();
+    builtins.insert("scope".to_string(), scope_id.to_string());
+    builtins.insert("scope.name".to_string(), scope_name.to_string());
+    builtins.insert("scope.id".to_string(), scope_id.to_string());
 
-    // Set up variable context for template substitution
-    let mut variables = VariableContext::new();
-
-    // Set scope variables as builtins (template uses {scope}, {scope.name}, {scope.id})
-    variables.set_builtin("scope", scope_id);
-    variables.set_builtin("scope.name", scope_name);
-    variables.set_builtin("scope.id", scope_id);
-
-    // Set parent.id placeholder - it will be replaced after we generate the actual parent ID
-    variables.set_parent("id", PARENT_ID_PLACEHOLDER);
-
-    // Create tasks from template (no data source for review - static subtasks)
-    let (parent_def, mut subtask_defs) = create_tasks_from_template(&template, &variables, None)?;
-
-    // Generate parent task ID from the resolved name
-    let parent_id = generate_task_id(&parent_def.name);
-
-    // Substitute {{parent.id}} in subtask instructions now that we have the parent ID
-    substitute_parent_id(&mut subtask_defs, &parent_id);
-
-    // Determine task type from template defaults or definition
-    let task_type = parent_def.task_type.or(template.defaults.task_type.clone());
-
-    // Determine priority from template
-    let priority = parent_def
-        .priority
-        .as_ref()
-        .and_then(|p| parse_priority(p))
-        .or(template.defaults.priority.as_ref().and_then(|p| parse_priority(p)))
-        .unwrap_or(TaskPriority::P2);
-
-    // Build sources list
-    let mut sources = parent_def.sources.clone();
-    if scope_id != "session" && !sources.iter().any(|s| s.starts_with("task:")) {
+    let mut sources = vec![];
+    if scope_id != "session" {
         sources.push(format!("task:{}", scope_id));
     }
 
-    // Create parent task event
-    let parent_event = TaskEvent::Created {
-        task_id: parent_id.clone(),
-        name: parent_def.name.clone(),
-        task_type,
-        priority,
-        assignee: assignee.clone(),
+    let params = TemplateTaskParams {
+        template_name: template_name.to_string(),
         sources,
-        template: Some(template.template_id()),
-        working_copy: working_copy.clone(),
-        instructions: Some(parent_def.instructions.clone()),
-        data: convert_data(&parent_def.data),
-        timestamp,
+        assignee: assignee.clone(),
+        builtins,
+        ..Default::default()
     };
-    write_event(cwd, &parent_event)?;
 
-    // Create subtasks
-    for (i, subtask_def) in subtask_defs.iter().enumerate() {
-        let subtask_id = format!("{}.{}", parent_id, i + 1);
-
-        let subtask_priority = subtask_def
-            .priority
-            .as_ref()
-            .and_then(|p| parse_priority(p))
-            .unwrap_or(priority);
-
-        // Subtask sources: link to parent
-        let mut subtask_sources = subtask_def.sources.clone();
-        if !subtask_sources.iter().any(|s| s.starts_with("task:")) {
-            subtask_sources.push(format!("task:{}", parent_id));
-        }
-
-        let subtask_event = TaskEvent::Created {
-            task_id: subtask_id,
-            name: subtask_def.name.clone(),
-            task_type: Some("review".to_string()), // Subtasks inherit review type
-            priority: subtask_priority,
-            assignee: subtask_def.assignee.clone().or_else(|| assignee.clone()),
-            sources: subtask_sources,
-            template: None,
-            working_copy: working_copy.clone(),
-            instructions: Some(subtask_def.instructions.clone()),
-            data: convert_data(&subtask_def.data),
-            timestamp,
-        };
-        write_event(cwd, &subtask_event)?;
-    }
-
-    Ok(parent_id)
+    create_from_template(cwd, params)
 }
 
 /// Placeholder value for parent.id during initial template processing
@@ -958,12 +950,6 @@ pub fn create_review_task_from_template(
 /// We use this placeholder because the parent ID isn't known until after
 /// template processing (it's generated from the resolved parent name).
 pub const PARENT_ID_PLACEHOLDER: &str = "__AIKI_PARENT_ID_PLACEHOLDER__";
-
-/// Placeholder value for id (task's own ID) during initial template processing
-///
-/// Similar to PARENT_ID_PLACEHOLDER, but for the task's own ID. Used when
-/// a template's instructions reference {{id}} (the task being created).
-pub const ID_PLACEHOLDER: &str = "__AIKI_ID_PLACEHOLDER__";
 
 /// Substitute the parent.id placeholder with the actual parent ID
 ///
@@ -1103,7 +1089,10 @@ Find opportunities.
 
         let template = load_template("aiki/review", temp_dir.path()).unwrap();
         assert_eq!(template.name, "aiki/review");
-        assert_eq!(template.description, Some("General code review".to_string()));
+        assert_eq!(
+            template.description,
+            Some("General code review".to_string())
+        );
         assert_eq!(template.defaults.task_type, Some("review".to_string()));
         assert_eq!(template.parent.name, "Review: {{data.scope}}");
         assert_eq!(template.subtasks.len(), 1);
@@ -1274,9 +1263,15 @@ No frontmatter here.
         assert!(subtasks[0].instructions.contains("Variable may be null"));
 
         // Verify comment metadata is persisted to TaskDefinition.data
-        assert_eq!(subtasks[0].data.get("file"), Some(&serde_json::json!("src/auth.ts")));
+        assert_eq!(
+            subtasks[0].data.get("file"),
+            Some(&serde_json::json!("src/auth.ts"))
+        );
         assert_eq!(subtasks[0].data.get("line"), Some(&serde_json::json!("42")));
-        assert_eq!(subtasks[0].data.get("severity"), Some(&serde_json::json!("error")));
+        assert_eq!(
+            subtasks[0].data.get("severity"),
+            Some(&serde_json::json!("error"))
+        );
 
         // Check second subtask
         assert_eq!(subtasks[1].name, "Fix: src/utils.ts:7");
@@ -1284,9 +1279,15 @@ No frontmatter here.
         assert!(subtasks[1].instructions.contains("Unused import"));
 
         // Verify comment metadata is persisted to TaskDefinition.data
-        assert_eq!(subtasks[1].data.get("file"), Some(&serde_json::json!("src/utils.ts")));
+        assert_eq!(
+            subtasks[1].data.get("file"),
+            Some(&serde_json::json!("src/utils.ts"))
+        );
         assert_eq!(subtasks[1].data.get("line"), Some(&serde_json::json!("7")));
-        assert_eq!(subtasks[1].data.get("severity"), Some(&serde_json::json!("warning")));
+        assert_eq!(
+            subtasks[1].data.get("severity"),
+            Some(&serde_json::json!("warning"))
+        );
     }
 
     #[test]
@@ -1358,7 +1359,7 @@ No frontmatter here.
         let content = r#"## Fix: {item.file}
 ---
 sources:
-  - task:{source.task_id}
+  - task:{source.id}
 priority: p1
 assignee: claude-code
 ---
@@ -1376,7 +1377,7 @@ Fix the issue described above."#;
         assert_eq!(fm.priority, Some("p1".to_string()));
         assert_eq!(fm.assignee, Some("claude-code".to_string()));
         assert_eq!(fm.sources.len(), 1);
-        assert_eq!(fm.sources[0], "task:{source.task_id}");
+        assert_eq!(fm.sources[0], "task:{source.id}");
 
         assert!(parsed.body.contains("Fix the issue"));
     }
@@ -1399,7 +1400,10 @@ Body text."#;
         assert!(parsed.frontmatter.is_some());
 
         let fm = parsed.frontmatter.unwrap();
-        assert_eq!(fm.data.get("severity"), Some(&serde_json::json!("{item.severity}")));
+        assert_eq!(
+            fm.data.get("severity"),
+            Some(&serde_json::json!("{item.severity}"))
+        );
         assert_eq!(fm.data.get("file"), Some(&serde_json::json!("{item.file}")));
     }
 
@@ -1653,12 +1657,18 @@ No items found.
         // Only the high priority task should have the HIGH PRIORITY marker
         // Count occurrences - should be exactly 1
         let high_count = result.matches("**HIGH PRIORITY**").count();
-        assert_eq!(high_count, 1, "HIGH PRIORITY should appear exactly once (for the urgent task)");
+        assert_eq!(
+            high_count, 1,
+            "HIGH PRIORITY should appear exactly once (for the urgent task)"
+        );
 
         // Verify the HIGH PRIORITY appears after Urgent task, not after Normal task
         let urgent_pos = result.find("## Urgent task").unwrap();
         let high_pos = result.find("**HIGH PRIORITY**").unwrap();
-        assert!(high_pos > urgent_pos, "HIGH PRIORITY should appear after Urgent task");
+        assert!(
+            high_pos > urgent_pos,
+            "HIGH PRIORITY should appear after Urgent task"
+        );
     }
 
     // ===== Inline Loop Tests =====
@@ -1716,7 +1726,8 @@ Fix the issues.
             },
         ];
 
-        let subtasks = create_subtasks_from_inline_loops(content, &variables, Some(comments)).unwrap();
+        let subtasks =
+            create_subtasks_from_inline_loops(content, &variables, Some(comments)).unwrap();
 
         assert_eq!(subtasks.len(), 2);
         assert_eq!(subtasks[0].name, "Fix: src/login.rs");
@@ -1743,7 +1754,8 @@ Fix the issues.
 
     #[test]
     fn test_create_subtasks_from_inline_loops_no_loops() {
-        let content = "# Task\n\nNo loops here.\n\n# Subtasks\n\n## Static subtask\n\nInstructions.";
+        let content =
+            "# Task\n\nNo loops here.\n\n# Subtasks\n\n## Static subtask\n\nInstructions.";
         let variables = VariableContext::new();
         let subtasks = create_subtasks_from_inline_loops(content, &variables, None).unwrap();
         // Returns empty because there are no loop markers to process
@@ -1758,7 +1770,8 @@ Fix the issues.
         let mut template = TaskTemplate::new("test/inline");
         template.parent.name = "Fix: {{data.scope}}".to_string();
         template.parent.instructions = "Fix all issues.".to_string();
-        template.raw_content = Some(r#"---
+        template.raw_content = Some(
+            r#"---
 version: 1.0.0
 ---
 
@@ -1773,29 +1786,145 @@ Fix all issues.
 
 {{item.text}}
 {% endfor %}
-"#.to_string());
+"#
+            .to_string(),
+        );
 
         let mut variables = VariableContext::new();
         variables.set_data("scope", "src/");
 
-        let comments = vec![
-            TaskComment {
-                id: None,
-                text: "Error here".to_string(),
-                timestamp: Utc::now(),
-                data: {
-                    let mut d = HashMap::new();
-                    d.insert("file".to_string(), "src/main.rs".to_string());
-                    d
-                },
+        let comments = vec![TaskComment {
+            id: None,
+            text: "Error here".to_string(),
+            timestamp: Utc::now(),
+            data: {
+                let mut d = HashMap::new();
+                d.insert("file".to_string(), "src/main.rs".to_string());
+                d
             },
-        ];
+        }];
 
-        let (parent, subtasks) = create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
+        let (parent, subtasks) =
+            create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
 
         assert_eq!(parent.name, "Fix: src/");
         assert_eq!(subtasks.len(), 1);
         assert_eq!(subtasks[0].name, "Fix: src/main.rs");
         assert!(subtasks[0].instructions.contains("Error here"));
+    }
+
+    #[test]
+    fn test_expand_loops_nested_loop_index() {
+        use chrono::Utc;
+
+        // This tests nested loops with loop.index references
+        // The inner loop should have its OWN loop.index values, not the outer loop's
+        let content = r#"<!-- AIKI_LOOP:outer:source.comments -->
+Outer: {{loop.index}}
+<!-- AIKI_LOOP:inner:source.comments -->
+  Inner: {{loop.index}}
+<!-- AIKI_ENDLOOP -->
+<!-- AIKI_ENDLOOP -->"#;
+
+        let mut data_sources = HashMap::new();
+        data_sources.insert(
+            "source.comments".to_string(),
+            vec![
+                TaskComment {
+                    id: None,
+                    text: "".to_string(),
+                    timestamp: Utc::now(),
+                    data: HashMap::new(),
+                },
+                TaskComment {
+                    id: None,
+                    text: "".to_string(),
+                    timestamp: Utc::now(),
+                    data: HashMap::new(),
+                },
+            ],
+        );
+
+        let result = expand_loops(content, &data_sources).unwrap();
+
+        // The outer loop should show 1, 2
+        // Each inner loop should show 1, 2 (not 1, 1 or 2, 2)
+        // Expected:
+        // Outer: 1
+        //   Inner: 1
+        //   Inner: 2
+        // Outer: 2
+        //   Inner: 1
+        //   Inner: 2
+
+        // Expected pattern: after first "Outer: 1", we should see "Inner: 1" then "Inner: 2"
+        // NOT "Inner: 1" then "Inner: 1"
+        let lines: Vec<&str> = result
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        // Find the first Inner line after "Outer: 1"
+        let mut found_outer_1 = false;
+        let mut inner_values_after_outer_1 = Vec::new();
+        for line in &lines {
+            if *line == "Outer: 1" {
+                found_outer_1 = true;
+            } else if found_outer_1 && line.starts_with("Inner:") {
+                inner_values_after_outer_1.push(*line);
+                if inner_values_after_outer_1.len() == 2 {
+                    break;
+                }
+            } else if found_outer_1 && line.starts_with("Outer:") {
+                break;
+            }
+        }
+
+        assert_eq!(
+            inner_values_after_outer_1,
+            vec!["Inner: 1", "Inner: 2"],
+            "After Outer: 1, inner loop should iterate 1, 2. Got: {:?}. Full output:\n{}",
+            inner_values_after_outer_1,
+            result
+        );
+    }
+
+    #[test]
+    fn test_replace_outside_nested_loops_with_non_ascii() {
+        // Non-ASCII characters (emojis, unicode) should not cause panics
+        let content = "🛑 Before\n<!-- AIKI_LOOP:item:source.comments -->\n{{item.text}}\n<!-- AIKI_ENDLOOP -->\n🎉 After {{loop.index}}";
+        let replacements = vec![("{{loop.index}}".to_string(), "1".to_string())];
+
+        let result = replace_outside_nested_loops(content, &replacements);
+
+        // Should replace outside the loop but not inside
+        assert!(result.contains("🛑 Before"));
+        assert!(result.contains("🎉 After 1"));
+        // Inside the loop should remain unchanged
+        assert!(result.contains("{{item.text}}"));
+    }
+
+    #[test]
+    fn test_expand_loops_with_non_ascii_content() {
+        use chrono::Utc;
+
+        // Templates can contain emojis (e.g., "🛑 Do NOT edit code")
+        let content = "🛑 Important\n<!-- AIKI_LOOP:item:source.comments -->\n## {{item.text}} 🎯\n<!-- AIKI_ENDLOOP -->";
+
+        let mut data_sources = HashMap::new();
+        data_sources.insert(
+            "source.comments".to_string(),
+            vec![TaskComment {
+                id: None,
+                text: "Fix büg".to_string(),
+                timestamp: Utc::now(),
+                data: HashMap::new(),
+            }],
+        );
+
+        let result = expand_loops(content, &data_sources).unwrap();
+        assert!(result.contains("🛑 Important"));
+        assert!(result.contains("## Fix büg 🎯"));
     }
 }

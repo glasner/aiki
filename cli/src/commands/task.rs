@@ -13,7 +13,7 @@ use std::path::Path;
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::events::{AikiEvent, AikiTaskClosedPayload, AikiTaskStartedPayload, TaskEventPayload};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::tasks::{
     generate_child_id, generate_task_id, get_next_subtask_number, is_task_id,
@@ -22,10 +22,14 @@ use crate::tasks::{
         get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
         ScopeSet,
     },
+    reopen_if_closed,
     runner::{run_task_with_xml, TaskRunOptions},
     storage::{read_events, read_events_with_ids, write_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
-    xml::{format_added, format_closed, format_started, format_stopped, format_task_list},
+    xml::{
+        format_added, format_closed, format_instructions, format_started, format_stopped,
+        format_task_list,
+    },
     XmlBuilder,
 };
 
@@ -413,6 +417,10 @@ pub enum TaskCommands {
         /// Remove assignee (make task unassigned)
         #[arg(long, group = "assign")]
         unassign: bool,
+
+        /// Set or update a data field (can be specified multiple times)
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
     },
 
     /// Add a comment to a task
@@ -445,6 +453,57 @@ pub enum TaskCommands {
         /// Run asynchronously (spawn agent and return immediately)
         #[arg(long = "async", short = 'a')]
         run_async: bool,
+    },
+
+    /// Wait for task(s) to complete
+    ///
+    /// Polls task status until all specified tasks reach a terminal state
+    /// (closed or stopped). Outputs each task's final status and closing comment.
+    ///
+    /// Examples:
+    ///   aiki task wait abc123                         # Wait for one task
+    ///   aiki task wait abc123 def456                  # Wait for multiple tasks
+    ///   aiki task wait abc123 --timeout 300           # Wait up to 5 minutes
+    Wait {
+        /// Task IDs to wait for
+        #[arg(required = true)]
+        ids: Vec<String>,
+
+        /// Timeout in seconds (0 = no timeout, default)
+        #[arg(long, default_value = "0")]
+        timeout: u64,
+    },
+
+    /// Undo file changes made by a task
+    ///
+    /// Reverts file changes made by a task or set of tasks, restoring files
+    /// to their state before the task started. Creates a backup bookmark by default.
+    ///
+    /// Examples:
+    ///   aiki task undo abc123...                    # Undo a single task
+    ///   aiki task undo abc123 def456                # Undo multiple tasks
+    ///   aiki task undo abc123 --completed           # Undo completed subtasks of a plan
+    ///   aiki task undo abc123 --dry-run             # Preview what would be undone
+    Undo {
+        /// Task ID(s) to undo
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
+
+        /// For plan tasks: undo all completed subtasks
+        #[arg(long)]
+        completed: bool,
+
+        /// Force undo despite conflicts (may lose manual edits)
+        #[arg(long)]
+        force: bool,
+
+        /// Show what would be undone without making changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip backup bookmark creation
+        #[arg(long)]
+        no_backup: bool,
     },
 
     /// Show diff of changes made while working on a task
@@ -574,13 +633,22 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             name,
             assignee,
             unassign,
-        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign),
+            data,
+        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign, data),
         TaskCommands::Comment { id, text, data } => run_comment(&cwd, id, text, data),
         TaskCommands::Run {
             id,
             agent,
             run_async,
         } => run_run(&cwd, id, agent, run_async),
+        TaskCommands::Wait { ids, timeout } => run_wait(&cwd, ids, timeout),
+        TaskCommands::Undo {
+            ids,
+            completed,
+            force,
+            dry_run,
+            no_backup,
+        } => run_undo(&cwd, ids, completed, force, dry_run, no_backup),
         TaskCommands::Diff {
             id,
             summary,
@@ -892,17 +960,45 @@ fn run_add(
             ));
         }
 
-        let task_id = create_from_template(
-            cwd,
-            template,
-            &data_args,
-            &sources,
-            assignee_arg.as_deref(),
-            p0,
-            p1,
-            false,
-            p3,
-        )?;
+        // Validate source prefixes
+        validate_sources(&sources)?;
+
+        // Resolve "prompt" source to actual prompt change_id
+        let sources = resolve_prompt_sources(cwd, sources)?;
+
+        // Parse data arguments (with type coercion for template variable substitution)
+        let data = parse_data_flags(&data_args, true)?;
+
+        // Resolve assignee
+        let assignee = if let Some(ref a) = assignee_arg {
+            match crate::agents::Assignee::from_str(a) {
+                Some(parsed) => parsed.as_str().map(|s| s.to_string()),
+                None => return Err(AikiError::UnknownAssignee(a.clone())),
+            }
+        } else {
+            None
+        };
+
+        // Determine priority from flags
+        let priority = if p0 {
+            Some(TaskPriority::P0)
+        } else if p1 {
+            Some(TaskPriority::P1)
+        } else if p3 {
+            Some(TaskPriority::P3)
+        } else {
+            None // Let template defaults apply
+        };
+
+        let params = TemplateTaskParams {
+            template_name: template.clone(),
+            data,
+            sources,
+            assignee,
+            priority,
+            ..Default::default()
+        };
+        let task_id = create_from_template(cwd, params)?;
 
         // Read events to get the task we just created
         let events = read_events(cwd)?;
@@ -979,15 +1075,10 @@ fn run_add(
 
     // Determine task ID and possibly inherit parent's assignee
     let (task_id, effective_assignee) = if let Some(ref parent_id) = parent {
-        // Validate parent exists and is not closed
-        let parent_task = if let Some(pt) = find_task(&tasks, parent_id) {
-            if pt.status == TaskStatus::Closed {
-                return Err(AikiError::ParentTaskClosed(parent_id.clone()));
-            }
-            pt
-        } else {
-            return Err(AikiError::TaskNotFound(parent_id.clone()));
-        };
+        // Validate parent exists; if closed, implicitly reopen it
+        let parent_task = find_task(&tasks, parent_id)
+            .ok_or_else(|| AikiError::TaskNotFound(parent_id.clone()))?;
+        reopen_if_closed(cwd, parent_id, &tasks, "Subtasks added")?;
 
         // Generate subtask ID (parent.N where N is next available)
         let task_ids: Vec<&str> = tasks.keys().map(|s| s.as_str()).collect();
@@ -1102,23 +1193,50 @@ fn run_start(
     sources: Vec<String>,
     assignee_arg: Option<String>,
 ) -> Result<()> {
-    use crate::agents::Assignee;
     use crate::session::find_active_session;
 
     // If --template is provided, create from template and start
     if let Some(ref template) = template_name {
+        // Validate source prefixes
+        validate_sources(&sources)?;
+
+        // Resolve "prompt" source to actual prompt change_id
+        let resolved_sources = resolve_prompt_sources(cwd, sources.clone())?;
+
+        // Parse data arguments
+        let data = parse_data_flags(&data_args, true)?;
+
+        // Resolve assignee
+        let assignee = if let Some(ref a) = assignee_arg {
+            match crate::agents::Assignee::from_str(a) {
+                Some(parsed) => parsed.as_str().map(|s| s.to_string()),
+                None => return Err(AikiError::UnknownAssignee(a.clone())),
+            }
+        } else {
+            None
+        };
+
+        // Determine priority from flags
+        let priority = if p0 {
+            Some(TaskPriority::P0)
+        } else if p1 {
+            Some(TaskPriority::P1)
+        } else if p3 {
+            Some(TaskPriority::P3)
+        } else {
+            None
+        };
+
         // Create task from template first
-        let task_id = create_from_template(
-            cwd,
-            template,
-            &data_args,
-            &sources,
-            assignee_arg.as_deref(),
-            p0,
-            p1,
-            false,
-            p3,
-        )?;
+        let params = TemplateTaskParams {
+            template_name: template.clone(),
+            data,
+            sources: resolved_sources,
+            assignee,
+            priority,
+            ..Default::default()
+        };
+        let task_id = create_from_template(cwd, params)?;
         // Now start that task - recursive call with just the task ID
         return run_start(
             cwd,
@@ -1155,11 +1273,20 @@ fn run_start(
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
 
-    // Get in-progress task IDs first (to avoid borrow issues)
-    // Note: We collect all IDs here; parent-preservation filtering happens later
-    // once we know which actual IDs we're starting (after quick-start/template handling)
+    // Detect current session early - needed for both session filtering and start event
+    let session_match = find_active_session(cwd);
+    let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
+
+    // Only auto-stop tasks explicitly claimed by THIS session.
+    // Tasks claimed by other sessions or unclaimed tasks are left alone.
+    // This prevents agents from stopping each other's tasks (e.g., Codex agents
+    // that don't create sessions would otherwise auto-stop each other).
     let all_in_progress_ids: Vec<String> = get_in_progress(&tasks)
         .iter()
+        .filter(|t| match (&t.claimed_by_session, &our_session_id) {
+            (Some(claimed), Some(ours)) => claimed == ours, // Ours → auto-stop
+            _ => false,                                     // Everything else → leave alone
+        })
         .map(|t| t.id.clone())
         .collect();
 
@@ -1381,13 +1508,12 @@ fn run_start(
     }
 
     // Start new tasks (batch operation)
-    // Session detection: find session by PID matching or agent-type fallback
-    let session_match = find_active_session(cwd);
+    // Reuse session detected earlier (for both auto-stop filtering and start event)
     let agent_type_str = session_match
         .as_ref()
         .map(|m| m.agent_type.as_str().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let session_id = session_match.as_ref().map(|m| m.session_id.clone());
+    let session_id = our_session_id.clone();
 
     let timestamp = chrono::Utc::now();
     let start_event = TaskEvent::Started {
@@ -1715,7 +1841,10 @@ fn run_close(
     wont_do: bool,
     comment: Option<String>,
 ) -> Result<()> {
-    use crate::tasks::manager::{all_subtasks_closed, get_all_unclosed_descendants};
+    use crate::session::find_active_session;
+    use crate::tasks::manager::{
+        all_subtasks_closed, get_all_unclosed_descendants, get_scoped_ready_queue,
+    };
     use std::io::Read;
 
     // Validate outcome (unless --wont_do is used, which overrides)
@@ -1955,6 +2084,90 @@ fn run_close(
         }
     }
 
+    // Auto-start next subtask: if a subtask was closed and the parent is claimed
+    // by the current session, auto-start the next pending subtask in that parent.
+    // This only triggers when the session owns the parent (i.e., is working through
+    // the batch), NOT when an agent only claimed a single subtask.
+    let mut auto_started_subtasks: Vec<Task> = Vec::new();
+    let session_match = find_active_session(cwd);
+    let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
+
+    for parent_id in &unique_parent_ids {
+        // Skip if all subtasks just closed (parent auto-start already handled above)
+        if all_subtasks_closed(&tasks, parent_id) {
+            continue;
+        }
+
+        // Check if the parent is claimed by the current session
+        let parent_claimed_by_us = if let Some(parent) = tasks.get(parent_id) {
+            match (&parent.claimed_by_session, &our_session_id) {
+                (Some(claimed), Some(ours)) => claimed == ours,
+                _ => false,
+            }
+        } else {
+            false
+        };
+
+        if !parent_claimed_by_us {
+            continue;
+        }
+
+        // Pick the next pending subtask from the scoped ready queue
+        let next_subtasks = get_scoped_ready_queue(&tasks, Some(parent_id));
+        if let Some(next) = next_subtasks.first() {
+            let next_id = next.id.clone();
+            let next_name = next.name.clone();
+            let next_task_type = infer_task_type(next);
+            let next_assignee = next.assignee.clone();
+            let next_source = next.sources.first().cloned();
+
+            let auto_start_timestamp = chrono::Utc::now();
+            let agent_type_str = session_match
+                .as_ref()
+                .map(|m| m.agent_type.as_str().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let start_event = TaskEvent::Started {
+                task_ids: vec![next_id.clone()],
+                agent_type: agent_type_str,
+                session_id: our_session_id.clone(),
+                timestamp: auto_start_timestamp,
+                stopped: Vec::new(),
+            };
+            write_event(cwd, &start_event)?;
+
+            // Emit flow event
+            let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
+                task: TaskEventPayload {
+                    id: next_id.clone(),
+                    name: next_name.clone(),
+                    task_type: next_task_type,
+                    status: "in_progress".to_string(),
+                    assignee: next_assignee,
+                    outcome: None,
+                    source: next_source,
+                    files: None,
+                    changes: None,
+                },
+                cwd: cwd.to_path_buf(),
+                timestamp: auto_start_timestamp,
+            });
+            let _ = crate::event_bus::dispatch(task_event);
+
+            // Update local state
+            if let Some(task) = tasks.get_mut(&next_id) {
+                task.status = TaskStatus::InProgress;
+                task.claimed_by_session = our_session_id.clone();
+                auto_started_subtasks.push(task.clone());
+            }
+
+            notices.push(format!(
+                "Auto-started next subtask: {} (id: {})",
+                next_name, next_id
+            ));
+        }
+    }
+
     // Update context: remove closed tasks from in_progress
     let mut updated_in_progress: Vec<Task> = in_progress_ids
         .iter()
@@ -1965,6 +2178,11 @@ fn run_close(
     // Add auto-started parents to in_progress
     for parent in &auto_started_parents {
         updated_in_progress.push(parent.clone());
+    }
+
+    // Add auto-started subtasks to in_progress
+    for subtask in &auto_started_subtasks {
+        updated_in_progress.push(subtask.clone());
     }
 
     // Determine output scope set based on updated in-progress tasks
@@ -2002,6 +2220,13 @@ fn run_close(
         content.push('\n');
         let parent_refs: Vec<_> = auto_started_parents.iter().collect();
         content.push_str(&format_started(&parent_refs));
+    }
+
+    // Add auto-started subtasks to output
+    if !auto_started_subtasks.is_empty() {
+        content.push('\n');
+        let subtask_refs: Vec<_> = auto_started_subtasks.iter().collect();
+        content.push_str(&format_started(&subtask_refs));
     }
 
     // Add notices if present
@@ -2256,17 +2481,6 @@ fn format_source(
                                     "\n      <text>{}</text>",
                                     escape_xml(&comment.text)
                                 ));
-                                if !comment.data.is_empty() {
-                                    xml.push_str("\n      <data>");
-                                    for (key, value) in &comment.data {
-                                        xml.push_str(&format!(
-                                            "\n        <field key=\"{}\">{}</field>",
-                                            escape_xml(key),
-                                            escape_xml(value)
-                                        ));
-                                    }
-                                    xml.push_str("\n      </data>");
-                                }
                                 xml.push_str("\n    </source>");
                                 return xml;
                             }
@@ -2330,7 +2544,13 @@ fn format_source_minimal(source: &SourceRef) -> String {
 }
 
 /// Show task details (including subtasks for parent tasks)
-fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, with_instructions: bool) -> Result<()> {
+fn run_show(
+    cwd: &Path,
+    id: Option<String>,
+    show_diff: bool,
+    with_source: bool,
+    with_instructions: bool,
+) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
     use crate::tasks::xml::escape_xml;
 
@@ -2400,10 +2620,7 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, 
     // Add instructions if present and requested
     if with_instructions {
         if let Some(ref instructions) = task.instructions {
-            content.push_str(&format!(
-                "\n    <instructions><![CDATA[{}]]></instructions>",
-                instructions
-            ));
+            content.push_str(&format!("\n    {}", format_instructions(instructions)));
         }
     }
 
@@ -2442,17 +2659,10 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, 
                 .as_ref()
                 .map(|id| format!(" id=\"{}\"", escape_xml(id)))
                 .unwrap_or_default();
-            // Build data.* attributes from comment.data
-            let data_attrs: String = comment
-                .data
-                .iter()
-                .map(|(k, v)| format!(" data.{}=\"{}\"", escape_xml(k), escape_xml(v)))
-                .collect();
             content.push_str(&format!(
-                "\n      <comment timestamp=\"{}\"{}{}>{}",
+                "\n      <comment timestamp=\"{}\"{}>{}</comment>",
                 comment.timestamp.to_rfc3339(),
                 id_attr,
-                data_attrs,
                 escape_xml(&comment.text)
             ));
             content.push_str("</comment>");
@@ -2462,7 +2672,7 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, 
 
     // Add files_changed summary for closed tasks
     if task.status == TaskStatus::Closed {
-        if let Some(files) = get_task_changed_files(cwd, &task_id)? {
+        if let Some(files) = get_task_changed_files(cwd, &task_id, true)? {
             let total_files = files.len();
             content.push_str(&format!("\n    <files_changed total=\"{}\">", total_files));
             for path in &files {
@@ -2527,6 +2737,571 @@ fn run_show(cwd: &Path, id: Option<String>, show_diff: bool, with_source: bool, 
 ///
 /// Shows the net result (baseline → final) of all task work.
 /// Uses jj revsets to derive baseline from provenance metadata.
+/// Undo file changes made by a task or set of tasks
+fn run_undo(
+    cwd: &Path,
+    ids: Vec<String>,
+    completed: bool,
+    force: bool,
+    dry_run: bool,
+    no_backup: bool,
+) -> Result<()> {
+    use crate::jj::jj_cmd;
+    use crate::tasks::id::is_direct_child_of;
+
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+
+    // Resolve task IDs: if --completed, expand to completed subtasks
+    let task_ids = if completed {
+        if ids.len() != 1 {
+            return Err(AikiError::InvalidArgument(
+                "--completed requires exactly one plan task ID".to_string(),
+            ));
+        }
+        let plan_id = &ids[0];
+        if find_task(&tasks, plan_id).is_none() {
+            return Err(AikiError::TaskNotFound(plan_id.clone()));
+        }
+
+        // Find completed subtasks (direct children of the plan)
+        let completed_subtasks: Vec<String> = tasks
+            .values()
+            .filter(|t| {
+                is_direct_child_of(&t.id, plan_id)
+                    && t.status == TaskStatus::Closed
+                    && t.closed_outcome == Some(TaskOutcome::Done)
+            })
+            .map(|t| t.id.clone())
+            .collect();
+
+        if completed_subtasks.is_empty() {
+            return Err(AikiError::NoCompletedSubtasks);
+        }
+        completed_subtasks
+    } else {
+        // Verify all task IDs exist
+        for id in &ids {
+            if find_task(&tasks, id).is_none() {
+                return Err(AikiError::TaskNotFound(id.clone()));
+            }
+        }
+        ids
+    };
+
+    // Build union revset pattern for all tasks being undone
+    let patterns: Vec<String> = task_ids
+        .iter()
+        .map(|id| build_task_revset_pattern(id))
+        .collect();
+    let union_pattern = patterns.join(" | ");
+
+    // Check if any changes exist for these tasks
+    let check_output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "log",
+            "-r",
+            &union_pattern,
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query changes: {}", e)))?;
+
+    if !check_output.status.success() {
+        let stderr = String::from_utf8_lossy(&check_output.stderr);
+        if !stderr.contains("no revisions") {
+            return Err(AikiError::JjCommandFailed(format!(
+                "jj log failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    if String::from_utf8_lossy(&check_output.stdout)
+        .trim()
+        .is_empty()
+    {
+        return Err(AikiError::TaskNoChanges);
+    }
+
+    // Compute baseline and final revsets
+    let from_revset = format!("parents(roots({}))", union_pattern);
+    let to_revset = format!("heads({})", union_pattern);
+
+    // Get list of changed files with their change types
+    let summary_output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "diff",
+            "--from",
+            &from_revset,
+            "--to",
+            &to_revset,
+            "--summary",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff summary: {}", e)))?;
+
+    if !summary_output.status.success() {
+        let stderr = String::from_utf8_lossy(&summary_output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "jj diff --summary failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    let summary_text = String::from_utf8_lossy(&summary_output.stdout);
+    let file_changes = parse_diff_summary_with_types(&summary_text);
+
+    if file_changes.is_empty() {
+        return Err(AikiError::TaskNoChanges);
+    }
+
+    // Conflict detection (unless --force)
+    if !force {
+        // Trigger an explicit working copy snapshot upfront so all subsequent
+        // jj calls (both the in-progress check and file_content_differs) see a
+        // single consistent snapshot. Without this, the first jj call that omits
+        // --ignore-working-copy would trigger an implicit snapshot mid-flow.
+        let _ = jj_cmd().current_dir(cwd).args(["status"]).output();
+
+        // Check for in-progress task conflicts
+        let in_progress_tasks = get_in_progress(&tasks);
+        let undo_set: HashSet<&str> = task_ids.iter().map(|s| s.as_str()).collect();
+
+        let mut ip_conflicts: Vec<String> = Vec::new();
+        for ip_task in &in_progress_tasks {
+            if undo_set.contains(ip_task.id.as_str()) {
+                continue;
+            }
+            let ip_pattern = build_task_revset_pattern(&ip_task.id);
+            // Scope to current workspace: intersect with ::@
+            let scoped_pattern = format!("({}) & ::@", ip_pattern);
+
+            let scope_check = jj_cmd()
+                .current_dir(cwd)
+                .args([
+                    "log",
+                    "-r",
+                    &scoped_pattern,
+                    "--no-graph",
+                    "-T",
+                    "change_id",
+                    "--ignore-working-copy",
+                ])
+                .output();
+
+            if let Ok(output) = scope_check {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.trim().is_empty() || !output.status.success() {
+                    continue; // Task has no commits in current workspace
+                }
+            } else {
+                continue;
+            }
+
+            // Get files modified by this in-progress task
+            if let Ok(Some(ip_files)) = get_task_changed_files(cwd, &ip_task.id, false) {
+                let undo_files: HashSet<&str> =
+                    file_changes.iter().map(|(_, f)| f.as_str()).collect();
+                for f in &ip_files {
+                    if undo_files.contains(f.as_str()) {
+                        ip_conflicts.push(format!(
+                            "  - Task {}: \"{}\" modified {}",
+                            &ip_task.id[..8],
+                            ip_task.name,
+                            f
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !ip_conflicts.is_empty() {
+            let msg = format!(
+                "In-progress tasks affecting these files:\n{}\n\n\
+                 Options:\n\
+                 1. Complete or stop those tasks first\n\
+                 2. Use --force to undo anyway (may cause issues for in-progress work)",
+                ip_conflicts.join("\n")
+            );
+            return Err(AikiError::UndoInProgressConflict(msg));
+        }
+
+        // Check for post-task modifications (compare working copy to task's final state)
+        let mut conflicts: Vec<String> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
+
+        for (change_type, file_path) in &file_changes {
+            let wc_exists = cwd.join(file_path).exists();
+
+            match change_type.as_str() {
+                "A" => {
+                    // Task added this file
+                    if !wc_exists {
+                        skipped.push(file_path.clone());
+                        continue; // Already gone, skip
+                    }
+                    // Compare working copy to task's final state.
+                    // Omits --ignore-working-copy intentionally — relies on
+                    // the upfront jj status snapshot above.
+                    if file_content_differs(cwd, file_path, &to_revset)? {
+                        conflicts.push(format!(
+                            "  - {} (task created, then manually edited)",
+                            file_path
+                        ));
+                    }
+                }
+                "D" => {
+                    // Task deleted this file
+                    if wc_exists {
+                        conflicts
+                            .push(format!("  - {} (task deleted, then re-created)", file_path));
+                    }
+                    // If still deleted, nothing to do for conflict check
+                }
+                _ => {
+                    // Modified
+                    if !wc_exists {
+                        // File was modified by task but deleted afterward
+                        conflicts.push(format!("  - {} (task modified, then deleted)", file_path));
+                    } else if file_content_differs(cwd, file_path, &to_revset)? {
+                        // Omits --ignore-working-copy intentionally — relies on
+                        // the upfront jj status snapshot above.
+                        conflicts.push(format!(
+                            "  - {} (task modified, then manually edited)",
+                            file_path
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !conflicts.is_empty() {
+            let msg = format!(
+                "Files modified after task completed:\n{}\n\n\
+                 Suggestions:\n\
+                 1. Review changes manually\n\
+                 2. Use --force to undo anyway (WARNING: loses manual edits)\n\
+                 3. Use --dry-run to preview what would be undone",
+                conflicts.join("\n")
+            );
+            return Err(AikiError::UndoConflict(msg));
+        }
+    }
+
+    // Filter out files that should be skipped (added but already deleted)
+    let active_changes: Vec<(String, String)> = file_changes
+        .iter()
+        .filter(|(change_type, file_path)| !(change_type == "A" && !cwd.join(file_path).exists()))
+        .cloned()
+        .collect();
+
+    if active_changes.is_empty() {
+        eprintln!("All task changes have already been reverted (no files to undo).");
+        return Ok(());
+    }
+
+    // Dry run: just print what would be done
+    if dry_run {
+        eprintln!("[DRY RUN] Would undo {} task(s)", task_ids.len());
+        for id in &task_ids {
+            if let Some(task) = find_task(&tasks, id) {
+                eprintln!("  \"{}\"", task.name);
+            }
+        }
+        eprintln!();
+        eprintln!("Files that would be reverted ({}):", active_changes.len());
+        for (change_type, file_path) in &active_changes {
+            let action = match change_type.as_str() {
+                "A" => "remove file",
+                "D" => "restore file",
+                _ => "restore to previous state",
+            };
+            eprintln!("  {} {} → {}", change_type, file_path, action);
+        }
+        eprintln!();
+        if force {
+            eprintln!("(Conflict checks were not performed due to --force)");
+        } else {
+            eprintln!("No conflicts detected.");
+        }
+        return Ok(());
+    }
+
+    // Create backup bookmark (unless --no-backup)
+    let backup_name = if !no_backup {
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let suffix = if task_ids.len() == 1 {
+            task_ids[0][..8].to_string()
+        } else {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            for id in &task_ids {
+                hasher.update(id.as_bytes());
+            }
+            let hash = hasher.finalize();
+            hex::encode(&hash[..4])
+        };
+        let name = format!("aiki/undo-backup-{}-{}", timestamp, suffix);
+
+        let bookmark_result = jj_cmd()
+            .current_dir(cwd)
+            .args([
+                "bookmark",
+                "create",
+                &name,
+                "-r",
+                "@",
+                "--ignore-working-copy",
+            ])
+            .output()
+            .map_err(|e| {
+                AikiError::JjCommandFailed(format!("Failed to create backup bookmark: {}", e))
+            })?;
+
+        if !bookmark_result.status.success() {
+            let stderr = String::from_utf8_lossy(&bookmark_result.stderr);
+            return Err(AikiError::JjCommandFailed(format!(
+                "Failed to create backup bookmark: {}",
+                stderr.trim()
+            )));
+        }
+        eprintln!("Creating backup: {}", name);
+        Some(name)
+    } else {
+        None
+    };
+
+    // Restore files to baseline state using jj restore
+    // For multi-task undo, compute per-file baselines to avoid reverting
+    // changes made between tasks by non-undo changes
+    //
+    // file_to_task_ids is populated in the multi-task branch and reused later
+    // for per-task file counts in XML output (avoids redundant jj diff calls).
+    let mut file_to_task_ids: HashMap<String, Vec<String>> = HashMap::new();
+    let baseline_groups: Vec<(String, Vec<String>)> = if task_ids.len() > 1 {
+        // Compute per-task file lists to determine which tasks touched which files
+        for id in &task_ids {
+            let pattern = build_task_revset_pattern(id);
+            let task_from = format!("parents(roots({}))", pattern);
+            let task_to = format!("heads({})", pattern);
+            let output = jj_cmd()
+                .current_dir(cwd)
+                .args([
+                    "diff",
+                    "--from",
+                    &task_from,
+                    "--to",
+                    &task_to,
+                    "--summary",
+                    "--ignore-working-copy",
+                ])
+                .output()
+                .map_err(|e| {
+                    AikiError::JjCommandFailed(format!("Failed to get per-task diff: {}", e))
+                })?;
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for f in parse_diff_summary_files(&stdout) {
+                    file_to_task_ids.entry(f).or_default().push(id.clone());
+                }
+            }
+        }
+
+        // Group active files by baseline (determined by which tasks touched them)
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        for (_, file_path) in &active_changes {
+            let baseline = match file_to_task_ids.get(file_path) {
+                Some(touching_tasks) if touching_tasks.len() < task_ids.len() => {
+                    // Only a subset of tasks touched this file - use specific baseline
+                    let sub_patterns: Vec<String> = touching_tasks
+                        .iter()
+                        .map(|id| build_task_revset_pattern(id))
+                        .collect();
+                    format!("parents(roots({}))", sub_patterns.join(" | "))
+                }
+                _ => from_revset.clone(), // All tasks (or unknown) - use global baseline
+            };
+            groups.entry(baseline).or_default().push(file_path.clone());
+        }
+        groups.into_iter().collect()
+    } else {
+        // Single task: one group with global baseline (correct and efficient)
+        let files = active_changes.iter().map(|(_, f)| f.clone()).collect();
+        vec![(from_revset.clone(), files)]
+    };
+
+    for (baseline, files) in &baseline_groups {
+        let mut restore_cmd = jj_cmd();
+        restore_cmd
+            .current_dir(cwd)
+            .arg("restore")
+            .arg("--from")
+            .arg(baseline);
+        for path in files {
+            restore_cmd.arg(path.as_str());
+        }
+        let restore_output = restore_cmd
+            .output()
+            .map_err(|e| AikiError::JjCommandFailed(format!("Failed to restore files: {}", e)))?;
+        if !restore_output.status.success() {
+            let stderr = String::from_utf8_lossy(&restore_output.stderr);
+            return Err(AikiError::JjCommandFailed(format!(
+                "jj restore failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    // Human-readable output to stderr
+    eprintln!();
+    if task_ids.len() == 1 {
+        if let Some(task) = find_task(&tasks, &task_ids[0]) {
+            eprintln!("Undoing task {}", &task_ids[0][..8]);
+            eprintln!("  \"{}\"", task.name);
+        }
+    } else if completed {
+        eprintln!("Undoing {} completed subtasks", task_ids.len());
+        for id in &task_ids {
+            if let Some(task) = find_task(&tasks, id) {
+                eprintln!("  - {}: {}", &id[..8], task.name);
+            }
+        }
+    } else {
+        eprintln!("Undoing {} tasks", task_ids.len());
+        for id in &task_ids {
+            if let Some(task) = find_task(&tasks, id) {
+                eprintln!("  - {}: {}", &id[..8], task.name);
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!("Files reverted ({}):", active_changes.len());
+    for (change_type, file_path) in &active_changes {
+        let desc = match change_type.as_str() {
+            "A" => "(file removed)",
+            "D" => "(file restored)",
+            _ => "(restored to previous state)",
+        };
+        eprintln!("  {} {} {}", change_type, file_path, desc);
+    }
+    eprintln!();
+    eprintln!("Task changes undone successfully.");
+
+    // Machine-readable XML output to stdout
+    // For multi-task undo, derive per-task file counts from file_to_task_ids
+    // (already computed during baseline grouping — no extra jj calls needed).
+    let mut xml_content = String::new();
+    if task_ids.len() > 1 {
+        let active_set: HashSet<&str> = active_changes.iter().map(|(_, f)| f.as_str()).collect();
+        for id in &task_ids {
+            let count = file_to_task_ids
+                .iter()
+                .filter(|(file, ids)| active_set.contains(file.as_str()) && ids.contains(id))
+                .count();
+            xml_content.push_str(&format!(
+                "  <undone task=\"{}\" files=\"{}\"/>\n",
+                id, count
+            ));
+        }
+    } else {
+        for id in &task_ids {
+            xml_content.push_str(&format!(
+                "  <undone task=\"{}\" files=\"{}\"/>\n",
+                id,
+                active_changes.len()
+            ));
+        }
+    }
+    if let Some(ref name) = backup_name {
+        xml_content.push_str(&format!("  <backup bookmark=\"{}\"/>\n", name));
+    }
+
+    let in_progress = get_in_progress(&tasks);
+    let scope_set = get_current_scope_set(&tasks);
+    let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let xml_scopes = scope_set.to_xml_scopes();
+    let mut builder = XmlBuilder::new("undo");
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
+    }
+    let xml = builder.build(&xml_content, &in_progress, &ready_queue);
+    println!("{}", xml);
+
+    Ok(())
+}
+
+/// Parse diff summary output preserving change types (A/M/D/R)
+///
+/// Handles JJ rename lines (`R old_path => new_path`) by splitting them
+/// into a delete of the old path and an add of the new path.
+fn parse_diff_summary_with_types(output: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.len() > 2 && line.chars().nth(1) == Some(' ') {
+            let change_type = &line[..1];
+            let path_part = &line[2..];
+            if change_type == "R" {
+                // Rename: "R old_path => new_path"
+                // Split into delete of old + add of new for undo purposes
+                if let Some((old_path, new_path)) = path_part.split_once(" => ") {
+                    result.push(("D".to_string(), old_path.to_string()));
+                    result.push(("A".to_string(), new_path.to_string()));
+                } else {
+                    // Fallback: treat as modification if separator not found
+                    result.push(("M".to_string(), path_part.to_string()));
+                }
+            } else {
+                result.push((change_type.to_string(), path_part.to_string()));
+            }
+        }
+    }
+    result
+}
+
+/// Check if a file's working copy content differs from its state in a given revision.
+///
+/// NOTE: Deliberately omits --ignore-working-copy. We need jj to auto-snapshot
+/// the working copy so we compare against the true on-disk state, not a stale snapshot.
+/// Callers should trigger an explicit snapshot before calling this in a loop to avoid
+/// a mid-loop snapshot that could race with concurrent edits.
+fn file_content_differs(cwd: &Path, file_path: &str, revset: &str) -> Result<bool> {
+    use crate::jj::jj_cmd;
+
+    // Use jj diff to compare working copy (@) to the given revset for this specific file
+    // No --ignore-working-copy: we need the real working copy state (see doc comment)
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "diff",
+            "--from",
+            revset,
+            "--to",
+            "@",
+            "--summary",
+            file_path,
+        ])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to compare file: {}", e)))?;
+
+    if !output.status.success() {
+        // If the command fails, assume there's a difference (safer)
+        return Ok(true);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // If there's any output, the file differs
+    Ok(!stdout.trim().is_empty())
+}
+
 fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) -> Result<()> {
     use crate::jj::jj_cmd;
 
@@ -2676,7 +3451,11 @@ fn build_task_revset_pattern(task_id: &str) -> String {
 ///
 /// Uses jj diff --summary with revset-based baseline/final approach.
 /// Returns None if no changes found, otherwise returns list of file paths.
-fn get_task_changed_files(cwd: &Path, task_id: &str) -> Result<Option<Vec<String>>> {
+fn get_task_changed_files(
+    cwd: &Path,
+    task_id: &str,
+    ignore_working_copy: bool,
+) -> Result<Option<Vec<String>>> {
     use crate::jj::jj_cmd;
 
     let pattern = build_task_revset_pattern(task_id);
@@ -2720,17 +3499,21 @@ fn get_task_changed_files(cwd: &Path, task_id: &str) -> Result<Option<Vec<String
     let to_revset = format!("heads({})", pattern);
 
     // Run jj diff --summary to get file paths
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "diff",
-            "--from",
-            &from_revset,
-            "--to",
-            &to_revset,
-            "--summary",
-            "--ignore-working-copy",
-        ])
+    // When checking in-progress task conflicts, skip --ignore-working-copy
+    // to capture the latest working copy state (auto-snapshot)
+    let mut diff_cmd = jj_cmd();
+    diff_cmd.current_dir(cwd).args([
+        "diff",
+        "--from",
+        &from_revset,
+        "--to",
+        &to_revset,
+        "--summary",
+    ]);
+    if ignore_working_copy {
+        diff_cmd.arg("--ignore-working-copy");
+    }
+    let output = diff_cmd
         .output()
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to get diff: {}", e)))?;
 
@@ -2755,20 +3538,31 @@ fn get_task_changed_files(cwd: &Path, task_id: &str) -> Result<Option<Vec<String
 /// M src/auth.ts
 /// A src/new_file.ts
 /// D src/old_file.ts
+/// R src/old_name.ts => src/new_name.ts
 /// ```
+///
+/// Rename lines produce both the old and new path.
 fn parse_diff_summary_files(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            // Format: "M path/to/file" - status char, space, path
-            if line.len() > 2 && line.chars().nth(1) == Some(' ') {
-                Some(line[2..].to_string())
+    let mut result = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.len() > 2 && line.chars().nth(1) == Some(' ') {
+            let change_type = &line[..1];
+            let path_part = &line[2..];
+            if change_type == "R" {
+                // Rename: "R old_path => new_path" - include both paths
+                if let Some((old_path, new_path)) = path_part.split_once(" => ") {
+                    result.push(old_path.to_string());
+                    result.push(new_path.to_string());
+                } else {
+                    result.push(path_part.to_string());
+                }
             } else {
-                None
+                result.push(path_part.to_string());
             }
-        })
-        .collect()
+        }
+    }
+    result
 }
 
 /// Update task details
@@ -2782,9 +3576,21 @@ fn run_update(
     name: Option<String>,
     assignee_arg: Option<String>,
     unassign: bool,
+    data_args: Vec<String>,
 ) -> Result<()> {
     use crate::agents::Assignee;
     use crate::tasks::xml::escape_xml;
+    use crate::validation::is_valid_template_identifier;
+
+    // Parse data arguments (verbatim, no coercion)
+    let data_updates = parse_data_flags(&data_args, false)?;
+
+    // Validate data keys
+    for key in data_updates.keys() {
+        if !is_valid_template_identifier(key) {
+            return Err(AikiError::InvalidDataKey(key.clone()));
+        }
+    }
 
     let events = read_events(cwd)?;
     let mut tasks = materialize_tasks(&events);
@@ -2835,10 +3641,17 @@ fn run_update(
         None // No change
     };
 
+    // Wrap data_updates: Some if non-empty, None if no data flags provided
+    let new_data = if data_updates.is_empty() {
+        None
+    } else {
+        Some(data_updates)
+    };
+
     // Check if there's anything to update
-    if new_priority.is_none() && name.is_none() && new_assignee.is_none() {
+    if new_priority.is_none() && name.is_none() && new_assignee.is_none() && new_data.is_none() {
         let xml = XmlBuilder::new("update").error().build_error(
-            "No updates specified. Use --name, --for, --unassign, or --p0/--p1/--p2/--p3",
+            "No updates specified. Use --name, --data, --for, --unassign, or --p0/--p1/--p2/--p3",
         );
         println!("{}", xml);
         return Ok(());
@@ -2850,6 +3663,7 @@ fn run_update(
         name: name.clone(),
         priority: new_priority,
         assignee: new_assignee.clone(),
+        data: new_data.clone(),
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &event)?;
@@ -2866,17 +3680,45 @@ fn run_update(
         if let Some(ref new_a) = new_assignee {
             task.assignee = new_a.clone();
         }
+        if let Some(ref data) = new_data {
+            for (key, value) in data {
+                if value.is_empty() {
+                    task.data.remove(key);
+                } else {
+                    task.data.insert(key.clone(), value.clone());
+                }
+            }
+        }
     }
 
     // Get updated task for output
     let updated_task = tasks.get(&task_id).expect("Task should exist");
 
-    // Build output
+    // Build output - include data if present
+    let data_xml = if updated_task.data.is_empty() {
+        String::new()
+    } else {
+        let mut fields: Vec<String> = updated_task
+            .data
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "      <field key=\"{}\" value=\"{}\"/>",
+                    escape_xml(k),
+                    escape_xml(v)
+                )
+            })
+            .collect();
+        fields.sort(); // Deterministic output
+        format!("\n    <data>\n{}\n    </data>", fields.join("\n"))
+    };
+
     let content = format!(
-        "  <updated>\n    <task id=\"{}\" name=\"{}\" priority=\"{}\"/>\n  </updated>",
+        "  <updated>\n    <task id=\"{}\" name=\"{}\" priority=\"{}\"/>{}\n  </updated>",
         escape_xml(&updated_task.id),
         escape_xml(&updated_task.name),
-        updated_task.priority
+        updated_task.priority,
+        data_xml
     );
 
     // Get scope set and ready queue for context (now uses updated tasks map)
@@ -2987,6 +3829,106 @@ fn run_run(cwd: &Path, id: String, agent: Option<String>, run_async: bool) -> Re
         run_task_async_with_xml(cwd, &id, options)
     } else {
         run_task_with_xml(cwd, &id, options)
+    }
+}
+
+/// Wait for task(s) to reach a terminal state (closed or stopped)
+fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
+    use crate::tasks::xml::escape_xml;
+    use std::time::{Duration, Instant};
+
+    let poll_interval = Duration::from_millis(500);
+    let timeout = if timeout_secs > 0 {
+        Some(Duration::from_secs(timeout_secs))
+    } else {
+        None
+    };
+    let start = Instant::now();
+
+    // Validate all task IDs exist up front
+    let events = read_events(cwd)?;
+    let tasks = materialize_tasks(&events);
+    for id in &ids {
+        if find_task(&tasks, id).is_none() {
+            return Err(AikiError::TaskNotFound(id.clone()));
+        }
+    }
+
+    // Poll until all tasks are in terminal state
+    loop {
+        let events = read_events(cwd)?;
+        let tasks = materialize_tasks(&events);
+
+        let all_done = ids.iter().all(|id| {
+            find_task(&tasks, id)
+                .map(|t| matches!(t.status, TaskStatus::Closed | TaskStatus::Stopped))
+                .unwrap_or(false)
+        });
+
+        if all_done {
+            // Build XML output with results for each task
+            let mut content = String::new();
+            for id in &ids {
+                if let Some(task) = find_task(&tasks, id) {
+                    let status = task.status.to_string();
+                    let outcome = task
+                        .closed_outcome
+                        .as_ref()
+                        .map(|o| format!(" outcome=\"{}\"", o))
+                        .unwrap_or_default();
+                    let comment = task
+                        .comments
+                        .last()
+                        .map(|c| escape_xml(&c.text))
+                        .unwrap_or_default();
+                    content.push_str(&format!(
+                        "  <task id=\"{}\" name=\"{}\" status=\"{}\"{}>\n    <comment>{}</comment>\n  </task>\n",
+                        id,
+                        escape_xml(&task.name),
+                        status,
+                        outcome,
+                        comment,
+                    ));
+                }
+            }
+            let in_progress = get_in_progress(&tasks);
+            let scope_set = get_current_scope_set(&tasks);
+            let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
+            let xml_scopes = scope_set.to_xml_scopes();
+            let mut builder = XmlBuilder::new("wait");
+            if !xml_scopes.is_empty() {
+                builder = builder.with_scopes(&xml_scopes);
+            }
+            let xml = builder.build(&content, &in_progress, &ready_queue);
+            println!("{}", xml);
+            return Ok(());
+        }
+
+        // Check timeout
+        if let Some(t) = timeout {
+            if start.elapsed() >= t {
+                let mut pending: Vec<String> = Vec::new();
+                for id in &ids {
+                    if let Some(task) = find_task(&tasks, id) {
+                        if !matches!(task.status, TaskStatus::Closed | TaskStatus::Stopped) {
+                            pending.push(id.clone());
+                        }
+                    }
+                }
+                let xml = XmlBuilder::new("wait").error().build_error(&format!(
+                    "Timeout after {}s. Still waiting on: {}",
+                    timeout_secs,
+                    pending.join(", ")
+                ));
+                println!("{}", xml);
+                return Err(AikiError::TaskWaitTimeout {
+                    timeout_secs,
+                    pending: pending.join(", "),
+                });
+            }
+        }
+
+        std::thread::sleep(poll_interval);
     }
 }
 
@@ -3107,72 +4049,81 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
     Ok(())
 }
 
-/// Create task(s) from a template (shared logic for create and start --template)
-fn create_from_template(
-    cwd: &Path,
-    template_name: &str,
-    data_args: &[String],
-    sources: &[String],
-    assignee_override: Option<&str>,
-    p0: bool,
-    p1: bool,
-    _p2: bool,
-    p3: bool,
-) -> Result<String> {
-    use crate::agents::Assignee;
+/// Parameters for creating a task from a template.
+///
+/// This struct provides a unified interface for all template-based task creation:
+/// `task add --template`, `build`, `fix`, and `review`. Each caller sets only the
+/// fields it needs; the rest use defaults.
+#[derive(Default)]
+pub struct TemplateTaskParams {
+    /// Template name (e.g., "aiki/review", "aiki/build")
+    pub template_name: String,
+    /// Data variables for template substitution (key=value pairs)
+    pub data: HashMap<String, String>,
+    /// Source references (e.g., "file:path", "task:id")
+    pub sources: Vec<String>,
+    /// Assignee for the task
+    pub assignee: Option<String>,
+    /// Priority override (if None, resolved from template defaults)
+    pub priority: Option<TaskPriority>,
+    /// When set, create as a child task (generates child ID instead of standalone)
+    pub parent_id: Option<String>,
+    /// Parent name for {{parent.name}} variable (parent.id comes from parent_id)
+    pub parent_name: Option<String>,
+    /// Source metadata for {{source.*}} variables (e.g., source.name, source.id)
+    pub source_data: HashMap<String, String>,
+    /// Additional builtins for {{key}} variables (e.g., scope, scope.name, scope.id)
+    pub builtins: HashMap<String, String>,
+}
+
+/// Create task(s) from a template (shared logic for all template-based task creation)
+///
+/// This is the single code path for creating tasks from templates. Used by:
+/// - `task add --template` (CLI)
+/// - `build` command
+/// - `fix` command
+/// - `review` command
+pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<String> {
     use crate::tasks::templates::{
-        create_tasks_from_template, find_templates_dir, load_template, parse_data_source,
-        resolve_data_source, substitute_with_template_name, VariableContext,
+        find_templates_dir, load_template, substitute_with_template_name, VariableContext,
     };
 
-    // Validate source prefixes
-    validate_sources(sources)?;
-
-    // Resolve "prompt" source to actual prompt change_id
-    let sources = resolve_prompt_sources(cwd, sources.to_vec())?;
-
-    // Parse data arguments (with type coercion for template variable substitution)
-    let mut data = parse_data_flags(data_args, true)?;
+    let template_name = &params.template_name;
 
     // Find and load template
     let templates_dir = find_templates_dir(cwd)?;
     let template = load_template(template_name, &templates_dir)?;
 
-    // Determine priority
-    let priority = if p0 {
-        TaskPriority::P0
-    } else if p1 {
-        TaskPriority::P1
-    } else if p3 {
-        TaskPriority::P3
+    // Determine priority: explicit param > template default > P2
+    let priority = if let Some(p) = params.priority {
+        p
     } else if let Some(ref p) = template.defaults.priority {
         TaskPriority::from_str(p).unwrap_or_default()
     } else {
         TaskPriority::default()
     };
 
-    // Determine assignee
-    let assignee = if let Some(a) = assignee_override {
-        match Assignee::from_str(a) {
-            Some(parsed) => parsed.as_str().map(|s| s.to_string()),
-            None => return Err(AikiError::UnknownAssignee(a.to_string())),
-        }
+    // Determine assignee: explicit param > template default > None
+    let assignee = if params.assignee.is_some() {
+        params.assignee.clone()
     } else if let Some(ref a) = template.defaults.assignee {
         Some(a.clone())
     } else {
         None
     };
 
-    // Merge data: template defaults + CLI overrides (CLI wins)
+    // Merge data: template defaults first, then params.data overrides
+    let mut data = HashMap::new();
     for (key, value) in &template.defaults.data {
-        if !data.contains_key(key) {
-            // Convert serde_json::Value to string
-            let value_str = match value {
-                serde_json::Value::String(s) => s.clone(),
-                _ => value.to_string(),
-            };
-            data.insert(key.clone(), value_str);
-        }
+        let value_str = match value {
+            serde_json::Value::String(s) => s.clone(),
+            _ => value.to_string(),
+        };
+        data.insert(key.clone(), value_str);
+    }
+    // Params data overrides template defaults
+    for (key, value) in &params.data {
+        data.insert(key.clone(), value.clone());
     }
 
     // Build variable context
@@ -3187,16 +4138,42 @@ fn create_from_template(
     if let Some(ref t) = template.defaults.task_type {
         ctx.set_builtin("type", t);
     }
-    if let Some(source) = sources.first() {
+    if let Some(source) = params.sources.first() {
         ctx.set_source(source);
+    }
+
+    // Apply additional source data (overrides auto-parsed source data)
+    for (key, value) in &params.source_data {
+        ctx.set_source_data(key, value);
+    }
+
+    // Apply parent variables
+    if let Some(ref parent_id) = params.parent_id {
+        ctx.set_parent("id", parent_id);
+    }
+    if let Some(ref parent_name) = params.parent_name {
+        ctx.set_parent("name", parent_name);
+    }
+
+    // Apply additional builtins
+    for (key, value) in &params.builtins {
+        ctx.set_builtin(key, value);
     }
 
     // Substitute variables in parent task name
     let parent_name =
         substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
 
-    // Generate task ID
-    let task_id = generate_task_id(&parent_name);
+    // Generate task ID: child ID if parent_id is set, standalone otherwise
+    let task_id = if let Some(ref parent_id) = params.parent_id {
+        let events = read_events(cwd)?;
+        let current_tasks = materialize_tasks(&events);
+        let task_ids: Vec<&str> = current_tasks.keys().map(|s| s.as_str()).collect();
+        let subtask_num = get_next_subtask_number(parent_id, task_ids.into_iter());
+        generate_child_id(parent_id, subtask_num)
+    } else {
+        generate_task_id(&parent_name)
+    };
 
     // Set id in context for substitution
     ctx.set_builtin("id", &task_id);
@@ -3222,7 +4199,7 @@ fn create_from_template(
         task_type: template.parent.task_type.clone(),
         priority,
         assignee: assignee.clone(),
-        sources: sources.clone(),
+        sources: params.sources.clone(),
         template: Some(template.template_id()),
         working_copy: get_working_copy_change_id(cwd),
         instructions: parent_instructions,
@@ -3239,7 +4216,7 @@ fn create_from_template(
             &template,
             template_name,
             subtasks_source_str,
-            &sources,
+            &params.sources,
             &task_id,
             &ctx,
             priority,
@@ -3254,11 +4231,12 @@ fn create_from_template(
             &template,
             template_name,
             &task_id,
-            &sources,
+            &params.sources,
             priority,
             &assignee,
             &data,
             timestamp,
+            &params.builtins,
         )?;
     }
 
@@ -3388,6 +4366,7 @@ fn create_static_subtasks(
     parent_assignee: &Option<String>,
     parent_data: &std::collections::HashMap<String, String>,
     timestamp: chrono::DateTime<chrono::Utc>,
+    extra_builtins: &HashMap<String, String>,
 ) -> Result<()> {
     use crate::tasks::templates::substitute_with_template_name;
 
@@ -3447,6 +4426,10 @@ fn create_static_subtasks(
         if let Some(source) = sources.first() {
             subtask_ctx.set_source(source);
             subtask_ctx.set_parent("source", source);
+        }
+        // Apply extra builtins from caller (e.g., scope, scope.name, scope.id for review)
+        for (key, value) in extra_builtins {
+            subtask_ctx.set_builtin(key, value);
         }
 
         // Substitute variables in subtask name and instructions using subtask context
@@ -3553,5 +4536,76 @@ D src/old_file.ts
         let output = "";
         let files = parse_diff_summary_files(output);
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_basic() {
+        let output = "M src/auth.rs\nA src/new_file.rs\nD src/old_file.rs\n";
+        let changes = parse_diff_summary_with_types(output);
+
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0], ("M".to_string(), "src/auth.rs".to_string()));
+        assert_eq!(changes[1], ("A".to_string(), "src/new_file.rs".to_string()));
+        assert_eq!(changes[2], ("D".to_string(), "src/old_file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_empty() {
+        let output = "";
+        let changes = parse_diff_summary_with_types(output);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_single() {
+        let output = "M path/to/file.rs\n";
+        let changes = parse_diff_summary_with_types(output);
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0], ("M".to_string(), "path/to/file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_rename() {
+        let output = "M src/auth.rs\nR src/old_name.rs => src/new_name.rs\nA src/added.rs\n";
+        let changes = parse_diff_summary_with_types(output);
+
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[0], ("M".to_string(), "src/auth.rs".to_string()));
+        // Rename is split into D (old) + A (new)
+        assert_eq!(changes[1], ("D".to_string(), "src/old_name.rs".to_string()));
+        assert_eq!(changes[2], ("A".to_string(), "src/new_name.rs".to_string()));
+        assert_eq!(changes[3], ("A".to_string(), "src/added.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_with_types_rename_only() {
+        let output = "R old.rs => new.rs\n";
+        let changes = parse_diff_summary_with_types(output);
+
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0], ("D".to_string(), "old.rs".to_string()));
+        assert_eq!(changes[1], ("A".to_string(), "new.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_rename() {
+        let output = "M src/auth.rs\nR src/old_name.rs => src/new_name.rs\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], "src/auth.rs");
+        assert_eq!(files[1], "src/old_name.rs");
+        assert_eq!(files[2], "src/new_name.rs");
+    }
+
+    #[test]
+    fn test_parse_diff_summary_files_rename_only() {
+        let output = "R old.rs => new.rs\n";
+        let files = parse_diff_summary_files(output);
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], "old.rs");
+        assert_eq!(files[1], "new.rs");
     }
 }

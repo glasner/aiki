@@ -125,7 +125,7 @@ pub struct SubtaskFrontmatter {
     pub priority: Option<String>,
     /// Override assignee
     pub assignee: Option<String>,
-    /// Sources for this subtask (e.g., "task:{source.task_id}")
+    /// Sources for this subtask (e.g., "task:{source.id}")
     #[serde(default)]
     pub sources: Vec<String>,
     /// Additional data

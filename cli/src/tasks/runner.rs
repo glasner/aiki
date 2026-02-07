@@ -8,8 +8,8 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use crate::agents::{
-    get_runtime, AgentSessionResult, AgentSpawnOptions, AgentType, Assignee, BackgroundHandle,
-    MonitoredChild,
+    detect_agent_from_process_tree, get_runtime, AgentSessionResult, AgentSpawnOptions, AgentType,
+    Assignee, BackgroundHandle, MonitoredChild,
 };
 use crate::error::{AikiError, Result};
 use crate::session::find_task_session;
@@ -99,11 +99,13 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                 )));
             }
             Some(Assignee::Unassigned) | None => {
-                return Err(AikiError::TaskNoAssignee(task_id.to_string()));
+                detect_agent_from_process_tree()
+                    .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
             }
         }
     } else {
-        return Err(AikiError::TaskNoAssignee(task_id.to_string()));
+        detect_agent_from_process_tree()
+            .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
     };
 
     // Get runtime for the agent
@@ -427,11 +429,13 @@ pub fn task_run_async(
                 )));
             }
             Some(Assignee::Unassigned) | None => {
-                return Err(AikiError::TaskNoAssignee(task_id.to_string()));
+                detect_agent_from_process_tree()
+                    .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
             }
         }
     } else {
-        return Err(AikiError::TaskNoAssignee(task_id.to_string()));
+        detect_agent_from_process_tree()
+            .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
     };
 
     // Get runtime for the agent

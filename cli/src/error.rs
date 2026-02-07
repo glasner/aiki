@@ -191,9 +191,6 @@ Alternatively, install the agent globally:
     #[error("Task not found: '{0}'")]
     TaskNotFound(String),
 
-    #[error("Cannot create subtask: parent task '{0}' is closed")]
-    ParentTaskClosed(String),
-
     #[error("No tasks in ready queue")]
     NoTasksReady,
 
@@ -217,6 +214,9 @@ Alternatively, install the agent globally:
 
     #[error("Invalid --data format: '{0}'. Expected: --data key=value")]
     InvalidDataFormat(String),
+
+    #[error("Invalid data key: '{0}'. Keys must be lowercase with underscores (e.g., 'my_key')")]
+    InvalidDataKey(String),
 
     #[error("Task '{0}' has no assignee and no --agent specified")]
     TaskNoAssignee(String),
@@ -270,9 +270,28 @@ Alternatively, install the agent globally:
     #[error("{0}")]
     MissingSourceTask(String),
 
+    // Undo errors
+    #[error("Task has no file changes to undo")]
+    TaskNoChanges,
+
+    #[error("Cannot undo - files have been modified since task completed:\n{0}")]
+    UndoConflict(String),
+
+    #[error("Cannot undo - in-progress tasks have modified the same files:\n{0}")]
+    UndoInProgressConflict(String),
+
+    #[error("Plan has no completed subtasks to undo")]
+    NoCompletedSubtasks,
+
     // Review system errors
     #[error("Nothing to review - no closed tasks in session")]
     NothingToReview,
+
+    #[error("Timeout after {timeout_secs}s waiting for tasks: {pending}")]
+    TaskWaitTimeout {
+        timeout_secs: u64,
+        pending: String,
+    },
 
     // Generic wrapper for underlying errors
     #[error(transparent)]

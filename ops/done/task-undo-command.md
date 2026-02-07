@@ -88,12 +88,18 @@ aiki task undo task1 task2 task3
 
 **Algorithm:**
 1. Collect all files modified by any of the tasks being undone
-2. For each file, find the earliest baseline (parent of first change among tasks)
+2. For each file, compute its baseline using the **union revset**:
+   - Let `union = (task=id1 | task=id2 | task=id3)` (all commits from all tasks being undone)
+   - Baseline for each file = `parents(roots(union))` — the parents of the earliest commits in the combined set
+   - This uses JJ's topological ancestry, which is well-defined even in non-linear history
+   - For per-file precision: if a file was only touched by a subset of tasks, the baseline is `parents(roots(union & <commits touching file>))`
 3. Compute combined final state: `heads(task=id1 | task=id2 | task=id3)`
-4. Conflict = working copy differs from combined final state (someone else changed it after)
+4. Conflict detection per the algorithm above (including special cases for added/deleted files)
 5. Restore each file from its per-file baseline
 
-**Order Independence:** The command argument order (`task1 task2 task3` vs `task3 task1 task2`) produces identical results because we compute baselines based on commit topology, not argument order.
+**Order Independence:** The command argument order (`task1 task2 task3` vs `task3 task1 task2`) produces identical results because baselines are computed from the topological structure of the union revset, not argument order.
+
+**Why `parents(roots(...))` is deterministic:** JJ revsets like `roots()` and `parents()` are defined over the DAG topology. Even with non-linear history (merges, parallel branches), `roots(S)` returns commits in `S` that have no ancestors in `S`, and `parents()` returns their immediate predecessors. This is fully deterministic for any given DAG state.
 
 ### Plan Subtasks Undo
 
@@ -150,7 +156,10 @@ For each file modified by the task:
 
 1. **Get task's final state** from `heads(task=<id>)`
 2. **Get current working state** from working copy
-3. **Compare:** If file differs from task's final state → conflict
+3. **Handle special cases before comparing:**
+   - If the task **added** the file and it no longer exists in working copy → **skip** (already gone, undo is a no-op for this file)
+   - If the task **deleted** the file and it now exists in working copy → **conflict** (someone re-created it)
+4. **Compare:** If file content differs from task's final state → conflict
 
 ### Detection Algorithm (Multiple Tasks)
 
@@ -158,9 +167,10 @@ For union-undo of multiple tasks:
 
 1. **Compute combined final state:** `heads(task=id1 | task=id2 | ...)`
 2. **For each file** modified by any task being undone:
-   - Get file content from combined final state
-   - Get file content from working copy
-   - If they differ → conflict (someone else changed it after these tasks)
+   - Determine whether the combined final state **adds**, **modifies**, or **deletes** the file
+   - **Added by tasks, missing from working copy** → **skip** (already gone, no-op)
+   - **Deleted by tasks, present in working copy** → **conflict** (re-created after deletion)
+   - **Otherwise:** compare file content from combined final state to working copy; if they differ → conflict
 3. This correctly handles tasks that touched the same file sequentially
 
 ### Conflict Scenarios
@@ -175,19 +185,31 @@ For union-undo of multiple tasks:
 
 ### In-Progress Task Check
 
-Before undoing, detect if any **other** in-progress tasks have modified the same files:
+Before undoing, detect if any **other** in-progress tasks have modified the same files.
+
+**Source of truth:** Use task metadata from the aiki task store (the `aiki/tasks` branch), not commit description markers. This avoids issues with rebased/squashed commits losing description markers.
+
+**Scoping:** Only check tasks whose commits are ancestors of the current working copy (`::@`). This excludes in-progress tasks from other workspaces or branches that don't affect the current state.
 
 ```bash
-# Get files modified by in-progress tasks (not being undone)
-jj log -r 'description(glob:"aiki:task:*") & ~description(glob:"aiki:task:*:closed")' --no-graph -T 'change_id'
+# 1. Query in-progress tasks from task store (not from commit descriptions)
+aiki task list --status in_progress --format json
+
+# 2. For each in-progress task, check if its commits are in current workspace
+jj log -r '<task-revset> & ::@' --no-graph -T 'change_id'
+
+# 3. Get modified files for workspace-scoped in-progress tasks
+jj diff -r '<task-revset> & ::@' --summary
 ```
 
 **Algorithm:**
-1. Query all in-progress task change IDs (have task marker but no `:closed` marker)
+1. Query in-progress tasks from the aiki task store (structured metadata, not description matching)
 2. Exclude the task(s) being undone from this set
-3. For each remaining in-progress task, get its modified files via `jj diff`
-4. Intersect with files to be undone
-5. If intersection is non-empty → **conflict** (unless `--force`)
+3. For each remaining in-progress task, scope to current workspace: intersect task commits with `::@` (ancestors of working copy)
+4. Skip tasks with no commits in the current workspace (they're on other branches)
+5. For workspace-scoped tasks, get their modified files via `jj diff`
+6. Intersect with files to be undone
+7. If intersection is non-empty → **conflict** (unless `--force`)
 
 **Error message:**
 ```
@@ -333,10 +355,14 @@ let to_revset = format!("heads({})", pattern);
        cwd: &Path,
        task_ids: &[String]
    ) -> Result<HashMap<PathBuf, String>> {
-       // For each file modified by any task:
-       // 1. Find which tasks touched it
-       // 2. Find the earliest task (by commit order)
-       // 3. Baseline = parent of that task's first commit touching this file
+       // 1. Build union revset: (task=id1 | task=id2 | ...)
+       // 2. Get all files modified across the union via jj diff
+       // 3. For each file:
+       //    a. Find which commits in the union touched this file
+       //    b. Compute roots() of those commits (topological earliest)
+       //    c. Baseline = parents(roots(...)) for this file
+       // 4. Optimization: if all files share the same roots, use a single
+       //    parents(roots(union)) baseline for all files
        // Returns map of file -> baseline revset
    }
    ```
@@ -358,9 +384,14 @@ let to_revset = format!("heads({})", pattern);
        cwd: &Path,
        task_ids: &[String],
        files: &[PathBuf]
-   ) -> Result<Vec<PathBuf>> {
-       // Compare working copy with combined final state
-       // Return files that differ (modified by someone else after tasks)
+   ) -> Result<ConflictReport> {
+       // For each file in the combined final state:
+       // 1. Determine change type (added, modified, deleted by tasks)
+       // 2. Check working copy state:
+       //    - Added by tasks + missing from WC → skip (no-op)
+       //    - Deleted by tasks + present in WC → conflict
+       //    - Otherwise: compare content, differ → conflict
+       // Return ConflictReport { conflicts: Vec<PathBuf>, skipped: Vec<PathBuf> }
    }
    ```
 
@@ -371,9 +402,13 @@ let to_revset = format!("heads({})", pattern);
        task_ids: &[String],  // tasks being undone
        files: &[PathBuf]
    ) -> Result<Vec<(String, PathBuf)>> {
-       // Find in-progress tasks not in task_ids
-       // Get their modified files
-       // Return (task_id, file) pairs that conflict
+       // 1. Query in-progress tasks from task store (not descriptions)
+       // 2. Exclude task_ids being undone
+       // 3. For each remaining task, scope to current workspace:
+       //    jj log -r '<task-revset> & ::@' to check relevance
+       // 4. Skip tasks with no commits in ::@ (other branches)
+       // 5. Get modified files for workspace-scoped tasks
+       // 6. Return (task_id, file) pairs that overlap with files
    }
    ```
 

@@ -31,25 +31,14 @@ impl AgentRuntime for CodexRuntime {
     }
 
     fn spawn_blocking(&self, options: &AgentSpawnOptions) -> Result<AgentSessionResult> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn codex process with prompt
         // Uses `codex exec` for non-interactive execution
+        // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
         let output = Command::new("codex")
             .current_dir(&options.cwd)
-            .args(["exec", &prompt])
+            .args(["exec", "--full-auto", &prompt])
             .output();
 
         match output {
@@ -82,25 +71,14 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
     }
 
     fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn codex process detached from parent
         // The process runs independently and continues after parent exits
+        // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
         let child = Command::new("codex")
             .current_dir(&options.cwd)
-            .args(["exec", &prompt])
+            .args(["exec", "--full-auto", &prompt])
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
             // Mark as background session for mode detection
@@ -127,24 +105,13 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
     }
 
     fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn codex process - keep Child handle for monitoring
+        // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
         let child = Command::new("codex")
             .current_dir(&options.cwd)
-            .args(["exec", &prompt])
+            .args(["exec", "--full-auto", &prompt])
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
             // Mark as monitored session for mode detection
