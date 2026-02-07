@@ -80,7 +80,12 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                     },
                 );
             }
-            TaskEvent::Started { task_ids, session_id, timestamp, .. } => {
+            TaskEvent::Started {
+                task_ids,
+                session_id,
+                timestamp,
+                ..
+            } => {
                 for task_id in task_ids {
                     if let Some(task) = tasks.get_mut(task_id) {
                         task.status = TaskStatus::InProgress;
@@ -123,7 +128,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
             TaskEvent::CommentAdded {
                 task_ids,
                 text,
-                data,
+                data: _,
                 timestamp,
             } => {
                 for task_id in task_ids {
@@ -131,7 +136,6 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         task.comments.push(TaskComment {
                             id: None, // Change ID not available in this code path
                             text: text.clone(),
-                            data: data.clone(),
                             timestamp: *timestamp,
                         });
                     }
@@ -142,6 +146,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                 name,
                 priority,
                 assignee,
+                data,
                 ..
             } => {
                 if let Some(task) = tasks.get_mut(task_id) {
@@ -154,6 +159,16 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                     // Handle assignee: Some(Some(a)) = assign, Some(None) = unassign
                     if let Some(new_assignee) = assignee {
                         task.assignee = new_assignee.clone();
+                    }
+                    // Merge data: empty values remove keys, non-empty values add/update
+                    if let Some(new_data) = data {
+                        for (key, value) in new_data {
+                            if value.is_empty() {
+                                task.data.remove(key);
+                            } else {
+                                task.data.insert(key.clone(), value.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -169,9 +184,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
 /// This is needed when generating followup tasks that need to reference specific comments
 /// via `source: comment:<change_id>`.
 #[must_use]
-pub fn materialize_tasks_with_ids(
-    events: &[super::storage::EventWithId],
-) -> HashMap<String, Task> {
+pub fn materialize_tasks_with_ids(events: &[super::storage::EventWithId]) -> HashMap<String, Task> {
     let mut tasks: HashMap<String, Task> = HashMap::new();
 
     for event_with_id in events {
@@ -272,7 +285,7 @@ pub fn materialize_tasks_with_ids(
             TaskEvent::CommentAdded {
                 task_ids,
                 text,
-                data,
+                data: _,
                 timestamp,
             } => {
                 for task_id in task_ids {
@@ -280,7 +293,6 @@ pub fn materialize_tasks_with_ids(
                         task.comments.push(TaskComment {
                             id: Some(change_id.clone()), // Include the change_id as comment ID
                             text: text.clone(),
-                            data: data.clone(),
                             timestamp: *timestamp,
                         });
                     }
@@ -291,6 +303,7 @@ pub fn materialize_tasks_with_ids(
                 name,
                 priority,
                 assignee,
+                data,
                 ..
             } => {
                 if let Some(task) = tasks.get_mut(task_id) {
@@ -302,6 +315,16 @@ pub fn materialize_tasks_with_ids(
                     }
                     if let Some(new_assignee) = assignee {
                         task.assignee = new_assignee.clone();
+                    }
+                    // Merge data: empty values remove keys, non-empty values add/update
+                    if let Some(new_data) = data {
+                        for (key, value) in new_data {
+                            if value.is_empty() {
+                                task.data.remove(key);
+                            } else {
+                                task.data.insert(key.clone(), value.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -584,7 +607,10 @@ pub fn get_ready_queue_for_scope_set<'a>(
 /// - Tasks assigned to "human"
 /// - Tasks assigned to other agents
 #[must_use]
-pub fn get_ready_queue_for_agent<'a>(tasks: &'a HashMap<String, Task>, agent: &AgentType) -> Vec<&'a Task> {
+pub fn get_ready_queue_for_agent<'a>(
+    tasks: &'a HashMap<String, Task>,
+    agent: &AgentType,
+) -> Vec<&'a Task> {
     let mut ready: Vec<&Task> = tasks
         .values()
         .filter(|t| t.status == TaskStatus::Open)
@@ -1085,8 +1111,14 @@ mod tests {
         let pos_1 = ids.iter().position(|id| *id == "parent.1").unwrap();
         let pos_1_1 = ids.iter().position(|id| *id == "parent.1.1").unwrap();
         let pos_1_2 = ids.iter().position(|id| *id == "parent.1.2").unwrap();
-        assert!(pos_1_1 < pos_1, "Grandsubtask 1.1 should come before Child 1");
-        assert!(pos_1_2 < pos_1, "Grandsubtask 1.2 should come before Child 1");
+        assert!(
+            pos_1_1 < pos_1,
+            "Grandsubtask 1.1 should come before Child 1"
+        );
+        assert!(
+            pos_1_2 < pos_1,
+            "Grandsubtask 1.2 should come before Child 1"
+        );
     }
 
     #[test]
@@ -1478,7 +1510,7 @@ mod tests {
         assert!(ids.contains(&"parent.1"));
         assert!(ids.contains(&"parent.2"));
         assert!(!ids.contains(&"root1")); // Root not included
-        // Verify priority sorting (P0 first)
+                                          // Verify priority sorting (P0 first)
         assert_eq!(ready[0].id, "parent.1");
     }
 
@@ -1711,6 +1743,7 @@ mod tests {
                 name: Some("Updated name".to_string()),
                 priority: None,
                 assignee: None,
+                data: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1744,6 +1777,7 @@ mod tests {
                 name: None,
                 priority: Some(TaskPriority::P0),
                 assignee: None,
+                data: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1777,6 +1811,7 @@ mod tests {
                 name: Some("New name".to_string()),
                 priority: Some(TaskPriority::P1),
                 assignee: None,
+                data: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1839,6 +1874,7 @@ mod tests {
                 name: Some("Fix critical bug".to_string()),
                 priority: Some(TaskPriority::P0),
                 assignee: None,
+                data: None,
                 timestamp: base_time + chrono::Duration::seconds(5),
             },
         ];
@@ -1921,11 +1957,15 @@ mod tests {
             name: Some("New name".to_string()),
             priority: None,
             assignee: None,
+            data: None,
             timestamp: Utc::now(),
         }];
 
         let tasks = materialize_tasks(&events);
-        assert!(tasks.is_empty(), "No task should be created from Update event alone");
+        assert!(
+            tasks.is_empty(),
+            "No task should be created from Update event alone"
+        );
     }
 
     #[test]
@@ -1938,7 +1978,10 @@ mod tests {
         }];
 
         let tasks = materialize_tasks(&events);
-        assert!(tasks.is_empty(), "No task should be created from CommentAdded event alone");
+        assert!(
+            tasks.is_empty(),
+            "No task should be created from CommentAdded event alone"
+        );
     }
 
     #[test]
@@ -1950,7 +1993,10 @@ mod tests {
         }];
 
         let tasks = materialize_tasks(&events);
-        assert!(tasks.is_empty(), "No task should be created from Reopened event alone");
+        assert!(
+            tasks.is_empty(),
+            "No task should be created from Reopened event alone"
+        );
     }
 
     // Tests for assignee-based filtering
@@ -1980,9 +2026,13 @@ mod tests {
     #[test]
     fn test_get_ready_queue_for_agent_unassigned() {
         // Unassigned tasks are visible to all agents
-        let events = vec![
-            make_created_event_with_assignee("task1", "Unassigned", TaskPriority::P2, 1, None),
-        ];
+        let events = vec![make_created_event_with_assignee(
+            "task1",
+            "Unassigned",
+            TaskPriority::P2,
+            1,
+            None,
+        )];
         let tasks = materialize_tasks(&events);
 
         let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
@@ -1995,9 +2045,13 @@ mod tests {
     #[test]
     fn test_get_ready_queue_for_agent_assigned_to_self() {
         // Tasks assigned to an agent are visible only to that agent
-        let events = vec![
-            make_created_event_with_assignee("task1", "For Claude", TaskPriority::P2, 1, Some("claude-code")),
-        ];
+        let events = vec![make_created_event_with_assignee(
+            "task1",
+            "For Claude",
+            TaskPriority::P2,
+            1,
+            Some("claude-code"),
+        )];
         let tasks = materialize_tasks(&events);
 
         let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
@@ -2010,9 +2064,13 @@ mod tests {
     #[test]
     fn test_get_ready_queue_for_agent_human_task() {
         // Tasks assigned to human are not visible to agents
-        let events = vec![
-            make_created_event_with_assignee("task1", "For Human", TaskPriority::P2, 1, Some("human")),
-        ];
+        let events = vec![make_created_event_with_assignee(
+            "task1",
+            "For Human",
+            TaskPriority::P2,
+            1,
+            Some("human"),
+        )];
         let tasks = materialize_tasks(&events);
 
         let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
@@ -2027,9 +2085,27 @@ mod tests {
         // Mixed assignees - agent should see only relevant tasks
         let events = vec![
             make_created_event_with_assignee("unassigned", "Unassigned", TaskPriority::P3, 4, None),
-            make_created_event_with_assignee("for_claude", "For Claude", TaskPriority::P2, 3, Some("claude-code")),
-            make_created_event_with_assignee("for_codex", "For Codex", TaskPriority::P1, 2, Some("codex")),
-            make_created_event_with_assignee("for_human", "For Human", TaskPriority::P0, 1, Some("human")),
+            make_created_event_with_assignee(
+                "for_claude",
+                "For Claude",
+                TaskPriority::P2,
+                3,
+                Some("claude-code"),
+            ),
+            make_created_event_with_assignee(
+                "for_codex",
+                "For Codex",
+                TaskPriority::P1,
+                2,
+                Some("codex"),
+            ),
+            make_created_event_with_assignee(
+                "for_human",
+                "For Human",
+                TaskPriority::P0,
+                1,
+                Some("human"),
+            ),
         ];
         let tasks = materialize_tasks(&events);
 
@@ -2051,8 +2127,20 @@ mod tests {
     fn test_get_ready_queue_for_human() {
         let events = vec![
             make_created_event_with_assignee("unassigned", "Unassigned", TaskPriority::P3, 4, None),
-            make_created_event_with_assignee("for_claude", "For Claude", TaskPriority::P2, 3, Some("claude-code")),
-            make_created_event_with_assignee("for_human", "For Human", TaskPriority::P0, 1, Some("human")),
+            make_created_event_with_assignee(
+                "for_claude",
+                "For Claude",
+                TaskPriority::P2,
+                3,
+                Some("claude-code"),
+            ),
+            make_created_event_with_assignee(
+                "for_human",
+                "For Human",
+                TaskPriority::P0,
+                1,
+                Some("human"),
+            ),
         ];
         let tasks = materialize_tasks(&events);
 
@@ -2068,9 +2156,27 @@ mod tests {
     fn test_get_ready_queue_for_agent_scoped() {
         let events = vec![
             make_created_event_with_assignee("parent", "Parent", TaskPriority::P2, 5, None),
-            make_created_event_with_assignee("parent.1", "Child Unassigned", TaskPriority::P2, 4, None),
-            make_created_event_with_assignee("parent.2", "Child For Claude", TaskPriority::P1, 3, Some("claude-code")),
-            make_created_event_with_assignee("parent.3", "Child For Human", TaskPriority::P0, 2, Some("human")),
+            make_created_event_with_assignee(
+                "parent.1",
+                "Child Unassigned",
+                TaskPriority::P2,
+                4,
+                None,
+            ),
+            make_created_event_with_assignee(
+                "parent.2",
+                "Child For Claude",
+                TaskPriority::P1,
+                3,
+                Some("claude-code"),
+            ),
+            make_created_event_with_assignee(
+                "parent.3",
+                "Child For Human",
+                TaskPriority::P0,
+                2,
+                Some("human"),
+            ),
         ];
         let tasks = materialize_tasks(&events);
 
@@ -2079,7 +2185,8 @@ mod tests {
             scopes: vec!["parent".to_string()],
         };
 
-        let scoped_queue = get_ready_queue_for_agent_scoped(&tasks, &scope_set, &AgentType::ClaudeCode);
+        let scoped_queue =
+            get_ready_queue_for_agent_scoped(&tasks, &scope_set, &AgentType::ClaudeCode);
 
         // Claude sees subtasks: unassigned (P2), for_claude (P1)
         // Sorted by priority: P1 first
@@ -2100,11 +2207,7 @@ mod tests {
         }
     }
 
-    fn make_started_event_with_time(
-        task_id: &str,
-        session_id: &str,
-        hours_ago: i64,
-    ) -> TaskEvent {
+    fn make_started_event_with_time(task_id: &str, session_id: &str, hours_ago: i64) -> TaskEvent {
         TaskEvent::Started {
             task_ids: vec![task_id.to_string()],
             agent_type: "claude-code".to_string(),

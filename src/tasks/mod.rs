@@ -90,6 +90,10 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         }
     }
 
+    // Detect current session early - needed for both session filtering and start event
+    let session_match = find_active_session(cwd);
+    let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
+
     // Get current in-progress tasks to auto-stop
     // But exclude parent tasks when starting their subtasks
     let parent_ids_to_preserve: std::collections::HashSet<String> = task_ids
@@ -100,8 +104,16 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         })
         .collect();
 
+    // Only auto-stop tasks explicitly claimed by THIS session.
+    // Tasks claimed by other sessions or unclaimed tasks are left alone.
+    // This prevents agents from stopping each other's tasks (e.g., Codex agents
+    // that don't create sessions would otherwise auto-stop each other).
     let current_in_progress_ids: Vec<String> = get_in_progress(&tasks)
         .iter()
+        .filter(|t| match (&t.claimed_by_session, &our_session_id) {
+            (Some(claimed), Some(ours)) => claimed == ours, // Ours → auto-stop
+            _ => false,                                      // Everything else → leave alone
+        })
         .map(|t| t.id.clone())
         .filter(|id| !parent_ids_to_preserve.contains(id))
         .collect();
@@ -128,13 +140,12 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         write_event(cwd, &stop_event)?;
     }
 
-    // Get session info
-    let session_match = find_active_session(cwd);
+    // Reuse session detected earlier for start event
     let agent_type_str = session_match
         .as_ref()
         .map(|m| m.agent_type.as_str().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let session_id = session_match.as_ref().map(|m| m.session_id.clone());
+    let session_id = our_session_id;
 
     // Create started event
     let timestamp = chrono::Utc::now();
@@ -178,6 +189,29 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
     })
 }
 
+/// Reopen a task if it is closed. No-op if the task is not closed or not found.
+///
+/// Used when adding subtasks to a closed parent — the parent must be reopened
+/// before new children can be created.
+pub fn reopen_if_closed(
+    cwd: &Path,
+    task_id: &str,
+    tasks: &std::collections::HashMap<String, Task>,
+    reason: &str,
+) -> Result<()> {
+    if let Some(task) = tasks.get(task_id) {
+        if task.status == TaskStatus::Closed {
+            let reopen_event = TaskEvent::Reopened {
+                task_id: task_id.to_string(),
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now(),
+            };
+            write_event(cwd, &reopen_event)?;
+        }
+    }
+    Ok(())
+}
+
 /// Reassign a task to a new agent.
 ///
 /// Creates an Updated event to change the task's assignee field.
@@ -187,6 +221,7 @@ pub fn reassign_task(cwd: &Path, task_id: &str, new_assignee: &str) -> Result<()
         name: None,
         priority: None,
         assignee: Some(Some(new_assignee.to_string())), // Some(Some(x)) = assign to x
+        data: None,
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &update_event)?;

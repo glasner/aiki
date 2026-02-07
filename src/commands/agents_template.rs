@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.9";
+pub const AIKI_BLOCK_VERSION: &str = "1.11";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.9">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.11">
 
 ## ⛔ STOP - Read This First
 
@@ -20,7 +20,7 @@ This creates and starts a task in one atomic command (quick-start).
 
 **"Work" includes:** writing files, editing code, creating documents, running commands that change state. Reading files to understand the task is OK before starting.
 
-**FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool, or mental checklists. These do not persist.
+**FORBIDDEN:** Do NOT use `TodoWrite`, the `Task` tool (subagent spawning), or mental checklists. These do not persist. Use `aiki task` for tracking and `aiki task run` for delegation.
 
 ### ❌ WRONG (don't do this)
 ```bash
@@ -151,6 +151,64 @@ aiki fix <review-task-id>
 
 **Note:** `aiki review` without a task ID reviews all closed tasks in the current session.
 
+### Delegating Work to Subagents
+
+**Do NOT use native subagent tools to spawn agents.** Use `aiki task run` instead — it spawns a separate agent session with full aiki context (task tracking, provenance, hooks).
+
+Native subagent tools include:
+- **Claude Code**: `Task` tool (subagent spawning)
+- **Codex**: `spawn_agent`, `spawn_agents_parallel`
+- **Cursor**: Subagents (`/explore`, `/bash`, etc.) and Background Agents
+
+**Why:** Native subagents run without aiki context. Their work isn't tracked, isn't visible to other agents/humans, and doesn't persist. `aiki task run` gives the spawned agent the same aiki integration you have.
+
+**Scenario 1: User asks you to delegate an existing task**
+```bash
+# Run synchronously (wait for agent to finish)
+aiki task run <task-id>
+
+# Run in background (return immediately)
+aiki task run <task-id> --async
+```
+
+**Scenario 2: User asks you to have a subagent do something new**
+```bash
+# 1. Create a task describing the work
+aiki task add "Description of the work to delegate"
+
+# 2. Run it with a subagent
+aiki task run <task-id>
+```
+
+**Scenario 3: User asks you to run multiple things in parallel**
+```bash
+# Create tasks for each piece of work
+aiki task add "First piece of work"
+aiki task add "Second piece of work"
+
+# Run them concurrently in background
+aiki task run <id1> --async
+aiki task run <id2> --async
+```
+
+### ❌ WRONG: Using native subagents
+```
+# Claude Code - Don't use the Task tool
+Task(prompt="Go fix the tests", subagent_type="general-purpose")
+
+# Codex - Don't use spawn_agent
+spawn_agent(role="fixer", prompt="Go fix the tests")
+
+# Cursor - Don't use subagents or background agents directly
+/bash fix the failing tests
+```
+
+### ✅ CORRECT: Using aiki task run
+```bash
+aiki task add "Fix failing tests in auth module"
+aiki task run <task-id>
+```
+
 ### Quick Reference
 
 ```bash
@@ -186,26 +244,64 @@ aiki task close <task-id> --outcome wont_do --comment "Already handled by existi
 
 # Close multiple tasks
 aiki task close <id1> <id2> <id3> --comment "All done"
+
+# Delegate task to a subagent
+aiki task run <task-id>
+
+# Delegate in background
+aiki task run <task-id> --async
 ```
 
-### Parent + Subtasks (Example)
+### Handling Multiple Requests (Subtasks)
+
+**When a user asks you to do multiple things at once, create a parent task with subtasks.**
+
+This is common when:
+- User provides a list of fixes or changes ("fix X, Y, and Z")
+- A review produces multiple issues to address
+- User pastes a list of items to work through
+- Any request with 2+ distinct pieces of work
+
+**How to do it:**
 
 ```bash
-# Create a parent task
-aiki task add "Review prompt-history findings"
+# 1. Create a parent task for the overall request
+aiki task add "Fix issues from code review" --source prompt
 
-# Add subtasks under the parent
-aiki task add --parent <parent-id> "Check attribution range collisions"
-aiki task add --parent <parent-id> "Define intent summary field"
-aiki task add --parent <parent-id> "Add privacy redaction rules"
+# 2. Add a subtask for each item
+aiki task add --parent <parent-id> "Fix null check in auth handler"
+aiki task add --parent <parent-id> "Add missing error handling in API client"
+aiki task add --parent <parent-id> "Remove unused import in utils.rs"
 
-# Start the parent - this reveals subtasks
+# 3. Start the parent to begin work
 aiki task start <parent-id>
 
-# Work through subtasks, closing each with a comment
+# 4. Work through subtasks one by one
 aiki task start <parent-id>.1
 # ... do the work ...
-aiki task close <parent-id>.1 --comment "Fixed by ..."
+aiki task close <parent-id>.1 --comment "Added null check before token access"
+
+aiki task start <parent-id>.2
+# ... do the work ...
+aiki task close <parent-id>.2 --comment "Wrapped API calls in try/catch"
+```
+
+### ❌ WRONG: One big task for multiple items
+```bash
+# Don't lump everything into one task
+aiki task start "Fix all review issues"
+# ... do 5 different things ...
+aiki task close <id> --comment "Fixed everything"  # No granularity!
+```
+
+### ✅ CORRECT: Parent + subtasks
+```bash
+aiki task add "Fix review issues" --source prompt
+aiki task add --parent <id> "Fix null check in auth"
+aiki task add --parent <id> "Add error handling in API"
+aiki task add --parent <id> "Remove unused import"
+aiki task start <id>
+# Work through each subtask individually
 ```
 
 ### Parent Task Behavior
@@ -214,8 +310,7 @@ When you start a parent task with subtasks:
 1. A `.0` subtask auto-starts: "Review all subtasks and start first batch"
 2. `aiki task` now shows only subtasks (scoped view)
 3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
-4. When all subtasks are closed, the parent auto-starts for final review
-5. Close the parent task when everything is complete
+4. When all subtasks are closed, the parent auto-closes
 
 ### When Planning Work
 
@@ -314,6 +409,7 @@ Example:
 ### Common Pitfalls
 
 - **Using TodoWrite instead of `aiki task`** ← Most common mistake!
+- **Using the Task tool instead of `aiki task run`** ← Native subagents lack aiki context!
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
 - Forgetting to `start` a task before you begin work

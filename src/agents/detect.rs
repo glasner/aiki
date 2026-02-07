@@ -16,7 +16,6 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 /// - "gemini" -> Gemini
 ///
 /// Returns None if no known agent is detected (likely human terminal).
-#[allow(dead_code)] // Part of detection API
 pub fn detect_agent_from_process_tree() -> Option<AgentType> {
     let mut system = System::new();
     // Refresh all processes to populate the process tree
@@ -58,7 +57,6 @@ pub fn detect_agent_from_process_tree() -> Option<AgentType> {
 }
 
 /// Match process name/path to known agent types
-#[allow(dead_code)] // Called by detect_agent_from_process_tree
 fn match_agent(name: &str, exe_path: &str) -> Option<AgentType> {
     // Claude Code
     if name.contains("claude") {

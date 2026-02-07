@@ -167,6 +167,8 @@ pub enum TaskEvent {
         priority: Option<TaskPriority>,
         /// New assignee value. Some(Some("agent")) = assign, Some(None) = unassign, None = no change
         assignee: Option<Option<String>>,
+        /// Data fields to merge (add/update). Empty values mean remove the key.
+        data: Option<HashMap<String, String>>,
         timestamp: DateTime<Utc>,
     },
 }
@@ -179,7 +181,6 @@ pub struct TaskComment {
     pub id: Option<String>,
     pub text: String,
     pub timestamp: DateTime<Utc>,
-    pub data: HashMap<String, String>,
 }
 
 /// Materialized task view (computed from events)

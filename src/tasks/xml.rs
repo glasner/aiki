@@ -264,13 +264,44 @@ pub fn format_added(tasks: &[&Task]) -> String {
     xml
 }
 
+/// Format instructions as a CDATA-wrapped XML element.
+///
+/// Used by both `task start` and `task show` to render instructions consistently.
+#[must_use]
+pub fn format_instructions(instructions: &str) -> String {
+    format!("<instructions><![CDATA[{}]]></instructions>", instructions)
+}
+
 /// Format started tasks output
+///
+/// Includes instructions (CDATA-wrapped) when present on a task,
+/// so agents see what to do immediately upon starting.
 #[must_use]
 pub fn format_started(tasks: &[&Task]) -> String {
     let mut xml = String::from("  <started>\n");
 
     for task in tasks {
-        xml.push_str(&format_task_with_body(task, None));
+        if task.instructions.is_some() {
+            // Expanded form with instructions child element
+            let type_attr = task
+                .task_type
+                .as_ref()
+                .map(|t| format!(r#" type="{}""#, escape_xml(t)))
+                .unwrap_or_default();
+            xml.push_str(&format!(
+                r#"    <task id="{}" priority="{}" name="{}"{}>"#,
+                task.id,
+                task.priority,
+                escape_xml(&task.name),
+                type_attr,
+            ));
+            if let Some(ref instructions) = task.instructions {
+                xml.push_str(&format!("\n      {}", format_instructions(instructions)));
+            }
+            xml.push_str("\n    </task>");
+        } else {
+            xml.push_str(&format_task_with_body(task, None));
+        }
         xml.push('\n');
     }
 

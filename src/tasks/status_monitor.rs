@@ -16,7 +16,7 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use super::id::is_direct_child_of;
+use super::id::{get_child_number, is_direct_child_of};
 use super::storage::read_events;
 use super::types::{Task, TaskStatus};
 use super::manager::materialize_tasks;
@@ -266,7 +266,8 @@ impl StatusMonitor {
             let prefix = if is_last { "└─ " } else { "├─ " };
             let child_prefix = if is_last { "   " } else { "│  " };
 
-            let task_line = self.format_task_line(subtask, prefix, Some(idx));
+            let child_number = get_child_number(&subtask.id);
+            let task_line = self.format_task_line(subtask, prefix, child_number);
             lines.push(task_line);
 
             // Show latest comment for in-progress or recently closed subtasks
@@ -276,7 +277,20 @@ impl StatusMonitor {
                     "{}   └─ {} {}",
                     child_prefix,
                     SYMBOL_COMMENT,
-                    truncate_comment(&latest_comment.text, 55)
+                    format_comment(&latest_comment.text)
+                );
+                lines.push(comment_line);
+            }
+        }
+
+        // Show comments on the parent/root task below the tree
+        if !root_task.comments.is_empty() {
+            lines.push(String::new());
+            for comment in &root_task.comments {
+                let comment_line = format!(
+                    "{} {}",
+                    SYMBOL_COMMENT,
+                    format_comment(&comment.text)
                 );
                 lines.push(comment_line);
             }
@@ -316,19 +330,13 @@ impl StatusMonitor {
             String::new()
         };
 
-        // Root task: short ID; Subtasks: .1), .2), etc.
+        // Root task: short ID; Subtasks: .0), .1), .2), etc.
         let id_display = match subtask_index {
             None => format!("[{}]", &task.id[..8.min(task.id.len())]),
-            Some(idx) => format!(".{})", idx + 1),
+            Some(num) => format!(".{})", num),
         };
 
-        // Truncate name to fit in typical terminal width
-        let max_name_len = 50;
-        let name = if task.name.len() > max_name_len {
-            format!("{}...", &task.name[..max_name_len - 3])
-        } else {
-            task.name.clone()
-        };
+        let name = &task.name;
 
         format!("{}{} {} {}{}", prefix, symbol, id_display, name, elapsed)
     }
@@ -354,8 +362,8 @@ impl StatusMonitor {
             .filter(|t| is_direct_child_of(&t.id, parent_id))
             .collect();
 
-        // Sort by creation time
-        subtasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        // Sort by child number (e.g., .0, .1, .2)
+        subtasks.sort_by_key(|t| get_child_number(&t.id));
 
         subtasks
     }
@@ -394,16 +402,9 @@ fn is_process_alive(_pid: u32) -> bool {
     true
 }
 
-/// Truncate a comment for display
-fn truncate_comment(text: &str, max_len: usize) -> String {
-    // Take first line only
-    let first_line = text.lines().next().unwrap_or("");
-
-    if first_line.len() > max_len {
-        format!("{}...", &first_line[..max_len - 3])
-    } else {
-        first_line.to_string()
-    }
+/// Format a comment for display (first line only)
+fn format_comment(text: &str) -> String {
+    text.lines().next().unwrap_or("").to_string()
 }
 
 #[cfg(test)]
@@ -411,23 +412,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_truncate_comment_short() {
-        let result = truncate_comment("Short comment", 60);
+    fn test_format_comment_short() {
+        let result = format_comment("Short comment");
         assert_eq!(result, "Short comment");
     }
 
     #[test]
-    fn test_truncate_comment_long() {
+    fn test_format_comment_long() {
         let long = "A".repeat(80);
-        let result = truncate_comment(&long, 60);
-        assert_eq!(result.len(), 60);
-        assert!(result.ends_with("..."));
+        let result = format_comment(&long);
+        assert_eq!(result.len(), 80);
     }
 
     #[test]
-    fn test_truncate_comment_multiline() {
+    fn test_format_comment_multiline() {
         let multiline = "First line\nSecond line\nThird line";
-        let result = truncate_comment(multiline, 60);
+        let result = format_comment(multiline);
         assert_eq!(result, "First line");
     }
 

@@ -7,7 +7,6 @@ mod detect;
 pub mod runtime;
 mod types;
 
-#[allow(unused_imports)]
 pub use detect::detect_agent_from_process_tree;
 #[allow(unused_imports)]
 pub use runtime::{

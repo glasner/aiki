@@ -15,16 +15,12 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
-use crate::tasks::templates::{
-    create_tasks_from_template, find_templates_dir, load_template, VariableContext,
-    ID_PLACEHOLDER,
-};
 use crate::tasks::xml::{escape_xml, XmlBuilder};
 use crate::tasks::{
-    find_task, generate_task_id, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_tasks, materialize_tasks_with_ids,
-    read_events, read_events_with_ids, reassign_task, start_task_core,
-    write_event, Task, TaskComment, TaskEvent, TaskPriority,
+    find_task, get_current_scope_set, get_in_progress,
+    get_ready_queue_for_scope_set, materialize_tasks,
+    materialize_tasks_with_ids, read_events, read_events_with_ids, reassign_task,
+    reopen_if_closed, start_task_core, Task, TaskComment,
 };
 
 /// Run the fix command
@@ -87,6 +83,35 @@ fn read_task_id_from_stdin() -> Result<String> {
     Ok(extract_task_id(&input))
 }
 
+/// What was reviewed — determines fix behavior
+enum ReviewTarget {
+    /// Review targeted a task (source: task:<id>)
+    Task(String),
+    /// Review targeted a file (future: ops/next/review-and-fix-files.md)
+    #[allow(dead_code)]
+    File(String),
+    /// Could not determine review target
+    Unknown,
+}
+
+/// Determine what was reviewed by inspecting the review task's sources.
+///
+/// Priority: task > file (only task is supported currently)
+fn get_review_target(review_task: &Task) -> ReviewTarget {
+    // Priority: task > file
+    for source in &review_task.sources {
+        if let Some(task_id) = source.strip_prefix("task:") {
+            return ReviewTarget::Task(task_id.to_string());
+        }
+    }
+    for source in &review_task.sources {
+        if let Some(path) = source.strip_prefix("file:") {
+            return ReviewTarget::File(path.to_string());
+        }
+    }
+    ReviewTarget::Unknown
+}
+
 /// Core fix implementation
 fn run_fix(
     cwd: &Path,
@@ -114,6 +139,16 @@ fn run_fix(
     let review_task = find_task(&tasks, task_id)
         .ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
 
+    // Validate that the input task is actually a review task
+    // Check task_type first, then fall back to template name for backward compatibility
+    // (older review tasks may not have task_type set)
+    if !is_review_task(review_task) {
+        return Err(AikiError::InvalidArgument(format!(
+            "Task {} is not a review task.",
+            task_id
+        )));
+    }
+
     // Get all comments from the review task
     // Note: closing a review requires a comment, so 1 comment = just the closing comment (no issues)
     // More than 1 comment means there are issues to fix
@@ -125,16 +160,39 @@ fn run_fix(
         return Ok(());
     }
 
-    // Find the originally reviewed task to determine followup assignee
-    // The review task's source field contains "task:<id>" of the task that was reviewed
-    let reviewed_task = find_reviewed_task(&tasks, review_task);
+    // Determine what was reviewed and branch on target type
+    let review_target = get_review_target(review_task);
 
-    // Determine assignee for followup task
-    let assignee = determine_followup_assignee(agent_type, reviewed_task);
+    let followup_id = match review_target {
+        ReviewTarget::Task(original_task_id) => {
+            // Fix targets a task — add fix subtask to the original task
+            let original_task = find_task(&tasks, &original_task_id)
+                .ok_or_else(|| AikiError::TaskNotFound(original_task_id.clone()))?;
 
-    // Create followup task from template (agent will create subtasks from comments)
-    let template = template_name.as_deref().unwrap_or("aiki/fix");
-    let followup_id = create_followup_task_from_template(cwd, review_task, &assignee, template)?;
+            // Determine assignee for followup task
+            let assignee = determine_followup_assignee(agent_type, Some(original_task));
+
+            // Create fix subtask on the original task
+            let template = template_name.as_deref().unwrap_or("aiki/fix");
+            create_fix_subtask_on_original(
+                cwd,
+                review_task,
+                original_task,
+                &assignee,
+                template,
+            )?
+        }
+        ReviewTarget::File(_) => {
+            return Err(AikiError::InvalidArgument(
+                "Fixing file-targeted reviews is not yet supported. Only task-targeted reviews can be fixed.".to_string(),
+            ));
+        }
+        ReviewTarget::Unknown => {
+            return Err(AikiError::InvalidArgument(
+                "Could not determine what was reviewed. The review task has no task: or file: source.".to_string(),
+            ));
+        }
+    };
 
     // Re-read tasks to include newly created followup task
     let events = read_events(cwd)?;
@@ -194,15 +252,16 @@ fn output_followup_started(
     in_progress: &[&Task],
     ready: &[&Task],
 ) -> Result<()> {
+    let issue_count = comments.len().saturating_sub(1);
     let mut content = String::new();
     content.push_str(&format!(
         "  <followup task_id=\"{}\" issues_found=\"{}\" status=\"started\">\n",
         escape_xml(followup_id),
-        comments.len()
+        issue_count
     ));
     content.push_str(&format!(
-        "    Created and started followup task with {} subtask(s).\n\n",
-        comments.len()
+        "    Created fix followup subtask under original task ({} issue(s)).\n\n",
+        issue_count
     ));
 
     for (i, comment) in comments.iter().enumerate() {
@@ -234,10 +293,11 @@ fn output_followup_started(
 
 /// Output followup async message (for --async mode)
 fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
+    let issue_count = comments.len().saturating_sub(1);
     let content = format!(
-        "  <started task_id=\"{}\" issues_found=\"{}\">\n    Followup task started in background.\n  </started>",
+        "  <started task_id=\"{}\" issues_found=\"{}\">\n    Fix followup subtask started in background.\n  </started>",
         escape_xml(followup_id),
-        comments.len()
+        issue_count
     );
     let xml = XmlBuilder::new("fix").build(&content, &[], &[]);
     eprintln!("{}", xml);
@@ -246,33 +306,35 @@ fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<
 
 /// Output followup completed message (for blocking mode)
 fn output_followup_completed(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
+    let issue_count = comments.len().saturating_sub(1);
     let content = format!(
-        "  <completed task_id=\"{}\" issues_found=\"{}\">\n    Followup task completed.\n  </completed>",
+        "  <completed task_id=\"{}\" issues_found=\"{}\">\n    Fix followup subtask completed.\n  </completed>",
         escape_xml(followup_id),
-        comments.len()
+        issue_count
     );
     let xml = XmlBuilder::new("fix").build(&content, &[], &[]);
     eprintln!("{}", xml);
     Ok(())
 }
 
-/// Find the task that was originally reviewed by looking at the review task's source field.
+/// Check if a task is a review task.
 ///
-/// The review task has `source: task:<id>` pointing to the task that was reviewed.
-/// We need to find that task to determine who should fix the issues (the original worker).
-fn find_reviewed_task<'a>(
-    tasks: &'a std::collections::HashMap<String, Task>,
-    review_task: &Task,
-) -> Option<&'a Task> {
-    // Look for "task:<id>" in review task's sources
-    for source in &review_task.sources {
-        if let Some(task_id) = source.strip_prefix("task:") {
-            if let Some(task) = find_task(tasks, task_id) {
-                return Some(task);
-            }
+/// A task is considered a review task if:
+/// 1. Its task_type is explicitly "review", OR
+/// 2. It was created from a review template (template starts with "aiki/review")
+///
+/// The fallback to template name provides backward compatibility with review tasks
+/// created before the template set the `type` field in frontmatter.
+fn is_review_task(task: &Task) -> bool {
+    if task.task_type.as_deref() == Some("review") {
+        return true;
+    }
+    if let Some(ref template) = task.template {
+        if template.starts_with("aiki/review") {
+            return true;
         }
     }
-    None
+    false
 }
 
 /// Determine assignee for followup task.
@@ -295,109 +357,50 @@ fn determine_followup_assignee(agent_override: Option<AgentType>, reviewed_task:
     Some("claude-code".to_string())
 }
 
-/// Create followup task from template (agent creates subtasks)
-fn create_followup_task_from_template(
+/// Create a fix subtask on the original task (not a standalone task).
+///
+/// The fix subtask is added as a child of the original task (e.g., X.1),
+/// with the review task as its source. The agent will create nested
+/// subtasks (X.1.1, X.1.2, etc.) for each issue found in the review.
+///
+/// If the original task is closed, this function reopens it before creating the subtask.
+fn create_fix_subtask_on_original(
     cwd: &Path,
-    source_task: &Task,
+    review_task: &Task,
+    original_task: &Task,
     assignee: &Option<String>,
     template_name: &str,
 ) -> Result<String> {
-    let timestamp = chrono::Utc::now();
-    let working_copy = get_working_copy_change_id(cwd);
+    use super::task::{create_from_template, TemplateTaskParams};
 
-    // Load the template
-    let templates_dir = find_templates_dir(cwd)?;
-    let template = load_template(template_name, &templates_dir)?;
+    // Reopen the original task if closed before adding subtask
+    let events = read_events(cwd)?;
+    let current_tasks = materialize_tasks(&events);
+    reopen_if_closed(cwd, &original_task.id, &current_tasks, "Subtasks added")?;
 
-    // Set up variable context for template substitution
-    let mut variables = VariableContext::new();
+    let mut source_data = std::collections::HashMap::new();
+    source_data.insert("name".to_string(), review_task.name.clone());
+    source_data.insert("id".to_string(), review_task.id.clone());
 
-    // Set source variables (template uses {source.name}, {source.id})
-    variables.set_source(&format!("task:{}", source_task.id));
-    variables.set_source_data("name", &source_task.name);
-    variables.set_source_data("id", &source_task.id);
-
-    // Set id placeholder - will be substituted after we generate the actual ID
-    // This allows templates to reference {{id}} (the task's own ID)
-    variables.set_builtin("id", ID_PLACEHOLDER);
-
-    // Create task from template (no subtasks - agent will create them)
-    let (mut parent_def, _subtask_defs) =
-        create_tasks_from_template(&template, &variables, None)?;
-
-    // Generate parent task ID from the resolved name
-    let parent_id = generate_task_id(&parent_def.name);
-
-    // Substitute {{id}} placeholder with the actual task ID in instructions
-    parent_def.instructions = parent_def.instructions.replace(ID_PLACEHOLDER, &parent_id);
-
-    // Build sources list
-    let mut sources = parent_def.sources.clone();
-    if !sources.iter().any(|s| s.starts_with("task:")) {
-        sources.push(format!("task:{}", source_task.id));
-    }
-
-    // Create parent task event
-    let parent_event = TaskEvent::Created {
-        task_id: parent_id.clone(),
-        name: parent_def.name.clone(),
-        task_type: parent_def.task_type.or(template.defaults.task_type.clone()),
-        priority: source_task.priority, // Inherit from source task
+    let params = TemplateTaskParams {
+        template_name: template_name.to_string(),
+        sources: vec![format!("task:{}", review_task.id)],
         assignee: assignee.clone(),
-        sources,
-        template: Some(template.template_id()),
-        working_copy: working_copy.clone(),
-        instructions: Some(parent_def.instructions.clone()),
-        data: convert_data(&parent_def.data),
-        timestamp,
+        priority: Some(original_task.priority),
+        parent_id: Some(original_task.id.clone()),
+        parent_name: Some(original_task.name.clone()),
+        source_data,
+        ..Default::default()
     };
-    write_event(cwd, &parent_event)?;
 
-    Ok(parent_id)
-}
-
-/// Convert serde_json::Value HashMap to String HashMap for TaskEvent
-fn convert_data(
-    data: &std::collections::HashMap<String, serde_json::Value>,
-) -> std::collections::HashMap<String, String> {
-    data.iter()
-        .map(|(k, v)| {
-            let value_str = match v {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            (k.clone(), value_str)
-        })
-        .collect()
-}
-
-/// Returns the change_id of the current working copy (`@` in jj terms).
-fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
-    use crate::jj::jj_cmd;
-
-    let output = jj_cmd()
-        .args(["log", "-r", "@", "-T", "change_id", "--no-graph"])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if change_id.is_empty() {
-        None
-    } else {
-        Some(change_id)
-    }
+    create_from_template(cwd, params)
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::TaskStatus;
+    use crate::tasks::{TaskPriority, TaskStatus};
     use std::collections::HashMap;
 
     #[test]
@@ -476,5 +479,88 @@ mod tests {
         // If we can't find the reviewed task, fall back to claude-code
         let result = determine_followup_assignee(None, None);
         assert_eq!(result, Some("claude-code".to_string()));
+    }
+
+    fn make_task_with_sources(id: &str, sources: Vec<&str>) -> Task {
+        Task {
+            id: id.to_string(),
+            name: format!("Task {}", id),
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: sources.into_iter().map(|s| s.to_string()).collect(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            comments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_get_review_target_task_source() {
+        let review = make_task_with_sources("review1", vec!["task:original123"]);
+        match get_review_target(&review) {
+            ReviewTarget::Task(id) => assert_eq!(id, "original123"),
+            _ => panic!("Expected ReviewTarget::Task"),
+        }
+    }
+
+    #[test]
+    fn test_get_review_target_task_priority_over_file() {
+        // task: should take priority over file:
+        let review = make_task_with_sources("review2", vec!["file:src/main.rs", "task:abc"]);
+        match get_review_target(&review) {
+            ReviewTarget::Task(id) => assert_eq!(id, "abc"),
+            _ => panic!("Expected ReviewTarget::Task"),
+        }
+    }
+
+    #[test]
+    fn test_get_review_target_file_source() {
+        let review = make_task_with_sources("review3", vec!["file:src/lib.rs"]);
+        match get_review_target(&review) {
+            ReviewTarget::File(path) => assert_eq!(path, "src/lib.rs"),
+            _ => panic!("Expected ReviewTarget::File"),
+        }
+    }
+
+    #[test]
+    fn test_get_review_target_unknown() {
+        let review = make_task_with_sources("review4", vec!["prompt:xyz"]);
+        assert!(matches!(get_review_target(&review), ReviewTarget::Unknown));
+    }
+
+    #[test]
+    fn test_get_review_target_no_sources() {
+        let review = make_task_with_sources("review5", vec![]);
+        assert!(matches!(get_review_target(&review), ReviewTarget::Unknown));
+    }
+
+    #[test]
+    fn test_is_review_task_by_type() {
+        let mut task = make_task_with_sources("t1", vec![]);
+        task.task_type = Some("review".to_string());
+        assert!(is_review_task(&task));
+    }
+
+    #[test]
+    fn test_is_review_task_by_template() {
+        let mut task = make_task_with_sources("t2", vec![]);
+        task.template = Some("aiki/review@1.0.0".to_string());
+        assert!(is_review_task(&task));
+    }
+
+    #[test]
+    fn test_is_review_task_neither() {
+        let task = make_task_with_sources("t3", vec![]);
+        assert!(!is_review_task(&task));
     }
 }

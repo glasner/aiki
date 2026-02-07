@@ -31,19 +31,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
     }
 
     fn spawn_blocking(&self, options: &AgentSpawnOptions) -> Result<AgentSessionResult> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn claude process with prompt via command args
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
@@ -83,19 +71,7 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
     }
 
     fn spawn_background(&self, options: &AgentSpawnOptions) -> Result<BackgroundHandle> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn claude process detached from parent
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
@@ -129,19 +105,7 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
     }
 
     fn spawn_monitored(&self, options: &AgentSpawnOptions) -> Result<MonitoredChild> {
-        // Build the task prompt with clear instructions for autonomous work
-        let prompt = format!(
-            r#"You are assigned task `{}`. Work autonomously until ALL work is complete.
-
-WORKFLOW:
-1. Run `aiki task start {}` to begin
-2. Run `aiki task` to see your task and any subtasks
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
-4. Repeat until all subtasks are closed
-
-CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence until the parent task auto-closes. Only stop if you are genuinely blocked on something."#,
-            options.task_id, options.task_id
-        );
+        let prompt = options.task_prompt();
 
         // Spawn claude process - keep Child handle for monitoring
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
