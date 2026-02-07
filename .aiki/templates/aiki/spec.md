@@ -12,7 +12,7 @@ Guide the user through creating or refining a spec document.
 # Instructions
 
 You are helping the user write a spec at `{{data.spec_path}}`.
-
+{{data.user_context}}
 **For new specs:** Work through the subtasks in order (they are defined at the end of this template).
 
 **For existing specs:**
@@ -91,12 +91,14 @@ Use this structure for new specs:
 
 ## Clarify user intent and requirements
 
-1. Ask clarifying questions where you have them:
+1. Review any user-provided context above (topic and guidance text)
+2. Ask clarifying questions where you have them:
    - What problem does this solve?
    - Who is the user/audience?
    - What are the key requirements?
    - Any constraints or non-goals?
-3. Close subtask when you have enough clarity to draft the spec
+3. If the user already provided detailed guidance, skip questions that are already answered
+4. Close subtask when you have enough clarity to draft the spec
 
 ## Draft initial spec structure
 
