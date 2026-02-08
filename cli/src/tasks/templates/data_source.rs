@@ -126,16 +126,6 @@ mod tests {
             id: None,
             text: text.to_string(),
             timestamp: Utc::now(),
-            data: HashMap::new(),
-        }
-    }
-
-    fn create_test_comment_with_data(text: &str, data: HashMap<String, String>) -> TaskComment {
-        TaskComment {
-            id: None,
-            text: text.to_string(),
-            timestamp: Utc::now(),
-            data,
         }
     }
 
@@ -192,7 +182,6 @@ mod tests {
         let result = resolve_data_source(&DataSource::Comments, "task1", &tasks).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "Fix the bug");
-        assert!(result[0].data.is_empty());
     }
 
     #[test]
@@ -213,28 +202,6 @@ mod tests {
         assert_eq!(result[0].text, "First comment");
         assert_eq!(result[1].text, "Second comment");
         assert_eq!(result[2].text, "Third comment");
-    }
-
-    #[test]
-    fn test_resolve_comments_with_data() {
-        let mut comment_data = HashMap::new();
-        comment_data.insert("severity".to_string(), "error".to_string());
-        comment_data.insert("file".to_string(), "src/main.rs".to_string());
-        comment_data.insert("line".to_string(), "42".to_string());
-
-        let mut tasks = HashMap::new();
-        let task = create_test_task(
-            "task1",
-            vec![create_test_comment_with_data("Fix null check", comment_data)],
-        );
-        tasks.insert("task1".to_string(), task);
-
-        let result = resolve_data_source(&DataSource::Comments, "task1", &tasks).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "Fix null check");
-        assert_eq!(result[0].data.get("severity"), Some(&"error".to_string()));
-        assert_eq!(result[0].data.get("file"), Some(&"src/main.rs".to_string()));
-        assert_eq!(result[0].data.get("line"), Some(&"42".to_string()));
     }
 
     #[test]

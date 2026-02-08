@@ -70,11 +70,14 @@ With optional inline conditional (Jinja2-style):
 
 **Grammar:**
 ```
-subtask      := "{% subtask" template_name [if_clause] "%}"
-template_name := identifier ("/" identifier)*
-if_clause    := "if" condition
-condition    := <same as {% if %} conditions>
+subtask       := "{% subtask" template_name [if_clause] "%}"
+template_name := segment ("/" segment)*
+segment       := [a-z0-9][a-z0-9._-]*
+if_clause     := "if" condition
+condition     := <same as {% if %} conditions>
 ```
+
+Segments can contain lowercase alphanumerics, hyphens, dots, and underscores (matching valid filesystem names). Examples: `aiki/plan`, `aiki/review-code`, `myorg/v2.0`.
 
 Composed subtasks inherit all variables from the parent template's context.
 
@@ -119,11 +122,13 @@ Each specialized template brings its own subtasks with domain-specific evaluatio
 ### Processing Order
 
 1. Parse frontmatter
-2. Process conditionals (`{% if %}`)
-3. Expand loops (`{% for %}`)
-4. **Resolve subtask references** (`{% subtask %}`) — NEW
-5. Substitute remaining variables
-6. Extract subtasks from `# Subtasks` section
+2. Tokenize and parse AST (produces `Text`, `Variable`, `Conditional`, `Loop`, and `SubtaskRef` nodes)
+3. Evaluate conditionals (`{% if %}`) — eliminates `Conditional` nodes, may prune `SubtaskRef` nodes inside false branches
+4. Expand loops (`{% for %}`) — may produce additional `SubtaskRef` nodes from loop bodies
+5. Substitute remaining variables (in `Text` nodes and `SubtaskRef` template names)
+6. Extract subtasks from `# Subtasks` section — **resolve `SubtaskRef` nodes here**, rejecting any found outside the subtasks section
+
+`SubtaskRef` remains a typed AST node throughout steps 2–5, preserving its source line number and template name. It is never converted to a string marker. Resolution (loading the referenced template and building the nested task tree) happens in step 6, after all control-flow expansion is complete. This guarantees that `{% subtask %}` tags generated inside `{% for %}` loops are handled correctly.
 
 ### Subtask Resolution
 
@@ -166,12 +171,39 @@ Build: feature.md                    (parent)
 └── Execute Subtasks                 (static subtask)
 ```
 
-Task IDs follow the existing convention:
+Task IDs follow the existing convention. Each entry under `# Subtasks` (whether static `##` heading or `{% subtask %}`) consumes one sequential index. Composed subtasks' children are nested under their parent's index:
+
 - `<build-id>` — Build parent
-- `<build-id>.1` — Plan (child template subtask)
-- `<build-id>.1.1` — Read spec (grandchild)
-- `<build-id>.1.2` — Create subtasks (grandchild)
+- `<build-id>.1` — Plan (composed subtask from `{% subtask aiki/plan %}`)
+- `<build-id>.1.1` — Read spec (plan's subtask)
+- `<build-id>.1.2` — Create subtasks (plan's subtask)
 - `<build-id>.2` — Execute Subtasks (static subtask)
+
+**Mixed ordering example** — static and composed subtasks interleaved:
+
+```markdown
+# Subtasks
+
+## Setup environment
+Install dependencies.
+
+{% subtask aiki/plan %}
+
+## Execute plan
+Run each plan subtask.
+
+{% subtask aiki/review %}
+```
+
+Resulting IDs:
+- `.1` — Setup environment (static)
+- `.2` — Plan: feature.md (composed)
+- `.2.1` — Read spec (plan's child)
+- `.2.2` — Create subtasks (plan's child)
+- `.3` — Execute plan (static)
+- `.4` — Review: feature.md (composed)
+- `.4.1` — Check for issues (review's child)
+- `.4.2` — Write summary (review's child)
 
 ### Variable Inheritance
 
@@ -231,30 +263,34 @@ The unified `aiki/review` template uses `{% subtask %}` with `if` conditions to 
 
 ## Implementation Plan
 
-### Phase 1: Parser — `{% subtask %}` tag
+### Phase 1: Parser — `{% subtask %}` AST node
 
 **Files:** `cli/src/tasks/templates/conditionals.rs`
 
-- Add `SubtaskRef` token: `{% subtask <name> %}` and `{% subtask <name> if condition %}`
-- Add `TemplateNode::SubtaskRef { template_name, condition }` AST node
-- Emit marker during conditional processing: `<!-- AIKI_SUBTASK:template_name -->`
+- Add `SubtaskRef` token variant for `{% subtask <name> %}` and `{% subtask <name> if condition %}`
+- Add `TemplateNode::SubtaskRef { template_name: String, condition: Option<Condition>, line: usize }` AST node
+- During conditional evaluation: if a `SubtaskRef` has an inline `if` condition, evaluate it and either keep or discard the node (same as how `Conditional` nodes work)
+- During loop expansion: `SubtaskRef` nodes inside loop bodies are cloned per iteration with variables substituted in `template_name`
+- `SubtaskRef` nodes pass through all processing stages as typed AST nodes (never converted to string markers)
 
-### Phase 2: Resolver — expand subtask markers
+### Phase 2: Resolver — extract composed subtasks (pure)
 
-**Files:** `cli/src/tasks/templates/resolver.rs`, `cli/src/commands/task.rs`
+**Files:** `cli/src/tasks/templates/resolver.rs`
 
-- Add `expand_subtask_refs()` function that processes `<!-- AIKI_SUBTASK:... -->` markers
-- Load referenced templates, build child variable contexts
-- Create nested task events (subtask + sub-subtasks)
-- Add recursion depth tracking and cycle detection
+- Update `extract_subtasks()` / `parse_subtasks()` to recognize `SubtaskRef` nodes alongside static `## Heading` subtasks
+- Return a `Vec<SubtaskEntry>` where each entry is either `Static { name, body }` or `Composed { template_name, line }`
+- Reject `SubtaskRef` nodes found outside the `# Subtasks` section (error with line number)
+- This phase is **pure** — it produces a list of subtask entries but does not create tasks or load child templates
 
-### Phase 3: Update `create_from_template`
+### Phase 3: Task tree creation in `create_from_template`
 
 **Files:** `cli/src/commands/task.rs`
 
-- After expanding loops and conditionals, scan for subtask markers
-- For each marker, recursively call template resolution
-- Generate proper nested task IDs (`parent.N.M`)
+- After receiving the subtask list from the resolver, iterate entries in order:
+  - `Static` entries: create subtask events as today (consume one index each)
+  - `Composed` entries: load the referenced template, build the child variable context (inheriting parent's context), recursively call `create_from_template` to produce the nested subtask + its sub-subtasks
+- Assign sequential IDs to all top-level subtask entries regardless of type (composed subtask `.1`, its children `.1.1`/`.1.2`, next entry `.2`, etc.)
+- Add recursion depth tracking (max 4) and cycle detection (track template name stack)
 
 ### Phase 4: Update built-in templates
 
@@ -270,15 +306,18 @@ The unified `aiki/review` template uses `{% subtask %}` with `if` conditions to 
 | Error | Message |
 |-------|---------|
 | Template not found | `Template 'myorg/missing' not found in {% subtask %} at line N` |
+| Outside subtasks section | `{% subtask %} at line N is outside # Subtasks section. Move it below the # Subtasks heading.` |
 | Cycle detected | `Template cycle detected: aiki/build → aiki/plan → aiki/build` |
 | Max depth exceeded | `Template composition depth limit (4) exceeded at 'aiki/deep'` |
 | Invalid `if` syntax | `Invalid {% subtask %} syntax at line N. Expected: {% subtask name if condition %}` |
 | Missing required variable | Standard variable-not-found error, but with composition context in the message |
 
+Line numbers in error messages are accurate because `SubtaskRef` is a typed AST node that preserves its source `line` field throughout all processing stages.
+
 ---
 
 ## Design Decisions
 
-1. **`{% subtask %}` only works in `# Subtasks` sections** — not for general content inclusion. This keeps the feature focused: it creates nested task trees, not text partials.
+1. **`{% subtask %}` only works in `# Subtasks` sections** — not for general content inclusion. This keeps the feature focused: it creates nested task trees, not text partials. **Enforcement:** `SubtaskRef` nodes encountered outside the `# Subtasks` section produce an error during subtask extraction (step 6 in processing order). The parser accepts `{% subtask %}` anywhere to produce clear error messages, but `extract_subtasks()` rejects any `SubtaskRef` nodes it encounters in the parent instructions section. Error: `{% subtask %} at line N is outside # Subtasks section. Move it below the # Subtasks heading.`
 2. **No name overrides** — the child template's resolved name (e.g., "Plan: feature.md") is used as-is. No `as "..."` syntax.
 3. **`parent.*` points to the composed subtask** — sub-subtasks inside a composed template see their immediate parent (the composed subtask), not the top-level root. This is consistent with how `parent.*` works for static subtasks today.
