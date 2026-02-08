@@ -4208,7 +4208,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     };
     write_event(cwd, &create_event)?;
 
-    // Create subtasks - either dynamic (from data source) or static (from template)
+    // Create subtasks - route based on template type
     if let Some(ref subtasks_source_str) = template.subtasks_source {
         // Dynamic subtasks: iterate over a data source (e.g., comments from a task)
         create_dynamic_subtasks(
@@ -4223,6 +4223,33 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &assignee,
             &data,
             timestamp,
+        )?;
+    } else if template
+        .raw_content
+        .as_ref()
+        .is_some_and(|c| crate::tasks::templates::has_subtask_refs(c) || crate::tasks::templates::has_inline_loops(c))
+    {
+        // Composable templates: use entry-based flow for {% subtask %} refs or {% for %} loops
+        let (_, entries) = crate::tasks::templates::create_subtask_entries_from_template(
+            &template, &ctx, None,
+        )?;
+        let composition_stack = vec![template_name.to_string()];
+        create_subtasks_from_entries(
+            cwd,
+            &entries,
+            template_name,
+            &template.template_id(),
+            template.defaults.task_type.as_deref(),
+            &task_id,
+            &params.sources,
+            priority,
+            &assignee,
+            &data,
+            &ctx,
+            timestamp,
+            &params.builtins,
+            &composition_stack,
+            1, // depth starts at 1 (parent template is depth 0)
         )?;
     } else {
         // Static subtasks: use predefined subtasks from template
@@ -4467,6 +4494,309 @@ fn create_static_subtasks(
             timestamp,
         };
         write_event(cwd, &subtask_event)?;
+    }
+
+    Ok(())
+}
+
+/// Maximum depth for recursive template composition
+const MAX_COMPOSITION_DEPTH: usize = 4;
+
+/// Create subtasks from a list of SubtaskEntry items (handles both static and composed)
+///
+/// This function iterates over subtask entries and creates events for each:
+/// - `Static` entries: create subtask events directly (same as create_static_subtasks)
+/// - `Composed` entries: load the referenced template, create a subtask for it,
+///   then recursively create its sub-subtasks
+///
+/// # Arguments
+/// * `cwd` - Working directory
+/// * `entries` - List of subtask entries to create
+/// * `template_name` - Parent template name (for variable substitution context)
+/// * `parent_id` - ID of the parent task
+/// * `sources` - Source references for the parent task
+/// * `parent_priority` - Priority inherited from parent
+/// * `parent_assignee` - Assignee inherited from parent
+/// * `parent_data` - Data inherited from parent
+/// * `parent_ctx` - Variable context from the parent
+/// * `timestamp` - Timestamp for event creation
+/// * `extra_builtins` - Additional builtin variables
+/// * `composition_stack` - Stack of template names for cycle detection
+/// * `depth` - Current composition depth
+fn create_subtasks_from_entries(
+    cwd: &Path,
+    entries: &[crate::tasks::templates::SubtaskEntry],
+    template_name: &str,
+    template_id: &str,
+    parent_task_type: Option<&str>,
+    parent_id: &str,
+    sources: &[String],
+    parent_priority: TaskPriority,
+    parent_assignee: &Option<String>,
+    parent_data: &std::collections::HashMap<String, String>,
+    parent_ctx: &crate::tasks::templates::VariableContext,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    extra_builtins: &HashMap<String, String>,
+    composition_stack: &[String],
+    depth: usize,
+) -> Result<()> {
+    use crate::tasks::templates::{
+        find_templates_dir, load_template, substitute_with_template_name, SubtaskEntry,
+        VariableContext,
+    };
+
+    for (i, entry) in entries.iter().enumerate() {
+        let subtask_index = i + 1;
+        let subtask_id = generate_child_id(parent_id, subtask_index);
+
+        match entry {
+            SubtaskEntry::Static(subtask_def) => {
+                // Same logic as create_static_subtasks for a single entry
+                let subtask_priority = if let Some(ref p) = subtask_def.priority {
+                    TaskPriority::from_str(p).unwrap_or(parent_priority)
+                } else {
+                    parent_priority
+                };
+
+                let subtask_assignee = if let Some(ref a) = subtask_def.assignee {
+                    Some(a.clone())
+                } else {
+                    parent_assignee.clone()
+                };
+
+                let mut subtask_data = parent_data.clone();
+                for (key, value) in &subtask_def.data {
+                    let value_str = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
+                    subtask_data.insert(key.clone(), value_str);
+                }
+
+                let mut subtask_ctx = VariableContext::new();
+                for (key, value) in &subtask_data {
+                    subtask_ctx.set_data(key, value);
+                }
+                subtask_ctx.set_builtin("id", &subtask_id);
+                if let Some(ref a) = subtask_assignee {
+                    subtask_ctx.set_builtin("assignee", a);
+                }
+                subtask_ctx.set_builtin("priority", subtask_priority.to_string());
+                subtask_ctx.set_builtin("created", timestamp.to_rfc3339());
+                if let Some(t) = parent_task_type {
+                    subtask_ctx.set_builtin("type", t);
+                }
+                subtask_ctx.set_parent("id", parent_id);
+                if let Some(ref a) = parent_assignee {
+                    subtask_ctx.set_parent("assignee", a);
+                }
+                subtask_ctx.set_parent("priority", parent_priority.to_string());
+                for (key, value) in parent_data {
+                    subtask_ctx.set_parent(&format!("data.{}", key), value);
+                }
+                if let Some(source) = sources.first() {
+                    subtask_ctx.set_source(source);
+                    subtask_ctx.set_parent("source", source);
+                }
+                for (key, value) in extra_builtins {
+                    subtask_ctx.set_builtin(key, value);
+                }
+
+                let subtask_name = substitute_with_template_name(
+                    &subtask_def.name,
+                    &subtask_ctx,
+                    Some(template_name),
+                )?;
+                let subtask_instructions = if !subtask_def.instructions.is_empty() {
+                    Some(substitute_with_template_name(
+                        &subtask_def.instructions,
+                        &subtask_ctx,
+                        Some(template_name),
+                    )?)
+                } else {
+                    None
+                };
+
+                let mut subtask_sources: Vec<String> = subtask_def
+                    .sources
+                    .iter()
+                    .map(|s| substitute_with_template_name(s, &subtask_ctx, Some(template_name)))
+                    .collect::<Result<Vec<_>>>()?;
+                subtask_sources.push(format!("task:{}", parent_id));
+
+                let subtask_event = TaskEvent::Created {
+                    task_id: subtask_id,
+                    name: subtask_name,
+                    task_type: None,
+                    priority: subtask_priority,
+                    assignee: subtask_assignee,
+                    sources: subtask_sources,
+                    template: Some(template_id.to_string()),
+                    working_copy: None,
+                    instructions: subtask_instructions,
+                    data: subtask_data,
+                    timestamp,
+                };
+                write_event(cwd, &subtask_event)?;
+            }
+
+            SubtaskEntry::Composed {
+                template_name: child_template_name,
+                line,
+            } => {
+                // Check depth limit
+                if depth > MAX_COMPOSITION_DEPTH {
+                    return Err(AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Template composition depth limit ({}) exceeded at '{}'",
+                            MAX_COMPOSITION_DEPTH, child_template_name
+                        ),
+                    });
+                }
+
+                // Check for cycles
+                if composition_stack.contains(child_template_name) {
+                    let cycle_path = composition_stack.join(" → ");
+                    return Err(AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Template cycle detected: {} → {}",
+                            cycle_path, child_template_name
+                        ),
+                    });
+                }
+
+                // Load the child template
+                let templates_dir = find_templates_dir(cwd)?;
+                let child_template =
+                    load_template(child_template_name, &templates_dir).map_err(|e| {
+                        AikiError::TemplateProcessingFailed {
+                            details: format!(
+                                "Template '{}' not found in {{% subtask %}} at line {}: {}",
+                                child_template_name, line, e
+                            ),
+                        }
+                    })?;
+
+                // Determine child priority and assignee from child template defaults
+                let child_priority =
+                    if let Some(ref p) = child_template.defaults.priority {
+                        TaskPriority::from_str(p).unwrap_or(parent_priority)
+                    } else {
+                        parent_priority
+                    };
+                let child_assignee =
+                    if let Some(ref a) = child_template.defaults.assignee {
+                        Some(a.clone())
+                    } else {
+                        parent_assignee.clone()
+                    };
+
+                // Merge data: parent data first, then child template defaults override
+                let mut child_data = parent_data.clone();
+                for (key, value) in &child_template.defaults.data {
+                    let value_str = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
+                    child_data.insert(key.clone(), value_str);
+                }
+
+                // Build child variable context (inherits parent's full context)
+                let mut child_ctx = parent_ctx.clone();
+                // Update data.* with merged child data
+                for (key, value) in &child_data {
+                    child_ctx.set_data(key, value);
+                }
+                // Set child-specific builtins
+                child_ctx.set_builtin("id", &subtask_id);
+                if let Some(ref a) = child_assignee {
+                    child_ctx.set_builtin("assignee", a);
+                }
+                child_ctx.set_builtin("priority", child_priority.to_string());
+                child_ctx.set_builtin("created", timestamp.to_rfc3339());
+                if let Some(ref t) = child_template.defaults.task_type {
+                    child_ctx.set_builtin("type", t);
+                }
+
+                // Resolve child template's parent name (this becomes the composed subtask name)
+                let child_name = substitute_with_template_name(
+                    &child_template.parent.name,
+                    &child_ctx,
+                    Some(child_template_name),
+                )?;
+
+                // Resolve child template's parent instructions
+                let child_instructions = if !child_template.parent.instructions.is_empty() {
+                    Some(substitute_with_template_name(
+                        &child_template.parent.instructions,
+                        &child_ctx,
+                        Some(child_template_name),
+                    )?)
+                } else {
+                    None
+                };
+
+                // Rebind parent.* to point to the composed subtask (for sub-subtasks)
+                child_ctx.set_parent("id", &subtask_id);
+                child_ctx.set_parent("name", &child_name);
+                if let Some(ref a) = child_assignee {
+                    child_ctx.set_parent("assignee", a);
+                }
+                child_ctx.set_parent("priority", child_priority.to_string());
+                for (key, value) in &child_data {
+                    child_ctx.set_parent(&format!("data.{}", key), value);
+                }
+
+                // Create the composed subtask event
+                let composed_sources = vec![format!("task:{}", parent_id)];
+                let composed_event = TaskEvent::Created {
+                    task_id: subtask_id.clone(),
+                    name: child_name,
+                    task_type: child_template.defaults.task_type.clone(),
+                    priority: child_priority,
+                    assignee: child_assignee.clone(),
+                    sources: composed_sources.clone(),
+                    template: Some(child_template.template_id()),
+                    working_copy: None,
+                    instructions: child_instructions,
+                    data: child_data.clone(),
+                    timestamp,
+                };
+                write_event(cwd, &composed_event)?;
+
+                // Recursively create the child template's subtasks
+                let mut child_stack = composition_stack.to_vec();
+                child_stack.push(child_template_name.clone());
+
+                // Get child template's subtask entries
+                let child_entries =
+                    crate::tasks::templates::create_subtask_entries_from_template(
+                        &child_template,
+                        &child_ctx,
+                        None, // No data source for composed subtasks
+                    )?;
+
+                if !child_entries.1.is_empty() {
+                    create_subtasks_from_entries(
+                        cwd,
+                        &child_entries.1,
+                        child_template_name,
+                        &child_template.template_id(),
+                        child_template.defaults.task_type.as_deref(),
+                        &subtask_id,
+                        &composed_sources,
+                        child_priority,
+                        &child_assignee,
+                        &child_data,
+                        &child_ctx,
+                        timestamp,
+                        extra_builtins,
+                        &child_stack,
+                        depth + 1,
+                    )?;
+                }
+            }
+        }
     }
 
     Ok(())

@@ -97,10 +97,11 @@ pub use conditionals::{
 pub use data_source::{parse_data_source, resolve_data_source, DataSource};
 pub use parser::{extract_yaml_frontmatter, parse_template, FrontmatterError};
 pub use resolver::{
-    convert_data, create_review_task_from_template, create_subtasks_from_inline_loops,
+    convert_data, create_review_task_from_template, create_subtask_entries,
+    create_subtask_entries_from_template, create_subtasks_from_inline_loops,
     create_tasks_from_template, expand_loops, find_templates_dir, get_working_copy_change_id,
-    has_inline_loops, list_templates, load_template, load_template_file, parse_priority,
-    substitute_parent_id, TemplateInfo, PARENT_ID_PLACEHOLDER,
+    has_inline_loops, has_subtask_refs, list_templates, load_template, load_template_file,
+    parse_priority, substitute_parent_id, SubtaskEntry, TemplateInfo, PARENT_ID_PLACEHOLDER,
 };
 pub use types::{TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
 pub use variables::{

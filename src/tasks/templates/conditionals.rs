@@ -143,6 +143,15 @@ pub enum TemplateNode {
         /// Optional else body for empty collections
         else_body: Option<Vec<TemplateNode>>,
     },
+    /// Subtask reference for template composition
+    SubtaskRef {
+        /// Template name (e.g., "aiki/plan", "aiki/review/spec")
+        template_name: String,
+        /// Optional inline condition (e.g., `{% subtask aiki/plan if data.needs_plan %}`)
+        condition: Option<Condition>,
+        /// Source line number for error reporting
+        line: usize,
+    },
 }
 
 /// Serialize template nodes back to template syntax
@@ -196,6 +205,17 @@ fn node_to_template(node: &TemplateNode) -> String {
             }
             result.push_str("{% endfor %}");
             result
+        }
+        TemplateNode::SubtaskRef {
+            template_name,
+            condition,
+            ..
+        } => {
+            if let Some(cond) = condition {
+                format!("{{% subtask {} if {} %}}", template_name, condition_to_string(cond))
+            } else {
+                format!("{{% subtask {} %}}", template_name)
+            }
         }
     }
 }
@@ -561,6 +581,10 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<TemplateNode>, ConditionalError> {
                         token: "endfor".to_string(),
                         line,
                     });
+                } else if block_lower.starts_with("subtask ") {
+                    // Parse subtask reference: {% subtask <name> %} or {% subtask <name> if condition %}
+                    let subtask_ref = parse_subtask_ref(&block[8..], line)?;
+                    result.push(subtask_ref);
                 }
                 // Unknown control blocks are ignored (for future extensibility)
             }
@@ -661,6 +685,16 @@ where
                         elif_branches.last_mut().unwrap().1.push(nested_node);
                     } else {
                         if_content.push(nested_node);
+                    }
+                } else if block_lower.starts_with("subtask ") {
+                    // Subtask reference inside conditional
+                    let subtask_ref = parse_subtask_ref(&block[8..], *line)?;
+                    if else_branch.is_some() {
+                        else_branch.as_mut().unwrap().push(subtask_ref);
+                    } else if !elif_branches.is_empty() {
+                        elif_branches.last_mut().unwrap().1.push(subtask_ref);
+                    } else {
+                        if_content.push(subtask_ref);
                     }
                 }
             }
@@ -813,11 +847,84 @@ where
                         token: "elif".to_string(),
                         line: *line,
                     });
+                } else if block_lower.starts_with("subtask ") {
+                    // Subtask reference inside loop
+                    let subtask_ref = parse_subtask_ref(&block[8..], *line)?;
+                    if in_else {
+                        else_body.as_mut().unwrap().push(subtask_ref);
+                    } else {
+                        body.push(subtask_ref);
+                    }
                 }
                 // Unknown control blocks are passed through
             }
         }
     }
+}
+
+/// Parse a subtask reference: `<template_name>` or `<template_name> if <condition>`
+///
+/// Template name segments: `[a-z0-9][a-z0-9._-]*` separated by `/`
+/// Examples: `aiki/plan`, `aiki/review/spec`, `myorg/v2.0`
+fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, ConditionalError> {
+    let content = content.trim();
+
+    if content.is_empty() {
+        return Err(ConditionalError::InvalidCondition {
+            condition: "{% subtask %} requires a template name".to_string(),
+            line,
+        });
+    }
+
+    // Check for inline "if" condition: `<name> if <condition>`
+    // We need to find " if " that separates the template name from the condition
+    let (template_name, condition) = if let Some(if_pos) = content.find(" if ") {
+        let name = content[..if_pos].trim();
+        let cond_str = content[if_pos + 4..].trim();
+        let condition = parse_condition(cond_str, line)?;
+        (name, Some(condition))
+    } else {
+        (content, None)
+    };
+
+    // Validate template name: segments separated by `/`, each segment matches [a-z0-9][a-z0-9._-]*
+    let segments: Vec<&str> = template_name.split('/').collect();
+    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+        return Err(ConditionalError::InvalidCondition {
+            condition: format!(
+                "Invalid template name '{}' in {{% subtask %}}. Expected: namespace/template",
+                template_name
+            ),
+            line,
+        });
+    }
+    for segment in &segments {
+        let chars: Vec<char> = segment.chars().collect();
+        if !chars[0].is_ascii_lowercase() && !chars[0].is_ascii_digit() {
+            return Err(ConditionalError::InvalidCondition {
+                condition: format!(
+                    "Invalid template name segment '{}' in {{% subtask %}}. Segments must start with [a-z0-9]",
+                    segment
+                ),
+                line,
+            });
+        }
+        if !chars.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-') {
+            return Err(ConditionalError::InvalidCondition {
+                condition: format!(
+                    "Invalid template name segment '{}' in {{% subtask %}}. Segments may contain [a-z0-9._-]",
+                    segment
+                ),
+                line,
+            });
+        }
+    }
+
+    Ok(TemplateNode::SubtaskRef {
+        template_name: template_name.to_string(),
+        condition,
+        line,
+    })
 }
 
 /// Parse a condition string into a Condition AST
@@ -1118,6 +1225,32 @@ fn render_with_loops(
                 // The actual iteration is handled by the template resolver
                 // Here we just emit the loop as markers for later processing
                 result.push_str(&render_loop(variable, collection, body, else_body, ctx, loop_vars));
+            }
+            TemplateNode::SubtaskRef {
+                template_name,
+                condition,
+                line,
+            } => {
+                // If there's an inline condition, evaluate it
+                if let Some(cond) = condition {
+                    let eval_ctx = make_loop_aware_context(ctx, loop_vars);
+                    if !evaluate_condition(cond, &eval_ctx) {
+                        continue; // Condition false, skip this subtask ref
+                    }
+                }
+                // Emit as a marker for the resolver to process later
+                // Substitute any variables in the template name
+                let mut resolved_name = template_name.clone();
+                for (var_name, item) in loop_vars {
+                    for (field, value) in &item.data {
+                        let pattern = format!("{{{{{}.{}}}}}", var_name, field);
+                        resolved_name = resolved_name.replace(&pattern, value);
+                    }
+                }
+                result.push_str(&format!(
+                    "<!-- AIKI_SUBTASK_REF:{}:{} -->",
+                    resolved_name, line
+                ));
             }
         }
     }
@@ -1998,5 +2131,200 @@ Content under heading
         );
         assert!(result.contains("**HIGH PRIORITY**"), "Conditional body missing");
         assert!(result.contains("{% endif %}"), "Conditional endif missing");
+    }
+
+    // ===== SubtaskRef Tests =====
+
+    #[test]
+    fn test_tokenize_subtask_ref() {
+        let tokens = tokenize("{% subtask aiki/plan %}").unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::ControlBlock("subtask aiki/plan".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_parse_subtask_ref_simple() {
+        let tokens = tokenize("{% subtask aiki/plan %}").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            TemplateNode::SubtaskRef { template_name, condition, line } => {
+                assert_eq!(template_name, "aiki/plan");
+                assert!(condition.is_none());
+                assert_eq!(*line, 1);
+            }
+            _ => panic!("Expected SubtaskRef"),
+        }
+    }
+
+    #[test]
+    fn test_parse_subtask_ref_with_condition() {
+        let tokens = tokenize("{% subtask aiki/review/spec if data.file_type == \"spec\" %}").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            TemplateNode::SubtaskRef { template_name, condition, .. } => {
+                assert_eq!(template_name, "aiki/review/spec");
+                assert!(condition.is_some());
+                match condition.as_ref().unwrap() {
+                    Condition::Equals { left, right } => {
+                        assert_eq!(left, "data.file_type");
+                        assert_eq!(*right, Value::String("spec".to_string()));
+                    }
+                    _ => panic!("Expected Equals condition"),
+                }
+            }
+            _ => panic!("Expected SubtaskRef"),
+        }
+    }
+
+    #[test]
+    fn test_parse_subtask_ref_inside_conditional() {
+        let tokens = tokenize("{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            TemplateNode::Conditional { if_branch, .. } => {
+                assert!(if_branch.1.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/plan")));
+            }
+            _ => panic!("Expected Conditional"),
+        }
+    }
+
+    #[test]
+    fn test_parse_subtask_ref_inside_loop() {
+        let tokens = tokenize("{% for item in list %}{% subtask aiki/plan %}{% endfor %}").unwrap();
+        let ast = parse(&tokens).unwrap();
+        assert_eq!(ast.len(), 1);
+        match &ast[0] {
+            TemplateNode::Loop { body, .. } => {
+                assert!(body.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/plan")));
+            }
+            _ => panic!("Expected Loop"),
+        }
+    }
+
+    #[test]
+    fn test_subtask_ref_invalid_empty_name() {
+        let tokens = tokenize("{% subtask %}").unwrap();
+        let result = parse(&tokens);
+        // "subtask " won't match because there's only "subtask" without trailing space
+        // The block content is "subtask" which doesn't start with "subtask " (no space after)
+        // So it's treated as unknown control block
+        assert!(result.is_ok()); // Unknown blocks are ignored
+    }
+
+    #[test]
+    fn test_subtask_ref_template_name_validation() {
+        // Valid names
+        let result = parse_subtask_ref("aiki/plan", 1);
+        assert!(result.is_ok());
+
+        let result = parse_subtask_ref("aiki/review/spec", 1);
+        assert!(result.is_ok());
+
+        let result = parse_subtask_ref("myorg/v2.0", 1);
+        assert!(result.is_ok());
+
+        let result = parse_subtask_ref("aiki/review-code", 1);
+        assert!(result.is_ok());
+
+        let result = parse_subtask_ref("aiki/my_template", 1);
+        assert!(result.is_ok());
+
+        // Invalid: uppercase
+        let result = parse_subtask_ref("Aiki/Plan", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_subtask_ref_roundtrip() {
+        // SubtaskRef should serialize back to template syntax correctly
+        let node = TemplateNode::SubtaskRef {
+            template_name: "aiki/plan".to_string(),
+            condition: None,
+            line: 1,
+        };
+        assert_eq!(node_to_template(&node), "{% subtask aiki/plan %}");
+
+        let node_with_cond = TemplateNode::SubtaskRef {
+            template_name: "aiki/review/spec".to_string(),
+            condition: Some(Condition::Equals {
+                left: "data.type".to_string(),
+                right: Value::String("spec".to_string()),
+            }),
+            line: 1,
+        };
+        assert_eq!(
+            node_to_template(&node_with_cond),
+            "{% subtask aiki/review/spec if data.type == \"spec\" %}"
+        );
+    }
+
+    #[test]
+    fn test_process_subtask_ref_unconditional() {
+        let ctx = EvalContext::new();
+        let result = process_conditionals("{% subtask aiki/plan %}", &ctx).unwrap();
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+    }
+
+    #[test]
+    fn test_process_subtask_ref_conditional_true() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.file_type", "spec");
+        let result = process_conditionals(
+            "{% subtask aiki/review/spec if data.file_type == \"spec\" %}",
+            &ctx,
+        ).unwrap();
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/review/spec:"));
+    }
+
+    #[test]
+    fn test_process_subtask_ref_conditional_false() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.file_type", "code");
+        let result = process_conditionals(
+            "{% subtask aiki/review/spec if data.file_type == \"spec\" %}",
+            &ctx,
+        ).unwrap();
+        assert!(!result.contains("AIKI_SUBTASK_REF"));
+    }
+
+    #[test]
+    fn test_process_subtask_ref_inside_if_block() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.needs_plan", "true");
+        let result = process_conditionals(
+            "{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}",
+            &ctx,
+        ).unwrap();
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+
+        // False branch
+        let ctx2 = EvalContext::new();
+        let result2 = process_conditionals(
+            "{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}",
+            &ctx2,
+        ).unwrap();
+        assert!(!result2.contains("AIKI_SUBTASK_REF"));
+    }
+
+    #[test]
+    fn test_process_subtask_ref_mixed_with_static() {
+        let ctx = EvalContext::new();
+        let template = r#"## Setup environment
+Install dependencies.
+
+{% subtask aiki/plan %}
+
+## Execute plan
+Run each plan subtask."#;
+
+        let result = process_conditionals(template, &ctx).unwrap();
+        assert!(result.contains("## Setup environment"));
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+        assert!(result.contains("## Execute plan"));
     }
 }

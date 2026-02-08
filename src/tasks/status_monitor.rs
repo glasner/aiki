@@ -296,6 +296,38 @@ impl StatusMonitor {
             }
         }
 
+        // If root task has data.plan, render the plan task tree below
+        if let Some(plan_id) = root_task.data.get("plan") {
+            if let Some(plan_task) = tasks.get(plan_id) {
+                lines.push(String::new());
+                let plan_line = self.format_task_line(plan_task, "", None);
+                lines.push(plan_line);
+
+                let plan_subtasks = self.get_sorted_subtasks(tasks, plan_id);
+                let plan_subtask_count = plan_subtasks.len();
+
+                for (idx, subtask) in plan_subtasks.iter().enumerate() {
+                    let is_last = idx == plan_subtask_count - 1;
+                    let prefix = if is_last { "└─ " } else { "├─ " };
+                    let child_prefix = if is_last { "   " } else { "│  " };
+
+                    let child_number = get_child_number(&subtask.id);
+                    let task_line = self.format_task_line(subtask, prefix, child_number);
+                    lines.push(task_line);
+
+                    if let Some(latest_comment) = subtask.comments.last() {
+                        let comment_line = format!(
+                            "{}   └─ {} {}",
+                            child_prefix,
+                            SYMBOL_COMMENT,
+                            format_comment(&latest_comment.text)
+                        );
+                        lines.push(comment_line);
+                    }
+                }
+            }
+        }
+
         // Add footer
         lines.push(String::new());
         lines.push("[Ctrl+C to detach]".to_string());
