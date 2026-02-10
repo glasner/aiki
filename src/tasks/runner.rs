@@ -20,7 +20,7 @@ use crate::tasks::{
     status_monitor::{MonitorExitReason, StatusMonitor},
     types::{TaskEvent, TaskStatus},
     write_event,
-    xml::XmlBuilder,
+    md::MdBuilder,
 };
 
 /// Options for running a task
@@ -78,7 +78,8 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     let tasks = materialize_tasks(&events);
 
     // Find the task
-    let task = find_task(&tasks, task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+    let task = find_task(&tasks, task_id)?;
+    let task_id = &task.id; // rebind to canonical ID
 
     // Validate task can be run
     if task.status == TaskStatus::Closed {
@@ -150,7 +151,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
             // Agent stopped - emit Stopped event if task is not already closed
             let refreshed_events = read_events(cwd)?;
             let refreshed_tasks = materialize_tasks(&refreshed_events);
-            if let Some(refreshed_task) = find_task(&refreshed_tasks, task_id) {
+            if let Ok(refreshed_task) = find_task(&refreshed_tasks, task_id) {
                 if refreshed_task.status != TaskStatus::Closed {
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
@@ -177,7 +178,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
             // This handles spawn failures where the agent never claimed the task
             let refreshed_events = read_events(cwd)?;
             let refreshed_tasks = materialize_tasks(&refreshed_events);
-            if let Some(refreshed_task) = find_task(&refreshed_tasks, task_id) {
+            if let Ok(refreshed_task) = find_task(&refreshed_tasks, task_id) {
                 if refreshed_task.status != TaskStatus::Closed {
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
@@ -237,10 +238,9 @@ fn run_with_status_monitor(
                     TaskStatus::Closed => {
                         // Task was closed right before agent exited
                         let summary = task
-                            .comments
-                            .last()
-                            .map(|c| c.text.clone())
-                            .unwrap_or_default();
+                            .effective_summary()
+                            .unwrap_or_default()
+                            .to_string();
                         Ok(AgentSessionResult::Completed { summary })
                     }
                     TaskStatus::Stopped => {
@@ -282,10 +282,9 @@ fn run_with_status_monitor(
                 match task.status {
                     TaskStatus::Closed => {
                         let summary = task
-                            .comments
-                            .last()
-                            .map(|c| c.text.clone())
-                            .unwrap_or_default();
+                            .effective_summary()
+                            .unwrap_or_default()
+                            .to_string();
                         Ok(AgentSessionResult::Completed { summary })
                     }
                     TaskStatus::Stopped => {
@@ -311,24 +310,22 @@ fn run_with_status_monitor(
     }
 }
 
-/// Run a task and output XML result
+/// Run a task and output result
 ///
-/// Wrapper around `task_run` that outputs XML-formatted results.
-pub fn run_task_with_xml(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+/// Wrapper around `task_run` that outputs formatted results.
+pub fn run_task_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     match task_run(cwd, task_id, options) {
         Ok(()) => {
-            // Output success XML
-            let xml = XmlBuilder::new("run")
-                .build(&format!("  <completed task_id=\"{}\"/>", task_id), &[], &[]);
-            println!("{}", xml);
+            let md = MdBuilder::new("run")
+                .build(&format!("## Run Completed\n- **Task:** {}\n", task_id), &[], &[]);
+            println!("{}", md);
             Ok(())
         }
         Err(e) => {
-            // Output error XML
-            let xml = XmlBuilder::new("run")
+            let md = MdBuilder::new("run")
                 .error()
                 .build_error(&e.to_string());
-            println!("{}", xml);
+            println!("{}", md);
             Err(e)
         }
     }
@@ -407,8 +404,8 @@ pub fn task_run_async(
     let tasks = materialize_tasks(&events);
 
     // Find the task
-    let task =
-        find_task(&tasks, task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+    let task = find_task(&tasks, task_id)?;
+    let task_id = &task.id; // rebind to canonical ID
 
     // Validate task can be run
     if task.status == TaskStatus::Closed {
@@ -455,26 +452,24 @@ pub fn task_run_async(
 
 /// Run a task asynchronously and output XML result
 ///
-/// Wrapper around `task_run_async` that outputs XML-formatted results.
-pub fn run_task_async_with_xml(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+/// Wrapper around `task_run_async` that outputs formatted results.
+pub fn run_task_async_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     match task_run_async(cwd, task_id, options) {
         Ok(handle) => {
-            // Output success XML with async=true
-            let xml = XmlBuilder::new("run").build(
+            let md = MdBuilder::new("run").build(
                 &format!(
-                    "  <started task_id=\"{}\" async=\"true\">\n    Task started asynchronously.\n  </started>",
+                    "## Run Started\n- **Task:** {}\n- Task started asynchronously.\n",
                     handle.task_id
                 ),
                 &[],
                 &[],
             );
-            println!("{}", xml);
+            println!("{}", md);
             Ok(())
         }
         Err(e) => {
-            // Output error XML
-            let xml = XmlBuilder::new("run").error().build_error(&e.to_string());
-            println!("{}", xml);
+            let md = MdBuilder::new("run").error().build_error(&e.to_string());
+            println!("{}", md);
             Err(e)
         }
     }

@@ -21,10 +21,10 @@ use crate::tasks::templates::{
     convert_data, create_tasks_from_template, find_templates_dir, get_working_copy_change_id,
     load_template, parse_priority, VariableContext,
 };
-use crate::tasks::xml::{escape_xml, XmlBuilder};
+use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    find_task, generate_task_id, get_subtasks, materialize_tasks, read_events, write_event, Task,
-    TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
+    find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_tasks, read_events,
+    write_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
 };
 
 /// Plan subcommands
@@ -213,10 +213,9 @@ fn run_show(cwd: &Path, arg: &str) -> Result<()> {
     let tasks = materialize_tasks(&events);
 
     // Determine if arg is a task ID or spec path
-    let plan = if is_task_id(arg) {
-        // Direct task ID lookup
-        find_task(&tasks, arg)
-            .ok_or_else(|| AikiError::TaskNotFound(arg.to_string()))?
+    let plan = if is_task_id(arg) || is_task_id_prefix(arg) {
+        // Task ID or prefix lookup
+        find_task(&tasks, arg)?
     } else {
         // Spec path lookup - find most recent plan with data.spec=<path>
         find_plan_for_spec(&tasks, arg).ok_or_else(|| {
@@ -368,6 +367,7 @@ fn close_plan(cwd: &Path, plan_id: &str) -> Result<()> {
     let close_event = TaskEvent::Closed {
         task_ids: vec![plan_id.to_string()],
         outcome: TaskOutcome::WontDo,
+        summary: Some("Closed by --restart".to_string()),
         timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -495,25 +495,17 @@ fn prompt_existing_plan(plan: &Task, subtasks: &[&Task]) -> Result<PlanChoice> {
 
 /// Output plan created message to stderr
 fn output_plan_created(plan_id: &str, subtasks: &[&Task]) -> Result<()> {
-    let mut content = format!(
-        "  <plan plan_id=\"{}\">\n    Plan created.\n\n",
-        escape_xml(plan_id)
-    );
+    let mut content = format!("## Plan Created\n- **ID:** {}\n\n", plan_id);
     for (i, subtask) in subtasks.iter().enumerate() {
-        content.push_str(&format!(
-            "    {}. {}\n",
-            i + 1,
-            escape_xml(&subtask.name)
-        ));
+        content.push_str(&format!("{}. {}\n", i + 1, &subtask.name));
     }
-    content.push_str("\n    Review:  aiki plan show ");
-    content.push_str(plan_id);
-    content.push_str("\n    Execute: aiki build ");
-    content.push_str(plan_id);
-    content.push_str("\n  </plan>");
+    content.push_str(&format!(
+        "\n- Review:  `aiki plan show {}`\n- Execute: `aiki build {}`\n",
+        plan_id, plan_id
+    ));
 
-    let xml = XmlBuilder::new("plan").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("plan").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -526,10 +518,8 @@ fn output_plan_resumed(plan_id: &str, subtasks: &[&Task]) -> Result<()> {
     let total = subtasks.len();
 
     let mut content = format!(
-        "  <plan plan_id=\"{}\" status=\"resumed\">\n    Resuming existing plan ({}/{} subtasks done).\n\n",
-        escape_xml(plan_id),
-        completed,
-        total
+        "## Plan Resumed\n- **ID:** {}\n- Resuming existing plan ({}/{} subtasks done).\n\n",
+        plan_id, completed, total
     );
     for (i, subtask) in subtasks.iter().enumerate() {
         let status_mark = if subtask.status == TaskStatus::Closed {
@@ -537,21 +527,15 @@ fn output_plan_resumed(plan_id: &str, subtasks: &[&Task]) -> Result<()> {
         } else {
             "pending"
         };
-        content.push_str(&format!(
-            "    {}. [{}] {}\n",
-            i + 1,
-            status_mark,
-            escape_xml(&subtask.name)
-        ));
+        content.push_str(&format!("{}. [{}] {}\n", i + 1, status_mark, &subtask.name));
     }
-    content.push_str("\n    Review:  aiki plan show ");
-    content.push_str(plan_id);
-    content.push_str("\n    Execute: aiki build ");
-    content.push_str(plan_id);
-    content.push_str("\n  </plan>");
+    content.push_str(&format!(
+        "\n- Review:  `aiki plan show {}`\n- Execute: `aiki build {}`\n",
+        plan_id, plan_id
+    ));
 
-    let xml = XmlBuilder::new("plan").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("plan").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -573,33 +557,26 @@ fn output_plan_show(plan: &Task, subtasks: &[&Task]) -> Result<()> {
     let outcome_str = plan
         .closed_outcome
         .as_ref()
-        .map(|o| format!(" outcome=\"{}\"", escape_xml(&o.to_string())))
+        .map(|o| format!("- **Outcome:** {}\n", o))
         .unwrap_or_default();
 
     let spec_str = plan
         .data
         .get("spec")
-        .map(|s| format!(" spec=\"{}\"", escape_xml(s)))
+        .map(|s| format!("- **Spec:** {}\n", s))
         .unwrap_or_default();
 
     let mut content = format!(
-        "  <plan id=\"{}\" status=\"{}\"{}{}>\n    <name>{}</name>\n",
-        escape_xml(&plan.id),
-        status_str,
-        outcome_str,
-        spec_str,
-        escape_xml(&plan.name)
+        "## Plan: {}\n- **ID:** {}\n- **Status:** {}\n{}{}",
+        &plan.name, &plan.id, status_str, outcome_str, spec_str
     );
 
     // Add progress summary
-    content.push_str(&format!(
-        "    <progress completed=\"{}\" total=\"{}\"/>\n",
-        completed, total
-    ));
+    content.push_str(&format!("- **Progress:** {}/{}\n", completed, total));
 
     // Add subtask list
     if !subtasks.is_empty() {
-        content.push_str("    <subtasks>\n");
+        content.push_str("\n### Subtasks\n| # | ID | Status | Outcome | Name |\n|---|-----|--------|---------|------|\n");
         for (i, subtask) in subtasks.iter().enumerate() {
             let sub_status = match subtask.status {
                 TaskStatus::Open => "open",
@@ -611,37 +588,26 @@ fn output_plan_show(plan: &Task, subtasks: &[&Task]) -> Result<()> {
             let sub_outcome = subtask
                 .closed_outcome
                 .as_ref()
-                .map(|o| format!(" outcome=\"{}\"", escape_xml(&o.to_string())))
+                .map(|o| o.to_string())
                 .unwrap_or_default();
 
             content.push_str(&format!(
-                "      <subtask n=\"{}\" id=\"{}\" status=\"{}\"{}>{}</subtask>\n",
-                i + 1,
-                escape_xml(&subtask.id),
-                sub_status,
-                sub_outcome,
-                escape_xml(&subtask.name)
+                "| {} | {} | {} | {} | {} |\n",
+                i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
             ));
         }
-        content.push_str("    </subtasks>\n");
     }
 
     // Add sources
     if !plan.sources.is_empty() {
-        content.push_str("    <sources>\n");
+        content.push_str("\n### Sources\n");
         for source in &plan.sources {
-            content.push_str(&format!(
-                "      <source>{}</source>\n",
-                escape_xml(source)
-            ));
+            content.push_str(&format!("- {}\n", source));
         }
-        content.push_str("    </sources>\n");
     }
 
-    content.push_str("  </plan>");
-
-    let xml = XmlBuilder::new("plan-show").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("plan-show").build(&content, &[], &[]);
+    eprintln!("{}", md);
 
     Ok(())
 }
@@ -676,6 +642,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments: Vec::new(),
         }
     }

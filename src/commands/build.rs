@@ -16,9 +16,9 @@ use clap::Subcommand;
 use crate::agents::AgentType;
 use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
-use crate::tasks::id::is_task_id;
+use crate::tasks::id::{is_task_id, is_task_id_prefix};
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
-use crate::tasks::xml::{escape_xml, XmlBuilder};
+use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_subtasks, materialize_tasks, read_events, write_event, Task,
     TaskEvent, TaskOutcome, TaskStatus,
@@ -80,7 +80,7 @@ pub fn run(args: BuildArgs) -> Result<()> {
         )
     })?;
 
-    if is_task_id(&target) {
+    if is_task_id(&target) || is_task_id_prefix(&target) {
         run_build_plan(&cwd, &target, args.run_async, args.template, args.agent)
     } else {
         run_build_spec(
@@ -262,11 +262,11 @@ fn run_build_plan(
         None
     };
 
-    // Find plan task
+    // Find plan task (resolve prefix to canonical ID)
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
-    let plan = find_task(&tasks, plan_id)
-        .ok_or_else(|| AikiError::TaskNotFound(plan_id.to_string()))?;
+    let plan = find_task(&tasks, plan_id)?;
+    let plan_id = plan.id.as_str();
 
     // Get spec path from plan's data
     let spec_path = plan
@@ -468,6 +468,7 @@ fn cleanup_stale_builds(cwd: &Path, spec_path: &str) -> Result<()> {
         let close_event = TaskEvent::Closed {
             task_ids: vec![build_id.clone()],
             outcome: TaskOutcome::WontDo,
+            summary: Some("Stale build cleaned up".to_string()),
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &close_event)?;
@@ -526,6 +527,7 @@ fn close_plan(cwd: &Path, plan_id: &str) -> Result<()> {
     let close_event = TaskEvent::Closed {
         task_ids: vec![plan_id.to_string()],
         outcome: TaskOutcome::WontDo,
+        summary: Some("Closed by --restart".to_string()),
         timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -617,22 +619,19 @@ fn prompt_existing_plan(plan: &Task, subtasks: &[&Task]) -> Result<BuildChoice> 
 /// Output build started message to stderr
 fn output_build_started(build_id: &str, plan_id: &str) -> Result<()> {
     let content = format!(
-        "  <started build_id=\"{}\" plan_id=\"{}\">\n    Build started.\n  </started>",
-        escape_xml(build_id),
-        escape_xml(plan_id)
+        "## Build Started\n- **Build ID:** {}\n- **Plan ID:** {}\n",
+        build_id, plan_id
     );
-    let xml = XmlBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("build").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output build completed message to stderr
 fn output_build_completed(build_id: &str, plan_id: &str, subtasks: &[&Task]) -> Result<()> {
     let mut content = format!(
-        "  <completed build_id=\"{}\" plan_id=\"{}\" subtasks=\"{}\">\n    Build completed successfully.\n\n",
-        escape_xml(build_id),
-        escape_xml(plan_id),
-        subtasks.len()
+        "## Build Completed\n- **Build ID:** {}\n- **Plan ID:** {}\n- **Subtasks:** {}\n\n",
+        build_id, plan_id, subtasks.len()
     );
 
     for (i, subtask) in subtasks.iter().enumerate() {
@@ -641,29 +640,22 @@ fn output_build_completed(build_id: &str, plan_id: &str, subtasks: &[&Task]) -> 
         } else {
             "pending"
         };
-        content.push_str(&format!(
-            "    {}. {} ({})\n",
-            i + 1,
-            escape_xml(&subtask.name),
-            status
-        ));
+        content.push_str(&format!("{}. {} ({})\n", i + 1, &subtask.name, status));
     }
-    content.push_str("  </completed>");
 
-    let xml = XmlBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("build").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output build async started message to stderr
 fn output_build_async(build_id: &str, plan_id: &str) -> Result<()> {
     let content = format!(
-        "  <started build_id=\"{}\" plan_id=\"{}\" async=\"true\">\n    Build started in background.\n  </started>",
-        escape_xml(build_id),
-        escape_xml(plan_id)
+        "## Build Started\n- **Build ID:** {}\n- **Plan ID:** {}\n- Build started in background.\n",
+        build_id, plan_id
     );
-    let xml = XmlBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("build").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -685,33 +677,26 @@ fn output_build_show(plan: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> 
     let outcome_str = plan
         .closed_outcome
         .as_ref()
-        .map(|o| format!(" outcome=\"{}\"", escape_xml(&o.to_string())))
+        .map(|o| format!("- **Outcome:** {}\n", o))
         .unwrap_or_default();
 
     let spec_str = plan
         .data
         .get("spec")
-        .map(|s| format!(" spec=\"{}\"", escape_xml(s)))
+        .map(|s| format!("- **Spec:** {}\n", s))
         .unwrap_or_default();
 
     let mut content = format!(
-        "  <plan id=\"{}\" status=\"{}\"{}{}>\n    <name>{}</name>\n",
-        escape_xml(&plan.id),
-        status_str,
-        outcome_str,
-        spec_str,
-        escape_xml(&plan.name)
+        "## Plan: {}\n- **ID:** {}\n- **Status:** {}\n{}{}",
+        &plan.name, &plan.id, status_str, outcome_str, spec_str
     );
 
     // Add progress summary
-    content.push_str(&format!(
-        "    <progress completed=\"{}\" total=\"{}\"/>\n",
-        completed, total
-    ));
+    content.push_str(&format!("- **Progress:** {}/{}\n", completed, total));
 
     // Add subtask list
     if !subtasks.is_empty() {
-        content.push_str("    <subtasks>\n");
+        content.push_str("\n### Subtasks\n| # | ID | Status | Outcome | Name |\n|---|-----|--------|---------|------|\n");
         for (i, subtask) in subtasks.iter().enumerate() {
             let sub_status = match subtask.status {
                 TaskStatus::Open => "open",
@@ -723,24 +708,19 @@ fn output_build_show(plan: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> 
             let sub_outcome = subtask
                 .closed_outcome
                 .as_ref()
-                .map(|o| format!(" outcome=\"{}\"", escape_xml(&o.to_string())))
+                .map(|o| o.to_string())
                 .unwrap_or_default();
 
             content.push_str(&format!(
-                "      <subtask n=\"{}\" id=\"{}\" status=\"{}\"{}>{}</subtask>\n",
-                i + 1,
-                escape_xml(&subtask.id),
-                sub_status,
-                sub_outcome,
-                escape_xml(&subtask.name)
+                "| {} | {} | {} | {} | {} |\n",
+                i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
             ));
         }
-        content.push_str("    </subtasks>\n");
     }
 
     // Add build history
     if !build_tasks.is_empty() {
-        content.push_str("    <builds>\n");
+        content.push_str("\n### Builds\n| ID | Status | Outcome | Name |\n|-----|--------|---------|------|\n");
         for build in build_tasks {
             let build_status = match build.status {
                 TaskStatus::Open => "open",
@@ -752,36 +732,26 @@ fn output_build_show(plan: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> 
             let build_outcome = build
                 .closed_outcome
                 .as_ref()
-                .map(|o| format!(" outcome=\"{}\"", escape_xml(&o.to_string())))
+                .map(|o| o.to_string())
                 .unwrap_or_default();
 
             content.push_str(&format!(
-                "      <build id=\"{}\" status=\"{}\"{}>{}</build>\n",
-                escape_xml(&build.id),
-                build_status,
-                build_outcome,
-                escape_xml(&build.name)
+                "| {} | {} | {} | {} |\n",
+                &build.id, build_status, build_outcome, &build.name
             ));
         }
-        content.push_str("    </builds>\n");
     }
 
     // Add sources
     if !plan.sources.is_empty() {
-        content.push_str("    <sources>\n");
+        content.push_str("\n### Sources\n");
         for source in &plan.sources {
-            content.push_str(&format!(
-                "      <source>{}</source>\n",
-                escape_xml(source)
-            ));
+            content.push_str(&format!("- {}\n", source));
         }
-        content.push_str("    </sources>\n");
     }
 
-    content.push_str("  </plan>");
-
-    let xml = XmlBuilder::new("build-show").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("build-show").build(&content, &[], &[]);
+    eprintln!("{}", md);
 
     Ok(())
 }
@@ -811,6 +781,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments: Vec::new(),
         }
     }

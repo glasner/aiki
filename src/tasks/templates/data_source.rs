@@ -117,6 +117,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments,
         }
     }

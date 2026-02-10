@@ -213,8 +213,14 @@ pub fn substitute_with_template_name(
 ) -> Result<String> {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
+    let mut line_number: usize = 1;
 
     while let Some(c) = chars.next() {
+        if c == '\n' {
+            line_number += 1;
+            result.push(c);
+            continue;
+        }
         if c == '{' {
             if chars.peek() == Some(&'{') {
                 // Start of variable reference: {{
@@ -278,9 +284,10 @@ pub fn substitute_with_template_name(
                                 format!("Variable '{}' is not a recognized built-in variable", var_ref)
                             };
 
-                            let template_info = template_name
-                                .map(|n| format!("\n  In template: {}", n))
-                                .unwrap_or_default();
+                            let template_info = match template_name {
+                                Some(n) => format!("\n  In template: {} (line {})", n, line_number),
+                                None => format!("\n  At line: {}", line_number),
+                            };
 
                             return Err(AikiError::TemplateVariableNotFound {
                                 variable: var_ref.to_string(),
@@ -359,11 +366,12 @@ mod tests {
     #[test]
     fn test_substitute_data() {
         let mut ctx = VariableContext::new();
-        ctx.set_data("scope", "@");
+        ctx.set_data("scope.name", "Task (abc123)");
+        ctx.set_data("scope.id", "abc123");
         ctx.set_data("files", "src/auth.rs, src/crypto.rs");
 
-        let result = substitute("Review {{data.scope}} (files: {{data.files}})", &ctx).unwrap();
-        assert_eq!(result, "Review @ (files: src/auth.rs, src/crypto.rs)");
+        let result = substitute("Review {{data.scope.name}} (files: {{data.files}})", &ctx).unwrap();
+        assert_eq!(result, "Review Task (abc123) (files: src/auth.rs, src/crypto.rs)");
     }
 
     #[test]
@@ -446,11 +454,13 @@ mod tests {
     fn test_variable_context_builder() {
         let mut ctx = VariableContext::new();
         ctx.set_builtin("id", "abc123");
-        ctx.set_data("scope", "@");
+        ctx.set_data("scope.name", "Task (@)");
+        ctx.set_data("scope.id", "@");
         ctx.set_source("file:plan.md");
 
         assert_eq!(ctx.resolve("id"), Some("abc123".to_string()));
-        assert_eq!(ctx.resolve("data.scope"), Some("@".to_string()));
+        assert_eq!(ctx.resolve("data.scope.name"), Some("Task (@)".to_string()));
+        assert_eq!(ctx.resolve("data.scope.id"), Some("@".to_string()));
         assert_eq!(ctx.resolve("source"), Some("file:plan.md".to_string()));
         assert_eq!(ctx.resolve("unknown"), None);
     }

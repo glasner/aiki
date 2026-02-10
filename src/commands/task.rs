@@ -16,21 +16,23 @@ use crate::events::{AikiEvent, AikiTaskClosedPayload, AikiTaskStartedPayload, Ta
 use std::collections::{HashMap, HashSet};
 
 use crate::tasks::{
-    generate_child_id, generate_task_id, get_next_subtask_number, is_task_id,
+    generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix,
     manager::{
         find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
         get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
-        ScopeSet,
+        resolve_task_id, ScopeSet,
     },
     reopen_if_closed,
-    runner::{run_task_with_xml, TaskRunOptions},
+    runner::{run_task_with_output, TaskRunOptions},
     storage::{read_events, read_events_with_ids, write_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
-    xml::{
-        format_added, format_closed, format_instructions, format_started, format_stopped,
-        format_task_list,
+    md::{
+        aiki_print, build_context, build_list_output, build_transition_context,
+        format_action_added, format_action_closed, format_action_commented,
+        format_action_started, format_action_stopped, format_instructions, format_task_list,
+        short_id,
     },
-    XmlBuilder,
+    MdBuilder,
 };
 
 /// Valid prefixes for task sources
@@ -357,9 +359,9 @@ pub enum TaskCommands {
         #[arg(long)]
         wont_do: bool,
 
-        /// Comment to add before closing (use "-" for stdin/heredoc)
+        /// Summary of what was accomplished (use "-" for stdin)
         #[arg(long)]
-        comment: Option<String>,
+        summary: Option<String>,
     },
 
     /// Show task details (including subtasks for parent tasks)
@@ -616,8 +618,8 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             ids,
             outcome,
             wont_do,
-            comment,
-        } => run_close(&cwd, ids, &outcome, wont_do, comment),
+            summary,
+        } => run_close(&cwd, ids, &outcome, wont_do, summary),
         TaskCommands::Show {
             id,
             diff,
@@ -828,12 +830,13 @@ fn run_list(
     };
 
     // Get list of tasks based on filters (for display in content)
-    let list_tasks: Vec<&Task> = if all
+    let has_active_filters = all
         || has_status_filters
         || has_explicit_assignee_filters
         || filter_source.is_some()
-        || filter_template.is_some()
-    {
+        || filter_template.is_some();
+
+    let list_tasks: Vec<&Task> = if has_active_filters {
         // Show tasks with filters applied
         let mut all_tasks: Vec<_> = tasks.values().collect();
         all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
@@ -921,17 +924,21 @@ fn run_list(
         })
         .collect();
 
-    let content = format_task_list(&list_tasks);
+    let output = if has_active_filters {
+        // Filtered view: show filtered list + context (via MdBuilder)
+        let content = format_task_list(&list_tasks);
+        let mut builder = MdBuilder::new("list");
+        let xml_scopes = scope_set.to_xml_scopes();
+        if !xml_scopes.is_empty() {
+            builder = builder.with_scopes(&xml_scopes);
+        }
+        builder.build(&content, &in_progress, &ready_queue)
+    } else {
+        // Default view: nav hint header + context
+        build_list_output(&in_progress, &ready_queue)
+    };
 
-    let mut builder = XmlBuilder::new("list");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    // Context always uses the actual ready queue, not the filtered list
-    let xml = builder.build(&content, &in_progress, &ready_queue);
-
-    println!("{}", xml);
+    aiki_print(&output);
     Ok(())
 }
 
@@ -1003,33 +1010,13 @@ fn run_add(
         // Read events to get the task we just created
         let events = read_events(cwd)?;
         let tasks = materialize_tasks(&events);
-        let in_progress = get_in_progress(&tasks);
 
         let task = tasks
             .get(&task_id)
             .ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
 
-        // Get scope set and ready queue
-        let scope_set = get_current_scope_set(&tasks);
-        let ready: Vec<_> = get_ready_queue_for_scope_set(&tasks, &scope_set)
-            .into_iter()
-            .cloned()
-            .collect();
-
-        // Build output
-        let content = format_added(&[task]);
-
-        let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
-        let ready_refs: Vec<_> = ready.iter().collect();
-
-        let mut builder = XmlBuilder::new("add");
-        let xml_scopes = scope_set.to_xml_scopes();
-        if !xml_scopes.is_empty() {
-            builder = builder.with_scopes(&xml_scopes);
-        }
-        let xml = builder.build(&content, &in_progress_refs, &ready_refs);
-
-        println!("{}", xml);
+        // Slim output: single line confirmation
+        aiki_print(&format_action_added(task));
         return Ok(());
     }
 
@@ -1068,16 +1055,15 @@ fn run_add(
         TaskPriority::P2 // Default, also covers explicit --p2
     };
 
-    // Read current state first (needed for context)
+    // Read current state first
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
-    let in_progress = get_in_progress(&tasks);
 
     // Determine task ID and possibly inherit parent's assignee
     let (task_id, effective_assignee) = if let Some(ref parent_id) = parent {
         // Validate parent exists; if closed, implicitly reopen it
-        let parent_task = find_task(&tasks, parent_id)
-            .ok_or_else(|| AikiError::TaskNotFound(parent_id.clone()))?;
+        let parent_task = find_task(&tasks, parent_id)?;
+        let parent_id = &parent_task.id; // rebind to canonical ID
         reopen_if_closed(cwd, parent_id, &tasks, "Subtasks added")?;
 
         // Generate subtask ID (parent.N where N is next available)
@@ -1137,44 +1123,12 @@ fn run_add(
         last_session_id: None,
         stopped_reason: None,
         closed_outcome: None,
+        summary: None,
         comments: Vec::new(),
     };
 
-    // Determine current scope set for context
-    let scope_set = get_current_scope_set(&tasks);
-
-    // Update ready queue based on scope set
-    let mut ready: Vec<Task> = get_ready_queue_for_scope_set(&tasks, &scope_set)
-        .into_iter()
-        .map(|t| (*t).clone())
-        .collect();
-
-    // Add new task if it's in the current scope
-    let new_task_in_scope = match (&parent, &scope_set) {
-        // New root task is in scope if root is included or no scopes active
-        (None, ss) if ss.include_root || ss.is_empty() => true,
-        // New child task is in scope if its parent is one of the active scopes
-        (Some(p), ss) => ss.scopes.contains(p),
-        // New root task when only child scopes active - not in scope
-        (None, _) => false,
-    };
-
-    if new_task_in_scope {
-        ready.push(new_task.clone());
-        ready.sort_by(|a, b| a.priority.cmp(&b.priority));
-    }
-
-    let content = format_added(&[&new_task]);
-
-    let ready_refs: Vec<_> = ready.iter().collect();
-    let mut builder = XmlBuilder::new("add");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &in_progress, &ready_refs);
-
-    println!("{}", xml);
+    // Slim output: single line confirmation
+    aiki_print(&format_action_added(&new_task));
     Ok(())
 }
 
@@ -1306,88 +1260,99 @@ fn run_start(
             return Err(AikiError::NoTasksReady);
         }
     } else if ids.len() == 1 && !is_task_id(&ids[0]) {
-        // Quick-start: input is a description, not a task ID
-        // Create a new task and start it atomically
-        let description = &ids[0];
-        let task_id = generate_task_id(description);
-        let timestamp = chrono::Utc::now();
-        let working_copy = get_working_copy_change_id(cwd);
-
-        // Create the task
-        let create_event = TaskEvent::Created {
-            task_id: task_id.clone(),
-            name: description.clone(),
-            task_type: None,
-            priority,
-            assignee: None,
-            sources: sources.clone(),
-            template: None,
-            working_copy: working_copy.clone(),
-            instructions: None,
-            data: std::collections::HashMap::new(),
-            timestamp,
-        };
-        write_event(cwd, &create_event)?;
-
-        // Add to local tasks map for output
-        let new_task = Task {
-            id: task_id.clone(),
-            name: description.clone(),
-            task_type: None,
-            status: TaskStatus::Open,
-            priority,
-            assignee: None,
-            sources: sources.clone(),
-            template: None,
-            working_copy,
-            instructions: None,
-            data: std::collections::HashMap::new(),
-            created_at: timestamp,
-            started_at: None,
-            claimed_by_session: None,
-            last_session_id: None,
-            stopped_reason: None,
-            closed_outcome: None,
-            comments: Vec::new(),
-        };
-        tasks.insert(task_id.clone(), new_task.clone());
-        created_new_task = Some(new_task);
-
-        vec![task_id]
-    } else {
-        // Validate all IDs exist and check reopen requirements
-        for id in &ids {
-            if let Some(task) = find_task(&tasks, id) {
-                if task.status == TaskStatus::Closed {
-                    if !reopen {
-                        let xml = XmlBuilder::new("start").error().build_error(&format!(
-                            "Task '{}' is closed. Use --reopen --reason to reopen it.",
-                            id
-                        ));
-                        println!("{}", xml);
-                        return Ok(());
-                    }
-                    // Reopen requires a reason
-                    if reopen_reason.is_none() {
-                        let xml = XmlBuilder::new("start")
-                            .error()
-                            .build_error("--reopen requires --reason");
-                        println!("{}", xml);
-                        return Ok(());
-                    }
-                }
-            } else {
-                return Err(AikiError::TaskNotFound(id.clone()));
+        // Single arg that's not a full task ID — could be prefix or description
+        let mut resolved = None;
+        if is_task_id_prefix(&ids[0]) {
+            match resolve_task_id(&tasks, &ids[0]) {
+                Ok(full_id) => resolved = Some(full_id),
+                Err(AikiError::TaskNotFound(_)) => {} // fall through to quick-start
+                Err(e) => return Err(e),               // ambiguous → error
             }
         }
-        ids
+
+        if let Some(full_id) = resolved {
+            vec![full_id]
+        } else {
+            // Quick-start: create a new task from the description
+            let description = &ids[0];
+            let task_id = generate_task_id(description);
+            let timestamp = chrono::Utc::now();
+            let working_copy = get_working_copy_change_id(cwd);
+
+            let create_event = TaskEvent::Created {
+                task_id: task_id.clone(),
+                name: description.clone(),
+                task_type: None,
+                priority,
+                assignee: None,
+                sources: sources.clone(),
+                template: None,
+                working_copy: working_copy.clone(),
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                timestamp,
+            };
+            write_event(cwd, &create_event)?;
+
+            let new_task = Task {
+                id: task_id.clone(),
+                name: description.clone(),
+                task_type: None,
+                status: TaskStatus::Open,
+                priority,
+                assignee: None,
+                sources: sources.clone(),
+                template: None,
+                working_copy,
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                created_at: timestamp,
+                started_at: None,
+                claimed_by_session: None,
+                last_session_id: None,
+                stopped_reason: None,
+                closed_outcome: None,
+                summary: None,
+                comments: Vec::new(),
+            };
+            tasks.insert(task_id.clone(), new_task.clone());
+            created_new_task = Some(new_task);
+
+            vec![task_id]
+        }
+    } else {
+        // Resolve all IDs (prefix → full) and validate
+        let mut resolved_ids = Vec::new();
+        for id in &ids {
+            let full_id = resolve_task_id(&tasks, id)?;
+            let task = tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id.clone()))?;
+            if task.status == TaskStatus::Closed {
+                if !reopen {
+                    let xml = MdBuilder::new("start").error().build_error(&format!(
+                        "Task '{}' is closed. Use --reopen --reason to reopen it.",
+                        full_id
+                    ));
+                    aiki_print(&xml);
+                    return Ok(());
+                }
+                if reopen_reason.is_none() {
+                    let xml = MdBuilder::new("start")
+                        .error()
+                        .build_error("--reopen requires --reason");
+                    aiki_print(&xml);
+                    return Ok(());
+                }
+            }
+            resolved_ids.push(full_id);
+        }
+        resolved_ids
     };
 
     // Reopen closed tasks if --reopen was specified
     if reopen {
         if let Some(reason) = &reopen_reason {
             for id in &ids_to_start {
-                if let Some(task) = find_task(&tasks, id) {
+                if let Ok(task) = find_task(&tasks, id) {
                     if task.status == TaskStatus::Closed {
                         let reopen_event = TaskEvent::Reopened {
                             task_id: id.clone(),
@@ -1419,7 +1384,7 @@ fn run_start(
             let planning_id = generate_child_id(&task_id, 0);
 
             // Check if planning task already exists
-            if find_task(&tasks, &planning_id).is_none() {
+            if find_task(&tasks, &planning_id).is_err() {
                 // Create the planning task
                 let timestamp = chrono::Utc::now();
                 let working_copy = get_working_copy_change_id(cwd);
@@ -1457,6 +1422,7 @@ fn run_start(
                     last_session_id: None,
                     stopped_reason: None,
                     closed_outcome: None,
+                    summary: None,
                     comments: Vec::new(),
                 };
                 tasks.insert(planning_id.clone(), task);
@@ -1527,7 +1493,7 @@ fn run_start(
 
     // Emit task.started flow events for each started task
     for task_id in &actual_ids_to_start {
-        if let Some(task) = find_task(&tasks, task_id) {
+        if let Ok(task) = find_task(&tasks, task_id) {
             let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
                 task: TaskEventPayload {
                     id: task.id.clone(),
@@ -1560,85 +1526,19 @@ fn run_start(
         task.claimed_by_session = session_id.clone();
     }
 
-    // Determine output scope set (new scope if starting parent, or scope set from started tasks)
-    let output_scope_set: ScopeSet = if let Some(ref s) = new_scope {
-        ScopeSet {
-            include_root: false,
-            scopes: vec![s.clone()],
-        }
-    } else {
-        // Build scope set from started tasks
-        let mut include_root = false;
-        let mut scopes: Vec<String> = Vec::new();
-        for task in &started_tasks {
-            if let Some(parent_id) = crate::tasks::id::get_parent_id(&task.id) {
-                scopes.push(parent_id.to_string());
-            } else {
-                include_root = true;
-            }
-        }
-        scopes.sort();
-        scopes.dedup();
-        ScopeSet {
-            include_root,
-            scopes,
-        }
-    };
+    // Build slim output: no context footer for start
+    let mut output = String::new();
 
-    // Update context: started tasks are now in progress
-    let updated_in_progress = started_tasks.clone();
-
-    // Update ready queue based on new scope set
-    let mut updated_ready: Vec<Task> = get_ready_queue_for_scope_set(&tasks, &output_scope_set)
-        .into_iter()
-        .filter(|t| !actual_ids_to_start.contains(&t.id))
-        .map(|t| (*t).clone())
-        .collect();
-
-    // Add stopped tasks back to ready if they're in scope
+    // Show stopped tasks if any (one line each)
     for task in &stopped_tasks {
-        let task_parent = crate::tasks::id::get_parent_id(&task.id);
-        let task_in_scope = match task_parent {
-            None => output_scope_set.include_root || output_scope_set.is_empty(),
-            Some(parent) => output_scope_set.scopes.iter().any(|s| s == parent),
-        };
-        if task_in_scope {
-            updated_ready.push(task.clone());
-        }
-    }
-    updated_ready.sort_by(|a, b| a.priority.cmp(&b.priority));
-
-    // Build output
-    let mut content = String::new();
-
-    // Show stopped tasks if any
-    if !current_in_progress_ids.is_empty() {
-        let stopped_task_refs: Vec<_> = stopped_tasks.iter().collect();
-        content.push_str(&format_stopped(&stopped_task_refs, Some(&stop_reason)));
-        content.push('\n');
+        output.push_str(&format_action_stopped(short_id(&task.id), None));
     }
 
-    // Show created task if quick-start was used
-    if let Some(ref new_task) = created_new_task {
-        content.push_str(&format_added(&[new_task]));
-        content.push('\n');
+    for task in &started_tasks {
+        output.push_str(&format_action_started(task));
     }
 
-    // Show started tasks
-    let started_task_refs: Vec<_> = started_tasks.iter().collect();
-    content.push_str(&format_started(&started_task_refs));
-
-    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
-    let updated_ready_refs: Vec<_> = updated_ready.iter().collect();
-
-    let mut builder = XmlBuilder::new("start");
-    let xml_scopes = output_scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &updated_in_progress_refs, &updated_ready_refs);
-
-    println!("{}", xml);
+    aiki_print(&output);
     Ok(())
 }
 
@@ -1662,30 +1562,26 @@ fn run_stop(
     // Determine which task to stop
     let task_id = if let Some(id) = id {
         // Verify task exists and is in progress
-        if let Some(task) = find_task(&tasks, &id) {
-            if task.status != TaskStatus::InProgress {
-                // Task exists but isn't in progress - still allow stopping if it's open
-                if task.status != TaskStatus::Open {
-                    return Err(AikiError::TaskNotFound(format!(
-                        "Task '{}' is not in progress",
-                        id
-                    )));
-                }
+        let task = find_task(&tasks, &id)?;
+        if task.status != TaskStatus::InProgress {
+            if task.status != TaskStatus::Open {
+                return Err(AikiError::TaskNotFound(format!(
+                    "Task '{}' is not in progress",
+                    id
+                )));
             }
-            id
-        } else {
-            return Err(AikiError::TaskNotFound(id));
         }
+        task.id.clone() // use canonical ID
     } else {
         // Default to first in-progress task
         if let Some(first_id) = in_progress_ids.first() {
             first_id.clone()
         } else {
             // Try to print an error response
-            let xml = XmlBuilder::new("stop")
+            let xml = MdBuilder::new("stop")
                 .error()
                 .build_error("No task in progress to stop");
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
     };
@@ -1702,11 +1598,11 @@ fn run_stop(
                 .unwrap_or(false);
 
             if !is_owner {
-                let xml = XmlBuilder::new("stop").error().build_error(&format!(
+                let xml = MdBuilder::new("stop").error().build_error(&format!(
                     "Task '{}' is claimed by another session. Use --force to override.",
                     task_id
                 ));
-                println!("{}", xml);
+                aiki_print(&xml);
                 return Ok(());
             }
         }
@@ -1763,6 +1659,7 @@ fn run_stop(
                 last_session_id: None,
                 stopped_reason: None,
                 closed_outcome: None,
+                summary: None,
                 comments: Vec::new(),
             },
         );
@@ -1816,20 +1713,13 @@ fn run_stop(
     }
     ready.sort_by(|a, b| a.priority.cmp(&b.priority));
 
-    // Build output
-    let content = format_stopped(&[&stopped_task], reason.as_deref());
-
-    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
+    // Build output: action+hint line, then ---/context
+    let in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
     let ready_refs: Vec<_> = ready.iter().collect();
+    let mut output = format_action_stopped(short_id(&stopped_task.id), reason.as_deref());
+    output.push_str(&build_transition_context(&in_progress_refs, &ready_refs));
 
-    let mut builder = XmlBuilder::new("stop");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &updated_in_progress_refs, &ready_refs);
-
-    println!("{}", xml);
+    aiki_print(&output);
     Ok(())
 }
 
@@ -1839,7 +1729,7 @@ fn run_close(
     ids: Vec<String>,
     outcome_str: &str,
     wont_do: bool,
-    comment: Option<String>,
+    summary: Option<String>,
 ) -> Result<()> {
     use crate::session::find_active_session;
     use crate::tasks::manager::{
@@ -1873,21 +1763,20 @@ fn run_close(
     let mut ids_to_close = if ids.is_empty() {
         // Default to current in-progress tasks
         if in_progress_ids.is_empty() {
-            let xml = XmlBuilder::new("close")
+            let xml = MdBuilder::new("close")
                 .error()
                 .build_error("No task in progress to close");
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
         in_progress_ids.clone()
     } else {
-        // Validate all IDs exist
+        // Resolve all IDs (prefix → full) and validate
+        let mut resolved = Vec::new();
         for id in &ids {
-            if find_task(&tasks, id).is_none() {
-                return Err(AikiError::TaskNotFound(id.clone()));
-            }
+            resolved.push(resolve_task_id(&tasks, id)?);
         }
-        ids
+        resolved
     };
 
     // Keep track of explicitly requested tasks vs cascade-closed descendants
@@ -1911,21 +1800,57 @@ fn run_close(
     descendants_to_close.append(&mut ids_to_close);
     ids_to_close = descendants_to_close;
 
-    // Handle stdin for --comment -
-    let comment_text = if comment.as_deref() == Some("-") {
+    // Handle stdin for --summary -
+    let summary_text = if summary.as_deref() == Some("-") {
         let mut buffer = String::new();
         std::io::stdin().read_to_string(&mut buffer)?;
         Some(buffer.trim().to_string())
     } else {
-        comment
+        summary
     };
 
-    // Always require a comment when closing tasks - ensures work is documented
-    if comment_text.is_none() {
-        return Err(AikiError::TaskCommentRequired(
-            "Closing tasks requires a comment. Please summarize your work with --comment."
-                .to_string(),
-        ));
+    // Determine if summary is required
+    let session_match = find_active_session(cwd);
+    let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
+
+    if summary_text.is_none() {
+        // --wont-do always requires a summary (rationale for declining)
+        if wont_do || outcome_str == "wont_do" {
+            return Err(AikiError::TaskCommentRequired(
+                "Summary required when closing as won't-do. Explain why:\n  aiki task close <id> --wont-do --summary \"Already handled by existing code\""
+                    .to_string(),
+            ));
+        }
+
+        // Summary required if current session started ANY of the explicit tasks
+        let requires_summary: Vec<String> = explicit_ids
+            .iter()
+            .filter(|id| {
+                if let Some(task) = tasks.get(*id) {
+                    // Check if current session started this task
+                    match (&task.last_session_id, &our_session_id) {
+                        (Some(task_session), Some(our)) => task_session == our,
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if !requires_summary.is_empty() {
+            let short_ids: Vec<String> = requires_summary
+                .iter()
+                .map(|id| crate::tasks::md::short_id(id).to_string())
+                .collect();
+            return Err(AikiError::TaskCommentRequired(
+                format!(
+                    "Summary required when closing an in progress task.\n\nInstead close with a summary of your work:\n  aiki task close {} --summary \"What you accomplished\"",
+                    short_ids.join(" ")
+                ),
+            ));
+        }
     }
 
     // --wont_do flag overrides --outcome for backwards compatibility
@@ -1941,41 +1866,29 @@ fn run_close(
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
-    // Add comments before close (1ms before close for chronological order)
     let close_timestamp = chrono::Utc::now();
-    let comment_timestamp = close_timestamp - chrono::Duration::milliseconds(1);
 
-    // Descendants that were cascade-closed get "Closed with parent" comment
+    // Cascade-closed descendants get their own Closed event with "Closed with parent" summary
     let cascade_ids: Vec<String> = ids_to_close
         .iter()
         .filter(|id| !explicit_ids.contains(id))
         .cloned()
         .collect();
     if !cascade_ids.is_empty() {
-        let cascade_comment = TaskEvent::CommentAdded {
+        let cascade_close = TaskEvent::Closed {
             task_ids: cascade_ids,
-            text: "Closed with parent".to_string(),
-            data: std::collections::HashMap::new(),
-            timestamp: comment_timestamp,
+            outcome,
+            summary: Some("Closed with parent".to_string()),
+            timestamp: close_timestamp,
         };
-        write_event(cwd, &cascade_comment)?;
+        write_event(cwd, &cascade_close)?;
     }
 
-    // User's comment goes only to explicitly requested tasks
-    if let Some(ref comment) = comment_text {
-        let explicit_comment = TaskEvent::CommentAdded {
-            task_ids: explicit_ids,
-            text: comment.clone(),
-            data: std::collections::HashMap::new(),
-            timestamp: comment_timestamp,
-        };
-        write_event(cwd, &explicit_comment)?;
-    }
-
-    // Close the tasks (batch operation)
+    // Close the explicitly requested tasks with user's summary
     let close_event = TaskEvent::Closed {
-        task_ids: ids_to_close.clone(),
+        task_ids: explicit_ids.clone(),
         outcome,
+        summary: summary_text.clone(),
         timestamp: close_timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -2044,12 +1957,15 @@ fn run_close(
                 }
 
                 // Auto-start the parent for review/finalization
-                // Note: session_id is None since close doesn't have session context
                 let auto_start_timestamp = chrono::Utc::now();
+                let agent_type_str = session_match
+                    .as_ref()
+                    .map(|m| m.agent_type.as_str().to_string())
+                    .unwrap_or_else(|| "claude-code".to_string());
                 let start_event = TaskEvent::Started {
                     task_ids: vec![parent_id.clone()],
-                    agent_type: "claude-code".to_string(),
-                    session_id: None,
+                    agent_type: agent_type_str,
+                    session_id: our_session_id.clone(),
                     timestamp: auto_start_timestamp,
                     stopped: Vec::new(),
                 };
@@ -2089,8 +2005,6 @@ fn run_close(
     // This only triggers when the session owns the parent (i.e., is working through
     // the batch), NOT when an agent only claimed a single subtask.
     let mut auto_started_subtasks: Vec<Task> = Vec::new();
-    let session_match = find_active_session(cwd);
-    let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
 
     for parent_id in &unique_parent_ids {
         // Skip if all subtasks just closed (parent auto-start already handled above)
@@ -2209,45 +2123,37 @@ fn run_close(
         .map(|t| (*t).clone())
         .collect();
 
-    // Build output
-    let mut content = String::new();
-
-    let closed_task_refs: Vec<_> = closed_tasks.iter().collect();
-    content.push_str(&format_closed(&closed_task_refs, &outcome.to_string()));
-
-    // Add auto-started parents to output
-    if !auto_started_parents.is_empty() {
-        content.push('\n');
-        let parent_refs: Vec<_> = auto_started_parents.iter().collect();
-        content.push_str(&format_started(&parent_refs));
-    }
-
-    // Add auto-started subtasks to output
-    if !auto_started_subtasks.is_empty() {
-        content.push('\n');
-        let subtask_refs: Vec<_> = auto_started_subtasks.iter().collect();
-        content.push_str(&format_started(&subtask_refs));
-    }
-
-    // Add notices if present
-    for notice in &notices {
-        content.push_str(&format!(
-            "\n  <notice>{}</notice>",
-            crate::tasks::xml::escape_xml(notice)
-        ));
-    }
-
-    let updated_in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
+    // Build output: action+hint line, then ---/context
+    let mut output = String::new();
+    let in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
     let ready_refs: Vec<_> = ready.iter().collect();
 
-    let mut builder = XmlBuilder::new("close");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
+    // Closed confirmation with hint
+    if closed_tasks.len() == 1 {
+        output.push_str(&format_action_closed(short_id(&closed_tasks[0].id)));
+    } else {
+        output.push_str(&format!("Closed {} tasks\n", closed_tasks.len()));
     }
-    let xml = builder.build(&content, &updated_in_progress_refs, &ready_refs);
 
-    println!("{}", xml);
+    // Notices and auto-starts
+    let has_intermediates =
+        !notices.is_empty() || !auto_started_parents.is_empty() || !auto_started_subtasks.is_empty();
+    if has_intermediates {
+        for notice in &notices {
+            output.push_str(&format!("> {}\n", notice));
+        }
+        for parent in &auto_started_parents {
+            output.push_str(&format_action_started(parent));
+        }
+        for subtask in &auto_started_subtasks {
+            output.push_str(&format_action_started(subtask));
+        }
+    }
+
+    // Full context after ---
+    output.push_str(&build_transition_context(&in_progress_refs, &ready_refs));
+
+    aiki_print(&output);
     Ok(())
 }
 
@@ -2367,9 +2273,9 @@ fn parse_source(source: &str) -> SourceRef {
     }
 }
 
-/// Format a source reference as XML
+/// Format a source reference as markdown
 ///
-/// When `expand` is false, returns minimal XML: `<source type="task" id="..."/>`
+/// When `expand` is false, returns a brief source line.
 /// When `expand` is true, includes full content from the source.
 fn format_source(
     cwd: &Path,
@@ -2377,169 +2283,97 @@ fn format_source(
     tasks: &std::collections::HashMap<String, Task>,
     expand: bool,
 ) -> String {
-    use crate::tasks::xml::escape_xml;
-
     let parsed = parse_source(source);
 
     match parsed {
         SourceRef::Task { id } => {
             if expand {
-                // Look up the task and include its name + instructions
                 if let Some(task) = tasks.get(&id) {
-                    let mut xml =
-                        format!("\n    <source type=\"task\" id=\"{}\">", escape_xml(&id));
-                    xml.push_str(&format!("\n      <name>{}</name>", escape_xml(&task.name)));
+                    let mut md = format!("- Source: task:{} ({})\n", &id, &task.name);
                     if let Some(ref instructions) = task.instructions {
-                        xml.push_str(&format!(
-                            "\n      <instructions>{}</instructions>",
-                            escape_xml(instructions)
-                        ));
+                        md.push_str(&format!("  Instructions: {}\n", instructions));
                     }
-                    // Show nested sources as minimal refs (not recursively expanded)
                     for nested_source in &task.sources {
                         let nested_parsed = parse_source(nested_source);
-                        xml.push_str(&format_source_minimal(&nested_parsed));
+                        md.push_str(&format_source_minimal(&nested_parsed));
                     }
-                    xml.push_str("\n    </source>");
-                    xml
+                    md
                 } else {
-                    format!(
-                        "\n    <source type=\"task\" id=\"{}\" error=\"not_found\"/>",
-                        escape_xml(&id)
-                    )
+                    format!("- Source: task:{} (not found)\n", &id)
                 }
             } else {
-                format!("\n    <source type=\"task\" id=\"{}\"/>", escape_xml(&id))
+                format!("- Source: task:{}\n", &id)
             }
         }
         SourceRef::Prompt { id } => {
             if expand {
-                // Load prompt from global aiki history repo
                 use crate::global::global_aiki_dir;
                 use crate::history::get_prompt_by_change_id;
 
                 let global_repo = global_aiki_dir();
                 match get_prompt_by_change_id(&global_repo, &id) {
                     Ok(Some(content)) => {
-                        format!(
-                            "\n    <source type=\"prompt\" id=\"{}\">\n      <text><![CDATA[{}]]></text>\n    </source>",
-                            escape_xml(&id),
-                            content
-                        )
+                        format!("- Source: prompt:{}\n  > {}\n", &id, content)
                     }
                     _ => {
-                        format!(
-                            "\n    <source type=\"prompt\" id=\"{}\" error=\"not_found\"/>",
-                            escape_xml(&id)
-                        )
+                        format!("- Source: prompt:{} (not found)\n", &id)
                     }
                 }
             } else {
-                format!("\n    <source type=\"prompt\" id=\"{}\"/>", escape_xml(&id))
+                format!("- Source: prompt:{}\n", &id)
             }
         }
         SourceRef::File { path } => {
             if expand {
-                // Try to read the file content
                 let full_path = cwd.join(&path);
                 match std::fs::read_to_string(&full_path) {
                     Ok(content) => {
                         format!(
-                            "\n    <source type=\"file\" path=\"{}\">\n      <content><![CDATA[{}]]></content>\n    </source>",
-                            escape_xml(&path),
-                            content
+                            "- Source: file:{}\n```\n{}\n```\n",
+                            &path, content
                         )
                     }
                     Err(_) => {
-                        format!(
-                            "\n    <source type=\"file\" path=\"{}\" error=\"not_found\"/>",
-                            escape_xml(&path)
-                        )
+                        format!("- Source: file:{} (not found)\n", &path)
                     }
                 }
             } else {
-                format!(
-                    "\n    <source type=\"file\" path=\"{}\"/>",
-                    escape_xml(&path)
-                )
+                format!("- Source: file:{}\n", &path)
             }
         }
         SourceRef::Comment { id } => {
             if expand {
-                // Comment IDs are in format "task_id:comment_index"
-                // Try to parse and look up the comment
                 if let Some((task_id, index_str)) = id.split_once(':') {
                     if let Ok(index) = index_str.parse::<usize>() {
                         if let Some(task) = tasks.get(task_id) {
                             if let Some(comment) = task.comments.get(index) {
-                                let mut xml = format!(
-                                    "\n    <source type=\"comment\" id=\"{}\" task_id=\"{}\">",
-                                    escape_xml(&id),
-                                    escape_xml(task_id)
+                                return format!(
+                                    "- Source: comment:{} (task:{})\n  > {}\n",
+                                    &id, task_id, &comment.text
                                 );
-                                xml.push_str(&format!(
-                                    "\n      <text>{}</text>",
-                                    escape_xml(&comment.text)
-                                ));
-                                xml.push_str("\n    </source>");
-                                return xml;
                             }
                         }
                     }
                 }
-                // Could not find or parse comment
-                format!(
-                    "\n    <source type=\"comment\" id=\"{}\" error=\"not_found\"/>",
-                    escape_xml(&id)
-                )
+                format!("- Source: comment:{} (not found)\n", &id)
             } else {
-                format!(
-                    "\n    <source type=\"comment\" id=\"{}\"/>",
-                    escape_xml(&id)
-                )
+                format!("- Source: comment:{}\n", &id)
             }
         }
         SourceRef::Unknown { raw } => {
-            format!(
-                "\n    <source type=\"unknown\" raw=\"{}\"/>",
-                escape_xml(&raw)
-            )
+            format!("- Source: {}\n", &raw)
         }
     }
 }
 
-/// Format a source reference as minimal XML (for nested sources)
+/// Format a source reference as minimal markdown (for nested sources)
 fn format_source_minimal(source: &SourceRef) -> String {
-    use crate::tasks::xml::escape_xml;
-
     match source {
-        SourceRef::Task { id } => {
-            format!("\n      <source type=\"task\" id=\"{}\"/>", escape_xml(id))
-        }
-        SourceRef::Prompt { id } => {
-            format!(
-                "\n      <source type=\"prompt\" id=\"{}\"/>",
-                escape_xml(id)
-            )
-        }
-        SourceRef::File { path } => {
-            format!(
-                "\n      <source type=\"file\" path=\"{}\"/>",
-                escape_xml(path)
-            )
-        }
-        SourceRef::Comment { id } => {
-            format!(
-                "\n      <source type=\"comment\" id=\"{}\"/>",
-                escape_xml(id)
-            )
-        }
-        SourceRef::Unknown { raw } => {
-            format!(
-                "\n      <source type=\"unknown\" raw=\"{}\"/>",
-                escape_xml(raw)
-            )
-        }
+        SourceRef::Task { id } => format!("  - source: task:{}\n", id),
+        SourceRef::Prompt { id } => format!("  - source: prompt:{}\n", id),
+        SourceRef::File { path } => format!("  - source: file:{}\n", path),
+        SourceRef::Comment { id } => format!("  - source: comment:{}\n", id),
+        SourceRef::Unknown { raw } => format!("  - source: {}\n", raw),
     }
 }
 
@@ -2552,7 +2386,6 @@ fn run_show(
     with_instructions: bool,
 ) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
-    use crate::tasks::xml::escape_xml;
 
     let events = read_events_with_ids(cwd)?;
     let tasks = materialize_tasks_with_ids(&events);
@@ -2560,19 +2393,17 @@ fn run_show(
 
     // Determine which task to show
     let task_id = if let Some(id) = id {
-        if find_task(&tasks, &id).is_none() {
-            return Err(AikiError::TaskNotFound(id));
-        }
-        id
+        let task = find_task(&tasks, &id)?;
+        task.id.clone()
     } else {
         // Default to first in-progress task
         if let Some(task) = in_progress.first() {
             task.id.clone()
         } else {
-            let xml = XmlBuilder::new("show")
+            let xml = MdBuilder::new("show")
                 .error()
                 .build_error("No task in progress to show");
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
     };
@@ -2595,20 +2426,30 @@ fn run_show(
         (0, 0)
     };
 
-    // Build task XML content
-    let type_attr = task
-        .task_type
-        .as_ref()
-        .map(|t| format!(" type=\"{}\"", escape_xml(t)))
-        .unwrap_or_default();
+    // Build compressed task details (no bold markers, no timestamps/IDs on comments)
+    let status_display = if task.status == TaskStatus::Closed {
+        format!(
+            "{} ({})",
+            task.status,
+            task.closed_outcome
+                .as_ref()
+                .map(|o| o.to_string())
+                .unwrap_or_else(|| "done".to_string())
+        )
+    } else {
+        task.status.to_string()
+    };
     let mut content = format!(
-        "  <task id=\"{}\" name=\"{}\" status=\"{}\" priority=\"{}\"{}>",
-        escape_xml(&task.id),
-        escape_xml(&task.name),
-        task.status,
-        task.priority,
-        type_attr
+        "Task: {}\nID: {}\nStatus: {}\nPriority: {}\n",
+        task.name, task.id, status_display, task.priority,
     );
+
+    // Add summary for closed tasks
+    if task.status == TaskStatus::Closed {
+        if let Some(summary) = task.effective_summary() {
+            content.push_str(&format!("Summary: {}\n", summary));
+        }
+    }
 
     // Add sources if any
     if !task.sources.is_empty() {
@@ -2620,116 +2461,69 @@ fn run_show(
     // Add instructions if present and requested
     if with_instructions {
         if let Some(ref instructions) = task.instructions {
-            content.push_str(&format!("\n    {}", format_instructions(instructions)));
+            content.push('\n');
+            content.push_str(&format_instructions(instructions));
         }
     }
 
-    // Add subtasks section if this is a parent
+    // Add subtasks section with checklist format and relative IDs
     if has_subtasks {
-        content.push_str("\n    <subtasks>");
-        for subtask in &subtasks {
-            content.push_str(&format!(
-                "\n      <task id=\"{}\" status=\"{}\" name=\"{}\"/>",
-                escape_xml(&subtask.id),
-                subtask.status,
-                escape_xml(&subtask.name)
-            ));
-        }
-        content.push_str("\n    </subtasks>");
-
-        // Add progress element
         let percentage = if total > 0 {
             (completed * 100) / total
         } else {
             0
         };
         content.push_str(&format!(
-            "\n    <progress completed=\"{}\" total=\"{}\" percentage=\"{}\"/>",
+            "\nSubtasks ({}/{} — {}%):\n",
             completed, total, percentage
         ));
+        for subtask in &subtasks {
+            let check = match subtask.status {
+                TaskStatus::Closed => "[x]",
+                TaskStatus::InProgress => "[>]",
+                _ => "[ ]",
+            };
+            // Use relative ID (.N) since parent ID is already shown
+            let relative_id = if let Some(dot_pos) = subtask.id.rfind('.') {
+                &subtask.id[dot_pos..]
+            } else {
+                &subtask.id
+            };
+            content.push_str(&format!("{} {} {}\n", check, relative_id, subtask.name));
+        }
     }
 
-    // Add comments if any
+    // Add comments (no timestamps, no IDs - just the text)
     if !task.comments.is_empty() {
-        content.push_str("\n    <comments>");
+        content.push_str("\nComments:\n");
         for comment in &task.comments {
-            // Build id attribute if present
-            let id_attr = comment
-                .id
-                .as_ref()
-                .map(|id| format!(" id=\"{}\"", escape_xml(id)))
-                .unwrap_or_default();
-            content.push_str(&format!(
-                "\n      <comment timestamp=\"{}\"{}>{}</comment>",
-                comment.timestamp.to_rfc3339(),
-                id_attr,
-                escape_xml(&comment.text)
-            ));
-            content.push_str("</comment>");
-        }
-        content.push_str("\n    </comments>");
-    }
-
-    // Add files_changed summary for closed tasks
-    if task.status == TaskStatus::Closed {
-        if let Some(files) = get_task_changed_files(cwd, &task_id, true)? {
-            let total_files = files.len();
-            content.push_str(&format!("\n    <files_changed total=\"{}\">", total_files));
-            for path in &files {
-                content.push_str(&format!("\n      <file path=\"{}\" />", escape_xml(path)));
-            }
-            content.push_str("\n    </files_changed>");
+            content.push_str(&format!("- {}\n", &comment.text));
         }
     }
 
-    // Query changes for this task
-    let changes = query_changes_for_task(cwd, &task_id)?;
-    if !changes.is_empty() {
-        content.push_str(&format!("\n    <changes count=\"{}\">", changes.len()));
-        for change in &changes {
-            if show_diff {
-                // Include full diff
+    // Skip Files Changed and Changes sections (use `task diff` for those)
+    // Only show diff inline when --diff flag is explicitly requested
+    if show_diff {
+        let changes = query_changes_for_task(cwd, &task_id)?;
+        if !changes.is_empty() {
+            content.push_str(&format!("\nChanges ({}):\n", changes.len()));
+            for change in &changes {
                 let diff = get_change_diff(cwd, &change.change_id)?;
                 content.push_str(&format!(
-                    "\n      <change id=\"{}\"{}>\n<![CDATA[{}]]>\n      </change>",
-                    escape_xml(&change.change_id),
-                    change
-                        .timestamp
-                        .as_ref()
-                        .map_or(String::new(), |ts| format!(" timestamp=\"{}\"", ts)),
-                    diff
-                ));
-            } else {
-                // Just list change IDs
-                content.push_str(&format!(
-                    "\n      <change id=\"{}\"{} />",
-                    escape_xml(&change.change_id),
-                    change
-                        .timestamp
-                        .as_ref()
-                        .map_or(String::new(), |ts| format!(" timestamp=\"{}\"", ts))
+                    "- {}\n```\n{}\n```\n",
+                    change.change_id, diff
                 ));
             }
         }
-        content.push_str("\n    </changes>");
     }
 
-    content.push_str("\n  </task>");
-
-    // Get scope set and ready queue for context
+    // Context footer (read command - keep it)
     let scope_set = get_current_scope_set(&tasks);
     let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
-
     let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
+    content.push_str(&build_context(&in_progress_refs, &ready));
 
-    let mut builder = XmlBuilder::new("show");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &in_progress_refs, &ready);
-
-    println!("{}", xml);
+    aiki_print(&content);
     Ok(())
 }
 
@@ -2759,10 +2553,8 @@ fn run_undo(
                 "--completed requires exactly one plan task ID".to_string(),
             ));
         }
-        let plan_id = &ids[0];
-        if find_task(&tasks, plan_id).is_none() {
-            return Err(AikiError::TaskNotFound(plan_id.clone()));
-        }
+        let plan_task = find_task(&tasks, &ids[0])?;
+        let plan_id = &plan_task.id;
 
         // Find completed subtasks (direct children of the plan)
         let completed_subtasks: Vec<String> = tasks
@@ -2780,13 +2572,12 @@ fn run_undo(
         }
         completed_subtasks
     } else {
-        // Verify all task IDs exist
+        // Resolve all IDs (prefix → full) and validate
+        let mut resolved = Vec::new();
         for id in &ids {
-            if find_task(&tasks, id).is_none() {
-                return Err(AikiError::TaskNotFound(id.clone()));
-            }
+            resolved.push(resolve_task_id(&tasks, id)?);
         }
-        ids
+        resolved
     };
 
     // Build union revset pattern for all tasks being undone
@@ -3011,7 +2802,7 @@ fn run_undo(
     if dry_run {
         eprintln!("[DRY RUN] Would undo {} task(s)", task_ids.len());
         for id in &task_ids {
-            if let Some(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task(&tasks, id) {
                 eprintln!("  \"{}\"", task.name);
             }
         }
@@ -3162,21 +2953,21 @@ fn run_undo(
     // Human-readable output to stderr
     eprintln!();
     if task_ids.len() == 1 {
-        if let Some(task) = find_task(&tasks, &task_ids[0]) {
+        if let Ok(task) = find_task(&tasks, &task_ids[0]) {
             eprintln!("Undoing task {}", &task_ids[0][..8]);
             eprintln!("  \"{}\"", task.name);
         }
     } else if completed {
         eprintln!("Undoing {} completed subtasks", task_ids.len());
         for id in &task_ids {
-            if let Some(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task(&tasks, id) {
                 eprintln!("  - {}: {}", &id[..8], task.name);
             }
         }
     } else {
         eprintln!("Undoing {} tasks", task_ids.len());
         for id in &task_ids {
-            if let Some(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task(&tasks, id) {
                 eprintln!("  - {}: {}", &id[..8], task.name);
             }
         }
@@ -3198,7 +2989,7 @@ fn run_undo(
     // Machine-readable XML output to stdout
     // For multi-task undo, derive per-task file counts from file_to_task_ids
     // (already computed during baseline grouping — no extra jj calls needed).
-    let mut xml_content = String::new();
+    let mut md_content = String::from("## Undone\n");
     if task_ids.len() > 1 {
         let active_set: HashSet<&str> = active_changes.iter().map(|(_, f)| f.as_str()).collect();
         for id in &task_ids {
@@ -3206,34 +2997,31 @@ fn run_undo(
                 .iter()
                 .filter(|(file, ids)| active_set.contains(file.as_str()) && ids.contains(id))
                 .count();
-            xml_content.push_str(&format!(
-                "  <undone task=\"{}\" files=\"{}\"/>\n",
-                id, count
-            ));
+            md_content.push_str(&format!("- **{}** — {} files reverted\n", id, count));
         }
     } else {
         for id in &task_ids {
-            xml_content.push_str(&format!(
-                "  <undone task=\"{}\" files=\"{}\"/>\n",
+            md_content.push_str(&format!(
+                "- **{}** — {} files reverted\n",
                 id,
                 active_changes.len()
             ));
         }
     }
     if let Some(ref name) = backup_name {
-        xml_content.push_str(&format!("  <backup bookmark=\"{}\"/>\n", name));
+        md_content.push_str(&format!("- **Backup:** {}\n", name));
     }
 
     let in_progress = get_in_progress(&tasks);
     let scope_set = get_current_scope_set(&tasks);
     let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
     let xml_scopes = scope_set.to_xml_scopes();
-    let mut builder = XmlBuilder::new("undo");
+    let mut builder = MdBuilder::new("undo");
     if !xml_scopes.is_empty() {
         builder = builder.with_scopes(&xml_scopes);
     }
-    let xml = builder.build(&xml_content, &in_progress, &ready_queue);
-    println!("{}", xml);
+    let md = builder.build(&md_content, &in_progress, &ready_queue);
+    aiki_print(&md);
 
     Ok(())
 }
@@ -3308,9 +3096,8 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
     // Verify task exists
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
-    if find_task(&tasks, &id).is_none() {
-        return Err(AikiError::TaskNotFound(id));
-    }
+    let task = find_task(&tasks, &id)?;
+    let id = task.id.clone(); // use canonical ID
 
     // Build revset pattern for task
     // For parent tasks with subtasks, match task=<id> AND task=<id>.* (subtasks)
@@ -3579,7 +3366,6 @@ fn run_update(
     data_args: Vec<String>,
 ) -> Result<()> {
     use crate::agents::Assignee;
-    use crate::tasks::xml::escape_xml;
     use crate::validation::is_valid_template_identifier;
 
     // Parse data arguments (verbatim, no coercion)
@@ -3598,19 +3384,17 @@ fn run_update(
 
     // Determine which task to update
     let task_id = if let Some(id) = id {
-        if find_task(&tasks, &id).is_none() {
-            return Err(AikiError::TaskNotFound(id));
-        }
-        id
+        let task = find_task(&tasks, &id)?;
+        task.id.clone()
     } else {
         // Default to first in-progress task
         if let Some(task) = in_progress.first() {
             task.id.clone()
         } else {
-            let xml = XmlBuilder::new("update")
+            let xml = MdBuilder::new("update")
                 .error()
                 .build_error("No task in progress to update");
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
     };
@@ -3650,10 +3434,10 @@ fn run_update(
 
     // Check if there's anything to update
     if new_priority.is_none() && name.is_none() && new_assignee.is_none() && new_data.is_none() {
-        let xml = XmlBuilder::new("update").error().build_error(
+        let xml = MdBuilder::new("update").error().build_error(
             "No updates specified. Use --name, --data, --for, --unassign, or --p0/--p1/--p2/--p3",
         );
-        println!("{}", xml);
+        aiki_print(&xml);
         return Ok(());
     }
 
@@ -3695,30 +3479,24 @@ fn run_update(
     let updated_task = tasks.get(&task_id).expect("Task should exist");
 
     // Build output - include data if present
-    let data_xml = if updated_task.data.is_empty() {
+    let data_md = if updated_task.data.is_empty() {
         String::new()
     } else {
         let mut fields: Vec<String> = updated_task
             .data
             .iter()
-            .map(|(k, v)| {
-                format!(
-                    "      <field key=\"{}\" value=\"{}\"/>",
-                    escape_xml(k),
-                    escape_xml(v)
-                )
-            })
+            .map(|(k, v)| format!("{}={}", k, v))
             .collect();
         fields.sort(); // Deterministic output
-        format!("\n    <data>\n{}\n    </data>", fields.join("\n"))
+        format!("- **Data:** {}\n", fields.join(", "))
     };
 
     let content = format!(
-        "  <updated>\n    <task id=\"{}\" name=\"{}\" priority=\"{}\"/>{}\n  </updated>",
-        escape_xml(&updated_task.id),
-        escape_xml(&updated_task.name),
+        "## Updated\n- **{}** — {} ({})\n{}",
+        updated_task.id,
+        updated_task.name,
         updated_task.priority,
-        data_xml
+        data_md
     );
 
     // Get scope set and ready queue for context (now uses updated tasks map)
@@ -3728,21 +3506,19 @@ fn run_update(
     let updated_in_progress = get_in_progress(&tasks);
     let in_progress_refs: Vec<_> = updated_in_progress.iter().map(|t| *t).collect();
 
-    let mut builder = XmlBuilder::new("update");
+    let mut builder = MdBuilder::new("update");
     let xml_scopes = scope_set.to_xml_scopes();
     if !xml_scopes.is_empty() {
         builder = builder.with_scopes(&xml_scopes);
     }
     let xml = builder.build(&content, &in_progress_refs, &ready);
 
-    println!("{}", xml);
+    aiki_print(&xml);
     Ok(())
 }
 
 /// Add a comment to a task
 fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<String>) -> Result<()> {
-    use crate::tasks::xml::escape_xml;
-
     // Parse data arguments (verbatim, no coercion for comment metadata)
     let data = parse_data_flags(&data_args, false)?;
 
@@ -3752,19 +3528,17 @@ fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<Stri
 
     // Determine which task to comment on
     let task_id = if let Some(id) = id {
-        if find_task(&tasks, &id).is_none() {
-            return Err(AikiError::TaskNotFound(id));
-        }
-        id
+        let task = find_task(&tasks, &id)?;
+        task.id.clone()
     } else {
         // Default to first in-progress task
         if let Some(task) = in_progress.first() {
             task.id.clone()
         } else {
-            let xml = XmlBuilder::new("comment")
+            let xml = MdBuilder::new("comment")
                 .error()
                 .build_error("No task in progress to comment on");
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
     };
@@ -3780,33 +3554,14 @@ fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<Stri
     };
     write_event(cwd, &event)?;
 
-    // Build output
-    let content = format!(
-        "  <comment_added task_id=\"{}\" timestamp=\"{}\">\n    <text>{}</text>\n  </comment_added>",
-        escape_xml(&task_id),
-        timestamp.to_rfc3339(),
-        escape_xml(&text)
-    );
-
-    // Get scope set and ready queue for context
-    let scope_set = get_current_scope_set(&tasks);
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
-    let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
-
-    let mut builder = XmlBuilder::new("comment");
-    let xml_scopes = scope_set.to_xml_scopes();
-    if !xml_scopes.is_empty() {
-        builder = builder.with_scopes(&xml_scopes);
-    }
-    let xml = builder.build(&content, &in_progress_refs, &ready);
-
-    println!("{}", xml);
+    // Slim output: single line, no context footer
+    aiki_print(&format_action_commented());
     Ok(())
 }
 
 /// Run a task by spawning an agent session
 fn run_run(cwd: &Path, id: String, agent: Option<String>, run_async: bool) -> Result<()> {
-    use crate::tasks::runner::run_task_async_with_xml;
+    use crate::tasks::runner::run_task_async_with_output;
 
     // Parse and validate agent override if provided
     let agent_override = if let Some(ref agent_str) = agent {
@@ -3826,15 +3581,14 @@ fn run_run(cwd: &Path, id: String, agent: Option<String>, run_async: bool) -> Re
 
     // Run the task with XML output - async or blocking
     if run_async {
-        run_task_async_with_xml(cwd, &id, options)
+        run_task_async_with_output(cwd, &id, options)
     } else {
-        run_task_with_xml(cwd, &id, options)
+        run_task_with_output(cwd, &id, options)
     }
 }
 
 /// Wait for task(s) to reach a terminal state (closed or stopped)
 fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
-    use crate::tasks::xml::escape_xml;
     use std::time::{Duration, Instant};
 
     let poll_interval = Duration::from_millis(500);
@@ -3845,14 +3599,14 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
     };
     let start = Instant::now();
 
-    // Validate all task IDs exist up front
+    // Resolve all task IDs up front (prefix → full)
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
+    let mut resolved_ids = Vec::new();
     for id in &ids {
-        if find_task(&tasks, id).is_none() {
-            return Err(AikiError::TaskNotFound(id.clone()));
-        }
+        resolved_ids.push(resolve_task_id(&tasks, id)?);
     }
+    let ids = resolved_ids;
 
     // Poll until all tasks are in terminal state
     loop {
@@ -3866,28 +3620,27 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
         });
 
         if all_done {
-            // Build XML output with results for each task
-            let mut content = String::new();
+            // Build markdown output with results for each task
+            let mut content = String::from("## Wait Complete\n| ID | Name | Status | Outcome | Summary |\n|----|------|--------|---------|--------|\n");
             for id in &ids {
-                if let Some(task) = find_task(&tasks, id) {
+                if let Ok(task) = find_task(&tasks, id) {
                     let status = task.status.to_string();
                     let outcome = task
                         .closed_outcome
                         .as_ref()
-                        .map(|o| format!(" outcome=\"{}\"", o))
+                        .map(|o| o.to_string())
                         .unwrap_or_default();
-                    let comment = task
-                        .comments
-                        .last()
-                        .map(|c| escape_xml(&c.text))
-                        .unwrap_or_default();
+                    let summary = task
+                        .effective_summary()
+                        .unwrap_or_default()
+                        .to_string();
                     content.push_str(&format!(
-                        "  <task id=\"{}\" name=\"{}\" status=\"{}\"{}>\n    <comment>{}</comment>\n  </task>\n",
+                        "| {} | {} | {} | {} | {} |\n",
                         id,
-                        escape_xml(&task.name),
+                        task.name,
                         status,
                         outcome,
-                        comment,
+                        summary,
                     ));
                 }
             }
@@ -3895,12 +3648,12 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
             let scope_set = get_current_scope_set(&tasks);
             let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
             let xml_scopes = scope_set.to_xml_scopes();
-            let mut builder = XmlBuilder::new("wait");
+            let mut builder = MdBuilder::new("wait");
             if !xml_scopes.is_empty() {
                 builder = builder.with_scopes(&xml_scopes);
             }
             let xml = builder.build(&content, &in_progress, &ready_queue);
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
 
@@ -3909,18 +3662,18 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
             if start.elapsed() >= t {
                 let mut pending: Vec<String> = Vec::new();
                 for id in &ids {
-                    if let Some(task) = find_task(&tasks, id) {
+                    if let Ok(task) = find_task(&tasks, id) {
                         if !matches!(task.status, TaskStatus::Closed | TaskStatus::Stopped) {
                             pending.push(id.clone());
                         }
                     }
                 }
-                let xml = XmlBuilder::new("wait").error().build_error(&format!(
+                let xml = MdBuilder::new("wait").error().build_error(&format!(
                     "Timeout after {}s. Still waiting on: {}",
                     timeout_secs,
                     pending.join(", ")
                 ));
-                println!("{}", xml);
+                aiki_print(&xml);
                 return Err(AikiError::TaskWaitTimeout {
                     timeout_secs,
                     pending: pending.join(", "),
@@ -3935,17 +3688,16 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
 /// Handle template subcommands (list, show)
 fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
     use crate::tasks::templates::{find_templates_dir, list_templates, load_template};
-    use crate::tasks::xml::escape_xml;
 
     // Find templates directory
     let templates_dir = match find_templates_dir(cwd) {
         Ok(dir) => dir,
         Err(_) => {
             // No templates directory found - show helpful message
-            let xml = XmlBuilder::new("template").build_error(
+            let xml = MdBuilder::new("template").build_error(
                 "No templates directory found. Create .aiki/templates/ to add templates.",
             );
-            println!("{}", xml);
+            aiki_print(&xml);
             return Ok(());
         }
     };
@@ -3955,94 +3707,75 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
             let templates = list_templates(&templates_dir)?;
 
             if templates.is_empty() {
-                let xml = XmlBuilder::new("template")
+                let md = MdBuilder::new("template")
                     .build_error("No templates found. Create template files in .aiki/templates/");
-                println!("{}", xml);
+                aiki_print(&md);
                 return Ok(());
             }
 
-            // Build XML output
-            let mut content = String::new();
-            content.push_str("  <templates>\n");
+            // Build markdown output
+            let mut content = String::from("## Templates\n");
             for template in &templates {
                 let desc = template.description.as_deref().unwrap_or("");
-                content.push_str(&format!(
-                    "    <template name=\"{}\" description=\"{}\" />\n",
-                    escape_xml(&template.name),
-                    escape_xml(desc)
-                ));
+                if desc.is_empty() {
+                    content.push_str(&format!("- **{}**\n", &template.name));
+                } else {
+                    content.push_str(&format!("- **{}** — {}\n", &template.name, desc));
+                }
             }
-            content.push_str("  </templates>");
 
             let empty: Vec<&Task> = vec![];
-            let xml = XmlBuilder::new("template").build(&content, &empty, &empty);
-            println!("{}", xml);
+            let md = MdBuilder::new("template").build(&content, &empty, &empty);
+            aiki_print(&md);
         }
         TemplateCommands::Show { name } => {
             let template = load_template(&name, &templates_dir)?;
 
-            // Build XML output showing template details
-            let mut content = String::new();
-            content.push_str("  <template>\n");
-            content.push_str(&format!(
-                "    <name>{}</name>\n",
-                escape_xml(&template.name)
-            ));
+            // Build markdown output showing template details
+            let mut content = format!("## Template: {}\n", &template.name);
 
             // Show source location
             if let Some(ref path) = template.source_path {
-                content.push_str(&format!("    <source>{}</source>\n", escape_xml(path)));
+                content.push_str(&format!("- Source: {}\n", path));
             }
 
             if let Some(ref v) = template.version {
-                content.push_str(&format!("    <version>{}</version>\n", escape_xml(v)));
+                content.push_str(&format!("- **Version:** {}\n", v));
             }
             if let Some(ref desc) = template.description {
-                content.push_str(&format!(
-                    "    <description>{}</description>\n",
-                    escape_xml(desc)
-                ));
+                content.push_str(&format!("- **Description:** {}\n", desc));
             }
             if let Some(ref t) = template.defaults.task_type {
-                content.push_str(&format!("    <type>{}</type>\n", escape_xml(t)));
+                content.push_str(&format!("- **Type:** {}\n", t));
             }
             if let Some(ref a) = template.defaults.assignee {
-                content.push_str(&format!("    <assignee>{}</assignee>\n", escape_xml(a)));
+                content.push_str(&format!("- **Assignee:** {}\n", a));
             }
             if let Some(ref p) = template.defaults.priority {
-                content.push_str(&format!("    <priority>{}</priority>\n", escape_xml(p)));
+                content.push_str(&format!("- **Priority:** {}\n", p));
             }
 
             // Show parent task name
-            content.push_str(&format!(
-                "    <parent_name>{}</parent_name>\n",
-                escape_xml(&template.parent.name)
-            ));
+            content.push_str(&format!("- **Parent:** {}\n", &template.parent.name));
 
             // Show subtasks
             if !template.subtasks.is_empty() {
-                content.push_str("    <subtasks>\n");
+                content.push_str("\n### Subtasks\n");
                 for subtask in &template.subtasks {
-                    content.push_str(&format!(
-                        "      <subtask name=\"{}\" />\n",
-                        escape_xml(&subtask.name)
-                    ));
+                    content.push_str(&format!("- {}\n", &subtask.name));
                 }
-                content.push_str("    </subtasks>\n");
             }
 
             // Show full template content
             if let Some(ref raw) = template.raw_content {
-                content.push_str("    <content><![CDATA[\n");
+                content.push_str("\n### Content\n```\n");
                 content.push_str(raw);
-                content.push_str("\n]]></content>\n");
+                content.push_str("\n```\n");
             }
 
-            content.push_str("  </template>");
-
             let empty: Vec<&Task> = vec![];
-            let xml = XmlBuilder::new("template").build(&content, &empty, &empty);
-            println!("{}", xml);
+            let md = MdBuilder::new("template").build(&content, &empty, &empty);
+            aiki_print(&md);
         }
     }
 
@@ -4072,7 +3805,7 @@ pub struct TemplateTaskParams {
     pub parent_name: Option<String>,
     /// Source metadata for {{source.*}} variables (e.g., source.name, source.id)
     pub source_data: HashMap<String, String>,
-    /// Additional builtins for {{key}} variables (e.g., scope, scope.name, scope.id)
+    /// Additional builtins for {{key}} variables
     pub builtins: HashMap<String, String>,
 }
 
@@ -4208,6 +3941,18 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     };
     write_event(cwd, &create_event)?;
 
+    // Set parent.* to current task for subtask variable substitution.
+    // Static subtasks within this template use {{parent.id}} to reference their parent.
+    ctx.set_parent("id", &task_id);
+    ctx.set_parent("name", &parent_name);
+    if let Some(ref a) = assignee {
+        ctx.set_parent("assignee", a);
+    }
+    ctx.set_parent("priority", priority.to_string());
+    for (key, value) in &data {
+        ctx.set_parent(&format!("data.{}", key), value);
+    }
+
     // Create subtasks - route based on template type
     if let Some(ref subtasks_source_str) = template.subtasks_source {
         // Dynamic subtasks: iterate over a data source (e.g., comments from a task)
@@ -4241,6 +3986,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &template.template_id(),
             template.defaults.task_type.as_deref(),
             &task_id,
+            &parent_name,
             &params.sources,
             priority,
             &assignee,
@@ -4454,7 +4200,7 @@ fn create_static_subtasks(
             subtask_ctx.set_source(source);
             subtask_ctx.set_parent("source", source);
         }
-        // Apply extra builtins from caller (e.g., scope, scope.name, scope.id for review)
+        // Apply extra builtins from caller
         for (key, value) in extra_builtins {
             subtask_ctx.set_builtin(key, value);
         }
@@ -4514,6 +4260,7 @@ const MAX_COMPOSITION_DEPTH: usize = 4;
 /// * `entries` - List of subtask entries to create
 /// * `template_name` - Parent template name (for variable substitution context)
 /// * `parent_id` - ID of the parent task
+/// * `parent_name` - Resolved name of the parent task (for parent.name in child contexts)
 /// * `sources` - Source references for the parent task
 /// * `parent_priority` - Priority inherited from parent
 /// * `parent_assignee` - Assignee inherited from parent
@@ -4530,6 +4277,7 @@ fn create_subtasks_from_entries(
     template_id: &str,
     parent_task_type: Option<&str>,
     parent_id: &str,
+    parent_name: &str,
     sources: &[String],
     parent_priority: TaskPriority,
     parent_assignee: &Option<String>,
@@ -4718,6 +4466,21 @@ fn create_subtasks_from_entries(
                     child_ctx.set_builtin("type", t);
                 }
 
+                // Set parent.* to point to the outer parent (the task containing {% subtask %})
+                // so the child template's own content can reference {{parent.id}}, etc.
+                child_ctx.set_parent("id", parent_id);
+                child_ctx.set_parent("name", parent_name);
+                if let Some(ref a) = parent_assignee {
+                    child_ctx.set_parent("assignee", a);
+                }
+                child_ctx.set_parent("priority", parent_priority.to_string());
+                for (key, value) in parent_data {
+                    child_ctx.set_parent(&format!("data.{}", key), value);
+                }
+                if let Some(source) = sources.first() {
+                    child_ctx.set_parent("source", source);
+                }
+
                 // Resolve child template's parent name (this becomes the composed subtask name)
                 let child_name = substitute_with_template_name(
                     &child_template.parent.name,
@@ -4751,7 +4514,7 @@ fn create_subtasks_from_entries(
                 let composed_sources = vec![format!("task:{}", parent_id)];
                 let composed_event = TaskEvent::Created {
                     task_id: subtask_id.clone(),
-                    name: child_name,
+                    name: child_name.clone(),
                     task_type: child_template.defaults.task_type.clone(),
                     priority: child_priority,
                     assignee: child_assignee.clone(),
@@ -4784,6 +4547,7 @@ fn create_subtasks_from_entries(
                         &child_template.template_id(),
                         child_template.defaults.task_type.as_deref(),
                         &subtask_id,
+                        &child_name,
                         &composed_sources,
                         child_priority,
                         &child_assignee,

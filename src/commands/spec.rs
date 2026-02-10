@@ -21,7 +21,7 @@ use crate::tasks::templates::{
     create_tasks_from_template, find_templates_dir, load_template, substitute_parent_id,
     VariableContext, PARENT_ID_PLACEHOLDER,
 };
-use crate::tasks::xml::{escape_xml, XmlBuilder};
+use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     generate_task_id, get_current_scope_set, get_in_progress,
     get_ready_queue_for_scope_set, materialize_tasks, read_events, reassign_task, start_task_core,
@@ -665,39 +665,38 @@ fn output_spec_started(
 ) -> Result<()> {
     let action = if is_new { "Creating" } else { "Editing" };
     let content = format!(
-        "  <started spec_task=\"{}\" file=\"{}\">\n    {} spec at {}.\n  </started>",
-        escape_xml(spec_id),
-        escape_xml(&spec_path.display().to_string()),
+        "## Spec Started\n- **Task:** {}\n- **File:** {}\n- {} spec at {}.\n",
+        spec_id,
+        spec_path.display(),
         action,
-        escape_xml(&spec_path.display().to_string())
+        spec_path.display()
     );
-    let xml = XmlBuilder::new("spec").build(&content, in_progress, ready);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("spec").build(&content, in_progress, ready);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output spec completed message
 fn output_spec_completed(spec_id: &str, spec_path: &Path) -> Result<()> {
     let content = format!(
-        "  <completed spec_task=\"{}\" file=\"{}\">\n    Spec session completed.\n\n    Created: {}\n  </completed>",
-        escape_xml(spec_id),
-        escape_xml(&spec_path.display().to_string()),
-        escape_xml(&spec_path.display().to_string())
+        "## Spec Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n",
+        spec_id,
+        spec_path.display(),
+        spec_path.display()
     );
-    let xml = XmlBuilder::new("spec").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("spec").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output spec error message
 fn output_spec_error(spec_id: &str, error: &str) -> Result<()> {
     let content = format!(
-        "  <error spec_task=\"{}\">\n    {}\n  </error>",
-        escape_xml(spec_id),
-        escape_xml(error)
+        "Spec task {}: {}",
+        spec_id, error
     );
-    let xml = XmlBuilder::new("spec").error().build_error(&content);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("spec").error().build_error(&content);
+    eprintln!("{}", md);
     Ok(())
 }
 

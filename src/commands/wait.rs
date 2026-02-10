@@ -127,8 +127,7 @@ fn poll_task_status(
         let tasks = materialize_tasks(&events);
 
         // Find the task
-        let task = find_task(&tasks, task_id)
-            .ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+        let task = find_task(&tasks, task_id)?;
 
         // Check if terminal state
         match task.status {

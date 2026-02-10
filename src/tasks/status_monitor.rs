@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    cursor::{MoveToColumn, MoveUp},
+    cursor::{RestorePosition, SavePosition},
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
@@ -57,8 +57,6 @@ pub struct StatusMonitor {
     poll_interval: Duration,
     /// When monitoring started (for elapsed time)
     start_time: Instant,
-    /// Number of lines rendered in last update (for clearing)
-    last_rendered_lines: usize,
     /// Flag to track if we've already rendered initial state
     has_rendered: bool,
     /// Atomic flag to signal when to stop (for Ctrl+C handling)
@@ -81,7 +79,6 @@ impl StatusMonitor {
             last_event_count: 0,
             poll_interval: Duration::from_millis(poll_interval_ms),
             start_time: Instant::now(),
-            last_rendered_lines: 0,
             has_rendered: false,
             stop_flag: Arc::new(AtomicBool::new(false)),
             agent_pid: None,
@@ -242,14 +239,15 @@ impl StatusMonitor {
     fn render_task_tree(&mut self, tasks: &HashMap<String, Task>, root_task: &Task) -> Result<()> {
         let mut stderr = stderr();
 
-        // Clear previous render (move up and clear lines)
-        if self.last_rendered_lines > 0 {
-            for _ in 0..self.last_rendered_lines {
-                stderr.execute(MoveUp(1))?;
-                stderr.execute(Clear(ClearType::CurrentLine))?;
-            }
-            stderr.execute(MoveToColumn(0))?;
+        // On re-render, restore cursor to saved position and clear everything below.
+        // This avoids counting physical lines (which breaks when lines wrap).
+        if self.has_rendered {
+            stderr.execute(RestorePosition)?;
+            stderr.execute(Clear(ClearType::FromCursorDown))?;
         }
+
+        // Save cursor position before writing so next render can return here
+        stderr.execute(SavePosition)?;
 
         let mut lines = Vec::new();
 
@@ -270,14 +268,18 @@ impl StatusMonitor {
             let task_line = self.format_task_line(subtask, prefix, child_number);
             lines.push(task_line);
 
-            // Show latest comment for in-progress or recently closed subtasks
-            // Align comment text with task name (after "├─ ✓ .N) ")
-            if let Some(latest_comment) = subtask.comments.last() {
+            // Show summary for closed tasks, latest comment for in-progress
+            let display_text = if subtask.status == TaskStatus::Closed {
+                subtask.effective_summary().map(|s| s.to_string())
+            } else {
+                subtask.comments.last().map(|c| c.text.clone())
+            };
+            if let Some(text) = display_text {
                 let comment_line = format!(
                     "{}   └─ {} {}",
                     child_prefix,
                     SYMBOL_COMMENT,
-                    format_comment(&latest_comment.text)
+                    format_comment(&text)
                 );
                 lines.push(comment_line);
             }
@@ -315,12 +317,17 @@ impl StatusMonitor {
                     let task_line = self.format_task_line(subtask, prefix, child_number);
                     lines.push(task_line);
 
-                    if let Some(latest_comment) = subtask.comments.last() {
+                    let display_text = if subtask.status == TaskStatus::Closed {
+                        subtask.effective_summary().map(|s| s.to_string())
+                    } else {
+                        subtask.comments.last().map(|c| c.text.clone())
+                    };
+                    if let Some(text) = display_text {
                         let comment_line = format!(
                             "{}   └─ {} {}",
                             child_prefix,
                             SYMBOL_COMMENT,
-                            format_comment(&latest_comment.text)
+                            format_comment(&text)
                         );
                         lines.push(comment_line);
                     }
@@ -337,8 +344,6 @@ impl StatusMonitor {
             writeln!(stderr, "{}", line)?;
         }
         stderr.flush()?;
-
-        self.last_rendered_lines = lines.len();
 
         Ok(())
     }

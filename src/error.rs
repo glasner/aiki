@@ -191,6 +191,15 @@ Alternatively, install the agent globally:
     #[error("Task not found: '{0}'")]
     TaskNotFound(String),
 
+    #[error("Ambiguous task ID prefix '{prefix}' — matches {count} tasks:\n{matches}")]
+    AmbiguousTaskId { prefix: String, count: usize, matches: String },
+
+    #[error("Task '{root}' has no subtask '.{subtask}'")]
+    SubtaskNotFound { root: String, subtask: String },
+
+    #[error("Task ID prefix '{prefix}' is too short (minimum 3 characters)")]
+    PrefixTooShort { prefix: String },
+
     #[error("No tasks in ready queue")]
     NoTasksReady,
 
@@ -284,6 +293,9 @@ Alternatively, install the agent globally:
     NoCompletedSubtasks,
 
     // Review system errors
+    #[error("Unknown review scope type: '{0}'. Valid values: 'task', 'spec', 'implementation', 'session'")]
+    UnknownReviewScope(String),
+
     #[error("Nothing to review - no closed tasks in session")]
     NothingToReview,
 
@@ -400,5 +412,39 @@ mod tests {
         assert!(result.contains("top.yml"));
         assert!(result.contains("→ middle.yml"));
         assert!(result.contains("→ bottom.yml"));
+    }
+
+    #[test]
+    fn test_ambiguous_task_id_display() {
+        let err = AikiError::AmbiguousTaskId {
+            prefix: "mvslrsp".to_string(),
+            count: 2,
+            matches: "  mvslrspm — Task A\n  mvslrspo — Task B".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Ambiguous task ID prefix 'mvslrsp'"));
+        assert!(msg.contains("matches 2 tasks"));
+        assert!(msg.contains("Task A"));
+        assert!(msg.contains("Task B"));
+    }
+
+    #[test]
+    fn test_subtask_not_found_display() {
+        let err = AikiError::SubtaskNotFound {
+            root: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            subtask: "99".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("has no subtask '.99'"));
+    }
+
+    #[test]
+    fn test_prefix_too_short_display() {
+        let err = AikiError::PrefixTooShort {
+            prefix: "mv".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("'mv'"));
+        assert!(msg.contains("minimum 3 characters"));
     }
 }

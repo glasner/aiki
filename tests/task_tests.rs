@@ -208,11 +208,9 @@ fn test_task_close_current() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close the current task
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"])
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"])
         .success()
-        .stdout(predicate::str::contains(r#"cmd="close""#))
-        .stdout(predicate::str::contains(r#"<closed outcome="done">"#))
-        .stdout(predicate::str::contains(r#"name="Task to complete""#));
+        .stdout(predicate::str::contains("Closed"));
 }
 
 #[test]
@@ -225,9 +223,9 @@ fn test_task_close_wont_do() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close as won't do
-    aiki_task(temp_dir.path(), &["close", "--wont-do", "--comment", "Not implementing"])
+    aiki_task(temp_dir.path(), &["close", "--wont-do", "--summary", "Not implementing"])
         .success()
-        .stdout(predicate::str::contains(r#"outcome="wont_do""#));
+        .stdout(predicate::str::contains("Closed"));
 }
 
 #[test]
@@ -240,9 +238,9 @@ fn test_task_close_with_outcome_done() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome done (explicit)
-    aiki_task(temp_dir.path(), &["close", "--outcome", "done", "--comment", "Done explicitly"])
+    aiki_task(temp_dir.path(), &["close", "--outcome", "done", "--summary", "Done explicitly"])
         .success()
-        .stdout(predicate::str::contains(r#"outcome="done""#));
+        .stdout(predicate::str::contains("Closed"));
 }
 
 #[test]
@@ -255,9 +253,9 @@ fn test_task_close_with_outcome_wont_do() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome wont_do
-    aiki_task(temp_dir.path(), &["close", "--outcome", "wont_do", "--comment", "Won't do via outcome"])
+    aiki_task(temp_dir.path(), &["close", "--outcome", "wont_do", "--summary", "Won't do via outcome"])
         .success()
-        .stdout(predicate::str::contains(r#"outcome="wont_do""#));
+        .stdout(predicate::str::contains("Closed"));
 }
 
 #[test]
@@ -270,7 +268,7 @@ fn test_task_close_with_invalid_outcome() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with invalid --outcome should fail
-    aiki_task(temp_dir.path(), &["close", "--outcome", "invalid", "--comment", "Bad outcome"])
+    aiki_task(temp_dir.path(), &["close", "--outcome", "invalid", "--summary", "Bad outcome"])
         .failure()
         .stderr(predicate::str::contains("Invalid outcome: 'invalid'"))
         .stderr(predicate::str::contains("done, wont_do"));
@@ -365,7 +363,7 @@ fn test_task_list_all() {
     aiki_task(temp_dir.path(), &["add", "Open task"]).success();
     aiki_task(temp_dir.path(), &["add", "To be closed"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"]).success();
 
     // --all should show all tasks including closed
     aiki_task(temp_dir.path(), &["list", "--all"])
@@ -384,7 +382,7 @@ fn test_task_list_open_filter() {
     aiki_task(temp_dir.path(), &["add", "Task to close"]).success();
     aiki_task(temp_dir.path(), &["add", "Task to keep open"]).success();
     aiki_task(temp_dir.path(), &["start"]).success(); // Starts "Task to close" (oldest)
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success(); // Closes "Task to close"
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"]).success(); // Closes "Task to close"
 
     // --open should only show open tasks
     let output = aiki_task(temp_dir.path(), &["list", "--open"]).success();
@@ -451,12 +449,12 @@ fn test_task_list_closed_filter() {
     // Create and close a task
     aiki_task(temp_dir.path(), &["add", "Closed task"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"]).success();
 
     // --closed should show closed tasks
     aiki_task(temp_dir.path(), &["list", "--closed"])
         .success()
-        .stdout(predicate::str::contains(r#"name="Closed task""#));
+        .stdout(predicate::str::contains("Closed task"));
 }
 
 // ============================================================================
@@ -741,7 +739,7 @@ fn test_task_start_reopen() {
     // Create, start, and close a task
     aiki_task(temp_dir.path(), &["add", "Task to reopen"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"]).success();
 
     // Get the task ID from closed list
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -856,7 +854,7 @@ fn test_list_filter_preserves_context_ready_queue() {
     aiki_task(temp_dir.path(), &["add", "Open task"]).success();
     aiki_task(temp_dir.path(), &["add", "To close"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"]).success();
 
     // When filtering by --closed, the context should still show actual ready queue
     let output = aiki_task(temp_dir.path(), &["list", "--closed"]).success();
@@ -925,9 +923,9 @@ fn test_task_close_when_none_in_progress() {
     aiki_task(temp_dir.path(), &["add", "Not started"]).success();
 
     // Note: Error cases return exit code 0 but with XML error output
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test completed"])
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test completed"])
         .success()
-        .stdout(predicate::str::contains(r#"status="error""#))
+        .stdout(predicate::str::contains("Error:"))
         .stdout(predicate::str::contains("No task in progress to close"));
 }
 
@@ -957,27 +955,31 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
         .output()
         .expect("Failed to add parent task");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
-    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
-    let parent_id = &stdout[id_start..id_end];
+    // Extract short ID from "Added <short-id> → ..."
+    let after_added = stdout.strip_prefix("Added ").expect("Expected 'Added' prefix");
+    let parent_id: String = after_added
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase())
+        .collect();
+    assert!(parent_id.len() >= 7, "Expected short ID, got: {}", stdout);
 
     // Create two subtasks
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "add", "Subtask 1", "--parent", parent_id])
+        .args(["task", "add", "Subtask 1", "--parent", &parent_id])
         .output()
         .expect("Failed to add subtask 1");
 
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "add", "Subtask 2", "--parent", parent_id])
+        .args(["task", "add", "Subtask 2", "--parent", &parent_id])
         .output()
         .expect("Failed to add subtask 2");
 
     // Start parent (which auto-creates .0 planning task)
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "start", parent_id])
+        .args(["task", "start", &parent_id])
         .output()
         .expect("Failed to start parent");
 
@@ -985,7 +987,7 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
     let planning_id = format!("{}.0", parent_id);
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "close", &planning_id, "--comment", "Reviewed"])
+        .args(["task", "close", &planning_id, "--summary", "Reviewed"])
         .output()
         .expect("Failed to close planning task");
 
@@ -999,7 +1001,7 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
 
     Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "close", &subtask1_id, "--comment", "Done"])
+        .args(["task", "close", &subtask1_id, "--summary", "Done"])
         .output()
         .expect("Failed to close subtask 1");
 
@@ -1014,7 +1016,7 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
     // Close subtask 2 and verify parent auto-starts
     aiki_task(
         temp_dir.path(),
-        &["close", &subtask2_id, "--comment", "All done"],
+        &["close", &subtask2_id, "--summary", "All done"],
     )
     .success()
     .stdout(predicate::str::contains("auto-started"))

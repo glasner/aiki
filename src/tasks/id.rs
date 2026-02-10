@@ -139,6 +139,52 @@ pub fn get_child_number(task_id: &str) -> Option<usize> {
         .and_then(|(_, num)| num.parse::<usize>().ok())
 }
 
+/// Check if a string looks like a task ID prefix (shorter than a full ID)
+///
+/// Returns true if the input could be a task ID prefix:
+/// - Root prefix: 3+ characters of lowercase k-z (e.g., "mvslrsp")
+/// - Subtask prefix: root_prefix.N (e.g., "mvslrsp.1")
+/// - Full 32-char IDs also return true (a prefix that happens to be complete)
+///
+/// Returns false for descriptions, IDs with wrong chars, or prefixes under 3 chars.
+///
+/// # Examples
+/// ```
+/// use aiki::tasks::is_task_id_prefix;
+/// assert!(is_task_id_prefix("mvslrsp"));
+/// assert!(is_task_id_prefix("mvslrsp.1"));
+/// assert!(is_task_id_prefix("kvx"));
+/// assert!(is_task_id_prefix("mvslrspmoynoxyyywqyutmovxpvztkls")); // full ID
+/// assert!(!is_task_id_prefix("Fix bug"));
+/// assert!(!is_task_id_prefix("abc")); // outside k-z range
+/// assert!(!is_task_id_prefix("kv")); // too short
+/// ```
+#[must_use]
+pub fn is_task_id_prefix(input: &str) -> bool {
+    if input.is_empty() || input.contains(' ') {
+        return false;
+    }
+
+    let parts: Vec<&str> = input.split('.').collect();
+    let root_part = parts[0];
+
+    // Root prefix must be 3+ chars of k-z
+    if root_part.len() < 3 || !root_part.chars().all(|c| matches!(c, 'k'..='z')) {
+        return false;
+    }
+
+    // If there are additional parts, they must all be numeric
+    if parts.len() > 1 {
+        for part in &parts[1..] {
+            if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
 /// Check if a string looks like a task ID (vs a task description)
 ///
 /// Task IDs are:
@@ -561,5 +607,55 @@ mod tests {
         // Only lowercase k-z but wrong length
         assert!(!is_task_id("mvslrsp")); // 7 chars
         assert!(!is_task_id("mvslrspmoynoxyyywqyutmovxpvztklss")); // 33 chars
+    }
+
+    // Tests for is_task_id_prefix
+
+    #[test]
+    fn test_is_task_id_prefix_valid() {
+        // Valid short prefixes (3+ k-z chars)
+        assert!(is_task_id_prefix("kvx"));
+        assert!(is_task_id_prefix("mvslrsp"));
+        assert!(is_task_id_prefix("zzzzzzzz"));
+
+        // Full 32-char ID is also a valid prefix
+        assert!(is_task_id_prefix("mvslrspmoynoxyyywqyutmovxpvztkls"));
+    }
+
+    #[test]
+    fn test_is_task_id_prefix_subtask() {
+        // Subtask prefixes
+        assert!(is_task_id_prefix("mvslrsp.1"));
+        assert!(is_task_id_prefix("mvslrsp.0"));
+        assert!(is_task_id_prefix("mvslrsp.42"));
+        assert!(is_task_id_prefix("mvslrspmoynoxyyywqyutmovxpvztkls.1"));
+        assert!(is_task_id_prefix("mvslrsp.1.2"));
+    }
+
+    #[test]
+    fn test_is_task_id_prefix_too_short() {
+        // 1-2 char prefixes are too short
+        assert!(!is_task_id_prefix("k"));
+        assert!(!is_task_id_prefix("kv"));
+        assert!(!is_task_id_prefix(""));
+    }
+
+    #[test]
+    fn test_is_task_id_prefix_invalid() {
+        // Descriptions
+        assert!(!is_task_id_prefix("Fix bug"));
+        assert!(!is_task_id_prefix("implement-login"));
+
+        // Wrong char range (a-j, not k-z)
+        assert!(!is_task_id_prefix("abc"));
+        assert!(!is_task_id_prefix("abcdefg"));
+
+        // Mixed valid/invalid chars
+        assert!(!is_task_id_prefix("mvslAsp"));
+        assert!(!is_task_id_prefix("mvsl1sp"));
+
+        // Invalid subtask suffix
+        assert!(!is_task_id_prefix("mvslrsp.abc"));
+        assert!(!is_task_id_prefix("mvslrsp."));
     }
 }
