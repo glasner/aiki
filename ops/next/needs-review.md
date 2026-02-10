@@ -31,7 +31,7 @@ Add a new close outcome alongside `done` and `wont_do`. When an agent closes a t
 
 ```bash
 # Agent finishes work
-aiki task close <id> --needs-review --comment "Implemented feature"
+aiki task close <id> --needs-review --summary "Implemented feature"
 
 # Task shows as needing review in listings
 aiki task

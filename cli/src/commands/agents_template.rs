@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.11";
+pub const AIKI_BLOCK_VERSION: &str = "1.13";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.11">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.13">
 
 ## ⛔ STOP - Read This First
 
@@ -27,14 +27,14 @@ This creates and starts a task in one atomic command (quick-start).
 # Reading the codebase, writing the plan file...
 # Oh, I should track this
 aiki task start "Already done task"
-aiki task close <id> --comment "..."  # Immediately closing - defeats the purpose!
+aiki task close <id> --summary "..."  # Immediately closing - defeats the purpose!
 ```
 
 ### ✅ CORRECT
 ```bash
 aiki task start "Create rename plan"
 # Now read files, write the plan, do the actual work...
-aiki task close <id> --comment "Created plan at ops/now/rename.md"
+aiki task close <id> --summary "Created plan at ops/now/rename.md"
 ```
 
 **Leave progress comments during long tasks:**
@@ -44,7 +44,7 @@ aiki task comment --id <task-id> "Completed phase 1, now working on phase 2"
 
 **When closing tasks, summarize your work:**
 ```bash
-aiki task close <task-id> --comment "What you did"
+aiki task close <task-id> --summary "What you did"
 ```
 
 ---
@@ -63,8 +63,8 @@ aiki task close <task-id> --comment "What you did"
 # 1) Quick-start: create and start a task in one command
 aiki task start "Task description"
 
-# 2) Close it when done (with comment describing your work)
-aiki task close <task-id> --comment "What I did to fix this"
+# 2) Close it when done (with summary describing your work)
+aiki task close <task-id> --summary "What I did to fix this"
 ```
 
 Alternative (two-step):
@@ -86,7 +86,7 @@ aiki task start <task-id>
 # ALWAYS do this first, before reading/analyzing/implementing:
 aiki task start "Review assign-tasks.md design"
 # ... now do the work ...
-aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
+aiki task close <task-id> --summary "Reviewed, found 3 issues: ..."
 ```
 
 ### When to Use Tasks
@@ -114,7 +114,7 @@ aiki task comment --id <task-id> "Implemented password hashing"
 aiki task comment --id <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
-aiki task close <task-id> --comment "Completed: authentication with JWT tokens, password hashing, and session management"
+aiki task close <task-id> --summary "Completed: authentication with JWT tokens, password hashing, and session management"
 ```
 
 **Benefits:**
@@ -237,13 +237,13 @@ aiki task comment --id <task-id> "Progress update: ..."
 aiki task show <task-id>
 
 # Close with comment (preferred - atomic operation)
-aiki task close <task-id> --comment "Fixed by updating X to do Y"
+aiki task close <task-id> --summary "Fixed by updating X to do Y"
 
 # Close as won't-do (skipped, not needed, or deliberately declined)
-aiki task close <task-id> --outcome wont_do --comment "Already handled by existing code"
+aiki task close <task-id> --wont-do --summary "Already handled by existing code"
 
 # Close multiple tasks
-aiki task close <id1> <id2> <id3> --comment "All done"
+aiki task close <id1> <id2> <id3> --summary "All done"
 
 # Delegate task to a subagent
 aiki task run <task-id>
@@ -279,11 +279,11 @@ aiki task start <parent-id>
 # 4. Work through subtasks one by one
 aiki task start <parent-id>.1
 # ... do the work ...
-aiki task close <parent-id>.1 --comment "Added null check before token access"
+aiki task close <parent-id>.1 --summary "Added null check before token access"
 
 aiki task start <parent-id>.2
 # ... do the work ...
-aiki task close <parent-id>.2 --comment "Wrapped API calls in try/catch"
+aiki task close <parent-id>.2 --summary "Wrapped API calls in try/catch"
 ```
 
 ### ❌ WRONG: One big task for multiple items
@@ -291,7 +291,7 @@ aiki task close <parent-id>.2 --comment "Wrapped API calls in try/catch"
 # Don't lump everything into one task
 aiki task start "Fix all review issues"
 # ... do 5 different things ...
-aiki task close <id> --comment "Fixed everything"  # No granularity!
+aiki task close <id> --summary "Fixed everything"  # No granularity!
 ```
 
 ### ✅ CORRECT: Parent + subtasks
@@ -312,7 +312,7 @@ When you start a parent task with subtasks:
 3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
 4. **After all subtasks are done**, review the work to make sure nothing was missed, then close the parent with a summary comment:
    ```bash
-   aiki task close <parent-id> --comment "All 3 subtasks done: fixed null check, added error handling, removed unused import"
+   aiki task close <parent-id> --summary "All 3 subtasks done: fixed null check, added error handling, removed unused import"
    ```
 
 ### When Planning Work
@@ -332,25 +332,39 @@ aiki task start <id>
 
 ### Task Output Format
 
-Commands return XML showing current state:
+**Action commands** (add, start, comment) return slim single-line confirmations:
+```
+Added: qotysworupowzkxyknzkworuwlyksmls — Fix auth bug
+Started: qotysworupowzkxyknzkworuwlyksmls
+Commented: qotysworupowzkxyknzkworuwlyksmls
+```
 
-```xml
-<aiki_task cmd="list" status="ok">
-  <context>
-    <in_progress>
-      <task id="abc" name="Current task"/>
-    </in_progress>
-    <list ready="3">
-      <task id="def" priority="p0" name="Next task"/>
-    </list>
-  </context>
-</aiki_task>
+**State-transition commands** (stop, close) return confirmation + context footer:
+```
+Closed: qotysworupowzkxyknzkworuwlyksmls
+
+In Progress:
+(none)
+
+Ready (2):
+- anothertwentycharsofidpadding01 [p0] Urgent fix
+- anothertwentycharsofidpadding02 [p2] Add tests
+```
+
+**Read commands** (list, show) return full context:
+```
+In Progress:
+- qotysworupowzkxyknzkworuwlyksmls — Fix auth bug
+
+Ready (3):
+- anothertwentycharsofidpadding01 [p0] Urgent fix
+- anothertwentycharsofidpadding02 [p2] Add tests
 ```
 
 **Reading the output:**
-- `<in_progress>` - Tasks you're currently working on
-- `<list ready="N">` - Tasks ready to be started
-- `scope="<id>"` attribute means you're inside a parent task (only subtasks shown)
+- `In Progress:` - Tasks you're currently working on
+- `Ready (N):` - Tasks ready to be started
+- Error responses: `Error: message`
 
 ### Task IDs
 
@@ -365,7 +379,7 @@ Commands return XML showing current state:
 1. Run `aiki task show <id>` to see what the task is about
 2. If the user wants work done, run `aiki task start <id>` (if not already started)
 3. Do the work described in the task
-4. Close with `aiki task close <id> --comment "What you did"`
+4. Close with `aiki task close <id> --summary "What you did"`
 
 **Subtask IDs:** Append a dot and number to parent ID: `<parent-id>.1`, `<parent-id>.2`
 
@@ -374,8 +388,8 @@ Commands return XML showing current state:
 1. **Start before working** - Run `aiki task start` before implementation
 2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
 3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
-4. **Close with comment** - Use `aiki task close --comment` to document your work
-5. **Close as won't-do when appropriate** - Use `aiki task close --outcome wont_do --comment` for tasks you skip or decline (not needed, already done, disagree with approach)
+4. **Close with summary** - Use `aiki task close --summary` to document your work
+5. **Close as won't-do when appropriate** - Use `aiki task close --wont-do --summary` for tasks you skip or decline (not needed, already done, disagree with approach)
 6. **Close immediately** - Don't leave tasks open after finishing
 7. **Report what you did** - Include completed tasks when replying to user
 
@@ -416,7 +430,7 @@ Example:
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
 - Forgetting to `start` a task before you begin work
-- Closing tasks without `--comment` to describe what you did
+- Closing tasks without `--summary` to describe what you did
 - Leaving tasks open after finishing
 - Creating long tasks without subtasks for multi-step work
 - Not updating progress with comments during multi-step work

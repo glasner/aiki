@@ -52,7 +52,7 @@ turn.started:
           append: |
             ---
             ACTIVE TASK: $active_tasks.id - $active_tasks.name
-            Continue this task or close it with: aiki task close $active_tasks.id --comment "..."
+            Continue this task or close it with: aiki task close $active_tasks.id --summary "..."
 ```
 
 **Pros:**

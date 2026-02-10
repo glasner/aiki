@@ -1,6 +1,5 @@
 ---
 version: 2.0.0
-type: build
 ---
 
 # Build: {{data.spec}}
@@ -10,7 +9,7 @@ type: build
 When all plan subtasks are complete, close this task:
 
 ```bash
-aiki task close {{id}} --comment "Build completed: all subtasks done."
+aiki task close {{id}} --summary "Build completed: all subtasks done."
 ```
 
 # Subtasks
@@ -29,5 +28,5 @@ aiki task run {{parent.id}}.1.<subtask number>
 Run them in order. If a subtask fails do not continue, stop and report the failure using the following command:
 
 ```bash
-aiki task stop {{parent.id}} --comment "Failed subtask <subtask_number>: <reason>"
+aiki task stop {{parent.id}} --reason "Failed subtask <subtask_number>: <reason>"
 ```

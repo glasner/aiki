@@ -2,7 +2,7 @@
 //!
 //! Provides an AI-first task tracking system with:
 //! - Event-sourced storage on `aiki/tasks` branch
-//! - XML output format for agent consumption
+//! - Markdown output format for agent consumption
 //! - Ready queue calculation with priority sorting
 //! - Task execution via agent runtimes
 //! - Template-based task creation
@@ -16,23 +16,24 @@ pub mod status_monitor;
 pub mod storage;
 pub mod templates;
 pub mod types;
-pub mod xml;
+pub mod md;
 
-pub use id::{generate_child_id, generate_task_id, get_next_subtask_number, is_task_id};
+pub use id::{generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix};
 #[allow(unused_imports)]
 pub use manager::{
     all_subtasks_closed, find_task, get_subtasks, get_current_scope_set, get_in_progress,
     get_ready_queue, get_ready_queue_for_agent, get_ready_queue_for_agent_scoped,
     get_ready_queue_for_human, get_ready_queue_for_scope_set, get_scoped_ready_queue,
-    get_unclosed_subtasks, has_subtasks, materialize_tasks, materialize_tasks_with_ids, ScopeSet,
+    get_unclosed_subtasks, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
+    resolve_task_id, ScopeSet,
 };
 #[allow(unused_imports)]
-pub use runner::{run_task_async_with_xml, task_run_async, terminate_background_task};
+pub use runner::{run_task_async_with_output, task_run_async, terminate_background_task};
 #[allow(unused_imports)]
 pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, EventWithId};
 #[allow(unused_imports)]
 pub use types::{Task, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus};
-pub use xml::XmlBuilder;
+pub use md::MdBuilder;
 
 use crate::error::{AikiError, Result};
 use crate::events::{AikiEvent, AikiTaskStartedPayload, TaskEventPayload};
@@ -79,8 +80,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
 
     // Validate all tasks exist and are not closed
     for id in task_ids {
-        let task = find_task(&tasks, id)
-            .ok_or_else(|| AikiError::TaskNotFound(id.clone()))?;
+        let task = find_task(&tasks, id)?;
 
         if task.status == TaskStatus::Closed {
             return Err(AikiError::InvalidArgument(format!(
@@ -125,7 +125,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         .collect();
     let started_tasks: Vec<Task> = task_ids
         .iter()
-        .filter_map(|id| find_task(&tasks, id).cloned())
+        .filter_map(|id| find_task(&tasks, id).ok().cloned())
         .collect();
 
     // Auto-stop current in-progress tasks
@@ -160,7 +160,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
 
     // Emit task.started flow events for each started task
     for task_id in task_ids {
-        if let Some(task) = find_task(&tasks, task_id) {
+        if let Ok(task) = find_task(&tasks, task_id) {
             let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
                 task: TaskEventPayload {
                     id: task.id.clone(),

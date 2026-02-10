@@ -317,11 +317,11 @@ If Phase 2 doesn't hit targets:
 **Tasks:**
 1. Implement `bench_task_close` benchmark
 2. Profile with different comment sizes
-3. Test with `--comment` flag (adds extra event)
+3. Test with `--summary` flag
 4. Identify bottlenecks
 
 **Acceptance:**
-- Baseline numbers for close with/without comment
+- Baseline numbers for close with/without summary
 - Understanding of event writing overhead
 
 ### Phase 2: Optimizations (2 days)
@@ -330,17 +330,11 @@ If Phase 2 doesn't hit targets:
 
 1. **Atomic Multi-Event Writes**
    ```rust
-   // Before: Two separate transactions for comment + close
-   if let Some(comment) = opts.comment {
-       emit_event(CommentAdded { ... })?;  // Transaction 1
-   }
-   emit_event(Closed { ... })?;  // Transaction 2
-   
-   // After: Single transaction for both
-   let events = vec![
-       CommentAdded { ... },
-       Closed { ... },
-   ];
+   // Before: Separate transactions
+   emit_event(Closed { summary, ... })?;  // Transaction 1
+
+   // After: Single optimized transaction
+   let events = vec![Closed { summary, ... }];
    emit_events_atomic(&events)?;  // Single transaction
    ```
 
@@ -373,7 +367,7 @@ If Phase 2 doesn't hit targets:
    }
    ```
 
-**Target:** <50ms P95, even with `--comment`
+**Target:** <50ms P95, even with `--summary`
 
 ### Phase 3: Batch Operations (2 days)
 
@@ -381,7 +375,7 @@ Support closing multiple tasks efficiently:
 
 ```rust
 // CLI support
-aiki task close task1 task2 task3 --comment "Batch close"
+aiki task close task1 task2 task3 --summary "Batch close"
 
 // Implementation
 pub fn close_batch(task_ids: Vec<String>, opts: CloseOptions) -> Result<()> {
@@ -441,7 +435,7 @@ pub fn close_batch(task_ids: Vec<String>, opts: CloseOptions) -> Result<()> {
 
 **Deliverables:**
 - Optimized `task close` implementation
-- Support for `--comment` without performance penalty
+- Support for `--summary` without performance penalty
 - Batch close API (if time permits)
 
 ### Phase 4: Monitoring and Documentation (2 days)

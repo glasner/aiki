@@ -888,6 +888,8 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
     };
 
     // Validate template name: segments separated by `/`, each segment matches [a-z0-9][a-z0-9._-]*
+    // Skip character-level validation for segments containing {{...}} interpolation
+    let has_interpolation = template_name.contains("{{");
     let segments: Vec<&str> = template_name.split('/').collect();
     if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
         return Err(ConditionalError::InvalidCondition {
@@ -898,25 +900,27 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
             line,
         });
     }
-    for segment in &segments {
-        let chars: Vec<char> = segment.chars().collect();
-        if !chars[0].is_ascii_lowercase() && !chars[0].is_ascii_digit() {
-            return Err(ConditionalError::InvalidCondition {
-                condition: format!(
-                    "Invalid template name segment '{}' in {{% subtask %}}. Segments must start with [a-z0-9]",
-                    segment
-                ),
-                line,
-            });
-        }
-        if !chars.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-') {
-            return Err(ConditionalError::InvalidCondition {
-                condition: format!(
-                    "Invalid template name segment '{}' in {{% subtask %}}. Segments may contain [a-z0-9._-]",
-                    segment
-                ),
-                line,
-            });
+    if !has_interpolation {
+        for segment in &segments {
+            let chars: Vec<char> = segment.chars().collect();
+            if !chars[0].is_ascii_lowercase() && !chars[0].is_ascii_digit() {
+                return Err(ConditionalError::InvalidCondition {
+                    condition: format!(
+                        "Invalid template name segment '{}' in {{% subtask %}}. Segments must start with [a-z0-9]",
+                        segment
+                    ),
+                    line,
+                });
+            }
+            if !chars.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '.' || *c == '_' || *c == '-') {
+                return Err(ConditionalError::InvalidCondition {
+                    condition: format!(
+                        "Invalid template name segment '{}' in {{% subtask %}}. Segments may contain [a-z0-9._-]",
+                        segment
+                    ),
+                    line,
+                });
+            }
         }
     }
 
@@ -1246,6 +1250,11 @@ fn render_with_loops(
                         let pattern = format!("{{{{{}.{}}}}}", var_name, field);
                         resolved_name = resolved_name.replace(&pattern, value);
                     }
+                }
+                // Substitute context variables (e.g., {{data.scope.kind}})
+                for (key, value) in &ctx.variables {
+                    let pattern = format!("{{{{{}}}}}", key);
+                    resolved_name = resolved_name.replace(&pattern, value);
                 }
                 result.push_str(&format!(
                     "<!-- AIKI_SUBTASK_REF:{}:{} -->",
@@ -2237,6 +2246,48 @@ Content under heading
         // Invalid: uppercase
         let result = parse_subtask_ref("Aiki/Plan", 1);
         assert!(result.is_err());
+
+        // Valid: interpolated template name
+        let result = parse_subtask_ref("aiki/review/{{data.scope.kind}}", 1);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            TemplateNode::SubtaskRef { template_name, .. } => {
+                assert_eq!(template_name, "aiki/review/{{data.scope.kind}}");
+            }
+            _ => panic!("Expected SubtaskRef"),
+        }
+    }
+
+    #[test]
+    fn test_process_subtask_ref_interpolated() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.scope.kind", "task");
+        let result = process_conditionals(
+            "{% subtask aiki/review/{{data.scope.kind}} %}",
+            &ctx,
+        )
+        .unwrap();
+        assert!(
+            result.contains("AIKI_SUBTASK_REF:aiki/review/task:"),
+            "Expected interpolated template name, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_process_subtask_ref_interpolated_session() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.scope.kind", "session");
+        let result = process_conditionals(
+            "{% subtask aiki/review/{{data.scope.kind}} %}",
+            &ctx,
+        )
+        .unwrap();
+        assert!(
+            result.contains("AIKI_SUBTASK_REF:aiki/review/session:"),
+            "Expected interpolated template name, got: {}",
+            result
+        );
     }
 
     #[test]

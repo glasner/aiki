@@ -1,7 +1,5 @@
 ---
 version: 1.0.0
-type: plan
-assignee: claude-code
 ---
 
 # Plan: {{data.spec}}
@@ -52,7 +50,7 @@ aiki task add "<step description>" --parent <plan_task_id>
 When all subtasks are added, close this planning task and report the plan:
 
 ```bash
-aiki task close --comment "Plan created with N subtasks. Plan ID: <plan_task_id>"
+aiki task close --summary "Plan created with N subtasks. Plan ID: <plan_task_id>"
 ```
 
 Output the plan task ID and subtask summary for the user.

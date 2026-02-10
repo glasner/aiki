@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 
+use std::collections::HashSet;
+
 use super::id::{get_parent_id, is_direct_child_of};
 use super::types::{Task, TaskComment, TaskEvent, TaskStatus};
 use crate::agents::{AgentType, Assignee};
+use crate::error::{AikiError, Result};
 
 /// Represents the set of active scopes based on in-progress tasks
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,6 +79,7 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                         last_session_id: None,
                         stopped_reason: None,
                         closed_outcome: None,
+                        summary: None,
                         comments: Vec::new(),
                     },
                 );
@@ -108,12 +112,16 @@ pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
                 }
             }
             TaskEvent::Closed {
-                task_ids, outcome, ..
+                task_ids,
+                outcome,
+                summary,
+                ..
             } => {
                 for task_id in task_ids {
                     if let Some(task) = tasks.get_mut(task_id) {
                         task.status = TaskStatus::Closed;
                         task.closed_outcome = Some(*outcome);
+                        task.summary = summary.clone();
                         task.claimed_by_session = None; // Release claim
                     }
                 }
@@ -224,6 +232,7 @@ pub fn materialize_tasks_with_ids(events: &[super::storage::EventWithId]) -> Has
                         last_session_id: None,
                         stopped_reason: None,
                         closed_outcome: None,
+                        summary: None,
                         comments: Vec::new(),
                     },
                 );
@@ -265,12 +274,16 @@ pub fn materialize_tasks_with_ids(events: &[super::storage::EventWithId]) -> Has
                 }
             }
             TaskEvent::Closed {
-                task_ids, outcome, ..
+                task_ids,
+                outcome,
+                summary,
+                ..
             } => {
                 for task_id in task_ids {
                     if let Some(task) = tasks.get_mut(task_id) {
                         task.status = TaskStatus::Closed;
                         task.closed_outcome = Some(*outcome);
+                        task.summary = summary.clone();
                         task.claimed_by_session = None;
                     }
                 }
@@ -416,10 +429,97 @@ pub fn get_closed(tasks: &HashMap<String, Task>) -> Vec<&Task> {
         .collect()
 }
 
-/// Find a task by ID
-#[must_use]
-pub fn find_task<'a>(tasks: &'a HashMap<String, Task>, id: &str) -> Option<&'a Task> {
-    tasks.get(id)
+/// Find a task by ID or prefix
+///
+/// Accepts full IDs or unique prefixes. Returns the task or an error
+/// (TaskNotFound, AmbiguousTaskId, SubtaskNotFound, PrefixTooShort).
+pub fn find_task<'a>(tasks: &'a HashMap<String, Task>, id_or_prefix: &str) -> Result<&'a Task> {
+    // Fast path: exact match
+    if let Some(task) = tasks.get(id_or_prefix) {
+        return Ok(task);
+    }
+
+    // Try prefix resolution
+    let full_id = resolve_task_id_internal(tasks, id_or_prefix)?;
+    tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id))
+}
+
+/// Resolve a task ID prefix to a full ID
+///
+/// Use this when you need the resolved ID string (e.g., for batch validation
+/// or before the task map is available). Most call sites should use `find_task`.
+pub fn resolve_task_id(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+    resolve_task_id_internal(tasks, prefix)
+}
+
+/// Internal helper for prefix resolution
+fn resolve_task_id_internal(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+    // Fast path: exact match
+    if tasks.contains_key(prefix) {
+        return Ok(prefix.to_string());
+    }
+
+    // Subtask prefix: "mvslrsp.1"
+    if let Some((root_prefix, suffix)) = prefix.split_once('.') {
+        let full_root = resolve_root_prefix(tasks, root_prefix)?;
+        let full_id = format!("{}.{}", full_root, suffix);
+
+        // Verify subtask exists
+        if tasks.contains_key(&full_id) {
+            Ok(full_id)
+        } else {
+            Err(AikiError::SubtaskNotFound {
+                root: full_root,
+                subtask: suffix.to_string(),
+            })
+        }
+    } else {
+        // Root prefix: "mvslrsp"
+        resolve_root_prefix(tasks, prefix)
+    }
+}
+
+/// Resolve a root task prefix (no dots)
+fn resolve_root_prefix(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+    // Enforce minimum prefix length (3 chars)
+    if prefix.len() < 3 {
+        return Err(AikiError::PrefixTooShort { prefix: prefix.to_string() });
+    }
+
+    // Collect unique root IDs matching the prefix
+    let mut matches: Vec<String> = tasks
+        .keys()
+        .filter_map(|id| {
+            let root = id.split('.').next().unwrap();
+            if root.starts_with(prefix) {
+                Some(root.to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    matches.sort();
+
+    match matches.len() {
+        0 => Err(AikiError::TaskNotFound(prefix.to_string())),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ => {
+            let match_list = matches
+                .iter()
+                .filter_map(|id| tasks.get(id).map(|t| format!("  {} — {}", &id[..id.len().min(8)], t.name)))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            Err(AikiError::AmbiguousTaskId {
+                prefix: prefix.to_string(),
+                count: matches.len(),
+                matches: match_list,
+            })
+        }
+    }
 }
 
 /// Check if a task has any subtasks
@@ -739,6 +839,7 @@ mod tests {
         TaskEvent::Closed {
             task_ids: vec![task_id.to_string()],
             outcome,
+            summary: None,
             timestamp: Utc::now(),
         }
     }
@@ -866,8 +967,8 @@ mod tests {
 
         let tasks = materialize_tasks(&events);
 
-        assert!(find_task(&tasks, "a1b2").is_some());
-        assert!(find_task(&tasks, "nonexistent").is_none());
+        assert!(find_task(&tasks, "a1b2").is_ok());
+        assert!(find_task(&tasks, "nonexistent").is_err());
     }
 
     #[test]
@@ -1372,8 +1473,8 @@ mod tests {
         let events = vec![make_created_event("task1", "Task 1", TaskPriority::P2, 1)];
         let tasks = materialize_tasks(&events);
 
-        assert!(find_task(&tasks, "nonexistent").is_none());
-        assert!(find_task(&tasks, "").is_none());
+        assert!(find_task(&tasks, "nonexistent").is_err());
+        assert!(find_task(&tasks, "").is_err());
     }
 
     #[test]
@@ -1665,6 +1766,7 @@ mod tests {
             TaskEvent::Closed {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
+                summary: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             TaskEvent::Reopened {
@@ -1860,6 +1962,7 @@ mod tests {
             TaskEvent::Closed {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
+                summary: None,
                 timestamp: base_time + chrono::Duration::seconds(3),
             },
             // Reopen task
@@ -1909,6 +2012,7 @@ mod tests {
             TaskEvent::Closed {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
+                summary: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1935,6 +2039,7 @@ mod tests {
             TaskEvent::Closed {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
+                summary: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             TaskEvent::Reopened {
@@ -2308,5 +2413,131 @@ mod tests {
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         // task1 was closed, so only task2 remains in-progress
         assert_eq!(task_ids, vec!["task2"]);
+    }
+
+    // Tests for find_task with prefix resolution
+
+    fn make_tasks_for_prefix_tests() -> HashMap<String, Task> {
+        let events = vec![
+            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls", "Task Alpha", TaskPriority::P2, 3),
+            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls.1", "Subtask 1", TaskPriority::P2, 2),
+            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls.2", "Subtask 2", TaskPriority::P2, 1),
+            make_created_event("nrqklspxopmwtryzyzkqnlmsqvpwtkls", "Task Beta", TaskPriority::P2, 3),
+            make_created_event("mvslxyymoynoxyyywqyutmovxpvztkls", "Task Gamma", TaskPriority::P2, 3),
+        ];
+        materialize_tasks(&events)
+    }
+
+    #[test]
+    fn test_find_task_exact_match() {
+        let tasks = make_tasks_for_prefix_tests();
+        let task = find_task(&tasks, "mvslrspmoynoxyyywqyutmovxpvztkls").unwrap();
+        assert_eq!(task.name, "Task Alpha");
+    }
+
+    #[test]
+    fn test_find_task_unique_prefix() {
+        let tasks = make_tasks_for_prefix_tests();
+        // "nrqkl" uniquely matches nrqklspxopmwtryzyzkqnlmsqvpwtkls
+        let task = find_task(&tasks, "nrqkl").unwrap();
+        assert_eq!(task.name, "Task Beta");
+    }
+
+    #[test]
+    fn test_find_task_ambiguous_prefix() {
+        let tasks = make_tasks_for_prefix_tests();
+        // "mvsl" matches both mvslrsp... and mvslxyy...
+        let err = find_task(&tasks, "mvsl").unwrap_err();
+        match err {
+            AikiError::AmbiguousTaskId { prefix, count, matches } => {
+                assert_eq!(prefix, "mvsl");
+                assert_eq!(count, 2);
+                assert!(matches.contains("Task Alpha"));
+                assert!(matches.contains("Task Gamma"));
+            }
+            _ => panic!("Expected AmbiguousTaskId, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_find_task_not_found() {
+        let tasks = make_tasks_for_prefix_tests();
+        let err = find_task(&tasks, "zzzzz").unwrap_err();
+        match err {
+            AikiError::TaskNotFound(id) => assert_eq!(id, "zzzzz"),
+            _ => panic!("Expected TaskNotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_find_task_subtask_prefix() {
+        let tasks = make_tasks_for_prefix_tests();
+        // "mvslrsp.1" — prefix of root + subtask number
+        // "mvslrsp" uniquely matches mvslrspmoynoxyyywqyutmovxpvztkls (since dedup removes subtask variants)
+        let task = find_task(&tasks, "mvslrsp.1").unwrap();
+        assert_eq!(task.name, "Subtask 1");
+    }
+
+    #[test]
+    fn test_find_task_subtask_not_found() {
+        let tasks = make_tasks_for_prefix_tests();
+        let err = find_task(&tasks, "mvslrsp.99").unwrap_err();
+        match err {
+            AikiError::SubtaskNotFound { root, subtask } => {
+                assert_eq!(root, "mvslrspmoynoxyyywqyutmovxpvztkls");
+                assert_eq!(subtask, "99");
+            }
+            _ => panic!("Expected SubtaskNotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_find_task_prefix_too_short() {
+        let tasks = make_tasks_for_prefix_tests();
+        let err = find_task(&tasks, "mv").unwrap_err();
+        match err {
+            AikiError::PrefixTooShort { prefix } => assert_eq!(prefix, "mv"),
+            _ => panic!("Expected PrefixTooShort, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_find_task_deduplication() {
+        let tasks = make_tasks_for_prefix_tests();
+        // "mvslrsp" matches mvslrspmoynoxyyywqyutmovxpvztkls, mvslrspmoynoxyyywqyutmovxpvztkls.1,
+        // and mvslrspmoynoxyyywqyutmovxpvztkls.2 — but they all share the same root, so should
+        // resolve to the root ID (not ambiguous).
+        let task = find_task(&tasks, "mvslrsp").unwrap();
+        assert_eq!(task.name, "Task Alpha");
+    }
+
+    // Tests for resolve_task_id
+
+    #[test]
+    fn test_resolve_task_id_exact() {
+        let tasks = make_tasks_for_prefix_tests();
+        let id = resolve_task_id(&tasks, "mvslrspmoynoxyyywqyutmovxpvztkls").unwrap();
+        assert_eq!(id, "mvslrspmoynoxyyywqyutmovxpvztkls");
+    }
+
+    #[test]
+    fn test_resolve_task_id_prefix() {
+        let tasks = make_tasks_for_prefix_tests();
+        let id = resolve_task_id(&tasks, "nrqkl").unwrap();
+        assert_eq!(id, "nrqklspxopmwtryzyzkqnlmsqvpwtkls");
+    }
+
+    #[test]
+    fn test_resolve_task_id_subtask() {
+        let tasks = make_tasks_for_prefix_tests();
+        let id = resolve_task_id(&tasks, "mvslrsp.2").unwrap();
+        assert_eq!(id, "mvslrspmoynoxyyywqyutmovxpvztkls.2");
+    }
+
+    #[test]
+    fn test_resolve_task_id_ambiguous() {
+        let tasks = make_tasks_for_prefix_tests();
+        let err = resolve_task_id(&tasks, "mvsl").unwrap_err();
+        assert!(matches!(err, AikiError::AmbiguousTaskId { .. }));
     }
 }

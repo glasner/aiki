@@ -3,17 +3,17 @@ version: 1.0.0
 type: review
 ---
 
-# Review: {{scope.name}}
+# Review: {{data.scope.name}}
 
-Review the code changes from task `{{scope.id}}`.
+Review the code changes from task `{{data.scope.id}}`.
 
 ## Understand the changes
 
 Run these commands to see what was modified:
 
 ```bash
-aiki task show {{scope.id}} --with-source  # Understand intent
-aiki task diff {{scope.id}}                 # View all code changes
+aiki task show {{data.scope.id}} --with-source  # Understand intent
+aiki task diff {{data.scope.id}}                 # View all code changes
 ```
 
 ## Review for issues and report findings

@@ -434,6 +434,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Closed {
             task_ids,
             outcome,
+            summary,
             timestamp,
         } => {
             add_metadata("event", "closed", &mut lines);
@@ -441,6 +442,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 add_metadata("task_id", task_id, &mut lines);
             }
             add_metadata("outcome", outcome, &mut lines);
+            if let Some(summary) = summary {
+                add_metadata_escaped("summary", summary, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Reopened {
@@ -658,10 +662,15 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .and_then(|v| v.first())
                 .and_then(|s| TaskOutcome::from_str(s))
                 .unwrap_or(TaskOutcome::Done);
+            let summary = fields
+                .get("summary")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
 
             Some(TaskEvent::Closed {
                 task_ids,
                 outcome,
+                summary,
                 timestamp,
             })
         }
@@ -1010,6 +1019,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Closed {
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             outcome: TaskOutcome::WontDo,
+            summary: None,
             timestamp: Utc::now(),
         };
 
@@ -1037,6 +1047,64 @@ timestamp=2026-01-09T10:30:00Z
                 assert_eq!(outcome1, outcome2);
             }
             _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_closed_with_summary() {
+        let original = TaskEvent::Closed {
+            task_ids: vec!["task1".to_string()],
+            outcome: TaskOutcome::Done,
+            summary: Some("Fixed the auth bug".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Closed {
+                task_ids,
+                outcome,
+                summary,
+                ..
+            } => {
+                assert_eq!(task_ids, vec!["task1".to_string()]);
+                assert_eq!(outcome, TaskOutcome::Done);
+                assert_eq!(summary, Some("Fixed the auth bug".to_string()));
+            }
+            _ => panic!("Expected Closed event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_closed_summary_with_special_chars() {
+        let original = TaskEvent::Closed {
+            task_ids: vec!["task1".to_string()],
+            outcome: TaskOutcome::Done,
+            summary: Some("Fixed bug: added null check\nnew line here".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Closed { summary, .. } => {
+                assert_eq!(
+                    summary,
+                    Some("Fixed bug: added null check\nnew line here".to_string())
+                );
+            }
+            _ => panic!("Expected Closed event"),
         }
     }
 

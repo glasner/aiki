@@ -3,26 +3,35 @@
 **Date**: 2026-02-06
 **Status**: Idea
 **Priority**: P3
-**Depends on**: `ops/now/fix-original-task.md`
+**Depends on**: `ops/done/fix-original-task.md`, `ops/done/review-scope-refactor.md`, `ops/now/task-summary.md`
 
 **Related Documents**:
-- [Fix Targets Original Task](../now/fix-original-task.md) - Task-targeted fix (prerequisite)
-- [Composable Task Templates](composable-task-templates.md) - Template composition with `{% subtask %}` (prerequisite)
-- [Template Conditionals](../now/template-conditionals.md) - Conditional logic for templates (implemented)
+- [Fix Targets Original Task](../done/fix-original-task.md) - Task-targeted fix (prerequisite)
+- [Composable Task Templates](../done/composable-task-templates.md) - Template composition with `{% subtask %}` (prerequisite)
+- [Template Conditionals](../done/template-conditionals.md) - Conditional logic for templates (implemented)
 - [Task Templates](../done/task-templates.md) - Template system (implemented)
-
-**Prerequisites**:
-- Template conditionals (implemented in `cli/src/tasks/templates/conditionals.rs`)
-- Composable task templates (in progress - needed for specialized review templates)
-- Fix targets original task (in progress)
+- [ReviewScope Refactor](../done/review-scope-refactor.md) - Typed `ReviewScope` struct for review/fix routing (implemented)
+- [Task Summary](task-summary.md) - Dedicated `summary` field on tasks, replacing `--comment` on close (prerequisite)
 
 ---
 
 ## Problem
 
-`aiki review` currently only targets tasks. We want it to also handle files and specs, with `aiki fix` adapting accordingly. After `fix-original-task.md` lands, the `ReviewTarget` enum and `get_review_target` function exist but `File` returns an error.
+`aiki review` currently only targets tasks. We want it to also handle files and specs, with `aiki fix` adapting accordingly. The `ReviewScope` struct and fix routing via `ReviewScope::from_data()` are implemented (see [ReviewScope Refactor](../done/review-scope-refactor.md)), but only `Task` and `Session` kinds are wired up — `Spec` and `Implementation` need to be added.
 
-This plan extends both `review` and `fix` to support non-task targets.
+This plan extends both `review` and `fix` to support non-task targets, building on the existing `ReviewScope` infrastructure.
+
+---
+
+## Prerequisites Status
+
+- ✅ Template conditionals (implemented in `cli/src/tasks/templates/conditionals.rs`)
+- ✅ Composable task templates (implemented in `cli/src/tasks/templates/`)
+- ✅ Fix targets original task (implemented in `cli/src/commands/fix.rs`)
+- ✅ [ReviewScope Refactor](../done/review-scope-refactor.md) — typed `ReviewScope` struct, scope as task data, fix routing via data instead of source prefixes
+- ⬜ [Task Summary](task-summary.md) — dedicated `summary` field on tasks, `--summary` flag on `task close`
+
+The `ReviewScope` struct and `ReviewScopeKind` enum are implemented in `cli/src/commands/review.rs`. Fix routing in `cli/src/commands/fix.rs` uses `ReviewScope::from_data()` to read scope from task data. Currently only `ReviewScopeKind::Task` and `ReviewScopeKind::Session` are fully wired — `Spec` and `Implementation` are the new targets added by this plan.
 
 ---
 
@@ -54,76 +63,98 @@ aiki review
 
 ### Target Detection
 
+Extends the existing `detect_target()` to return `ReviewScope` for file targets. The `--implementation` flag determines whether a file target produces `ReviewScopeKind::Spec` or `ReviewScopeKind::Implementation`:
+
 ```rust
-fn detect_target(arg: Option<&str>) -> ReviewTarget {
+fn detect_target(arg: Option<&str>, implementation: bool) -> Result<ReviewScope> {
     match arg {
-        None => ReviewTarget::Session,
+        None => Ok(ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "session".into(),
+            task_ids: collect_session_task_ids()?,
+        }),
 
         Some(s) if s.ends_with(".md") && Path::new(s).exists() => {
-            ReviewTarget::File {
-                path: s.into(),
-                file_type: "spec",
-            }
+            let kind = if implementation {
+                ReviewScopeKind::Implementation
+            } else {
+                ReviewScopeKind::Spec
+            };
+            Ok(ReviewScope {
+                kind,
+                id: s.into(),
+                task_ids: vec![],
+            })
+        }
+
+        Some(s) if s.ends_with(".md") => {
+            bail!("File not found: {}", s)
         }
 
         Some(s) if is_task_id(s) => {
-            ReviewTarget::Task { id: s.into() }
+            if implementation {
+                bail!("--implementation flag only applies to file targets")
+            }
+            Ok(ReviewScope {
+                kind: ReviewScopeKind::Task,
+                id: s.into(),
+                task_ids: vec![],
+            })
         }
 
         Some(s) if Path::new(s).exists() => {
-            anyhow::bail!("File review only supports .md files currently")
+            bail!("File review only supports .md files currently")
         }
 
         Some(s) => {
-            anyhow::bail!("Target not found: {}", s)
+            bail!("Target not found: {}", s)
         }
     }
 }
 ```
 
-### Template Data
+### Scope Data
 
-The review command populates `data.*` fields based on target type:
+**Implemented via [ReviewScope Refactor](../done/review-scope-refactor.md).** The `ReviewScope` struct serializes scope metadata to task `data` fields via `scope.to_data()`. These are persisted on the review task and available to both templates (as `{{data.scope.type}}`, etc.) and downstream consumers like `aiki fix` (via `ReviewScope::from_data(&review_task.data)`).
+
+The review command builds a `ReviewScope` from target detection, then calls `scope.to_data()` to produce:
 
 **For task review:**
-```yaml
-data:
-  target_type: task
-  target_name: "task xqrmnpst"
-  task_id: xqrmnpst
-```
+| Key | Value |
+|-----|-------|
+| `scope.type` | `task` |
+| `scope.id` | `xqrmnpst` |
+| `scope.name` | `Task (xqrmnpst)` |
 
-**For file review (spec document):**
-```yaml
-data:
-  target_type: file
-  target_name: "ops/now/feature.md"
-  path: ops/now/feature.md
-  file_type: spec
-  review_mode: document  # default when no --implementation flag
-```
+**For spec document review:**
+| Key | Value |
+|-----|-------|
+| `scope.type` | `spec` |
+| `scope.id` | `ops/now/feature.md` |
+| `scope.name` | `Spec (feature.md)` |
 
-**For file review with --implementation (current codebase):**
-```yaml
-data:
-  target_type: file
-  target_name: "ops/now/feature.md"
-  path: ops/now/feature.md
-  file_type: spec
-  review_mode: implementation  # when --implementation flag is used
-```
+**For implementation review (with --implementation flag):**
+| Key | Value |
+|-----|-------|
+| `scope.type` | `implementation` |
+| `scope.id` | `ops/now/feature.md` |
+| `scope.name` | `Implementation (feature.md)` |
 
 **For session review:**
-```yaml
-data:
-  target_type: session
-  target_name: "session changes"
-  task_ids: [abc123, def456]
-```
+| Key | Value |
+|-----|-------|
+| `scope.type` | `session` |
+| `scope.id` | `session` |
+| `scope.name` | `Session` |
+| `scope.task_ids` | `abc123,def456` |
+
+The `scope.name` field is computed by `ReviewScope::name()` from kind and id, keeping templates simple.
+
+**Why task data instead of sources:** Scope fields are structured metadata about the review target. Storing them as task data means they persist on the task, are readable by `aiki fix` via `ReviewScope::from_data()`, and automatically flow into templates. Sources (`task:`, `file:`, `prompt:`) remain purely for lineage/provenance.
 
 ### Unified Review Template with Composable Subtasks
 
-The `aiki/review` template uses **composable task templates** (via `{% subtask %}`) to delegate to specialized review templates based on target type:
+The `aiki/review` template uses **composable task templates** (via `{% subtask %}`) to delegate to specialized review templates. The `data.scope.type` field directly maps to the template name:
 
 ```markdown
 ---
@@ -131,48 +162,85 @@ version: 2.0.0
 type: review
 ---
 
-# Review: {{data.target_name}}
+# Review: {{data.scope.name}}
 
 Review the target for quality and readiness.
 
+When all subtasks are complete, close this task with a summary:
+
+```bash
+aiki task close {{id}} --summary "Review complete (n issues found)"
+```
+
 # Subtasks
 
-## Understand what you're reviewing
-Identify the target type and review approach.
+{% subtask aiki/review/{{data.scope.type}} %}
 
-{% subtask aiki/review/spec if data.file_type == "spec" and data.review_mode == "document" %}
-{% subtask aiki/review/implementation if data.file_type == "spec" and data.review_mode == "implementation" %}
-{% subtask aiki/review/code if data.target_type == "task" %}
-{% subtask aiki/review/session if data.target_type == "session" %}
+## Report findings
 
-## Provide feedback
-Leave comments on issues found using `aiki task comment`.
+Review the findings from the specialized review subtask above. For each issue found, add a comment to this parent task ({{parent.id}}) using:
+
+```bash
+aiki task comment {{parent.id}} "<description of issue>"
+```
+
+Once all findings are recorded as comments on {{parent.id}}, close this review task with a summary:
+
+```bash
+aiki task close {{id}} --summary "Review complete (n issues found)"
+```
 ```
 
 **How it works:**
-- The unified template conditionally includes specialized review templates
+- `data.scope.type` is set based on what you're reviewing (task, spec, implementation, session)
+- Template interpolation resolves `aiki/review/{{data.scope.type}}` to the appropriate specialized template
 - Each specialized template brings its own subtasks with domain-specific evaluation criteria
-- Templates inherit variables from parent context (`data.*`, `source.*`, etc.)
+- Templates inherit data variables from parent context (`data.scope.*`, `source.*`, etc.)
 - Agent sees a nested task tree with appropriate review steps for the target type
+- Final "Report findings" subtask translates findings into comments on the parent review task for `aiki fix` to consume
 
-**Specialized review templates:**
+**Specialized review templates (mapped from data.scope.type):**
 
-1. **`aiki/review/spec`** - Review spec documents for completeness, clarity, implementability
-2. **`aiki/review/implementation`** - Review current codebase implementation against a spec
-3. **`aiki/review/code`** - Review code changes from a task (existing behavior)
-4. **`aiki/review/session`** - Review all closed tasks in a session (existing behavior)
+1. **`aiki/review/task`** - Review code changes from a task
+2. **`aiki/review/spec`** - Review spec documents for completeness, clarity, implementability
+3. **`aiki/review/implementation`** - Review current codebase implementation against a spec
+4. **`aiki/review/session`** - Review all closed tasks in a session
 
 Each specialized template is a complete template with its own parent name and subtasks, which get composed into the parent review task tree.
+
+### Contract Between Wrapper and Specialized Templates
+
+**Wrapper template responsibilities:**
+- Set up review context (`data.scope.*` fields on the review task)
+- Delegate to specialized template via `{% subtask aiki/review/{{data.scope.type}} %}`
+- Collect findings from specialized review subtask
+- Record findings as comments on the parent review task
+- Close review with `--summary "Review complete (n issues found)"`
+
+**Specialized template responsibilities:**
+- Perform domain-specific review (code, spec, implementation, session)
+- Identify issues during review subtasks
+- Specialized templates should NOT directly comment on the parent - they work within their subtask scope
+- Findings are collected by the wrapper's "Report findings" subtask
+
+**Contract for `aiki fix`:**
+- Review task is closed with `--summary` describing the overall result (e.g., "Review complete (3 issues found)")
+- Each issue is a comment on the review task (added during review, before closing)
+- `aiki fix` reads comments from closed review task and creates fix tasks
+- Comment text becomes fix task description
+- The review task's `summary` field provides a quick overview; individual comments provide the actionable detail
+
+This separation allows specialized templates to focus on domain-specific review logic without knowing about the fix workflow.
 
 ### How Composable Templates Work for Reviews
 
 **Subtask Resolution:**
 
-When the template engine encounters `{% subtask aiki/review/spec if data.file_type == "spec" %}`:
+When the template engine encounters `{% subtask aiki/review/{{data.scope.type}} %}`:
 
-1. Evaluate the condition (`if data.file_type == "spec"`)
-2. If true, load the referenced template (`aiki/review/spec`)
-3. Child template inherits parent's full variable context (`data.*`, `source.*`, etc.)
+1. Interpolate `{{data.scope.type}}` to get the template name (e.g., `data.scope.type: spec` → `aiki/review/spec`)
+2. Load the referenced template
+3. Child template inherits parent's full variable context (`data.scope.*`, `source.*`, etc.)
 4. Resolve the child template's parent name (becomes the composed subtask name)
 5. Create the composed subtask in the task tree
 6. Recursively create the child template's subtasks as sub-subtasks
@@ -196,13 +264,13 @@ Child templates inherit all variables from the parent review template:
 
 | Variable | Available in child template |
 |----------|----------------------------|
-| `data.path` | Path to file being reviewed |
-| `data.file_type` | Type of file (e.g., "spec") |
-| `data.review_mode` | "document" or "implementation" |
-| `data.target_name` | Display name of review target |
+| `data.scope.type` | Type of review (task, spec, implementation, session) |
+| `data.scope.id` | Path to file being reviewed (or task ID) |
+| `data.scope.name` | Display name of review target |
+| `data.scope.task_ids` | Task IDs (for session reviews) |
 | `parent.*` | Points to composed subtask (not top-level review) |
 
-This allows specialized templates to reference context like `{{data.path}}` in their instructions without re-passing variables.
+This allows specialized templates to reference context like `{{data.scope.id}}` in their instructions without re-passing variables.
 
 **Benefits:**
 - **Modularity**: Each review type is a separate, reusable template
@@ -277,10 +345,10 @@ When `--implementation` is used, the agent explores the current codebase:
 
 ### Template Behavior
 
-The review template adapts based on `data.review_mode`:
+The review command sets `data.scope.type` based on the target and flags:
 
-- `review_mode: document` (default) → Review the spec document for completeness, clarity, implementability
-- `review_mode: implementation` (with `--implementation`) → Review the current codebase against the spec for coverage, quality, alignment
+- No flag (default) → `data.scope.type: spec` → uses `aiki/review/spec` template
+- With `--implementation` → `data.scope.type: implementation` → uses `aiki/review/implementation` template
 
 ### Use Cases
 
@@ -343,20 +411,29 @@ aiki review ops/now/feature.md → close review Y → fix Y → new standalone f
 - Agent handles fixes independently
 
 **Examples:**
-- `aiki review ops/now/plan.md` → `aiki fix <review-id>` → new standalone task
-- `aiki review <task-id>` → `aiki fix <review-id>` → subtask on original (handled by `fix-original-task.md`)
+- `aiki review ops/now/plan.md` → `aiki fix xqrmnpst` → new standalone task
+- `aiki review mvslrsp` → `aiki fix ytnzwklm` → subtask on original (handled by `fix-original-task.md`)
 
-### Handle `ReviewTarget::File` in fix.rs
+### Fix Routing via Task Data
 
-The `get_review_target` function and `ReviewTarget::File` variant already exist (added by `fix-original-task.md`). This work adds the handler:
+**Implemented via [ReviewScope Refactor](../done/review-scope-refactor.md).** Fix routing uses `ReviewScope::from_data(&review_task.data)` to deserialize scope from the review task's data fields, then matches on `scope.kind`:
 
 ```rust
-ReviewTarget::File(_) => {
-    // Create standalone fix task (current behavior)
-    // Source the fix task to the review: task:<review-id>
-    // Agent handles fixes independently
+let scope = ReviewScope::from_data(&review_task.data)?;
+match scope.kind {
+    ReviewScopeKind::Task => {
+        // Subtask on original task (existing behavior)
+    }
+    ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
+        // NEW: Standalone fix task (no parent task to attach to)
+    }
+    ReviewScopeKind::Session => {
+        // Session fix (existing behavior)
+    }
 }
 ```
+
+For file targets (`Spec` or `Implementation`), fix creates a standalone task (no parent task to attach to). The fix task's template can read `scope.kind` to know whether to fix the spec or the implementation.
 
 ### Fix Template for File Reviews
 
@@ -368,7 +445,7 @@ File reviews need a different template path since there's no parent task. The te
 ### Pipe Flow
 
 ```bash
-aiki review ops/now/feature.md | aiki fix   # review outputs review ID, fix creates standalone task
+aiki review ops/now/feature.md | aiki fix   # review outputs review ID (e.g., xqrmnpst), fix creates standalone task
 ```
 
 ---
@@ -381,7 +458,7 @@ aiki review ops/now/feature.md | aiki fix   # review outputs review ID, fix crea
 # Review the spec document before building
 aiki review ops/now/feature.md
 # If issues found, fix the spec
-aiki fix <review-id>
+aiki fix xqrmnpst
 ```
 
 ### Post-Implementation Review
@@ -390,7 +467,7 @@ aiki fix <review-id>
 # Review the current implementation against the spec
 aiki review ops/now/feature.md --implementation
 # If issues found, fix the implementation
-aiki fix <review-id>
+aiki fix ytnzwklm
 ```
 
 ### Full Pipeline
@@ -419,7 +496,7 @@ aiki build ops/now/user-authentication.md
 aiki review ops/now/user-authentication.md --implementation
 
 # Fix any issues found
-aiki fix <review-id>
+aiki fix xqrmnpst
 
 # Re-review after fixes
 aiki review ops/now/user-authentication.md --implementation
@@ -429,58 +506,88 @@ aiki review ops/now/user-authentication.md --implementation
 
 ## Output Format
 
-Output format follows current `aiki review` pattern, with added target info:
+Output format follows the simpler-markdown-output.md spec. Since review completes and closes a review task, it's a state-transition command that includes a context footer.
 
-**stdout (piped):**
+**stdout (for piping):**
 ```
 xqrmnpst
 ```
 
-**stderr (file review without --build):**
-```xml
-<aiki_review cmd="review" status="ok">
-  <completed task_id="xqrmnpst" target="ops/now/feature.md" target_type="file" review_mode="document" comments="3">
-    Review completed with 3 comments.
-  </completed>
-</aiki_review>
+**stderr (file review without --implementation):**
+```
+Review: xqrmnpst
+Type: spec
+Scope: ops/now/feature.md
+
+Review complete: 3 issues found
+- Incomplete requirements section
+- Missing acceptance criteria
+- Unclear technical approach
+
+---
+Run `aiki fix xqrmnpst` to remediate.
+
+---
+Tasks (2 ready)
+Run `aiki task` to view - OR - `aiki task start` to begin work.
 ```
 
 **stderr (file review with --implementation):**
-```xml
-<aiki_review cmd="review" status="ok">
-  <completed task_id="xqrmnpst" target="ops/now/feature.md" target_type="file" review_mode="implementation" comments="5">
-    Review completed with 5 comments.
-  </completed>
-</aiki_review>
+```
+Review: ytnzwkl
+Type: implementation
+Scope: ops/now/feature.md
+
+Review complete: 2 issues found
+- Missing error handling in auth module
+- UX doesn't match spec requirements
+
+---
+Run `aiki fix ytnzwkl` to remediate.
+
+---
+Tasks (2 ready)
+Run `aiki task` to view - OR - `aiki task start` to begin work.
 ```
 
 **stderr (task review):**
-```xml
-<aiki_review cmd="review" status="ok">
-  <completed task_id="xqrmnpst" target="task" target_type="task" comments="3">
-    Review completed with 3 comments.
-  </completed>
-</aiki_review>
 ```
+Review: zqrmnps
+Type: task
+Scope: mvslrsp - Fix auth bug
+
+Review complete: 1 issue found
+- Potential SQL injection vulnerability
+
+---
+Run `aiki fix zqrmnps` to remediate.
+
+---
+Tasks (2 ready)
+Run `aiki task` to view - OR - `aiki task start` to begin work.
+```
+
+**Note:** Review completes automatically and closes the review task with `--summary` (see [Task Summary](task-summary.md)), so the output matches the pattern for `task close` (state-transition command with context footer). The task ID is written to stdout for piping to `aiki fix`. The review summary (e.g., "Review complete: 3 issues found") is stored as the task's `summary` field, while individual issues are stored as comments.
 
 ---
 
 ## Implementation Order
 
-### Phase 1: Target Detection (review side)
-- `ReviewTarget` enum with `Task`, `File`, `Session` variants
-- Detection logic in `cli/src/commands/review.rs`
-- Populate `data.*` fields for template
+**Prerequisites (done):**
+- ✅ [ReviewScope Refactor](../done/review-scope-refactor.md) — `ReviewScope` struct, scope as task data, fix routing via `from_data()`
 
-### Phase 2: Implementation Flag Support
-- Add `--implementation` flag to review command
-- When `--implementation` is used with a file target, set `data.review_mode = "implementation"`
-- Agent will explore codebase based on spec content (no task lookup needed)
+**Prerequisites (pending):**
+- ⬜ [Task Summary](task-summary.md) — `--summary` flag on `task close`, templates updated to use `--summary`
 
-### Phase 3: Specialized Review Templates
+### Phase 1: Target Detection
+- Extend `detect_target()` to return `ReviewScope` for file targets (currently only handles task and session)
+- Add `--implementation` flag: when used with a file target, returns `ReviewScopeKind::Implementation`
+- Validate `--implementation` is only used with file targets (error otherwise)
+
+### Phase 2: Specialized Review Templates
 - Create `.aiki/templates/aiki/review/spec.md` for spec document reviews
 - Create `.aiki/templates/aiki/review/implementation.md` for implementation vs spec reviews
-- Create `.aiki/templates/aiki/review/code.md` for task code reviews (extract existing logic)
+- Create `.aiki/templates/aiki/review/task.md` for task code reviews (extract existing logic)
 - Create `.aiki/templates/aiki/review/session.md` for session reviews (extract existing logic)
 
 **Template structure:**
@@ -489,22 +596,24 @@ Each specialized template should be a complete, standalone template with:
 - Frontmatter (`version`, `type: review`)
 - Parent task name (e.g., `# Review Spec Document`)
 - Subtasks specific to that review type
-- Clear instructions that reference inherited variables (`{{data.path}}`, `{{data.task_id}}`, etc.)
+- Clear instructions that reference inherited data variables (`{{data.scope.id}}`, `{{data.scope.name}}`, etc.)
 
-### Phase 3b: Composable Review Template
-- Update `aiki/review` template to use `{% subtask %}` with conditionals
-- Include appropriate specialized template based on `data.file_type` and `data.review_mode`
-- Test with both code and file targets, with and without `--implementation`
+### Phase 2b: Composable Review Template
+- Update `aiki/review` template to use `{% subtask aiki/review/{{data.scope.type}} %}`
+- Single line interpolates to the appropriate specialized template based on `data.scope.type`
+- Test with all target types: task, spec, implementation, session
 
-### Phase 4: Fix for File Targets
-- Handle `ReviewTarget::File` in fix.rs (remove error, add standalone task creation)
+### Phase 3: Fix for File Targets
+- Handle `ReviewScopeKind::Spec` and `ReviewScopeKind::Implementation` in existing fix routing (standalone task creation)
 - Fix template for file-targeted reviews
+- `ReviewScopeKind` naturally distinguishes "fix the spec" (`Spec`) from "fix the code" (`Implementation`)
+- Fix reads review task's `summary` field for quick overview, comments for individual issues
 
-### Phase 5: Integration & Testing
+### Phase 4: Integration & Testing
 - Wire target detection into review command
-- Pass target data to template renderer
-- Update XML output with `target`, `target_type`, and `review_mode` attributes
+- **Output formatting**: Review completion closes the task with `--summary` and emits a state-transition footer on stderr (matching `task close` pattern) with review summary, `aiki fix` hint, and task context block. Review task ID written to stdout for piping. See Output Format section above.
 - Tests for detection, template rendering, implementation flag, and fix flow
+- Verify review templates use `--summary` (not `--comment`) for closing
 
 ---
 
@@ -525,7 +634,7 @@ Each specialized template should be a complete, standalone template with:
 
 - **Review targets multiple files:** Fix task covers all files from the review.
 - **File no longer exists at fix time:** Agent should note this and skip or adapt.
-- **Mixed sources (task + file):** `task:` takes priority per source resolution in `fix-original-task.md`.
+- **Missing scope data:** If a review task has no `data.scope.type` (e.g., created before the ReviewScope refactor), `ReviewScope::from_data()` returns an error: "Missing scope.type in review task data".
 
 ---
 

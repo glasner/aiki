@@ -18,14 +18,14 @@ This creates and starts a task in one atomic command (quick-start).
 # Reading the codebase, writing the plan file...
 # Oh, I should track this
 aiki task start "Already done task"
-aiki task close <id> --comment "..."  # Immediately closing - defeats the purpose!
+aiki task close <id> --summary "..."  # Immediately closing - defeats the purpose!
 ```
 
 ### ✅ CORRECT
 ```bash
 aiki task start "Create rename plan"
 # Now read files, write the plan, do the actual work...
-aiki task close <id> --comment "Created plan at ops/now/rename.md"
+aiki task close <id> --summary "Created plan at ops/now/rename.md"
 ```
 
 **Leave progress comments during long tasks:**
@@ -35,7 +35,7 @@ aiki task comment <task-id> "Completed phase 1, now working on phase 2"
 
 **When closing tasks, summarize your work:**
 ```bash
-aiki task close <task-id> --comment "What you did"
+aiki task close <task-id> --summary "What you did"
 ```
 
 ---
@@ -55,7 +55,7 @@ aiki task close <task-id> --comment "What you did"
 aiki task start "Task description"
 
 # 2) Close it when done (with comment describing your work)
-aiki task close <task-id> --comment "What I did to fix this"
+aiki task close <task-id> --summary "What I did to fix this"
 ```
 
 Alternative (two-step):
@@ -77,7 +77,7 @@ aiki task start <task-id>
 # ALWAYS do this first, before reading/analyzing/implementing:
 aiki task start "Review assign-tasks.md design"
 # ... now do the work ...
-aiki task close <task-id> --comment "Reviewed, found 3 issues: ..."
+aiki task close <task-id> --summary "Reviewed, found 3 issues: ..."
 ```
 
 ### When to Use Tasks
@@ -100,7 +100,7 @@ aiki task comment <task-id> "Implemented password hashing"
 aiki task comment <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
-aiki task close <task-id> --comment "Completed: authentication with JWT tokens, password hashing, and session management"
+aiki task close <task-id> --summary "Completed: authentication with JWT tokens, password hashing, and session management"
 ```
 
 **Benefits:**
@@ -136,10 +136,10 @@ aiki task comment <task-id> "Progress update: ..."
 aiki task show <task-id>
 
 # Close with comment (preferred - atomic operation)
-aiki task close <task-id> --comment "Fixed by updating X to do Y"
+aiki task close <task-id> --summary "Fixed by updating X to do Y"
 
 # Close multiple tasks
-aiki task close <id1> <id2> <id3> --comment "All done"
+aiki task close <id1> <id2> <id3> --summary "All done"
 ```
 
 ### Parent + Subtasks (Example)
@@ -159,7 +159,7 @@ aiki task start <parent-id>
 # Work through subtasks, closing each with a comment
 aiki task start <parent-id>.1
 # ... do the work ...
-aiki task close <parent-id>.1 --comment "Fixed by ..."
+aiki task close <parent-id>.1 --summary "Fixed by ..."
 ```
 
 ### Parent Task Behavior
@@ -221,7 +221,7 @@ Commands return XML showing current state:
 1. Run `aiki task show <id>` to see what the task is about
 2. If the user wants work done, run `aiki task start <id>` (if not already started)
 3. Do the work described in the task
-4. Close with `aiki task close <id> --comment "What you did"`
+4. Close with `aiki task close <id> --summary "What you did"`
 
 **Subtask IDs:** Append a dot and number to parent ID: `<parent-id>.1`, `<parent-id>.2`
 
@@ -230,7 +230,7 @@ Commands return XML showing current state:
 1. **Start before working** - Run `aiki task start` before implementation
 2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
 3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
-4. **Close with comment** - Use `aiki task close --comment` to document your work
+4. **Close with summary** - Use `aiki task close --summary` to document your work
 5. **Close immediately** - Don't leave tasks open after finishing
 6. **Report what you did** - Include completed tasks when replying to user
 
@@ -270,7 +270,7 @@ Example:
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
 - Forgetting to `start` a task before you begin work
-- Closing tasks without `--comment` to describe what you did
+- Closing tasks without `--summary` to describe what you did
 - Leaving tasks open after finishing
 - Creating long tasks without subtasks for multi-step work
 - Not updating progress with comments during multi-step work

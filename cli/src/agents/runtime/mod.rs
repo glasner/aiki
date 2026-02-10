@@ -206,7 +206,7 @@ SCOPE: ONLY work on task `{id}` and its subtasks. Do NOT start, pick up, or work
 WORKFLOW:
 1. Run `aiki task start {id}` to begin
 2. Run `aiki task show {id}` to read the task details and instructions
-3. Complete each subtask's work, then close it: `aiki task close <id> --comment "what I did"`
+3. Complete each subtask's work, then close it: `aiki task close <id> --summary "what I did"`
 4. Closing a subtask auto-starts the next one — read the <started> block in the close output for your next task and its instructions
 5. When ALL subtasks are closed, the parent task auto-starts for you to do a final review
 

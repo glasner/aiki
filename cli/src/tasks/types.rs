@@ -145,6 +145,8 @@ pub enum TaskEvent {
     Closed {
         task_ids: Vec<String>,
         outcome: TaskOutcome,
+        /// Summary of what was accomplished (replaces closing comment pattern)
+        summary: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task was reopened
@@ -214,8 +216,23 @@ pub struct Task {
     pub stopped_reason: Option<String>,
     /// Closure outcome (if closed)
     pub closed_outcome: Option<TaskOutcome>,
+    /// Summary of what was accomplished when task was closed
+    pub summary: Option<String>,
     /// Comments on this task
     pub comments: Vec<TaskComment>,
+}
+
+impl Task {
+    /// Returns the effective summary for display purposes.
+    ///
+    /// Prefers `summary` field (set by `--summary` on close), but falls back
+    /// to the last comment for backward compatibility with tasks closed before
+    /// the summary field existed.
+    pub fn effective_summary(&self) -> Option<&str> {
+        self.summary
+            .as_deref()
+            .or_else(|| self.comments.last().map(|c| c.text.as_str()))
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +274,63 @@ mod tests {
     fn test_outcome_display() {
         assert_eq!(TaskOutcome::Done.to_string(), "done");
         assert_eq!(TaskOutcome::WontDo.to_string(), "wont_do");
+    }
+
+    fn make_task_for_summary() -> Task {
+        Task {
+            id: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
+            name: "Test".to_string(),
+            task_type: None,
+            status: TaskStatus::Closed,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            comments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_effective_summary_prefers_summary_field() {
+        let mut task = make_task_for_summary();
+        task.summary = Some("The summary".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "A comment".to_string(),
+            timestamp: chrono::Utc::now(),
+        });
+        assert_eq!(task.effective_summary(), Some("The summary"));
+    }
+
+    #[test]
+    fn test_effective_summary_falls_back_to_last_comment() {
+        let mut task = make_task_for_summary();
+        task.comments.push(TaskComment {
+            id: None,
+            text: "First comment".to_string(),
+            timestamp: chrono::Utc::now(),
+        });
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Last comment".to_string(),
+            timestamp: chrono::Utc::now(),
+        });
+        assert_eq!(task.effective_summary(), Some("Last comment"));
+    }
+
+    #[test]
+    fn test_effective_summary_none_when_empty() {
+        let task = make_task_for_summary();
+        assert_eq!(task.effective_summary(), None);
     }
 }

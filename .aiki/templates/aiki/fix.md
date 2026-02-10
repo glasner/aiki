@@ -23,16 +23,16 @@ Review task `{{source.id}}` found issues in the original task `{{parent.id}}`.
    ```bash
    aiki task start {{id}}.1
    # ... do the work to fix the issue ...
-   aiki task close {{id}}.1 --comment "Fixed by doing X"
+   aiki task close {{id}}.1 --summary "Fixed by doing X"
    ```
    - **You MUST start each subtask before working on it**
-   - Close with `--comment` when fixed
-   - Close with `--wont-do --comment` if out of scope or adds too much complexity
+   - Close with `--summary` when fixed
+   - Close with `--wont-do --summary` if out of scope or adds too much complexity
    - Continue until all nested subtasks are completed
 
 4. Return to this fix subtask and close it:
    ```bash
-   aiki task close {{id}} --comment <summary of fix>
+   aiki task close {{id}} --summary "<summary of fix>"
    ```
 
 Important: Do NOT return without closing all nested subtasks and this fix subtask.

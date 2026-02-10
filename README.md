@@ -181,7 +181,7 @@ aiki task start "Implement login validation" --source prompt
 aiki task comment <id> "Added email format check"
 
 # Close when done
-aiki task close <id> --comment "Validation complete"
+aiki task close <id> --summary "Validation complete"
 ```
 
 **Task features:**

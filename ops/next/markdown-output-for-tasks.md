@@ -163,7 +163,7 @@ aiki task comment abc123 "Your progress update"
 
 To close this task:
 ```bash
-aiki task close abc123 --comment "What you accomplished"
+aiki task close abc123 --summary "What you accomplished"
 ```
 ```
 

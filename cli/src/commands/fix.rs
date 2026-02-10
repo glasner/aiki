@@ -15,7 +15,7 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
-use crate::tasks::xml::{escape_xml, XmlBuilder};
+use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress,
     get_ready_queue_for_scope_set, materialize_tasks,
@@ -83,34 +83,7 @@ fn read_task_id_from_stdin() -> Result<String> {
     Ok(extract_task_id(&input))
 }
 
-/// What was reviewed — determines fix behavior
-enum ReviewTarget {
-    /// Review targeted a task (source: task:<id>)
-    Task(String),
-    /// Review targeted a file (future: ops/next/review-and-fix-files.md)
-    #[allow(dead_code)]
-    File(String),
-    /// Could not determine review target
-    Unknown,
-}
-
-/// Determine what was reviewed by inspecting the review task's sources.
-///
-/// Priority: task > file (only task is supported currently)
-fn get_review_target(review_task: &Task) -> ReviewTarget {
-    // Priority: task > file
-    for source in &review_task.sources {
-        if let Some(task_id) = source.strip_prefix("task:") {
-            return ReviewTarget::Task(task_id.to_string());
-        }
-    }
-    for source in &review_task.sources {
-        if let Some(path) = source.strip_prefix("file:") {
-            return ReviewTarget::File(path.to_string());
-        }
-    }
-    ReviewTarget::Unknown
-}
+use super::review::{ReviewScope, ReviewScopeKind};
 
 /// Core fix implementation
 fn run_fix(
@@ -136,8 +109,7 @@ fn run_fix(
     let tasks = materialize_tasks_with_ids(&events_with_ids);
 
     // Find the review task (the task we're creating followups for)
-    let review_task = find_task(&tasks, task_id)
-        .ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+    let review_task = find_task(&tasks, task_id)?;
 
     // Validate that the input task is actually a review task
     // Check task_type first, then fall back to template name for backward compatibility
@@ -160,14 +132,13 @@ fn run_fix(
         return Ok(());
     }
 
-    // Determine what was reviewed and branch on target type
-    let review_target = get_review_target(review_task);
+    // Determine what was reviewed from typed scope data
+    let scope = ReviewScope::from_data(&review_task.data)?;
 
-    let followup_id = match review_target {
-        ReviewTarget::Task(original_task_id) => {
+    let followup_id = match scope.kind {
+        ReviewScopeKind::Task => {
             // Fix targets a task — add fix subtask to the original task
-            let original_task = find_task(&tasks, &original_task_id)
-                .ok_or_else(|| AikiError::TaskNotFound(original_task_id.clone()))?;
+            let original_task = find_task(&tasks, &scope.id)?;
 
             // Determine assignee for followup task
             let assignee = determine_followup_assignee(agent_type, Some(original_task));
@@ -182,14 +153,14 @@ fn run_fix(
                 template,
             )?
         }
-        ReviewTarget::File(_) => {
+        ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
             return Err(AikiError::InvalidArgument(
                 "Fixing file-targeted reviews is not yet supported. Only task-targeted reviews can be fixed.".to_string(),
             ));
         }
-        ReviewTarget::Unknown => {
+        ReviewScopeKind::Session => {
             return Err(AikiError::InvalidArgument(
-                "Could not determine what was reviewed. The review task has no task: or file: source.".to_string(),
+                "Fixing session reviews is not yet supported. Only task-targeted reviews can be fixed.".to_string(),
             ));
         }
     };
@@ -236,11 +207,11 @@ fn run_fix(
 /// Output approved message when no issues found
 fn output_approved(task_id: &str) -> Result<()> {
     let content = format!(
-        "  <approved task_id=\"{}\">\n    Review approved - no issues found.\n  </approved>",
-        escape_xml(task_id)
+        "## Approved\n- **Task:** {}\n- Review approved - no issues found.\n",
+        task_id
     );
-    let xml = XmlBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("fix").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -253,16 +224,12 @@ fn output_followup_started(
     ready: &[&Task],
 ) -> Result<()> {
     let issue_count = comments.len().saturating_sub(1);
-    let mut content = String::new();
-    content.push_str(&format!(
-        "  <followup task_id=\"{}\" issues_found=\"{}\" status=\"started\">\n",
-        escape_xml(followup_id),
+    let mut content = format!(
+        "## Fix Followup\n- **Task:** {}\n- **Issues found:** {}\n- **Status:** started\n\nCreated fix followup subtask under original task ({} issue(s)).\n\n",
+        followup_id,
+        issue_count,
         issue_count
-    ));
-    content.push_str(&format!(
-        "    Created fix followup subtask under original task ({} issue(s)).\n\n",
-        issue_count
-    ));
+    );
 
     for (i, comment) in comments.iter().enumerate() {
         // Truncate long comments for display
@@ -271,17 +238,11 @@ fn output_followup_started(
         } else {
             comment.text.clone()
         };
-        content.push_str(&format!(
-            "    {}. {}\n",
-            i + 1,
-            escape_xml(&display_text)
-        ));
+        content.push_str(&format!("{}. {}\n", i + 1, &display_text));
     }
 
-    content.push_str("  </followup>");
-
-    let xml = XmlBuilder::new("fix").build(&content, in_progress, ready);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("fix").build(&content, in_progress, ready);
+    eprintln!("{}", md);
 
     // Output task ID to stdout if piped
     if !std::io::stdout().is_terminal() {
@@ -295,12 +256,12 @@ fn output_followup_started(
 fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
     let issue_count = comments.len().saturating_sub(1);
     let content = format!(
-        "  <started task_id=\"{}\" issues_found=\"{}\">\n    Fix followup subtask started in background.\n  </started>",
-        escape_xml(followup_id),
+        "## Fix Started\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask started in background.\n",
+        followup_id,
         issue_count
     );
-    let xml = XmlBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("fix").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -308,12 +269,12 @@ fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<
 fn output_followup_completed(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
     let issue_count = comments.len().saturating_sub(1);
     let content = format!(
-        "  <completed task_id=\"{}\" issues_found=\"{}\">\n    Fix followup subtask completed.\n  </completed>",
-        escape_xml(followup_id),
+        "## Fix Completed\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask completed.\n",
+        followup_id,
         issue_count
     );
-    let xml = XmlBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("fix").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -437,6 +398,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments: Vec::new(),
         };
 
@@ -466,6 +428,7 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments: Vec::new(),
         };
 
@@ -481,7 +444,7 @@ mod tests {
         assert_eq!(result, Some("claude-code".to_string()));
     }
 
-    fn make_task_with_sources(id: &str, sources: Vec<&str>) -> Task {
+    fn make_test_task(id: &str) -> Task {
         Task {
             id: id.to_string(),
             name: format!("Task {}", id),
@@ -489,7 +452,7 @@ mod tests {
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
             assignee: None,
-            sources: sources.into_iter().map(|s| s.to_string()).collect(),
+            sources: Vec::new(),
             template: None,
             working_copy: None,
             instructions: None,
@@ -500,67 +463,47 @@ mod tests {
             last_session_id: None,
             stopped_reason: None,
             closed_outcome: None,
+            summary: None,
             comments: Vec::new(),
         }
     }
 
     #[test]
-    fn test_get_review_target_task_source() {
-        let review = make_task_with_sources("review1", vec!["task:original123"]);
-        match get_review_target(&review) {
-            ReviewTarget::Task(id) => assert_eq!(id, "original123"),
-            _ => panic!("Expected ReviewTarget::Task"),
-        }
+    fn test_review_scope_from_data_task() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "original123".to_string(),
+            task_ids: vec![],
+        };
+        let data = scope.to_data();
+        let restored = ReviewScope::from_data(&data).unwrap();
+        assert_eq!(restored.kind, ReviewScopeKind::Task);
+        assert_eq!(restored.id, "original123");
     }
 
     #[test]
-    fn test_get_review_target_task_priority_over_file() {
-        // task: should take priority over file:
-        let review = make_task_with_sources("review2", vec!["file:src/main.rs", "task:abc"]);
-        match get_review_target(&review) {
-            ReviewTarget::Task(id) => assert_eq!(id, "abc"),
-            _ => panic!("Expected ReviewTarget::Task"),
-        }
-    }
-
-    #[test]
-    fn test_get_review_target_file_source() {
-        let review = make_task_with_sources("review3", vec!["file:src/lib.rs"]);
-        match get_review_target(&review) {
-            ReviewTarget::File(path) => assert_eq!(path, "src/lib.rs"),
-            _ => panic!("Expected ReviewTarget::File"),
-        }
-    }
-
-    #[test]
-    fn test_get_review_target_unknown() {
-        let review = make_task_with_sources("review4", vec!["prompt:xyz"]);
-        assert!(matches!(get_review_target(&review), ReviewTarget::Unknown));
-    }
-
-    #[test]
-    fn test_get_review_target_no_sources() {
-        let review = make_task_with_sources("review5", vec![]);
-        assert!(matches!(get_review_target(&review), ReviewTarget::Unknown));
+    fn test_review_scope_from_data_missing() {
+        let data = HashMap::new();
+        assert!(ReviewScope::from_data(&data).is_err());
     }
 
     #[test]
     fn test_is_review_task_by_type() {
-        let mut task = make_task_with_sources("t1", vec![]);
+        let mut task = make_test_task("t1");
         task.task_type = Some("review".to_string());
         assert!(is_review_task(&task));
     }
 
     #[test]
     fn test_is_review_task_by_template() {
-        let mut task = make_task_with_sources("t2", vec![]);
+        let mut task = make_test_task("t2");
         task.template = Some("aiki/review@1.0.0".to_string());
         assert!(is_review_task(&task));
     }
 
     #[test]
     fn test_is_review_task_neither() {
-        let task = make_task_with_sources("t3", vec![]);
+        let task = make_test_task("t3");
         assert!(!is_review_task(&task));
     }
 }

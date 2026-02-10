@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::parser::parse_template;
 use super::types::{TaskDefinition, TaskTemplate};
-use super::variables::{substitute, VariableContext};
+use super::variables::{substitute, substitute_with_template_name, VariableContext};
 use crate::tasks::types::TaskComment;
 use regex::Regex;
 
@@ -324,7 +324,12 @@ pub fn create_subtask_entries_from_template(
     } else if let Some(ref raw_content) = template.raw_content {
         if has_inline_loops(raw_content) || has_subtask_refs(raw_content) {
             // Process through conditional/loop engine (returns mixed Static + Composed entries)
-            create_subtask_entries(raw_content, variables, data_source)?
+            create_subtask_entries_with_name(
+                raw_content,
+                variables,
+                data_source,
+                Some(&template.template_id()),
+            )?
         } else {
             // Static subtasks: just substitute variables
             let defs = create_static_subtasks(template, variables)?;
@@ -861,8 +866,35 @@ pub fn create_subtask_entries(
     variables: &VariableContext,
     data_source: Option<Vec<TaskComment>>,
 ) -> Result<Vec<SubtaskEntry>> {
+    create_subtask_entries_with_name(content, variables, data_source, None)
+}
+
+/// Create subtask entries with template name for better error messages
+pub fn create_subtask_entries_with_name(
+    content: &str,
+    variables: &VariableContext,
+    data_source: Option<Vec<TaskComment>>,
+    template_name: Option<&str>,
+) -> Result<Vec<SubtaskEntry>> {
     // First, process conditionals (which emits loop markers and subtask ref markers)
-    let ctx = super::conditionals::EvalContext::new();
+    // Populate EvalContext from VariableContext so that {{data.*}} interpolation
+    // works inside {% subtask %} template names (e.g., {% subtask aiki/review/{{data.scope.kind}} %})
+    let mut ctx = super::conditionals::EvalContext::new();
+    for (key, value) in &variables.data {
+        ctx.set(format!("data.{}", key), value);
+    }
+    for (key, value) in &variables.builtins {
+        ctx.set(key.clone(), value);
+    }
+    if let Some(ref source) = variables.source {
+        ctx.set("source", source);
+        for (key, value) in &variables.source_data {
+            ctx.set(format!("source.{}", key), value);
+        }
+    }
+    for (key, value) in &variables.parent {
+        ctx.set(format!("parent.{}", key), value);
+    }
     let processed = super::conditionals::process_conditionals(content, &ctx).map_err(|e| {
         AikiError::TemplateProcessingFailed {
             details: e.to_string(),
@@ -890,7 +922,7 @@ pub fn create_subtask_entries(
     }
 
     // Parse subtask entries (static ## headings and composed <!-- AIKI_SUBTASK_REF --> markers)
-    parse_expanded_subtasks(&subtasks_section, variables)
+    parse_expanded_subtasks(&subtasks_section, variables, template_name)
 }
 
 /// Legacy wrapper: create subtasks from inline loops (returns only static TaskDefinitions)
@@ -972,6 +1004,7 @@ fn extract_subtasks_section(content: &str) -> String {
 fn parse_expanded_subtasks(
     content: &str,
     variables: &VariableContext,
+    template_name: Option<&str>,
 ) -> Result<Vec<SubtaskEntry>> {
     let subtask_ref_re =
         Regex::new(r"^<!-- AIKI_SUBTASK_REF:([^:]+):(\d+) -->$").expect("Invalid regex");
@@ -1013,8 +1046,8 @@ fn parse_expanded_subtasks(
             let instructions = body_lines.join("\n").trim().to_string();
 
             // Substitute variables in name and instructions
-            let name = substitute(&name, variables)?;
-            let instructions = substitute(&instructions, variables)?;
+            let name = substitute_with_template_name(&name, variables, template_name)?;
+            let instructions = substitute_with_template_name(&instructions, variables, template_name)?;
 
             entries.push(SubtaskEntry::Static(TaskDefinition {
                 name,
@@ -1051,8 +1084,8 @@ pub fn has_subtask_refs(content: &str) -> bool {
 ///
 /// # Arguments
 /// * `cwd` - The current working directory
-/// * `scope_name` - Human-readable scope description (e.g., "task abc123" or "current session")
-/// * `scope_id` - The scope identifier (task ID or "session")
+/// * `scope_data` - Data fields from `ReviewScope::to_data()` (scope.kind, scope.id, scope.name)
+/// * `sources` - Source references for lineage (e.g., `["task:abc123"]`)
 /// * `assignee` - Optional assignee for the review task
 /// * `template_name` - Template name (e.g., "aiki/review")
 ///
@@ -1060,28 +1093,18 @@ pub fn has_subtask_refs(content: &str) -> bool {
 /// The task ID of the created review parent task
 pub fn create_review_task_from_template(
     cwd: &Path,
-    scope_name: &str,
-    scope_id: &str,
+    scope_data: &HashMap<String, String>,
+    sources: &[String],
     assignee: &Option<String>,
     template_name: &str,
 ) -> Result<String> {
     use crate::commands::task::{create_from_template, TemplateTaskParams};
 
-    let mut builtins = HashMap::new();
-    builtins.insert("scope".to_string(), scope_id.to_string());
-    builtins.insert("scope.name".to_string(), scope_name.to_string());
-    builtins.insert("scope.id".to_string(), scope_id.to_string());
-
-    let mut sources = vec![];
-    if scope_id != "session" {
-        sources.push(format!("task:{}", scope_id));
-    }
-
     let params = TemplateTaskParams {
         template_name: template_name.to_string(),
-        sources,
+        data: scope_data.clone(),
+        sources: sources.to_vec(),
         assignee: assignee.clone(),
-        builtins,
         ..Default::default()
     };
 
@@ -1176,9 +1199,9 @@ description: General code review
 type: review
 ---
 
-# Review: {{data.scope}}
+# Review: {{data.scope.name}}
 
-Review the changes.
+Review the changes for `{{data.scope.id}}`.
 
 # Subtasks
 
@@ -1237,7 +1260,7 @@ Find opportunities.
             Some("General code review".to_string())
         );
         assert_eq!(template.defaults.task_type, Some("review".to_string()));
-        assert_eq!(template.parent.name, "Review: {{data.scope}}");
+        assert_eq!(template.parent.name, "Review: {{data.scope.name}}");
         assert_eq!(template.subtasks.len(), 1);
     }
 
@@ -1333,12 +1356,15 @@ No frontmatter here.
         let template = load_template("aiki/review", temp_dir.path()).unwrap();
 
         let mut variables = VariableContext::new();
-        variables.set_data("scope", "@");
+        variables.set_data("scope.name", "Task (abc123)");
+        variables.set_data("scope.id", "abc123");
+        variables.set_data("scope.kind", "task");
 
         let (parent, subtasks) = create_tasks_from_template(&template, &variables, None).unwrap();
 
-        assert_eq!(parent.name, "Review: @");
-        assert!(parent.instructions.contains("Review the changes."));
+        assert_eq!(parent.name, "Review: Task (abc123)");
+        assert!(parent.instructions.contains("Review the changes"));
+        assert!(parent.instructions.contains("abc123"));
         assert_eq!(subtasks.len(), 1);
         assert_eq!(subtasks[0].name, "Digest");
         assert!(subtasks[0].instructions.contains("Examine code."));
@@ -1351,7 +1377,7 @@ No frontmatter here.
 
         // Create a template with dynamic subtasks
         let mut template = TaskTemplate::new("test/dynamic");
-        template.parent.name = "Review: {{data.scope}}".to_string();
+        template.parent.name = "Review: {{data.scope.name}}".to_string();
         template.parent.instructions = "Review all issues.".to_string();
         template.subtasks_source = Some("source.comments".to_string());
         template.subtask_template = Some(
@@ -1360,7 +1386,9 @@ No frontmatter here.
         );
 
         let mut variables = VariableContext::new();
-        variables.set_data("scope", "src/auth.rs");
+        variables.set_data("scope.name", "Spec (auth.rs)");
+        variables.set_data("scope.id", "src/auth.rs");
+        variables.set_data("scope.kind", "spec");
 
         // Create comments directly
         let comments = vec![
@@ -1379,7 +1407,7 @@ No frontmatter here.
         let (parent, subtasks) =
             create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
 
-        assert_eq!(parent.name, "Review: src/auth.rs");
+        assert_eq!(parent.name, "Review: Spec (auth.rs)");
         assert_eq!(subtasks.len(), 2);
 
         // Check first subtask
@@ -1816,14 +1844,14 @@ Fix the issues.
 
         // Create a template with inline loops
         let mut template = TaskTemplate::new("test/inline");
-        template.parent.name = "Fix: {{data.scope}}".to_string();
+        template.parent.name = "Fix: {{data.scope.name}}".to_string();
         template.parent.instructions = "Fix all issues.".to_string();
         template.raw_content = Some(
             r#"---
 version: 1.0.0
 ---
 
-# Fix: {{data.scope}}
+# Fix: {{data.scope.name}}
 
 Fix all issues.
 
@@ -1837,7 +1865,9 @@ Fix all issues.
         );
 
         let mut variables = VariableContext::new();
-        variables.set_data("scope", "src/");
+        variables.set_data("scope.name", "Spec (lib.rs)");
+        variables.set_data("scope.id", "src/lib.rs");
+        variables.set_data("scope.kind", "spec");
 
         let comments = vec![TaskComment {
             id: None,
@@ -1848,7 +1878,7 @@ Fix all issues.
         let (parent, subtasks) =
             create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
 
-        assert_eq!(parent.name, "Fix: src/");
+        assert_eq!(parent.name, "Fix: Spec (lib.rs)");
         assert_eq!(subtasks.len(), 1);
         assert_eq!(subtasks[0].name, "Fix: Error here");
     }
@@ -2044,16 +2074,16 @@ Review target.
         let mut variables = VariableContext::new();
         variables.set_data("file_type", "spec");
 
-        // Note: process_conditionals uses EvalContext, not VariableContext
-        // The condition evaluation happens during process_conditionals with EvalContext
-        // For this test, we need to set the variable in the right context
         let entries = create_subtask_entries(content, &variables, None).unwrap();
 
-        // The condition is evaluated during process_conditionals with an empty EvalContext,
-        // so the condition will be false (data.file_type not set in EvalContext)
-        // This is expected - actual condition evaluation happens in render_with_loops
-        // which uses EvalContext, not VariableContext
-        assert!(entries.is_empty());
+        // VariableContext data is now propagated to EvalContext, so the condition evaluates to true
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Composed { template_name, .. } => {
+                assert_eq!(template_name, "aiki/review/spec");
+            }
+            _ => panic!("Expected Composed"),
+        }
     }
 
     #[test]
@@ -2109,7 +2139,7 @@ Instructions.
     fn test_parse_expanded_subtasks_with_refs() {
         let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/plan:10 -->\n\n## Run\nExecute.";
         let variables = VariableContext::new();
-        let entries = parse_expanded_subtasks(content, &variables).unwrap();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
         assert_eq!(entries.len(), 3);
         match &entries[0] {

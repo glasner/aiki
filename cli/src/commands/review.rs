@@ -8,6 +8,7 @@
 //! - Shows review task details (show subcommand)
 
 use clap::Subcommand;
+use std::collections::HashMap;
 use std::env;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -17,11 +18,124 @@ use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
-use crate::tasks::xml::{escape_xml, XmlBuilder};
+use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
     materialize_tasks, read_events, reassign_task, start_task_core, Task, TaskStatus,
 };
+
+/// What kind of review scope this is
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewScopeKind {
+    Task,
+    Spec,
+    Implementation,
+    Session,
+}
+
+impl ReviewScopeKind {
+    /// Convert to string representation for serialization
+    pub fn as_str(&self) -> &str {
+        match self {
+            ReviewScopeKind::Task => "task",
+            ReviewScopeKind::Spec => "spec",
+            ReviewScopeKind::Implementation => "implementation",
+            ReviewScopeKind::Session => "session",
+        }
+    }
+
+    /// Parse from string representation
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "task" => Ok(ReviewScopeKind::Task),
+            "spec" => Ok(ReviewScopeKind::Spec),
+            "implementation" => Ok(ReviewScopeKind::Implementation),
+            "session" => Ok(ReviewScopeKind::Session),
+            _ => Err(AikiError::UnknownReviewScope(s.to_string())),
+        }
+    }
+}
+
+/// What is being reviewed and how
+#[derive(Debug, Clone)]
+pub struct ReviewScope {
+    pub kind: ReviewScopeKind,
+    /// Task ID or file path depending on kind
+    pub id: String,
+    /// Task IDs for session reviews (empty otherwise)
+    pub task_ids: Vec<String>,
+}
+
+impl ReviewScope {
+    /// Get display name (computed from kind and id)
+    pub fn name(&self) -> String {
+        match self.kind {
+            ReviewScopeKind::Task => format!("Task ({})", &self.id),
+            ReviewScopeKind::Spec => {
+                let filename = Path::new(&self.id)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&self.id);
+                format!("Spec ({})", filename)
+            }
+            ReviewScopeKind::Implementation => {
+                let filename = Path::new(&self.id)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&self.id);
+                format!("Implementation ({})", filename)
+            }
+            ReviewScopeKind::Session => "Session".to_string(),
+        }
+    }
+
+    /// Serialize to task data HashMap for persistence
+    pub fn to_data(&self) -> HashMap<String, String> {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".into(), self.kind.as_str().into());
+        data.insert("scope.id".into(), self.id.clone());
+        data.insert("scope.name".into(), self.name());
+        if !self.task_ids.is_empty() {
+            data.insert("scope.task_ids".into(), self.task_ids.join(","));
+        }
+        data
+    }
+
+    /// Deserialize from task data HashMap
+    pub fn from_data(data: &HashMap<String, String>) -> Result<Self> {
+        let kind_str = data.get("scope.kind").ok_or_else(|| {
+            AikiError::InvalidArgument("Missing scope.kind in review task data".into())
+        })?;
+        let kind = ReviewScopeKind::from_str(kind_str)?;
+
+        // scope.id is required for non-Session scopes (Task, Spec, Implementation)
+        let id = match kind {
+            ReviewScopeKind::Session => {
+                data.get("scope.id").cloned().unwrap_or_default()
+            }
+            _ => {
+                data.get("scope.id")
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .ok_or_else(|| {
+                        AikiError::InvalidArgument(format!(
+                            "Missing scope.id in review task data (required for {:?} scope kind)",
+                            kind_str
+                        ))
+                    })?
+            }
+        };
+
+        Ok(Self {
+            kind,
+            id,
+            task_ids: data
+                .get("scope.task_ids")
+                .map(|s| s.split(',').map(String::from).collect())
+                .unwrap_or_default(),
+        })
+    }
+}
 
 /// Review subcommands (for list and show only)
 #[derive(Subcommand)]
@@ -107,10 +221,8 @@ pub struct CreateReviewParams {
 pub struct CreateReviewResult {
     /// The created review task ID
     pub review_task_id: String,
-    /// The scope name (task name or session name)
-    pub scope_name: String,
-    /// The scope ID (task ID or "session")
-    pub scope_id: String,
+    /// The review scope (typed, replaces loose scope_name/scope_id)
+    pub scope: ReviewScope,
     /// The assigned reviewer
     pub assignee: Option<String>,
 }
@@ -128,25 +240,26 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     let session = find_active_session(cwd);
 
     // Determine review scope and worker (for reviewer assignment)
-    let (scope_name, scope_id, worker) = match params.task_id {
+    let (scope, worker) = match params.task_id {
         Some(ref id) => {
             // Review specific task - worker is task's assignee
-            let task = find_task(&tasks, id).ok_or_else(|| AikiError::TaskNotFound(id.clone()))?;
-            let worker = task.assignee.as_deref();
-            (task.name.clone(), id.clone(), worker.map(|s| s.to_string()))
+            let task = find_task(&tasks, id)?;
+            let worker = task.assignee.as_deref().map(|s| s.to_string());
+            let scope = ReviewScope {
+                kind: ReviewScopeKind::Task,
+                id: task.id.clone(),
+                task_ids: vec![],
+            };
+            (scope, worker)
         }
         None => {
             // Review all closed tasks in current session - worker is session's agent
-            let (session_id, session_name, session_agent) = match &session {
+            let (session_id, session_agent) = match &session {
                 Some(s) => (
                     Some(s.session_id.clone()),
-                    format!(
-                        "session {}",
-                        &s.external_session_id[..8.min(s.external_session_id.len())]
-                    ),
                     Some(s.agent_type.as_str().to_string()),
                 ),
-                None => (None, "current session".to_string(), None),
+                None => (None, None),
             };
 
             // Filter to closed tasks that were worked on in the current session
@@ -173,7 +286,13 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
                 return Err(AikiError::NothingToReview);
             }
 
-            (session_name, "session".to_string(), session_agent)
+            let task_ids: Vec<String> = closed_tasks.iter().map(|t| t.id.clone()).collect();
+            let scope = ReviewScope {
+                kind: ReviewScopeKind::Session,
+                id: "session".to_string(),
+                task_ids,
+            };
+            (scope, session_agent)
         }
     };
 
@@ -184,13 +303,25 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 
     // Create review task with subtasks from template
     let template = params.template.as_deref().unwrap_or("aiki/review");
-    let review_id =
-        create_review_task_from_template(cwd, &scope_name, &scope_id, &assignee, template)?;
+    let scope_data = scope.to_data();
+
+    // Build sources for lineage (not routing)
+    let sources = match scope.kind {
+        ReviewScopeKind::Task => vec![format!("task:{}", scope.id)],
+        _ => vec![],
+    };
+
+    let review_id = create_review_task_from_template(
+        cwd,
+        &scope_data,
+        &sources,
+        &assignee,
+        template,
+    )?;
 
     Ok(CreateReviewResult {
         review_task_id: review_id,
-        scope_name,
-        scope_id,
+        scope,
         assignee,
     })
 }
@@ -273,21 +404,20 @@ fn run_review(
 
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
-    let content =
-        "  <approved>\n    Nothing to review - no closed tasks in session.\n  </approved>";
-    let xml = XmlBuilder::new("review").build(content, &[], &[]);
-    eprintln!("{}", xml);
+    let content = "## Approved\nNothing to review - no closed tasks in session.\n";
+    let md = MdBuilder::new("review").build(content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output review started message (for --start mode)
 fn output_review_started(review_id: &str, in_progress: &[&Task], ready: &[&Task]) -> Result<()> {
     let content = format!(
-        "  <started task_id=\"{}\">\n    Review task started. You are now reviewing.\n  </started>",
-        escape_xml(review_id)
+        "## Review Started\n- **Task:** {}\n- Review task started. You are now reviewing.\n",
+        review_id
     );
-    let xml = XmlBuilder::new("review").build(&content, in_progress, ready);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("review").build(&content, in_progress, ready);
+    eprintln!("{}", md);
 
     // Output task ID to stdout if piped
     if !std::io::stdout().is_terminal() {
@@ -300,23 +430,22 @@ fn output_review_started(review_id: &str, in_progress: &[&Task], ready: &[&Task]
 /// Output review async message (for --async mode)
 fn output_review_async(review_id: &str) -> Result<()> {
     let content = format!(
-        "  <started task_id=\"{}\">\n    Review started in background.\n  </started>",
-        escape_xml(review_id)
+        "## Review Started\n- **Task:** {}\n- Review started in background.\n",
+        review_id
     );
-    let xml = XmlBuilder::new("review").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("review").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
 /// Output review completed message (for blocking mode)
 fn output_review_completed(review_id: &str) -> Result<()> {
-    // TODO: Get actual comment count from task
     let content = format!(
-        "  <completed task_id=\"{}\">\n    Review completed.\n  </completed>",
-        escape_xml(review_id)
+        "## Review Completed\n- **Task:** {}\n- Review completed.\n",
+        review_id
     );
-    let xml = XmlBuilder::new("review").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("review").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -340,17 +469,17 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
 
     if reviews.is_empty() {
         let content = if all {
-            "  <empty>No review tasks found.</empty>"
+            "No review tasks found.\n"
         } else {
-            "  <empty>No open review tasks. Use --all to see closed reviews.</empty>"
+            "No open review tasks. Use --all to see closed reviews.\n"
         };
-        let xml = XmlBuilder::new("review-list").build(content, &[], &[]);
-        eprintln!("{}", xml);
+        let md = MdBuilder::new("review-list").build(content, &[], &[]);
+        eprintln!("{}", md);
         return Ok(());
     }
 
     // Format review list
-    let mut lines = Vec::new();
+    let mut content = String::from("## Reviews\n| ID | Status | Outcome | Issues | Name |\n|----|--------|---------|--------|------|\n");
     for review in &reviews {
         let status_str = match review.status {
             TaskStatus::Open => "open",
@@ -359,39 +488,26 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
             TaskStatus::Closed => "closed",
         };
 
-        // Get outcome if closed
         let outcome_str = review
             .closed_outcome
             .as_ref()
-            .map(|o| {
-                format!(
-                    " outcome=\"{}\"",
-                    escape_xml(&format!("{:?}", o).to_lowercase())
-                )
-            })
+            .map(|o| format!("{:?}", o).to_lowercase())
             .unwrap_or_default();
 
-        // Count comments with issues
         let issue_count = review.comments.len();
-        let issues_str = if issue_count > 0 {
-            format!(" issues=\"{}\"", issue_count)
-        } else {
-            String::new()
-        };
 
-        lines.push(format!(
-            "  <review id=\"{}\" status=\"{}\"{}{}>\n    {}\n  </review>",
-            escape_xml(&review.id),
+        content.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            &review.id,
             status_str,
             outcome_str,
-            issues_str,
-            escape_xml(&review.name)
+            issue_count,
+            &review.name
         ));
     }
 
-    let content = lines.join("\n");
-    let xml = XmlBuilder::new("review-list").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("review-list").build(&content, &[], &[]);
+    eprintln!("{}", md);
 
     Ok(())
 }
@@ -401,8 +517,7 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     let events = read_events(cwd)?;
     let tasks = materialize_tasks(&events);
 
-    let task =
-        find_task(&tasks, task_id).ok_or_else(|| AikiError::TaskNotFound(task_id.to_string()))?;
+    let task = find_task(&tasks, task_id)?;
 
     // Verify it's a review task
     if task.task_type.as_deref() != Some("review") {
@@ -419,55 +534,42 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         TaskStatus::Closed => "closed",
     };
 
-    // Get outcome if closed
     let outcome_str = task
         .closed_outcome
         .as_ref()
-        .map(|o| {
-            format!(
-                " outcome=\"{}\"",
-                escape_xml(&format!("{:?}", o).to_lowercase())
-            )
-        })
+        .map(|o| format!("{:?}", o).to_lowercase())
         .unwrap_or_default();
 
-    // Get assignee
     let assignee_str = task
         .assignee
         .as_ref()
-        .map(|a| format!(" assignee=\"{}\"", escape_xml(a)))
+        .map(|a| format!("- **Assignee:** {}\n", a))
         .unwrap_or_default();
 
     // Build content
-    let mut content_lines = vec![format!(
-        "  <review id=\"{}\" status=\"{}\"{}{}>\n    <name>{}</name>",
-        escape_xml(&task.id),
-        status_str,
-        outcome_str,
-        assignee_str,
-        escape_xml(&task.name)
-    )];
+    let mut content = format!(
+        "## Review: {}\n- **ID:** {}\n- **Status:** {}\n",
+        &task.name, &task.id, status_str
+    );
+    if !outcome_str.is_empty() {
+        content.push_str(&format!("- **Outcome:** {}\n", outcome_str));
+    }
+    content.push_str(&assignee_str);
 
     // Add sources if any
     if !task.sources.is_empty() {
-        content_lines.push("    <sources>".to_string());
+        content.push_str("\n### Sources\n");
         for source in &task.sources {
-            content_lines.push(format!("      <source>{}</source>", escape_xml(source)));
+            content.push_str(&format!("- {}\n", source));
         }
-        content_lines.push("    </sources>".to_string());
     }
 
     // Add comments/issues
     if !task.comments.is_empty() {
-        content_lines.push("    <issues>".to_string());
+        content.push_str("\n### Issues\n");
         for (idx, comment) in task.comments.iter().enumerate() {
-            content_lines.push(format!(
-                "      <issue n=\"{}\">\n        {}\n      </issue>",
-                idx + 1,
-                escape_xml(&comment.text)
-            ));
+            content.push_str(&format!("{}. {}\n", idx + 1, &comment.text));
         }
-        content_lines.push("    </issues>".to_string());
     }
 
     // Find followup tasks (tasks sourced from this review's comments)
@@ -482,7 +584,7 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         .collect();
 
     if !followups.is_empty() {
-        content_lines.push("    <followups>".to_string());
+        content.push_str("\n### Followups\n");
         for followup in &followups {
             let fu_status = match followup.status {
                 TaskStatus::Open => "open",
@@ -490,21 +592,15 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
                 TaskStatus::Stopped => "stopped",
                 TaskStatus::Closed => "closed",
             };
-            content_lines.push(format!(
-                "      <followup id=\"{}\" status=\"{}\">{}</followup>",
-                escape_xml(&followup.id),
-                fu_status,
-                escape_xml(&followup.name)
+            content.push_str(&format!(
+                "- **{}** [{}] {}\n",
+                &followup.id, fu_status, &followup.name
             ));
         }
-        content_lines.push("    </followups>".to_string());
     }
 
-    content_lines.push("  </review>".to_string());
-
-    let content = content_lines.join("\n");
-    let xml = XmlBuilder::new("review-show").build(&content, &[], &[]);
-    eprintln!("{}", xml);
+    let md = MdBuilder::new("review-show").build(&content, &[], &[]);
+    eprintln!("{}", md);
 
     Ok(())
 }
@@ -539,5 +635,198 @@ mod tests {
         // Unknown worker, default to codex
         let result = determine_reviewer(Some("unknown-agent"));
         assert_eq!(result, "codex".to_string());
+    }
+
+    // ReviewScopeKind tests
+
+    #[test]
+    fn test_scope_kind_as_str() {
+        assert_eq!(ReviewScopeKind::Task.as_str(), "task");
+        assert_eq!(ReviewScopeKind::Spec.as_str(), "spec");
+        assert_eq!(ReviewScopeKind::Implementation.as_str(), "implementation");
+        assert_eq!(ReviewScopeKind::Session.as_str(), "session");
+    }
+
+    #[test]
+    fn test_scope_kind_from_str() {
+        assert_eq!(ReviewScopeKind::from_str("task").unwrap(), ReviewScopeKind::Task);
+        assert_eq!(ReviewScopeKind::from_str("spec").unwrap(), ReviewScopeKind::Spec);
+        assert_eq!(ReviewScopeKind::from_str("implementation").unwrap(), ReviewScopeKind::Implementation);
+        assert_eq!(ReviewScopeKind::from_str("session").unwrap(), ReviewScopeKind::Session);
+    }
+
+    #[test]
+    fn test_scope_kind_from_str_unknown() {
+        let result = ReviewScopeKind::from_str("unknown");
+        assert!(result.is_err());
+    }
+
+    // ReviewScope tests
+
+    #[test]
+    fn test_scope_name_task() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "abc123".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Task (abc123)");
+    }
+
+    #[test]
+    fn test_scope_name_spec() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Spec,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Spec (feature.md)");
+    }
+
+    #[test]
+    fn test_scope_name_implementation() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Implementation,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Implementation (feature.md)");
+    }
+
+    #[test]
+    fn test_scope_name_session() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "session".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(scope.name(), "Session");
+    }
+
+    #[test]
+    fn test_scope_to_data_task() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "abc123".to_string(),
+            task_ids: vec![],
+        };
+        let data = scope.to_data();
+        assert_eq!(data.get("scope.kind").unwrap(), "task");
+        assert_eq!(data.get("scope.id").unwrap(), "abc123");
+        assert_eq!(data.get("scope.name").unwrap(), "Task (abc123)");
+        assert!(data.get("scope.task_ids").is_none());
+    }
+
+    #[test]
+    fn test_scope_to_data_session_with_task_ids() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "session".to_string(),
+            task_ids: vec!["t1".to_string(), "t2".to_string()],
+        };
+        let data = scope.to_data();
+        assert_eq!(data.get("scope.kind").unwrap(), "session");
+        assert_eq!(data.get("scope.task_ids").unwrap(), "t1,t2");
+    }
+
+    #[test]
+    fn test_scope_roundtrip_task() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "abc123".to_string(),
+            task_ids: vec![],
+        };
+        let data = scope.to_data();
+        let restored = ReviewScope::from_data(&data).unwrap();
+        assert_eq!(restored.kind, ReviewScopeKind::Task);
+        assert_eq!(restored.id, "abc123");
+        assert!(restored.task_ids.is_empty());
+    }
+
+    #[test]
+    fn test_scope_roundtrip_session() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "session".to_string(),
+            task_ids: vec!["t1".to_string(), "t2".to_string()],
+        };
+        let data = scope.to_data();
+        let restored = ReviewScope::from_data(&data).unwrap();
+        assert_eq!(restored.kind, ReviewScopeKind::Session);
+        assert_eq!(restored.id, "session");
+        assert_eq!(restored.task_ids, vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn test_scope_roundtrip_spec() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Spec,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        let data = scope.to_data();
+        let restored = ReviewScope::from_data(&data).unwrap();
+        assert_eq!(restored.kind, ReviewScopeKind::Spec);
+        assert_eq!(restored.id, "ops/now/feature.md");
+    }
+
+    #[test]
+    fn test_scope_roundtrip_implementation() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Implementation,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        let data = scope.to_data();
+        let restored = ReviewScope::from_data(&data).unwrap();
+        assert_eq!(restored.kind, ReviewScopeKind::Implementation);
+        assert_eq!(restored.id, "ops/now/feature.md");
+    }
+
+    #[test]
+    fn test_scope_from_data_missing_type() {
+        let data = HashMap::new();
+        let result = ReviewScope::from_data(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_scope_from_data_unknown_type() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "bogus".to_string());
+        let result = ReviewScope::from_data(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_scope_from_data_missing_id_for_task_scope() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "task".to_string());
+        // No scope.id — should fail for Task scope
+        let result = ReviewScope::from_data(&data);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Missing scope.id"),
+            "Error should mention missing scope.id"
+        );
+    }
+
+    #[test]
+    fn test_scope_from_data_empty_id_for_task_scope() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "task".to_string());
+        data.insert("scope.id".to_string(), "".to_string());
+        // Empty scope.id — should also fail for Task scope
+        let result = ReviewScope::from_data(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_scope_from_data_missing_id_ok_for_session() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "session".to_string());
+        // No scope.id — should be fine for Session scope
+        let result = ReviewScope::from_data(&data);
+        assert!(result.is_ok());
     }
 }

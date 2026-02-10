@@ -78,11 +78,30 @@ fn aiki_wait(path: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Asser
     cmd.assert()
 }
 
-/// Helper to extract task ID from XML output
+/// Helper to extract task short ID from markdown output.
+/// Looks for patterns like `[p2] abcdefg` or `Added abcdefg`.
 fn extract_task_id(output: &str) -> Option<String> {
-    let id_start = output.find(r#"id=""#)? + 4;
-    let id_end = output[id_start..].find('"')? + id_start;
-    Some(output[id_start..id_end].to_string())
+    // Try markdown list format: [pN] <short-id>
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("[p") {
+            // Skip priority digit and "] "
+            if let Some(after_bracket) = rest.get(1..).and_then(|s| s.strip_prefix("] ")) {
+                let id: String = after_bracket.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+                if id.len() >= 7 {
+                    return Some(id);
+                }
+            }
+        }
+        // Try "Added <id>" format
+        if let Some(rest) = trimmed.strip_prefix("Added ") {
+            let id: String = rest.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+            if id.len() >= 7 {
+                return Some(id);
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -369,7 +388,7 @@ fn test_wait_with_closed_task_exits_immediately() {
     // Add, start, and close a task
     aiki_task(temp_dir.path(), &["add", "Task to close"]).success();
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Done"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
 
     // Get the task ID from closed tasks
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -415,67 +434,41 @@ fn test_wait_with_stopped_task_returns_error() {
 }
 
 // ============================================================================
-// Task ID Extraction from XML Tests (Unit Tests)
+// Task ID Extraction from Markdown Tests (Unit Tests)
 // ============================================================================
 
 #[test]
-fn test_extract_task_id_from_plain_string() {
-    // Plain task ID should be returned as-is
+fn test_extract_task_id_from_list_format() {
+    // Markdown list format: [pN] <short-id>  Task name
     assert_eq!(
-        extract_task_id(r#"id="xqrmnpst""#),
-        Some("xqrmnpst".to_string())
+        extract_task_id("[p2] xqrmnps  Test task"),
+        Some("xqrmnps".to_string())
     );
 }
 
 #[test]
-fn test_extract_task_id_from_xml_started() {
-    // Test extraction from async start XML output
-    let xml = r#"<aiki_task cmd="run" status="ok">
-  <started task_id="xqrmnpst" async="true">
-    Task started asynchronously.
-  </started>
-</aiki_task>"#;
-
-    // Our helper extracts from id="..." format in the list output
-    // The wait command's extract_task_id handles task_id="..." differently
-    // This test verifies our test helper works for list output
-    assert!(xml.contains("task_id=\"xqrmnpst\""));
-}
-
-#[test]
-fn test_extract_task_id_from_xml_completed() {
-    // Test extraction from completed XML output
-    let xml = r#"<aiki_task cmd="run" status="ok">
-  <completed task_id="abcdefgh"/>
-</aiki_task>"#;
-
-    assert!(xml.contains("task_id=\"abcdefgh\""));
-}
-
-#[test]
-fn test_extract_task_id_from_xml_list() {
-    // Test extraction from list XML output (what our helper uses)
-    let xml = r#"<aiki_task cmd="list" status="ok">
-  <list total="1">
-    <task id="xqrmnpst" name="Test task" priority="p2"/>
-  </list>
-</aiki_task>"#;
-
+fn test_extract_task_id_from_added_format() {
+    // Added format: Added <short-id> → Run `aiki task start` to begin work
     assert_eq!(
-        extract_task_id(xml),
-        Some("xqrmnpst".to_string())
+        extract_task_id("Added xqrmnps → Run `aiki task start` to begin work"),
+        Some("xqrmnps".to_string())
     );
 }
 
 #[test]
-fn test_extract_task_id_with_subtask() {
-    // Test extraction of subtask ID
-    let xml = r#"<task id="parent123.1" name="Subtask"/>"#;
-
+fn test_extract_task_id_from_multiline() {
+    // Extract first ID from multi-line output
+    let md = "Tasks (2):\n[p2] abcdefg  First task\n[p1] hijklmn  Second task\n";
     assert_eq!(
-        extract_task_id(xml),
-        Some("parent123.1".to_string())
+        extract_task_id(md),
+        Some("abcdefg".to_string())
     );
+}
+
+#[test]
+fn test_extract_task_id_no_match() {
+    // No task ID in output
+    assert_eq!(extract_task_id("No tasks found"), None);
 }
 
 // ============================================================================
@@ -631,7 +624,7 @@ fn test_async_wait_conceptual_flow() {
     // 3. Verify wait command works (though task not running)
     // Close the task first so wait can succeed
     aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--comment", "Test done"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Test done"]).success();
 
     // Get the task ID from closed list
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
