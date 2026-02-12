@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.13";
+pub const AIKI_BLOCK_VERSION: &str = "1.14";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.13">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.14">
 
 ## ⛔ STOP - Read This First
 
@@ -250,6 +250,15 @@ aiki task run <task-id>
 
 # Delegate in background
 aiki task run <task-id> --async
+
+# Add a relationship between tasks
+aiki task link <id> --blocked-by <blocker-id>       # Block until blocker closes
+aiki task link <id> --sourced-from file:design.md   # Track provenance
+aiki task link <id> --subtask-of <parent-id>        # Set parent
+aiki task link <id> --implements ops/now/spec.md     # Link to spec
+
+# Remove a relationship
+aiki task unlink <id> --blocked-by <blocker-id>
 ```
 
 ### Handling Multiple Requests (Subtasks)
@@ -440,5 +449,29 @@ Example:
 ### Task Priorities
 
 `p0` (urgent) → `p1` (high) → `p2` (normal, default) → `p3` (low)
+
+### Task Relationships (Links)
+
+Tasks can be linked to express relationships. Use `aiki task link` to create links:
+
+| Link Kind | Direction | Meaning | Blocks Ready Queue? |
+|---|---|---|---|
+| `blocked-by` | task → blocker | Can't start until blocker closes | Yes |
+| `sourced-from` | task → origin | Where this task came from | No |
+| `subtask-of` | child → parent | Parent-child hierarchy | No |
+| `implements` | plan → spec | Plan implements this spec | No |
+| `orchestrates` | orchestrator → plan | Orchestrator drives this plan | No |
+| `scoped-to` | task → target | Task operates on this target | No |
+| `supersedes` | new → old | New task replaces old one | No |
+
+**When to use links:**
+- `--blocked-by`: Task A can't start until task B is done
+- `--sourced-from`: Track where a task came from (auto-emitted with `--source`)
+- `--subtask-of`: Express parent-child relationships
+- `--implements`: Link a plan task to its spec file
+
+**Auto-replace:** Single-link kinds (`subtask-of`, `implements`, `orchestrates`, `supersedes`) automatically replace existing links when a new one is added.
+
+**Cycle detection:** `blocked-by` and `subtask-of` links are checked for cycles at write time.
 </aiki>
 "#;

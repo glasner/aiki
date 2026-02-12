@@ -14,33 +14,9 @@ const TASKS_BRANCH: &str = "aiki/tasks";
 const METADATA_START: &str = "[aiki-task]";
 const METADATA_END: &str = "[/aiki-task]";
 
-/// Ensure the aiki/tasks branch exists
+/// Ensure the aiki/tasks branch exists (cached per process)
 pub fn ensure_tasks_branch(cwd: &Path) -> Result<()> {
-    // Check if branch exists by listing bookmarks
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-
-    if !bookmarks.contains(TASKS_BRANCH) {
-        // Create the branch as an orphan (no parent) starting from root()
-        let result = jj_cmd()
-            .current_dir(cwd)
-            .args(["bookmark", "create", TASKS_BRANCH, "-r", "root()", "--ignore-working-copy"])
-            .output()
-            .map_err(|e| {
-                AikiError::TaskBranchInitFailed(format!("Failed to create bookmark: {}", e))
-            })?;
-
-        if !result.status.success() {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            return Err(AikiError::TaskBranchInitFailed(stderr.to_string()));
-        }
-    }
-    Ok(())
+    crate::jj::ensure_branch(cwd, TASKS_BRANCH)
 }
 
 /// Write a task event to the aiki/tasks branch
@@ -66,94 +42,232 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    // Get the change_id of the newly created child
-    // Using --limit 1 ensures we get only the most recent child even if there are
-    // multiple (e.g., from a previous failed bookmark update)
+    Ok(())
+}
+
+/// Write a LinkAdded event with mandatory validation.
+///
+/// This is the canonical way to emit a link. All validation happens here:
+/// - Target normalization (short ID resolution, file: prefix, task_only check)
+/// - Idempotency (skip if link already exists)
+/// - Cycle detection (for blocked-by and subtask-of)
+/// - Cardinality enforcement (single-link auto-replace with supersedes)
+///
+/// Returns Ok(true) if a new link was written, Ok(false) if it was a no-op
+/// (duplicate link).
+pub fn write_link_event(
+    cwd: &Path,
+    graph: &super::graph::TaskGraph,
+    kind: &str,
+    from: &str,
+    to: &str,
+) -> Result<bool> {
+    use super::graph::find_link_kind;
+    use super::md::short_id;
+
+    // 1. Normalize the target
+    let to_normalized = normalize_link_target_for_graph(to, kind, graph)?;
+
+    // 2. Idempotency: skip if link already exists
+    if graph.edges.has_link(from, &to_normalized, kind) {
+        return Ok(false);
+    }
+
+    // 3. Cycle detection for blocking/hierarchical kinds
+    if kind == "blocked-by" || kind == "subtask-of" {
+        if graph.would_create_cycle(from, &to_normalized, kind) {
+            return Err(AikiError::LinkCycle {
+                kind: kind.to_string(),
+            });
+        }
+    }
+
+    // 4. Cardinality enforcement with auto-replace
+    let link_kind = find_link_kind(kind);
+    let emit_supersedes = kind == "implements" || kind == "orchestrates";
+    let timestamp = chrono::Utc::now();
+
+    if let Some(lk) = link_kind {
+        // Forward cardinality: max links from this node
+        if let Some(max) = lk.max_forward {
+            let existing: Vec<String> = graph.edges.targets(from, kind).to_vec();
+            if existing.len() >= max {
+                for old_target in &existing {
+                    let remove_event = TaskEvent::LinkRemoved {
+                        from: from.to_string(),
+                        to: old_target.clone(),
+                        kind: kind.to_string(),
+                        reason: Some(format!("Replaced by link to {}", short_id(&to_normalized))),
+                        timestamp,
+                    };
+                    write_event(cwd, &remove_event)?;
+
+                    if emit_supersedes {
+                        // supersedes is task_only — skip if old_target is a file/external ref
+                        if !has_external_ref_prefix(old_target) {
+                            let supersedes_event = TaskEvent::LinkAdded {
+                                from: from.to_string(),
+                                to: old_target.clone(),
+                                kind: "supersedes".to_string(),
+                                timestamp,
+                            };
+                            write_event(cwd, &supersedes_event)?;
+                            eprintln!(
+                                "Superseded: {} previously {} {}",
+                                short_id(old_target),
+                                if kind == "implements" { "implemented" } else { "orchestrated" },
+                                short_id(&to_normalized)
+                            );
+                        }
+                        // If old_target is a file path, skip the supersedes link silently (bug #4 fix)
+                    } else if kind == "subtask-of" {
+                        eprintln!(
+                            "Re-parented: {} moved from {} to {}",
+                            short_id(from),
+                            short_id(old_target),
+                            short_id(&to_normalized)
+                        );
+                    }
+                }
+            }
+        }
+
+        // Reverse cardinality: max referrers to the target
+        if let Some(max) = lk.max_reverse {
+            let existing: Vec<String> = graph.edges.referrers(&to_normalized, kind).to_vec();
+            if existing.len() >= max {
+                for old_from in &existing {
+                    let remove_event = TaskEvent::LinkRemoved {
+                        from: old_from.clone(),
+                        to: to_normalized.clone(),
+                        kind: kind.to_string(),
+                        reason: Some(format!(
+                            "Replaced by {} linking to {}",
+                            short_id(from),
+                            short_id(&to_normalized)
+                        )),
+                        timestamp,
+                    };
+                    write_event(cwd, &remove_event)?;
+
+                    if emit_supersedes {
+                        // old_from is always a task ID in reverse cardinality
+                        let supersedes_event = TaskEvent::LinkAdded {
+                            from: from.to_string(),
+                            to: old_from.clone(),
+                            kind: "supersedes".to_string(),
+                            timestamp,
+                        };
+                        write_event(cwd, &supersedes_event)?;
+                        eprintln!(
+                            "Superseded: {} previously {} {}",
+                            short_id(old_from),
+                            if kind == "orchestrates" { "orchestrated" } else { "implemented" },
+                            short_id(&to_normalized)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Write the LinkAdded event
+    let event = TaskEvent::LinkAdded {
+        from: from.to_string(),
+        to: to_normalized,
+        kind: kind.to_string(),
+        timestamp,
+    };
+    write_event(cwd, &event)?;
+
+    Ok(true)
+}
+
+/// Check if a string has an external reference prefix
+fn has_external_ref_prefix(s: &str) -> bool {
+    s.starts_with("file:")
+        || s.starts_with("prompt:")
+        || s.starts_with("comment:")
+        || s.starts_with("issue:")
+}
+
+/// Normalize a link target using a TaskGraph for lookups.
+///
+/// This is the graph-aware variant used by write_link_event.
+fn normalize_link_target_for_graph(
+    input: &str,
+    kind: &str,
+    graph: &super::graph::TaskGraph,
+) -> Result<String> {
+    use super::graph::is_task_only_kind;
+    use super::id::is_task_id;
+    use super::manager::resolve_task_id;
+
+    // 1. Strip task: prefix if present
+    let stripped = input.strip_prefix("task:").unwrap_or(input);
+
+    // 2. If it's already a full 32-char task ID, use it directly
+    if is_task_id(stripped) {
+        if graph.tasks.contains_key(stripped) {
+            return Ok(stripped.to_string());
+        }
+        // Full-length ID but not found
+        if is_task_only_kind(kind) {
+            return Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            });
+        }
+        return Ok(stripped.to_string());
+    }
+
+    // 3. If it has an external reference prefix
+    if has_external_ref_prefix(stripped) {
+        if is_task_only_kind(kind) {
+            return Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            });
+        }
+        return Ok(stripped.to_string());
+    }
+
+    // 4. Try resolving as a short task ID prefix
+    match resolve_task_id(&graph.tasks, stripped) {
+        Ok(full_id) => Ok(full_id),
+        Err(AikiError::TaskNotFound(_)) if !is_task_only_kind(kind) => {
+            // Flexible-target kinds: treat unresolved input as file path
+            Ok(format!("file:{}", stripped))
+        }
+        Err(AikiError::TaskNotFound(_)) => {
+            // Task-only kinds: wrap as InvalidLinkTarget for clearer messaging
+            Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            })
+        }
+        // AmbiguousTaskId, PrefixTooShort — propagate for all kinds
+        Err(e) => Err(e),
+    }
+}
+
+/// Read all task events from the aiki/tasks branch
+pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
+    if !crate::jj::branch_exists(cwd, TASKS_BRANCH)? {
+        return Ok(Vec::new());
+    }
+
+    // Read all task events: children of any ancestor of the bookmark
+    // This finds chain events, orphaned events, and new flat events
     let output = jj_cmd()
         .current_dir(cwd)
         .args([
             "log",
             "-r",
             &format!(
-                "children({}) & description(substring:\"{}\")",
+                "children(ancestors({})) & description(substring:\"{}\")",
                 TASKS_BRANCH, METADATA_START
             ),
-            "--no-graph",
-            "-T",
-            "change_id",
-            "--limit",
-            "1",
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| {
-            AikiError::JjCommandFailed(format!("Failed to get new task change_id: {}", e))
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to get new task change_id: {}",
-            stderr
-        )));
-    }
-
-    let new_change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if new_change_id.is_empty() {
-        return Err(AikiError::JjCommandFailed(
-            "Failed to find newly created task change".to_string(),
-        ));
-    }
-
-    // Move the bookmark forward to point at the newly created change using its specific change_id
-    let result = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "bookmark",
-            "set",
-            TASKS_BRANCH,
-            "-r",
-            &new_change_id,
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to update bookmark: {}", e)))?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to update task bookmark: {}",
-            stderr
-        )));
-    }
-
-    Ok(())
-}
-
-/// Read all task events from the aiki/tasks branch
-pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(TASKS_BRANCH) {
-        // Branch doesn't exist yet, return empty list
-        return Ok(Vec::new());
-    }
-
-    // Read all changes on the branch, oldest first
-    // Using `root()..aiki/tasks` to get ancestors of bookmark (excluding root)
-    // This gives us the linear chain of task events
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "log",
-            "-r",
-            &format!("root()..{}", TASKS_BRANCH),
             "--no-graph",
             "-T",
             "description ++ \"\\n---EVENT-SEPARATOR---\\n\"",
@@ -192,6 +306,9 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
         }
     }
 
+    // Sort by timestamp to ensure consistent ordering (flat model doesn't guarantee position order)
+    events.sort_by_key(|e| e.timestamp());
+
     Ok(events)
 }
 
@@ -209,27 +326,20 @@ pub struct EventWithId {
 /// This is used when we need to track which JJ change each event came from,
 /// particularly for generating comment IDs (source: comment:<change_id>).
 pub fn read_events_with_ids(cwd: &Path) -> Result<Vec<EventWithId>> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(TASKS_BRANCH) {
-        // Branch doesn't exist yet, return empty list
+    if !crate::jj::branch_exists(cwd, TASKS_BRANCH)? {
         return Ok(Vec::new());
     }
 
-    // Read all changes on the branch with their change_ids, oldest first
-    // Template outputs: change_id followed by description, separated by markers
+    // Read all task events with change_ids: children of any ancestor of the bookmark
     let output = jj_cmd()
         .current_dir(cwd)
         .args([
             "log",
             "-r",
-            &format!("root()..{}", TASKS_BRANCH),
+            &format!(
+                "children(ancestors({})) & description(substring:\"{}\")",
+                TASKS_BRANCH, METADATA_START
+            ),
             "--no-graph",
             "-T",
             "\"---CHANGE-ID:\" ++ change_id ++ \"---\\n\" ++ description ++ \"\\n---EVENT-SEPARATOR---\\n\"",
@@ -282,6 +392,9 @@ pub fn read_events_with_ids(cwd: &Path) -> Result<Vec<EventWithId>> {
             }
         }
     }
+
+    // Sort by timestamp to ensure consistent ordering
+    events.sort_by_key(|e| e.event.timestamp());
 
     Ok(events)
 }
@@ -416,7 +529,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Stopped {
             task_ids,
             reason,
-            blocked_reason,
             timestamp,
         } => {
             add_metadata("event", "stopped", &mut lines);
@@ -425,9 +537,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             if let Some(reason) = reason {
                 add_metadata_escaped("reason", reason, &mut lines);
-            }
-            if let Some(blocked) = blocked_reason {
-                add_metadata_escaped("blocked_reason", blocked, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -503,6 +612,34 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 for (key, value) in data {
                     add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
                 }
+            }
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::LinkAdded {
+            from,
+            to,
+            kind,
+            timestamp,
+        } => {
+            add_metadata("event", "link_added", &mut lines);
+            add_metadata("from", from, &mut lines);
+            add_metadata_escaped("to", to, &mut lines);
+            add_metadata("kind", kind, &mut lines);
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::LinkRemoved {
+            from,
+            to,
+            kind,
+            reason,
+            timestamp,
+        } => {
+            add_metadata("event", "link_removed", &mut lines);
+            add_metadata("from", from, &mut lines);
+            add_metadata_escaped("to", to, &mut lines);
+            add_metadata("kind", kind, &mut lines);
+            if let Some(reason) = reason {
+                add_metadata_escaped("reason", reason, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -639,15 +776,12 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("reason")
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
-            let blocked_reason = fields
-                .get("blocked_reason")
-                .and_then(|v| v.first())
-                .map(|s| unescape_metadata_value(s));
+            // Note: blocked_reason field is ignored for backward compatibility
+            // (old events may still contain it, but it's no longer part of the type)
 
             Some(TaskEvent::Stopped {
                 task_ids,
                 reason,
-                blocked_reason,
                 timestamp,
             })
         }
@@ -749,6 +883,41 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 priority,
                 assignee,
                 data,
+                timestamp,
+            })
+        }
+        "link_added" => {
+            let from = fields.get("from")?.first()?.to_string();
+            let to = fields
+                .get("to")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s))?;
+            let kind = fields.get("kind")?.first()?.to_string();
+
+            Some(TaskEvent::LinkAdded {
+                from,
+                to,
+                kind,
+                timestamp,
+            })
+        }
+        "link_removed" => {
+            let from = fields.get("from")?.first()?.to_string();
+            let to = fields
+                .get("to")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s))?;
+            let kind = fields.get("kind")?.first()?.to_string();
+            let reason = fields
+                .get("reason")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
+
+            Some(TaskEvent::LinkRemoved {
+                from,
+                to,
+                kind,
+                reason,
                 timestamp,
             })
         }
@@ -980,7 +1149,6 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Stopped {
             task_ids: vec!["task1".to_string()],
             reason: Some("Need more info".to_string()),
-            blocked_reason: Some("Waiting for API".to_string()),
             timestamp: Utc::now(),
         };
 
@@ -996,19 +1164,16 @@ timestamp=2026-01-09T10:30:00Z
                 TaskEvent::Stopped {
                     task_ids: ids1,
                     reason: reason1,
-                    blocked_reason: blocked1,
                     ..
                 },
                 TaskEvent::Stopped {
                     task_ids: ids2,
                     reason: reason2,
-                    blocked_reason: blocked2,
                     ..
                 },
             ) => {
                 assert_eq!(ids1, ids2);
                 assert_eq!(reason1, reason2);
-                assert_eq!(blocked1, blocked2);
             }
             _ => panic!("Event type mismatch"),
         }
@@ -1254,11 +1419,9 @@ timestamp=2026-01-09T10:30:00Z
         match event {
             TaskEvent::Stopped {
                 reason,
-                blocked_reason,
                 ..
             } => {
                 assert!(reason.is_none());
-                assert!(blocked_reason.is_none());
             }
             _ => panic!("Expected Stopped event"),
         }
@@ -1789,5 +1952,190 @@ timestamp=2026-01-09T10:30:00Z
         assert!(block.contains("name=New task name"));
         assert!(block.contains("priority=p1"));
         assert!(block.contains("[/aiki-task]"));
+    }
+
+    #[test]
+    fn test_roundtrip_link_added() {
+        let original = TaskEvent::LinkAdded {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "blocked-by".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::LinkAdded {
+                    from: f1,
+                    to: t1,
+                    kind: k1,
+                    ..
+                },
+                TaskEvent::LinkAdded {
+                    from: f2,
+                    to: t2,
+                    kind: k2,
+                    ..
+                },
+            ) => {
+                assert_eq!(f1, f2);
+                assert_eq!(t1, t2);
+                assert_eq!(k1, k2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_link_added_external_ref() {
+        let original = TaskEvent::LinkAdded {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "file:ops/now/design.md".to_string(),
+            kind: "sourced-from".to_string(),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::LinkAdded { from, to, kind, .. } => {
+                assert_eq!(from, "mvslrspmoynoxyyywqyutmovxpvztkls");
+                assert_eq!(to, "file:ops/now/design.md");
+                assert_eq!(kind, "sourced-from");
+            }
+            _ => panic!("Expected LinkAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_link_removed() {
+        let original = TaskEvent::LinkRemoved {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "blocked-by".to_string(),
+            reason: Some("Blocker resolved".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::LinkRemoved {
+                    from: f1,
+                    to: t1,
+                    kind: k1,
+                    reason: r1,
+                    ..
+                },
+                TaskEvent::LinkRemoved {
+                    from: f2,
+                    to: t2,
+                    kind: k2,
+                    reason: r2,
+                    ..
+                },
+            ) => {
+                assert_eq!(f1, f2);
+                assert_eq!(t1, t2);
+                assert_eq!(k1, k2);
+                assert_eq!(r1, r2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_link_removed_no_reason() {
+        let original = TaskEvent::LinkRemoved {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "subtask-of".to_string(),
+            reason: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::LinkRemoved { reason, .. } => {
+                assert!(reason.is_none());
+            }
+            _ => panic!("Expected LinkRemoved event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_link_added() {
+        let block = r#"
+event=link_added
+from=mvslrspmoynoxyyywqyutmovxpvztkls
+to=nqrtxsypzkwolmnrstvuqxyzplmrwknos
+kind=blocked-by
+timestamp=2026-02-10T14:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::LinkAdded {
+                from, to, kind, ..
+            } => {
+                assert_eq!(from, "mvslrspmoynoxyyywqyutmovxpvztkls");
+                assert_eq!(to, "nqrtxsypzkwolmnrstvuqxyzplmrwknos");
+                assert_eq!(kind, "blocked-by");
+            }
+            _ => panic!("Expected LinkAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_link_removed() {
+        let block = r#"
+event=link_removed
+from=mvslrspmoynoxyyywqyutmovxpvztkls
+to=nqrtxsypzkwolmnrstvuqxyzplmrwknos
+kind=blocked-by
+reason=No longer needed
+timestamp=2026-02-10T14:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::LinkRemoved {
+                from,
+                to,
+                kind,
+                reason,
+                ..
+            } => {
+                assert_eq!(from, "mvslrspmoynoxyyywqyutmovxpvztkls");
+                assert_eq!(to, "nqrtxsypzkwolmnrstvuqxyzplmrwknos");
+                assert_eq!(kind, "blocked-by");
+                assert_eq!(reason, Some("No longer needed".to_string()));
+            }
+            _ => panic!("Expected LinkRemoved event"),
+        }
     }
 }

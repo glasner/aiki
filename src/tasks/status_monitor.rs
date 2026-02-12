@@ -3,7 +3,6 @@
 //! Provides live terminal visualization of task progress during sync execution.
 //! Shows subtasks and comments as they're created by the working agent.
 
-use std::collections::HashMap;
 use std::io::{stderr, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,10 +15,10 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use super::id::{get_child_number, is_direct_child_of};
+use super::graph::{materialize_graph, TaskGraph};
+use super::id::get_child_number;
 use super::storage::read_events;
 use super::types::{Task, TaskStatus};
-use super::manager::materialize_tasks;
 use crate::agents::MonitoredChild;
 use crate::error::Result;
 
@@ -103,10 +102,10 @@ impl StatusMonitor {
     /// Returns Ok(true) if task reached terminal state (closed/stopped)
     pub fn poll_and_display(&mut self, cwd: &Path) -> Result<bool> {
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let graph = materialize_graph(&events);
 
         // Find the root task
-        let root_task = match tasks.get(&self.task_id) {
+        let root_task = match graph.tasks.get(&self.task_id) {
             Some(task) => task,
             None => return Ok(false), // Task not found yet, keep waiting
         };
@@ -116,7 +115,7 @@ impl StatusMonitor {
 
         if should_render {
             self.last_event_count = events.len();
-            self.render_task_tree(&tasks, root_task)?;
+            self.render_task_tree(&graph, root_task)?;
             self.has_rendered = true;
         }
 
@@ -236,7 +235,7 @@ impl StatusMonitor {
     }
 
     /// Render the task tree to stderr
-    fn render_task_tree(&mut self, tasks: &HashMap<String, Task>, root_task: &Task) -> Result<()> {
+    fn render_task_tree(&mut self, graph: &TaskGraph, root_task: &Task) -> Result<()> {
         let mut stderr = stderr();
 
         // On re-render, restore cursor to saved position and clear everything below.
@@ -256,7 +255,7 @@ impl StatusMonitor {
         lines.push(root_line);
 
         // Get subtasks (direct children)
-        let subtasks = self.get_sorted_subtasks(tasks, &root_task.id);
+        let subtasks = self.get_sorted_subtasks(graph, &root_task.id);
         let subtask_count = subtasks.len();
 
         for (idx, subtask) in subtasks.iter().enumerate() {
@@ -300,12 +299,12 @@ impl StatusMonitor {
 
         // If root task has data.plan, render the plan task tree below
         if let Some(plan_id) = root_task.data.get("plan") {
-            if let Some(plan_task) = tasks.get(plan_id) {
+            if let Some(plan_task) = graph.tasks.get(plan_id) {
                 lines.push(String::new());
                 let plan_line = self.format_task_line(plan_task, "", None);
                 lines.push(plan_line);
 
-                let plan_subtasks = self.get_sorted_subtasks(tasks, plan_id);
+                let plan_subtasks = self.get_sorted_subtasks(graph, plan_id);
                 let plan_subtask_count = plan_subtasks.len();
 
                 for (idx, subtask) in plan_subtasks.iter().enumerate() {
@@ -393,15 +392,9 @@ impl StatusMonitor {
     }
 
     /// Get sorted subtasks for a parent task
-    fn get_sorted_subtasks<'a>(&self, tasks: &'a HashMap<String, Task>, parent_id: &str) -> Vec<&'a Task> {
-        let mut subtasks: Vec<&Task> = tasks
-            .values()
-            .filter(|t| is_direct_child_of(&t.id, parent_id))
-            .collect();
-
-        // Sort by child number (e.g., .0, .1, .2)
+    fn get_sorted_subtasks<'a>(&self, graph: &'a TaskGraph, parent_id: &str) -> Vec<&'a Task> {
+        let mut subtasks = graph.children_of(parent_id);
         subtasks.sort_by_key(|t| get_child_number(&t.id));
-
         subtasks
     }
 

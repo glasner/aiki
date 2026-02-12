@@ -218,14 +218,29 @@ fn test_task_close_wont_do() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Add and start a task
-    aiki_task(temp_dir.path(), &["add", "Task to abandon"]).success();
+    // Add a task and extract its short ID
+    let add_output = aiki_task(temp_dir.path(), &["add", "Task to abandon"]).success();
+    let add_stdout = String::from_utf8_lossy(&add_output.get_output().stdout);
+    let short_id = add_stdout
+        .strip_prefix("Added ")
+        .and_then(|s| s.split_whitespace().next())
+        .expect("Should extract short ID from add output");
+
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close as won't do
     aiki_task(temp_dir.path(), &["close", "--wont-do", "--summary", "Not implementing"])
         .success()
         .stdout(predicate::str::contains("Closed"));
+
+    // Verify the outcome persisted as wont_do via show
+    let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
+    let show_stdout = String::from_utf8_lossy(&show_output.get_output().stdout);
+    assert!(
+        show_stdout.contains("closed (wont_do)"),
+        "Task should have wont_do outcome after --wont-do close, got: {}",
+        show_stdout
+    );
 }
 
 #[test]
@@ -233,14 +248,29 @@ fn test_task_close_with_outcome_done() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Add and start a task
-    aiki_task(temp_dir.path(), &["add", "Task with explicit done"]).success();
+    // Add a task and extract its short ID
+    let add_output = aiki_task(temp_dir.path(), &["add", "Task with explicit done"]).success();
+    let add_stdout = String::from_utf8_lossy(&add_output.get_output().stdout);
+    let short_id = add_stdout
+        .strip_prefix("Added ")
+        .and_then(|s| s.split_whitespace().next())
+        .expect("Should extract short ID from add output");
+
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome done (explicit)
     aiki_task(temp_dir.path(), &["close", "--outcome", "done", "--summary", "Done explicitly"])
         .success()
         .stdout(predicate::str::contains("Closed"));
+
+    // Verify the outcome persisted as done via show
+    let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
+    let show_stdout = String::from_utf8_lossy(&show_output.get_output().stdout);
+    assert!(
+        show_stdout.contains("closed (done)"),
+        "Task should have done outcome after --outcome done close, got: {}",
+        show_stdout
+    );
 }
 
 #[test]
@@ -248,14 +278,29 @@ fn test_task_close_with_outcome_wont_do() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Add and start a task
-    aiki_task(temp_dir.path(), &["add", "Task with outcome wont_do"]).success();
+    // Add a task and extract its short ID
+    let add_output = aiki_task(temp_dir.path(), &["add", "Task with outcome wont_do"]).success();
+    let add_stdout = String::from_utf8_lossy(&add_output.get_output().stdout);
+    let short_id = add_stdout
+        .strip_prefix("Added ")
+        .and_then(|s| s.split_whitespace().next())
+        .expect("Should extract short ID from add output");
+
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome wont_do
     aiki_task(temp_dir.path(), &["close", "--outcome", "wont_do", "--summary", "Won't do via outcome"])
         .success()
         .stdout(predicate::str::contains("Closed"));
+
+    // Verify the outcome persisted as wont_do via show
+    let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
+    let show_stdout = String::from_utf8_lossy(&show_output.get_output().stdout);
+    assert!(
+        show_stdout.contains("closed (wont_do)"),
+        "Task should have wont_do outcome after --outcome wont_do close, got: {}",
+        show_stdout
+    );
 }
 
 #[test]

@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+pub mod graph;
 pub mod id;
 pub mod manager;
 pub mod runner;
@@ -18,19 +19,20 @@ pub mod templates;
 pub mod types;
 pub mod md;
 
+pub use graph::{materialize_graph, materialize_graph_with_ids, EdgeStore, LinkKind, TaskGraph, LINK_KINDS};
 pub use id::{generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix};
 #[allow(unused_imports)]
 pub use manager::{
-    all_subtasks_closed, find_task, get_subtasks, get_current_scope_set, get_in_progress,
-    get_ready_queue, get_ready_queue_for_agent, get_ready_queue_for_agent_scoped,
+    all_subtasks_closed, find_task, get_subtasks, get_current_scope_set,
+    get_in_progress, get_ready_queue, get_ready_queue_for_agent, get_ready_queue_for_agent_scoped,
     get_ready_queue_for_human, get_ready_queue_for_scope_set, get_scoped_ready_queue,
-    get_unclosed_subtasks, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
+    get_unclosed_subtasks, has_subtasks,
     resolve_task_id, ScopeSet,
 };
 #[allow(unused_imports)]
 pub use runner::{run_task_async_with_output, task_run_async, terminate_background_task};
 #[allow(unused_imports)]
-pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, EventWithId};
+pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_link_event, EventWithId};
 #[allow(unused_imports)]
 pub use types::{Task, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus};
 pub use md::MdBuilder;
@@ -76,7 +78,7 @@ pub struct StartTaskResult {
 /// `StartTaskResult` with the started and stopped tasks
 pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResult> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Validate all tasks exist and are not closed
     for id in task_ids {
@@ -134,7 +136,6 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         let stop_event = TaskEvent::Stopped {
             task_ids: current_in_progress_ids.clone(),
             reason: Some(stop_reason),
-            blocked_reason: None,
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &stop_event)?;
@@ -196,7 +197,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
 pub fn reopen_if_closed(
     cwd: &Path,
     task_id: &str,
-    tasks: &std::collections::HashMap<String, Task>,
+    tasks: &types::FastHashMap<String, Task>,
     reason: &str,
 ) -> Result<()> {
     if let Some(task) = tasks.get(task_id) {

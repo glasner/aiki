@@ -23,8 +23,8 @@ use crate::tasks::templates::{
 };
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_tasks, read_events,
-    write_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
+    find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_graph, read_events,
+    write_event, write_link_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
 };
 
 /// Plan subcommands
@@ -112,7 +112,8 @@ fn run_plan(
 
     // Load current tasks to check for existing plans
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Check for existing plan with data.spec matching spec_path
     let existing_plan = find_plan_for_spec(&tasks, spec_path);
@@ -126,7 +127,7 @@ fn run_plan(
                 close_plan(cwd, &plan.id)?;
             } else {
                 // Show interactive prompt or error
-                let subtasks = get_subtasks(&tasks, &plan.id);
+                let subtasks = get_subtasks(&graph, &plan.id);
                 let choice = prompt_existing_plan(plan, &subtasks)?;
                 match choice {
                     PlanChoice::Resume => {
@@ -175,15 +176,16 @@ fn run_plan(
     // After the planning agent finishes, find the plan task it created
     // Re-read tasks since the planning agent created new ones
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Find the plan task created by the planning agent
     // It should have data.spec=<spec-path> and source=task:<planning_task_id>
-    let plan_task = find_created_plan(&tasks, spec_path, &planning_task_id);
+    let plan_task = find_created_plan(tasks, spec_path, &planning_task_id);
 
     match plan_task {
         Some(plan) => {
-            let subtasks = get_subtasks(&tasks, &plan.id);
+            let subtasks = get_subtasks(&graph, &plan.id);
             output_plan_created(&plan.id, &subtasks)?;
 
             // Output machine-readable XML to stdout if piped
@@ -210,20 +212,21 @@ fn run_plan(
 /// Show plan status and subtasks
 fn run_show(cwd: &Path, arg: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Determine if arg is a task ID or spec path
     let plan = if is_task_id(arg) || is_task_id_prefix(arg) {
         // Task ID or prefix lookup
-        find_task(&tasks, arg)?
+        find_task(tasks, arg)?
     } else {
         // Spec path lookup - find most recent plan with data.spec=<path>
-        find_plan_for_spec(&tasks, arg).ok_or_else(|| {
+        find_plan_for_spec(tasks, arg).ok_or_else(|| {
             AikiError::InvalidArgument(format!("No plan found for spec: {}", arg))
         })?
     };
 
-    let subtasks = get_subtasks(&tasks, &plan.id);
+    let subtasks = get_subtasks(&graph, &plan.id);
     output_plan_show(plan, &subtasks)?;
 
     Ok(())
@@ -270,7 +273,7 @@ fn validate_spec_path(cwd: &Path, spec_path: &str) -> Result<()> {
 /// If no plan created by a planning task is found, falls back to any task with
 /// `data.spec` matching the spec path that has subtasks (a plan without a planning task source).
 fn find_plan_for_spec<'a>(
-    tasks: &'a std::collections::HashMap<String, Task>,
+    tasks: &'a crate::tasks::types::FastHashMap<String, Task>,
     spec_path: &str,
 ) -> Option<&'a Task> {
     // First, look for plan tasks created by a planning task (have source: task:...)
@@ -303,7 +306,7 @@ fn find_plan_for_spec<'a>(
 /// - `data.spec=<spec-path>`
 /// - `source: task:<planning_task_id>`
 fn find_created_plan<'a>(
-    tasks: &'a std::collections::HashMap<String, Task>,
+    tasks: &'a crate::tasks::types::FastHashMap<String, Task>,
     spec_path: &str,
     planning_task_id: &str,
 ) -> Option<&'a Task> {
@@ -437,6 +440,16 @@ fn create_planning_task(
         timestamp,
     };
     write_event(cwd, &event)?;
+
+    // Emit scoped-to link for the spec (dual-write with data.spec attribute)
+    let spec_target = if spec_path.starts_with("file:") {
+        spec_path.to_string()
+    } else {
+        format!("file:{}", spec_path)
+    };
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    write_link_event(cwd, &graph, "scoped-to", &task_id, &spec_target)?;
 
     Ok(task_id)
 }
@@ -621,6 +634,7 @@ fn is_spec_path(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::types::FastHashMap;
     use std::collections::HashMap;
 
     fn make_task(id: &str, name: &str, status: TaskStatus) -> Task {
@@ -682,13 +696,13 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_none() {
-        let tasks = HashMap::new();
+        let tasks = FastHashMap::default();
         assert!(find_plan_for_spec(&tasks, "ops/now/feature.md").is_none());
     }
 
     #[test]
     fn test_find_plan_for_spec_found() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -708,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_excludes_planning_task() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -739,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_wrong_spec() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/other.md".to_string());
 
@@ -757,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_most_recent() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -787,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_find_created_plan() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -807,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_find_created_plan_wrong_planning_id() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -827,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_fallback_no_task_source() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 

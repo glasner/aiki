@@ -4,6 +4,10 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Fast HashMap using ahash for non-cryptographic hashing.
+/// 2-5x faster than std HashMap for short string keys (task IDs).
+pub type FastHashMap<K, V> = hashbrown::HashMap<K, V, ahash::RandomState>;
+
 /// Task status (derived from event stream)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -137,8 +141,6 @@ pub enum TaskEvent {
     Stopped {
         task_ids: Vec<String>,
         reason: Option<String>,
-        /// If set, creates a blocker task assigned to human
-        blocked_reason: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were closed (batch operation)
@@ -173,6 +175,45 @@ pub enum TaskEvent {
         data: Option<HashMap<String, String>>,
         timestamp: DateTime<Utc>,
     },
+    /// Link added between two nodes
+    LinkAdded {
+        /// Source node (always a task ID)
+        from: String,
+        /// Target node (task ID or external ref like "file:path")
+        to: String,
+        /// Open-ended link type (e.g., "blocked-by", "sourced-from")
+        kind: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Link removed between two nodes
+    LinkRemoved {
+        /// Source node (always a task ID)
+        from: String,
+        /// Target node (task ID or external ref)
+        to: String,
+        /// Link type being removed
+        kind: String,
+        /// Audit trail for why the link was removed
+        reason: Option<String>,
+        timestamp: DateTime<Utc>,
+    },
+}
+
+impl TaskEvent {
+    /// Get the timestamp of this event
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        match self {
+            TaskEvent::Created { timestamp, .. }
+            | TaskEvent::Started { timestamp, .. }
+            | TaskEvent::Stopped { timestamp, .. }
+            | TaskEvent::Closed { timestamp, .. }
+            | TaskEvent::Reopened { timestamp, .. }
+            | TaskEvent::CommentAdded { timestamp, .. }
+            | TaskEvent::Updated { timestamp, .. }
+            | TaskEvent::LinkAdded { timestamp, .. }
+            | TaskEvent::LinkRemoved { timestamp, .. } => *timestamp,
+        }
+    }
 }
 
 /// A comment on a task
@@ -232,6 +273,14 @@ impl Task {
         self.summary
             .as_deref()
             .or_else(|| self.comments.last().map(|c| c.text.as_str()))
+    }
+
+    /// Returns true if this task is an orchestrator (coordinates subtask execution).
+    ///
+    /// Orchestrator tasks get special lifecycle behavior: when stopped or failed,
+    /// all their unclosed descendants are automatically cascade-closed as WontDo.
+    pub fn is_orchestrator(&self) -> bool {
+        self.task_type.as_deref() == Some("orchestrator")
     }
 }
 
@@ -332,5 +381,25 @@ mod tests {
     fn test_effective_summary_none_when_empty() {
         let task = make_task_for_summary();
         assert_eq!(task.effective_summary(), None);
+    }
+
+    #[test]
+    fn test_is_orchestrator_true() {
+        let mut task = make_task_for_summary();
+        task.task_type = Some("orchestrator".to_string());
+        assert!(task.is_orchestrator());
+    }
+
+    #[test]
+    fn test_is_orchestrator_false_for_other_type() {
+        let mut task = make_task_for_summary();
+        task.task_type = Some("build".to_string());
+        assert!(!task.is_orchestrator());
+    }
+
+    #[test]
+    fn test_is_orchestrator_false_for_none() {
+        let task = make_task_for_summary();
+        assert!(!task.is_orchestrator());
     }
 }

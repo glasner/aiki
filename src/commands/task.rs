@@ -15,23 +15,25 @@ use crate::error::{AikiError, Result};
 use crate::events::{AikiEvent, AikiTaskClosedPayload, AikiTaskStartedPayload, TaskEventPayload};
 use std::collections::{HashMap, HashSet};
 
+use crate::tasks::types::FastHashMap;
+
 use crate::tasks::{
     generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix,
+    materialize_graph, materialize_graph_with_ids,
     manager::{
         find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
-        get_ready_queue_for_scope_set, has_subtasks, materialize_tasks, materialize_tasks_with_ids,
+        get_ready_queue_for_scope_set, has_subtasks,
         resolve_task_id, ScopeSet,
+    },
+    md::{
+        aiki_print, build_context, build_list_output, build_transition_context,
+        format_action_added, format_action_closed, format_action_commented, format_action_started,
+        format_action_stopped, format_instructions, format_task_list, short_id,
     },
     reopen_if_closed,
     runner::{run_task_with_output, TaskRunOptions},
-    storage::{read_events, read_events_with_ids, write_event},
+    storage::{read_events, read_events_with_ids, write_event, write_link_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
-    md::{
-        aiki_print, build_context, build_list_output, build_transition_context,
-        format_action_added, format_action_closed, format_action_commented,
-        format_action_started, format_action_stopped, format_instructions, format_task_list,
-        short_id,
-    },
     MdBuilder,
 };
 
@@ -508,6 +510,85 @@ pub enum TaskCommands {
         no_backup: bool,
     },
 
+    /// Add a link between tasks
+    ///
+    /// Creates a relationship between two tasks. The first argument is the
+    /// subject task; the flag names the relationship and takes the target.
+    ///
+    /// Examples:
+    ///   aiki task link B --blocked-by A     # B is blocked by A
+    ///   aiki task link A --sourced-from file:design.md
+    ///   aiki task link child --subtask-of parent
+    Link {
+        /// Subject task (the "from" node)
+        id: String,
+
+        /// Task that blocks this one (from can't start until target closes)
+        #[arg(long)]
+        blocked_by: Option<String>,
+
+        /// Origin this task came from (task ID or external ref)
+        #[arg(long)]
+        sourced_from: Option<String>,
+
+        /// Parent task this is a subtask of
+        #[arg(long)]
+        subtask_of: Option<String>,
+
+        /// Spec file this task implements
+        #[arg(long)]
+        implements: Option<String>,
+
+        /// Plan task this orchestrator drives
+        #[arg(long)]
+        orchestrates: Option<String>,
+
+        /// Target this task operates on
+        #[arg(long)]
+        scoped_to: Option<String>,
+
+        /// Predecessor this task replaces
+        #[arg(long)]
+        supersedes: Option<String>,
+    },
+
+    /// Remove a link between tasks
+    ///
+    /// Examples:
+    ///   aiki task unlink B --blocked-by A
+    Unlink {
+        /// Subject task (the "from" node)
+        id: String,
+
+        /// Remove blocked-by link to this target
+        #[arg(long)]
+        blocked_by: Option<String>,
+
+        /// Remove sourced-from link to this target
+        #[arg(long)]
+        sourced_from: Option<String>,
+
+        /// Remove subtask-of link to this target
+        #[arg(long)]
+        subtask_of: Option<String>,
+
+        /// Remove implements link to this target
+        #[arg(long)]
+        implements: Option<String>,
+
+        /// Remove orchestrates link to this target
+        #[arg(long)]
+        orchestrates: Option<String>,
+
+        /// Remove scoped-to link to this target
+        #[arg(long)]
+        scoped_to: Option<String>,
+
+        /// Remove supersedes link to this target
+        #[arg(long)]
+        supersedes: Option<String>,
+    },
+
     /// Show diff of changes made while working on a task
     ///
     /// Shows the net result of all changes made during a task (baseline → final).
@@ -651,6 +732,46 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             dry_run,
             no_backup,
         } => run_undo(&cwd, ids, completed, force, dry_run, no_backup),
+        TaskCommands::Link {
+            id,
+            blocked_by,
+            sourced_from,
+            subtask_of,
+            implements,
+            orchestrates,
+            scoped_to,
+            supersedes,
+        } => run_link(
+            &cwd,
+            id,
+            blocked_by,
+            sourced_from,
+            subtask_of,
+            implements,
+            orchestrates,
+            scoped_to,
+            supersedes,
+        ),
+        TaskCommands::Unlink {
+            id,
+            blocked_by,
+            sourced_from,
+            subtask_of,
+            implements,
+            orchestrates,
+            scoped_to,
+            supersedes,
+        } => run_unlink(
+            &cwd,
+            id,
+            blocked_by,
+            sourced_from,
+            subtask_of,
+            implements,
+            orchestrates,
+            scoped_to,
+            supersedes,
+        ),
         TaskCommands::Diff {
             id,
             summary,
@@ -678,7 +799,8 @@ fn run_list(
     use crate::session::find_active_session;
 
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Determine scope set from override or current in-progress tasks
     let scope_set = if let Some(s) = scope_override {
@@ -687,7 +809,7 @@ fn run_list(
             scopes: vec![s.to_string()],
         }
     } else {
-        get_current_scope_set(&tasks)
+        get_current_scope_set(&graph)
     };
 
     // Collect active status filters
@@ -775,19 +897,27 @@ fn run_list(
 
     // Helper closure to check source filter
     // Supports partial matching: "ops/now/assign.md" matches "file:ops/now/assign.md"
+    // Uses graph's sourced-from edges for source matching (includes both
+    // old-style task.sources indexed at materialization and explicit LinkAdded events,
+    // with LinkRemoved properly removing edges).
     let matches_source = |task: &Task| -> bool {
         match &filter_source {
             None => true, // No filter applied
             Some(query) => {
-                // Match if any source in the task's sources list matches the query
-                task.sources.iter().any(|source| {
+                let source_match = |source: &str| -> bool {
                     // Exact match
                     source == query ||
                     // Partial match: query without prefix matches source
                     source.ends_with(query) ||
                     // Partial match: source without prefix matches query
                     source.split(':').nth(1).map_or(false, |suffix| suffix == query)
-                })
+                };
+                // Check graph's sourced-from edges (handles LinkAdded and LinkRemoved correctly)
+                graph
+                    .edges
+                    .targets(&task.id, "sourced-from")
+                    .iter()
+                    .any(|s| source_match(s))
             }
         }
     };
@@ -810,20 +940,20 @@ fn run_list(
     };
 
     // Always compute the actual ready queue for context (maintains contract)
-    // Apply agent/human filtering AND session filtering
+    // Blocking is filtered internally by ready queue functions, then apply agent/human AND session filtering
     let ready_queue: Vec<&Task> = if let Some(ref agent) = auto_agent_filter {
-        get_ready_queue_for_agent_scoped(&tasks, &scope_set, agent)
+        get_ready_queue_for_agent_scoped(&graph, &scope_set, agent)
             .into_iter()
             .filter(|t| matches_session(t))
             .collect()
     } else if apply_human_filter {
         // Human mode: filter to human-visible tasks
-        get_ready_queue_for_scope_set(&tasks, &scope_set)
+        get_ready_queue_for_scope_set(&graph, &scope_set)
             .into_iter()
             .filter(|t| is_auto_visible(t) && matches_session(t))
             .collect()
     } else {
-        get_ready_queue_for_scope_set(&tasks, &scope_set)
+        get_ready_queue_for_scope_set(&graph, &scope_set)
             .into_iter()
             .filter(|t| matches_session(t))
             .collect()
@@ -1009,7 +1139,7 @@ fn run_add(
 
         // Read events to get the task we just created
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task = tasks
             .get(&task_id)
@@ -1057,7 +1187,8 @@ fn run_add(
 
     // Read current state first
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Determine task ID and possibly inherit parent's assignee
     let (task_id, effective_assignee) = if let Some(ref parent_id) = parent {
@@ -1103,6 +1234,11 @@ fn run_add(
     };
 
     write_event(cwd, &event)?;
+
+    // Emit sourced-from links for each source
+    for source in &sources {
+        write_link_event(cwd, &graph, "sourced-from", &task_id, source)?;
+    }
 
     // Build new task from event (avoid re-reading)
     let new_task = Task {
@@ -1225,7 +1361,7 @@ fn run_start(
         TaskPriority::default() // P2
     };
     let events = read_events(cwd)?;
-    let mut tasks = materialize_tasks(&events);
+    let mut tasks = materialize_graph(&events).tasks;
 
     // Detect current session early - needed for both session filtering and start event
     let session_match = find_active_session(cwd);
@@ -1244,9 +1380,10 @@ fn run_start(
         .map(|t| t.id.clone())
         .collect();
 
-    // Determine current scope set for ready queue
-    let current_scope_set = get_current_scope_set(&tasks);
-    let ready = get_ready_queue_for_scope_set(&tasks, &current_scope_set);
+    // Build graph for edge lookups (scope set, blocked-by filtering)
+    let graph = materialize_graph(&events);
+    let current_scope_set = get_current_scope_set(&graph);
+    let ready = get_ready_queue_for_scope_set(&graph, &current_scope_set);
 
     // Track if we created a new task (for output formatting)
     let mut created_new_task: Option<Task> = None;
@@ -1266,7 +1403,7 @@ fn run_start(
             match resolve_task_id(&tasks, &ids[0]) {
                 Ok(full_id) => resolved = Some(full_id),
                 Err(AikiError::TaskNotFound(_)) => {} // fall through to quick-start
-                Err(e) => return Err(e),               // ambiguous → error
+                Err(e) => return Err(e),              // ambiguous → error
             }
         }
 
@@ -1293,6 +1430,11 @@ fn run_start(
                 timestamp,
             };
             write_event(cwd, &create_event)?;
+
+            // Emit sourced-from links for each source
+            for source in &sources {
+                write_link_event(cwd, &graph, "sourced-from", &task_id, source)?;
+            }
 
             let new_task = Task {
                 id: task_id.clone(),
@@ -1325,7 +1467,9 @@ fn run_start(
         let mut resolved_ids = Vec::new();
         for id in &ids {
             let full_id = resolve_task_id(&tasks, id)?;
-            let task = tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id.clone()))?;
+            let task = tasks
+                .get(&full_id)
+                .ok_or_else(|| AikiError::TaskNotFound(full_id.clone()))?;
             if task.status == TaskStatus::Closed {
                 if !reopen {
                     let xml = MdBuilder::new("start").error().build_error(&format!(
@@ -1379,7 +1523,7 @@ fn run_start(
 
     if ids_to_start.len() == 1 {
         let task_id = ids_to_start[0].clone();
-        if has_subtasks(&tasks, &task_id) {
+        if has_subtasks(&graph, &task_id) {
             // Starting a parent task - create planning task if needed
             let planning_id = generate_child_id(&task_id, 0);
 
@@ -1467,7 +1611,6 @@ fn run_start(
         let stop_event = TaskEvent::Stopped {
             task_ids: current_in_progress_ids.clone(),
             reason: Some(stop_reason.clone()),
-            blocked_reason: None,
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &stop_event)?;
@@ -1531,7 +1674,7 @@ fn run_start(
 
     // Show stopped tasks if any (one line each)
     for task in &stopped_tasks {
-        output.push_str(&format_action_stopped(short_id(&task.id), None));
+        output.push_str(&format_action_stopped(task, None));
     }
 
     for task in &started_tasks {
@@ -1539,6 +1682,64 @@ fn run_start(
     }
 
     aiki_print(&output);
+    Ok(())
+}
+
+/// Cascade-close a set of tasks: write Closed event, dispatch flow events, update in-memory state.
+///
+/// Used by run_close (existing cascade), run_stop (orchestrator), and task_run (orchestrator).
+pub(crate) fn cascade_close_tasks(
+    cwd: &Path,
+    tasks: &mut FastHashMap<String, Task>,
+    task_ids: &[String],
+    outcome: TaskOutcome,
+    summary: &str,
+) -> Result<()> {
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+
+    let close_timestamp = chrono::Utc::now();
+
+    // 1. Write the Closed event
+    let close_event = TaskEvent::Closed {
+        task_ids: task_ids.to_vec(),
+        outcome,
+        summary: Some(summary.to_string()),
+        timestamp: close_timestamp,
+    };
+    write_event(cwd, &close_event)?;
+
+    // 2. Dispatch task.closed flow events for hook automation
+    for id in task_ids {
+        if let Some(task) = tasks.get(id) {
+            let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
+                task: TaskEventPayload {
+                    id: task.id.clone(),
+                    name: task.name.clone(),
+                    task_type: infer_task_type(task),
+                    status: "closed".to_string(),
+                    assignee: task.assignee.clone(),
+                    outcome: Some(outcome.to_string()),
+                    source: task.sources.first().cloned(),
+                    files: None,
+                    changes: None,
+                },
+                cwd: cwd.to_path_buf(),
+                timestamp: close_timestamp,
+            });
+            let _ = crate::event_bus::dispatch(task_event);
+        }
+    }
+
+    // 3. Update in-memory state
+    for id in task_ids {
+        if let Some(task) = tasks.get_mut(id) {
+            task.status = TaskStatus::Closed;
+            task.closed_outcome = Some(outcome);
+        }
+    }
+
     Ok(())
 }
 
@@ -1551,10 +1752,10 @@ fn run_stop(
     force: bool,
 ) -> Result<()> {
     let events = read_events(cwd)?;
-    let mut tasks = materialize_tasks(&events);
+    let mut graph = materialize_graph(&events);
 
     // Get in-progress task IDs first (to avoid borrow conflicts)
-    let in_progress_ids: Vec<String> = get_in_progress(&tasks)
+    let in_progress_ids: Vec<String> = get_in_progress(&graph.tasks)
         .iter()
         .map(|t| t.id.clone())
         .collect();
@@ -1562,7 +1763,7 @@ fn run_stop(
     // Determine which task to stop
     let task_id = if let Some(id) = id {
         // Verify task exists and is in progress
-        let task = find_task(&tasks, &id)?;
+        let task = find_task(&graph.tasks, &id)?;
         if task.status != TaskStatus::InProgress {
             if task.status != TaskStatus::Open {
                 return Err(AikiError::TaskNotFound(format!(
@@ -1587,7 +1788,7 @@ fn run_stop(
     };
 
     // Get the task before stopping (for output)
-    let mut stopped_task = tasks.get(&task_id).expect("Task should exist").clone();
+    let mut stopped_task = graph.tasks.get(&task_id).expect("Task should exist").clone();
 
     // Session ownership guard: only owning session can stop (unless --force)
     if let Some(ref claimed_session) = stopped_task.claimed_by_session {
@@ -1608,17 +1809,15 @@ fn run_stop(
         }
     }
 
-    // Stop the task (batch operation with single task)
-    // Store first blocked reason in event (for backward compatibility)
+    // Stop the task
     let stop_event = TaskEvent::Stopped {
         task_ids: vec![task_id.clone()],
         reason: reason.clone(),
-        blocked_reason: blocked.first().cloned(),
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &stop_event)?;
 
-    // Create blocker tasks for each --blocked flag and add to in-memory map
+    // Create blocker tasks for each --blocked flag and emit links
     let timestamp = chrono::Utc::now();
     let working_copy = get_working_copy_change_id(cwd);
     for blocked_reason in &blocked {
@@ -1638,8 +1837,14 @@ fn run_stop(
         };
         write_event(cwd, &blocker_event)?;
 
+        // Emit blocked-by link: stopped task → blocker
+        write_link_event(cwd, &graph, "blocked-by", &task_id, &blocker_id)?;
+
+        // Emit sourced-from link: blocker → stopped task
+        write_link_event(cwd, &graph, "sourced-from", &blocker_id, &task_id)?;
+
         // Add blocker task to in-memory map so it appears in ready queue
-        tasks.insert(
+        graph.tasks.insert(
             blocker_id.clone(),
             Task {
                 id: blocker_id,
@@ -1665,21 +1870,41 @@ fn run_stop(
         );
     }
 
-    // Update stopped task status
+    // Update stopped task status in both the clone and the tasks map
     stopped_task.status = TaskStatus::Stopped;
+    if let Some(t) = graph.tasks.get_mut(&task_id) {
+        t.status = TaskStatus::Stopped;
+    }
+
+    // Cascade-close unclosed descendants if this is an orchestrator task
+    if stopped_task.is_orchestrator() {
+        use crate::tasks::manager::get_all_unclosed_descendants;
+        let unclosed = get_all_unclosed_descendants(&graph, &task_id);
+        if !unclosed.is_empty() {
+            let cascade_ids: Vec<String> = unclosed.iter().map(|t| t.id.clone()).collect();
+            cascade_close_tasks(
+                cwd,
+                &mut graph.tasks,
+                &cascade_ids,
+                TaskOutcome::WontDo,
+                "Parent orchestrator stopped",
+            )?;
+        }
+    }
 
     // Update context: get in-progress tasks minus the stopped one
     let updated_in_progress: Vec<Task> = in_progress_ids
         .iter()
         .filter(|id| *id != &task_id)
-        .filter_map(|id| tasks.get(id).cloned())
+        .filter_map(|id| graph.tasks.get(id).cloned())
         .collect();
 
     // Determine scope set based on remaining in-progress tasks
+    // Use graph edges to find parent of each task
     let mut include_root = false;
     let mut scopes: Vec<String> = Vec::new();
     for task in &updated_in_progress {
-        if let Some(parent_id) = crate::tasks::id::get_parent_id(&task.id) {
+        if let Some(parent_id) = graph.edges.target(&task.id, "subtask-of") {
             scopes.push(parent_id.to_string());
         } else {
             include_root = true;
@@ -1692,15 +1917,15 @@ fn run_stop(
         scopes,
     };
 
-    // Get scoped ready queue
-    let mut ready: Vec<Task> = get_ready_queue_for_scope_set(&tasks, &scope_set)
-        .into_iter()
-        .map(|t| (*t).clone())
-        .collect();
+    // Get scoped ready queue (blocking is filtered internally)
+    let mut ready: Vec<Task> = get_ready_queue_for_scope_set(&graph, &scope_set)
+    .into_iter()
+    .map(|t| (*t).clone())
+    .collect();
 
     // Add stopped task if it's in scope
     let stopped_in_scope = match (
-        crate::tasks::id::get_parent_id(&stopped_task.id),
+        graph.edges.target(&stopped_task.id, "subtask-of"),
         &scope_set,
     ) {
         // Root task in scope if root included or no scopes
@@ -1716,7 +1941,7 @@ fn run_stop(
     // Build output: action+hint line, then ---/context
     let in_progress_refs: Vec<_> = updated_in_progress.iter().collect();
     let ready_refs: Vec<_> = ready.iter().collect();
-    let mut output = format_action_stopped(short_id(&stopped_task.id), reason.as_deref());
+    let mut output = format_action_stopped(&stopped_task, reason.as_deref());
     output.push_str(&build_transition_context(&in_progress_refs, &ready_refs));
 
     aiki_print(&output);
@@ -1751,7 +1976,7 @@ fn run_close(
     }
 
     let events = read_events(cwd)?;
-    let mut tasks = materialize_tasks(&events);
+    let mut tasks = materialize_graph(&events).tasks;
 
     // Get in-progress task IDs first (to avoid borrow issues)
     let in_progress_ids: Vec<String> = get_in_progress(&tasks)
@@ -1782,12 +2007,15 @@ fn run_close(
     // Keep track of explicitly requested tasks vs cascade-closed descendants
     let explicit_ids = ids_to_close.clone();
 
+    // Build graph for edge lookups (subtask-of, blocked-by, etc.)
+    let graph = materialize_graph(&events);
+
     // Cascade close: collect all unclosed descendants for any parent tasks being closed
     // This allows closing a parent to automatically close all its subtasks
     let mut descendants_to_close: Vec<String> = Vec::new();
     for id in &ids_to_close {
-        if has_subtasks(&tasks, id) {
-            let unclosed = get_all_unclosed_descendants(&tasks, id);
+        if has_subtasks(&graph, id) {
+            let unclosed = get_all_unclosed_descendants(&graph, id);
             for task in unclosed {
                 if !ids_to_close.contains(&task.id) && !descendants_to_close.contains(&task.id) {
                     descendants_to_close.push(task.id.clone());
@@ -1866,23 +2094,15 @@ fn run_close(
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
-    let close_timestamp = chrono::Utc::now();
-
-    // Cascade-closed descendants get their own Closed event with "Closed with parent" summary
+    // Cascade-close descendants via shared helper (write event, dispatch flow events, update state)
     let cascade_ids: Vec<String> = ids_to_close
         .iter()
         .filter(|id| !explicit_ids.contains(id))
         .cloned()
         .collect();
-    if !cascade_ids.is_empty() {
-        let cascade_close = TaskEvent::Closed {
-            task_ids: cascade_ids,
-            outcome,
-            summary: Some("Closed with parent".to_string()),
-            timestamp: close_timestamp,
-        };
-        write_event(cwd, &cascade_close)?;
-    }
+    cascade_close_tasks(cwd, &mut tasks, &cascade_ids, outcome, "Closed with parent")?;
+
+    let close_timestamp = chrono::Utc::now();
 
     // Close the explicitly requested tasks with user's summary
     let close_event = TaskEvent::Closed {
@@ -1897,8 +2117,8 @@ fn run_close(
     // Close is called by the agent when it finishes work gracefully.
     // Use `aiki task stop` to forcibly terminate a running agent.
 
-    // Emit task.closed flow events for each closed task
-    for task_id in &ids_to_close {
+    // Emit task.closed flow events for explicitly closed tasks
+    for task_id in &explicit_ids {
         if let Some(task) = tasks.get(task_id) {
             let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
                 task: TaskEventPayload {
@@ -1909,25 +2129,22 @@ fn run_close(
                     assignee: task.assignee.clone(),
                     outcome: Some(outcome.to_string()),
                     source: task.sources.first().cloned(),
-                    // TODO: Implement lazy loading for files/changes (see ops/now/lazy-load-payloads.md)
                     files: None,
                     changes: None,
                 },
                 cwd: cwd.to_path_buf(),
                 timestamp: close_timestamp,
             });
-
-            // Dispatch event (fire-and-forget, don't block on failure)
             let _ = crate::event_bus::dispatch(task_event);
         }
     }
 
-    // Update closed tasks status in local state
+    // Update closed tasks status in local state for explicit IDs
     for task in &mut closed_tasks {
         task.status = TaskStatus::Closed;
         task.closed_outcome = Some(outcome);
     }
-    for id in &ids_to_close {
+    for id in &explicit_ids {
         if let Some(task) = tasks.get_mut(id) {
             task.status = TaskStatus::Closed;
             task.closed_outcome = Some(outcome);
@@ -1937,8 +2154,12 @@ fn run_close(
     // Collect all unique parent IDs from closed tasks for auto-start check
     let unique_parent_ids: HashSet<String> = ids_to_close
         .iter()
-        .filter_map(|id| crate::tasks::id::get_parent_id(id).map(|s| s.to_string()))
+        .filter_map(|id| graph.edges.target(id, "subtask-of").map(|s| s.to_string()))
         .collect();
+
+    // Move mutated tasks into graph for accurate subtask-closed checks and edge lookups
+    let mut graph = graph;
+    graph.tasks = tasks;
 
     // Check each parent for auto-start eligibility
     let mut auto_started_parents: Vec<Task> = Vec::new();
@@ -1946,8 +2167,8 @@ fn run_close(
 
     for parent_id in &unique_parent_ids {
         // Check if all subtasks are now closed
-        if all_subtasks_closed(&tasks, parent_id) {
-            if let Some(parent) = tasks.get_mut(parent_id) {
+        if all_subtasks_closed(&graph, parent_id) {
+            if let Some(parent) = graph.tasks.get_mut(parent_id) {
                 // Guard: skip if already closed or in-progress
                 if parent.status == TaskStatus::Closed {
                     continue;
@@ -2008,12 +2229,12 @@ fn run_close(
 
     for parent_id in &unique_parent_ids {
         // Skip if all subtasks just closed (parent auto-start already handled above)
-        if all_subtasks_closed(&tasks, parent_id) {
+        if all_subtasks_closed(&graph, parent_id) {
             continue;
         }
 
         // Check if the parent is claimed by the current session
-        let parent_claimed_by_us = if let Some(parent) = tasks.get(parent_id) {
+        let parent_claimed_by_us = if let Some(parent) = graph.tasks.get(parent_id) {
             match (&parent.claimed_by_session, &our_session_id) {
                 (Some(claimed), Some(ours)) => claimed == ours,
                 _ => false,
@@ -2027,7 +2248,7 @@ fn run_close(
         }
 
         // Pick the next pending subtask from the scoped ready queue
-        let next_subtasks = get_scoped_ready_queue(&tasks, Some(parent_id));
+        let next_subtasks = get_scoped_ready_queue(&graph, Some(parent_id));
         if let Some(next) = next_subtasks.first() {
             let next_id = next.id.clone();
             let next_name = next.name.clone();
@@ -2069,7 +2290,7 @@ fn run_close(
             let _ = crate::event_bus::dispatch(task_event);
 
             // Update local state
-            if let Some(task) = tasks.get_mut(&next_id) {
+            if let Some(task) = graph.tasks.get_mut(&next_id) {
                 task.status = TaskStatus::InProgress;
                 task.claimed_by_session = our_session_id.clone();
                 auto_started_subtasks.push(task.clone());
@@ -2086,7 +2307,7 @@ fn run_close(
     let mut updated_in_progress: Vec<Task> = in_progress_ids
         .iter()
         .filter(|id| !ids_to_close.contains(id))
-        .filter_map(|id| tasks.get(id).cloned())
+        .filter_map(|id| graph.tasks.get(id).cloned())
         .collect();
 
     // Add auto-started parents to in_progress
@@ -2103,7 +2324,7 @@ fn run_close(
     let mut include_root = false;
     let mut output_scopes: Vec<String> = Vec::new();
     for task in &updated_in_progress {
-        if let Some(parent_id) = crate::tasks::id::get_parent_id(&task.id) {
+        if let Some(parent_id) = graph.edges.target(&task.id, "subtask-of") {
             output_scopes.push(parent_id.to_string());
         } else {
             include_root = true;
@@ -2116,12 +2337,12 @@ fn run_close(
         scopes: output_scopes,
     };
 
-    // Get scoped ready queue
-    let ready: Vec<Task> = get_ready_queue_for_scope_set(&tasks, &scope_set)
-        .into_iter()
-        .filter(|t| !ids_to_close.contains(&t.id))
-        .map(|t| (*t).clone())
-        .collect();
+    // Get scoped ready queue (with blocked-by filtering)
+    let ready: Vec<Task> = get_ready_queue_for_scope_set(&graph, &scope_set)
+    .into_iter()
+    .filter(|t| !ids_to_close.contains(&t.id))
+    .map(|t| (*t).clone())
+    .collect();
 
     // Build output: action+hint line, then ---/context
     let mut output = String::new();
@@ -2130,14 +2351,15 @@ fn run_close(
 
     // Closed confirmation with hint
     if closed_tasks.len() == 1 {
-        output.push_str(&format_action_closed(short_id(&closed_tasks[0].id)));
+        output.push_str(&format_action_closed(&closed_tasks[0]));
     } else {
         output.push_str(&format!("Closed {} tasks\n", closed_tasks.len()));
     }
 
     // Notices and auto-starts
-    let has_intermediates =
-        !notices.is_empty() || !auto_started_parents.is_empty() || !auto_started_subtasks.is_empty();
+    let has_intermediates = !notices.is_empty()
+        || !auto_started_parents.is_empty()
+        || !auto_started_subtasks.is_empty();
     if has_intermediates {
         for notice in &notices {
             output.push_str(&format!("> {}\n", notice));
@@ -2280,7 +2502,7 @@ fn parse_source(source: &str) -> SourceRef {
 fn format_source(
     cwd: &Path,
     source: &str,
-    tasks: &std::collections::HashMap<String, Task>,
+    tasks: &FastHashMap<String, Task>,
     expand: bool,
 ) -> String {
     let parsed = parse_source(source);
@@ -2328,10 +2550,7 @@ fn format_source(
                 let full_path = cwd.join(&path);
                 match std::fs::read_to_string(&full_path) {
                     Ok(content) => {
-                        format!(
-                            "- Source: file:{}\n```\n{}\n```\n",
-                            &path, content
-                        )
+                        format!("- Source: file:{}\n```\n{}\n```\n", &path, content)
                     }
                     Err(_) => {
                         format!("- Source: file:{} (not found)\n", &path)
@@ -2388,7 +2607,8 @@ fn run_show(
     use crate::tasks::manager::get_subtasks;
 
     let events = read_events_with_ids(cwd)?;
-    let tasks = materialize_tasks_with_ids(&events);
+    let graph = materialize_graph_with_ids(&events);
+    let tasks = &graph.tasks;
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to show
@@ -2411,7 +2631,7 @@ fn run_show(
     let task = tasks.get(&task_id).expect("Task should exist");
 
     // Get subtasks if this is a parent task
-    let subtasks = get_subtasks(&tasks, &task_id);
+    let subtasks = get_subtasks(&graph, &task_id);
     let has_subtasks = !subtasks.is_empty();
 
     // Calculate progress if has subtasks
@@ -2451,10 +2671,39 @@ fn run_show(
         }
     }
 
-    // Add sources if any
-    if !task.sources.is_empty() {
-        for source in &task.sources {
+    // Add sources: use graph's sourced-from edges (superset of old-style task.sources)
+    let source_targets = graph.edges.targets(&task_id, "sourced-from");
+    if !source_targets.is_empty() {
+        for source in source_targets {
             content.push_str(&format_source(cwd, source, &tasks, with_source));
+        }
+    }
+
+    // Add blocked-by links
+    let blockers = graph.edges.targets(&task_id, "blocked-by");
+    if !blockers.is_empty() {
+        content.push_str("\nBlocked by:\n");
+        for blocker_id in blockers {
+            let status = graph
+                .tasks
+                .get(blocker_id)
+                .map(|t| format!("{} — {} ({})", short_id(blocker_id), t.name, t.status))
+                .unwrap_or_else(|| short_id(blocker_id).to_string());
+            content.push_str(&format!("- {}\n", status));
+        }
+    }
+
+    // Add blocks links (reverse lookup — what does this task block?)
+    let blocks = graph.edges.referrers(&task_id, "blocked-by");
+    if !blocks.is_empty() {
+        content.push_str("\nBlocks:\n");
+        for blocked_id in blocks {
+            let status = graph
+                .tasks
+                .get(blocked_id)
+                .map(|t| format!("{} [{}] {}", short_id(blocked_id), t.status, t.name))
+                .unwrap_or_else(|| short_id(blocked_id).to_string());
+            content.push_str(&format!("- {}\n", status));
         }
     }
 
@@ -2509,17 +2758,14 @@ fn run_show(
             content.push_str(&format!("\nChanges ({}):\n", changes.len()));
             for change in &changes {
                 let diff = get_change_diff(cwd, &change.change_id)?;
-                content.push_str(&format!(
-                    "- {}\n```\n{}\n```\n",
-                    change.change_id, diff
-                ));
+                content.push_str(&format!("- {}\n```\n{}\n```\n", change.change_id, diff));
             }
         }
     }
 
     // Context footer (read command - keep it)
-    let scope_set = get_current_scope_set(&tasks);
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let scope_set = get_current_scope_set(&graph);
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
     let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
     content.push_str(&build_context(&in_progress_refs, &ready));
 
@@ -2541,10 +2787,10 @@ fn run_undo(
     no_backup: bool,
 ) -> Result<()> {
     use crate::jj::jj_cmd;
-    use crate::tasks::id::is_direct_child_of;
 
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Resolve task IDs: if --completed, expand to completed subtasks
     let task_ids = if completed {
@@ -2553,15 +2799,17 @@ fn run_undo(
                 "--completed requires exactly one plan task ID".to_string(),
             ));
         }
-        let plan_task = find_task(&tasks, &ids[0])?;
+        let plan_task = find_task(tasks, &ids[0])?;
         let plan_id = &plan_task.id;
 
         // Find completed subtasks (direct children of the plan)
-        let completed_subtasks: Vec<String> = tasks
-            .values()
+        let completed_subtasks: Vec<String> = graph
+            .edges
+            .referrers(plan_id, "subtask-of")
+            .iter()
+            .filter_map(|id| graph.tasks.get(id))
             .filter(|t| {
-                is_direct_child_of(&t.id, plan_id)
-                    && t.status == TaskStatus::Closed
+                t.status == TaskStatus::Closed
                     && t.closed_outcome == Some(TaskOutcome::Done)
             })
             .map(|t| t.id.clone())
@@ -3013,8 +3261,9 @@ fn run_undo(
     }
 
     let in_progress = get_in_progress(&tasks);
-    let scope_set = get_current_scope_set(&tasks);
-    let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let graph = materialize_graph(&events);
+    let scope_set = get_current_scope_set(&graph);
+    let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
     let xml_scopes = scope_set.to_xml_scopes();
     let mut builder = MdBuilder::new("undo");
     if !xml_scopes.is_empty() {
@@ -3095,7 +3344,7 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 
     // Verify task exists
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
     let task = find_task(&tasks, &id)?;
     let id = task.id.clone(); // use canonical ID
 
@@ -3379,7 +3628,7 @@ fn run_update(
     }
 
     let events = read_events(cwd)?;
-    let mut tasks = materialize_tasks(&events);
+    let mut tasks = materialize_graph(&events).tasks;
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to update
@@ -3493,15 +3742,13 @@ fn run_update(
 
     let content = format!(
         "## Updated\n- **{}** — {} ({})\n{}",
-        updated_task.id,
-        updated_task.name,
-        updated_task.priority,
-        data_md
+        updated_task.id, updated_task.name, updated_task.priority, data_md
     );
 
-    // Get scope set and ready queue for context (now uses updated tasks map)
-    let scope_set = get_current_scope_set(&tasks);
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    // Get scope set and ready queue for context (now uses updated tasks map, with blocked-by filtering)
+    let graph = materialize_graph(&events);
+    let scope_set = get_current_scope_set(&graph);
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
     // Re-calculate in_progress since it may have changed
     let updated_in_progress = get_in_progress(&tasks);
     let in_progress_refs: Vec<_> = updated_in_progress.iter().map(|t| *t).collect();
@@ -3523,7 +3770,7 @@ fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<Stri
     let data = parse_data_flags(&data_args, false)?;
 
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to comment on
@@ -3601,7 +3848,7 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
 
     // Resolve all task IDs up front (prefix → full)
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
     let mut resolved_ids = Vec::new();
     for id in &ids {
         resolved_ids.push(resolve_task_id(&tasks, id)?);
@@ -3611,7 +3858,7 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
     // Poll until all tasks are in terminal state
     loop {
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let all_done = ids.iter().all(|id| {
             find_task(&tasks, id)
@@ -3630,23 +3877,17 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
                         .as_ref()
                         .map(|o| o.to_string())
                         .unwrap_or_default();
-                    let summary = task
-                        .effective_summary()
-                        .unwrap_or_default()
-                        .to_string();
+                    let summary = task.effective_summary().unwrap_or_default().to_string();
                     content.push_str(&format!(
                         "| {} | {} | {} | {} | {} |\n",
-                        id,
-                        task.name,
-                        status,
-                        outcome,
-                        summary,
+                        id, task.name, status, outcome, summary,
                     ));
                 }
             }
             let in_progress = get_in_progress(&tasks);
-            let scope_set = get_current_scope_set(&tasks);
-            let ready_queue = get_ready_queue_for_scope_set(&tasks, &scope_set);
+            let graph = materialize_graph(&events);
+            let scope_set = get_current_scope_set(&graph);
+            let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
             let xml_scopes = scope_set.to_xml_scopes();
             let mut builder = MdBuilder::new("wait");
             if !xml_scopes.is_empty() {
@@ -3898,10 +4139,10 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
 
     // Generate task ID: child ID if parent_id is set, standalone otherwise
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
     let task_id = if let Some(ref parent_id) = params.parent_id {
-        let events = read_events(cwd)?;
-        let current_tasks = materialize_tasks(&events);
-        let task_ids: Vec<&str> = current_tasks.keys().map(|s| s.as_str()).collect();
+        let task_ids: Vec<&str> = graph.tasks.keys().map(|s| s.as_str()).collect();
         let subtask_num = get_next_subtask_number(parent_id, task_ids.into_iter());
         generate_child_id(parent_id, subtask_num)
     } else {
@@ -3941,6 +4182,11 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     };
     write_event(cwd, &create_event)?;
 
+    // Emit sourced-from links for each source
+    for source in &params.sources {
+        write_link_event(cwd, &graph, "sourced-from", &task_id, source)?;
+    }
+
     // Set parent.* to current task for subtask variable substitution.
     // Static subtasks within this template use {{parent.id}} to reference their parent.
     ctx.set_parent("id", &task_id);
@@ -3969,15 +4215,12 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &data,
             timestamp,
         )?;
-    } else if template
-        .raw_content
-        .as_ref()
-        .is_some_and(|c| crate::tasks::templates::has_subtask_refs(c) || crate::tasks::templates::has_inline_loops(c))
-    {
+    } else if template.raw_content.as_ref().is_some_and(|c| {
+        crate::tasks::templates::has_subtask_refs(c) || crate::tasks::templates::has_inline_loops(c)
+    }) {
         // Composable templates: use entry-based flow for {% subtask %} refs or {% for %} loops
-        let (_, entries) = crate::tasks::templates::create_subtask_entries_from_template(
-            &template, &ctx, None,
-        )?;
+        let (_, entries) =
+            crate::tasks::templates::create_subtask_entries_from_template(&template, &ctx, None)?;
         let composition_stack = vec![template_name.to_string()];
         create_subtasks_from_entries(
             cwd,
@@ -4049,7 +4292,7 @@ fn create_dynamic_subtasks(
 
     // Materialize tasks to get the source task's comments
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Resolve the data source (e.g., fetch comments from the source task)
     let data_items = resolve_data_source(&data_source, source_task_id, &tasks)?;
@@ -4426,18 +4669,16 @@ fn create_subtasks_from_entries(
                     })?;
 
                 // Determine child priority and assignee from child template defaults
-                let child_priority =
-                    if let Some(ref p) = child_template.defaults.priority {
-                        TaskPriority::from_str(p).unwrap_or(parent_priority)
-                    } else {
-                        parent_priority
-                    };
-                let child_assignee =
-                    if let Some(ref a) = child_template.defaults.assignee {
-                        Some(a.clone())
-                    } else {
-                        parent_assignee.clone()
-                    };
+                let child_priority = if let Some(ref p) = child_template.defaults.priority {
+                    TaskPriority::from_str(p).unwrap_or(parent_priority)
+                } else {
+                    parent_priority
+                };
+                let child_assignee = if let Some(ref a) = child_template.defaults.assignee {
+                    Some(a.clone())
+                } else {
+                    parent_assignee.clone()
+                };
 
                 // Merge data: parent data first, then child template defaults override
                 let mut child_data = parent_data.clone();
@@ -4532,12 +4773,11 @@ fn create_subtasks_from_entries(
                 child_stack.push(child_template_name.clone());
 
                 // Get child template's subtask entries
-                let child_entries =
-                    crate::tasks::templates::create_subtask_entries_from_template(
-                        &child_template,
-                        &child_ctx,
-                        None, // No data source for composed subtasks
-                    )?;
+                let child_entries = crate::tasks::templates::create_subtask_entries_from_template(
+                    &child_template,
+                    &child_ctx,
+                    None, // No data source for composed subtasks
+                )?;
 
                 if !child_entries.1.is_empty() {
                     create_subtasks_from_entries(
@@ -4563,6 +4803,234 @@ fn create_subtasks_from_entries(
         }
     }
 
+    Ok(())
+}
+
+/// Check if a string has an external reference prefix
+fn has_external_ref_prefix(s: &str) -> bool {
+    s.starts_with("file:")
+        || s.starts_with("prompt:")
+        || s.starts_with("comment:")
+        || s.starts_with("issue:")
+}
+
+/// Normalize a link target to its canonical storage form.
+/// Called at write time — the event always stores canonical IDs.
+/// Kind-aware: task-only kinds reject non-task targets instead of
+/// silently coercing them to file: paths.
+fn normalize_link_target(input: &str, kind: &str, tasks: &FastHashMap<String, Task>) -> Result<String> {
+    use crate::tasks::graph::is_task_only_kind;
+
+    // 1. Strip task: prefix if present
+    let stripped = input.strip_prefix("task:").unwrap_or(input);
+
+    // 2. If it's already a full 32-char task ID, use it directly
+    if is_task_id(stripped) {
+        if tasks.contains_key(stripped) {
+            return Ok(stripped.to_string());
+        }
+        // Full-length ID but not found
+        if is_task_only_kind(kind) {
+            return Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            });
+        }
+        return Ok(stripped.to_string());
+    }
+
+    // 3. If it has an external reference prefix
+    if has_external_ref_prefix(stripped) {
+        if is_task_only_kind(kind) {
+            return Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            });
+        }
+        return Ok(stripped.to_string());
+    }
+
+    // 4. Try resolving as a short task ID prefix
+    match resolve_task_id(tasks, stripped) {
+        Ok(full_id) => Ok(full_id),
+        Err(AikiError::TaskNotFound(_)) if !is_task_only_kind(kind) => {
+            // Flexible-target kinds: treat unresolved input as file path
+            Ok(format!("file:{}", stripped))
+        }
+        Err(AikiError::TaskNotFound(_)) => {
+            // Task-only kinds: wrap as InvalidLinkTarget for clearer messaging
+            Err(AikiError::InvalidLinkTarget {
+                kind: kind.to_string(),
+                target: stripped.to_string(),
+            })
+        }
+        // AmbiguousTaskId, PrefixTooShort — propagate for all kinds
+        Err(e) => Err(e),
+    }
+}
+
+/// Extract the single (kind, target) pair from the link/unlink flags.
+/// Returns an error if zero or more than one flag is set.
+fn extract_link_flag(
+    blocked_by: Option<String>,
+    sourced_from: Option<String>,
+    subtask_of: Option<String>,
+    implements: Option<String>,
+    orchestrates: Option<String>,
+    scoped_to: Option<String>,
+    supersedes: Option<String>,
+) -> Result<(String, String)> {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    if let Some(v) = blocked_by {
+        pairs.push(("blocked-by", v));
+    }
+    if let Some(v) = sourced_from {
+        pairs.push(("sourced-from", v));
+    }
+    if let Some(v) = subtask_of {
+        pairs.push(("subtask-of", v));
+    }
+    if let Some(v) = implements {
+        pairs.push(("implements", v));
+    }
+    if let Some(v) = orchestrates {
+        pairs.push(("orchestrates", v));
+    }
+    if let Some(v) = scoped_to {
+        pairs.push(("scoped-to", v));
+    }
+    if let Some(v) = supersedes {
+        pairs.push(("supersedes", v));
+    }
+
+    match pairs.len() {
+        0 => {
+            let msg = "No link kind specified. Use one of: --blocked-by, --sourced-from, --subtask-of, --implements, --orchestrates, --scoped-to, --supersedes";
+            aiki_print(&MdBuilder::new("link").error().build_error(msg));
+            Err(AikiError::Other(anyhow::anyhow!("{}", msg)))
+        }
+        1 => {
+            let (kind, target) = pairs.remove(0);
+            Ok((kind.to_string(), target))
+        }
+        _ => {
+            let msg = "Only one link kind flag can be specified at a time";
+            aiki_print(&MdBuilder::new("link").error().build_error(msg));
+            Err(AikiError::Other(anyhow::anyhow!("{}", msg)))
+        }
+    }
+}
+
+/// Add a link between tasks
+fn run_link(
+    cwd: &Path,
+    id: String,
+    blocked_by: Option<String>,
+    sourced_from: Option<String>,
+    subtask_of: Option<String>,
+    implements: Option<String>,
+    orchestrates: Option<String>,
+    scoped_to: Option<String>,
+    supersedes: Option<String>,
+) -> Result<()> {
+    let (kind, raw_target) = extract_link_flag(
+        blocked_by,
+        sourced_from,
+        subtask_of,
+        implements,
+        orchestrates,
+        scoped_to,
+        supersedes,
+    )?;
+
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+
+    // Resolve the subject task
+    let from_task = find_task(&graph.tasks, &id)?;
+    let from_id = from_task.id.clone();
+
+    // Delegate all validation, cardinality, and writing to write_link_event
+    let wrote = write_link_event(cwd, &graph, &kind, &from_id, &raw_target)?;
+
+    if wrote {
+        eprintln!(
+            "Linked: {} --{} {}",
+            short_id(&from_id),
+            kind,
+            short_id(&raw_target)
+        );
+    } else {
+        eprintln!(
+            "Link already exists: {} --{} {}",
+            short_id(&from_id),
+            kind,
+            short_id(&raw_target)
+        );
+    }
+    Ok(())
+}
+
+/// Remove a link between tasks
+fn run_unlink(
+    cwd: &Path,
+    id: String,
+    blocked_by: Option<String>,
+    sourced_from: Option<String>,
+    subtask_of: Option<String>,
+    implements: Option<String>,
+    orchestrates: Option<String>,
+    scoped_to: Option<String>,
+    supersedes: Option<String>,
+) -> Result<()> {
+
+    let (kind, raw_target) = extract_link_flag(
+        blocked_by,
+        sourced_from,
+        subtask_of,
+        implements,
+        orchestrates,
+        scoped_to,
+        supersedes,
+    )?;
+
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+
+    // Resolve the subject task
+    let from_task = find_task(&graph.tasks, &id)?;
+    let from_id = from_task.id.clone();
+
+    // Normalize the target
+    let to_id = normalize_link_target(&raw_target, &kind, &graph.tasks)?;
+
+    // Check the link exists
+    if !graph.edges.has_link(&from_id, &to_id, &kind) {
+        eprintln!(
+            "No link found: {} --{} {}",
+            short_id(&from_id),
+            kind,
+            short_id(&to_id)
+        );
+        return Ok(());
+    }
+
+    // Emit the LinkRemoved event
+    let event = TaskEvent::LinkRemoved {
+        from: from_id.clone(),
+        to: to_id.clone(),
+        kind: kind.clone(),
+        reason: None,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &event)?;
+
+    eprintln!(
+        "Unlinked: {} --{} {}",
+        short_id(&from_id),
+        kind,
+        short_id(&to_id)
+    );
     Ok(())
 }
 
@@ -4701,5 +5169,246 @@ D src/old_file.ts
         assert_eq!(files.len(), 2);
         assert_eq!(files[0], "old.rs");
         assert_eq!(files[1], "new.rs");
+    }
+
+    // --- normalize_link_target tests ---
+
+    fn make_task_map() -> FastHashMap<String, Task> {
+        use crate::tasks::types::{TaskPriority, TaskStatus};
+
+        let mut tasks = FastHashMap::default();
+        let make = |id: &str, name: &str| Task {
+            id: id.to_string(),
+            name: name.to_string(),
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            comments: Vec::new(),
+        };
+        tasks.insert(
+            "klmnopqrstuvwxyzklmnopqrstuvwxyz".to_string(),
+            make("klmnopqrstuvwxyzklmnopqrstuvwxyz", "Task A"),
+        );
+        tasks.insert(
+            "xyzxyzxyzxyzxyzxyzxyzxyzxyzxyzxy".to_string(),
+            make("xyzxyzxyzxyzxyzxyzxyzxyzxyzxyzxy", "Task B"),
+        );
+        tasks
+    }
+
+    #[test]
+    fn test_normalize_link_target_full_task_id() {
+        let tasks = make_task_map();
+        let result =
+            normalize_link_target("klmnopqrstuvwxyzklmnopqrstuvwxyz", "blocked-by", &tasks);
+        assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn test_normalize_link_target_with_task_prefix() {
+        let tasks = make_task_map();
+        let result = normalize_link_target(
+            "task:klmnopqrstuvwxyzklmnopqrstuvwxyz",
+            "blocked-by",
+            &tasks,
+        );
+        assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn test_normalize_link_target_short_prefix() {
+        let tasks = make_task_map();
+        let result = normalize_link_target("klmno", "blocked-by", &tasks);
+        assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
+    }
+
+    #[test]
+    fn test_normalize_link_target_external_ref_flexible_kind() {
+        let tasks = make_task_map();
+        let result = normalize_link_target("file:design.md", "sourced-from", &tasks);
+        assert_eq!(result.unwrap(), "file:design.md");
+    }
+
+    #[test]
+    fn test_normalize_link_target_external_ref_task_only_kind_rejected() {
+        let tasks = make_task_map();
+        let result = normalize_link_target("file:design.md", "blocked-by", &tasks);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AikiError::InvalidLinkTarget { kind, .. } => assert_eq!(kind, "blocked-by"),
+            other => panic!("Expected InvalidLinkTarget, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_normalize_link_target_bare_path_flexible_kind() {
+        let tasks = make_task_map();
+        let result = normalize_link_target("design.md", "sourced-from", &tasks);
+        assert_eq!(result.unwrap(), "file:design.md");
+    }
+
+    #[test]
+    fn test_normalize_link_target_nonexistent_task_only_kind() {
+        let tasks = make_task_map();
+        let result = normalize_link_target("nonexistent", "blocked-by", &tasks);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AikiError::InvalidLinkTarget { kind, .. } => assert_eq!(kind, "blocked-by"),
+            other => panic!("Expected InvalidLinkTarget, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_normalize_link_target_ambiguous_task_only_kind() {
+        use crate::tasks::types::{TaskPriority, TaskStatus};
+
+        let mut tasks = make_task_map();
+        // Add a second task sharing the "klmn" prefix to create ambiguity
+        let task_c = Task {
+            id: "klmnzzzzzzzzzzzzzzzzzzzzzzzzzzzy".to_string(),
+            name: "Task C".to_string(),
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            comments: Vec::new(),
+        };
+        tasks.insert(task_c.id.clone(), task_c);
+
+        let result = normalize_link_target("klmn", "blocked-by", &tasks);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AikiError::AmbiguousTaskId { prefix, .. } => assert_eq!(prefix, "klmn"),
+            other => panic!("Expected AmbiguousTaskId, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_normalize_link_target_ambiguous_flexible_kind() {
+        use crate::tasks::types::{TaskPriority, TaskStatus};
+
+        let mut tasks = make_task_map();
+        let task_c = Task {
+            id: "klmnzzzzzzzzzzzzzzzzzzzzzzzzzzzy".to_string(),
+            name: "Task C".to_string(),
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            comments: Vec::new(),
+        };
+        tasks.insert(task_c.id.clone(), task_c);
+
+        // Flexible kinds should also error on ambiguous prefixes (not silently file:-prefix)
+        let result = normalize_link_target("klmn", "sourced-from", &tasks);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AikiError::AmbiguousTaskId { prefix, .. } => assert_eq!(prefix, "klmn"),
+            other => panic!("Expected AmbiguousTaskId, got {:?}", other),
+        }
+    }
+
+    // --- has_external_ref_prefix tests ---
+
+    #[test]
+    fn test_has_external_ref_prefix() {
+        assert!(has_external_ref_prefix("file:foo.md"));
+        assert!(has_external_ref_prefix("prompt:abc123"));
+        assert!(has_external_ref_prefix("comment:xyz"));
+        assert!(has_external_ref_prefix("issue:GH-42"));
+        assert!(!has_external_ref_prefix("task:abc"));
+        assert!(!has_external_ref_prefix("abc123"));
+        assert!(!has_external_ref_prefix("design.md"));
+    }
+
+    // --- extract_link_flag tests ---
+
+    #[test]
+    fn test_extract_link_flag_single() {
+        let result = extract_link_flag(
+            Some("target".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (kind, target) = result.unwrap();
+        assert_eq!(kind, "blocked-by");
+        assert_eq!(target, "target");
+    }
+
+    #[test]
+    fn test_extract_link_flag_sourced_from() {
+        let result = extract_link_flag(
+            None,
+            Some("file:design.md".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (kind, target) = result.unwrap();
+        assert_eq!(kind, "sourced-from");
+        assert_eq!(target, "file:design.md");
+    }
+
+    #[test]
+    fn test_extract_link_flag_none() {
+        let result = extract_link_flag(None, None, None, None, None, None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_link_flag_multiple() {
+        let result = extract_link_flag(
+            Some("a".to_string()),
+            Some("b".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err());
     }
 }

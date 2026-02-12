@@ -3,98 +3,31 @@
 //! Conversation events are stored as fileless JJ changes on the `aiki/conversations` branch.
 //! Each event is a JJ change with metadata in the description.
 
-use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::jj::jj_cmd;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
-use std::thread;
-use std::time::Duration;
 
 use super::types::{AgentType, ConversationEvent, ConversationSummary, SessionMode, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
 
-/// Configuration for JJ write retry logic
-const MAX_RETRIES: u32 = 3;
-const INITIAL_BACKOFF_MS: u64 = 50;
-const BACKOFF_MULTIPLIER: u64 = 2;
-
-/// Ensure the aiki/conversations branch exists
+/// Ensure the aiki/conversations branch exists (cached per process)
 pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
-    // Check if branch exists by listing bookmarks
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
-        // Create the branch as an orphan (no parent) starting from root()
-        let result = jj_cmd()
-            .current_dir(cwd)
-            .args(["bookmark", "create", CONVERSATIONS_BRANCH, "-r", "root()", "--ignore-working-copy"])
-            .output()
-            .map_err(|e| {
-                AikiError::ConversationsBranchInitFailed(format!("Failed to create bookmark: {}", e))
-            })?;
-
-        if !result.status.success() {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            return Err(AikiError::ConversationsBranchInitFailed(stderr.to_string()));
-        }
-    }
-    Ok(())
+    crate::jj::ensure_branch(cwd, CONVERSATIONS_BRANCH)
 }
 
 /// Write a conversation event to the aiki/conversations branch
 ///
 /// Uses `jj new --no-edit` to create the event change without affecting the working copy.
-/// Includes retry logic with exponential backoff to handle concurrent writes from multiple agents.
+/// Single atomic command — no bookmark advancement needed (flat sibling model).
 pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
     ensure_conversations_branch(cwd)?;
 
     let metadata = event_to_metadata_block(event);
 
-    // Retry loop for concurrent write handling
-    let mut attempt = 0;
-    let mut last_error = None;
-
-    while attempt < MAX_RETRIES {
-        match write_event_inner(cwd, &metadata) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                attempt += 1;
-                last_error = Some(e);
-
-                if attempt < MAX_RETRIES {
-                    // Exponential backoff: 50ms, 100ms, 200ms, ...
-                    let backoff_ms = INITIAL_BACKOFF_MS * BACKOFF_MULTIPLIER.pow(attempt - 1);
-                    debug_log(|| {
-                        format!(
-                            "JJ write failed (attempt {}/{}), retrying in {}ms",
-                            attempt, MAX_RETRIES, backoff_ms
-                        )
-                    });
-                    thread::sleep(Duration::from_millis(backoff_ms));
-                }
-            }
-        }
-    }
-
-    // All retries exhausted - return the last error
-    Err(last_error.unwrap_or_else(|| {
-        AikiError::JjCommandFailed("Write failed with unknown error".to_string())
-    }))
-}
-
-/// Inner write operation (without retry logic)
-fn write_event_inner(cwd: &Path, metadata: &str) -> Result<()> {
-    // Create a new change as child of aiki/conversations WITHOUT switching working copy
     let result = jj_cmd()
         .current_dir(cwd)
-        .args(["new", CONVERSATIONS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", metadata])
+        .args(["new", CONVERSATIONS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
         .output()
         .map_err(|e| {
             AikiError::JjCommandFailed(format!("Failed to create conversation event: {}", e))
@@ -104,32 +37,6 @@ fn write_event_inner(cwd: &Path, metadata: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(AikiError::JjCommandFailed(format!(
             "Failed to write conversation event: {}",
-            stderr
-        )));
-    }
-
-    // Move the bookmark forward to point at the newly created change
-    // Filter to only the conversation change (has [aiki-conversation] in description), not the working copy
-    let result = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "bookmark",
-            "set",
-            CONVERSATIONS_BRANCH,
-            "-r",
-            &format!(
-                "children({}) & description(substring:\"{}\")",
-                CONVERSATIONS_BRANCH, METADATA_START
-            ),
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to update bookmark: {}", e)))?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to update conversations bookmark: {}",
             stderr
         )));
     }
@@ -144,24 +51,7 @@ fn write_event_inner(cwd: &Path, metadata: &str) -> Result<()> {
 ///
 /// Returns `(0, TurnSource::User)` if no prompt events are found (new session).
 pub fn get_current_turn_info(cwd: &Path, session_id: &str) -> Result<(u32, TurnSource)> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to list bookmarks: {}",
-            stderr
-        )));
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
-        // Branch doesn't exist yet - new session
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok((0, TurnSource::User));
     }
 
@@ -173,7 +63,7 @@ pub fn get_current_turn_info(cwd: &Path, session_id: &str) -> Result<(u32, TurnS
             "log",
             "-r",
             &format!(
-                "ancestors({}) & description(substring:'{}') & description(substring:'event=prompt') & description(substring:'session={}')",
+                "children(ancestors({})) & description(substring:'{}') & description(substring:'event=prompt') & description(substring:'session={}')",
                 CONVERSATIONS_BRANCH, METADATA_START, session_id
             ),
             "--no-graph",
@@ -228,24 +118,7 @@ pub fn get_current_turn_info(cwd: &Path, session_id: &str) -> Result<(u32, TurnS
 /// then we're in autoreply mode (the autoreply was generated but the prompt
 /// for it hasn't been recorded yet).
 pub fn has_pending_autoreply(cwd: &Path, session_id: &str) -> Result<bool> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to list bookmarks: {}",
-            stderr
-        )));
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
-        // Branch doesn't exist yet - no autoreply pending
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(false);
     }
 
@@ -257,7 +130,7 @@ pub fn has_pending_autoreply(cwd: &Path, session_id: &str) -> Result<bool> {
             "log",
             "-r",
             &format!(
-                "ancestors({}) & description(substring:'{}') & description(substring:'session={}')",
+                "children(ancestors({})) & description(substring:'{}') & description(substring:'session={}')",
                 CONVERSATIONS_BRANCH, METADATA_START, session_id
             ),
             "--no-graph",
@@ -303,24 +176,7 @@ pub fn has_pending_autoreply(cwd: &Path, session_id: &str) -> Result<bool> {
 /// Used by `--source prompt` to automatically resolve to the triggering prompt.
 /// Returns None if no prompt events found for the session.
 pub fn get_latest_prompt_change_id(cwd: &Path, session_id: &str) -> Result<Option<String>> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to list bookmarks: {}",
-            stderr
-        )));
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
-        // Branch doesn't exist yet
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(None);
     }
 
@@ -336,7 +192,7 @@ pub fn get_latest_prompt_change_id(cwd: &Path, session_id: &str) -> Result<Optio
             "log",
             "-r",
             &format!(
-                "ancestors({}) & description(substring:'{}') & description(substring:'event=prompt') & description(substring:'session={}')",
+                "children(ancestors({})) & description(substring:'{}') & description(substring:'event=prompt') & description(substring:'session={}')",
                 CONVERSATIONS_BRANCH, METADATA_START, session_id
             ),
             "--no-graph",
@@ -373,19 +229,7 @@ pub fn get_latest_prompt_change_id(cwd: &Path, session_id: &str) -> Result<Optio
 /// Returns the prompt content if found, None otherwise.
 /// Used by `--with-source` to expand prompt: source references.
 pub fn get_prompt_by_change_id(cwd: &Path, change_id: &str) -> Result<Option<String>> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(None);
     }
 
@@ -437,19 +281,7 @@ pub fn get_current_turn_number(cwd: &Path, session_id: &str) -> Result<u32> {
 ///
 /// Returns true if a session_start event exists in the conversation history.
 pub fn has_session_started_event(cwd: &Path, session_id: &str) -> Result<bool> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(false);
     }
 
@@ -460,7 +292,7 @@ pub fn has_session_started_event(cwd: &Path, session_id: &str) -> Result<bool> {
             "log",
             "-r",
             &format!(
-                "ancestors({}) & description(substring:'{}') & description(substring:'event=session_start') & description(substring:'session={}')",
+                "children(ancestors({})) & description(substring:'{}') & description(substring:'event=session_start') & description(substring:'session={}')",
                 CONVERSATIONS_BRANCH, METADATA_START, session_id
             ),
             "--no-graph",
@@ -497,34 +329,20 @@ pub fn get_last_prompt_turn(cwd: &Path, session_id: &str) -> Result<Option<u32>>
 /// Read all conversation events from the aiki/conversations branch
 #[allow(dead_code)] // Part of history API
 pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
-    // Check if branch exists first
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to list bookmarks: {}",
-            stderr
-        )));
-    }
-
-    let bookmarks = String::from_utf8_lossy(&output.stdout);
-    if !bookmarks.contains(CONVERSATIONS_BRANCH) {
-        // Branch doesn't exist yet, return empty list
+    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(Vec::new());
     }
 
-    // Read all changes on the branch, oldest first
+    // Read all conversation events: children of any ancestor of the bookmark
     let output = jj_cmd()
         .current_dir(cwd)
         .args([
             "log",
             "-r",
-            &format!("root()..{}", CONVERSATIONS_BRANCH),
+            &format!(
+                "children(ancestors({})) & description(substring:\"{}\")",
+                CONVERSATIONS_BRANCH, METADATA_START
+            ),
             "--no-graph",
             "-T",
             "description ++ \"\\n---EVENT-SEPARATOR---\\n\"",

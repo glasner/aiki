@@ -18,8 +18,8 @@ use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_tasks,
-    materialize_tasks_with_ids, read_events, read_events_with_ids, reassign_task,
+    get_ready_queue_for_scope_set, materialize_graph, materialize_graph_with_ids,
+    read_events, read_events_with_ids, reassign_task,
     reopen_if_closed, start_task_core, Task, TaskComment,
 };
 
@@ -106,7 +106,7 @@ fn run_fix(
 
     // Load tasks with change IDs (needed for comment IDs)
     let events_with_ids = read_events_with_ids(cwd)?;
-    let tasks = materialize_tasks_with_ids(&events_with_ids);
+    let tasks = materialize_graph_with_ids(&events_with_ids).tasks;
 
     // Find the review task (the task we're creating followups for)
     let review_task = find_task(&tasks, task_id)?;
@@ -122,12 +122,12 @@ fn run_fix(
     }
 
     // Get all comments from the review task
-    // Note: closing a review requires a comment, so 1 comment = just the closing comment (no issues)
-    // More than 1 comment means there are issues to fix
+    // The closing summary is stored in task.summary, not as a comment,
+    // so any comments here are actual findings/issues.
     let comments: Vec<TaskComment> = review_task.comments.clone();
 
-    // If only the closing comment (or no comments), output "approved" message and succeed
-    if comments.len() <= 1 {
+    // If no comments, the review found no issues
+    if comments.is_empty() {
         output_approved(task_id)?;
         return Ok(());
     }
@@ -167,10 +167,11 @@ fn run_fix(
 
     // Re-read tasks to include newly created followup task
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
-    let scope_set = get_current_scope_set(&tasks);
-    let in_progress: Vec<&Task> = get_in_progress(&tasks).into_iter().collect();
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
+    let scope_set = get_current_scope_set(&graph);
+    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
 
     // Handle execution mode
     if start {
@@ -336,7 +337,7 @@ fn create_fix_subtask_on_original(
 
     // Reopen the original task if closed before adding subtask
     let events = read_events(cwd)?;
-    let current_tasks = materialize_tasks(&events);
+    let current_tasks = materialize_graph(&events).tasks;
     reopen_if_closed(cwd, &original_task.id, &current_tasks, "Subtasks added")?;
 
     let mut source_data = std::collections::HashMap::new();
