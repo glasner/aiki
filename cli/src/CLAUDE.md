@@ -11,7 +11,8 @@ This document provides important context and guidelines for AI assistants (espec
 4. [Module Organization](#module-organization)
 5. [Architecture](#architecture-change-centric-not-commit-centric)
 6. [Metadata Storage](#metadata-storage-pattern)
-7. [Testing](#testing)
+7. [Task Link Naming](#task-link-naming)
+8. [Testing](#testing)
 
 ---
 
@@ -812,6 +813,50 @@ Originally, Aiki considered using SQLite to store provenance. We pivoted to stor
 3. **Simpler architecture** - No database to manage or migrate
 4. **JJ-native** - Uses JJ's own data model correctly
 5. **Queryable** - Can use JJ revsets: `jj log -r 'description("agent=claude-code")'`
+
+---
+
+## Task Link Naming
+
+When creating new link types for the task DAG, follow these rules so that the CLI reads naturally and the direction is unambiguous.
+
+### The Sentence Rule
+
+`aiki task link A --predicate B` must read as a sentence. Passive links use **"A is [predicate] B"**; active links drop the "is": **"A [predicate] B"**.
+
+| Link | Reads as |
+|------|----------|
+| `link plan --implements spec.md` | "plan implements spec.md" |
+| `link build --orchestrates plan` | "build orchestrates plan" |
+| `link review --scoped-to task` | "review is scoped-to task" |
+| `link task --blocked-by other` | "task is blocked-by other" |
+| `link subtask --subtask-of parent` | "subtask is subtask-of parent" |
+| `link task --sourced-from file` | "task is sourced-from file" |
+| `link new-plan --supersedes old-plan` | "new-plan supersedes old-plan" |
+
+### Argument Roles
+
+- **A** (first positional arg) is always the entity that was created later, or exists in service of B.
+- **B** (flag value) is always the **anchor** — the thing A depends on, derives from, or serves.
+
+### Allowed Grammar
+
+Link predicates use one of these patterns:
+
+| Pattern | Examples |
+|---------|----------|
+| `[active-verb]` | `implements`, `orchestrates`, `supersedes` |
+| `[noun]-of` | `subtask-of` |
+| `[past-participle]-by` | `blocked-by` |
+| `[past-participle]-from` | `sourced-from` |
+| `[past-participle]-to` | `scoped-to` |
+
+### Adding a New Link Type
+
+1. Write the sentence: "A _____ B". If it doesn't read naturally, pick a different predicate.
+2. Verify A is the dependent/later/service entity and B is the anchor.
+3. Choose a grammar pattern from the table above.
+4. Add forward and reverse indexes to `TaskGraph`.
 
 ---
 

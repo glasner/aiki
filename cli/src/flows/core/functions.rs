@@ -98,7 +98,7 @@ fn get_in_progress_tasks_for_session(cwd: &Path, session_id: &str) -> Vec<String
     };
 
     // Materialize tasks and get in-progress ones for this session
-    let tasks = manager::materialize_tasks(&events);
+    let tasks = crate::tasks::graph::materialize_graph(&events).tasks;
     manager::get_in_progress_task_ids_for_session(&tasks, session_id)
 }
 
@@ -1010,9 +1010,9 @@ pub fn generate_coauthors(event: &AikiCommitMessageStartedPayload) -> Result<Act
 /// This is used for context injection in flows.
 pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
-    let tasks = crate::tasks::manager::materialize_tasks(&events);
-    let scope_set = crate::tasks::manager::get_current_scope_set(&tasks);
-    let ready = crate::tasks::manager::get_ready_queue_for_agent_scoped(&tasks, &scope_set, agent);
+    let graph = crate::tasks::graph::materialize_graph(&events);
+    let scope_set = crate::tasks::manager::get_current_scope_set(&graph);
+    let ready = crate::tasks::manager::get_ready_queue_for_agent_scoped(&graph, &scope_set, agent);
 
     Ok(ActionResult {
         success: true,
@@ -1029,8 +1029,8 @@ pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) ->
 #[allow(dead_code)] // Part of flow function API
 pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
-    let tasks = crate::tasks::manager::materialize_tasks(&events);
-    let ready = crate::tasks::manager::get_ready_queue(&tasks);
+    let graph = crate::tasks::graph::materialize_graph(&events);
+    let ready = crate::tasks::manager::get_ready_queue(&graph);
 
     Ok(ActionResult {
         success: true,
@@ -1046,7 +1046,7 @@ pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
 /// This is used for context injection in flows.
 pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
     let events = crate::tasks::storage::read_events(cwd)?;
-    let tasks = crate::tasks::manager::materialize_tasks(&events);
+    let tasks = crate::tasks::graph::materialize_graph(&events).tasks;
     let in_progress = crate::tasks::manager::get_in_progress(&tasks);
 
     // Return as JSON array of IDs

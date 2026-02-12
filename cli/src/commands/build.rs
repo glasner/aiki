@@ -20,7 +20,7 @@ use crate::tasks::id::{is_task_id, is_task_id_prefix};
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    find_task, get_subtasks, materialize_tasks, read_events, write_event, Task,
+    find_task, get_subtasks, materialize_graph, read_events, write_event, Task,
     TaskEvent, TaskOutcome, TaskStatus,
 };
 
@@ -135,10 +135,11 @@ fn run_build_spec(
 
     // Load current tasks to check for existing plans
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Check for existing plan with data.spec matching spec_path
-    let existing_plan = find_plan_for_spec(&tasks, spec_path);
+    let existing_plan = find_plan_for_spec(tasks, spec_path);
 
     let plan_id = match existing_plan {
         Some(plan) if plan.status != TaskStatus::Closed => {
@@ -150,7 +151,7 @@ fn run_build_spec(
                 None
             } else {
                 // Show interactive prompt or error
-                let subtasks = get_subtasks(&tasks, &plan.id);
+                let subtasks = get_subtasks(&graph, &plan.id);
                 let choice = prompt_existing_plan(plan, &subtasks)?;
                 match choice {
                     BuildChoice::Resume => Some(plan.id.clone()),
@@ -212,16 +213,16 @@ fn run_build_spec(
 
         // After build completes, re-read tasks to get final state
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let graph = materialize_graph(&events);
 
         // Find the plan task (may have been created during the build)
-        let final_plan = find_plan_for_spec(&tasks, spec_path);
+        let final_plan = find_plan_for_spec(&graph.tasks, spec_path);
         let final_plan_id = final_plan
             .map(|p| p.id.as_str())
             .unwrap_or(display_plan_id);
 
         let subtasks = final_plan
-            .map(|p| get_subtasks(&tasks, &p.id))
+            .map(|p| get_subtasks(&graph, &p.id))
             .unwrap_or_default();
         let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
         output_build_completed(&build_task_id, final_plan_id, &subtask_refs)?;
@@ -264,7 +265,7 @@ fn run_build_plan(
 
     // Find plan task (resolve prefix to canonical ID)
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
     let plan = find_task(&tasks, plan_id)?;
     let plan_id = plan.id.as_str();
 
@@ -324,9 +325,9 @@ fn run_build_plan(
 
         // After build completes, re-read tasks to get final state
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let graph = materialize_graph(&events);
 
-        let subtasks = get_subtasks(&tasks, plan_id);
+        let subtasks = get_subtasks(&graph, plan_id);
         output_build_completed(&build_task_id, plan_id, &subtasks)?;
 
         // Output machine-readable to stdout if piped
@@ -344,20 +345,21 @@ fn run_build_plan(
 /// Show build/plan status for a spec
 fn run_show(cwd: &Path, spec_path: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
 
     // Find plan with data.spec matching
-    let plan = find_plan_for_spec(&tasks, spec_path).ok_or_else(|| {
+    let plan = find_plan_for_spec(tasks, spec_path).ok_or_else(|| {
         AikiError::InvalidArgument(format!("No plan found for spec: {}", spec_path))
     })?;
 
-    let subtasks = get_subtasks(&tasks, &plan.id);
+    let subtasks = get_subtasks(&graph, &plan.id);
 
     // Find build tasks associated with this spec
     let build_tasks: Vec<&Task> = tasks
         .values()
         .filter(|t| {
-            t.task_type.as_deref() == Some("build")
+            t.task_type.as_deref() == Some("orchestrator")
                 && t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
         })
         .collect();
@@ -404,12 +406,12 @@ fn validate_spec_path(cwd: &Path, spec_path: &str) -> Result<()> {
 /// - Having `data.spec` matching the spec path
 /// - Having a `source` containing `task:` (created by a planning task)
 /// - NOT being a planning task itself (type != "plan")
-/// - NOT being a build task (type != "build")
+/// - NOT being an orchestrator task (type != "orchestrator")
 ///
 /// If no plan created by a planning task is found, falls back to any task with
 /// `data.spec` matching the spec path that is not a planning or build task.
 fn find_plan_for_spec<'a>(
-    tasks: &'a std::collections::HashMap<String, Task>,
+    tasks: &'a crate::tasks::types::FastHashMap<String, Task>,
     spec_path: &str,
 ) -> Option<&'a Task> {
     // First, look for plan tasks created by a planning task (have source: task:...)
@@ -418,7 +420,7 @@ fn find_plan_for_spec<'a>(
         .filter(|t| {
             t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
                 && t.task_type.as_deref() != Some("plan")
-                && t.task_type.as_deref() != Some("build")
+                && t.task_type.as_deref() != Some("orchestrator")
                 && t.sources.iter().any(|s| s.starts_with("task:"))
         })
         .max_by_key(|t| t.created_at);
@@ -433,7 +435,7 @@ fn find_plan_for_spec<'a>(
         .filter(|t| {
             t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
                 && t.task_type.as_deref() != Some("plan")
-                && t.task_type.as_deref() != Some("build")
+                && t.task_type.as_deref() != Some("orchestrator")
         })
         .max_by_key(|t| t.created_at)
 }
@@ -444,12 +446,12 @@ fn find_plan_for_spec<'a>(
 /// and closes them as wont_do with a comment.
 fn cleanup_stale_builds(cwd: &Path, spec_path: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     let stale_builds: Vec<String> = tasks
         .values()
         .filter(|t| {
-            t.task_type.as_deref() == Some("build")
+            t.task_type.as_deref() == Some("orchestrator")
                 && t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
                 && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
         })
@@ -561,7 +563,24 @@ fn create_build_task(
         ..Default::default()
     };
 
-    create_from_template(cwd, params)
+    let task_id = create_from_template(cwd, params)?;
+
+    // Emit link events for the relationships (dual-write with data attributes)
+    let spec_target = if spec_path.starts_with("file:") {
+        spec_path.to_string()
+    } else {
+        format!("file:{}", spec_path)
+    };
+    let events = crate::tasks::storage::read_events(cwd)?;
+    let graph = crate::tasks::graph::materialize_graph(&events);
+    crate::tasks::storage::write_link_event(cwd, &graph, "scoped-to", &task_id, &spec_target)?;
+
+    // orchestrator orchestrates the plan (if one exists)
+    if let Some(plan) = plan_id {
+        crate::tasks::storage::write_link_event(cwd, &graph, "orchestrates", &task_id, plan)?;
+    }
+
+    Ok(task_id)
 }
 
 /// Prompt user to choose between resuming or starting fresh when an incomplete plan exists.
@@ -760,6 +779,7 @@ fn output_build_show(plan: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> 
 mod tests {
     use super::*;
     use crate::tasks::TaskPriority;
+    use crate::tasks::types::FastHashMap;
     use std::collections::HashMap;
 
     fn make_task(id: &str, name: &str, status: TaskStatus) -> Task {
@@ -825,13 +845,13 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_none() {
-        let tasks = HashMap::new();
+        let tasks = FastHashMap::default();
         assert!(find_plan_for_spec(&tasks, "ops/now/feature.md").is_none());
     }
 
     #[test]
     fn test_find_plan_for_spec_found_with_task_source() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -851,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_excludes_planning_task() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -882,17 +902,17 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_excludes_build_task() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
-        // This is a build task (type: "build") - should be excluded
+        // This is a build task (type: "orchestrator") - should be excluded
         let build_task = make_task_with_type(
             "build1",
             "Build: ops/now/feature.md",
             TaskStatus::InProgress,
             data.clone(),
-            "build",
+            "orchestrator",
         );
         tasks.insert("build1".to_string(), build_task);
 
@@ -913,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_wrong_spec() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/other.md".to_string());
 
@@ -931,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_most_recent() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -961,7 +981,7 @@ mod tests {
 
     #[test]
     fn test_find_plan_for_spec_fallback_no_task_source() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -983,7 +1003,7 @@ mod tests {
 
     #[test]
     fn test_stale_build_detection_in_progress() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -993,14 +1013,14 @@ mod tests {
             TaskStatus::InProgress,
             data,
         );
-        task.task_type = Some("build".to_string());
+        task.task_type = Some("orchestrator".to_string());
         tasks.insert("build1".to_string(), task);
 
         // Verify the stale build detection logic
         let stale_builds: Vec<String> = tasks
             .values()
             .filter(|t| {
-                t.task_type.as_deref() == Some("build")
+                t.task_type.as_deref() == Some("orchestrator")
                     && t.data.get("spec").map(|s| s.as_str()) == Some("ops/now/feature.md")
                     && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
             })
@@ -1013,7 +1033,7 @@ mod tests {
 
     #[test]
     fn test_stale_build_detection_open() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -1023,13 +1043,13 @@ mod tests {
             TaskStatus::Open,
             data,
         );
-        task.task_type = Some("build".to_string());
+        task.task_type = Some("orchestrator".to_string());
         tasks.insert("build2".to_string(), task);
 
         let stale_builds: Vec<String> = tasks
             .values()
             .filter(|t| {
-                t.task_type.as_deref() == Some("build")
+                t.task_type.as_deref() == Some("orchestrator")
                     && t.data.get("spec").map(|s| s.as_str()) == Some("ops/now/feature.md")
                     && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
             })
@@ -1042,7 +1062,7 @@ mod tests {
 
     #[test]
     fn test_stale_build_not_detected_when_closed() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -1052,13 +1072,13 @@ mod tests {
             TaskStatus::Closed,
             data,
         );
-        task.task_type = Some("build".to_string());
+        task.task_type = Some("orchestrator".to_string());
         tasks.insert("build3".to_string(), task);
 
         let stale_builds: Vec<String> = tasks
             .values()
             .filter(|t| {
-                t.task_type.as_deref() == Some("build")
+                t.task_type.as_deref() == Some("orchestrator")
                     && t.data.get("spec").map(|s| s.as_str()) == Some("ops/now/feature.md")
                     && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
             })
@@ -1070,7 +1090,7 @@ mod tests {
 
     #[test]
     fn test_stale_build_not_detected_wrong_spec() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/other.md".to_string());
 
@@ -1080,13 +1100,13 @@ mod tests {
             TaskStatus::InProgress,
             data,
         );
-        task.task_type = Some("build".to_string());
+        task.task_type = Some("orchestrator".to_string());
         tasks.insert("build4".to_string(), task);
 
         let stale_builds: Vec<String> = tasks
             .values()
             .filter(|t| {
-                t.task_type.as_deref() == Some("build")
+                t.task_type.as_deref() == Some("orchestrator")
                     && t.data.get("spec").map(|s| s.as_str()) == Some("ops/now/feature.md")
                     && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
             })
@@ -1098,7 +1118,7 @@ mod tests {
 
     #[test]
     fn test_stale_build_not_detected_wrong_type() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let mut data = HashMap::new();
         data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
@@ -1114,7 +1134,7 @@ mod tests {
         let stale_builds: Vec<String> = tasks
             .values()
             .filter(|t| {
-                t.task_type.as_deref() == Some("build")
+                t.task_type.as_deref() == Some("orchestrator")
                     && t.data.get("spec").map(|s| s.as_str()) == Some("ops/now/feature.md")
                     && (t.status == TaskStatus::InProgress || t.status == TaskStatus::Open)
             })
@@ -1269,7 +1289,7 @@ mod tests {
             TaskStatus::Closed,
             build_data,
         );
-        build.task_type = Some("build".to_string());
+        build.task_type = Some("orchestrator".to_string());
         build.closed_outcome = Some(TaskOutcome::Done);
         let build_tasks: Vec<&Task> = vec![&build];
 

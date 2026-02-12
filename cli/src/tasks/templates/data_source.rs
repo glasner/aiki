@@ -72,7 +72,7 @@ pub fn parse_data_source(source_str: &str) -> Result<DataSource> {
 pub fn resolve_data_source(
     source: &DataSource,
     task_id: &str,
-    tasks: &std::collections::HashMap<String, Task>,
+    tasks: &crate::tasks::types::FastHashMap<String, Task>,
 ) -> Result<Vec<TaskComment>> {
     match source {
         DataSource::Comments => resolve_comments(task_id, tasks),
@@ -82,7 +82,7 @@ pub fn resolve_data_source(
 /// Resolve comments from a task
 fn resolve_comments(
     task_id: &str,
-    tasks: &std::collections::HashMap<String, Task>,
+    tasks: &crate::tasks::types::FastHashMap<String, Task>,
 ) -> Result<Vec<TaskComment>> {
     let task = tasks
         .get(task_id)
@@ -94,7 +94,7 @@ fn resolve_comments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::types::{TaskPriority, TaskStatus};
+    use crate::tasks::types::{FastHashMap, TaskPriority, TaskStatus};
     use chrono::Utc;
     use std::collections::HashMap;
 
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_resolve_comments_empty() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let task = create_test_task("task1", vec![]);
         tasks.insert("task1".to_string(), task);
 
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_resolve_comments_single() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let task = create_test_task("task1", vec![create_test_comment("Fix the bug")]);
         tasks.insert("task1".to_string(), task);
 
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_resolve_comments_multiple() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let task = create_test_task(
             "task1",
             vec![
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_resolve_comments_task_not_found() {
-        let tasks = HashMap::new();
+        let tasks = FastHashMap::default();
 
         let result = resolve_data_source(&DataSource::Comments, "nonexistent", &tasks);
         assert!(result.is_err());
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_resolve_data_source_dispatches_correctly() {
-        let mut tasks = HashMap::new();
+        let mut tasks = FastHashMap::default();
         let task = create_test_task("task1", vec![create_test_comment("Test")]);
         tasks.insert("task1".to_string(), task);
 

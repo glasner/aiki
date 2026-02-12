@@ -1,11 +1,8 @@
 //! Task manager for materializing views and calculating ready queue
 
-use std::collections::HashMap;
-
 use std::collections::HashSet;
 
-use super::id::{get_parent_id, is_direct_child_of};
-use super::types::{Task, TaskComment, TaskEvent, TaskStatus};
+use super::types::{FastHashMap, Task, TaskStatus};
 use crate::agents::{AgentType, Assignee};
 use crate::error::{AikiError, Result};
 
@@ -37,327 +34,20 @@ impl ScopeSet {
     }
 }
 
-/// Materialize task views from an event stream
-///
-/// Processes events in order and builds up the current state of each task.
-#[must_use]
-pub fn materialize_tasks(events: &[TaskEvent]) -> HashMap<String, Task> {
-    let mut tasks: HashMap<String, Task> = HashMap::new();
 
-    for event in events {
-        match event {
-            TaskEvent::Created {
-                task_id,
-                name,
-                task_type,
-                priority,
-                assignee,
-                sources,
-                template,
-                working_copy,
-                instructions,
-                data,
-                timestamp,
-            } => {
-                tasks.insert(
-                    task_id.clone(),
-                    Task {
-                        id: task_id.clone(),
-                        name: name.clone(),
-                        task_type: task_type.clone(),
-                        status: TaskStatus::Open,
-                        priority: *priority,
-                        assignee: assignee.clone(),
-                        sources: sources.clone(),
-                        template: template.clone(),
-                        working_copy: working_copy.clone(),
-                        instructions: instructions.clone(),
-                        data: data.clone(),
-                        created_at: *timestamp,
-                        started_at: None,
-                        claimed_by_session: None,
-                        last_session_id: None,
-                        stopped_reason: None,
-                        closed_outcome: None,
-                        summary: None,
-                        comments: Vec::new(),
-                    },
-                );
-            }
-            TaskEvent::Started {
-                task_ids,
-                session_id,
-                timestamp,
-                ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::InProgress;
-                        task.stopped_reason = None;
-                        task.claimed_by_session = session_id.clone();
-                        task.last_session_id = session_id.clone();
-                        task.started_at = Some(*timestamp);
-                    }
-                }
-            }
-            TaskEvent::Stopped {
-                task_ids, reason, ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::Stopped;
-                        task.stopped_reason = reason.clone();
-                        task.claimed_by_session = None; // Release claim so task is visible to all
-                    }
-                }
-            }
-            TaskEvent::Closed {
-                task_ids,
-                outcome,
-                summary,
-                ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::Closed;
-                        task.closed_outcome = Some(*outcome);
-                        task.summary = summary.clone();
-                        task.claimed_by_session = None; // Release claim
-                    }
-                }
-            }
-            TaskEvent::Reopened { task_id, .. } => {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    task.status = TaskStatus::Open;
-                    task.closed_outcome = None;
-                    task.claimed_by_session = None; // Release claim so task is visible to all
-                }
-            }
-            TaskEvent::CommentAdded {
-                task_ids,
-                text,
-                data: _,
-                timestamp,
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.comments.push(TaskComment {
-                            id: None, // Change ID not available in this code path
-                            text: text.clone(),
-                            timestamp: *timestamp,
-                        });
-                    }
-                }
-            }
-            TaskEvent::Updated {
-                task_id,
-                name,
-                priority,
-                assignee,
-                data,
-                ..
-            } => {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    if let Some(new_name) = name {
-                        task.name = new_name.clone();
-                    }
-                    if let Some(new_priority) = priority {
-                        task.priority = *new_priority;
-                    }
-                    // Handle assignee: Some(Some(a)) = assign, Some(None) = unassign
-                    if let Some(new_assignee) = assignee {
-                        task.assignee = new_assignee.clone();
-                    }
-                    // Merge data: empty values remove keys, non-empty values add/update
-                    if let Some(new_data) = data {
-                        for (key, value) in new_data {
-                            if value.is_empty() {
-                                task.data.remove(key);
-                            } else {
-                                task.data.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    tasks
-}
-
-/// Materialize task views from an event stream with change IDs
-///
-/// Like `materialize_tasks`, but accepts `EventWithId` to populate comment IDs.
-/// This is needed when generating followup tasks that need to reference specific comments
-/// via `source: comment:<change_id>`.
-#[must_use]
-pub fn materialize_tasks_with_ids(events: &[super::storage::EventWithId]) -> HashMap<String, Task> {
-    let mut tasks: HashMap<String, Task> = HashMap::new();
-
-    for event_with_id in events {
-        let super::storage::EventWithId { change_id, event } = event_with_id;
-
-        match event {
-            TaskEvent::Created {
-                task_id,
-                name,
-                task_type,
-                priority,
-                assignee,
-                sources,
-                template,
-                working_copy,
-                instructions,
-                data,
-                timestamp,
-            } => {
-                tasks.insert(
-                    task_id.clone(),
-                    Task {
-                        id: task_id.clone(),
-                        name: name.clone(),
-                        task_type: task_type.clone(),
-                        status: TaskStatus::Open,
-                        priority: *priority,
-                        assignee: assignee.clone(),
-                        sources: sources.clone(),
-                        template: template.clone(),
-                        working_copy: working_copy.clone(),
-                        instructions: instructions.clone(),
-                        data: data.clone(),
-                        created_at: *timestamp,
-                        started_at: None,
-                        claimed_by_session: None,
-                        last_session_id: None,
-                        stopped_reason: None,
-                        closed_outcome: None,
-                        summary: None,
-                        comments: Vec::new(),
-                    },
-                );
-            }
-            TaskEvent::Started {
-                task_ids,
-                session_id,
-                timestamp,
-                stopped,
-                ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::InProgress;
-                        task.stopped_reason = None;
-                        task.claimed_by_session = session_id.clone();
-                        task.last_session_id = session_id.clone();
-                        task.started_at = Some(*timestamp);
-                    }
-                }
-                for stopped_id in stopped {
-                    if let Some(task) = tasks.get_mut(stopped_id) {
-                        task.status = TaskStatus::Stopped;
-                        task.stopped_reason =
-                            Some(format!("Preempted by task {}", task_ids.join(", ")));
-                        task.claimed_by_session = None;
-                    }
-                }
-            }
-            TaskEvent::Stopped {
-                task_ids, reason, ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::Stopped;
-                        task.stopped_reason = reason.clone();
-                        task.claimed_by_session = None;
-                    }
-                }
-            }
-            TaskEvent::Closed {
-                task_ids,
-                outcome,
-                summary,
-                ..
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.status = TaskStatus::Closed;
-                        task.closed_outcome = Some(*outcome);
-                        task.summary = summary.clone();
-                        task.claimed_by_session = None;
-                    }
-                }
-            }
-            TaskEvent::Reopened { task_id, .. } => {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    task.status = TaskStatus::Open;
-                    task.closed_outcome = None;
-                    task.claimed_by_session = None;
-                }
-            }
-            TaskEvent::CommentAdded {
-                task_ids,
-                text,
-                data: _,
-                timestamp,
-            } => {
-                for task_id in task_ids {
-                    if let Some(task) = tasks.get_mut(task_id) {
-                        task.comments.push(TaskComment {
-                            id: Some(change_id.clone()), // Include the change_id as comment ID
-                            text: text.clone(),
-                            timestamp: *timestamp,
-                        });
-                    }
-                }
-            }
-            TaskEvent::Updated {
-                task_id,
-                name,
-                priority,
-                assignee,
-                data,
-                ..
-            } => {
-                if let Some(task) = tasks.get_mut(task_id) {
-                    if let Some(new_name) = name {
-                        task.name = new_name.clone();
-                    }
-                    if let Some(new_priority) = priority {
-                        task.priority = *new_priority;
-                    }
-                    if let Some(new_assignee) = assignee {
-                        task.assignee = new_assignee.clone();
-                    }
-                    // Merge data: empty values remove keys, non-empty values add/update
-                    if let Some(new_data) = data {
-                        for (key, value) in new_data {
-                            if value.is_empty() {
-                                task.data.remove(key);
-                            } else {
-                                task.data.insert(key.clone(), value.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    tasks
-}
-
-/// Get the ready queue (open tasks sorted by priority)
+/// Get the ready queue (open, unblocked tasks sorted by priority)
 ///
 /// Ready queue contains:
-/// - Open status tasks
+/// - Open status tasks that are not blocked
 /// - Sorted by priority (P0 first, then P1, P2, P3)
 /// - Then by creation time (oldest first)
 #[must_use]
-pub fn get_ready_queue(tasks: &HashMap<String, Task>) -> Vec<&Task> {
-    let mut ready: Vec<&Task> = tasks
+pub fn get_ready_queue<'a>(graph: &'a super::graph::TaskGraph) -> Vec<&'a Task> {
+    let mut ready: Vec<&Task> = graph
+        .tasks
         .values()
         .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
         .collect();
 
     // Sort by priority (P0 < P1 < P2 < P3), then by creation time (oldest first)
@@ -372,7 +62,7 @@ pub fn get_ready_queue(tasks: &HashMap<String, Task>) -> Vec<&Task> {
 
 /// Get tasks currently in progress
 #[must_use]
-pub fn get_in_progress(tasks: &HashMap<String, Task>) -> Vec<&Task> {
+pub fn get_in_progress(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
     tasks
         .values()
         .filter(|t| t.status == TaskStatus::InProgress)
@@ -387,7 +77,7 @@ pub fn get_in_progress(tasks: &HashMap<String, Task>) -> Vec<&Task> {
 /// Returns task IDs ordered by most recently started first.
 #[must_use]
 pub fn get_in_progress_task_ids_for_session(
-    tasks: &HashMap<String, Task>,
+    tasks: &FastHashMap<String, Task>,
     session_id: &str,
 ) -> Vec<String> {
     let mut result: Vec<&Task> = tasks
@@ -412,7 +102,7 @@ pub fn get_in_progress_task_ids_for_session(
 /// Get stopped tasks
 #[must_use]
 #[allow(dead_code)] // Part of task manager API
-pub fn get_stopped(tasks: &HashMap<String, Task>) -> Vec<&Task> {
+pub fn get_stopped(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
     tasks
         .values()
         .filter(|t| t.status == TaskStatus::Stopped)
@@ -422,7 +112,7 @@ pub fn get_stopped(tasks: &HashMap<String, Task>) -> Vec<&Task> {
 /// Get closed tasks
 #[must_use]
 #[allow(dead_code)] // Part of task manager API
-pub fn get_closed(tasks: &HashMap<String, Task>) -> Vec<&Task> {
+pub fn get_closed(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
     tasks
         .values()
         .filter(|t| t.status == TaskStatus::Closed)
@@ -433,7 +123,7 @@ pub fn get_closed(tasks: &HashMap<String, Task>) -> Vec<&Task> {
 ///
 /// Accepts full IDs or unique prefixes. Returns the task or an error
 /// (TaskNotFound, AmbiguousTaskId, SubtaskNotFound, PrefixTooShort).
-pub fn find_task<'a>(tasks: &'a HashMap<String, Task>, id_or_prefix: &str) -> Result<&'a Task> {
+pub fn find_task<'a>(tasks: &'a FastHashMap<String, Task>, id_or_prefix: &str) -> Result<&'a Task> {
     // Fast path: exact match
     if let Some(task) = tasks.get(id_or_prefix) {
         return Ok(task);
@@ -448,12 +138,12 @@ pub fn find_task<'a>(tasks: &'a HashMap<String, Task>, id_or_prefix: &str) -> Re
 ///
 /// Use this when you need the resolved ID string (e.g., for batch validation
 /// or before the task map is available). Most call sites should use `find_task`.
-pub fn resolve_task_id(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+pub fn resolve_task_id(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
     resolve_task_id_internal(tasks, prefix)
 }
 
 /// Internal helper for prefix resolution
-fn resolve_task_id_internal(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+fn resolve_task_id_internal(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
     // Fast path: exact match
     if tasks.contains_key(prefix) {
         return Ok(prefix.to_string());
@@ -480,7 +170,7 @@ fn resolve_task_id_internal(tasks: &HashMap<String, Task>, prefix: &str) -> Resu
 }
 
 /// Resolve a root task prefix (no dots)
-fn resolve_root_prefix(tasks: &HashMap<String, Task>, prefix: &str) -> Result<String> {
+fn resolve_root_prefix(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
     // Enforce minimum prefix length (3 chars)
     if prefix.len() < 3 {
         return Err(AikiError::PrefixTooShort { prefix: prefix.to_string() });
@@ -522,36 +212,40 @@ fn resolve_root_prefix(tasks: &HashMap<String, Task>, prefix: &str) -> Result<St
     }
 }
 
-/// Check if a task has any subtasks
+/// Check if a task has any subtasks (using graph edge lookups)
 #[must_use]
-pub fn has_subtasks(tasks: &HashMap<String, Task>, parent_id: &str) -> bool {
-    tasks.keys().any(|id| is_direct_child_of(id, parent_id))
+pub fn has_subtasks(graph: &super::graph::TaskGraph, parent_id: &str) -> bool {
+    !graph.edges.referrers(parent_id, "subtask-of").is_empty()
 }
 
-/// Get direct subtasks of a task
+/// Get direct subtasks of a task (using graph edge lookups)
 #[must_use]
-pub fn get_subtasks<'a>(tasks: &'a HashMap<String, Task>, parent_id: &str) -> Vec<&'a Task> {
-    tasks
-        .values()
-        .filter(|t| is_direct_child_of(&t.id, parent_id))
+pub fn get_subtasks<'a>(graph: &'a super::graph::TaskGraph, parent_id: &str) -> Vec<&'a Task> {
+    graph
+        .edges
+        .referrers(parent_id, "subtask-of")
+        .iter()
+        .filter_map(|id| graph.tasks.get(id))
         .collect()
 }
 
-/// Get the ready queue filtered by scope
+/// Get the ready queue filtered by scope (using graph edge lookups)
 ///
 /// When scope is None, returns only root-level tasks (no parent).
 /// When scope is Some(parent_id), returns only direct subtasks of that parent.
 #[must_use]
 pub fn get_scoped_ready_queue<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     scope: Option<&str>,
 ) -> Vec<&'a Task> {
-    let mut ready: Vec<&Task> = tasks
+    let mut ready: Vec<&Task> = graph
+        .tasks
         .values()
         .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
         .filter(|t| match scope {
-            None => get_parent_id(&t.id).is_none(), // Root-level tasks only
-            Some(parent_id) => is_direct_child_of(&t.id, parent_id),
+            None => graph.edges.target(&t.id, "subtask-of").is_none(), // Root-level tasks only
+            Some(parent_id) => graph.edges.target(&t.id, "subtask-of") == Some(parent_id),
         })
         .collect();
 
@@ -564,28 +258,26 @@ pub fn get_scoped_ready_queue<'a>(
     ready
 }
 
-/// Determine the current scope set based on in-progress tasks
+/// Determine the current scope set based on in-progress tasks (using graph edge lookups)
 ///
 /// Returns a `ScopeSet` containing:
 /// - `include_root`: true if any root task is in-progress
 /// - `scopes`: unique parent IDs of in-progress child tasks
 #[must_use]
-pub fn get_current_scope_set(tasks: &HashMap<String, Task>) -> ScopeSet {
-    let in_progress = get_in_progress(tasks);
+pub fn get_current_scope_set(graph: &super::graph::TaskGraph) -> ScopeSet {
+    let in_progress = get_in_progress(&graph.tasks);
 
     let mut include_root = false;
     let mut scopes: Vec<String> = Vec::new();
 
     for task in in_progress {
-        if let Some(parent_id) = get_parent_id(&task.id) {
+        if let Some(parent_id) = graph.edges.target(&task.id, "subtask-of") {
             scopes.push(parent_id.to_string());
         } else {
-            // This is a root task
             include_root = true;
         }
     }
 
-    // Remove duplicates and sort for deterministic output
     scopes.sort();
     scopes.dedup();
 
@@ -598,61 +290,59 @@ pub fn get_current_scope_set(tasks: &HashMap<String, Task>) -> ScopeSet {
 /// Get current scopes as a Vec (for backward compatibility)
 #[must_use]
 #[allow(dead_code)] // Part of task manager API
-pub fn get_current_scopes(tasks: &HashMap<String, Task>) -> Vec<String> {
-    get_current_scope_set(tasks).scopes
+pub fn get_current_scopes(graph: &super::graph::TaskGraph) -> Vec<String> {
+    get_current_scope_set(graph).scopes
 }
 
-/// Check if all subtasks of a parent are closed
+/// Check if all subtasks of a parent are closed (using graph edge lookups)
 #[must_use]
-pub fn all_subtasks_closed(tasks: &HashMap<String, Task>, parent_id: &str) -> bool {
-    let subtasks = get_subtasks(tasks, parent_id);
+pub fn all_subtasks_closed(graph: &super::graph::TaskGraph, parent_id: &str) -> bool {
+    let subtasks = get_subtasks(graph, parent_id);
     !subtasks.is_empty() && subtasks.iter().all(|t| t.status == TaskStatus::Closed)
 }
 
-/// Get unclosed subtasks of a parent
+/// Get unclosed subtasks of a parent (using graph edge lookups)
 #[must_use]
 #[allow(dead_code)] // Part of task manager API
 pub fn get_unclosed_subtasks<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     parent_id: &str,
 ) -> Vec<&'a Task> {
-    get_subtasks(tasks, parent_id)
+    get_subtasks(graph, parent_id)
         .into_iter()
         .filter(|t| t.status != TaskStatus::Closed)
         .collect()
 }
 
-/// Get all unclosed descendants of a parent (recursive)
+/// Get all unclosed descendants of a parent (recursive, using graph edge lookups)
 ///
 /// Returns all descendants (subtasks, grandsubtasks, etc.) that are not closed,
 /// in depth-first order (deepest first, so they can be closed bottom-up).
 #[must_use]
 pub fn get_all_unclosed_descendants<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     parent_id: &str,
 ) -> Vec<&'a Task> {
     let mut result = Vec::new();
-    collect_unclosed_descendants(tasks, parent_id, &mut result);
+    collect_unclosed_descendants(graph, parent_id, &mut result);
     result
 }
 
-/// Helper for recursive descent - collects descendants depth-first
+/// Helper for recursive descent - collects descendants depth-first (using graph edge lookups)
 fn collect_unclosed_descendants<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     parent_id: &str,
     result: &mut Vec<&'a Task>,
 ) {
-    for subtask in get_subtasks(tasks, parent_id) {
-        // First recurse to get grandsubtasks (depth-first)
-        collect_unclosed_descendants(tasks, &subtask.id, result);
-        // Then add this subtask if unclosed
+    for subtask in get_subtasks(graph, parent_id) {
+        collect_unclosed_descendants(graph, &subtask.id, result);
         if subtask.status != TaskStatus::Closed {
             result.push(subtask);
         }
     }
 }
 
-/// Get ready queue based on a ScopeSet
+/// Get ready queue based on a ScopeSet (using graph edge lookups)
 ///
 /// When include_root is true, includes root-level tasks.
 /// When scopes has entries, includes tasks from those scopes.
@@ -660,7 +350,7 @@ fn collect_unclosed_descendants<'a>(
 /// Merges and deduplicates when multiple sources are active.
 #[must_use]
 pub fn get_ready_queue_for_scope_set<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     scope_set: &ScopeSet,
 ) -> Vec<&'a Task> {
     use std::collections::HashSet;
@@ -668,26 +358,22 @@ pub fn get_ready_queue_for_scope_set<'a>(
     let mut seen: HashSet<&str> = HashSet::new();
     let mut ready: Vec<&Task> = Vec::new();
 
-    // Include root-level tasks if requested OR if scope set is empty (no in-progress tasks)
-    // This ensures `task list` shows root tasks when nothing is in progress
     if scope_set.include_root || scope_set.is_empty() {
-        for task in get_scoped_ready_queue(tasks, None) {
+        for task in get_scoped_ready_queue(graph, None) {
             if seen.insert(&task.id) {
                 ready.push(task);
             }
         }
     }
 
-    // Include tasks from each scope
     for scope in &scope_set.scopes {
-        for task in get_scoped_ready_queue(tasks, Some(scope)) {
+        for task in get_scoped_ready_queue(graph, Some(scope)) {
             if seen.insert(&task.id) {
                 ready.push(task);
             }
         }
     }
 
-    // Sort by priority then creation time
     ready.sort_by(|a, b| {
         a.priority
             .cmp(&b.priority)
@@ -699,21 +385,24 @@ pub fn get_ready_queue_for_scope_set<'a>(
 
 /// Get ready queue filtered for a specific agent
 ///
-/// Returns open tasks that are visible to the given agent:
+/// Returns open, unblocked tasks that are visible to the given agent:
 /// - Unassigned tasks (visible to all)
 /// - Tasks assigned to this specific agent
 ///
 /// Excludes:
 /// - Tasks assigned to "human"
 /// - Tasks assigned to other agents
+/// - Blocked tasks
 #[must_use]
 pub fn get_ready_queue_for_agent<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     agent: &AgentType,
 ) -> Vec<&'a Task> {
-    let mut ready: Vec<&Task> = tasks
+    let mut ready: Vec<&Task> = graph
+        .tasks
         .values()
         .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
         .filter(|t| {
             let assignee = t
                 .assignee
@@ -735,18 +424,21 @@ pub fn get_ready_queue_for_agent<'a>(
 
 /// Get ready queue filtered for human visibility
 ///
-/// Returns open tasks that are visible to humans:
+/// Returns open, unblocked tasks that are visible to humans:
 /// - Unassigned tasks
 /// - Tasks assigned to "human"
 ///
 /// Excludes:
 /// - Tasks assigned to any agent
+/// - Blocked tasks
 #[must_use]
 #[allow(dead_code)] // Part of task manager API
-pub fn get_ready_queue_for_human(tasks: &HashMap<String, Task>) -> Vec<&'_ Task> {
-    let mut ready: Vec<&Task> = tasks
+pub fn get_ready_queue_for_human(graph: &super::graph::TaskGraph) -> Vec<&'_ Task> {
+    let mut ready: Vec<&Task> = graph
+        .tasks
         .values()
         .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
         .filter(|t| {
             let assignee = t
                 .assignee
@@ -771,11 +463,11 @@ pub fn get_ready_queue_for_human(tasks: &HashMap<String, Task>) -> Vec<&'_ Task>
 /// Combines scope filtering with agent visibility filtering.
 #[must_use]
 pub fn get_ready_queue_for_agent_scoped<'a>(
-    tasks: &'a HashMap<String, Task>,
+    graph: &'a super::graph::TaskGraph,
     scope_set: &ScopeSet,
     agent: &AgentType,
 ) -> Vec<&'a Task> {
-    let scoped = get_ready_queue_for_scope_set(tasks, scope_set);
+    let scoped = get_ready_queue_for_scope_set(graph, scope_set);
     scoped
         .into_iter()
         .filter(|t| {
@@ -792,8 +484,14 @@ pub fn get_ready_queue_for_agent_scoped<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::types::{TaskOutcome, TaskPriority};
+    use crate::tasks::graph::{materialize_graph, TaskGraph};
+    use crate::tasks::types::{TaskEvent, TaskOutcome, TaskPriority};
     use chrono::Utc;
+
+    /// Helper: materialize a graph from events (tests that need edge lookups)
+    fn make_graph(events: &[TaskEvent]) -> TaskGraph {
+        materialize_graph(events)
+    }
 
     fn make_created_event(
         task_id: &str,
@@ -830,7 +528,6 @@ mod tests {
         TaskEvent::Stopped {
             task_ids: vec![task_id.to_string()],
             reason: reason.map(|s| s.to_string()),
-            blocked_reason: None,
             timestamp: Utc::now(),
         }
     }
@@ -848,7 +545,7 @@ mod tests {
     fn test_materialize_single_task() {
         let events = vec![make_created_event("a1b2", "Test task", TaskPriority::P2, 1)];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         assert_eq!(tasks.len(), 1);
         let task = tasks.get("a1b2").unwrap();
@@ -864,7 +561,7 @@ mod tests {
             make_started_event("a1b2"),
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").unwrap();
         assert_eq!(task.status, TaskStatus::InProgress);
 
@@ -875,7 +572,7 @@ mod tests {
             make_stopped_event("a1b2", Some("Need info")),
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").unwrap();
         assert_eq!(task.status, TaskStatus::Stopped);
         assert_eq!(task.stopped_reason, Some("Need info".to_string()));
@@ -889,7 +586,7 @@ mod tests {
             make_closed_event("a1b2", TaskOutcome::Done),
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").unwrap();
         assert_eq!(task.status, TaskStatus::Closed);
         assert_eq!(task.closed_outcome, Some(TaskOutcome::Done));
@@ -904,8 +601,8 @@ mod tests {
             make_created_event("normal", "Normal", TaskPriority::P2, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
 
         assert_eq!(ready.len(), 4);
         assert_eq!(ready[0].id, "critical"); // P0 first
@@ -921,8 +618,8 @@ mod tests {
             make_created_event("older", "Older task", TaskPriority::P2, 3),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
 
         assert_eq!(ready.len(), 2);
         assert_eq!(ready[0].id, "older"); // Older first (created 3 hours ago)
@@ -939,8 +636,8 @@ mod tests {
             make_closed_event("closed", TaskOutcome::Done),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
 
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "open");
@@ -954,7 +651,7 @@ mod tests {
             make_started_event("task1"),
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let in_progress = get_in_progress(&tasks);
 
         assert_eq!(in_progress.len(), 1);
@@ -965,7 +662,7 @@ mod tests {
     fn test_find_task() {
         let events = vec![make_created_event("a1b2", "Test", TaskPriority::P2, 1)];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         assert!(find_task(&tasks, "a1b2").is_ok());
         assert!(find_task(&tasks, "nonexistent").is_err());
@@ -980,12 +677,12 @@ mod tests {
             make_created_event("other", "Other", TaskPriority::P2, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        assert!(has_subtasks(&tasks, "parent"));
-        assert!(!has_subtasks(&tasks, "parent.1"));
-        assert!(!has_subtasks(&tasks, "other"));
-        assert!(!has_subtasks(&tasks, "nonexistent"));
+        assert!(has_subtasks(&graph, "parent"));
+        assert!(!has_subtasks(&graph, "parent.1"));
+        assert!(!has_subtasks(&graph, "other"));
+        assert!(!has_subtasks(&graph, "nonexistent"));
     }
 
     #[test]
@@ -998,8 +695,8 @@ mod tests {
             make_created_event("other", "Other", TaskPriority::P2, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let subtasks = get_subtasks(&tasks, "parent");
+        let graph = make_graph(&events);
+        let subtasks = get_subtasks(&graph, "parent");
 
         // Should only get direct subtasks, not grandsubtasks
         assert_eq!(subtasks.len(), 2);
@@ -1017,8 +714,8 @@ mod tests {
             make_created_event("root1.1", "Child", TaskPriority::P0, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_scoped_ready_queue(&tasks, None);
+        let graph = make_graph(&events);
+        let ready = get_scoped_ready_queue(&graph, None);
 
         // Should only get root-level tasks, not subtasks
         assert_eq!(ready.len(), 2);
@@ -1036,8 +733,8 @@ mod tests {
             make_created_event("other", "Other root", TaskPriority::P0, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_scoped_ready_queue(&tasks, Some("parent"));
+        let graph = make_graph(&events);
+        let ready = get_scoped_ready_queue(&graph, Some("parent"));
 
         // Should only get direct subtasks of parent
         assert_eq!(ready.len(), 2);
@@ -1052,16 +749,16 @@ mod tests {
             make_created_event("parent", "Parent", TaskPriority::P2, 1),
             make_created_event("parent.1", "Child", TaskPriority::P2, 1),
         ];
-        let tasks = materialize_tasks(&events);
-        assert!(get_current_scopes(&tasks).is_empty());
+        let graph = make_graph(&events);
+        assert!(get_current_scopes(&graph).is_empty());
 
         // In-progress root task -> no scopes
         let events = vec![
             make_created_event("parent", "Parent", TaskPriority::P2, 1),
             make_started_event("parent"),
         ];
-        let tasks = materialize_tasks(&events);
-        assert!(get_current_scopes(&tasks).is_empty());
+        let graph = make_graph(&events);
+        assert!(get_current_scopes(&graph).is_empty());
 
         // In-progress child task -> scope is parent
         let events = vec![
@@ -1069,8 +766,8 @@ mod tests {
             make_created_event("parent.1", "Child", TaskPriority::P2, 1),
             make_started_event("parent.1"),
         ];
-        let tasks = materialize_tasks(&events);
-        assert_eq!(get_current_scopes(&tasks), vec!["parent".to_string()]);
+        let graph = make_graph(&events);
+        assert_eq!(get_current_scopes(&graph), vec!["parent".to_string()]);
     }
 
     #[test]
@@ -1089,8 +786,8 @@ mod tests {
                 stopped: Vec::new(),
             },
         ];
-        let tasks = materialize_tasks(&events);
-        let scopes = get_current_scopes(&tasks);
+        let graph = make_graph(&events);
+        let scopes = get_current_scopes(&graph);
         assert_eq!(scopes.len(), 2);
         assert!(scopes.contains(&"parent1".to_string()));
         assert!(scopes.contains(&"parent2".to_string()));
@@ -1111,8 +808,8 @@ mod tests {
                 stopped: Vec::new(),
             },
         ];
-        let tasks = materialize_tasks(&events);
-        let scopes = get_current_scopes(&tasks);
+        let graph = make_graph(&events);
+        let scopes = get_current_scopes(&graph);
         assert_eq!(scopes, vec!["parent".to_string()]);
     }
 
@@ -1120,8 +817,8 @@ mod tests {
     fn test_all_subtasks_closed() {
         // No subtasks -> returns false
         let events = vec![make_created_event("parent", "Parent", TaskPriority::P2, 1)];
-        let tasks = materialize_tasks(&events);
-        assert!(!all_subtasks_closed(&tasks, "parent"));
+        let graph = make_graph(&events);
+        assert!(!all_subtasks_closed(&graph, "parent"));
 
         // Some subtasks open -> returns false
         let events = vec![
@@ -1130,8 +827,8 @@ mod tests {
             make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
             make_closed_event("parent.1", TaskOutcome::Done),
         ];
-        let tasks = materialize_tasks(&events);
-        assert!(!all_subtasks_closed(&tasks, "parent"));
+        let graph = make_graph(&events);
+        assert!(!all_subtasks_closed(&graph, "parent"));
 
         // All subtasks closed -> returns true
         let events = vec![
@@ -1141,8 +838,8 @@ mod tests {
             make_closed_event("parent.1", TaskOutcome::Done),
             make_closed_event("parent.2", TaskOutcome::Done),
         ];
-        let tasks = materialize_tasks(&events);
-        assert!(all_subtasks_closed(&tasks, "parent"));
+        let graph = make_graph(&events);
+        assert!(all_subtasks_closed(&graph, "parent"));
     }
 
     #[test]
@@ -1155,8 +852,8 @@ mod tests {
             make_closed_event("parent.1", TaskOutcome::Done),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let unclosed = get_unclosed_subtasks(&tasks, "parent");
+        let graph = make_graph(&events);
+        let unclosed = get_unclosed_subtasks(&graph, "parent");
 
         assert_eq!(unclosed.len(), 2);
         let ids: Vec<_> = unclosed.iter().map(|t| t.id.as_str()).collect();
@@ -1175,8 +872,8 @@ mod tests {
             make_closed_event("parent.1", TaskOutcome::Done),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let descendants = get_all_unclosed_descendants(&tasks, "parent");
+        let graph = make_graph(&events);
+        let descendants = get_all_unclosed_descendants(&graph, "parent");
 
         assert_eq!(descendants.len(), 2);
         let ids: Vec<_> = descendants.iter().map(|t| t.id.as_str()).collect();
@@ -1196,8 +893,8 @@ mod tests {
             make_created_event("parent.2.1", "Grandchild 2.1", TaskPriority::P2, 1),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let descendants = get_all_unclosed_descendants(&tasks, "parent");
+        let graph = make_graph(&events);
+        let descendants = get_all_unclosed_descendants(&graph, "parent");
 
         // Should have all 5 descendants
         assert_eq!(descendants.len(), 5);
@@ -1234,8 +931,8 @@ mod tests {
             make_closed_event("parent.1.1", TaskOutcome::Done),
         ];
 
-        let tasks = materialize_tasks(&events);
-        let descendants = get_all_unclosed_descendants(&tasks, "parent");
+        let graph = make_graph(&events);
+        let descendants = get_all_unclosed_descendants(&graph, "parent");
 
         // Only parent.2 should be unclosed
         assert_eq!(descendants.len(), 1);
@@ -1247,8 +944,8 @@ mod tests {
         // Test with no subtasks
         let events = vec![make_created_event("parent", "Parent", TaskPriority::P2, 1)];
 
-        let tasks = materialize_tasks(&events);
-        let descendants = get_all_unclosed_descendants(&tasks, "parent");
+        let graph = make_graph(&events);
+        let descendants = get_all_unclosed_descendants(&graph, "parent");
 
         assert!(descendants.is_empty());
     }
@@ -1260,8 +957,8 @@ mod tests {
             make_created_event("root1", "Root task", TaskPriority::P2, 1),
             make_started_event("root1"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(scope_set.include_root);
         assert!(scope_set.scopes.is_empty());
@@ -1278,8 +975,8 @@ mod tests {
             make_started_event("root1"),
             make_started_event("parent.1"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(scope_set.include_root);
         assert_eq!(scope_set.scopes, vec!["parent".to_string()]);
@@ -1293,8 +990,8 @@ mod tests {
             make_created_event("parent.1", "Child task", TaskPriority::P2, 2),
             make_started_event("parent.1"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(!scope_set.include_root);
         assert_eq!(scope_set.scopes, vec!["parent".to_string()]);
@@ -1304,8 +1001,8 @@ mod tests {
     fn test_scope_set_is_empty() {
         // No in-progress tasks → is_empty() = true
         let events = vec![make_created_event("task1", "Task 1", TaskPriority::P2, 1)];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(!scope_set.include_root);
         assert!(scope_set.scopes.is_empty());
@@ -1322,8 +1019,8 @@ mod tests {
             make_created_event("parent.1.1", "Grandchild", TaskPriority::P2, 2),
             make_started_event("parent.1.1"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(!scope_set.include_root);
         // Scope should be the DIRECT parent of the in-progress task
@@ -1342,8 +1039,8 @@ mod tests {
             make_started_event("root"),
             make_started_event("parent.1.1"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(scope_set.include_root); // root task is in-progress
         assert_eq!(scope_set.scopes, vec!["parent.1".to_string()]); // grandchild's parent
@@ -1361,8 +1058,8 @@ mod tests {
             make_started_event("parent.2"),
             make_started_event("parent.3"),
         ];
-        let tasks = materialize_tasks(&events);
-        let scope_set = get_current_scope_set(&tasks);
+        let graph = make_graph(&events);
+        let scope_set = get_current_scope_set(&graph);
 
         assert!(!scope_set.include_root);
         // Should deduplicate to single "parent" scope
@@ -1372,24 +1069,26 @@ mod tests {
     #[test]
     fn test_materialize_empty_events() {
         let events: Vec<TaskEvent> = vec![];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         assert!(tasks.is_empty());
     }
 
     #[test]
     fn test_ready_queue_empty_tasks() {
-        let tasks: HashMap<String, Task> = HashMap::new();
-        let ready = get_ready_queue(&tasks);
+        let events: Vec<TaskEvent> = vec![];
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
         assert!(ready.is_empty());
     }
 
     #[test]
     fn test_scoped_ready_queue_empty_tasks() {
-        let tasks: HashMap<String, Task> = HashMap::new();
-        let ready = get_scoped_ready_queue(&tasks, None);
+        let events: Vec<TaskEvent> = vec![];
+        let graph = make_graph(&events);
+        let ready = get_scoped_ready_queue(&graph, None);
         assert!(ready.is_empty());
 
-        let ready = get_scoped_ready_queue(&tasks, Some("parent"));
+        let ready = get_scoped_ready_queue(&graph, Some("parent"));
         assert!(ready.is_empty());
     }
 
@@ -1439,8 +1138,8 @@ mod tests {
                 timestamp: now,
             },
         ];
-        let tasks = materialize_tasks(&events);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
 
         assert_eq!(ready.len(), 3);
         // With same priority and time, order is deterministic (HashMap iteration order + sort stability)
@@ -1461,7 +1160,7 @@ mod tests {
             make_started_event("task1"),
             make_closed_event("task1", TaskOutcome::Done),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task = tasks.get("task1").unwrap();
         assert_eq!(task.status, TaskStatus::Closed);
@@ -1471,7 +1170,7 @@ mod tests {
     #[test]
     fn test_find_task_nonexistent() {
         let events = vec![make_created_event("task1", "Task 1", TaskPriority::P2, 1)];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         assert!(find_task(&tasks, "nonexistent").is_err());
         assert!(find_task(&tasks, "").is_err());
@@ -1486,9 +1185,9 @@ mod tests {
             make_created_event("parent.1.1", "Grandsubtask", TaskPriority::P2, 2),
             make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let subtasks = get_subtasks(&tasks, "parent");
+        let subtasks = get_subtasks(&graph, "parent");
         let ids: Vec<_> = subtasks.iter().map(|t| t.id.as_str()).collect();
 
         assert_eq!(ids.len(), 2);
@@ -1506,14 +1205,14 @@ mod tests {
             make_created_event("parent.1", "Child", TaskPriority::P2, 2),
             make_created_event("parent.1.1", "Grandsubtask", TaskPriority::P2, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         // parent.1 has subtasks (grandsubtask of parent)
-        assert!(has_subtasks(&tasks, "parent.1"));
+        assert!(has_subtasks(&graph, "parent.1"));
         // parent has subtasks (direct subtask parent.1)
-        assert!(has_subtasks(&tasks, "parent"));
+        assert!(has_subtasks(&graph, "parent"));
         // parent.1.1 has no subtasks
-        assert!(!has_subtasks(&tasks, "parent.1.1"));
+        assert!(!has_subtasks(&graph, "parent.1.1"));
     }
 
     #[test]
@@ -1526,7 +1225,7 @@ mod tests {
             make_started_event("task2"),
             make_stopped_event("task1", None),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let in_progress = get_in_progress(&tasks);
         let ids: Vec<_> = in_progress.iter().map(|t| t.id.as_str()).collect();
@@ -1547,14 +1246,14 @@ mod tests {
             make_created_event("root2", "Root 2", TaskPriority::P1, 1),
             make_created_event("parent.1", "Child 1", TaskPriority::P0, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: false,
             scopes: vec![],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         // Should return root-level tasks only (not subtasks)
@@ -1572,14 +1271,14 @@ mod tests {
             make_created_event("root2", "Root 2", TaskPriority::P1, 1),
             make_created_event("parent.1", "Child 1", TaskPriority::P0, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: true,
             scopes: vec![],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         assert_eq!(ids.len(), 2);
@@ -1597,14 +1296,14 @@ mod tests {
             make_created_event("parent.1", "Child 1", TaskPriority::P0, 2),
             make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: false,
             scopes: vec!["parent".to_string()],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         assert_eq!(ids.len(), 2);
@@ -1625,14 +1324,14 @@ mod tests {
             make_created_event("parent.1", "Child 1", TaskPriority::P0, 2),
             make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: true,
             scopes: vec!["parent".to_string()],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         // 4 tasks: root1, parent (root), parent.1, parent.2
@@ -1657,14 +1356,14 @@ mod tests {
             make_created_event("p1.1", "P1 Child", TaskPriority::P1, 3),
             make_created_event("p2.1", "P2 Child", TaskPriority::P0, 2),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: false,
             scopes: vec!["p1".to_string(), "p2".to_string()],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         assert_eq!(ids.len(), 2);
@@ -1686,14 +1385,14 @@ mod tests {
             make_started_event("parent.2"),
             make_closed_event("parent.3", TaskOutcome::Done),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: false,
             scopes: vec!["parent".to_string()],
         };
 
-        let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+        let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
         let ids: Vec<_> = ready.iter().map(|t| t.id.as_str()).collect();
 
         assert_eq!(ids.len(), 1);
@@ -1776,7 +1475,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.status, TaskStatus::Open);
@@ -1815,7 +1514,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.comments.len(), 2);
@@ -1850,7 +1549,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.name, "Updated name");
@@ -1884,7 +1583,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.name, "Test task"); // Name unchanged
@@ -1918,7 +1617,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.name, "New name");
@@ -1982,7 +1681,7 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         let task = tasks.get("a1b2").expect("Task should exist");
 
         assert_eq!(task.status, TaskStatus::Open);
@@ -2017,8 +1716,8 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
         assert!(ready.is_empty(), "Closed task should not be in ready queue");
 
         // Now add reopened event
@@ -2049,8 +1748,8 @@ mod tests {
             },
         ];
 
-        let tasks = materialize_tasks(&events_with_reopen);
-        let ready = get_ready_queue(&tasks);
+        let graph = make_graph(&events_with_reopen);
+        let ready = get_ready_queue(&graph);
         assert_eq!(ready.len(), 1, "Reopened task should be in ready queue");
         assert_eq!(ready[0].id, "a1b2");
     }
@@ -2066,7 +1765,7 @@ mod tests {
             timestamp: Utc::now(),
         }];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         assert!(
             tasks.is_empty(),
             "No task should be created from Update event alone"
@@ -2082,7 +1781,7 @@ mod tests {
             timestamp: Utc::now(),
         }];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         assert!(
             tasks.is_empty(),
             "No task should be created from CommentAdded event alone"
@@ -2097,7 +1796,7 @@ mod tests {
             timestamp: Utc::now(),
         }];
 
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
         assert!(
             tasks.is_empty(),
             "No task should be created from Reopened event alone"
@@ -2138,10 +1837,10 @@ mod tests {
             1,
             None,
         )];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&tasks, &AgentType::Codex);
+        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
+        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
 
         assert_eq!(claude_queue.len(), 1);
         assert_eq!(codex_queue.len(), 1);
@@ -2157,10 +1856,10 @@ mod tests {
             1,
             Some("claude-code"),
         )];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&tasks, &AgentType::Codex);
+        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
+        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
 
         assert_eq!(claude_queue.len(), 1);
         assert_eq!(codex_queue.len(), 0); // Not visible to Codex
@@ -2176,10 +1875,10 @@ mod tests {
             1,
             Some("human"),
         )];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&tasks, &AgentType::Codex);
+        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
+        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
 
         assert_eq!(claude_queue.len(), 0);
         assert_eq!(codex_queue.len(), 0);
@@ -2212,10 +1911,10 @@ mod tests {
                 Some("human"),
             ),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let claude_queue = get_ready_queue_for_agent(&tasks, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&tasks, &AgentType::Codex);
+        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
+        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
 
         // Claude sees: unassigned, for_claude (sorted by priority)
         assert_eq!(claude_queue.len(), 2);
@@ -2247,9 +1946,9 @@ mod tests {
                 Some("human"),
             ),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
-        let human_queue = get_ready_queue_for_human(&tasks);
+        let human_queue = get_ready_queue_for_human(&graph);
 
         // Human sees: unassigned, for_human (sorted by priority)
         assert_eq!(human_queue.len(), 2);
@@ -2283,7 +1982,7 @@ mod tests {
                 Some("human"),
             ),
         ];
-        let tasks = materialize_tasks(&events);
+        let graph = make_graph(&events);
 
         let scope_set = ScopeSet {
             include_root: false,
@@ -2291,7 +1990,7 @@ mod tests {
         };
 
         let scoped_queue =
-            get_ready_queue_for_agent_scoped(&tasks, &scope_set, &AgentType::ClaudeCode);
+            get_ready_queue_for_agent_scoped(&graph, &scope_set, &AgentType::ClaudeCode);
 
         // Claude sees subtasks: unassigned (P2), for_claude (P1)
         // Sorted by priority: P1 first
@@ -2325,7 +2024,7 @@ mod tests {
     #[test]
     fn test_get_in_progress_task_ids_for_session_empty() {
         let events = vec![make_created_event("task1", "Task 1", TaskPriority::P2, 1)];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         assert!(task_ids.is_empty());
@@ -2337,7 +2036,7 @@ mod tests {
             make_created_event("task1", "Task 1", TaskPriority::P2, 1),
             make_started_event_with_session("task1", "session-123"),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         assert_eq!(task_ids, vec!["task1"]);
@@ -2356,7 +2055,7 @@ mod tests {
             // task3 started 1 hour ago (most recent start)
             make_started_event_with_time("task3", "session-123", 1),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         // Should be sorted by start time descending (most recently started first)
@@ -2374,7 +2073,7 @@ mod tests {
             make_started_event_with_session("task1", "session-123"),
             make_started_event_with_session("task2", "session-456"),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let session_123_tasks = get_in_progress_task_ids_for_session(&tasks, "session-123");
         let session_456_tasks = get_in_progress_task_ids_for_session(&tasks, "session-456");
@@ -2392,7 +2091,7 @@ mod tests {
             make_started_event_with_session("task2", "session-123"),
             make_stopped_event("task1", None),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         // task1 was stopped, so only task2 remains in-progress
@@ -2408,7 +2107,7 @@ mod tests {
             make_started_event_with_session("task2", "session-123"),
             make_closed_event("task1", TaskOutcome::Done),
         ];
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         let task_ids = get_in_progress_task_ids_for_session(&tasks, "session-123");
         // task1 was closed, so only task2 remains in-progress
@@ -2417,7 +2116,7 @@ mod tests {
 
     // Tests for find_task with prefix resolution
 
-    fn make_tasks_for_prefix_tests() -> HashMap<String, Task> {
+    fn make_tasks_for_prefix_tests() -> FastHashMap<String, Task> {
         let events = vec![
             make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls", "Task Alpha", TaskPriority::P2, 3),
             make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls.1", "Subtask 1", TaskPriority::P2, 2),
@@ -2425,7 +2124,7 @@ mod tests {
             make_created_event("nrqklspxopmwtryzyzkqnlmsqvpwtkls", "Task Beta", TaskPriority::P2, 3),
             make_created_event("mvslxyymoynoxyyywqyutmovxpvztkls", "Task Gamma", TaskPriority::P2, 3),
         ];
-        materialize_tasks(&events)
+        materialize_graph(&events).tasks
     }
 
     #[test]
@@ -2539,5 +2238,330 @@ mod tests {
         let tasks = make_tasks_for_prefix_tests();
         let err = resolve_task_id(&tasks, "mvsl").unwrap_err();
         assert!(matches!(err, AikiError::AmbiguousTaskId { .. }));
+    }
+
+    fn make_created_event_with_type(
+        task_id: &str,
+        name: &str,
+        task_type: &str,
+        priority: TaskPriority,
+        hours_ago: i64,
+    ) -> TaskEvent {
+        TaskEvent::Created {
+            task_id: task_id.to_string(),
+            name: name.to_string(),
+            task_type: Some(task_type.to_string()),
+            priority,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: std::collections::HashMap::new(),
+            timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
+        }
+    }
+
+    #[test]
+    fn test_orchestrator_is_orchestrator() {
+        let events = vec![make_created_event_with_type(
+            "parent",
+            "Build: spec.md",
+            "orchestrator",
+            TaskPriority::P2,
+            1,
+        )];
+        let tasks = materialize_graph(&events).tasks;
+        let task = tasks.get("parent").unwrap();
+        assert!(task.is_orchestrator());
+    }
+
+    #[test]
+    fn test_non_orchestrator_is_not_orchestrator() {
+        let events = vec![make_created_event(
+            "parent",
+            "Regular task",
+            TaskPriority::P2,
+            1,
+        )];
+        let tasks = materialize_graph(&events).tasks;
+        let task = tasks.get("parent").unwrap();
+        assert!(!task.is_orchestrator());
+    }
+
+    #[test]
+    fn test_orchestrator_unclosed_descendants_for_cascade() {
+        // Simulates the cascade-stop scenario: orchestrator has subtasks, some open
+        let events = vec![
+            make_created_event_with_type(
+                "parent",
+                "Build: spec.md",
+                "orchestrator",
+                TaskPriority::P2,
+                5,
+            ),
+            make_created_event("parent.1", "Plan", TaskPriority::P2, 4),
+            make_created_event("parent.2", "Execute", TaskPriority::P2, 3),
+            make_created_event("parent.2.1", "Step 1", TaskPriority::P2, 2),
+            make_created_event("parent.2.2", "Step 2", TaskPriority::P2, 1),
+            make_closed_event("parent.1", TaskOutcome::Done),
+            make_started_event("parent.2"),
+            make_started_event("parent.2.1"),
+        ];
+
+        let graph = make_graph(&events);
+        let parent = graph.tasks.get("parent").unwrap();
+        assert!(parent.is_orchestrator());
+
+        let unclosed = get_all_unclosed_descendants(&graph, "parent");
+        // parent.1 is closed, so only parent.2, parent.2.1, parent.2.2
+        assert_eq!(unclosed.len(), 3);
+        let ids: Vec<_> = unclosed.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"parent.2"));
+        assert!(ids.contains(&"parent.2.1"));
+        assert!(ids.contains(&"parent.2.2"));
+    }
+
+    #[test]
+    fn test_non_orchestrator_stop_should_not_cascade() {
+        // Non-orchestrator tasks have subtasks but stop should NOT trigger cascade
+        // (cascade is only triggered by the calling code when is_orchestrator() is true)
+        let events = vec![
+            make_created_event("parent", "Regular parent", TaskPriority::P2, 3),
+            make_created_event("parent.1", "Child 1", TaskPriority::P2, 2),
+            make_created_event("parent.2", "Child 2", TaskPriority::P2, 1),
+        ];
+
+        let graph = make_graph(&events);
+        let parent = graph.tasks.get("parent").unwrap();
+        assert!(!parent.is_orchestrator());
+
+        // The unclosed descendants exist, but the calling code won't cascade-close them
+        // because is_orchestrator() returns false
+        let unclosed = get_all_unclosed_descendants(&graph, "parent");
+        assert_eq!(unclosed.len(), 2);
+    }
+
+    #[test]
+    fn test_orchestrator_stop_cascade_closes_descendants_as_wont_do() {
+        // Simulates the full orchestrator stop flow:
+        // 1. Orchestrator parent with subtasks (some in-progress, some open)
+        // 2. Parent gets stopped
+        // 3. cascade_close_tasks writes Closed events for all unclosed descendants
+        // 4. Verify descendants are closed with WontDo and correct summary
+        let summary = "Parent orchestrator stopped";
+        let events = vec![
+            make_created_event_with_type("parent", "Build: spec.md", "orchestrator", TaskPriority::P2, 5),
+            make_created_event("parent.1", "Plan", TaskPriority::P2, 4),
+            make_created_event("parent.2", "Execute", TaskPriority::P2, 3),
+            make_created_event("parent.2.1", "Step 1", TaskPriority::P2, 2),
+            make_created_event("parent.2.2", "Step 2", TaskPriority::P2, 1),
+            // parent.1 is closed (done)
+            make_closed_event("parent.1", TaskOutcome::Done),
+            // parent.2 and parent.2.1 are in-progress
+            make_started_event("parent"),
+            make_started_event("parent.2"),
+            make_started_event("parent.2.1"),
+            // Simulate run_stop: stop the parent
+            make_stopped_event("parent", Some("User stopped")),
+            // Simulate cascade_close_tasks: close all unclosed descendants as WontDo
+            TaskEvent::Closed {
+                task_ids: vec![
+                    "parent.2".to_string(),
+                    "parent.2.1".to_string(),
+                    "parent.2.2".to_string(),
+                ],
+                outcome: TaskOutcome::WontDo,
+                summary: Some(summary.to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let tasks = materialize_graph(&events).tasks;
+
+        // Parent should be stopped (not closed)
+        let parent = tasks.get("parent").unwrap();
+        assert_eq!(parent.status, TaskStatus::Stopped);
+        assert!(parent.is_orchestrator());
+
+        // parent.1 was already closed as Done — should remain unchanged
+        let child1 = tasks.get("parent.1").unwrap();
+        assert_eq!(child1.status, TaskStatus::Closed);
+        assert_eq!(child1.closed_outcome, Some(TaskOutcome::Done));
+
+        // parent.2 should be cascade-closed as WontDo
+        let child2 = tasks.get("parent.2").unwrap();
+        assert_eq!(child2.status, TaskStatus::Closed);
+        assert_eq!(child2.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(child2.summary.as_deref(), Some(summary));
+
+        // parent.2.1 should be cascade-closed as WontDo
+        let grandchild1 = tasks.get("parent.2.1").unwrap();
+        assert_eq!(grandchild1.status, TaskStatus::Closed);
+        assert_eq!(grandchild1.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(grandchild1.summary.as_deref(), Some(summary));
+
+        // parent.2.2 should be cascade-closed as WontDo
+        let grandchild2 = tasks.get("parent.2.2").unwrap();
+        assert_eq!(grandchild2.status, TaskStatus::Closed);
+        assert_eq!(grandchild2.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(grandchild2.summary.as_deref(), Some(summary));
+    }
+
+    #[test]
+    fn test_orchestrator_failure_cascade_closes_descendants() {
+        // Simulates runner failure path: orchestrator agent fails, descendants are
+        // cascade-closed with "Parent orchestrator failed" summary
+        let summary = "Parent orchestrator failed";
+        let events = vec![
+            make_created_event_with_type("orch", "Build: feature", "orchestrator", TaskPriority::P2, 4),
+            make_created_event("orch.1", "Subtask A", TaskPriority::P2, 3),
+            make_created_event("orch.2", "Subtask B", TaskPriority::P2, 2),
+            make_started_event("orch"),
+            make_started_event("orch.1"),
+            // Simulate runner failure: stop the parent, cascade-close descendants
+            make_stopped_event("orch", Some("Session failed: agent crashed")),
+            TaskEvent::Closed {
+                task_ids: vec!["orch.1".to_string(), "orch.2".to_string()],
+                outcome: TaskOutcome::WontDo,
+                summary: Some(summary.to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let tasks = materialize_graph(&events).tasks;
+
+        // Both subtasks should be closed as WontDo with failure summary
+        let sub_a = tasks.get("orch.1").unwrap();
+        assert_eq!(sub_a.status, TaskStatus::Closed);
+        assert_eq!(sub_a.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(sub_a.summary.as_deref(), Some(summary));
+
+        let sub_b = tasks.get("orch.2").unwrap();
+        assert_eq!(sub_b.status, TaskStatus::Closed);
+        assert_eq!(sub_b.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(sub_b.summary.as_deref(), Some(summary));
+    }
+
+    #[test]
+    fn test_orchestrator_cascade_does_not_affect_already_closed() {
+        // If a descendant is already closed (Done), cascade-close should not re-close it
+        // because get_all_unclosed_descendants filters out closed tasks
+        let events = vec![
+            make_created_event_with_type("p", "Build: x", "orchestrator", TaskPriority::P2, 5),
+            make_created_event("p.1", "Done task", TaskPriority::P2, 4),
+            make_created_event("p.2", "Open task", TaskPriority::P2, 3),
+            make_closed_event("p.1", TaskOutcome::Done),
+            make_started_event("p"),
+        ];
+
+        let graph = make_graph(&events);
+        let unclosed = get_all_unclosed_descendants(&graph, "p");
+
+        // Only p.2 should be in the unclosed list (p.1 is already closed)
+        assert_eq!(unclosed.len(), 1);
+        assert_eq!(unclosed[0].id, "p.2");
+
+        // After cascade close, p.1 should retain its original Done outcome
+        let events_with_cascade = vec![
+            make_created_event_with_type("p", "Build: x", "orchestrator", TaskPriority::P2, 5),
+            make_created_event("p.1", "Done task", TaskPriority::P2, 4),
+            make_created_event("p.2", "Open task", TaskPriority::P2, 3),
+            make_closed_event("p.1", TaskOutcome::Done),
+            make_started_event("p"),
+            make_stopped_event("p", None),
+            // Only p.2 gets cascade-closed (p.1 already closed)
+            TaskEvent::Closed {
+                task_ids: vec!["p.2".to_string()],
+                outcome: TaskOutcome::WontDo,
+                summary: Some("Parent orchestrator stopped".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let tasks = materialize_graph(&events_with_cascade).tasks;
+        let done_task = tasks.get("p.1").unwrap();
+        assert_eq!(done_task.closed_outcome, Some(TaskOutcome::Done));
+        assert!(done_task.summary.is_none()); // Original close had no summary
+
+        let cascade_task = tasks.get("p.2").unwrap();
+        assert_eq!(cascade_task.closed_outcome, Some(TaskOutcome::WontDo));
+        assert_eq!(cascade_task.summary.as_deref(), Some("Parent orchestrator stopped"));
+    }
+
+    // --- blocking integration tests ---
+
+    #[test]
+    fn test_ready_queue_excludes_blocked_tasks() {
+        let events = vec![
+            make_created_event("blocker", "Blocker", TaskPriority::P2, 2),
+            make_created_event("blocked", "Blocked task", TaskPriority::P2, 1),
+            make_created_event("free", "Free task", TaskPriority::P2, 0),
+            TaskEvent::LinkAdded {
+                from: "blocked".to_string(),
+                to: "blocker".to_string(),
+                kind: "blocked-by".to_string(),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
+        let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert!(ready_ids.contains(&"blocker"));
+        assert!(ready_ids.contains(&"free"));
+        assert!(!ready_ids.contains(&"blocked"));
+    }
+
+    #[test]
+    fn test_ready_queue_unblocks_when_blocker_closed() {
+        let events = vec![
+            make_created_event("blocker", "Blocker", TaskPriority::P2, 2),
+            make_created_event("blocked", "Blocked task", TaskPriority::P2, 1),
+            TaskEvent::LinkAdded {
+                from: "blocked".to_string(),
+                to: "blocker".to_string(),
+                kind: "blocked-by".to_string(),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["blocker".to_string()],
+                outcome: TaskOutcome::Done,
+                summary: None,
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let ready = get_ready_queue(&graph);
+        let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        assert!(ready_ids.contains(&"blocked"));
+    }
+
+    #[test]
+    fn test_scoped_ready_queue_excludes_blocked_subtask() {
+        // Auto-start-next should skip blocked subtasks
+        let events = vec![
+            make_created_event("parent", "Parent", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Child 1 (blocked)", TaskPriority::P2, 3),
+            make_created_event("parent.2", "Child 2 (free)", TaskPriority::P2, 2),
+            make_created_event("blocker", "Blocker task", TaskPriority::P2, 1),
+            TaskEvent::LinkAdded {
+                from: "parent.1".to_string(),
+                to: "blocker".to_string(),
+                kind: "blocked-by".to_string(),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let ready = get_scoped_ready_queue(&graph, Some("parent"));
+        let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+
+        // parent.2 should be in the ready queue, parent.1 should be excluded (blocked)
+        assert!(ready_ids.contains(&"parent.2"));
+        assert!(!ready_ids.contains(&"parent.1"));
     }
 }

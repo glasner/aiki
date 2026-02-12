@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error::{AikiError, Result};
-use crate::tasks::{find_task, materialize_tasks, read_events, TaskStatus};
+use crate::tasks::{find_task, materialize_graph, read_events, TaskStatus};
 
 /// Exponential backoff configuration for polling
 const INITIAL_DELAY_MS: u64 = 100;
@@ -124,7 +124,7 @@ fn poll_task_status(
     loop {
         // Load current task state
         let events = read_events(cwd)?;
-        let tasks = materialize_tasks(&events);
+        let tasks = materialize_graph(&events).tasks;
 
         // Find the task
         let task = find_task(&tasks, task_id)?;

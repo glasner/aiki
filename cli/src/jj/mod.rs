@@ -3,9 +3,13 @@ pub mod workspace;
 
 pub use workspace::JJWorkspace;
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use crate::error::{AikiError, Result};
 
 /// Common locations where `jj` may be installed (not in default PATH for
 /// processes spawned by GUI apps / OTel receivers).
@@ -155,4 +159,108 @@ pub fn get_files_for_task(cwd: &std::path::Path, task_id: &str) -> Vec<String> {
     let mut result: Vec<String> = unique.drain().collect();
     result.sort();
     result
+}
+
+/// Process-level cache for branch existence checks.
+///
+/// Keyed by `(canonicalized_repo_path, branch_name)` so that multi-repo
+/// scenarios (including tests) don't suppress checks for different repos.
+static ENSURED_BRANCHES: OnceLock<Mutex<HashSet<(PathBuf, String)>>> = OnceLock::new();
+
+/// Ensure a JJ branch (bookmark) exists, creating it from `root()` if needed.
+///
+/// Uses a process-level cache so that each `(repo, branch)` pair is checked
+/// at most once per process. This eliminates redundant `jj bookmark list`
+/// calls when multiple events are written in a single command.
+pub fn ensure_branch(cwd: &Path, branch: &str) -> Result<()> {
+    let key = (
+        cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()),
+        branch.to_string(),
+    );
+    let set = ENSURED_BRANCHES.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let guard = set.lock().unwrap();
+        if guard.contains(&key) {
+            return Ok(());
+        }
+    }
+    ensure_branch_impl(cwd, branch)?;
+    set.lock().unwrap().insert(key);
+    Ok(())
+}
+
+/// Check if a branch exists and return true/false without caching.
+///
+/// Used by read paths that need to return early (empty results) when the
+/// branch doesn't exist yet, without creating it.
+pub fn branch_exists(cwd: &Path, branch: &str) -> Result<bool> {
+    let key = (
+        cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()),
+        branch.to_string(),
+    );
+    let set = ENSURED_BRANCHES.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let guard = set.lock().unwrap();
+        if guard.contains(&key) {
+            return Ok(true);
+        }
+    }
+
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to list bookmarks: {}",
+            stderr
+        )));
+    }
+
+    let bookmarks = String::from_utf8_lossy(&output.stdout);
+    let exists = bookmarks.contains(branch);
+    if exists {
+        // Cache the positive result so future calls skip the check
+        set.lock().unwrap().insert(key);
+    }
+    Ok(exists)
+}
+
+/// Implementation: check if branch exists via `jj bookmark list`, create if missing.
+fn ensure_branch_impl(cwd: &Path, branch: &str) -> Result<()> {
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "list", "--all", "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
+
+    let bookmarks = String::from_utf8_lossy(&output.stdout);
+
+    if !bookmarks.contains(branch) {
+        let result = jj_cmd()
+            .current_dir(cwd)
+            .args([
+                "bookmark", "create", branch, "-r", "root()",
+                "--ignore-working-copy",
+            ])
+            .output()
+            .map_err(|e| {
+                AikiError::JjCommandFailed(format!(
+                    "Failed to create bookmark '{}': {}",
+                    branch, e
+                ))
+            })?;
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(AikiError::JjCommandFailed(format!(
+                "Failed to create bookmark '{}': {}",
+                branch, stderr
+            )));
+        }
+    }
+    Ok(())
 }

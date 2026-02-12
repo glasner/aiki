@@ -18,3 +18,5 @@ aiki task close {{id}} --summary "Review complete (n issues found)"             
 ## Review
 
 Review the work and if any issues are found, leave a comment on {{parent.id}} for each finding.
+
+{% subtask aiki/fix/loop if data.options.fix %}

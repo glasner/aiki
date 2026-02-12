@@ -153,10 +153,11 @@ pub fn build_list_output(in_progress: &[&Task], ready_queue: &[&Task]) -> String
 
 /// Build the context block for state-transition commands (stop, close).
 ///
-/// Returns context sections + footer, to be appended after the action line.
+/// Returns `---\n` separator + context sections + footer, to be appended after the action line.
 #[must_use]
 pub fn build_transition_context(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
-    let mut out = build_context(in_progress, ready_queue);
+    let mut out = String::from("---\n");
+    out.push_str(&build_context(in_progress, ready_queue));
     out.push_str(&build_footer(ready_queue.len()));
     out
 }
@@ -220,7 +221,7 @@ pub fn format_task_list(tasks: &[&Task]) -> String {
 #[must_use]
 pub fn format_action_added(task: &Task) -> String {
     format!(
-        "Added {} → Run `aiki task start` to begin work\n",
+        "Added {}\n---\nRun `aiki task start` to begin work\n",
         short_id(&task.id)
     )
 }
@@ -231,8 +232,9 @@ pub fn format_action_added(task: &Task) -> String {
 #[must_use]
 pub fn format_action_started(task: &Task) -> String {
     let mut md = format!(
-        "Started {} → Run `aiki task comment` to leave updates as you go\n",
-        short_id(&task.id)
+        "Started {} — {}\n---\nRun `aiki task comment` to leave updates as you go\n",
+        short_id(&task.id),
+        task.name
     );
 
     if let Some(ref instructions) = task.instructions {
@@ -245,18 +247,18 @@ pub fn format_action_started(task: &Task) -> String {
 
 /// Format action confirmation for `task stop`.
 ///
-/// Returns: `Stopped <short-id>\n`
+/// Returns: `Stopped <short-id> — <name>\n`
 #[must_use]
-pub fn format_action_stopped(task_short_id: &str, _reason: Option<&str>) -> String {
-    format!("Stopped {}\n", task_short_id)
+pub fn format_action_stopped(task: &Task, _reason: Option<&str>) -> String {
+    format!("Stopped {} — {}\n", short_id(&task.id), task.name)
 }
 
 /// Format action confirmation for `task close`.
 ///
-/// Returns: `Closed <short-id>\n`
+/// Returns: `Closed <short-id> — <name>\n`
 #[must_use]
-pub fn format_action_closed(task_short_id: &str) -> String {
-    format!("Closed {}\n", task_short_id)
+pub fn format_action_closed(task: &Task) -> String {
+    format!("Closed {} — {}\n", short_id(&task.id), task.name)
 }
 
 /// Format action confirmation for `task comment`
@@ -335,6 +337,7 @@ mod tests {
         );
         let md = format_action_started(&task);
         assert!(md.starts_with("Started abcdefg"));
+        assert!(md.contains("Test task"));
         assert!(md.contains("Run `aiki task comment`"));
     }
 
@@ -354,14 +357,28 @@ mod tests {
 
     #[test]
     fn test_format_action_stopped() {
-        let md = format_action_stopped("abcdefg", None);
-        assert_eq!(md, "Stopped abcdefg\n");
+        let task = make_task(
+            "abcdefghijklmnopqrstuvwxyzabcdef",
+            "Test task",
+            TaskPriority::P2,
+            TaskStatus::Stopped,
+        );
+        let md = format_action_stopped(&task, None);
+        assert!(md.starts_with("Stopped abcdefg"));
+        assert!(md.contains("Test task"));
     }
 
     #[test]
     fn test_format_action_closed() {
-        let md = format_action_closed("abcdefg");
-        assert_eq!(md, "Closed abcdefg\n");
+        let task = make_task(
+            "abcdefghijklmnopqrstuvwxyzabcdef",
+            "Test task",
+            TaskPriority::P2,
+            TaskStatus::Closed,
+        );
+        let md = format_action_closed(&task);
+        assert!(md.starts_with("Closed abcdefg"));
+        assert!(md.contains("Test task"));
     }
 
     #[test]
@@ -455,10 +472,11 @@ mod tests {
         );
         let md = format!(
             "{}{}",
-            format_action_closed("abcdefg"),
+            format_action_closed(&task),
             build_transition_context(&[], &[&task])
         );
         assert!(md.contains("Closed abcdefg"));
+        assert!(md.contains("Test"));
         assert!(md.contains("---\n"));
         assert!(md.contains("Ready (1):"));
     }

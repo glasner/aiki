@@ -227,6 +227,17 @@ Alternatively, install the agent globally:
     #[error("Invalid data key: '{0}'. Keys must be lowercase with underscores (e.g., 'my_key')")]
     InvalidDataKey(String),
 
+    #[error("Invalid link target for '{kind}': '{target}' is not a task. {kind} links require a task ID as target")]
+    InvalidLinkTarget {
+        kind: String,
+        target: String,
+    },
+
+    #[error("Link would create a cycle in '{kind}' links")]
+    LinkCycle {
+        kind: String,
+    },
+
     #[error("Task '{0}' has no assignee and no --agent specified")]
     TaskNoAssignee(String),
 

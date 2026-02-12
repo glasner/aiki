@@ -24,7 +24,7 @@ use crate::tasks::templates::{
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     generate_task_id, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_tasks, read_events, reassign_task, start_task_core,
+    get_ready_queue_for_scope_set, materialize_graph, read_events, reassign_task, start_task_core,
     write_event, Task, TaskEvent, TaskPriority, TaskStatus,
 };
 
@@ -402,7 +402,7 @@ fn run_spec(
 
     // Check for existing spec task with source: file:<path>
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     let source_key = format!("file:{}", spec_path.display());
     let existing_task = tasks.values().find(|t| {
@@ -462,10 +462,11 @@ fn run_spec(
 
     // Re-read tasks to include newly created spec task
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
-    let scope_set = get_current_scope_set(&tasks);
-    let in_progress: Vec<&Task> = get_in_progress(&tasks).into_iter().collect();
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
+    let scope_set = get_current_scope_set(&graph);
+    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
 
     // Reassign task to current agent if we're in an agent session
     if let Some(session) = find_active_session(cwd) {

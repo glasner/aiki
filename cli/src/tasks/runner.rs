@@ -15,7 +15,7 @@ use crate::error::{AikiError, Result};
 use crate::session::find_task_session;
 use crate::tasks::{
     find_task,
-    materialize_tasks,
+    materialize_graph,
     read_events,
     status_monitor::{MonitorExitReason, StatusMonitor},
     types::{TaskEvent, TaskStatus},
@@ -75,7 +75,7 @@ impl TaskRunOptions {
 pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     // Load task from events
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Find the task
     let task = find_task(&tasks, task_id)?;
@@ -150,16 +150,27 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
         AgentSessionResult::Stopped { reason } => {
             // Agent stopped - emit Stopped event if task is not already closed
             let refreshed_events = read_events(cwd)?;
-            let refreshed_tasks = materialize_tasks(&refreshed_events);
-            if let Ok(refreshed_task) = find_task(&refreshed_tasks, task_id) {
+            let mut refreshed_graph = materialize_graph(&refreshed_events);
+            if let Ok(refreshed_task) = find_task(&refreshed_graph.tasks, task_id) {
                 if refreshed_task.status != TaskStatus::Closed {
+                    let is_orchestrator = refreshed_task.is_orchestrator();
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(reason.clone()),
-                        blocked_reason: None,
                         timestamp: chrono::Utc::now(),
                     };
                     write_event(cwd, &stop_event)?;
+
+                    // Cascade-close subtasks if this is an orchestrator task
+                    if is_orchestrator {
+                        use crate::tasks::manager::get_all_unclosed_descendants;
+                        use crate::commands::task::cascade_close_tasks;
+                        let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
+                        if !unclosed.is_empty() {
+                            let cascade_ids: Vec<String> = unclosed.iter().map(|t| t.id.clone()).collect();
+                            cascade_close_tasks(cwd, &mut refreshed_graph.tasks, &cascade_ids, crate::tasks::types::TaskOutcome::WontDo, "Parent orchestrator stopped")?;
+                        }
+                    }
                 }
             }
             eprintln!("Task {} stopped: {}", task_id, reason);
@@ -177,16 +188,27 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
             // Agent failed - emit Stopped event even if task never reached InProgress
             // This handles spawn failures where the agent never claimed the task
             let refreshed_events = read_events(cwd)?;
-            let refreshed_tasks = materialize_tasks(&refreshed_events);
-            if let Ok(refreshed_task) = find_task(&refreshed_tasks, task_id) {
+            let mut refreshed_graph = materialize_graph(&refreshed_events);
+            if let Ok(refreshed_task) = find_task(&refreshed_graph.tasks, task_id) {
                 if refreshed_task.status != TaskStatus::Closed {
+                    let is_orchestrator = refreshed_task.is_orchestrator();
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(format!("Session failed: {}", error)),
-                        blocked_reason: None,
                         timestamp: chrono::Utc::now(),
                     };
                     write_event(cwd, &stop_event)?;
+
+                    // Cascade-close subtasks if this is an orchestrator task
+                    if is_orchestrator {
+                        use crate::tasks::manager::get_all_unclosed_descendants;
+                        use crate::commands::task::cascade_close_tasks;
+                        let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
+                        if !unclosed.is_empty() {
+                            let cascade_ids: Vec<String> = unclosed.iter().map(|t| t.id.clone()).collect();
+                            cascade_close_tasks(cwd, &mut refreshed_graph.tasks, &cascade_ids, crate::tasks::types::TaskOutcome::WontDo, "Parent orchestrator failed")?;
+                        }
+                    }
                 }
             }
             return Err(AikiError::AgentSpawnFailed(error.clone()));
@@ -231,7 +253,7 @@ fn run_with_status_monitor(
         MonitorExitReason::AgentExited { stderr } => {
             // Agent exited without task reaching terminal state - check final status
             let events = read_events(cwd)?;
-            let tasks = materialize_tasks(&events);
+            let tasks = materialize_graph(&events).tasks;
 
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
@@ -276,7 +298,7 @@ fn run_with_status_monitor(
         MonitorExitReason::TaskCompleted => {
             // Task reached terminal state - check final status
             let events = read_events(cwd)?;
-            let tasks = materialize_tasks(&events);
+            let tasks = materialize_graph(&events).tasks;
 
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
@@ -401,7 +423,7 @@ pub fn task_run_async(
 ) -> Result<BackgroundHandle> {
     // Load task from events
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Find the task
     let task = find_task(&tasks, task_id)?;

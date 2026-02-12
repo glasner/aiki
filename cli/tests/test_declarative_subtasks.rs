@@ -11,7 +11,7 @@ use aiki::tasks::templates::{
     create_tasks_from_template, parse_data_source, parse_template, resolve_data_source,
     DataSource, TaskTemplate, VariableContext,
 };
-use aiki::tasks::types::{Task, TaskComment, TaskPriority, TaskStatus};
+use aiki::tasks::types::{FastHashMap, Task, TaskComment, TaskPriority, TaskStatus};
 use chrono::Utc;
 use std::collections::HashMap;
 
@@ -39,6 +39,7 @@ fn create_test_task(id: &str, name: &str, comments: Vec<TaskComment>) -> Task {
         last_session_id: None,
         stopped_reason: None,
         closed_outcome: None,
+        summary: None,
         comments,
     }
 }
@@ -49,17 +50,16 @@ fn create_comment(text: &str) -> TaskComment {
         id: None,
         text: text.to_string(),
         timestamp: Utc::now(),
-        data: HashMap::new(),
     }
 }
 
-/// Create a task comment with structured data fields
-fn create_comment_with_data(text: &str, data: HashMap<String, String>) -> TaskComment {
+/// Create a task comment (data parameter retained for test compatibility but
+/// TaskComment no longer carries structured data — comment text is used instead)
+fn create_comment_with_data(text: &str, _data: HashMap<String, String>) -> TaskComment {
     TaskComment {
         id: None,
         text: text.to_string(),
         timestamp: Utc::now(),
-        data,
     }
 }
 
@@ -95,7 +95,7 @@ fn test_parse_data_source_invalid_strings() {
 
 #[test]
 fn test_resolve_data_source_with_empty_comments() {
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task("task123", "Test task", vec![]);
     tasks.insert("task123".to_string(), task);
 
@@ -105,7 +105,7 @@ fn test_resolve_data_source_with_empty_comments() {
 
 #[test]
 fn test_resolve_data_source_with_single_comment() {
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "task123",
         "Test task",
@@ -116,12 +116,11 @@ fn test_resolve_data_source_with_single_comment() {
     let result = resolve_data_source(&DataSource::Comments, "task123", &tasks).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].text, "Fix the authentication bug on line 42");
-    assert!(result[0].data.is_empty());
 }
 
 #[test]
 fn test_resolve_data_source_with_multiple_comments() {
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "task123",
         "Code review",
@@ -141,35 +140,23 @@ fn test_resolve_data_source_with_multiple_comments() {
 }
 
 #[test]
-fn test_resolve_data_source_with_structured_comment_data() {
-    let mut comment_data = HashMap::new();
-    comment_data.insert("file".to_string(), "src/auth.rs".to_string());
-    comment_data.insert("line".to_string(), "42".to_string());
-    comment_data.insert("severity".to_string(), "error".to_string());
-    comment_data.insert("category".to_string(), "null-safety".to_string());
-
-    let mut tasks = HashMap::new();
+fn test_resolve_data_source_with_comment_text() {
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "review1",
         "Security review",
-        vec![create_comment_with_data("Potential null pointer", comment_data)],
+        vec![create_comment("Potential null pointer")],
     );
     tasks.insert("review1".to_string(), task);
 
     let result = resolve_data_source(&DataSource::Comments, "review1", &tasks).unwrap();
     assert_eq!(result.len(), 1);
-
-    let item = &result[0];
-    assert_eq!(item.text, "Potential null pointer");
-    assert_eq!(item.data.get("file"), Some(&"src/auth.rs".to_string()));
-    assert_eq!(item.data.get("line"), Some(&"42".to_string()));
-    assert_eq!(item.data.get("severity"), Some(&"error".to_string()));
-    assert_eq!(item.data.get("category"), Some(&"null-safety".to_string()));
+    assert_eq!(result[0].text, "Potential null pointer");
 }
 
 #[test]
 fn test_resolve_data_source_task_not_found() {
-    let tasks = HashMap::new();
+    let tasks = FastHashMap::default();
 
     let result = resolve_data_source(&DataSource::Comments, "nonexistent", &tasks);
     assert!(result.is_err());
@@ -418,7 +405,7 @@ Fix all issues from the review.
     comment2_data.insert("severity".to_string(), "warning".to_string());
     comment2_data.insert("category".to_string(), "unused-import".to_string());
 
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "review123",
         "Code review",
@@ -482,7 +469,7 @@ Address all comments.
 
     let template = parse_template(template_content, "simple-followup", "simple-followup.md").unwrap();
 
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "review1",
         "Simple review",
@@ -536,7 +523,7 @@ Fix issues.
 
     let template = parse_template(template_content, "followup", "followup.md").unwrap();
 
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task("review1", "Empty review", vec![]); // No comments
     tasks.insert("review1".to_string(), task);
 
@@ -687,7 +674,7 @@ Fix all issues.
     comment_data.insert("line".to_string(), "100".to_string());
     comment_data.insert("severity".to_string(), "critical".to_string());
 
-    let mut tasks = HashMap::new();
+    let mut tasks = FastHashMap::default();
     let task = create_test_task(
         "review1",
         "Complex review",

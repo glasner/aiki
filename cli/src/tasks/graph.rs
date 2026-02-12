@@ -1,0 +1,1131 @@
+//! Task DAG — edge store and graph materialization
+//!
+//! The `TaskGraph` is the primary data structure for task management.
+//! Tasks are nodes, relationships are edges. Adding a new link kind
+//! requires only a new entry in `LINK_KINDS` — zero changes to EdgeStore.
+
+use super::types::{FastHashMap, Task, TaskComment, TaskEvent, TaskStatus};
+
+/// Link kind metadata — defines cardinality rules and blocking behavior.
+/// Checked at write time when adding links.
+pub struct LinkKind {
+    /// The kind string (e.g., "blocked-by")
+    pub name: &'static str,
+    /// Max active forward links per `from` node.
+    /// None = unlimited, Some(1) = single-link kind (auto-replace on conflict).
+    pub max_forward: Option<usize>,
+    /// Max active reverse links per `to` node.
+    /// None = unlimited, Some(1) = single reverse (e.g., orchestrates: one
+    /// orchestrator per plan).
+    pub max_reverse: Option<usize>,
+    /// Whether unresolved links of this kind exclude the `from` task
+    /// from the ready queue.
+    pub blocks_ready: bool,
+    /// Whether targets must resolve to task IDs (vs. external refs).
+    pub task_only: bool,
+}
+
+/// Registry of all link kinds. Adding a new kind = one entry here + zero
+/// changes to EdgeStore, TaskGraph, or materialization.
+pub const LINK_KINDS: &[LinkKind] = &[
+    LinkKind { name: "blocked-by",   max_forward: None,    max_reverse: None,    blocks_ready: true,  task_only: true  },
+    LinkKind { name: "sourced-from", max_forward: None,    max_reverse: None,    blocks_ready: false, task_only: false },
+    LinkKind { name: "subtask-of",   max_forward: Some(1), max_reverse: None,    blocks_ready: false, task_only: true  },
+    LinkKind { name: "implements",   max_forward: Some(1), max_reverse: Some(1), blocks_ready: false, task_only: false },
+    LinkKind { name: "orchestrates", max_forward: Some(1), max_reverse: Some(1), blocks_ready: false, task_only: true  },
+    LinkKind { name: "scoped-to",    max_forward: None,    max_reverse: None,    blocks_ready: false, task_only: false },
+    LinkKind { name: "supersedes",   max_forward: Some(1), max_reverse: None,    blocks_ready: false, task_only: true  },
+];
+
+/// Generic edge store — indexes all links by kind.
+///
+/// Two parallel maps: forward (from → [to]) and reverse (to → [from]),
+/// both keyed by link kind. Adding a new link kind requires zero changes
+/// to this struct.
+pub struct EdgeStore {
+    /// kind → (from_id → [to_id])
+    forward: FastHashMap<String, FastHashMap<String, Vec<String>>>,
+    /// kind → (to_id → [from_id])
+    reverse: FastHashMap<String, FastHashMap<String, Vec<String>>>,
+}
+
+impl EdgeStore {
+    /// Create a new empty edge store
+    pub fn new() -> Self {
+        Self {
+            forward: FastHashMap::default(),
+            reverse: FastHashMap::default(),
+        }
+    }
+
+    /// Add a link to the store (idempotent — duplicate links are ignored)
+    pub fn add(&mut self, from: &str, to: &str, kind: &str) {
+        // Forward: from → to
+        let targets = self
+            .forward
+            .entry(kind.to_string())
+            .or_default()
+            .entry(from.to_string())
+            .or_default();
+        if !targets.contains(&to.to_string()) {
+            targets.push(to.to_string());
+        }
+
+        // Reverse: to → from
+        let referrers = self
+            .reverse
+            .entry(kind.to_string())
+            .or_default()
+            .entry(to.to_string())
+            .or_default();
+        if !referrers.contains(&from.to_string()) {
+            referrers.push(from.to_string());
+        }
+    }
+
+    /// Remove a link from the store
+    pub fn remove(&mut self, from: &str, to: &str, kind: &str) {
+        // Forward: remove `to` from `from`'s list
+        if let Some(kind_map) = self.forward.get_mut(kind) {
+            if let Some(targets) = kind_map.get_mut(from) {
+                targets.retain(|t| t != to);
+            }
+        }
+
+        // Reverse: remove `from` from `to`'s list
+        if let Some(kind_map) = self.reverse.get_mut(kind) {
+            if let Some(referrers) = kind_map.get_mut(to) {
+                referrers.retain(|r| r != from);
+            }
+        }
+    }
+
+    /// Forward lookup: given a `from` node and kind, return all targets.
+    pub fn targets(&self, from: &str, kind: &str) -> &[String] {
+        self.forward
+            .get(kind)
+            .and_then(|m| m.get(from))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Reverse lookup: given a `to` node and kind, return all referrers.
+    pub fn referrers(&self, to: &str, kind: &str) -> &[String] {
+        self.reverse
+            .get(kind)
+            .and_then(|m| m.get(to))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Forward lookup for single-link kinds: return the one target (if any).
+    pub fn target(&self, from: &str, kind: &str) -> Option<&str> {
+        debug_assert!(
+            LINK_KINDS.iter().any(|k| k.name == kind && k.max_forward == Some(1)),
+            "target() called on many-link kind '{kind}'"
+        );
+        self.targets(from, kind).first().map(|s| s.as_str())
+    }
+
+    /// Reverse lookup for single-link kinds: return the one referrer (if any).
+    #[allow(dead_code)]
+    pub fn referrer(&self, to: &str, kind: &str) -> Option<&str> {
+        self.referrers(to, kind).first().map(|s| s.as_str())
+    }
+
+    /// Check if a specific forward link exists.
+    pub fn has_link(&self, from: &str, to: &str, kind: &str) -> bool {
+        self.targets(from, kind).contains(&to.to_string())
+    }
+}
+
+impl Default for EdgeStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Materialized task graph (computed from events)
+///
+/// Events (on the aiki/tasks branch) are the source of truth; the
+/// EdgeStore indexes are derived during replay.
+pub struct TaskGraph {
+    /// Node data (tasks)
+    pub tasks: FastHashMap<String, Task>,
+    /// Generic edge indexes (forward + reverse for every link kind)
+    pub edges: EdgeStore,
+}
+
+impl TaskGraph {
+    /// A task is blocked if any of its blockers are not Closed.
+    /// Only `blocked-by` links affect this — parent links do not.
+    pub fn is_blocked(&self, task_id: &str) -> bool {
+        self.edges
+            .targets(task_id, "blocked-by")
+            .iter()
+            .any(|b| {
+                self.tasks
+                    .get(b)
+                    .map_or(true, |t| t.status != TaskStatus::Closed)
+            })
+    }
+
+    /// A parent task cannot be closed while it has open children.
+    /// Returns the list of open children, or empty if closeable.
+    #[allow(dead_code)]
+    pub fn open_children(&self, task_id: &str) -> Vec<&Task> {
+        self.edges
+            .referrers(task_id, "subtask-of")
+            .iter()
+            .filter_map(|c| self.tasks.get(c))
+            .filter(|t| t.status != TaskStatus::Closed)
+            .collect()
+    }
+
+    /// Children of a parent: `edges.referrers(parent_id, "subtask-of")`.
+    pub fn children_of(&self, parent_id: &str) -> Vec<&Task> {
+        self.edges
+            .referrers(parent_id, "subtask-of")
+            .iter()
+            .filter_map(|c| self.tasks.get(c))
+            .collect()
+    }
+
+    /// Walk `subtask-of` links upward to get the full ancestor chain.
+    /// Returns parent IDs from immediate parent to root.
+    #[allow(dead_code)]
+    pub fn ancestor_chain(&self, task_id: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(task_id.to_string());
+        let mut current = task_id;
+        while let Some(parent) = self.edges.target(current, "subtask-of") {
+            if !visited.insert(parent.to_string()) {
+                break; // cycle detected — defense-in-depth
+            }
+            ancestors.push(parent.to_string());
+            current = parent;
+        }
+        ancestors
+    }
+
+    /// Cycle detection for a proposed new link.
+    /// Walks `edges.targets(id, kind)` via DFS to verify acyclicity.
+    #[allow(dead_code)]
+    pub fn would_create_cycle(&self, from: &str, to: &str, kind: &str) -> bool {
+        // Adding from→to would create a cycle if `from` is reachable from `to`
+        // by following existing links of the same kind
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![to];
+        while let Some(node) = stack.pop() {
+            if node == from {
+                return true;
+            }
+            if visited.insert(node.to_string()) {
+                for target in self.edges.targets(node, kind) {
+                    stack.push(target);
+                }
+            }
+        }
+        false
+    }
+
+    /// Full provenance chain: walk `sourced-from` links.
+    /// Uses a visited set to handle cycles.
+    #[allow(dead_code)]
+    pub fn provenance_chain(&self, task_id: &str) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(task_id.to_string());
+        let mut stack = vec![task_id.to_string()];
+        while let Some(node) = stack.pop() {
+            for target in self.edges.targets(&node, "sourced-from") {
+                if visited.insert(target.clone()) {
+                    chain.push(target.clone());
+                    stack.push(target.clone());
+                }
+            }
+        }
+        chain
+    }
+
+    /// Reverse provenance: what tasks came from this origin?
+    #[allow(dead_code)]
+    pub fn spawned_from(&self, origin: &str) -> Vec<&Task> {
+        self.edges
+            .referrers(origin, "sourced-from")
+            .iter()
+            .filter_map(|id| self.tasks.get(id))
+            .collect()
+    }
+}
+
+/// Materialize a task graph from an event stream.
+///
+/// Processes events in order and builds up the current state of each task
+/// plus the edge indexes for all link kinds.
+#[must_use]
+pub fn materialize_graph(events: &[TaskEvent]) -> TaskGraph {
+    let mut tasks: FastHashMap<String, Task> = FastHashMap::default();
+    let mut edges = EdgeStore::new();
+
+    for event in events {
+        process_event(event, &mut tasks, &mut edges);
+    }
+
+    TaskGraph { tasks, edges }
+}
+
+/// Materialize a task graph from an event stream with change IDs.
+///
+/// Like `materialize_graph`, but accepts `EventWithId` to populate comment IDs.
+/// This is needed when generating followup tasks that need to reference specific
+/// comments via `source: comment:<change_id>`.
+#[must_use]
+pub fn materialize_graph_with_ids(events: &[super::storage::EventWithId]) -> TaskGraph {
+    let plain_events: Vec<&TaskEvent> = events.iter().map(|e| &e.event).collect();
+    let mut graph = materialize_graph_refs(&plain_events);
+
+    // Second pass: populate comment IDs from change_ids
+    for event_with_id in events {
+        if let TaskEvent::CommentAdded { task_ids, text, timestamp, .. } = &event_with_id.event {
+            for task_id in task_ids {
+                if let Some(task) = graph.tasks.get_mut(task_id) {
+                    // Find the matching comment and set its ID
+                    for comment in &mut task.comments {
+                        if comment.id.is_none() && comment.text == *text && comment.timestamp == *timestamp {
+                            comment.id = Some(event_with_id.change_id.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    graph
+}
+
+/// Internal: materialize from a slice of event references.
+fn materialize_graph_refs(events: &[&TaskEvent]) -> TaskGraph {
+    let mut tasks: FastHashMap<String, Task> = FastHashMap::default();
+    let mut edges = EdgeStore::new();
+
+    for event in events {
+        process_event(event, &mut tasks, &mut edges);
+    }
+
+    TaskGraph { tasks, edges }
+}
+
+/// Process a single event into the tasks map and edge store.
+fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges: &mut EdgeStore) {
+    match event {
+        TaskEvent::Created {
+            task_id,
+            name,
+            task_type,
+            priority,
+            assignee,
+            sources,
+            template,
+            working_copy,
+            instructions,
+            data,
+            timestamp,
+        } => {
+            // Index old-style dot-notation parent-child as subtask-of (backward compat).
+            if let Some(parent_id) = super::id::get_parent_id(task_id) {
+                edges.add(task_id, parent_id, "subtask-of");
+            }
+
+            // Index old-style sources as sourced-from edges (backward compat).
+            for source in sources {
+                edges.add(task_id, source, "sourced-from");
+            }
+
+            // Index old-style data attributes as edges (backward compat).
+            if let Some(spec) = data.get("spec") {
+                let target = if spec.starts_with("file:") {
+                    spec.clone()
+                } else {
+                    format!("file:{}", spec)
+                };
+                edges.add(task_id, &target, "implements");
+            }
+
+            if let Some(plan_id) = data.get("plan") {
+                edges.add(task_id, plan_id, "orchestrates");
+            }
+
+            if let Some(scope_id) = data.get("scope.id") {
+                let scope_kind = data.get("scope.kind").map(|s| s.as_str());
+                let target = match scope_kind {
+                    Some("spec") | Some("implementation") => {
+                        if scope_id.starts_with("file:") {
+                            scope_id.clone()
+                        } else {
+                            format!("file:{}", scope_id)
+                        }
+                    }
+                    _ => scope_id.clone(),
+                };
+                edges.add(task_id, &target, "scoped-to");
+            }
+
+            if let Some(task_ids_str) = data.get("scope.task_ids") {
+                for tid in task_ids_str.split(',') {
+                    let tid = tid.trim();
+                    if !tid.is_empty() {
+                        edges.add(task_id, tid, "scoped-to");
+                    }
+                }
+            }
+
+            tasks.insert(
+                task_id.clone(),
+                Task {
+                    id: task_id.clone(),
+                    name: name.clone(),
+                    task_type: task_type.clone(),
+                    status: TaskStatus::Open,
+                    priority: *priority,
+                    assignee: assignee.clone(),
+                    sources: sources.clone(),
+                    template: template.clone(),
+                    working_copy: working_copy.clone(),
+                    instructions: instructions.clone(),
+                    data: data.clone(),
+                    created_at: *timestamp,
+                    started_at: None,
+                    claimed_by_session: None,
+                    last_session_id: None,
+                    stopped_reason: None,
+                    closed_outcome: None,
+                    summary: None,
+                    comments: Vec::new(),
+                },
+            );
+        }
+        TaskEvent::Started {
+            task_ids,
+            session_id,
+            timestamp,
+            stopped,
+            ..
+        } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::InProgress;
+                    task.stopped_reason = None;
+                    task.claimed_by_session = session_id.clone();
+                    task.last_session_id = session_id.clone();
+                    task.started_at = Some(*timestamp);
+                }
+            }
+            for stopped_id in stopped {
+                if let Some(task) = tasks.get_mut(stopped_id) {
+                    task.status = TaskStatus::Stopped;
+                    task.stopped_reason =
+                        Some(format!("Preempted by task {}", task_ids.join(", ")));
+                    task.claimed_by_session = None;
+                }
+            }
+        }
+        TaskEvent::Stopped {
+            task_ids, reason, ..
+        } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::Stopped;
+                    task.stopped_reason = reason.clone();
+                    task.claimed_by_session = None;
+                }
+            }
+        }
+        TaskEvent::Closed {
+            task_ids,
+            outcome,
+            summary,
+            ..
+        } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.status = TaskStatus::Closed;
+                    task.closed_outcome = Some(*outcome);
+                    task.summary = summary.clone();
+                    task.claimed_by_session = None;
+                }
+            }
+        }
+        TaskEvent::Reopened { task_id, .. } => {
+            if let Some(task) = tasks.get_mut(task_id) {
+                task.status = TaskStatus::Open;
+                task.closed_outcome = None;
+                task.claimed_by_session = None;
+            }
+        }
+        TaskEvent::CommentAdded {
+            task_ids,
+            text,
+            data: _,
+            timestamp,
+        } => {
+            for task_id in task_ids {
+                if let Some(task) = tasks.get_mut(task_id) {
+                    task.comments.push(TaskComment {
+                        id: None,
+                        text: text.clone(),
+                        timestamp: *timestamp,
+                    });
+                }
+            }
+        }
+        TaskEvent::Updated {
+            task_id,
+            name,
+            priority,
+            assignee,
+            data,
+            ..
+        } => {
+            if let Some(task) = tasks.get_mut(task_id) {
+                if let Some(new_name) = name {
+                    task.name = new_name.clone();
+                }
+                if let Some(new_priority) = priority {
+                    task.priority = *new_priority;
+                }
+                if let Some(new_assignee) = assignee {
+                    task.assignee = new_assignee.clone();
+                }
+                if let Some(new_data) = data {
+                    for (key, value) in new_data {
+                        if value.is_empty() {
+                            task.data.remove(key);
+                        } else {
+                            task.data.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        TaskEvent::LinkAdded {
+            from, to, kind, ..
+        } => {
+            edges.add(from, to, kind);
+        }
+        TaskEvent::LinkRemoved {
+            from, to, kind, ..
+        } => {
+            edges.remove(from, to, kind);
+        }
+    }
+}
+
+/// Check if a link kind requires task-only targets.
+pub fn is_task_only_kind(kind: &str) -> bool {
+    LINK_KINDS
+        .iter()
+        .find(|k| k.name == kind)
+        .map_or(false, |k| k.task_only)
+}
+
+/// Look up a link kind by name.
+#[allow(dead_code)]
+pub fn find_link_kind(name: &str) -> Option<&'static LinkKind> {
+    LINK_KINDS.iter().find(|k| k.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use crate::tasks::types::TaskPriority;
+    use chrono::Utc;
+
+    fn make_created(id: &str, name: &str) -> TaskEvent {
+        TaskEvent::Created {
+            task_id: id.to_string(),
+            name: name.to_string(),
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_closed(id: &str) -> TaskEvent {
+        TaskEvent::Closed {
+            task_ids: vec![id.to_string()],
+            outcome: crate::tasks::types::TaskOutcome::Done,
+            summary: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_link(from: &str, to: &str, kind: &str) -> TaskEvent {
+        TaskEvent::LinkAdded {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_unlink(from: &str, to: &str, kind: &str) -> TaskEvent {
+        TaskEvent::LinkRemoved {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            reason: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_edge_store_add_and_lookup() {
+        let mut store = EdgeStore::new();
+        store.add("A", "B", "blocked-by");
+        store.add("A", "C", "blocked-by");
+
+        assert_eq!(store.targets("A", "blocked-by"), &["B", "C"]);
+        assert_eq!(store.referrers("B", "blocked-by"), &["A"]);
+        assert_eq!(store.referrers("C", "blocked-by"), &["A"]);
+        assert!(store.targets("B", "blocked-by").is_empty());
+    }
+
+    #[test]
+    fn test_edge_store_remove() {
+        let mut store = EdgeStore::new();
+        store.add("A", "B", "blocked-by");
+        store.add("A", "C", "blocked-by");
+        store.remove("A", "B", "blocked-by");
+
+        assert_eq!(store.targets("A", "blocked-by"), &["C"]);
+        assert!(store.referrers("B", "blocked-by").is_empty());
+    }
+
+    #[test]
+    fn test_edge_store_has_link() {
+        let mut store = EdgeStore::new();
+        store.add("A", "B", "blocked-by");
+
+        assert!(store.has_link("A", "B", "blocked-by"));
+        assert!(!store.has_link("B", "A", "blocked-by"));
+        assert!(!store.has_link("A", "B", "sourced-from"));
+    }
+
+    #[test]
+    fn test_edge_store_target_single() {
+        let mut store = EdgeStore::new();
+        store.add("child", "parent", "subtask-of");
+
+        assert_eq!(store.target("child", "subtask-of"), Some("parent"));
+        assert_eq!(store.target("other", "subtask-of"), None);
+    }
+
+    #[test]
+    fn test_materialize_graph_basic() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_link("B", "A", "blocked-by"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(graph.tasks.len(), 2);
+        assert_eq!(graph.edges.targets("B", "blocked-by"), &["A"]);
+        assert_eq!(graph.edges.referrers("A", "blocked-by"), &["B"]);
+    }
+
+    #[test]
+    fn test_is_blocked_open_blocker() {
+        let events = vec![
+            make_created("A", "Blocker"),
+            make_created("B", "Blocked task"),
+            make_link("B", "A", "blocked-by"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(graph.is_blocked("B"));
+        assert!(!graph.is_blocked("A"));
+    }
+
+    #[test]
+    fn test_is_blocked_closed_blocker() {
+        let events = vec![
+            make_created("A", "Blocker"),
+            make_created("B", "Blocked task"),
+            make_link("B", "A", "blocked-by"),
+            make_closed("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(!graph.is_blocked("B"));
+    }
+
+    #[test]
+    fn test_unlink_removes_blocking() {
+        let events = vec![
+            make_created("A", "Blocker"),
+            make_created("B", "Blocked task"),
+            make_link("B", "A", "blocked-by"),
+            make_unlink("B", "A", "blocked-by"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(!graph.is_blocked("B"));
+        assert!(graph.edges.targets("B", "blocked-by").is_empty());
+    }
+
+    #[test]
+    fn test_would_create_cycle() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_created("C", "Task C"),
+            make_link("B", "A", "blocked-by"),
+            make_link("C", "B", "blocked-by"),
+        ];
+
+        let graph = materialize_graph(&events);
+        // A→B→C chain exists. Adding C→A would create cycle
+        assert!(graph.would_create_cycle("A", "C", "blocked-by"));
+        // Adding A→C would not (direction matters)
+        assert!(!graph.would_create_cycle("C", "A", "blocked-by"));
+    }
+
+    #[test]
+    fn test_ancestor_chain() {
+        let events = vec![
+            make_created("root", "Root"),
+            make_created("child", "Child"),
+            make_created("grandchild", "Grandchild"),
+            make_link("child", "root", "subtask-of"),
+            make_link("grandchild", "child", "subtask-of"),
+        ];
+
+        let graph = materialize_graph(&events);
+        let ancestors = graph.ancestor_chain("grandchild");
+        assert_eq!(ancestors, vec!["child", "root"]);
+    }
+
+    #[test]
+    fn test_children_of() {
+        let events = vec![
+            make_created("parent", "Parent"),
+            make_created("child1", "Child 1"),
+            make_created("child2", "Child 2"),
+            make_link("child1", "parent", "subtask-of"),
+            make_link("child2", "parent", "subtask-of"),
+        ];
+
+        let graph = materialize_graph(&events);
+        let children = graph.children_of("parent");
+        assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_provenance_chain() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_created("C", "Task C"),
+            make_link("B", "A", "sourced-from"),
+            make_link("C", "B", "sourced-from"),
+            make_link("B", "file:design.md", "sourced-from"),
+        ];
+
+        let graph = materialize_graph(&events);
+        let chain = graph.provenance_chain("C");
+        assert!(chain.contains(&"B".to_string()));
+        assert!(chain.contains(&"A".to_string()));
+        assert!(chain.contains(&"file:design.md".to_string()));
+    }
+
+    #[test]
+    fn test_spawned_from() {
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "From A"),
+            make_created("C", "Also from A"),
+            make_link("B", "A", "sourced-from"),
+            make_link("C", "A", "sourced-from"),
+        ];
+
+        let graph = materialize_graph(&events);
+        let spawned = graph.spawned_from("A");
+        assert_eq!(spawned.len(), 2);
+    }
+
+    #[test]
+    fn test_is_task_only_kind() {
+        assert!(is_task_only_kind("blocked-by"));
+        assert!(is_task_only_kind("subtask-of"));
+        assert!(is_task_only_kind("orchestrates"));
+        assert!(is_task_only_kind("supersedes"));
+        assert!(!is_task_only_kind("sourced-from"));
+        assert!(!is_task_only_kind("implements"));
+        assert!(!is_task_only_kind("scoped-to"));
+        assert!(!is_task_only_kind("unknown-kind"));
+    }
+
+    #[test]
+    fn test_link_kinds_registry() {
+        // Verify all 7 kinds are registered
+        assert_eq!(LINK_KINDS.len(), 7);
+
+        let blocked = find_link_kind("blocked-by").unwrap();
+        assert!(blocked.blocks_ready);
+        assert!(blocked.task_only);
+        assert!(blocked.max_forward.is_none());
+
+        let subtask = find_link_kind("subtask-of").unwrap();
+        assert_eq!(subtask.max_forward, Some(1));
+        assert!(subtask.max_reverse.is_none());
+
+        let orchestrates = find_link_kind("orchestrates").unwrap();
+        assert_eq!(orchestrates.max_forward, Some(1));
+        assert_eq!(orchestrates.max_reverse, Some(1));
+    }
+
+    #[test]
+    fn test_backward_compat_sources_indexed_as_sourced_from() {
+        // Old-style tasks have sources in the Created event but no LinkAdded events.
+        // materialize_graph should index them as sourced-from edges.
+        let events = vec![TaskEvent::Created {
+            task_id: "task1".to_string(),
+            name: "Task with sources".to_string(),
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: vec!["file:design.md".to_string(), "task:task0".to_string()],
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.targets("task1", "sourced-from"),
+            &["file:design.md", "task:task0"]
+        );
+        assert_eq!(graph.edges.referrers("file:design.md", "sourced-from"), &["task1"]);
+    }
+
+    #[test]
+    fn test_backward_compat_no_duplicate_when_link_also_exists() {
+        // New-style tasks emit both sources in Created AND LinkAdded events.
+        // materialize_graph should not double-count them.
+        let events = vec![
+            TaskEvent::Created {
+                task_id: "task1".to_string(),
+                name: "New task".to_string(),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: vec!["file:design.md".to_string()],
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            // Explicit LinkAdded emitted alongside the Created event
+            TaskEvent::LinkAdded {
+                from: "task1".to_string(),
+                to: "file:design.md".to_string(),
+                kind: "sourced-from".to_string(),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        // Should have exactly one edge, not two
+        let targets = graph.edges.targets("task1", "sourced-from");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], "file:design.md");
+    }
+
+    #[test]
+    fn test_backward_compat_data_spec_as_implements() {
+        let mut data = HashMap::new();
+        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "plan1".to_string(),
+            name: "Plan task".to_string(),
+            task_type: Some("plan".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.target("plan1", "implements"),
+            Some("file:ops/now/feature.md")
+        );
+        assert_eq!(
+            graph.edges.referrers("file:ops/now/feature.md", "implements"),
+            &["plan1"]
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_data_plan_as_orchestrates() {
+        let mut data = HashMap::new();
+        data.insert("spec".to_string(), "feature.md".to_string());
+        data.insert("plan".to_string(), "plan_task_id".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "build1".to_string(),
+            name: "Build task".to_string(),
+            task_type: Some("orchestrator".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.target("build1", "orchestrates"),
+            Some("plan_task_id")
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_data_scope_as_scoped_to() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "spec".to_string());
+        data.insert("scope.id".to_string(), "ops/now/auth.md".to_string());
+        data.insert("scope.name".to_string(), "Auth spec".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "review1".to_string(),
+            name: "Review auth".to_string(),
+            task_type: Some("review".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.targets("review1", "scoped-to"),
+            &["file:ops/now/auth.md"]
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_scope_task_ids() {
+        let mut data = HashMap::new();
+        data.insert("scope.kind".to_string(), "task".to_string());
+        data.insert("scope.id".to_string(), "taskid1".to_string());
+        data.insert("scope.task_ids".to_string(), "taskid1,taskid2,taskid3".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "review2".to_string(),
+            name: "Review tasks".to_string(),
+            task_type: Some("review".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        let targets = graph.edges.targets("review2", "scoped-to");
+        // scope.id produces one link, scope.task_ids produces 3
+        // But taskid1 appears in both, so EdgeStore dedup makes it 3 total
+        assert!(targets.contains(&"taskid1".to_string()));
+        assert!(targets.contains(&"taskid2".to_string()));
+        assert!(targets.contains(&"taskid3".to_string()));
+    }
+
+    #[test]
+    fn test_backward_compat_dot_notation_as_subtask_of() {
+        let events = vec![
+            make_created("parent", "Parent task"),
+            TaskEvent::Created {
+                task_id: "parent.1".to_string(),
+                name: "First subtask".to_string(),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: Vec::new(),
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::Created {
+                task_id: "parent.2".to_string(),
+                name: "Second subtask".to_string(),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: Vec::new(),
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        // Children should have subtask-of links to parent
+        assert_eq!(graph.edges.target("parent.1", "subtask-of"), Some("parent"));
+        assert_eq!(graph.edges.target("parent.2", "subtask-of"), Some("parent"));
+        // Parent should see its children via reverse lookup
+        let children = graph.children_of("parent");
+        assert_eq!(children.len(), 2);
+    }
+
+    /// Regression: source filtering depends on `graph.edges.targets(id, "sourced-from")`.
+    /// After a LinkRemoved event for a sourced-from edge, the edge must be gone
+    /// so that `matches_source` (in task list) no longer matches the removed source.
+    #[test]
+    fn test_link_removed_sourced_from_excludes_from_filter() {
+        let events = vec![
+            make_created("task1", "Task with source"),
+            make_link("task1", "file:design.md", "sourced-from"),
+            make_link("task1", "task:origin", "sourced-from"),
+            // Remove the file source link
+            make_unlink("task1", "file:design.md", "sourced-from"),
+        ];
+
+        let graph = materialize_graph(&events);
+
+        // The removed source must no longer appear in forward lookup
+        let sources = graph.edges.targets("task1", "sourced-from");
+        assert!(!sources.contains(&"file:design.md".to_string()),
+            "LinkRemoved should remove the sourced-from edge");
+        // The remaining source should still be present
+        assert!(sources.contains(&"task:origin".to_string()));
+
+        // Reverse lookup should also reflect the removal
+        assert!(graph.edges.referrers("file:design.md", "sourced-from").is_empty(),
+            "Reverse lookup should be empty after LinkRemoved");
+        assert_eq!(graph.edges.referrers("task:origin", "sourced-from"), &["task1"]);
+    }
+
+    /// Regression: old-style sources (from Created event) indexed as sourced-from
+    /// should also be removable via LinkRemoved, and source filtering should
+    /// stop matching after removal.
+    #[test]
+    fn test_backward_compat_source_removable_via_link_removed() {
+        let events = vec![
+            // Old-style: sources in Created event
+            TaskEvent::Created {
+                task_id: "task1".to_string(),
+                name: "Old-style task".to_string(),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: vec!["file:plan.md".to_string()],
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            // Later the source link is explicitly removed
+            make_unlink("task1", "file:plan.md", "sourced-from"),
+        ];
+
+        let graph = materialize_graph(&events);
+
+        // The edge should be removed despite being indexed from Created event
+        assert!(graph.edges.targets("task1", "sourced-from").is_empty(),
+            "LinkRemoved should remove old-style sourced-from edges too");
+        assert!(graph.edges.referrers("file:plan.md", "sourced-from").is_empty());
+    }
+
+    /// Regression: run_stop/run_close compute a ready-queue footer using
+    /// `graph.is_blocked()`. After closing a blocker in-memory, the graph's
+    /// tasks map must be updated so `is_blocked()` sees the new Closed status.
+    /// Without `graph.tasks = tasks.clone()`, the stale graph still shows the
+    /// blocker as Open, hiding newly-unblocked tasks from the footer.
+    #[test]
+    fn test_is_blocked_reflects_updated_tasks_map() {
+        // Set up: B is blocked by A (both open)
+        let events = vec![
+            make_created("A", "Blocker"),
+            make_created("B", "Blocked task"),
+            make_link("B", "A", "blocked-by"),
+        ];
+
+        let mut graph = materialize_graph(&events);
+
+        // Before mutation: B is blocked
+        assert!(graph.is_blocked("B"), "B should be blocked by open A");
+
+        // Simulate what run_close does: close A in the tasks map, then
+        // update graph.tasks with the mutated map
+        graph.tasks.get_mut("A").unwrap().status = TaskStatus::Closed;
+
+        // After updating graph.tasks: B should no longer be blocked
+        assert!(!graph.is_blocked("B"),
+            "B should be unblocked after A is closed in graph.tasks");
+    }
+
+    /// Regression: same pattern with multiple blockers — closing one should
+    /// not unblock a task that has other open blockers.
+    #[test]
+    fn test_is_blocked_partial_close_still_blocked() {
+        let events = vec![
+            make_created("A", "Blocker 1"),
+            make_created("B", "Blocker 2"),
+            make_created("C", "Blocked by both"),
+            make_link("C", "A", "blocked-by"),
+            make_link("C", "B", "blocked-by"),
+        ];
+
+        let mut graph = materialize_graph(&events);
+        assert!(graph.is_blocked("C"));
+
+        // Close only A
+        graph.tasks.get_mut("A").unwrap().status = TaskStatus::Closed;
+
+        // C should still be blocked (B is still open)
+        assert!(graph.is_blocked("C"),
+            "C should remain blocked while B is still open");
+
+        // Close B too
+        graph.tasks.get_mut("B").unwrap().status = TaskStatus::Closed;
+
+        // Now C should be unblocked
+        assert!(!graph.is_blocked("C"),
+            "C should be unblocked after both blockers are closed");
+    }
+}

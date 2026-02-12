@@ -21,7 +21,7 @@ use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
-    materialize_tasks, read_events, reassign_task, start_task_core, Task, TaskStatus,
+    materialize_graph, read_events, reassign_task, start_task_core, Task, TaskStatus,
 };
 
 /// What kind of review scope this is
@@ -234,7 +234,7 @@ pub struct CreateReviewResult {
 pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateReviewResult> {
     // Load tasks
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Get session info (needed for session scope)
     let session = find_active_session(cwd);
@@ -365,10 +365,11 @@ fn run_review(
 
     // Re-read tasks to include newly created review task
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
-    let scope_set = get_current_scope_set(&tasks);
-    let in_progress: Vec<&Task> = get_in_progress(&tasks).into_iter().collect();
-    let ready = get_ready_queue_for_scope_set(&tasks, &scope_set);
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
+    let scope_set = get_current_scope_set(&graph);
+    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
 
     // Handle execution mode
     if start {
@@ -452,7 +453,7 @@ fn output_review_completed(review_id: &str) -> Result<()> {
 /// List review tasks
 fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     // Filter to tasks with task_type == "review"
     let mut reviews: Vec<&Task> = tasks
@@ -515,7 +516,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
 /// Show review task details
 fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     let events = read_events(cwd)?;
-    let tasks = materialize_tasks(&events);
+    let tasks = materialize_graph(&events).tasks;
 
     let task = find_task(&tasks, task_id)?;
 
