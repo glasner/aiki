@@ -157,6 +157,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(reason.clone()),
+                        turn_id: None,
                         timestamp: chrono::Utc::now(),
                     };
                     write_event(cwd, &stop_event)?;
@@ -195,6 +196,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(format!("Session failed: {}", error)),
+                        turn_id: None,
                         timestamp: chrono::Utc::now(),
                     };
                     write_event(cwd, &stop_event)?;

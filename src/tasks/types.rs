@@ -1,6 +1,7 @@
 //! Core types for the task system
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -133,6 +134,8 @@ pub enum TaskEvent {
         agent_type: String,
         /// Session ID that claimed these tasks (deterministic UUID)
         session_id: Option<String>,
+        /// Turn ID (UUID v5) from the session's current turn
+        turn_id: Option<String>,
         timestamp: DateTime<Utc>,
         /// Task IDs that were auto-stopped when these tasks started
         stopped: Vec<String>,
@@ -141,6 +144,8 @@ pub enum TaskEvent {
     Stopped {
         task_ids: Vec<String>,
         reason: Option<String>,
+        /// Turn ID (UUID v5) from the session's current turn
+        turn_id: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task(s) were closed (batch operation)
@@ -149,6 +154,8 @@ pub enum TaskEvent {
         outcome: TaskOutcome,
         /// Summary of what was accomplished (replaces closing comment pattern)
         summary: Option<String>,
+        /// Turn ID (UUID v5) from the session's current turn
+        turn_id: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Task was reopened
@@ -259,6 +266,12 @@ pub struct Task {
     pub closed_outcome: Option<TaskOutcome>,
     /// Summary of what was accomplished when task was closed
     pub summary: Option<String>,
+    /// Turn ID when this task was most recently started
+    pub turn_started: Option<String>,
+    /// Turn ID when this task was closed
+    pub turn_closed: Option<String>,
+    /// Turn ID when this task was stopped (if currently stopped)
+    pub turn_stopped: Option<String>,
     /// Comments on this task
     pub comments: Vec<TaskComment>,
 }
@@ -281,6 +294,38 @@ impl Task {
     /// all their unclosed descendants are automatically cascade-closed as WontDo.
     pub fn is_orchestrator(&self) -> bool {
         self.task_type.as_deref() == Some("orchestrator")
+    }
+}
+
+/// A lightweight reference to a task for event payloads and APIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskReference {
+    /// Task ID (32-char change_id)
+    pub id: String,
+    /// Task name
+    pub name: String,
+    /// Task type (None for original work, Some for generated tasks like review/fix)
+    pub task_type: Option<String>,
+}
+
+/// A categorized list of tasks by state transitions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskActivity {
+    /// Tasks that were closed
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed: Vec<TaskReference>,
+    /// Tasks that were started
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub started: Vec<TaskReference>,
+    /// Tasks that were stopped
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stopped: Vec<TaskReference>,
+}
+
+impl TaskActivity {
+    /// Check if there was any activity
+    pub fn is_empty(&self) -> bool {
+        self.closed.is_empty() && self.started.is_empty() && self.stopped.is_empty()
     }
 }
 
@@ -345,6 +390,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         }
     }

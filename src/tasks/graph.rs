@@ -193,7 +193,6 @@ impl TaskGraph {
 
     /// Walk `subtask-of` links upward to get the full ancestor chain.
     /// Returns parent IDs from immediate parent to root.
-    #[allow(dead_code)]
     pub fn ancestor_chain(&self, task_id: &str) -> Vec<String> {
         let mut ancestors = Vec::new();
         let mut visited = std::collections::HashSet::new();
@@ -403,6 +402,9 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                     stopped_reason: None,
                     closed_outcome: None,
                     summary: None,
+                    turn_started: None,
+                    turn_closed: None,
+                    turn_stopped: None,
                     comments: Vec::new(),
                 },
             );
@@ -410,6 +412,7 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
         TaskEvent::Started {
             task_ids,
             session_id,
+            turn_id,
             timestamp,
             stopped,
             ..
@@ -421,6 +424,8 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                     task.claimed_by_session = session_id.clone();
                     task.last_session_id = session_id.clone();
                     task.started_at = Some(*timestamp);
+                    task.turn_started = turn_id.clone();
+                    task.turn_stopped = None;
                 }
             }
             for stopped_id in stopped {
@@ -433,13 +438,17 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
             }
         }
         TaskEvent::Stopped {
-            task_ids, reason, ..
+            task_ids,
+            reason,
+            turn_id,
+            ..
         } => {
             for task_id in task_ids {
                 if let Some(task) = tasks.get_mut(task_id) {
                     task.status = TaskStatus::Stopped;
                     task.stopped_reason = reason.clone();
                     task.claimed_by_session = None;
+                    task.turn_stopped = turn_id.clone();
                 }
             }
         }
@@ -447,6 +456,7 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
             task_ids,
             outcome,
             summary,
+            turn_id,
             ..
         } => {
             for task_id in task_ids {
@@ -455,6 +465,7 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                     task.closed_outcome = Some(*outcome);
                     task.summary = summary.clone();
                     task.claimed_by_session = None;
+                    task.turn_closed = turn_id.clone();
                 }
             }
         }
@@ -565,6 +576,7 @@ mod tests {
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::Done,
             summary: None,
+            turn_id: None,
             timestamp: Utc::now(),
         }
     }
@@ -1127,5 +1139,133 @@ mod tests {
         // Now C should be unblocked
         assert!(!graph.is_blocked("C"),
             "C should be unblocked after both blockers are closed");
+    }
+
+    #[test]
+    fn test_materialize_turn_started() {
+        let events = vec![
+            make_created("t1", "Task 1"),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa-1".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("t1").unwrap();
+        assert_eq!(task.turn_started, Some("turn-aaa-1".to_string()));
+        assert_eq!(task.turn_stopped, None);
+        assert_eq!(task.turn_closed, None);
+    }
+
+    #[test]
+    fn test_materialize_turn_stopped() {
+        let events = vec![
+            make_created("t1", "Task 1"),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa-1".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Stopped {
+                task_ids: vec!["t1".to_string()],
+                reason: None,
+                turn_id: Some("turn-aaa-2".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("t1").unwrap();
+        assert_eq!(task.turn_started, Some("turn-aaa-1".to_string()));
+        assert_eq!(task.turn_stopped, Some("turn-aaa-2".to_string()));
+    }
+
+    #[test]
+    fn test_materialize_turn_closed() {
+        let events = vec![
+            make_created("t1", "Task 1"),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa-1".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["t1".to_string()],
+                outcome: crate::tasks::types::TaskOutcome::Done,
+                summary: None,
+                turn_id: Some("turn-aaa-3".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("t1").unwrap();
+        assert_eq!(task.turn_started, Some("turn-aaa-1".to_string()));
+        assert_eq!(task.turn_closed, Some("turn-aaa-3".to_string()));
+    }
+
+    #[test]
+    fn test_materialize_restart_clears_turn_stopped() {
+        let events = vec![
+            make_created("t1", "Task 1"),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa-1".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Stopped {
+                task_ids: vec!["t1".to_string()],
+                reason: None,
+                turn_id: Some("turn-aaa-2".to_string()),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-bbb-1".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("t1").unwrap();
+        // After restart, turn_started should be updated and turn_stopped cleared
+        assert_eq!(task.turn_started, Some("turn-bbb-1".to_string()));
+        assert_eq!(task.turn_stopped, None);
+    }
+
+    #[test]
+    fn test_materialize_turn_id_none() {
+        let events = vec![
+            make_created("t1", "Task 1"),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: None,
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        let task = graph.tasks.get("t1").unwrap();
+        assert_eq!(task.turn_started, None);
     }
 }

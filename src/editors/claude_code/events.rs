@@ -786,6 +786,7 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response,
         modified_files: vec![],
+        tasks: Default::default(), // Populated by handle_turn_completed
     })
 }
 

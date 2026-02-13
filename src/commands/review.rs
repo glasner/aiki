@@ -11,7 +11,7 @@ use clap::Subcommand;
 use std::collections::HashMap;
 use std::env;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::agents::{determine_reviewer, AgentType};
 use crate::error::{AikiError, Result};
@@ -157,8 +157,16 @@ pub enum ReviewSubcommands {
 /// Arguments for the review command (top-level create args)
 #[derive(clap::Args)]
 pub struct ReviewArgs {
-    /// Task ID to review (reviews all closed tasks in session if not specified)
-    pub task_id: Option<String>,
+    /// Target to review: task ID, file path (.md), or nothing for session review
+    pub target: Option<String>,
+
+    /// Review the codebase implementation described in a spec (only with file targets)
+    #[arg(long)]
+    pub implementation: bool,
+
+    /// Review and auto-fix issues in one command
+    #[arg(long)]
+    pub fix: bool,
 
     /// Run review asynchronously (return immediately)
     #[arg(long = "async")]
@@ -197,7 +205,9 @@ pub fn run(args: ReviewArgs) -> Result<()> {
     // Otherwise, run the create/review flow with top-level args
     run_review(
         &cwd,
-        args.task_id,
+        args.target,
+        args.implementation,
+        args.fix,
         args.run_async,
         args.start,
         args.template,
@@ -208,12 +218,14 @@ pub fn run(args: ReviewArgs) -> Result<()> {
 /// Parameters for creating a review task
 #[derive(Debug, Clone)]
 pub struct CreateReviewParams {
-    /// Task ID to review (None for session scope)
-    pub task_id: Option<String>,
+    /// Pre-resolved review scope (caller detects target type)
+    pub scope: ReviewScope,
     /// Override the reviewer agent
     pub agent_override: Option<String>,
     /// Template to use (default: aiki/review)
     pub template: Option<String>,
+    /// Whether to auto-fix issues (sets data.options.fix)
+    pub fix: bool,
 }
 
 /// Result of creating a review task
@@ -227,33 +239,50 @@ pub struct CreateReviewResult {
     pub assignee: Option<String>,
 }
 
-/// Core review creation logic. Used by both CLI and flow action.
+/// Check if a string looks like it could be a task ID, prefix, or subtask ID.
 ///
-/// This function creates the review task with subtasks but does NOT
-/// start or run the task. The caller is responsible for the execution mode.
-pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateReviewResult> {
-    // Load tasks
-    let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+/// Task IDs are 32 lowercase letters (a-z only). Prefixes are shorter
+/// but follow the same pattern. Subtask IDs append `.N` suffixes
+/// (e.g., `abcdef.1`, `abcdef.1.2`). This is a heuristic used by
+/// detect_target to distinguish task IDs from file paths.
+fn looks_like_task_id(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Split off optional subtask suffix (e.g., "abc.1.2" → root "abc")
+    let root = s.split('.').next().unwrap_or(s);
+    // Root must be non-empty lowercase letters
+    if root.is_empty() || !root.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    // Every part after the root must be a non-empty digit sequence
+    let mut parts = s.split('.');
+    parts.next(); // skip root
+    parts.all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
 
-    // Get session info (needed for session scope)
-    let session = find_active_session(cwd);
-
-    // Determine review scope and worker (for reviewer assignment)
-    let (scope, worker) = match params.task_id {
-        Some(ref id) => {
-            // Review specific task - worker is task's assignee
-            let task = find_task(&tasks, id)?;
-            let worker = task.assignee.as_deref().map(|s| s.to_string());
-            let scope = ReviewScope {
-                kind: ReviewScopeKind::Task,
-                id: task.id.clone(),
-                task_ids: vec![],
-            };
-            (scope, worker)
-        }
+/// Detect the review target from the CLI argument and flags.
+///
+/// Returns a `ReviewScope` and optionally a worker agent string (for task targets).
+/// The `cwd` is needed to resolve file paths and load tasks.
+pub fn detect_target(
+    cwd: &Path,
+    arg: Option<&str>,
+    implementation: bool,
+) -> Result<(ReviewScope, Option<String>)> {
+    match arg {
         None => {
-            // Review all closed tasks in current session - worker is session's agent
+            if implementation {
+                return Err(AikiError::InvalidArgument(
+                    "--implementation flag only applies to file targets".to_string(),
+                ));
+            }
+
+            // Session scope — collect closed tasks from current session
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+            let session = find_active_session(cwd);
+
             let (session_id, session_agent) = match &session {
                 Some(s) => (
                     Some(s.session_id.clone()),
@@ -262,7 +291,6 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
                 None => (None, None),
             };
 
-            // Filter to closed tasks that were worked on in the current session
             let closed_tasks: Vec<Task> = tasks
                 .values()
                 .filter(|t| {
@@ -271,9 +299,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
                             (Some(task_session), Some(current_session)) => {
                                 task_session == current_session
                             }
-                            // If no session, fall back to all closed tasks
                             (_, None) => true,
-                            // If task has no session but we have one, skip it
                             (None, Some(_)) => false,
                         }
                 })
@@ -281,7 +307,6 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
                 .collect();
 
             if closed_tasks.is_empty() {
-                // No closed tasks to review - succeed with message
                 output_nothing_to_review()?;
                 return Err(AikiError::NothingToReview);
             }
@@ -292,8 +317,82 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
                 id: "session".to_string(),
                 task_ids,
             };
-            (scope, session_agent)
+            Ok((scope, session_agent))
         }
+
+        Some(s) if s.ends_with(".md") && PathBuf::from(s).exists() => {
+            let kind = if implementation {
+                ReviewScopeKind::Implementation
+            } else {
+                ReviewScopeKind::Spec
+            };
+            Ok((
+                ReviewScope {
+                    kind,
+                    id: s.to_string(),
+                    task_ids: vec![],
+                },
+                None,
+            ))
+        }
+
+        Some(s) if s.ends_with(".md") => {
+            Err(AikiError::InvalidArgument(format!("File not found: {}", s)))
+        }
+
+        Some(s) if looks_like_task_id(s) => {
+            if implementation {
+                return Err(AikiError::InvalidArgument(
+                    "--implementation flag only applies to file targets".to_string(),
+                ));
+            }
+
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+            let task = find_task(&tasks, s)?;
+            let worker = task.assignee.as_deref().map(|s| s.to_string());
+            let scope = ReviewScope {
+                kind: ReviewScopeKind::Task,
+                id: task.id.clone(),
+                task_ids: vec![],
+            };
+            Ok((scope, worker))
+        }
+
+        Some(s) if Path::new(s).exists() => {
+            Err(AikiError::InvalidArgument(
+                "File review only supports .md files currently".to_string(),
+            ))
+        }
+
+        Some(s) => {
+            Err(AikiError::InvalidArgument(format!("Target not found: {}", s)))
+        }
+    }
+}
+
+/// Core review creation logic. Used by both CLI and flow action.
+///
+/// This function creates the review task with subtasks but does NOT
+/// start or run the task. The caller is responsible for the execution mode.
+/// The scope must be pre-resolved by the caller (via `detect_target()` for CLI,
+/// or directly constructed for flow actions).
+pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateReviewResult> {
+    let scope = params.scope;
+
+    // Determine worker for reviewer assignment (for task scope)
+    let worker = match scope.kind {
+        ReviewScopeKind::Task => {
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+            let task = find_task(&tasks, &scope.id)?;
+            task.assignee.as_deref().map(|s| s.to_string())
+        }
+        ReviewScopeKind::Session => {
+            find_active_session(cwd)
+                .map(|s| s.agent_type.as_str().to_string())
+        }
+        _ => None,
     };
 
     // Determine assignee for review task
@@ -303,11 +402,19 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 
     // Create review task with subtasks from template
     let template = params.template.as_deref().unwrap_or("aiki/review");
-    let scope_data = scope.to_data();
+    let mut scope_data = scope.to_data();
+
+    // Add options data
+    if params.fix {
+        scope_data.insert("options.fix".to_string(), "true".to_string());
+    }
 
     // Build sources for lineage (not routing)
     let sources = match scope.kind {
         ReviewScopeKind::Task => vec![format!("task:{}", scope.id)],
+        ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
+            vec![format!("file:{}", scope.id)]
+        }
         _ => vec![],
     };
 
@@ -329,7 +436,9 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 /// Core review implementation
 fn run_review(
     cwd: &Path,
-    task_id: Option<String>,
+    target: Option<String>,
+    implementation: bool,
+    fix: bool,
     run_async: bool,
     start: bool,
     template_name: Option<String>,
@@ -344,18 +453,34 @@ fn run_review(
         None
     };
 
+    // Detect target and resolve scope at CLI layer
+    let (scope, _worker) = match detect_target(cwd, target.as_deref(), implementation) {
+        Ok(r) => r,
+        Err(AikiError::NothingToReview) => {
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+
+    // --fix is not supported for session reviews
+    if fix && scope.kind == ReviewScopeKind::Session {
+        return Err(AikiError::InvalidArgument(
+            "--fix is not supported for session reviews".to_string(),
+        ));
+    }
+
     // Create review task using shared logic
     let result = match create_review(
         cwd,
         CreateReviewParams {
-            task_id,
+            scope,
             agent_override,
             template: template_name,
+            fix,
         },
     ) {
         Ok(r) => r,
         Err(AikiError::NothingToReview) => {
-            // Already output message in create_review
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -371,6 +496,8 @@ fn run_review(
     let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
     let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
 
+    let scope = &result.scope;
+
     // Handle execution mode
     if start {
         // Reassign task to current agent (caller takes over)
@@ -379,12 +506,12 @@ fn run_review(
         }
         // Start task using core logic (validates, auto-stops, emits events)
         start_task_core(cwd, &[review_id.clone()])?;
-        output_review_started(&review_id, &in_progress, &ready)?;
+        output_review_started(&review_id, scope, &in_progress, &ready)?;
     } else if run_async {
         // Run async and return immediately
         let options = TaskRunOptions::new();
         task_run_async(cwd, &review_id, options)?;
-        output_review_async(&review_id)?;
+        output_review_async(&review_id, scope)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", review_id);
@@ -393,7 +520,7 @@ fn run_review(
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &review_id, options)?;
-        output_review_completed(&review_id)?;
+        output_review_completed(&review_id, scope)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", review_id);
@@ -405,18 +532,33 @@ fn run_review(
 
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
-    let content = "## Approved\nNothing to review - no closed tasks in session.\n";
-    let md = MdBuilder::new("review").build(content, &[], &[]);
+    use super::output::{CommandOutput, format_command_output};
+    let output = CommandOutput {
+        heading: "Approved",
+        task_id: "",
+        scope: None,
+        status: "Nothing to review - no closed tasks in session.",
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
+    let md = MdBuilder::new("review").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
 }
 
 /// Output review started message (for --start mode)
-fn output_review_started(review_id: &str, in_progress: &[&Task], ready: &[&Task]) -> Result<()> {
-    let content = format!(
-        "## Review Started\n- **Task:** {}\n- Review task started. You are now reviewing.\n",
-        review_id
-    );
+fn output_review_started(review_id: &str, scope: &ReviewScope, in_progress: &[&Task], ready: &[&Task]) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let output = CommandOutput {
+        heading: "Review Started",
+        task_id: review_id,
+        scope: Some(scope),
+        status: "Review task started. You are now reviewing.",
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("review").build(&content, in_progress, ready);
     eprintln!("{}", md);
 
@@ -429,22 +571,40 @@ fn output_review_started(review_id: &str, in_progress: &[&Task], ready: &[&Task]
 }
 
 /// Output review async message (for --async mode)
-fn output_review_async(review_id: &str) -> Result<()> {
-    let content = format!(
-        "## Review Started\n- **Task:** {}\n- Review started in background.\n",
-        review_id
-    );
+fn output_review_async(review_id: &str, scope: &ReviewScope) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let output = CommandOutput {
+        heading: "Review Started",
+        task_id: review_id,
+        scope: Some(scope),
+        status: "Review started in background.",
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("review").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
 }
 
 /// Output review completed message (for blocking mode)
-fn output_review_completed(review_id: &str) -> Result<()> {
-    let content = format!(
-        "## Review Completed\n- **Task:** {}\n- Review completed.\n",
-        review_id
-    );
+fn output_review_completed(review_id: &str, scope: &ReviewScope) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    // Only show fix hint for scopes that support fixing
+    let hint = if scope.kind == ReviewScopeKind::Session {
+        None
+    } else {
+        Some(format!("Run `aiki fix {}` to remediate.", review_id))
+    };
+    let output = CommandOutput {
+        heading: "Review Completed",
+        task_id: review_id,
+        scope: Some(scope),
+        status: "Review completed.",
+        issues: None,
+        hint,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("review").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
@@ -829,5 +989,115 @@ mod tests {
         // No scope.id — should be fine for Session scope
         let result = ReviewScope::from_data(&data);
         assert!(result.is_ok());
+    }
+
+    // detect_target tests
+
+    #[test]
+    fn test_detect_target_md_file_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("feature.md");
+        std::fs::write(&md_path, "# Feature\n").unwrap();
+        let path_str = md_path.to_str().unwrap();
+
+        let (scope, worker) = detect_target(dir.path(), Some(path_str), false).unwrap();
+        assert_eq!(scope.kind, ReviewScopeKind::Spec);
+        assert_eq!(scope.id, path_str);
+        assert!(scope.task_ids.is_empty());
+        assert!(worker.is_none());
+    }
+
+    #[test]
+    fn test_detect_target_md_file_implementation() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("feature.md");
+        std::fs::write(&md_path, "# Feature\n").unwrap();
+        let path_str = md_path.to_str().unwrap();
+
+        let (scope, worker) = detect_target(dir.path(), Some(path_str), true).unwrap();
+        assert_eq!(scope.kind, ReviewScopeKind::Implementation);
+        assert_eq!(scope.id, path_str);
+        assert!(worker.is_none());
+    }
+
+    #[test]
+    fn test_detect_target_md_file_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), Some("nonexistent.md"), false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("File not found"));
+    }
+
+    #[test]
+    fn test_detect_target_implementation_flag_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), None, true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("--implementation flag only applies to file targets"));
+    }
+
+    #[test]
+    fn test_detect_target_implementation_flag_task_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_target(dir.path(), Some("abcdefgh"), true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("--implementation flag only applies to file targets"));
+    }
+
+    #[test]
+    fn test_detect_target_non_md_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt_path = dir.path().join("file.txt");
+        std::fs::write(&txt_path, "content").unwrap();
+        let path_str = txt_path.to_str().unwrap();
+
+        let result = detect_target(dir.path(), Some(path_str), false);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("File review only supports .md files"));
+    }
+
+    #[test]
+    fn test_detect_target_unknown_target() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not a file, not a task ID (has digits and hyphen)
+        let result = detect_target(dir.path(), Some("not-a-target-123"), false);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Target not found"));
+    }
+
+    // looks_like_task_id tests
+
+    #[test]
+    fn test_looks_like_task_id_valid() {
+        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef"));
+        assert!(looks_like_task_id("abc")); // prefix
+        assert!(looks_like_task_id("x"));
+        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef.1")); // subtask
+        assert!(looks_like_task_id("abcdefghijklmnopqrstuvwxyzabcdef.1.2")); // nested subtask
+        assert!(looks_like_task_id("abc.3")); // prefix with subtask
+    }
+
+    #[test]
+    fn test_looks_like_task_id_invalid() {
+        assert!(!looks_like_task_id("")); // empty
+        assert!(!looks_like_task_id("ABC")); // uppercase
+        assert!(!looks_like_task_id("abc123")); // digits in root
+        assert!(!looks_like_task_id("ops/now/feature.md")); // path
+        assert!(!looks_like_task_id("hello-world")); // hyphen
+        assert!(!looks_like_task_id("has spaces")); // spaces
+        assert!(!looks_like_task_id(".1")); // no root
+        assert!(!looks_like_task_id("abc.")); // trailing dot, empty suffix
     }
 }

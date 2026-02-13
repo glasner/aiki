@@ -906,7 +906,7 @@ impl HookEngine {
     /// `review: { task_id: X, template: Y }` is equivalent to
     /// `aiki review X --template Y --async`. Flows always use async mode.
     fn execute_review(action: &ReviewAction, state: &mut AikiState) -> Result<ActionResult> {
-        use crate::commands::review::{create_review, CreateReviewParams};
+        use crate::commands::review::{create_review, CreateReviewParams, detect_target};
         use crate::tasks::runner::{task_run_async, TaskRunOptions};
 
         // Create variable resolver
@@ -928,13 +928,35 @@ impl HookEngine {
         // Get cwd from state
         let cwd = state.cwd();
 
+        // Detect target scope (flows are always task-id-centric, no --implementation)
+        let (scope, _worker) = match detect_target(&cwd, task_id.as_deref(), false) {
+            Ok(r) => r,
+            Err(AikiError::NothingToReview) => {
+                return Ok(ActionResult {
+                    success: true,
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: "Nothing to review - no closed tasks in session.".to_string(),
+                });
+            }
+            Err(e) => {
+                return Ok(ActionResult {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                });
+            }
+        };
+
         // Create review task using shared logic (same as CLI)
         let result = match create_review(
             &cwd,
             CreateReviewParams {
-                task_id,
+                scope,
                 agent_override,
                 template,
+                fix: false,
             },
         ) {
             Ok(r) => r,

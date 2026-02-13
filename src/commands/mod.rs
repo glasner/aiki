@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod event;
 pub mod fix;
 pub mod hooks;
+pub mod output;
 pub mod plan;
 pub mod init;
 pub mod otel_receive;

@@ -510,6 +510,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             task_ids,
             agent_type,
             session_id,
+            turn_id,
             timestamp,
             stopped,
         } => {
@@ -521,6 +522,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(sid) = session_id {
                 add_metadata("session_id", sid, &mut lines);
             }
+            if let Some(tid) = turn_id {
+                add_metadata("turn_id", tid, &mut lines);
+            }
             for stopped_id in stopped {
                 add_metadata("stopped_task", stopped_id, &mut lines);
             }
@@ -529,6 +533,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Stopped {
             task_ids,
             reason,
+            turn_id,
             timestamp,
         } => {
             add_metadata("event", "stopped", &mut lines);
@@ -538,12 +543,16 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(reason) = reason {
                 add_metadata_escaped("reason", reason, &mut lines);
             }
+            if let Some(tid) = turn_id {
+                add_metadata("turn_id", tid, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::Closed {
             task_ids,
             outcome,
             summary,
+            turn_id,
             timestamp,
         } => {
             add_metadata("event", "closed", &mut lines);
@@ -553,6 +562,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("outcome", outcome, &mut lines);
             if let Some(summary) = summary {
                 add_metadata_escaped("summary", summary, &mut lines);
+            }
+            if let Some(tid) = turn_id {
+                add_metadata("turn_id", tid, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -757,11 +769,16 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("stopped_task")
                 .map(|v| v.iter().map(|s| s.to_string()).collect())
                 .unwrap_or_else(Vec::new);
+            let turn_id = fields
+                .get("turn_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
 
             Some(TaskEvent::Started {
                 task_ids,
                 agent_type,
                 session_id,
+                turn_id,
                 timestamp,
                 stopped,
             })
@@ -776,12 +793,17 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("reason")
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
+            let turn_id = fields
+                .get("turn_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             // Note: blocked_reason field is ignored for backward compatibility
             // (old events may still contain it, but it's no longer part of the type)
 
             Some(TaskEvent::Stopped {
                 task_ids,
                 reason,
+                turn_id,
                 timestamp,
             })
         }
@@ -800,11 +822,16 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("summary")
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
+            let turn_id = fields
+                .get("turn_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
 
             Some(TaskEvent::Closed {
                 task_ids,
                 outcome,
                 summary,
+                turn_id,
                 timestamp,
             })
         }
@@ -1110,6 +1137,7 @@ timestamp=2026-01-09T10:30:00Z
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             agent_type: "claude-code".to_string(),
             session_id: Some("test-session-uuid".to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
             stopped: vec!["stopped1".to_string()],
         };
@@ -1149,6 +1177,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Stopped {
             task_ids: vec!["task1".to_string()],
             reason: Some("Need more info".to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
         };
 
@@ -1185,6 +1214,7 @@ timestamp=2026-01-09T10:30:00Z
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             outcome: TaskOutcome::WontDo,
             summary: None,
+            turn_id: None,
             timestamp: Utc::now(),
         };
 
@@ -1221,6 +1251,7 @@ timestamp=2026-01-09T10:30:00Z
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("Fixed the auth bug".to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
         };
 
@@ -1252,6 +1283,7 @@ timestamp=2026-01-09T10:30:00Z
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("Fixed bug: added null check\nnew line here".to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
         };
 
@@ -2136,6 +2168,112 @@ timestamp=2026-02-10T14:30:00Z
                 assert_eq!(reason, Some("No longer needed".to_string()));
             }
             _ => panic!("Expected LinkRemoved event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_started_with_turn_id() {
+        let original = TaskEvent::Started {
+            task_ids: vec!["task1".to_string()],
+            agent_type: "claude-code".to_string(),
+            session_id: Some("sess-123".to_string()),
+            turn_id: Some("turn-abc-1".to_string()),
+            timestamp: Utc::now(),
+            stopped: vec![],
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("turn_id=turn-abc-1"), "Serialized block should contain turn_id");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Started { turn_id, .. } => {
+                assert_eq!(turn_id, Some("turn-abc-1".to_string()));
+            }
+            _ => panic!("Expected Started event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_stopped_with_turn_id() {
+        let original = TaskEvent::Stopped {
+            task_ids: vec!["task1".to_string()],
+            reason: Some("blocked".to_string()),
+            turn_id: Some("turn-xyz-5".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("turn_id=turn-xyz-5"), "Serialized block should contain turn_id");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Stopped { turn_id, .. } => {
+                assert_eq!(turn_id, Some("turn-xyz-5".to_string()));
+            }
+            _ => panic!("Expected Stopped event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_closed_with_turn_id() {
+        let original = TaskEvent::Closed {
+            task_ids: vec!["task1".to_string()],
+            outcome: TaskOutcome::Done,
+            summary: Some("All done".to_string()),
+            turn_id: Some("turn-def-3".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("turn_id=turn-def-3"), "Serialized block should contain turn_id");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Closed { turn_id, .. } => {
+                assert_eq!(turn_id, Some("turn-def-3".to_string()));
+            }
+            _ => panic!("Expected Closed event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_started_without_turn_id() {
+        // Backward compatibility: turn_id=None should serialize without turn_id line
+        let original = TaskEvent::Started {
+            task_ids: vec!["task1".to_string()],
+            agent_type: "claude-code".to_string(),
+            session_id: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+            stopped: vec![],
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(!block.contains("turn_id="), "Should not contain turn_id when None");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Started { turn_id, .. } => {
+                assert_eq!(turn_id, None);
+            }
+            _ => panic!("Expected Started event"),
         }
     }
 }
