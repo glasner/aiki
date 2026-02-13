@@ -63,6 +63,7 @@ fn test_build_context_returns_none_when_empty() {
         turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
+        tasks: Default::default(),
     };
 
     let state = AikiState::new(event);
@@ -91,6 +92,7 @@ fn test_build_context_returns_some_with_chunks() {
         turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
+        tasks: Default::default(),
     };
 
     let mut state = AikiState::new(event);
@@ -175,6 +177,7 @@ fn test_turn_completed_does_not_trigger_session_ended() {
         turn: aiki::events::Turn::unknown(),
         response: "Task completed".to_string(),
         modified_files: vec![],
+        tasks: Default::default(),
     };
 
     // Dispatch the event - should succeed without triggering session.ended
@@ -238,6 +241,7 @@ fn test_documented_behavior() {
         turn: aiki::events::Turn::unknown(),
         response: "Done".to_string(),
         modified_files: vec![],
+        tasks: Default::default(),
     };
 
     let state = AikiState::new(event);

@@ -18,8 +18,8 @@ use std::collections::{HashMap, HashSet};
 use crate::tasks::types::FastHashMap;
 
 use crate::tasks::{
-    generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix,
-    materialize_graph, materialize_graph_with_ids,
+    generate_task_id, is_task_id, is_task_id_prefix,
+    materialize_graph, materialize_graph_with_ids, TaskGraph,
     manager::{
         find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
         get_ready_queue_for_scope_set, has_subtasks,
@@ -1197,10 +1197,8 @@ fn run_add(
         let parent_id = &parent_task.id; // rebind to canonical ID
         reopen_if_closed(cwd, parent_id, &tasks, "Subtasks added")?;
 
-        // Generate subtask ID (parent.N where N is next available)
-        let task_ids: Vec<&str> = tasks.keys().map(|s| s.as_str()).collect();
-        let subtask_num = get_next_subtask_number(parent_id, task_ids.into_iter());
-        let child_id = generate_child_id(parent_id, subtask_num);
+        // Generate subtask ID (full 32-char ID, linked via subtask-of edge)
+        let child_id = generate_task_id(&name);
 
         // Inherit parent's assignee if none specified
         let final_assignee = if assignee.is_some() {
@@ -1235,6 +1233,12 @@ fn run_add(
 
     write_event(cwd, &event)?;
 
+    // Emit subtask-of link if this is a child task
+    if let Some(ref parent_id) = parent {
+        let parent_id = &find_task(tasks, parent_id)?.id.clone();
+        write_link_event(cwd, &graph, "subtask-of", &task_id, parent_id)?;
+    }
+
     // Emit sourced-from links for each source
     for source in &sources {
         write_link_event(cwd, &graph, "sourced-from", &task_id, source)?;
@@ -1260,6 +1264,9 @@ fn run_add(
         stopped_reason: None,
         closed_outcome: None,
         summary: None,
+        turn_started: None,
+        turn_closed: None,
+        turn_stopped: None,
         comments: Vec::new(),
     };
 
@@ -1455,6 +1462,9 @@ fn run_start(
                 stopped_reason: None,
                 closed_outcome: None,
                 summary: None,
+                turn_started: None,
+                turn_closed: None,
+                turn_stopped: None,
                 comments: Vec::new(),
             };
             tasks.insert(task_id.clone(), new_task.clone());
@@ -1524,16 +1534,29 @@ fn run_start(
     if ids_to_start.len() == 1 {
         let task_id = ids_to_start[0].clone();
         if has_subtasks(&graph, &task_id) {
-            // Starting a parent task - create planning task if needed
-            let planning_id = generate_child_id(&task_id, 0);
+            // Starting a parent task - find or create a planning task among children
+            let existing_planning = graph
+                .edges
+                .referrers(&task_id, "subtask-of")
+                .iter()
+                .find(|child_id| {
+                    graph.tasks.get(*child_id).is_some_and(|t| {
+                        t.name == "Review all subtasks and start first batch"
+                            && t.status != TaskStatus::Closed
+                    })
+                })
+                .cloned();
 
-            // Check if planning task already exists
-            if find_task(&tasks, &planning_id).is_err() {
-                // Create the planning task
+            let planning_id = if let Some(id) = existing_planning {
+                id
+            } else {
+                // Create the planning task with a full 32-char ID
+                let id =
+                    generate_task_id("Review all subtasks and start first batch");
                 let timestamp = chrono::Utc::now();
                 let working_copy = get_working_copy_change_id(cwd);
                 let planning_event = TaskEvent::Created {
-                    task_id: planning_id.clone(),
+                    task_id: id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
                     task_type: None,
                     priority: TaskPriority::default(),
@@ -1546,10 +1569,11 @@ fn run_start(
                     timestamp,
                 };
                 write_event(cwd, &planning_event)?;
+                write_link_event(cwd, &graph, "subtask-of", &id, &task_id)?;
 
                 // Add to local tasks map for output
                 let task = Task {
-                    id: planning_id.clone(),
+                    id: id.clone(),
                     name: "Review all subtasks and start first batch".to_string(),
                     task_type: None,
                     status: TaskStatus::Open,
@@ -1567,25 +1591,26 @@ fn run_start(
                     stopped_reason: None,
                     closed_outcome: None,
                     summary: None,
+                    turn_started: None,
+                    turn_closed: None,
+                    turn_stopped: None,
                     comments: Vec::new(),
                 };
-                tasks.insert(planning_id.clone(), task);
-            }
+                tasks.insert(id.clone(), task);
+                id
+            };
 
             // Start the planning task instead of the parent
-            actual_ids_to_start = vec![generate_child_id(&task_id, 0)];
+            actual_ids_to_start = vec![planning_id];
             new_scope = Some(task_id);
         }
     }
 
     // Now that we know which IDs we're actually starting, filter out parent tasks
-    // When starting a subtask (id contains '.'), preserve its parent from being auto-stopped
+    // When starting a subtask, preserve its parent (via subtask-of edge) from being auto-stopped
     let parent_ids_to_preserve: std::collections::HashSet<String> = actual_ids_to_start
         .iter()
-        .filter_map(|id| {
-            // If this is a subtask (contains '.'), preserve its parent
-            id.rsplit_once('.').map(|(parent, _)| parent.to_string())
-        })
+        .filter_map(|id| graph.edges.target(id, "subtask-of").map(|s| s.to_string()))
         .collect();
 
     let current_in_progress_ids: Vec<String> = all_in_progress_ids
@@ -1604,6 +1629,9 @@ fn run_start(
         .filter_map(|id| tasks.get(id).cloned())
         .collect();
 
+    // Query current turn ID from session
+    let turn_id = crate::tasks::current_turn_id(our_session_id.as_deref());
+
     // Auto-stop current in-progress tasks (batch operation)
     let stop_reason = format!("Started {}", actual_ids_to_start.join(", "));
 
@@ -1611,6 +1639,7 @@ fn run_start(
         let stop_event = TaskEvent::Stopped {
             task_ids: current_in_progress_ids.clone(),
             reason: Some(stop_reason.clone()),
+            turn_id: turn_id.clone(),
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &stop_event)?;
@@ -1629,6 +1658,7 @@ fn run_start(
         task_ids: actual_ids_to_start.clone(),
         agent_type: agent_type_str,
         session_id: session_id.clone(),
+        turn_id: turn_id.clone(),
         timestamp,
         stopped: current_in_progress_ids.clone(),
     };
@@ -1703,11 +1733,18 @@ pub(crate) fn cascade_close_tasks(
 
     let close_timestamp = chrono::Utc::now();
 
+    // Query current turn ID from session
+    let session_match = crate::session::find_active_session(cwd);
+    let turn_id = crate::tasks::current_turn_id(
+        session_match.as_ref().map(|m| m.session_id.as_str()),
+    );
+
     // 1. Write the Closed event
     let close_event = TaskEvent::Closed {
         task_ids: task_ids.to_vec(),
         outcome,
         summary: Some(summary.to_string()),
+        turn_id,
         timestamp: close_timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -1812,9 +1849,14 @@ fn run_stop(
     }
 
     // Stop the task
+    let session_match = crate::session::find_active_session(cwd);
+    let turn_id = crate::tasks::current_turn_id(
+        session_match.as_ref().map(|m| m.session_id.as_str()),
+    );
     let stop_event = TaskEvent::Stopped {
         task_ids: vec![task_id.clone()],
         reason: reason.clone(),
+        turn_id,
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &stop_event)?;
@@ -1867,6 +1909,9 @@ fn run_stop(
                 stopped_reason: None,
                 closed_outcome: None,
                 summary: None,
+                turn_started: None,
+                turn_closed: None,
+                turn_stopped: None,
                 comments: Vec::new(),
             },
         );
@@ -2090,6 +2135,9 @@ fn run_close(
         TaskOutcome::Done
     };
 
+    // Query current turn ID from session
+    let turn_id = crate::tasks::current_turn_id(our_session_id.as_deref());
+
     // Get tasks before closing (for output)
     let mut closed_tasks: Vec<_> = ids_to_close
         .iter()
@@ -2111,6 +2159,7 @@ fn run_close(
         task_ids: explicit_ids.clone(),
         outcome,
         summary: summary_text.clone(),
+        turn_id: turn_id.clone(),
         timestamp: close_timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -2189,6 +2238,7 @@ fn run_close(
                     task_ids: vec![parent_id.clone()],
                     agent_type: agent_type_str,
                     session_id: our_session_id.clone(),
+                    turn_id: turn_id.clone(),
                     timestamp: auto_start_timestamp,
                     stopped: Vec::new(),
                 };
@@ -2268,6 +2318,7 @@ fn run_close(
                 task_ids: vec![next_id.clone()],
                 agent_type: agent_type_str,
                 session_id: our_session_id.clone(),
+                turn_id: turn_id.clone(),
                 timestamp: auto_start_timestamp,
                 stopped: Vec::new(),
             };
@@ -4140,16 +4191,10 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     let parent_name =
         substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
 
-    // Generate task ID: child ID if parent_id is set, standalone otherwise
+    // Generate task ID (always a full 32-char ID, linked via subtask-of edge if child)
     let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let task_id = if let Some(ref parent_id) = params.parent_id {
-        let task_ids: Vec<&str> = graph.tasks.keys().map(|s| s.as_str()).collect();
-        let subtask_num = get_next_subtask_number(parent_id, task_ids.into_iter());
-        generate_child_id(parent_id, subtask_num)
-    } else {
-        generate_task_id(&parent_name)
-    };
+    let mut graph = materialize_graph(&events);
+    let task_id = generate_task_id(&parent_name);
 
     // Set id in context for substitution
     ctx.set_builtin("id", &task_id);
@@ -4169,6 +4214,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     };
 
     // Create parent task event
+    let working_copy = get_working_copy_change_id(cwd);
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_name.clone(),
@@ -4177,12 +4223,46 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         assignee: assignee.clone(),
         sources: params.sources.clone(),
         template: Some(template.template_id()),
-        working_copy: get_working_copy_change_id(cwd),
-        instructions: parent_instructions,
+        working_copy: working_copy.clone(),
+        instructions: parent_instructions.clone(),
         data: data.clone(),
         timestamp,
     };
     write_event(cwd, &create_event)?;
+
+    // Insert into in-memory graph so subtask write_link_event validation passes
+    graph.tasks.insert(
+        task_id.clone(),
+        Task {
+            id: task_id.clone(),
+            name: parent_name.clone(),
+            task_type: template.parent.task_type.clone(),
+            status: TaskStatus::Open,
+            priority,
+            assignee: assignee.clone(),
+            sources: params.sources.clone(),
+            template: Some(template.template_id()),
+            working_copy,
+            instructions: parent_instructions,
+            data: data.clone(),
+            created_at: timestamp,
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: vec![],
+        },
+    );
+
+    // Emit subtask-of link if this is a child task
+    if let Some(ref parent_id) = params.parent_id {
+        write_link_event(cwd, &graph, "subtask-of", &task_id, parent_id)?;
+    }
 
     // Emit sourced-from links for each source
     for source in &params.sources {
@@ -4241,6 +4321,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &params.builtins,
             &composition_stack,
             1, // depth starts at 1 (parent template is depth 0)
+            &graph,
         )?;
     } else {
         // Static subtasks: use predefined subtasks from template
@@ -4255,6 +4336,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &data,
             timestamp,
             &params.builtins,
+            &graph,
         )?;
     }
 
@@ -4292,12 +4374,12 @@ fn create_dynamic_subtasks(
             )
         })?;
 
-    // Materialize tasks to get the source task's comments
+    // Materialize graph to get the source task's comments and for link writing
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
 
     // Resolve the data source (e.g., fetch comments from the source task)
-    let data_items = resolve_data_source(&data_source, source_task_id, &tasks)?;
+    let data_items = resolve_data_source(&data_source, source_task_id, &graph.tasks)?;
 
     // Build context with parent.* builtins for subtask variable substitution
     // This allows templates to reference parent values via {parent.id}, {parent.data.key}, etc.
@@ -4319,8 +4401,8 @@ fn create_dynamic_subtasks(
         create_tasks_from_template(template, &ctx_with_parent, Some(data_items))?;
 
     // Create events for each subtask
-    for (i, subtask_def) in subtask_defs.iter().enumerate() {
-        let subtask_id = generate_child_id(parent_id, i + 1);
+    for (_i, subtask_def) in subtask_defs.iter().enumerate() {
+        let subtask_id = generate_task_id(&subtask_def.name);
 
         // Determine subtask priority (override or inherit)
         let subtask_priority = if let Some(ref p) = subtask_def.priority {
@@ -4351,7 +4433,7 @@ fn create_dynamic_subtasks(
         subtask_sources.push(format!("task:{}", parent_id));
 
         let subtask_event = TaskEvent::Created {
-            task_id: subtask_id,
+            task_id: subtask_id.clone(),
             name: subtask_def.name.clone(),
             task_type: None, // Subtasks inherit type from parent context
             priority: subtask_priority,
@@ -4368,6 +4450,7 @@ fn create_dynamic_subtasks(
             timestamp,
         };
         write_event(cwd, &subtask_event)?;
+        write_link_event(cwd, &graph, "subtask-of", &subtask_id, parent_id)?;
     }
 
     Ok(())
@@ -4385,12 +4468,13 @@ fn create_static_subtasks(
     parent_data: &std::collections::HashMap<String, String>,
     timestamp: chrono::DateTime<chrono::Utc>,
     extra_builtins: &HashMap<String, String>,
+    graph: &TaskGraph,
 ) -> Result<()> {
     use crate::tasks::templates::substitute_with_template_name;
 
-    for (i, subtask_def) in template.subtasks.iter().enumerate() {
-        // Generate subtask ID first (only depends on parent ID and index)
-        let subtask_id = generate_child_id(parent_id, i + 1);
+    for (_i, subtask_def) in template.subtasks.iter().enumerate() {
+        // Generate subtask ID (full 32-char ID, linked via subtask-of edge)
+        let subtask_id = generate_task_id(&subtask_def.name);
 
         // Determine subtask priority (override or inherit)
         let subtask_priority = if let Some(ref p) = subtask_def.priority {
@@ -4472,7 +4556,7 @@ fn create_static_subtasks(
         subtask_sources.push(format!("task:{}", parent_id));
 
         let subtask_event = TaskEvent::Created {
-            task_id: subtask_id,
+            task_id: subtask_id.clone(),
             name: subtask_name,
             task_type: None, // Subtasks inherit type from parent context
             priority: subtask_priority,
@@ -4485,6 +4569,7 @@ fn create_static_subtasks(
             timestamp,
         };
         write_event(cwd, &subtask_event)?;
+        write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
     }
 
     Ok(())
@@ -4532,6 +4617,7 @@ fn create_subtasks_from_entries(
     extra_builtins: &HashMap<String, String>,
     composition_stack: &[String],
     depth: usize,
+    graph: &TaskGraph,
 ) -> Result<()> {
     use crate::tasks::templates::{
         find_templates_dir, load_template, substitute_with_template_name, SubtaskEntry,
@@ -4539,8 +4625,8 @@ fn create_subtasks_from_entries(
     };
 
     for (i, entry) in entries.iter().enumerate() {
-        let subtask_index = i + 1;
-        let subtask_id = generate_child_id(parent_id, subtask_index);
+        let _subtask_index = i + 1;
+        let subtask_id = generate_task_id(&format!("subtask-{}", i + 1));
 
         match entry {
             SubtaskEntry::Static(subtask_def) => {
@@ -4618,7 +4704,7 @@ fn create_subtasks_from_entries(
                 subtask_sources.push(format!("task:{}", parent_id));
 
                 let subtask_event = TaskEvent::Created {
-                    task_id: subtask_id,
+                    task_id: subtask_id.clone(),
                     name: subtask_name,
                     task_type: None,
                     priority: subtask_priority,
@@ -4631,6 +4717,7 @@ fn create_subtasks_from_entries(
                     timestamp,
                 };
                 write_event(cwd, &subtask_event)?;
+                write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
             }
 
             SubtaskEntry::Composed {
@@ -4769,6 +4856,7 @@ fn create_subtasks_from_entries(
                     timestamp,
                 };
                 write_event(cwd, &composed_event)?;
+                write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
 
                 // Recursively create the child template's subtasks
                 let mut child_stack = composition_stack.to_vec();
@@ -4799,6 +4887,7 @@ fn create_subtasks_from_entries(
                         extra_builtins,
                         &child_stack,
                         depth + 1,
+                        graph,
                     )?;
                 }
             }
@@ -5198,6 +5287,9 @@ D src/old_file.ts
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         };
         tasks.insert(
@@ -5298,6 +5390,9 @@ D src/old_file.ts
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         };
         tasks.insert(task_c.id.clone(), task_c);
@@ -5334,6 +5429,9 @@ D src/old_file.ts
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         };
         tasks.insert(task_c.id.clone(), task_c);

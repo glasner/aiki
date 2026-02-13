@@ -310,6 +310,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         }
     }

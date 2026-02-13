@@ -52,20 +52,19 @@ Request comes in
   │  - Session init                 │  - Always runs
   │  - Change tracking              │  - Not user-editable
   │  - Provenance metadata          │  - Compiled into binary
-  │  - Co-author generation         │
   └─────────────────┬───────────────┘
                     │
                     ▼
   ┌─────────────────────────────────┐
   │  .aiki/hooks.yml                │  Layer 2: Workflow automation
-  │  - Review loop                  │  - Created by aiki init
-  │  - Lint gates                   │  - User-editable
-  │  - Build checks                 │  - Composable plugins
+  │  - Git co-authors               │  - Created by aiki init
+  │  - Review loop                  │  - User-editable
+  │  - Lint gates                   │  - Composable plugins
   │  - Custom project hooks         │
   └─────────────────────────────────┘
 ```
 
-**Layer 1 (core)** handles the fundamentals: provenance tracking, change attribution, co-author generation, session lifecycle. These are non-negotiable and always run.
+**Layer 1 (core)** handles the fundamentals: provenance tracking, change attribution, session lifecycle. These are non-negotiable and always run.
 
 **Layer 2 (hooks.yml)** handles workflow automation: review loops, quality gates, context injection. These are opinionated defaults that users can customize.
 
@@ -252,11 +251,41 @@ The default plugin wraps the opinionated "Aiki Way" workflow automation. It comp
 description: "The opinionated Aiki Way - workflow automation that updates automatically"
 
 after:
+  - aiki/git-coauthors
   - aiki/review-loop
   # Future plugins added here in new releases:
   # - aiki/context-inject
   # - aiki/build-check
 ```
+
+#### `aiki/git-coauthors` (Co-Author Plugin)
+
+Appends `Co-Authored-By:` trailers to Git commit messages based on AI agent attribution from JJ provenance data. This handler is **extracted from `aiki/core`** — co-author generation is workflow automation (users may not want it, or may want to customize the format), not core provenance tracking.
+
+**Current location**: `cli/src/flows/core/hooks.yaml` lines 178-189 (`commit.message_started` handler)
+
+**No prerequisites** — uses the existing `generate_coauthors` function and `commit_message` action.
+
+```yaml
+# Built-in: aiki/git-coauthors
+name: aiki/git-coauthors
+description: "Append AI co-author trailers to Git commit messages"
+version: "1"
+
+commit.message_started:
+  # Generate co-author lines from staged changes
+  - let: coauthors = self.generate_coauthors
+    on_failure:
+      - stop: "Failed to generate co-authors"
+
+  # Append co-authors as Git trailers
+  - commit_message:
+      append_trailer: $coauthors
+    on_failure:
+      - stop: "Failed to append co-author trailers"
+```
+
+**Implementation**: Remove the `commit.message_started` handler from `cli/src/flows/core/hooks.yaml` and ship it as a built-in plugin instead. The `generate_coauthors` function and `commit_message` action remain in the engine — only the hook wiring moves.
 
 #### `aiki/review-loop` (Review Plugin)
 
@@ -357,9 +386,23 @@ The `aiki/review-loop` plugin requires task context in `turn.completed` events t
 
 ## Implementation Plan
 
+### Phase 0: Extract `aiki/git-coauthors` from Core
+
+**What**: Move the `commit.message_started` handler from `aiki/core` to a new `aiki/git-coauthors` built-in plugin.
+
+1. Remove the `commit.message_started` handler (lines 178-189) from `cli/src/flows/core/hooks.yaml`
+2. Create the `aiki/git-coauthors` built-in plugin YAML (same handler content)
+3. Add `aiki/git-coauthors` to the built-in plugin registry so it resolves via `after:` references
+
+**Why extract**: Co-author generation is workflow automation, not core provenance tracking. Users may want to disable it (e.g., repos that don't use Git commits, or teams with different co-author conventions). Keeping it in core makes it invisible and non-optional. As a plugin, it's visible in `aiki/default` and can be overridden or removed.
+
+**Files to modify**:
+- `cli/src/flows/core/hooks.yaml` — remove `commit.message_started` handler
+- `cli/src/flows/plugins/` — add `aiki/git-coauthors` plugin YAML (or embed alongside other built-in plugins)
+
 ### Phase 1: Default Hookfile Scaffolding
 
-**What**: `aiki init` creates `.aiki/hooks.yml` with the review-loop plugin.
+**What**: `aiki init` creates `.aiki/hooks.yml` with the default plugin (which includes git-coauthors and review-loop).
 
 1. Create `ensure_hooks_yml()` helper (like existing `ensure_agents_md()`) — idempotent, never overwrites
 2. Call it **before** the early return on line 46-54 of `init.rs` (currently returns early when hooks are already configured, which would skip hookfile creation on existing repos)
@@ -394,6 +437,7 @@ The hookfile is designed to grow as more plugins are built. Each plugin is indep
 | Plugin | Event | Purpose | Status |
 |--------|-------|---------|--------|
 | `aiki/default` | N/A (wrapper) | Opinionated workflow automation | Designed |
+| `aiki/git-coauthors` | `commit.message_started` | Append AI co-author trailers to commits | Designed (extracted from core) |
 | `aiki/review-loop` | `turn.completed` | Review and fix after each turn | Designed (`ops/now/review-loop.md`) |
 | `aiki/lint-gate` | `shell.permission_asked` | Block git push if lint fails | Future |
 | `aiki/build-check` | `turn.completed` | Run build after changes | Future |
@@ -409,6 +453,7 @@ after:
 **Power users** can opt for explicit control:
 ```yaml
 after:
+  - aiki/git-coauthors
   - aiki/review-loop
   - aiki/lint-gate
   - aiki/build-check
@@ -460,6 +505,7 @@ When a user customizes the hookfile, those changes are committed and shared with
 |----------|--------|-----------|
 | Hookfile content | List all events with docs | Each event is listed as a commented-out section with explanation of when it fires and what it's useful for. Maximizes discoverability. |
 | Default plugin wrapper | `aiki/default` instead of direct plugin list | Users on default settings get automatic workflow improvements with updates. Power users can opt out and use explicit plugin list. |
+| Co-authors extracted from core | `aiki/git-coauthors` plugin | Co-author generation is workflow automation, not core provenance. Extracting it makes it visible, optional, and overridable. Users who don't use Git commits (or want different co-author conventions) can remove it. |
 | Review loop default | Enabled via `aiki/default` | Opinionated out of the box — users remove `aiki/default` if unwanted or replace with explicit plugins. |
 | Doctor validation | Full validation | `aiki doctor` checks YAML syntax, verifies referenced plugins exist, and warns about unknown event types. |
 | Plugin versioning | Silent update | Built-in fallback always uses latest version. Users who haven't overridden get updates automatically. Simple and low-maintenance. |

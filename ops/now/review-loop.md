@@ -172,9 +172,9 @@ aiki fix {{parent.id}} --loop
 
 ```
 Review Task (parent)
-  ├── .1  Digest         (existing subtask — from {% subtask aiki/review/<kind> %})
-  ├── .2  Review         (existing inline subtask)
-  └── .3  Fix Loop       (conditional subtask — from {% subtask aiki/fix/loop %})
+  ├── Digest         (subtask linked via subtask-of — from {% subtask aiki/review/<kind> %})
+  ├── Review         (subtask linked via subtask-of — existing inline subtask)
+  └── Fix Loop       (subtask linked via subtask-of — from {% subtask aiki/fix/loop %})
               instructions: aiki fix <parent-id> --loop
 ```
 

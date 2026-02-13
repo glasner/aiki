@@ -389,6 +389,7 @@ fn build_turn_completed_event(payload: StopPayload) -> AikiEvent {
         turn: crate::events::Turn::unknown(), // Set by handle_turn_completed
         response: String::new(), // Cursor doesn't provide response text in stop hook
         modified_files: Vec::new(), // Cursor doesn't track modified files in stop hook
+        tasks: Default::default(), // Populated by handle_turn_completed
     })
 }
 

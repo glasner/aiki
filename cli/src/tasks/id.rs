@@ -104,6 +104,7 @@ pub fn generate_task_id(name: &str) -> String {
 /// Child IDs are created by appending a numeric suffix to the parent ID.
 /// For example: "a1b2" -> "a1b2.1", "a1b2.1" -> "a1b2.1.1"
 #[must_use]
+#[allow(dead_code)] // Kept for backward-compat bridge tests
 pub fn generate_child_id(parent_id: &str, child_number: usize) -> String {
     format!("{}.{}", parent_id, child_number)
 }
@@ -125,6 +126,7 @@ pub fn get_parent_id(task_id: &str) -> Option<&str> {
 
 /// Check if a task is a direct child of a parent (not grandchild)
 #[must_use]
+#[allow(dead_code)] // Kept for backward-compat bridge tests
 pub fn is_direct_child_of(task_id: &str, parent_id: &str) -> bool {
     get_parent_id(task_id) == Some(parent_id)
 }
@@ -133,6 +135,7 @@ pub fn is_direct_child_of(task_id: &str, parent_id: &str) -> bool {
 ///
 /// Returns `None` if the task ID has no parent.
 #[must_use]
+#[allow(dead_code)] // Kept for backward-compat bridge tests
 pub fn get_child_number(task_id: &str) -> Option<usize> {
     task_id
         .rsplit_once('.')
@@ -248,6 +251,7 @@ pub fn is_task_id(input: &str) -> bool {
 /// Scans the list of task IDs and finds the highest existing subtask number,
 /// then returns the next number. Returns 1 if no subtasks exist.
 #[must_use]
+#[allow(dead_code)] // Kept for backward-compat bridge tests
 pub fn get_next_subtask_number<'a>(
     parent_id: &str,
     task_ids: impl Iterator<Item = &'a str>,

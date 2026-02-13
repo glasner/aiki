@@ -481,6 +481,46 @@ pub fn get_ready_queue_for_agent_scoped<'a>(
         .collect()
 }
 
+/// Get task activity during a specific turn.
+///
+/// Returns a TaskActivity with tasks that transitioned during the turn.
+/// Uses the materialized task graph — turn_started/turn_closed/turn_stopped
+/// are captured during event replay.
+pub fn get_task_activity_by_turn(
+    graph: &super::graph::TaskGraph,
+    turn_id: &str,
+) -> super::types::TaskActivity {
+    use super::types::{TaskActivity, TaskReference};
+
+    let mut activity = TaskActivity::default();
+
+    for task in graph.tasks.values() {
+        if task.turn_closed.as_deref() == Some(turn_id) {
+            activity.closed.push(TaskReference {
+                id: task.id.clone(),
+                name: task.name.clone(),
+                task_type: task.task_type.clone(),
+            });
+        }
+        if task.turn_started.as_deref() == Some(turn_id) {
+            activity.started.push(TaskReference {
+                id: task.id.clone(),
+                name: task.name.clone(),
+                task_type: task.task_type.clone(),
+            });
+        }
+        if task.turn_stopped.as_deref() == Some(turn_id) {
+            activity.stopped.push(TaskReference {
+                id: task.id.clone(),
+                name: task.name.clone(),
+                task_type: task.task_type.clone(),
+            });
+        }
+    }
+
+    activity
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,6 +559,7 @@ mod tests {
             task_ids: vec![task_id.to_string()],
             agent_type: "claude-code".to_string(),
             session_id: None,
+            turn_id: None,
             timestamp: Utc::now(),
             stopped: Vec::new(),
         }
@@ -528,6 +569,7 @@ mod tests {
         TaskEvent::Stopped {
             task_ids: vec![task_id.to_string()],
             reason: reason.map(|s| s.to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
         }
     }
@@ -537,6 +579,7 @@ mod tests {
             task_ids: vec![task_id.to_string()],
             outcome,
             summary: None,
+            turn_id: None,
             timestamp: Utc::now(),
         }
     }
@@ -782,6 +825,7 @@ mod tests {
                 task_ids: vec!["parent1.1".to_string(), "parent2.1".to_string()],
                 agent_type: "claude-code".to_string(),
                 session_id: None,
+                turn_id: None,
                 timestamp: Utc::now(),
                 stopped: Vec::new(),
             },
@@ -804,6 +848,7 @@ mod tests {
                 task_ids: vec!["parent.1".to_string(), "parent.2".to_string()],
                 agent_type: "claude-code".to_string(),
                 session_id: None,
+                turn_id: None,
                 timestamp: Utc::now(),
                 stopped: Vec::new(),
             },
@@ -1466,6 +1511,7 @@ mod tests {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
+                turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             TaskEvent::Reopened {
@@ -1647,6 +1693,7 @@ mod tests {
                 task_ids: vec!["a1b2".to_string()],
                 agent_type: "claude-code".to_string(),
                 session_id: None,
+                turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
                 stopped: vec![],
             },
@@ -1662,6 +1709,7 @@ mod tests {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
+                turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(3),
             },
             // Reopen task
@@ -1712,6 +1760,7 @@ mod tests {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
+                turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1739,6 +1788,7 @@ mod tests {
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
+                turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
             TaskEvent::Reopened {
@@ -2006,6 +2056,7 @@ mod tests {
             task_ids: vec![task_id.to_string()],
             agent_type: "claude-code".to_string(),
             session_id: Some(session_id.to_string()),
+            turn_id: None,
             timestamp: Utc::now(),
             stopped: Vec::new(),
         }
@@ -2016,6 +2067,7 @@ mod tests {
             task_ids: vec![task_id.to_string()],
             agent_type: "claude-code".to_string(),
             session_id: Some(session_id.to_string()),
+            turn_id: None,
             timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
             stopped: Vec::new(),
         }
@@ -2373,6 +2425,7 @@ mod tests {
                 ],
                 outcome: TaskOutcome::WontDo,
                 summary: Some(summary.to_string()),
+                turn_id: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2425,6 +2478,7 @@ mod tests {
                 task_ids: vec!["orch.1".to_string(), "orch.2".to_string()],
                 outcome: TaskOutcome::WontDo,
                 summary: Some(summary.to_string()),
+                turn_id: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2475,6 +2529,7 @@ mod tests {
                 task_ids: vec!["p.2".to_string()],
                 outcome: TaskOutcome::WontDo,
                 summary: Some("Parent orchestrator stopped".to_string()),
+                turn_id: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2529,6 +2584,7 @@ mod tests {
                 task_ids: vec!["blocker".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
+                turn_id: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2563,5 +2619,151 @@ mod tests {
         // parent.2 should be in the ready queue, parent.1 should be excluded (blocked)
         assert!(ready_ids.contains(&"parent.2"));
         assert!(!ready_ids.contains(&"parent.1"));
+    }
+
+    // Tests for get_task_activity_by_turn
+
+    #[test]
+    fn test_activity_empty_when_no_matching_turn() {
+        let events = vec![
+            make_created_event("t1", "Task 1", TaskPriority::P2, 1),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let activity = get_task_activity_by_turn(&graph, "turn-zzz");
+        assert!(activity.is_empty());
+    }
+
+    #[test]
+    fn test_activity_started_tasks() {
+        let events = vec![
+            make_created_event("t1", "Task 1", TaskPriority::P2, 1),
+            make_created_event("t2", "Task 2", TaskPriority::P1, 1),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Started {
+                task_ids: vec!["t2".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-bbb".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let activity = get_task_activity_by_turn(&graph, "turn-aaa");
+        assert_eq!(activity.started.len(), 1);
+        assert_eq!(activity.started[0].id, "t1");
+        assert_eq!(activity.started[0].name, "Task 1");
+        assert!(activity.closed.is_empty());
+        assert!(activity.stopped.is_empty());
+    }
+
+    #[test]
+    fn test_activity_closed_tasks() {
+        let events = vec![
+            make_created_event("t1", "Task 1", TaskPriority::P2, 1),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["t1".to_string()],
+                outcome: TaskOutcome::Done,
+                summary: None,
+                turn_id: Some("turn-aaa".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let activity = get_task_activity_by_turn(&graph, "turn-aaa");
+        // Started and closed in the same turn
+        assert_eq!(activity.started.len(), 1);
+        assert_eq!(activity.closed.len(), 1);
+        assert_eq!(activity.closed[0].id, "t1");
+    }
+
+    #[test]
+    fn test_activity_stopped_tasks() {
+        let events = vec![
+            make_created_event("t1", "Task 1", TaskPriority::P2, 1),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-aaa".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Stopped {
+                task_ids: vec!["t1".to_string()],
+                reason: Some("blocked".to_string()),
+                turn_id: Some("turn-bbb".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let activity = get_task_activity_by_turn(&graph, "turn-bbb");
+        assert_eq!(activity.stopped.len(), 1);
+        assert_eq!(activity.stopped[0].id, "t1");
+        assert!(activity.started.is_empty()); // t1 was started in turn-aaa, not turn-bbb
+    }
+
+    #[test]
+    fn test_activity_multiple_tasks_same_turn() {
+        let events = vec![
+            make_created_event("t1", "Task 1", TaskPriority::P2, 1),
+            make_created_event("t2", "Task 2", TaskPriority::P1, 1),
+            make_created_event("t3", "Task 3", TaskPriority::P0, 1),
+            TaskEvent::Started {
+                task_ids: vec!["t1".to_string()],
+                agent_type: "claude-code".to_string(),
+                session_id: None,
+                turn_id: Some("turn-x".to_string()),
+                timestamp: Utc::now(),
+                stopped: vec![],
+            },
+            TaskEvent::Closed {
+                task_ids: vec!["t2".to_string()],
+                outcome: TaskOutcome::Done,
+                summary: None,
+                turn_id: Some("turn-x".to_string()),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::Stopped {
+                task_ids: vec!["t3".to_string()],
+                reason: None,
+                turn_id: Some("turn-x".to_string()),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = make_graph(&events);
+        let activity = get_task_activity_by_turn(&graph, "turn-x");
+        assert_eq!(activity.started.len(), 1);
+        assert_eq!(activity.closed.len(), 1);
+        assert_eq!(activity.stopped.len(), 1);
+        assert!(!activity.is_empty());
     }
 }

@@ -471,6 +471,7 @@ fn cleanup_stale_builds(cwd: &Path, spec_path: &str) -> Result<()> {
             task_ids: vec![build_id.clone()],
             outcome: TaskOutcome::WontDo,
             summary: Some("Stale build cleaned up".to_string()),
+            turn_id: None,
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &close_event)?;
@@ -530,6 +531,7 @@ fn close_plan(cwd: &Path, plan_id: &str) -> Result<()> {
         task_ids: vec![plan_id.to_string()],
         outcome: TaskOutcome::WontDo,
         summary: Some("Closed by --restart".to_string()),
+        turn_id: None,
         timestamp,
     };
     write_event(cwd, &close_event)?;
@@ -802,6 +804,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         }
     }

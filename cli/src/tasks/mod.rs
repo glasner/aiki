@@ -20,13 +20,13 @@ pub mod types;
 pub mod md;
 
 pub use graph::{materialize_graph, materialize_graph_with_ids, EdgeStore, LinkKind, TaskGraph, LINK_KINDS};
-pub use id::{generate_child_id, generate_task_id, get_next_subtask_number, is_task_id, is_task_id_prefix};
+pub use id::{generate_task_id, is_task_id, is_task_id_prefix};
 #[allow(unused_imports)]
 pub use manager::{
     all_subtasks_closed, find_task, get_subtasks, get_current_scope_set,
     get_in_progress, get_ready_queue, get_ready_queue_for_agent, get_ready_queue_for_agent_scoped,
     get_ready_queue_for_human, get_ready_queue_for_scope_set, get_scoped_ready_queue,
-    get_unclosed_subtasks, has_subtasks,
+    get_task_activity_by_turn, get_unclosed_subtasks, has_subtasks,
     resolve_task_id, ScopeSet,
 };
 #[allow(unused_imports)]
@@ -34,12 +34,23 @@ pub use runner::{run_task_async_with_output, task_run_async, terminate_backgroun
 #[allow(unused_imports)]
 pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_link_event, EventWithId};
 #[allow(unused_imports)]
-pub use types::{Task, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus};
+pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskReference, TaskStatus};
 pub use md::MdBuilder;
 
 use crate::error::{AikiError, Result};
 use crate::events::{AikiEvent, AikiTaskStartedPayload, TaskEventPayload};
 use crate::session::find_active_session;
+
+/// Get the current turn ID for the active session, if available.
+///
+/// Returns `None` when running outside a session (e.g., from a terminal)
+/// or if the session/turn lookup fails.
+pub fn current_turn_id(session_id: Option<&str>) -> Option<String> {
+    let sid = session_id?;
+    let (turn_number, _) =
+        crate::history::get_current_turn_info(&crate::global::global_aiki_dir(), sid).ok()?;
+    Some(crate::session::turn_state::generate_turn_id(sid, turn_number))
+}
 
 /// Result of starting tasks via `start_task_core`
 #[derive(Debug, Clone)]
@@ -130,12 +141,16 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         .filter_map(|id| find_task(&tasks, id).ok().cloned())
         .collect();
 
+    // Query current turn ID from session
+    let turn_id = current_turn_id(our_session_id.as_deref());
+
     // Auto-stop current in-progress tasks
     if !current_in_progress_ids.is_empty() {
         let stop_reason = format!("Started {}", task_ids.join(", "));
         let stop_event = TaskEvent::Stopped {
             task_ids: current_in_progress_ids.clone(),
             reason: Some(stop_reason),
+            turn_id: turn_id.clone(),
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &stop_event)?;
@@ -154,6 +169,7 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         task_ids: task_ids.to_vec(),
         agent_type: agent_type_str,
         session_id,
+        turn_id,
         timestamp,
         stopped: current_in_progress_ids,
     };

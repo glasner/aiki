@@ -7,6 +7,7 @@
 //! - If comments found: creates followup task (agent creates subtasks from comments)
 //! - Runs the followup task (default: completion, --async: async, --start: hand off)
 
+use std::collections::HashMap;
 use std::env;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
@@ -139,24 +140,15 @@ fn run_fix(
         ReviewScopeKind::Task => {
             // Fix targets a task — add fix subtask to the original task
             let original_task = find_task(&tasks, &scope.id)?;
-
-            // Determine assignee for followup task
             let assignee = determine_followup_assignee(agent_type, Some(original_task));
-
-            // Create fix subtask on the original task
             let template = template_name.as_deref().unwrap_or("aiki/fix");
-            create_fix_subtask_on_original(
-                cwd,
-                review_task,
-                original_task,
-                &assignee,
-                template,
-            )?
+            create_fix_task(cwd, review_task, &scope, Some(original_task), &assignee, template)?
         }
         ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
-            return Err(AikiError::InvalidArgument(
-                "Fixing file-targeted reviews is not yet supported. Only task-targeted reviews can be fixed.".to_string(),
-            ));
+            // Fix targets a file — create standalone fix task (no parent)
+            let assignee = determine_followup_assignee(agent_type, None);
+            let template = template_name.as_deref().unwrap_or("aiki/fix");
+            create_fix_task(cwd, review_task, &scope, None, &assignee, template)?
         }
         ReviewScopeKind::Session => {
             return Err(AikiError::InvalidArgument(
@@ -181,12 +173,12 @@ fn run_fix(
         }
         // Start task using core logic (validates, auto-stops, emits events)
         start_task_core(cwd, &[followup_id.clone()])?;
-        output_followup_started(&followup_id, review_task, &comments, &in_progress, &ready)?;
+        output_followup_started(&followup_id, &scope, &comments, &in_progress, &ready)?;
     } else if run_async {
         // Run async and return immediately
         let options = TaskRunOptions::new();
         task_run_async(cwd, &followup_id, options)?;
-        output_followup_async(&followup_id, &comments)?;
+        output_followup_async(&followup_id, &scope, &comments)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", followup_id);
@@ -195,7 +187,7 @@ fn run_fix(
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &followup_id, options)?;
-        output_followup_completed(&followup_id, &comments)?;
+        output_followup_completed(&followup_id, &scope, &comments)?;
         // Output task ID to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!("{}", followup_id);
@@ -207,41 +199,48 @@ fn run_fix(
 
 /// Output approved message when no issues found
 fn output_approved(task_id: &str) -> Result<()> {
-    let content = format!(
-        "## Approved\n- **Task:** {}\n- Review approved - no issues found.\n",
-        task_id
-    );
+    use super::output::{CommandOutput, format_command_output};
+    let output = CommandOutput {
+        heading: "Approved",
+        task_id,
+        scope: None,
+        status: "Review approved - no issues found.",
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("fix").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
 }
 
+/// Describe the fix action based on scope
+fn fix_description(scope: &ReviewScope) -> String {
+    match scope.kind {
+        ReviewScopeKind::Task => "Created fix followup subtask under original task".to_string(),
+        _ => format!("Created standalone fix task for {}", scope.name()),
+    }
+}
+
 /// Output followup started message
 fn output_followup_started(
     followup_id: &str,
-    _source_task: &Task,
+    scope: &ReviewScope,
     comments: &[TaskComment],
     in_progress: &[&Task],
     ready: &[&Task],
 ) -> Result<()> {
-    let issue_count = comments.len();
-    let mut content = format!(
-        "## Fix Followup\n- **Task:** {}\n- **Issues found:** {}\n- **Status:** started\n\nCreated fix followup subtask under original task ({} issue(s)).\n\n",
-        followup_id,
-        issue_count,
-        issue_count
-    );
-
-    for (i, comment) in comments.iter().enumerate() {
-        // Truncate long comments for display
-        let display_text = if comment.text.len() > 60 {
-            format!("{}...", &comment.text[..57])
-        } else {
-            comment.text.clone()
-        };
-        content.push_str(&format!("{}. {}\n", i + 1, &display_text));
-    }
-
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("{} ({} issue(s)).", fix_description(scope), comments.len());
+    let output = CommandOutput {
+        heading: "Fix Followup",
+        task_id: followup_id,
+        scope: Some(scope),
+        status: &status,
+        issues: Some(comments),
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("fix").build(&content, in_progress, ready);
     eprintln!("{}", md);
 
@@ -254,26 +253,36 @@ fn output_followup_started(
 }
 
 /// Output followup async message (for --async mode)
-fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
-    let issue_count = comments.len();
-    let content = format!(
-        "## Fix Started\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask started in background.\n",
-        followup_id,
-        issue_count
-    );
+fn output_followup_async(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("{} in background.", fix_description(scope));
+    let output = CommandOutput {
+        heading: "Fix Started",
+        task_id: followup_id,
+        scope: Some(scope),
+        status: &status,
+        issues: Some(comments),
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("fix").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
 }
 
 /// Output followup completed message (for blocking mode)
-fn output_followup_completed(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
-    let issue_count = comments.len();
-    let content = format!(
-        "## Fix Completed\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask completed.\n",
-        followup_id,
-        issue_count
-    );
+fn output_followup_completed(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("{} completed.", fix_description(scope));
+    let output = CommandOutput {
+        heading: "Fix Completed",
+        task_id: followup_id,
+        scope: Some(scope),
+        status: &status,
+        issues: Some(comments),
+        hint: None,
+    };
+    let content = format_command_output(&output);
     let md = MdBuilder::new("fix").build(&content, &[], &[]);
     eprintln!("{}", md);
     Ok(())
@@ -319,38 +328,45 @@ fn determine_followup_assignee(agent_override: Option<AgentType>, reviewed_task:
     Some("claude-code".to_string())
 }
 
-/// Create a fix subtask on the original task (not a standalone task).
+/// Create a fix task, either as a subtask on the original task or standalone.
 ///
-/// The fix subtask is added as a child of the original task (e.g., X.1),
-/// with the review task as its source. The agent will create nested
-/// subtasks (X.1.1, X.1.2, etc.) for each issue found in the review.
+/// When `parent` is `Some`, the fix is added as a child of the original task
+/// (e.g., X.1) and the original task is reopened if closed.
+/// When `parent` is `None` (file-targeted reviews), a standalone task is created.
 ///
-/// If the original task is closed, this function reopens it before creating the subtask.
-fn create_fix_subtask_on_original(
+/// Scope data is always passed to the template so `{{data.scope.name}}` works for all scope kinds.
+fn create_fix_task(
     cwd: &Path,
     review_task: &Task,
-    original_task: &Task,
+    scope: &ReviewScope,
+    parent: Option<&Task>,
     assignee: &Option<String>,
     template_name: &str,
 ) -> Result<String> {
     use super::task::{create_from_template, TemplateTaskParams};
 
-    // Reopen the original task if closed before adding subtask
-    let events = read_events(cwd)?;
-    let current_tasks = materialize_graph(&events).tasks;
-    reopen_if_closed(cwd, &original_task.id, &current_tasks, "Subtasks added")?;
+    if let Some(p) = parent {
+        let events = read_events(cwd)?;
+        let current_tasks = materialize_graph(&events).tasks;
+        reopen_if_closed(cwd, &p.id, &current_tasks, "Subtasks added")?;
+    }
 
-    let mut source_data = std::collections::HashMap::new();
+    // Pass scope data to both `data` (persisted on task, {{data.scope.*}}) and
+    // `source_data` (review task metadata, {{source.*}})
+    let scope_data = scope.to_data();
+
+    let mut source_data = HashMap::new();
     source_data.insert("name".to_string(), review_task.name.clone());
     source_data.insert("id".to_string(), review_task.id.clone());
 
     let params = TemplateTaskParams {
         template_name: template_name.to_string(),
+        data: scope_data,
         sources: vec![format!("task:{}", review_task.id)],
         assignee: assignee.clone(),
-        priority: Some(original_task.priority),
-        parent_id: Some(original_task.id.clone()),
-        parent_name: Some(original_task.name.clone()),
+        priority: parent.map(|p| p.priority),
+        parent_id: parent.map(|p| p.id.clone()),
+        parent_name: parent.map(|p| p.name.clone()),
         source_data,
         ..Default::default()
     };
@@ -400,6 +416,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         };
 
@@ -430,6 +449,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         };
 
@@ -465,6 +487,9 @@ mod tests {
             stopped_reason: None,
             closed_outcome: None,
             summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
             comments: Vec::new(),
         }
     }
@@ -506,5 +531,46 @@ mod tests {
     fn test_is_review_task_neither() {
         let task = make_test_task("t3");
         assert!(!is_review_task(&task));
+    }
+
+    // fix_description tests
+
+    #[test]
+    fn test_fix_description_task_scope() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: "abc123".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(
+            fix_description(&scope),
+            "Created fix followup subtask under original task"
+        );
+    }
+
+    #[test]
+    fn test_fix_description_spec_scope() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Spec,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(
+            fix_description(&scope),
+            "Created standalone fix task for Spec (feature.md)"
+        );
+    }
+
+    #[test]
+    fn test_fix_description_implementation_scope() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Implementation,
+            id: "ops/now/feature.md".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(
+            fix_description(&scope),
+            "Created standalone fix task for Implementation (feature.md)"
+        );
     }
 }

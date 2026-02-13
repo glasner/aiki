@@ -4,7 +4,7 @@ version: 1.0.0
 
 # Followup: Review {{source.id}}
 
-Review task `{{source.id}}` found issues in the original task `{{parent.id}}`.
+Review task `{{source.id}}` found issues in **{{data.scope.name}}**.
 
 ## Instructions
 

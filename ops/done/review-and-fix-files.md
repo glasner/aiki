@@ -1,7 +1,7 @@
 # Review and Fix Non-Task Targets
 
 **Date**: 2026-02-06
-**Status**: Idea
+**Status**: Done
 **Priority**: P3
 **Depends on**: `ops/done/fix-original-task.md`, `ops/done/review-scope-refactor.md`, `ops/now/task-summary.md`
 
@@ -246,11 +246,11 @@ When the template engine encounters `{% subtask aiki/review/{{data.scope.kind}} 
 For `aiki review ops/now/feature.md` (spec document), where `aiki/review/spec` has a subtask "Understand the plan described in spec":
 
 ```
-Review: Spec (feature.md)                        (parent)
-├── Review all subtasks and start first batch     (.0, auto-created)
-├── Understand the plan described in spec          (.1, from {% subtask aiki/review/spec %})
-├── Review                                         (.2, leave comments on parent for findings)
-└── Fix Loop                                       (.3, conditional: only if data.options.fix)
+Review: Spec (feature.md)                        (parent, full 32-char ID)
+├── Review all subtasks and start first batch     (auto-created planning subtask, linked via subtask-of)
+├── Understand the plan described in spec          (from {% subtask aiki/review/spec %}, linked via subtask-of)
+├── Review                                         (leave comments on parent for findings, linked via subtask-of)
+└── Fix Loop                                       (conditional: only if data.options.fix, linked via subtask-of)
 ```
 
 **Variable Inheritance:**

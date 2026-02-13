@@ -203,6 +203,7 @@ fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
         ),
         response: payload.last_assistant_message.unwrap_or_default(),
         modified_files: vec![], // Files come from JJ
+        tasks: Default::default(), // Populated by handle_turn_completed
     });
     if let Err(e) = event_bus::dispatch(turn_completed) {
         debug_log(|| format!("Failed to dispatch turn.completed for Codex: {}", e));

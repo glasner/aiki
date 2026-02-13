@@ -23,6 +23,9 @@ pub struct AikiTurnCompletedPayload {
     /// Files modified during this turn
     #[serde(default)]
     pub modified_files: Vec<PathBuf>,
+    /// Task activity during this turn (started, stopped, closed)
+    #[serde(default)]
+    pub tasks: crate::tasks::TaskActivity,
 }
 
 /// Handle turn.completed event
@@ -63,6 +66,18 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
         generate_turn_id(payload.session.uuid(), turn_number),
         source.to_string(),
     );
+
+    // Populate task activity for this turn
+    payload.tasks = match crate::tasks::storage::read_events(&payload.cwd) {
+        Ok(events) => {
+            let graph = crate::tasks::graph::materialize_graph(&events);
+            crate::tasks::manager::get_task_activity_by_turn(&graph, &payload.turn.id)
+        }
+        Err(e) => {
+            debug_log(|| format!("Task activity lookup failed, using empty: {}", e));
+            crate::tasks::TaskActivity::default()
+        }
+    };
 
     debug_log(|| {
         format!(

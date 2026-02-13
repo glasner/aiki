@@ -16,7 +16,6 @@ use crossterm::{
 };
 
 use super::graph::{materialize_graph, TaskGraph};
-use super::id::get_child_number;
 use super::storage::read_events;
 use super::types::{Task, TaskStatus};
 use crate::agents::MonitoredChild;
@@ -263,8 +262,7 @@ impl StatusMonitor {
             let prefix = if is_last { "└─ " } else { "├─ " };
             let child_prefix = if is_last { "   " } else { "│  " };
 
-            let child_number = get_child_number(&subtask.id);
-            let task_line = self.format_task_line(subtask, prefix, child_number);
+            let task_line = self.format_task_line(subtask, prefix, Some(idx));
             lines.push(task_line);
 
             // Show summary for closed tasks, latest comment for in-progress
@@ -312,8 +310,7 @@ impl StatusMonitor {
                     let prefix = if is_last { "└─ " } else { "├─ " };
                     let child_prefix = if is_last { "   " } else { "│  " };
 
-                    let child_number = get_child_number(&subtask.id);
-                    let task_line = self.format_task_line(subtask, prefix, child_number);
+                    let task_line = self.format_task_line(subtask, prefix, Some(idx));
                     lines.push(task_line);
 
                     let display_text = if subtask.status == TaskStatus::Closed {
@@ -391,10 +388,10 @@ impl StatusMonitor {
         }
     }
 
-    /// Get sorted subtasks for a parent task
+    /// Get sorted subtasks for a parent task (sorted by creation time)
     fn get_sorted_subtasks<'a>(&self, graph: &'a TaskGraph, parent_id: &str) -> Vec<&'a Task> {
         let mut subtasks = graph.children_of(parent_id);
-        subtasks.sort_by_key(|t| get_child_number(&t.id));
+        subtasks.sort_by_key(|t| t.created_at);
         subtasks
     }
 

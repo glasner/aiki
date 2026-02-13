@@ -215,14 +215,19 @@ before:
 
 ### Execution Model
 
-For a given event, the engine runs:
+For a given event, the composer walks three phase lists. Each list may contain multiple **blocks** (from includes + the hookfile's own). Each block is atomic — its includes run, then its inline handlers, before moving to the next block.
 
 ```
-1. before.include plugins (in order)   ← plugins for all events in before phase
-2. before's inline handlers for event  ← event-specific handlers (including hook: actions)
-3. Own handlers for event              ← the hookfile's own event handlers
-4. after.include plugins (in order)    ← plugins for all events in after phase
-5. after's inline handlers for event   ← event-specific handlers (including hook: actions)
+1. Walk before blocks in order. For each block:
+   a. Run include plugins (compose recursively)
+   b. Run inline handlers for event
+      (composer handles hook: actions; self.* set to block's source hook)
+2. Walk own handler segments in order:
+   For each segment, set self.* to segment's source hook, then execute statements
+3. Walk after blocks in order. For each block:
+   a. Run include plugins (compose recursively)
+   b. Run inline handlers for event
+      (composer handles hook: actions; self.* set to block's source hook)
 ```
 
 ---
@@ -233,28 +238,30 @@ For a given event, the engine runs:
 
 `include:` has two uses depending on context:
 
-**Top-level `include:`** — structural expansion. `include: foo` means: **take foo's composition configuration and merge it into mine.**
+**Top-level `include:`** — structural composition. `include: foo` means: **prepend foo's composition blocks and handler segments before mine, preserving provenance boundaries.**
 
 Concretely, when a hookfile includes a plugin:
 
-1. The plugin's `before:` block is prepended to the hookfile's `before:` block
-2. The plugin's `after:` block is prepended to the hookfile's `after:` block
-3. The plugin's own event handlers are prepended to the hookfile's handlers (plugin's run first)
+1. The plugin's `before:` blocks are prepended to the hookfile's before block list (as separate blocks, not merged)
+2. The plugin's `after:` blocks are prepended to the hookfile's after block list (as separate blocks, not merged)
+3. The plugin's own handler segments are prepended to the hookfile's handler segment list (as a separate segment, not concatenated)
 4. The plugin's `include:` list is expanded recursively (transitive)
 
 ```
 Effective hookfile after include expansion:
 
-  before   = [include.before, self.before]       ← blocks merged
-  handlers = [include.handlers, self.handlers]   ← lists concatenated
-  after    = [include.after, self.after]          ← blocks merged
+  before   = [...include.before_blocks, self.before_block]   ← blocks sequenced
+  handlers = [...include.handler_segments, self.handlers]    ← segments sequenced
+  after    = [...include.after_blocks, self.after_block]     ← blocks sequenced
 ```
 
-Includes are the "inherited" base configuration. Explicit `before:`/`after:` are customizations on top.
+Each block and segment retains its source hook identity for correct `self.*` resolution. Blocks are not merged — they execute in sequence, each as an atomic unit (includes first, then inline handlers).
+
+Includes are the "inherited" base configuration. Explicits customize.
 
 **`include:` inside `before:`/`after:`** — run these plugins for all events in this phase. The plugins are loaded and composed recursively (their before → own → after all execute in the enclosing phase).
 
-The context disambiguates: top-level `include:` expands structure, nested `include:` inside a composition block runs plugins in that phase.
+The context disambiguates: top-level `include:` composes structure, nested `include:` inside a composition block runs plugins in that phase.
 
 ### Full Example
 
@@ -292,51 +299,46 @@ turn.started:
   - context: "My custom context"
 ```
 
-**Effective hookfile after include expansion:**
+**Effective hookfile after include expansion (block lists, not merged YAML):**
 
-```yaml
-before:
-  # From include (aiki/default's before block):
-  turn.started:
-    - context: "Aiki project context"
-  # User's explicit:
-  include:
-    - myorg/pre-check
-  turn.started:
-    - hook: myorg/special-check
+```
+before_blocks = [
+  # Block 0 — from include (aiki/default's before block):
+  { source: "aiki/default", include: [], turn.started: [context: "Aiki project context"] },
+  # Block 1 — hookfile's own before block:
+  { source: "hooks", include: [myorg/pre-check], turn.started: [hook: myorg/special-check] },
+]
 
-session.started:
-  # From include (aiki/default's own handlers, run first):
-  - log: "Aiki Way enabled"
+handler_segments = [
+  # Segment 0 — from include (aiki/default's own handlers):
+  { source: "aiki/default", session.started: [log: "Aiki Way enabled"] },
+  # Segment 1 — hookfile's own handlers:
+  { source: "hooks", turn.started: [context: "My custom context"] },
+]
 
-turn.started:
-  # User's own handler:
-  - context: "My custom context"
-
-after:
-  # From include (aiki/default's after block):
-  turn.completed:
-    - if: $event.turn.tasks.completed
-      then:
-        - autoreply: "aiki review --fix --start"
+after_blocks = [
+  # Block 0 — from include (aiki/default's after block):
+  { source: "aiki/default", turn.completed: [if: $event.turn.tasks.completed, then: [autoreply: "aiki review..."]] },
+  # Block 1 — hookfile's own after block (empty):
+]
 ```
 
 **Execution order for `turn.started`:**
 
 ```
-1. context: "Aiki project context"  (include's before — inline handler)
-2. myorg/pre-check                  (before's include — plugin, all events)
-3. hook: myorg/special-check        (before's inline — hook action)
-4. context: "My custom context"     (own handler)
+1. context: "Aiki project context"  (before_blocks[0] inline — from aiki/default)
+2. myorg/pre-check                  (before_blocks[1] include — from hooks)
+3. hook: myorg/special-check        (before_blocks[1] inline — from hooks)
+4. context: "My custom context"     (handler_segments[1] — from hooks)
 5. (after has no turn.started)
 ```
 
 **Execution order for `turn.completed`:**
 
 ```
-1. (before has no turn.completed)
-2. (no own handlers)
-3. autoreply: "aiki review..."      (include's after — inline handler)
+1. (before blocks have no turn.completed)
+2. (no handler segments for turn.completed)
+3. autoreply: "aiki review..."      (after_blocks[0] inline — from aiki/default)
 ```
 
 Context injection runs before the user's handlers. Review loop runs after. One `include:` reference, one plugin file.
@@ -347,29 +349,38 @@ Context injection runs before the user's handlers. Review loop runs after. One `
 
 ### Full Execution Order
 
-For a given event, the engine processes phases in this order:
+For a given event, the composer processes three phase lists in order. Each list may contain multiple blocks/segments (from includes + the hookfile's own). Each block is atomic:
 
 ```
-1. before.include plugins (in order)   ← plugins for all events
-2. before's inline handlers for event  ← event-specific handlers (including hook: actions)
-3. Own handlers for event              ← the hookfile's event handlers
-4. after.include plugins (in order)    ← plugins for all events
-5. after's inline handlers for event   ← event-specific handlers (including hook: actions)
+1. Walk before blocks [include_1.before, include_2.before, ..., self.before]:
+   For each block:
+     a. Run block.include plugins (compose recursively)
+     b. Run block's inline handlers for event
+        (composer intercepts hook: actions; self.* set to block's source hook)
+2. Walk own handler segments [include_1.handlers, include_2.handlers, ..., self.handlers]:
+   For each segment:
+     a. Set self.* to segment's source hook
+     b. Execute statements (engine handles actions, composer intercepts hook:)
+3. Walk after blocks [include_1.after, include_2.after, ..., self.after]:
+   For each block:
+     a. Run block.include plugins (compose recursively)
+     b. Run block's inline handlers for event
+        (composer intercepts hook: actions; self.* set to block's source hook)
 ```
 
-With top-level `include:` expansion, the included plugin's blocks are prepended to the corresponding blocks of the includer.
+With top-level `include:` expansion, the included plugin's blocks and segments are prepended to the hookfile's lists as separate entries (not merged into the hookfile's own block).
 
 ### Ordering Rules
 
-| Source | Before position | Handler position | After position |
-|--------|----------------|-----------------|---------------|
-| `include:` (first) | Prepended to before | Prepended to handlers | Prepended to after |
-| `include:` (second) | After first include | After first include | After first include |
-| Explicit `before:` | After all includes | — | — |
-| Own handlers | — | After all includes | — |
-| Explicit `after:` | — | — | After all includes |
+| Source | Before list | Handler list | After list |
+|--------|------------|-------------|-----------|
+| `include:` (first) | Block prepended | Segment prepended | Block prepended |
+| `include:` (second) | Block after first | Segment after first | Block after first |
+| Explicit `before:` | Last block | — | — |
+| Own handlers | — | Last segment | — |
+| Explicit `after:` | — | — | Last block |
 
-**Mnemonic**: Includes set the base. Explicits customize.
+**Mnemonic**: Includes set the base. Explicits customize. Blocks never merge across provenance boundaries.
 
 ### Multiple Includes
 
@@ -379,29 +390,27 @@ include:
   - myorg/standard    # before has session.started logging, after has turn.completed notify
 ```
 
-Expansion (includes stack in declaration order):
+Expansion (includes stack in declaration order — blocks prepended, not merged):
 
-```yaml
-before:
-  # aiki/default's before block first
-  turn.started:
-    - context: "Aiki project context"
-  # then myorg/standard's before block
-  session.started:
-    - log: "Standard logging enabled"
+```
+before_blocks = [
+  # aiki/default's before block (first include)
+  { source: "aiki/default", turn.started: [context: "Aiki project context"] },
+  # myorg/standard's before block (second include)
+  { source: "myorg/standard", session.started: [log: "Standard logging enabled"] },
+  # hookfile's own before block (if any)
+]
 
-after:
-  # aiki/default's after block first
-  turn.completed:
-    - if: $event.turn.tasks.completed
-      then:
-        - autoreply: "aiki review --fix --start"
-  # then myorg/standard's after block
-  turn.completed:
-    - shell: "notify-send 'Turn completed'"
+after_blocks = [
+  # aiki/default's after block (first include)
+  { source: "aiki/default", turn.completed: [if: ..., then: [autoreply: "aiki review..."]] },
+  # myorg/standard's after block (second include)
+  { source: "myorg/standard", turn.completed: [shell: "notify-send 'Turn completed'"] },
+  # hookfile's own after block (if any)
+]
 ```
 
-When both includes contribute handlers for the same event in the same phase, they concatenate in include order.
+When both includes contribute handlers for the same event in the same phase, they execute in include order — each in its own block with its own `self.*` context.
 
 ### Transitive Includes
 
@@ -451,7 +460,7 @@ after:
 
 ### Cycle Detection
 
-Include expansion uses the existing cycle detection in `HookComposer`. Circular includes produce `AikiError::CircularHookDependency`:
+Include expansion and `hook:` invocation both use the existing cycle detection in `HookComposer`'s call stack. Circular includes or `hook:` references produce `AikiError::CircularHookDependency`:
 
 ```yaml
 # INVALID: circular include
@@ -508,20 +517,20 @@ session.started:
   2. log: "User session started"   (own)
 ```
 
-### Handler Merging (Before/After Inline)
+### Before/After Block Ordering
 
-When merging composition blocks (e.g., two includes both contribute `before:` blocks with handlers for the same event), handlers for the same event concatenate:
+Composition blocks from different sources are **never merged**. They remain as separate entries in the before/after block list. Each block executes atomically (its includes, then its inline handlers) before the next block begins:
 
-```yaml
-# After expanding two includes, before block has:
-before:
-  turn.started:
-    - context: "From first include"      # Runs first
-  turn.started:
-    - context: "From second include"     # Runs second
+```
+# After expanding two includes, before block list is:
+before_blocks = [
+  CompositionBlock { source: "first-include", turn.started: [context: "From first include"] },
+  CompositionBlock { source: "second-include", turn.started: [context: "From second include"] },
+  CompositionBlock { source: "self", ... },   # hookfile's own before block
+]
 ```
 
-In practice, the engine collects all before-phase handlers for the current event and runs them in order.
+The composer walks the list in order. For `turn.started`, block 0 runs its includes then `context: "From first include"`, then block 1 runs its includes then `context: "From second include"`, etc. Each block's inline handlers have `self.*` set to the block's source hook.
 
 ### `hook:` Action Semantics
 
@@ -535,9 +544,33 @@ turn.started:
 
 If `aiki/context-inject` has no `turn.started` handler, the `hook:` action is a no-op.
 
-`hook:` loads the referenced plugin via `HookLoader` (cycle detection applies), finds the plugin's handlers for the current event type, and executes them inline. The plugin's `before:`/`after:` blocks are **not** executed — only its handlers for the current event.
+`hook:` is handled by the **composer** (not the engine), because it requires the composer's `HookLoader` and call stack for cycle detection. When the composer encounters a `hook:` statement while walking inline handlers:
 
-This makes `hook:` a surgical invocation: "run this plugin's handler for this event, right here."
+1. Load the referenced plugin via `HookLoader`
+2. Push the plugin onto the composer's call stack (cycle detection)
+3. Save current `state.hook_name` and variables, clear variables, set `hook_name` to the target plugin's identity
+4. Get the plugin's own handlers for the current event type
+5. Execute those handlers via the **composer** (not the engine directly) so that any nested `hook:` actions inside the target plugin are intercepted and handled correctly. No before/after — just the own handlers.
+6. Restore caller's `state.hook_name` and variables (**unconditionally**, even on error — see Error Safety below)
+7. Pop from call stack
+
+The plugin's `before:`/`after:` blocks are **not** executed — only its own handlers for the current event.
+
+**State isolation policy:** `hook:` isolates some `AikiState` fields and intentionally shares others. The full policy:
+
+| Field | Behavior | Rationale |
+|-------|----------|-----------|
+| `let_vars` | **Isolated** — cleared before target, restored after | Variables are scoping artifacts. Leaking them would break caller's variable resolution. |
+| `variable_metadata` | **Isolated** — cleared with `let_vars` via `clear_variables()` | Metadata follows its variables. |
+| `hook_name` | **Isolated** — saved/restored around invocation | `self.*` must resolve to the target plugin during execution, then revert. |
+| `context_assembler` | **Shared** — target's `context:` actions contribute to the caller's assembled prompt | This is the point: `hook: aiki/context-inject` exists to add context to the caller's prompt/autoreply. Isolating it would make `hook:` useless for context injection. |
+| `failures` | **Shared** — target's failures accumulate into the caller's failure list | A failure inside a `hook:` target is a real failure of the overall execution. Isolating would silently swallow errors. |
+| `pending_session_ends` | **Shared** — target can register PIDs for deferred termination | These are global side-effects executed once after all hooks complete. Isolating would lose termination requests. |
+| `event` | **Shared** (immutable) — the triggering event is read-only, never modified | No isolation needed. |
+
+**Nested `hook:` actions:** Because `hook:` executes the target plugin's handlers through `execute_statements_with_hooks` (not `HookEngine` directly), any `hook:` actions inside the target plugin's handlers are intercepted and handled correctly. This enables arbitrary nesting: plugin A can `hook:` plugin B, which can `hook:` plugin C, with cycle detection at every level.
+
+**Error safety:** State cleanup (restore variables, restore `hook_name`, pop call stack) is **unconditional** — it runs even when the target plugin's handlers return an error. This prevents leaked call stack entries, stale `state.hook_name`, and variable drift after failures. The same unconditional cleanup applies to `execute_composition_block`'s `hook_name` save/restore.
 
 ---
 
@@ -546,15 +579,15 @@ This makes `hook:` a surgical invocation: "run this plugin's handler for this ev
 - **Not `before:`** — `before:` scopes execution to the before phase. Include at the top level expands the plugin's composition into your own.
 - **Not `after:`** — Same distinction. `after:` scopes to the after phase.
 - **Not handler overriding** — Include merges handlers, it doesn't replace them. There's no way for an included plugin to suppress the includer's handlers.
-- **Not middleware** — There's no "next()" or "yield" concept. Include is pure expansion — the plugin's structure is flattened into the hookfile at load time.
+- **Not middleware** — There's no "next()" or "yield" concept. Include is structural composition — the plugin's blocks and handler segments are prepended to the hookfile's lists at load time, preserving provenance boundaries for correct `self.*` resolution.
 
 ---
 
 ## Implementation
 
-### Phase 1: Type Changes — Composition Blocks + `hook:` Action
+### Phase 1: Type Changes — Composition Blocks, Handler Segments, `hook:` Action
 
-Change `before:` and `after:` from `Vec<String>` to a composition block struct. Add `hook:` as a new `HookStatement` variant.
+Change `before:` and `after:` from `Vec<String>` to `Vec<CompositionBlock>`. Add `HandlerSegment` for own handlers with provenance. Add `hook:` as a new `HookStatement` variant.
 
 **File:** `cli/src/flows/types.rs`
 
@@ -562,8 +595,14 @@ Change `before:` and `after:` from `Vec<String>` to a composition block struct. 
 /// A composition block used in before/after positions.
 /// Always a mapping with optional `include:` (plugins for all events)
 /// and event-specific inline handler lists.
+/// Each block retains its source hook identity for self.* resolution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompositionBlock {
+    /// The hook identity this block came from (for self.* resolution in inline handlers).
+    /// Set during include expansion; None for the hookfile's own block (resolved at execution time).
+    #[serde(skip)]
+    pub source_hook: Option<String>,
+
     /// Plugin references to run for all events in this phase
     #[serde(default)]
     pub include: Vec<String>,
@@ -581,11 +620,29 @@ pub struct CompositionBlock {
     // ... etc
 }
 
+/// A segment of own handlers tagged with their source hook identity.
+/// Preserves self.* context when handlers from different plugins are
+/// sequenced together via top-level include expansion.
+///
+/// Stores the full Hook so that the correct event's handlers can be
+/// selected at execution time (via event_type.get_statements()).
+/// This avoids the need for a get_all_statements() method that would
+/// conflate "all events" with "current event."
+#[derive(Debug, Clone)]
+pub struct HandlerSegment {
+    /// The hook identity for self.* resolution
+    pub source_hook: String,
+    /// The included hook (handlers selected per-event at execution time)
+    pub hook: Hook,
+}
+
 /// Add to the HookStatement enum:
 pub enum HookStatement {
     // ...existing variants...
 
-    /// Invoke another plugin's handler for the current event
+    /// Invoke another plugin's handler for the current event.
+    /// Handled by the composer (not the engine) because it requires
+    /// the composer's HookLoader and call stack for cycle detection.
     Hook { hook: String },
 }
 
@@ -593,81 +650,191 @@ pub struct Hook {
     pub name: String,
     // ...existing fields...
 
-    /// Plugins to include (expand their before/after/handlers into this hook)
+    /// Plugins to include (expand their blocks/segments into this hook's lists)
     #[serde(default)]
     pub include: Vec<String>,
 
-    /// Composition block: runs before this hook's own handlers
-    #[serde(default)]
-    pub before: Option<CompositionBlock>,
+    /// Composition block list: blocks run before this hook's own handlers.
+    /// Vec because include expansion prepends blocks without merging.
+    #[serde(default, deserialize_with = "deserialize_single_as_vec")]
+    pub before: Vec<CompositionBlock>,
 
-    /// Composition block: runs after this hook's own handlers
-    #[serde(default)]
-    pub after: Option<CompositionBlock>,
+    /// Composition block list: blocks run after this hook's own handlers.
+    /// Vec because include expansion prepends blocks without merging.
+    #[serde(default, deserialize_with = "deserialize_single_as_vec")]
+    pub after: Vec<CompositionBlock>,
 
-    // ...event handlers...
+    // ...event handlers (deserialized normally, wrapped into HandlerSegment at load time)...
 }
 ```
 
-No `#[serde(untagged)]` enum needed — `before:`/`after:` always deserialize as a `CompositionBlock` struct.
+**Deserialization note:** YAML hookfiles write `before:` as a single mapping (one `CompositionBlock`). The custom deserializer wraps it into a `Vec<CompositionBlock>` with one entry. Include expansion prepends additional blocks to the vec.
 
 > **Note:** `CompositionBlock` shares the same event handler fields as `Hook`. Consider extracting a shared `EventHandlers` trait or struct to avoid duplication. Alternatively, `CompositionBlock` could embed a `Hook` with metadata fields ignored.
 
-### Phase 2: `hook:` Action Execution in HookEngine
+### Phase 2: `hook:` Action Handling in HookComposer
 
-Add `hook:` handling to `HookEngine::execute_statement()`.
-
-**File:** `cli/src/flows/engine.rs`
-
-When the engine encounters a `Hook { hook: plugin_path }` statement:
-
-1. Load the referenced plugin via `HookLoader` (cycle detection applies)
-2. Get the plugin's handlers for the current event type
-3. Execute those handlers inline (no before/after — just the handlers)
-4. Return the outcome
-
-```rust
-HookStatement::Hook { hook: plugin_path } => {
-    let plugin = self.loader.load(plugin_path)?;
-    let statements = event_type.get_statements(&plugin);
-    if !statements.is_empty() {
-        let outcome = self.execute_statements(statements, state)?;
-        if outcome.should_stop() { return Ok(outcome); }
-    }
-    Ok(HookOutcome::Success)
-}
-```
-
-### Phase 3: Composition Block Execution in HookComposer
-
-Update `HookComposer::execute_composed_flow()` to handle `CompositionBlock`:
+`hook:` is a **composer-level concern**, not an engine concern. The engine remains stateless (no loader, no event_type, no call stack). The composer intercepts `Hook` statements while walking inline handlers and own handler segments.
 
 **File:** `cli/src/flows/composer.rs`
 
-When executing a hook's before/after:
-
-1. Run `include:` plugins — load each plugin, compose recursively (existing behavior).
-2. Run inline handlers — extract the inline handlers for the current event type, execute them via `HookEngine` (which handles `hook:` actions).
+Add a method that walks a statement list, delegating normal statements to the engine and handling `hook:` itself:
 
 ```rust
-fn execute_composition_block(
+/// Execute statements, intercepting hook: actions.
+/// Normal statements go to HookEngine. Hook statements are handled here
+/// because they require the loader, call stack, and event_type context.
+fn execute_statements_with_hooks(
     &mut self,
-    block: &CompositionBlock,
+    statements: &[HookStatement],
     event_type: EventType,
     state: &mut AikiState,
 ) -> Result<HookOutcome> {
-    // 1. Run included plugins for all events
+    for statement in statements {
+        let result = match statement {
+            HookStatement::Hook { hook: plugin_path } => {
+                self.execute_hook_action(plugin_path, event_type, state)?
+            }
+            other => {
+                // Delegate to engine (single statement)
+                HookEngine::execute_statements(std::slice::from_ref(other), state)?
+            }
+        };
+        match result {
+            HookOutcome::Success => {}
+            HookOutcome::FailedContinue => { /* track, continue */ }
+            HookOutcome::FailedStop | HookOutcome::FailedBlock => return Ok(result),
+        }
+    }
+    Ok(HookOutcome::Success)
+}
+
+/// Execute a hook: action — surgical invocation of a plugin's own handlers.
+/// Variable-isolated: the target plugin gets a clean variable scope,
+/// consistent with how composed flow boundaries clear variables.
+fn execute_hook_action(
+    &mut self,
+    plugin_path: &str,
+    event_type: EventType,
+    state: &mut AikiState,
+) -> Result<HookOutcome> {
+    // 1. Load plugin (HookLoader resolves path)
+    let (plugin, canonical_path) = self.loader.load(plugin_path)?;
+
+    // 2. Cycle detection (composer's call stack)
+    if self.call_stack.contains(&canonical_path) {
+        return Err(AikiError::CircularHookDependency { ... });
+    }
+    self.call_stack.push(canonical_path.clone());
+
+    // 3. Isolation: save/clear scoped fields, leave shared fields untouched.
+    //    Isolated: let_vars, variable_metadata (via clear_variables), hook_name.
+    //    Shared:   context_assembler, failures, pending_session_ends, event.
+    //    See "State isolation policy" table in the design doc for rationale.
+    let saved_hook_name = state.hook_name.take();
+    let saved_variables = state.save_variables();
+    state.clear_variables();
+    state.hook_name = Some(Self::extract_flow_identifier(&canonical_path));
+
+    // 4. Get plugin's own handlers for current event (no before/after).
+    //    Use execute_statements_with_hooks (not HookEngine directly) so that
+    //    any hook: actions inside the target plugin's handlers are intercepted.
+    let statements = event_type.get_statements(&plugin);
+    let result = if !statements.is_empty() {
+        self.execute_statements_with_hooks(statements, event_type, state)
+    } else {
+        Ok(HookOutcome::Success)
+    };
+
+    // 5. Restore caller's context and variables (unconditionally — even on error).
+    //    This prevents leaked call_stack entries and stale state after failures.
+    state.restore_variables(saved_variables);
+    state.hook_name = saved_hook_name;
+    self.call_stack.pop();
+
+    result
+}
+```
+
+### Phase 3: Composition Block List Execution in HookComposer
+
+Update `HookComposer::execute_composed_flow()` to walk `Vec<CompositionBlock>` and `Vec<HandlerSegment>`:
+
+**File:** `cli/src/flows/composer.rs`
+
+```rust
+fn execute_composed_flow(
+    &mut self,
+    hook: &Hook,
+    canonical_path: &Path,
+    event_type: EventType,
+    state: &mut AikiState,
+) -> Result<HookOutcome> {
+    // 1. Walk before blocks in order
+    for block in &hook.before {
+        let outcome = self.execute_composition_block(block, canonical_path, event_type, state)?;
+        if outcome.should_stop() { return Ok(outcome); }
+    }
+
+    // 2. Walk own handler segments in order
+    for segment in &hook.handler_segments {
+        // Select handlers for the current event only (not all events)
+        let statements = event_type.get_statements(&segment.hook);
+        if statements.is_empty() { continue; }
+
+        state.clear_variables();
+        state.hook_name = Some(segment.source_hook.clone());
+        let outcome = self.execute_statements_with_hooks(
+            statements, event_type, state
+        )?;
+        if outcome.should_stop() { return Ok(outcome); }
+    }
+
+    // 3. Walk after blocks in order
+    for block in &hook.after {
+        let outcome = self.execute_composition_block(block, canonical_path, event_type, state)?;
+        if outcome.should_stop() { return Ok(outcome); }
+    }
+
+    Ok(HookOutcome::Success)
+}
+
+/// Execute a single composition block: includes first, then inline handlers.
+fn execute_composition_block(
+    &mut self,
+    block: &CompositionBlock,
+    canonical_path: &Path,
+    event_type: EventType,
+    state: &mut AikiState,
+) -> Result<HookOutcome> {
+    // 1. Run included plugins for all events (compose recursively)
     for plugin_path in &block.include {
         let outcome = self.compose_hook(plugin_path, event_type, state)?;
         if outcome.should_stop() { return Ok(outcome); }
     }
-    // 2. Run inline handlers for this event type (hook: actions handled by engine)
+
+    // 2. Run inline handlers for this event type
     let statements = event_type.get_statements(block);
     if !statements.is_empty() {
-        let engine = HookEngine::new();
-        let outcome = engine.execute(statements, state)?;
+        // Variable isolation: clear variables before inline handlers, matching
+        // the clear_variables() done for handler segments. Without this, state
+        // from earlier blocks (or include plugins above) leaks into inline handlers.
+        state.clear_variables();
+
+        // Set self.* context for inline handlers (save/restore unconditionally)
+        let saved_hook_name = state.hook_name.take();
+        state.hook_name = block.source_hook.clone()
+            .or_else(|| Some(Self::extract_flow_identifier(canonical_path)));
+
+        let result = self.execute_statements_with_hooks(statements, event_type, state);
+
+        // Restore unconditionally — even on error — to prevent stale hook_name.
+        state.hook_name = saved_hook_name;
+
+        let outcome = result?;
         if outcome.should_stop() { return Ok(outcome); }
     }
+
     Ok(HookOutcome::Success)
 }
 ```
@@ -675,44 +842,74 @@ fn execute_composition_block(
 The execution order for a hook becomes:
 
 ```
-1. Execute before block (include plugins, then inline handlers for event)
-2. Execute own handlers for event
-3. Execute after block (include plugins, then inline handlers for event)
+1. Walk before blocks (each: include plugins → inline handlers for event)
+2. Walk own handler segments (each: set self.* → execute statements)
+3. Walk after blocks (each: include plugins → inline handlers for event)
 ```
 
 ### Phase 4: Include Expansion
 
-Add include expansion to `HookComposer::compose_hook()`.
+Add include expansion to `HookComposer::compose_hook()`. Expansion **prepends** blocks and segments — it never merges or flattens.
 
 **File:** `cli/src/flows/composer.rs`
 
 When a hook has a non-empty top-level `include:` list:
 
-1. For each included plugin (in order):
-   a. Load the included plugin via `HookLoader` (cycle detection applies)
-   b. Recursively expand any nested includes
-   c. Merge the included plugin's `before:` block into the current hook's `before:` block
-   d. Merge the included plugin's `after:` block into the current hook's `after:` block
-   e. Prepend the included plugin's own event handlers to the current hook's handlers
+1. For each included plugin (in **reverse** order, so the first-declared include ends up first in the list after prepending):
+   a. Load the included plugin via `HookLoader`
+   b. Push onto call stack (cycle detection via `HookComposer`, not `HookLoader`)
+   c. Recursively expand any nested includes
+   d. Prepend the included plugin's `before:` blocks to the current hook's `before:` list
+   e. Prepend the included plugin's `after:` blocks to the current hook's `after:` list
+   f. Prepend the included plugin's own handlers as a `HandlerSegment` to the current hook's segment list
+   g. Pop from call stack
 2. Execute the expanded hook normally
 
-**Merging composition blocks:**
+**Ordering invariant:** Reverse iteration ensures that `include: [a, b]` produces `[a.blocks, b.blocks, self.blocks]` — matching declaration order.
+
+**Prepending blocks (no merging):**
 
 ```rust
-/// Merge two CompositionBlocks. `source` is prepended to `target`.
-fn merge_blocks(target: &mut Option<CompositionBlock>, source: Option<CompositionBlock>) {
-    match (source, target.as_mut()) {
-        (None, _) => {} // Nothing to merge
-        (Some(src), None) => *target = Some(src),
-        (Some(src), Some(tgt)) => {
-            // Prepend source's include list
-            let mut merged_include = src.include;
-            merged_include.extend(tgt.include.drain(..));
-            tgt.include = merged_include;
-            // Prepend source's event handlers for each event type
-            tgt.prepend_handlers_from(&src);
-        }
+/// Expand top-level includes into the hook's block/segment lists.
+/// Processes includes in REVERSE order so that prepending preserves
+/// declaration order: include: [a, b] → [a.blocks, b.blocks, self.blocks].
+fn expand_includes(
+    hook: &mut Hook,
+    includes: &[(Hook, PathBuf)],  // already loaded in declaration order
+) {
+    for (included, included_canonical_path) in includes.iter().rev() {
+        Self::prepend_included(hook, included, included_canonical_path);
     }
+}
+
+fn prepend_included(
+    hook: &mut Hook,
+    included: &Hook,
+    included_canonical_path: &Path,
+) {
+    let source_hook = Self::extract_flow_identifier(included_canonical_path);
+
+    // Prepend before blocks (tag each with source)
+    let mut included_before = included.before.clone();
+    for block in &mut included_before {
+        block.source_hook.get_or_insert_with(|| source_hook.clone());
+    }
+    hook.before.splice(0..0, included_before);
+
+    // Prepend after blocks (tag each with source)
+    let mut included_after = included.after.clone();
+    for block in &mut included_after {
+        block.source_hook.get_or_insert_with(|| source_hook.clone());
+    }
+    hook.after.splice(0..0, included_after);
+
+    // Prepend own handlers as a HandlerSegment.
+    // Clone the included hook's per-event handler maps as-is;
+    // the segment is filtered to the current event at execution time.
+    hook.handler_segments.insert(0, HandlerSegment {
+        source_hook: source_hook.clone(),
+        hook: included.clone(),
+    });
 }
 ```
 
@@ -736,7 +933,7 @@ include:
 
 ### Phase 6: Tests
 
-Add tests in `cli/src/flows/composer.rs` and `cli/src/flows/engine.rs`:
+Add tests in `cli/src/flows/composer.rs`:
 
 **Composition Block tests:**
 1. **Include only** — `before: { include: [a, b] }` runs plugins in order for all events
@@ -744,21 +941,34 @@ Add tests in `cli/src/flows/composer.rs` and `cli/src/flows/engine.rs`:
 3. **Mixed** — `before: { include: [a], turn.started: [{ hook: b }] }` runs include plugins first, then inline handlers
 4. **Empty block** — No-op
 
-**`hook:` action tests:**
+**`hook:` action tests (in composer):**
 5. **Basic hook:** — Invokes plugin's handler for current event
 6. **hook: with no matching handler** — Plugin has no handler for event, no-op
 7. **hook: does not run before/after** — Only the plugin's own handlers execute
 8. **hook: interleaved** — `hook:` and inline actions execute in declaration order
 9. **hook: in own handlers** — Works outside composition blocks too
+10. **hook: cycle detection** — Circular `hook:` references produce `CircularHookDependency`
+11. **hook: self.* context** — `self.*` resolves against the target plugin during `hook:` execution, not the caller
 
 **Include tests:**
-10. **Basic include** — Include a plugin with inline before/after, verify execution order
-11. **Multiple includes** — First include's blocks come first
-12. **Transitive includes** — Plugin includes another plugin, verify full expansion
-13. **Include + explicit before/after** — Include contributions come first
-14. **Handler merging** — Same event in includer and included, verify concat order
-15. **Circular include** — Verify `CircularHookDependency` error
-16. **Include of plugin with no include field** — Backwards compatibility
+12. **Basic include** — Include a plugin with inline before/after, verify execution order
+13. **Multiple includes** — First include's blocks come first
+14. **Transitive includes** — Plugin includes another plugin, verify full expansion
+15. **Include + explicit before/after** — Include contributions come first
+16. **Handler segments** — Same event in includer and included, verify each runs with correct `self.*` context
+17. **Circular include** — Verify `CircularHookDependency` error
+18. **Include of plugin with no include field** — Backwards compatibility
+
+**`self.*` context tests:**
+19. **Inline handlers in before block** — `self.*` resolves to the block's source hook, not the hookfile
+20. **Included handler segments** — Each segment's `self.*` resolves to the included plugin, not the hookfile
+21. **hook: context switch** — `self.*` is saved/restored around `hook:` invocation
+22. **Multiple includes with self.*** — Each include's handlers resolve `self.*` independently
+
+**Variable isolation tests:**
+23. **hook: variable isolation** — Variables set by the target plugin do not leak back to the caller
+24. **hook: caller variables restored** — Caller's variables are fully restored after `hook:` returns
+25. **handler segment variable isolation** — Each segment starts with a clean variable scope (via `clear_variables()`)
 
 ---
 
@@ -766,10 +976,10 @@ Add tests in `cli/src/flows/composer.rs` and `cli/src/flows/engine.rs`:
 
 ### Existing `before:`/`after:` List Form
 
-The old list form for `before:`/`after:` is removed:
+The old list form for `before:`/`after:` is removed with no compatibility shim:
 
 ```yaml
-# Old (no longer supported)
+# Old (no longer supported — will fail to parse)
 before:
   - aiki/context-inject
   - myorg/pre-check
@@ -781,7 +991,7 @@ before:
     - myorg/pre-check
 ```
 
-This is a breaking change. Existing hookfiles using `before: [plugin-list]` must migrate to `before: { include: [plugin-list] }`.
+This is a clean break. Existing hookfiles using `before: [plugin-list]` must migrate to `before: { include: [plugin-list] }`. The migration is mechanical — wrap the list in an `include:` key. No compatibility parsing or deprecation warnings; the old form produces a deserialization error with a clear message.
 
 ### Existing `after: aiki/default` Pattern
 
@@ -841,11 +1051,13 @@ Users with `include: aiki/default` get both behaviors automatically.
 | Nested `include:` in before/after | Same keyword, different context | Top-level `include:` does structural expansion. Nested `include:` inside a composition block runs plugins in that phase. The context (top-level vs inside before/after) disambiguates naturally: "include this plugin" vs "in the before phase, include these plugins." |
 | Plugin invocation | `hook:` action | Domain-native keyword — these are hooks. Works as an action alongside `context:`, `shell:`, `if:`. Leaves `call:` free for future use (HTTP webhooks, reusable macros). Chosen over `use:` (too generic), `call:` (future collision risk), `run:` (conflicts with shell execution). |
 | `hook:` scope | Current event only, no before/after | Surgical invocation: "run this plugin's handler for this event." Running the plugin's full composition would be confusing and redundant with `include:`. |
-| Merge order | Includes prepend | Includes set the base/inherited configuration. Explicit before/after are customizations on top. Natural inheritance model. |
-| Handler merge | Concatenate (include first) | Consistent with how before-position plugins run before your handlers. Included handlers are "inherited" behavior. |
-| Own handlers | Included in merge | A plugin can contribute both composition (before/after) and direct handlers. No need for sub-plugins. |
+| `hook:` ownership | Composer, not engine | `hook:` requires the loader, call stack (cycle detection), and event_type — all composer state. The engine remains stateless. |
+| Block merging | Never — blocks stay separate | Flattening destroys provenance boundaries needed for `self.*` resolution. `Vec<CompositionBlock>` preserves ordering guarantees across include expansion. |
+| Handler segments | Tagged with source hook | Own handlers from includes become `HandlerSegment { source_hook, statements }`. Each segment sets `self.*` to its source hook before execution. |
+| Include expansion | Prepend blocks/segments, don't merge | Included plugin's before blocks prepend to the before list, after blocks prepend to the after list, own handlers become a HandlerSegment prepended to the handler list. Natural inheritance model. |
+| Own handlers | Included as segments | A plugin can contribute both composition (before/after) and direct handlers. No need for sub-plugins. |
 | Transitive | Yes | Plugins should be able to compose other plugins. Keeps the model uniform. |
-| Backwards compat | Breaking change for list form | Existing `before: [list]` must migrate to `before: { include: [list] }`. Acceptable trade-off for a simpler, uniform model. |
+| Backwards compat | Clean break, no compat shim | Existing `before: [list]` must migrate to `before: { include: [list] }`. Mechanical migration. No compatibility parsing or deprecation warnings — old form produces a clear deserialization error. |
 
 ### Why Not Require Sub-Plugins?
 
@@ -879,4 +1091,4 @@ Inline handlers eliminate this for simple cases. Sub-plugins remain available fo
            - aiki/review-loop   # Don't include the review loop
    ```
 
-3. **Should `CompositionBlock` share event handler fields with `Hook` via a trait?** Both structs have identical event handler fields. A shared `EventHandlers` trait or embedded struct would reduce duplication. Trade-off: adds abstraction complexity vs. maintaining two copies of the same fields.
+3. **Should `CompositionBlock` share event handler fields with `Hook` via a trait?** Both structs have identical event handler fields (plus `CompositionBlock` adds `source_hook`). A shared `EventHandlers` trait or embedded struct would reduce duplication. Trade-off: adds abstraction complexity vs. maintaining two copies of the same fields.

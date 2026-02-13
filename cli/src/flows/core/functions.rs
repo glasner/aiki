@@ -97,9 +97,22 @@ fn get_in_progress_tasks_for_session(cwd: &Path, session_id: &str) -> Vec<String
         }
     };
 
-    // Materialize tasks and get in-progress ones for this session
-    let tasks = crate::tasks::graph::materialize_graph(&events).tasks;
-    manager::get_in_progress_task_ids_for_session(&tasks, session_id)
+    // Materialize graph and get in-progress ones for this session
+    let graph = crate::tasks::graph::materialize_graph(&events);
+    let mut task_ids = manager::get_in_progress_task_ids_for_session(&graph.tasks, session_id);
+
+    // Expand with ancestor chain for each in-progress task
+    let mut ancestors = Vec::new();
+    for id in &task_ids {
+        ancestors.extend(graph.ancestor_chain(id));
+    }
+
+    // Deduplicate preserving order (leaf tasks first, then ancestors)
+    let mut seen = std::collections::HashSet::new();
+    task_ids.extend(ancestors);
+    task_ids.retain(|id| seen.insert(id.clone()));
+
+    task_ids
 }
 
 /// Get the prompt change_id for a session
