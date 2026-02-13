@@ -1678,7 +1678,9 @@ fn run_start(
     }
 
     for task in &started_tasks {
-        output.push_str(&format_action_started(task));
+        // Hide name on quick-start (user just typed it), show on start-by-ID
+        let show_name = created_new_task.as_ref().map_or(true, |ct| ct.id != task.id);
+        output.push_str(&format_action_started(task, show_name));
     }
 
     aiki_print(&output);
@@ -2365,10 +2367,10 @@ fn run_close(
             output.push_str(&format!("> {}\n", notice));
         }
         for parent in &auto_started_parents {
-            output.push_str(&format_action_started(parent));
+            output.push_str(&format_action_started(parent, true));
         }
         for subtask in &auto_started_subtasks {
-            output.push_str(&format_action_started(subtask));
+            output.push_str(&format_action_started(subtask, true));
         }
     }
 

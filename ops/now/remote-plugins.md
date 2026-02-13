@@ -12,7 +12,7 @@ Plugin identity follows `owner/repo`, mapping directly to GitHub:
 aiki plugin install owner/repo
 ```
 
-Internally, references carry a host: `github.com/owner/repo`. The host is hidden from users — `github.com` is the implicit default. An explicit host is supported for future extensibility:
+Internally, references carry a host: `github.com/owner/repo`. The host is hidden from users — `github.com` is the implicit default. Git operations use HTTPS URLs: `https://github.com/{owner}/{repo}.git`. An explicit host is supported for future extensibility:
 
 ```
 aiki plugin install gitlab.com/myorg/security   # explicit host (future)
@@ -20,13 +20,15 @@ aiki plugin install gitlab.com/myorg/security   # explicit host (future)
 
 **Host detection:** If the first segment contains a dot, it's treated as a host. Otherwise, `github.com` is implied.
 
+**Host restriction (current):** Only `github.com` is supported. Explicit non-GitHub hosts (e.g. `gitlab.com/myorg/security`) are rejected with an error: `"Non-GitHub hosts are not yet supported"`. This avoids storage collisions — see Storage section for details.
+
 ## Namespace Alias
 
 The `aiki` namespace maps to the `glasner` GitHub owner. This is hardcoded and will never be configurable.
 
 ```
 aiki plugin install aiki/way
-# Fetches: github.com/glasner/way
+# Fetches: https://github.com/glasner/way.git
 # Stored:  ~/.aiki/plugins/aiki/way/
 ```
 
@@ -34,7 +36,7 @@ For all other namespaces, owner = namespace:
 
 ```
 aiki plugin install somecorp/security
-# Fetches: github.com/somecorp/security
+# Fetches: https://github.com/somecorp/security.git
 # Stored:  ~/.aiki/plugins/somecorp/security/
 ```
 
@@ -83,15 +85,17 @@ Dependencies are resolved recursively. If `aiki/way` depends on `aiki/core`, and
 
 Plugins are installed **user-level** at `~/.aiki/plugins/`. They are shallow clones (`git clone --depth 1`).
 
+**Storage keys on `namespace/plugin` only** — host is not part of the path. This is safe because only `github.com` is currently accepted. When multi-host support is added, the layout must change to `~/.aiki/plugins/{host}/{ns}/{repo}/` to avoid collisions (e.g. `github.com/acme/tool` vs `gitlab.com/acme/tool`).
+
 ```
 ~/.aiki/
 └── plugins/
     ├── aiki/
-    │   ├── core/             # cloned from github.com/glasner/core (dep of way)
+    │   ├── core/             # cloned from https://github.com/glasner/core.git (dep of way)
     │   │   ├── .git/
     │   │   └── templates/
     │   │       └── base.md
-    │   └── way/              # cloned from github.com/glasner/way
+    │   └── way/              # cloned from https://github.com/glasner/way.git
     │       ├── .git/
     │       ├── deps          # contains: aiki/core
     │       ├── hooks.yaml
@@ -99,7 +103,7 @@ Plugins are installed **user-level** at `~/.aiki/plugins/`. They are shallow clo
     │           ├── fix.md
     │           └── review.md
     └── somecorp/
-        └── security/         # cloned from github.com/somecorp/security
+        └── security/         # cloned from https://github.com/somecorp/security.git
             ├── .git/
             ├── hooks.yaml
             └── templates/
@@ -143,7 +147,7 @@ With argument — install a specific plugin and its dependencies:
 
 ```bash
 aiki plugin install aiki/way
-# 1. git clone --depth 1 github.com/glasner/way ~/.aiki/plugins/aiki/way
+# 1. git clone --depth 1 https://github.com/glasner/way.git ~/.aiki/plugins/aiki/way
 # 2. Read ~/.aiki/plugins/aiki/way/deps
 # 3. Install any listed plugins not already present (recursively)
 ```
@@ -161,8 +165,8 @@ Without argument (inside a repo) — derive required plugins from project refere
 
 ```bash
 aiki plugin install
-# Scans .aiki/ for template/hook references
-# Derives unique namespace/plugin pairs
+# Scans .aiki/ for template references
+# Derives unique namespace/plugin pairs from three-part refs (ns/plugin/template)
 # Installs any that are missing from ~/.aiki/plugins/
 # Recursively installs deps of each installed plugin
 ```
@@ -175,7 +179,7 @@ With argument — update a specific plugin and reconcile its dependencies:
 
 ```bash
 aiki plugin update aiki/way
-# 1. cd ~/.aiki/plugins/aiki/way && git pull
+# 1. git -C ~/.aiki/plugins/aiki/way pull
 # 2. Re-read deps (may have changed after pull)
 # 3. Install any new deps not already present (recursively)
 # 4. Update existing deps
@@ -250,7 +254,7 @@ A dependency is only removed if it appears in neither.
 
 ## Deriving Required Plugins
 
-The core derivation function scans project `.aiki/` files for template and hook references, extracts unique `namespace/plugin` pairs, and checks installation status.
+The core derivation function scans project `.aiki/` files for template references, extracts unique `namespace/plugin` pairs from three-part refs (`ns/plugin/template`), and checks installation status.
 
 References are found in:
 - Hook YAML files (template references like `review: aiki/way/review`)
@@ -286,7 +290,7 @@ This document extends [plugin-directory.md](plugin-directory.md). Key changes to
 ## Deferred
 
 - **Versioning/pinning** — No tags, branches, or lockfiles. Always fetches default branch. Add when the first user complains.
-- **Non-GitHub hosts** — Internal support exists (host detection via dots) but no UI beyond explicit host in reference.
+- **Non-GitHub hosts** — Host detection parses dots in the first segment, but non-GitHub hosts are rejected at install time. When added, storage layout must include host in path to prevent collisions.
 - **Full plugin metadata** — No `plugin.yaml`. The `deps` file handles dependencies; identity comes from directory convention. A full manifest can be introduced later if more metadata is needed.
 - **Plugin search/discovery** — No registry. Users share plugin references directly.
 - **Dependency version constraints** — Deps are unversioned. All plugins track their default branch. Pinning a dep to a tag/branch is deferred.

@@ -5,7 +5,7 @@ Read the spec file at {{data.scope.id}} to understand plan.
 If this spec was created from a task, check the task for additional context:
 
 ```bash
-aiki task show --source file:{{data.scope.id}} --with-instructions
+aiki task list --source file:{{data.scope.id}}
 ```
 
 When done close this task with a summary of your understanding:
