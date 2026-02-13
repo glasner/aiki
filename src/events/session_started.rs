@@ -33,10 +33,18 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
         debug_log(|| format!("Failed to create session file: {}", e));
     }
 
-    // Record session start to conversation history (non-blocking on failure)
-    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
+    // Write repo ID to session file so find_session_by_repo works as a fallback
+    // when PID-based detection fails (e.g., Codex sandboxed tool execution)
     let cwd_str = payload.cwd.to_string_lossy();
     let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    if let Some(ref id) = repo_id {
+        if let Err(e) = session_file.add_repo(id) {
+            debug_log(|| format!("Failed to add repo to session file: {}", e));
+        }
+    }
+
+    // Record session start to conversation history (non-blocking on failure)
+    // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
     if let Err(e) = history::record_session_start(
         &global::global_aiki_dir(),
         &payload.session,

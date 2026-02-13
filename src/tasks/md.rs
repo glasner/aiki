@@ -228,13 +228,19 @@ pub fn format_action_added(task: &Task) -> String {
 
 /// Format action confirmation for `task start`
 ///
+/// When `show_name` is true, appends ` — <name>` (useful when starting by ID).
+/// When false, omits the name to avoid duplicating what the user just typed (quick-start).
 /// Includes instructions section if present.
 #[must_use]
-pub fn format_action_started(task: &Task) -> String {
+pub fn format_action_started(task: &Task, show_name: bool) -> String {
+    let header = if show_name {
+        format!("Started {} — {}", short_id(&task.id), task.name)
+    } else {
+        format!("Started {}", short_id(&task.id))
+    };
     let mut md = format!(
-        "Started {} — {}\n---\nRun `aiki task comment` to leave updates as you go\n",
-        short_id(&task.id),
-        task.name
+        "{}\n---\nRun `aiki task comment` to leave updates as you go\n",
+        header,
     );
 
     if let Some(ref instructions) = task.instructions {
@@ -335,10 +341,14 @@ mod tests {
             TaskPriority::P2,
             TaskStatus::InProgress,
         );
-        let md = format_action_started(&task);
+        let md = format_action_started(&task, true);
         assert!(md.starts_with("Started abcdefg"));
         assert!(md.contains("Test task"));
         assert!(md.contains("Run `aiki task comment`"));
+
+        let md_no_name = format_action_started(&task, false);
+        assert!(md_no_name.starts_with("Started abcdefg"));
+        assert!(!md_no_name.contains("Test task"));
     }
 
     #[test]
@@ -350,7 +360,7 @@ mod tests {
             TaskStatus::InProgress,
         );
         task.instructions = Some("Do the thing".to_string());
-        let md = format_action_started(&task);
+        let md = format_action_started(&task, true);
         assert!(md.contains("Started abcdefg"));
         assert!(md.contains("### Instructions\nDo the thing\n"));
     }

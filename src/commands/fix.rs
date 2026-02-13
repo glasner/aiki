@@ -224,7 +224,7 @@ fn output_followup_started(
     in_progress: &[&Task],
     ready: &[&Task],
 ) -> Result<()> {
-    let issue_count = comments.len().saturating_sub(1);
+    let issue_count = comments.len();
     let mut content = format!(
         "## Fix Followup\n- **Task:** {}\n- **Issues found:** {}\n- **Status:** started\n\nCreated fix followup subtask under original task ({} issue(s)).\n\n",
         followup_id,
@@ -255,7 +255,7 @@ fn output_followup_started(
 
 /// Output followup async message (for --async mode)
 fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
-    let issue_count = comments.len().saturating_sub(1);
+    let issue_count = comments.len();
     let content = format!(
         "## Fix Started\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask started in background.\n",
         followup_id,
@@ -268,7 +268,7 @@ fn output_followup_async(followup_id: &str, comments: &[TaskComment]) -> Result<
 
 /// Output followup completed message (for blocking mode)
 fn output_followup_completed(followup_id: &str, comments: &[TaskComment]) -> Result<()> {
-    let issue_count = comments.len().saturating_sub(1);
+    let issue_count = comments.len();
     let content = format!(
         "## Fix Completed\n- **Task:** {}\n- **Issues found:** {}\n- Fix followup subtask completed.\n",
         followup_id,
