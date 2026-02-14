@@ -51,7 +51,7 @@ pub fn handle_shell_completed(payload: AikiShellCompletedPayload) -> Result<Hook
     let _flow_result = execute_hook(
         EventType::ShellCompleted,
         &mut state,
-        &core_hook.shell_completed,
+        &core_hook.handlers.shell_completed,
     )?;
 
     // Extract failures from state

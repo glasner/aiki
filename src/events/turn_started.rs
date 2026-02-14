@@ -112,7 +112,7 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
     let flow_result = match execute_hook(
         EventType::TurnStarted,
         &mut state,
-        &core_hook.turn_started,
+        &core_hook.handlers.turn_started,
     ) {
         Ok(result) => result,
         Err(e) => {

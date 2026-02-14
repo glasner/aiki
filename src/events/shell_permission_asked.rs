@@ -42,7 +42,7 @@ pub fn handle_shell_permission_asked(
     let flow_result = execute_hook(
         EventType::ShellPermissionAsked,
         &mut state,
-        &core_hook.shell_permission_asked,
+        &core_hook.handlers.shell_permission_asked,
     )?;
 
     // Extract failures from state

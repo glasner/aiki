@@ -127,7 +127,7 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
     let _flow_result = match execute_hook(
         EventType::TurnCompleted,
         &mut state,
-        &core_hook.turn_completed,
+        &core_hook.handlers.turn_completed,
     ) {
         Ok(result) => result,
         Err(e) => {

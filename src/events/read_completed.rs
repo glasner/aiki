@@ -43,7 +43,7 @@ pub fn handle_read_completed(payload: AikiReadCompletedPayload) -> Result<HookRe
     let _flow_result = execute_hook(
         EventType::ReadCompleted,
         &mut state,
-        &core_hook.read_completed,
+        &core_hook.handlers.read_completed,
     )?;
 
     // Extract failures from state

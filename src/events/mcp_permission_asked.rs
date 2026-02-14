@@ -68,7 +68,7 @@ pub fn handle_mcp_permission_asked(payload: AikiMcpPermissionAskedPayload) -> Re
     let flow_result = execute_hook(
         EventType::McpPermissionAsked,
         &mut state,
-        &core_hook.mcp_permission_asked,
+        &core_hook.handlers.mcp_permission_asked,
     )?;
 
     // Extract failures from state

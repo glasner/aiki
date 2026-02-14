@@ -242,9 +242,9 @@ mod tests {
         temp_dir
     }
 
-    /// Create a flow file with specified before/after dependencies
+    /// Create a flow file with specified before/after dependencies.
+    /// Uses the new CompositionBlock format: `before: { include: [...] }`.
     fn create_flow_file(path: &Path, name: &str, before: &[&str], after: &[&str]) {
-        // Helper to quote paths that need it (start with @ or contain special chars)
         let quote_if_needed = |s: &str| -> String {
             if s.starts_with('@') || s.contains(':') || s.contains('#') {
                 format!("\"{}\"", s)
@@ -258,9 +258,9 @@ mod tests {
         } else {
             let items: Vec<String> = before
                 .iter()
-                .map(|b| format!("  - {}", quote_if_needed(b)))
+                .map(|b| format!("    - {}", quote_if_needed(b)))
                 .collect();
-            format!("before:\n{}\n", items.join("\n"))
+            format!("before:\n  include:\n{}\n", items.join("\n"))
         };
 
         let after_yaml = if after.is_empty() {
@@ -268,9 +268,9 @@ mod tests {
         } else {
             let items: Vec<String> = after
                 .iter()
-                .map(|a| format!("  - {}", quote_if_needed(a)))
+                .map(|a| format!("    - {}", quote_if_needed(a)))
                 .collect();
-            format!("after:\n{}\n", items.join("\n"))
+            format!("after:\n  include:\n{}\n", items.join("\n"))
         };
 
         let content = format!(
@@ -314,11 +314,13 @@ version: "1"
         let (hook, _) = loader.load("aiki/composed").unwrap();
 
         assert_eq!(hook.name, "Composed Flow");
-        assert_eq!(hook.before.len(), 2);
-        assert_eq!(hook.before[0], "aiki/base");
-        assert_eq!(hook.before[1], "./helpers/lint.yml");
-        assert_eq!(hook.after.len(), 1);
-        assert_eq!(hook.after[0], "aiki/cleanup");
+        assert_eq!(hook.before.len(), 1); // One CompositionBlock
+        assert_eq!(hook.before[0].include.len(), 2);
+        assert_eq!(hook.before[0].include[0], "aiki/base");
+        assert_eq!(hook.before[0].include[1], "./helpers/lint.yml");
+        assert_eq!(hook.after.len(), 1); // One CompositionBlock
+        assert_eq!(hook.after[0].include.len(), 1);
+        assert_eq!(hook.after[0].include[0], "aiki/cleanup");
     }
 
     #[test]

@@ -498,6 +498,7 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
             priority,
             assignee,
             data,
+            instructions,
             ..
         } => {
             if let Some(task) = tasks.get_mut(task_id) {
@@ -518,6 +519,9 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                             task.data.insert(key.clone(), value.clone());
                         }
                     }
+                }
+                if let Some(new_instructions) = instructions {
+                    task.instructions = Some(new_instructions.clone());
                 }
             }
         }

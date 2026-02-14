@@ -425,6 +425,10 @@ pub enum TaskCommands {
         /// Set or update a data field (can be specified multiple times)
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         data: Vec<String>,
+
+        /// Set instructions (reads content from stdin)
+        #[arg(long)]
+        instructions: bool,
     },
 
     /// Add a comment to a task
@@ -717,7 +721,8 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             assignee,
             unassign,
             data,
-        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign, data),
+            instructions,
+        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign, data, instructions),
         TaskCommands::Comment { id, text, data } => run_comment(&cwd, id, text, data),
         TaskCommands::Run {
             id,
@@ -3666,6 +3671,7 @@ fn run_update(
     assignee_arg: Option<String>,
     unassign: bool,
     data_args: Vec<String>,
+    instructions_flag: bool,
 ) -> Result<()> {
     use crate::agents::Assignee;
     use crate::validation::is_valid_template_identifier;
@@ -3734,10 +3740,29 @@ fn run_update(
         Some(data_updates)
     };
 
+    // Read instructions from stdin if --instructions flag is set
+    let new_instructions = if instructions_flag {
+        let content = std::io::read_to_string(std::io::stdin())
+            .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read stdin: {}", e)))?;
+        let trimmed = content.trim_end().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    } else {
+        None
+    };
+
     // Check if there's anything to update
-    if new_priority.is_none() && name.is_none() && new_assignee.is_none() && new_data.is_none() {
+    if new_priority.is_none()
+        && name.is_none()
+        && new_assignee.is_none()
+        && new_data.is_none()
+        && new_instructions.is_none()
+    {
         let xml = MdBuilder::new("update").error().build_error(
-            "No updates specified. Use --name, --data, --for, --unassign, or --p0/--p1/--p2/--p3",
+            "No updates specified. Use --name, --data, --instructions, --for, --unassign, or --p0/--p1/--p2/--p3",
         );
         aiki_print(&xml);
         return Ok(());
@@ -3750,6 +3775,7 @@ fn run_update(
         priority: new_priority,
         assignee: new_assignee.clone(),
         data: new_data.clone(),
+        instructions: new_instructions.clone(),
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &event)?;
@@ -3774,6 +3800,9 @@ fn run_update(
                     task.data.insert(key.clone(), value.clone());
                 }
             }
+        }
+        if let Some(ref instr) = new_instructions {
+            task.instructions = Some(instr.clone());
         }
     }
 

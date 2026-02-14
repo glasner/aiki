@@ -39,7 +39,7 @@ pub fn handle_task_closed(payload: AikiTaskClosedPayload) -> Result<HookResult> 
     let flow_result = execute_hook(
         EventType::TaskClosed,
         &mut state,
-        &core_hook.task_closed,
+        &core_hook.handlers.task_closed,
     )?;
 
     // Execute any pending session terminations (from session.end actions)

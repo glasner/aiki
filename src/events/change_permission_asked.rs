@@ -49,7 +49,7 @@ pub fn handle_change_permission_asked(
     let flow_result = execute_hook(
         EventType::ChangePermissionAsked,
         &mut state,
-        &core_hook.change_permission_asked,
+        &core_hook.handlers.change_permission_asked,
     )?;
 
     // Extract failures from state

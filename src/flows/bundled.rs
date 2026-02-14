@@ -51,7 +51,7 @@ mod tests {
         let core = load_core_hook();
 
         // Should have session.started handler
-        assert!(!core.session_started.is_empty());
+        assert!(!core.handlers.session_started.is_empty());
     }
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
         let core = load_core_hook();
 
         // Should have change.completed handler
-        assert!(!core.change_completed.is_empty());
+        assert!(!core.handlers.change_completed.is_empty());
     }
 
     #[test]
@@ -67,7 +67,7 @@ mod tests {
         let core = load_core_hook();
 
         // Should have change.permission_asked handler
-        assert!(!core.change_permission_asked.is_empty());
+        assert!(!core.handlers.change_permission_asked.is_empty());
     }
 
     #[test]
@@ -83,10 +83,10 @@ mod tests {
         let core = load_core_hook();
 
         // Should have change.completed handler
-        assert!(!core.change_completed.is_empty());
+        assert!(!core.handlers.change_completed.is_empty());
 
         // First statement is the write operation check (change.completed handles all operations)
-        match &core.change_completed[0] {
+        match &core.handlers.change_completed[0] {
             HookStatement::If(write_if) => {
                 // Verify checks for write operation
                 assert!(

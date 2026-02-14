@@ -49,7 +49,7 @@ pub fn handle_read_permission_asked(payload: AikiReadPermissionAskedPayload) -> 
     let flow_result = execute_hook(
         EventType::ReadPermissionAsked,
         &mut state,
-        &core_hook.read_permission_asked,
+        &core_hook.handlers.read_permission_asked,
     )?;
 
     // Extract failures from state

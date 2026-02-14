@@ -180,6 +180,8 @@ pub enum TaskEvent {
         assignee: Option<Option<String>>,
         /// Data fields to merge (add/update). Empty values mean remove the key.
         data: Option<HashMap<String, String>>,
+        /// New instructions content (replaces existing instructions)
+        instructions: Option<String>,
         timestamp: DateTime<Utc>,
     },
     /// Link added between two nodes

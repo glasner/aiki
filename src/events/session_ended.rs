@@ -48,7 +48,7 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
     let flow_result = execute_hook(
         EventType::SessionEnded,
         &mut state,
-        &core_hook.session_ended,
+        &core_hook.handlers.session_ended,
     )?;
 
     // Clean up session file (always happens, regardless of flow result)

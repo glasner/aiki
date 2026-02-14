@@ -48,7 +48,7 @@ pub fn handle_mcp_completed(payload: AikiMcpCompletedPayload) -> Result<HookResu
     let _flow_result = execute_hook(
         EventType::McpCompleted,
         &mut state,
-        &core_hook.mcp_completed,
+        &core_hook.handlers.mcp_completed,
     )?;
 
     // Extract failures from state

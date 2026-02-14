@@ -46,7 +46,7 @@ pub fn handle_web_permission_asked(payload: AikiWebPermissionAskedPayload) -> Re
     let flow_result = execute_hook(
         EventType::WebPermissionAsked,
         &mut state,
-        &core_hook.web_permission_asked,
+        &core_hook.handlers.web_permission_asked,
     )?;
 
     // Extract failures from state

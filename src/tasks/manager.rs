@@ -1591,6 +1591,7 @@ mod tests {
                 priority: None,
                 assignee: None,
                 data: None,
+                instructions: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1625,6 +1626,7 @@ mod tests {
                 priority: Some(TaskPriority::P0),
                 assignee: None,
                 data: None,
+                instructions: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1659,6 +1661,7 @@ mod tests {
                 priority: Some(TaskPriority::P1),
                 assignee: None,
                 data: None,
+                instructions: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
             },
         ];
@@ -1725,6 +1728,7 @@ mod tests {
                 priority: Some(TaskPriority::P0),
                 assignee: None,
                 data: None,
+                instructions: None,
                 timestamp: base_time + chrono::Duration::seconds(5),
             },
         ];
@@ -1812,6 +1816,7 @@ mod tests {
             priority: None,
             assignee: None,
             data: None,
+            instructions: None,
             timestamp: Utc::now(),
         }];
 
@@ -1820,6 +1825,41 @@ mod tests {
             tasks.is_empty(),
             "No task should be created from Update event alone"
         );
+    }
+
+    #[test]
+    fn test_materialize_updated_event_instructions() {
+        let base_time = Utc::now();
+        let events = vec![
+            TaskEvent::Created {
+                task_type: None,
+                task_id: "a1b2".to_string(),
+                name: "Test task".to_string(),
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: Vec::new(),
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                timestamp: base_time,
+            },
+            TaskEvent::Updated {
+                task_id: "a1b2".to_string(),
+                name: None,
+                priority: None,
+                assignee: None,
+                data: None,
+                instructions: Some("Step 1: do X\nStep 2: do Y".to_string()),
+                timestamp: base_time + chrono::Duration::seconds(1),
+            },
+        ];
+
+        let tasks = materialize_graph(&events).tasks;
+        let task = tasks.get("a1b2").expect("Task should exist");
+
+        assert_eq!(task.instructions, Some("Step 1: do X\nStep 2: do Y".to_string()));
+        assert_eq!(task.name, "Test task"); // Name unchanged
     }
 
     #[test]
