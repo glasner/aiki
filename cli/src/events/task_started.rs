@@ -66,7 +66,7 @@ pub fn handle_task_started(payload: AikiTaskStartedPayload) -> Result<HookResult
     let flow_result = execute_hook(
         EventType::TaskStarted,
         &mut state,
-        &core_hook.task_started,
+        &core_hook.handlers.task_started,
     )?;
 
     // Extract failures from state

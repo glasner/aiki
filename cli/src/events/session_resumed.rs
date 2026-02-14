@@ -36,7 +36,7 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
     let _flow_result = execute_hook(
         EventType::SessionResumed,
         &mut state,
-        &core_hook.session_resumed,
+        &core_hook.handlers.session_resumed,
     )?;
 
     // Extract failures from state

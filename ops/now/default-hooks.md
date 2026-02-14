@@ -6,7 +6,9 @@
 
 **Related Documents**:
 - [The Aiki Way](the-aiki-way.md) - Vision for opinionated workflow automation
-- [Review Loop](review-loop.md) - Review-fix cycle plugin (first composable plugin)
+- [Review Loop Plugin](review-loop-plugin.md) - Review-fix cycle plugin (first composable plugin)
+- [Loop Flags](loop-flags.md) - CLI primitives (`fix --loop`, `review --fix`, `build --loop`)
+- [Better Include for Plugins](better-include-for-plugins.md) - `include:` directive, `hook:` action, composition blocks (prerequisite)
 - [Built-In Plugin Resolution](built-in-plugin-resolution.md) - Embedded plugin fallback (prerequisite)
 - [Turn Event Payloads](turn-event-payloads.md) - Task context in turn.completed events (prerequisite)
 - [Rename to Hooks](../done/rename-to-hooks.md) - Hooks terminology and architecture
@@ -21,9 +23,11 @@ Today, `aiki init` sets up the JJ repository and installs agent integrations (Cl
 This means:
 
 1. **Users can't see what hooks are running.** The core hooks are invisible — embedded in the binary with no file on disk to inspect.
-2. **There's no composition point.** Without a user-owned hookfile, there's nowhere to add `after: aiki/review-loop` or other plugins.
+2. **There's no composition point.** Without a user-owned hookfile, there's nowhere to add `include: aiki/review-loop` or other plugins.
 3. **"The Aiki Way" has no delivery mechanism.** The opinionated workflow patterns (review loops, lint gates, etc.) need a hookfile to compose into.
 4. **New users don't know what's possible.** Without a scaffolded hookfile showing the extension points, discoverability is poor.
+
+**Compatibility stance**: We intentionally do not preserve backwards compatibility here. The opinionated workflow layer is only added when `.aiki/hooks.yml` is present; repos without a hookfile will only get core hooks.
 
 ---
 
@@ -31,7 +35,7 @@ This means:
 
 When `aiki init` runs, it creates a **hookfile** at `.aiki/hooks.yml` that:
 
-1. **Composes the opinionated "Aiki Way" workflow** from built-in plugins via `after:` directives
+1. **Composes the opinionated "Aiki Way" workflow** from built-in plugins via `include:` directives
 2. **Serves as the user's customization point** — they edit this file to add/remove plugins, add project-specific hooks, or override behavior
 3. **Is fully commented** with explanations of each plugin and event, so users understand what's happening and how to customize
 
@@ -70,9 +74,9 @@ Request comes in
 
 ### Execution Model
 
-The engine loads `aiki/core` first (embedded), then loads `.aiki/hooks.yml` (if it exists). For each event, it runs core's handlers, then the hookfile's handlers (including any plugins composed via `after:`).
+The engine loads `aiki/core` first (embedded), then loads `.aiki/hooks.yml` (if it exists). For each event, it runs core's handlers, then the hookfile's handlers (including any plugins composed via `include:`).
 
-If `.aiki/hooks.yml` doesn't exist, only core runs — backwards compatible with existing repos.
+If `.aiki/hooks.yml` doesn't exist, only core runs. This is intentional while the hookfile migration is explicit and user-facing.
 
 ---
 
@@ -111,10 +115,8 @@ Users open `.aiki/hooks.yml` and edit directly:
 ```yaml
 # .aiki/hooks.yml
 
-# before:
-#   - your/plugin  # Runs before aiki/default
-
-after:
+name: hooks
+include:
   - aiki/default  # The opinionated Aiki Way - updated automatically with new releases
 
 # Add your own project-specific hooks below:
@@ -139,10 +141,8 @@ after:
 #   aiki hooks --help
 #   https://aiki.sh/help/hooks
 
-# before:
-#   - your/plugin  # Runs before aiki/default
-
-after:
+name: hooks
+include:
   - aiki/default  # The opinionated Aiki Way (auto-updates with new releases)
 
 # ============================================================================
@@ -235,7 +235,7 @@ after:
 
 ### Plugin Files
 
-Each plugin referenced by `after:` is a separate YAML file shipped with aiki. These are **built-in plugins** — they ship inside the binary (like core) but are referenced by name from the hookfile.
+Each plugin referenced by `include:` is a separate YAML file shipped with aiki. These are **built-in plugins** — they ship inside the binary (like core) but are referenced by name from the hookfile.
 
 #### `aiki/default` (Wrapper Plugin)
 
@@ -248,11 +248,20 @@ The default plugin wraps the opinionated "Aiki Way" workflow automation. It comp
 
 ```yaml
 # Built-in: aiki/default
+name: aiki/default
 description: "The opinionated Aiki Way - workflow automation that updates automatically"
 
+before:
+  turn.started:
+    - context: "Aiki project context"
+
 after:
-  - aiki/git-coauthors
-  - aiki/review-loop
+  include:
+    - aiki/git-coauthors
+  turn.completed:
+    - if: $event.turn.tasks.completed
+      then:
+        - autoreply: "aiki review --fix --start"
   # Future plugins added here in new releases:
   # - aiki/context-inject
   # - aiki/build-check
@@ -289,7 +298,7 @@ commit.message_started:
 
 #### `aiki/review-loop` (Review Plugin)
 
-Already designed in `ops/now/review-loop.md`. Triggers `aiki review --fix --start` after agent turns that complete original work tasks.
+Already designed in `ops/now/review-loop-plugin.md`. Triggers `aiki review --fix --start` after agent turns that complete original work tasks.
 
 **Prerequisite**: Requires task context in `turn.completed` payload - see [Turn Event Payloads](turn-event-payloads.md).
 
@@ -322,7 +331,7 @@ Plugins are resolved in this order:
 
 This means:
 
-- `after: aiki/review-loop` resolves to the built-in plugin by default
+- `include: aiki/review-loop` resolves to the built-in plugin by default
 - Users can override by creating `.aiki/hooks/aiki/review-loop.yml` in their project
 - The built-in serves as fallback when no user file exists
 
@@ -342,9 +351,9 @@ The two-layer execution model already exists in `execute_hook` (`cli/src/events/
 ```
 Engine execution (existing code):
   1. aiki/core handlers for event
-  2. hooks.yml's before: plugins for event
-  3. hooks.yml's own handlers for event
-  4. hooks.yml's after: plugins for event
+  2. hooks.yml's before blocks (include plugins → inline handlers) for event
+  3. hooks.yml's own handler segments for event
+  4. hooks.yml's after blocks (include plugins → inline handlers) for event
 ```
 
 ### Known Bug: Path Resolution
@@ -360,11 +369,19 @@ let default_flow_path = loader.project_root().join(".aiki/hooks.yml");
 
 ### Relationship to Core
 
-The hookfile does **not** use `before: aiki/core` — core is handled specially by the engine and always runs first. The hookfile's `before:` and `after:` compose additional plugins on top.
+The hookfile does **not** use `include: aiki/core` — core is handled specially by the engine and always runs first. The hookfile's `include:`, `before:`, and `after:` compose additional plugins on top.
 
 ---
 
 ## Prerequisites
+
+### Include Directive and Composition Blocks
+
+The hookfile uses top-level `include:` to compose `aiki/default`, and `aiki/default` itself uses `before:`/`after:` composition blocks with inline event handlers. This requires the `include:` directive, composition block mapping format, and `hook:` action from [Better Include for Plugins](better-include-for-plugins.md).
+
+**Status**: Implemented
+
+**Must be implemented before**: Phase 1 (Default Hookfile Scaffolding) — the hookfile template uses `include: - aiki/default`, and the `aiki/default` plugin uses composition blocks with inline handlers
 
 ### Built-In Plugin Resolution
 
@@ -392,9 +409,11 @@ The `aiki/review-loop` plugin requires task context in `turn.completed` events t
 
 1. Remove the `commit.message_started` handler (lines 178-189) from `cli/src/flows/core/hooks.yaml`
 2. Create the `aiki/git-coauthors` built-in plugin YAML (same handler content)
-3. Add `aiki/git-coauthors` to the built-in plugin registry so it resolves via `after:` references
+3. Add `aiki/git-coauthors` to the built-in plugin registry so it resolves via `include:` references
 
-**Why extract**: Co-author generation is workflow automation, not core provenance tracking. Users may want to disable it (e.g., repos that don't use Git commits, or teams with different co-author conventions). Keeping it in core makes it invisible and non-optional. As a plugin, it's visible in `aiki/default` and can be overridden or removed.
+**Why extract**: Co-author generation is workflow automation, not core provenance tracking. Users may want to disable it (e.g., repos that don't use Git commits, or teams with different co-author conventions). Keeping it in core makes it invisible and non-optional.
+
+This is a deliberate behavior change: co-authors move out of core into hookfile-driven defaults (`aiki/default`), and are therefore unavailable until the hookfile is present.
 
 **Files to modify**:
 - `cli/src/flows/core/hooks.yaml` — remove `commit.message_started` handler
@@ -438,7 +457,7 @@ The hookfile is designed to grow as more plugins are built. Each plugin is indep
 |--------|-------|---------|--------|
 | `aiki/default` | N/A (wrapper) | Opinionated workflow automation | Designed |
 | `aiki/git-coauthors` | `commit.message_started` | Append AI co-author trailers to commits | Designed (extracted from core) |
-| `aiki/review-loop` | `turn.completed` | Review and fix after each turn | Designed (`ops/now/review-loop.md`) |
+| `aiki/review-loop` | `turn.completed` | Review and fix after each turn | Designed (`ops/now/review-loop-plugin.md`) |
 | `aiki/lint-gate` | `shell.permission_asked` | Block git push if lint fails | Future |
 | `aiki/build-check` | `turn.completed` | Run build after changes | Future |
 | `aiki/test-gate` | `shell.permission_asked` | Block git push if tests fail | Future |
@@ -446,13 +465,13 @@ The hookfile is designed to grow as more plugins are built. Each plugin is indep
 
 **Default users** get automatic updates via `aiki/default`:
 ```yaml
-after:
+include:
   - aiki/default  # Automatically includes review-loop and future plugins
 ```
 
 **Power users** can opt for explicit control:
 ```yaml
-after:
+include:
   - aiki/git-coauthors
   - aiki/review-loop
   - aiki/lint-gate
@@ -469,7 +488,7 @@ after:
 |-------|----------|---------|
 | File exists | Info | "No hookfile found. Run `aiki init` to create one." |
 | YAML syntax valid | Error | ".aiki/hooks.yml has invalid YAML: {parse error}" |
-| Referenced plugins exist | Warning | "Plugin 'aiki/lint-gate' not found (referenced in after:)" |
+| Referenced plugins exist | Warning | "Plugin 'aiki/lint-gate' not found (referenced in include:)" |
 | Unknown event types | Warning | "Unknown event 'session.starting' in .aiki/hooks.yml (did you mean 'session.started'?)" |
 | Core not in before/after | Info | "No need to reference aiki/core — it always runs automatically" |
 
@@ -484,7 +503,7 @@ after:
 | Scenario | Behavior |
 |----------|----------|
 | `hooks.yml` has syntax error | Log warning, skip user hooks, core still runs |
-| Plugin in `after:` not found | Log warning, skip that plugin, continue with others |
+| Plugin in `include:` not found | Log warning, skip that plugin, continue with others |
 | Plugin execution fails | Follow plugin's `on_failure:` directive, or skip and continue |
 | `aiki init` can't write `.aiki/hooks.yml` | Error: "Failed to create hookfile" |
 | `.aiki/hooks.yml` exists at init time | Skip creation, print "already exists" |

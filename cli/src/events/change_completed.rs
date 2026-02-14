@@ -401,7 +401,7 @@ pub fn handle_change_completed(mut payload: AikiChangeCompletedPayload) -> Resul
     let _flow_result = execute_hook(
         EventType::ChangeCompleted,
         &mut state,
-        &core_hook.change_completed,
+        &core_hook.handlers.change_completed,
     )?;
 
     // Extract failures from state

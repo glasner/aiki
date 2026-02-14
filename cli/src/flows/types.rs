@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 use crate::flows::context::TextLines;
@@ -11,6 +11,10 @@ pub enum HookStatement {
     If(IfStatement),
     /// Switch/case statement
     Switch(SwitchStatement),
+    /// Invoke another plugin's handler for the current event.
+    /// Handled by the composer (not the engine) because it requires
+    /// the composer's HookLoader and call stack for cycle detection.
+    Hook(HookAction),
     /// Action to execute
     Action(Action),
 }
@@ -73,6 +77,130 @@ impl Default for OnFailure {
     }
 }
 
+/// Hook action — invokes another plugin's handler for the current event.
+///
+/// YAML: `- hook: "aiki/context-inject"`
+///
+/// Handled by the composer (not the engine) because it requires
+/// the composer's HookLoader and call stack for cycle detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookAction {
+    /// Plugin path to invoke (e.g., "aiki/context-inject")
+    pub hook: String,
+}
+
+/// Deserialize a Vec<HookStatement> that treats null/unit as empty vec.
+/// Needed because serde(flatten) doesn't apply #[serde(default)] when
+/// the value is explicitly null (e.g., `session.resumed:` with no value in YAML).
+fn deserialize_null_as_empty_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<HookStatement>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<Vec<HookStatement>>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
+}
+
+/// Event handler fields shared by Hook and CompositionBlock.
+///
+/// Contains all event-specific handler lists. Both Hook (for own handlers)
+/// and CompositionBlock (for inline handlers in before/after) use these fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventHandlers {
+    // Session Lifecycle Events
+    #[serde(rename = "session.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_started: Vec<HookStatement>,
+    #[serde(rename = "session.resumed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_resumed: Vec<HookStatement>,
+    #[serde(rename = "session.ended", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_ended: Vec<HookStatement>,
+
+    // Turn Lifecycle Events
+    #[serde(rename = "turn.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub turn_started: Vec<HookStatement>,
+    #[serde(rename = "turn.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub turn_completed: Vec<HookStatement>,
+
+    // Read Operation Events
+    #[serde(rename = "read.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub read_permission_asked: Vec<HookStatement>,
+    #[serde(rename = "read.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub read_completed: Vec<HookStatement>,
+
+    // Change Operation Events
+    #[serde(rename = "change.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub change_permission_asked: Vec<HookStatement>,
+    #[serde(rename = "change.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub change_completed: Vec<HookStatement>,
+
+    // Shell Command Events
+    #[serde(rename = "shell.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub shell_permission_asked: Vec<HookStatement>,
+    #[serde(rename = "shell.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub shell_completed: Vec<HookStatement>,
+
+    // Web Access Events
+    #[serde(rename = "web.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub web_permission_asked: Vec<HookStatement>,
+    #[serde(rename = "web.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub web_completed: Vec<HookStatement>,
+
+    // MCP Tool Events
+    #[serde(rename = "mcp.permission_asked", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub mcp_permission_asked: Vec<HookStatement>,
+    #[serde(rename = "mcp.completed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub mcp_completed: Vec<HookStatement>,
+
+    // Commit Integration Events
+    #[serde(rename = "commit.message_started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub commit_message_started: Vec<HookStatement>,
+
+    // Task Lifecycle Events
+    #[serde(rename = "task.started", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub task_started: Vec<HookStatement>,
+    #[serde(rename = "task.closed", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub task_closed: Vec<HookStatement>,
+
+    // Legacy
+    #[serde(rename = "Stop", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub stop: Vec<HookStatement>,
+}
+
+/// A composition block used in before/after positions.
+///
+/// Always a mapping with optional `include:` (plugins for all events)
+/// and event-specific inline handler lists.
+/// Each block retains its source hook identity for self.* resolution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompositionBlock {
+    /// The hook identity this block came from (for self.* resolution in inline handlers).
+    /// Set during include expansion; None for the hookfile's own block (resolved at execution time).
+    #[serde(skip)]
+    pub source_hook: Option<String>,
+
+    /// Plugin references to run for all events in this phase
+    #[serde(default)]
+    pub include: Vec<String>,
+
+    /// Event handlers for this block
+    #[serde(flatten)]
+    pub handlers: EventHandlers,
+}
+
+/// A segment of own handlers tagged with their source hook identity.
+///
+/// Preserves self.* context when handlers from different plugins are
+/// sequenced together via top-level include expansion.
+/// Stores the full Hook so that the correct event's handlers can be
+/// selected at execution time.
+#[derive(Debug, Clone)]
+pub struct HandlerSegment {
+    /// The hook identity for self.* resolution
+    pub source_hook: String,
+    /// The included hook (handlers selected per-event at execution time)
+    pub hook: Hook,
+}
+
 /// A complete hook definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hook {
@@ -88,133 +216,103 @@ pub struct Hook {
     pub version: String,
 
     // ========================================================================
-    // Hook Composition (Milestone 1.3)
+    // Hook Composition
     // ========================================================================
-    /// Hooks to run before this hook's actions (in order)
-    /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
+    /// Plugins to include (expand their blocks/segments into this hook's lists).
+    /// Top-level structural composition: prepends included plugin's before/after
+    /// blocks and handler segments.
     #[serde(default)]
-    pub before: Vec<String>,
+    pub include: Vec<String>,
 
-    /// Hooks to run after this hook's actions (in order)
-    /// Supports: {namespace}/{name} format (e.g., aiki/*, eslint/*, mycompany/*)
-    #[serde(default)]
-    pub after: Vec<String>,
+    /// Composition block list: blocks run before this hook's own handlers.
+    /// Vec because include expansion prepends blocks without merging.
+    /// YAML hookfiles write `before:` as a single mapping (one CompositionBlock).
+    /// The custom deserializer wraps it into a Vec with one entry.
+    #[serde(default, deserialize_with = "deserialize_single_block_as_vec")]
+    pub before: Vec<CompositionBlock>,
 
-    // ========================================================================
-    // Session Lifecycle Events
-    // ========================================================================
-    /// session.started event handler (new agent session began)
-    #[serde(rename = "session.started", default)]
-    pub session_started: Vec<HookStatement>,
+    /// Composition block list: blocks run after this hook's own handlers.
+    /// Vec because include expansion prepends blocks without merging.
+    #[serde(default, deserialize_with = "deserialize_single_block_as_vec")]
+    pub after: Vec<CompositionBlock>,
 
-    /// session.resumed event handler (continuing a previous session)
-    #[serde(rename = "session.resumed", default)]
-    pub session_resumed: Vec<HookStatement>,
-
-    /// session.ended event handler (agent session terminated)
-    #[serde(rename = "session.ended", default)]
-    pub session_ended: Vec<HookStatement>,
+    /// Handler segments from include expansion (not deserialized from YAML).
+    /// Populated at runtime when top-level includes are expanded.
+    #[serde(skip)]
+    pub handler_segments: Vec<HandlerSegment>,
 
     // ========================================================================
-    // Turn Lifecycle Events
+    // Event Handlers (own handlers)
     // ========================================================================
-    /// turn.started event handler (turn began - user prompt or autoreply)
-    #[serde(rename = "turn.started", default)]
-    pub turn_started: Vec<HookStatement>,
-
-    /// turn.completed event handler (turn ended - agent finished processing)
-    #[serde(rename = "turn.completed", default)]
-    pub turn_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Read Operation Events
-    // ========================================================================
-    /// read.permission_asked event handler (agent is about to read a file)
-    #[serde(rename = "read.permission_asked", default)]
-    pub read_permission_asked: Vec<HookStatement>,
-
-    /// read.completed event handler (agent finished reading a file)
-    #[serde(rename = "read.completed", default)]
-    pub read_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Change Operation Events (Unified mutations: write, delete, move)
-    // ========================================================================
-    /// change.permission_asked event handler (agent is about to mutate files)
-    /// Unified handler for write, delete, and move operations.
-    /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
-    #[serde(rename = "change.permission_asked", default)]
-    pub change_permission_asked: Vec<HookStatement>,
-
-    /// change.completed event handler (agent finished mutating files)
-    /// Unified handler for write, delete, and move operations.
-    /// Use `$event.write`, `$event.delete`, `$event.move` for operation-specific logic.
-    #[serde(rename = "change.completed", default)]
-    pub change_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Shell Command Events
-    // ========================================================================
-    /// shell.permission_asked event handler (agent is about to execute a shell command)
-    /// This is the autonomous review wedge - intercept git commit, run review, provide feedback
-    #[serde(rename = "shell.permission_asked", default)]
-    pub shell_permission_asked: Vec<HookStatement>,
-
-    /// shell.completed event handler (shell command completed)
-    #[serde(rename = "shell.completed", default)]
-    pub shell_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Web Access Events
-    // ========================================================================
-    /// web.permission_asked event handler (agent is about to make a web request)
-    /// Operations: fetch, search
-    #[serde(rename = "web.permission_asked", default)]
-    pub web_permission_asked: Vec<HookStatement>,
-
-    /// web.completed event handler (web request completed)
-    #[serde(rename = "web.completed", default)]
-    pub web_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // MCP Tool Events
-    // ========================================================================
-    /// mcp.permission_asked event handler (agent is about to call an MCP tool)
-    #[serde(rename = "mcp.permission_asked", default)]
-    pub mcp_permission_asked: Vec<HookStatement>,
-
-    /// mcp.completed event handler (MCP tool call completed)
-    #[serde(rename = "mcp.completed", default)]
-    pub mcp_completed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Commit Integration Events
-    // ========================================================================
-    /// commit.message_started event handler (Git's prepare-commit-msg hook)
-    #[serde(rename = "commit.message_started", default)]
-    pub commit_message_started: Vec<HookStatement>,
-
-    // ========================================================================
-    // Task Lifecycle Events
-    // ========================================================================
-    /// task.started event handler (task transitioned to in_progress)
-    #[serde(rename = "task.started", default)]
-    pub task_started: Vec<HookStatement>,
-
-    /// task.closed event handler (task transitioned to closed)
-    #[serde(rename = "task.closed", default)]
-    pub task_closed: Vec<HookStatement>,
-
-    // ========================================================================
-    // Legacy
-    // ========================================================================
-    /// Stop event handler (legacy - kept for compatibility)
-    #[serde(rename = "Stop", default)]
-    pub stop: Vec<HookStatement>,
+    /// Event handler fields (flattened for YAML compatibility)
+    #[serde(flatten)]
+    pub handlers: EventHandlers,
 }
 
 fn default_version() -> String {
     "1".to_string()
+}
+
+/// Custom deserializer that wraps a single CompositionBlock into a Vec.
+///
+/// In YAML, `before:` is written as a single mapping (one CompositionBlock).
+/// This deserializer accepts either a single mapping or an array of mappings,
+/// producing a Vec<CompositionBlock> in both cases.
+fn deserialize_single_block_as_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<CompositionBlock>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Use an untagged enum to try both forms
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SingleOrVec {
+        Single(CompositionBlock),
+        Vec(Vec<CompositionBlock>),
+    }
+
+    match SingleOrVec::deserialize(deserializer)? {
+        SingleOrVec::Single(block) => Ok(vec![block]),
+        SingleOrVec::Vec(blocks) => {
+            // Validate: Vec form should not be used for the old list-of-strings format.
+            // If someone writes `before: ["aiki/foo"]`, the CompositionBlock deserialization
+            // will fail because strings aren't valid blocks. This is the intended clean break.
+            Ok(blocks)
+        }
+    }
+}
+
+impl Hook {
+    /// Check if this hook has any event handlers defined.
+    pub fn has_handlers(&self) -> bool {
+        self.handlers.has_any()
+    }
+}
+
+impl EventHandlers {
+    /// Check if any event handler has statements.
+    pub fn has_any(&self) -> bool {
+        !self.session_started.is_empty()
+            || !self.session_resumed.is_empty()
+            || !self.session_ended.is_empty()
+            || !self.turn_started.is_empty()
+            || !self.turn_completed.is_empty()
+            || !self.read_permission_asked.is_empty()
+            || !self.read_completed.is_empty()
+            || !self.change_permission_asked.is_empty()
+            || !self.change_completed.is_empty()
+            || !self.shell_permission_asked.is_empty()
+            || !self.shell_completed.is_empty()
+            || !self.web_permission_asked.is_empty()
+            || !self.web_completed.is_empty()
+            || !self.mcp_permission_asked.is_empty()
+            || !self.mcp_completed.is_empty()
+            || !self.commit_message_started.is_empty()
+            || !self.task_started.is_empty()
+            || !self.task_closed.is_empty()
+            || !self.stop.is_empty()
+    }
 }
 
 /// Continue hook execution action (generates Failure and continues)

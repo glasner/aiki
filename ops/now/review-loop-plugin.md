@@ -1,40 +1,29 @@
-# Review Loop: End-to-End Workflow
+# Review Loop Plugin
 
 **Date**: 2026-02-11
 **Status**: Draft
 **Priority**: P2
-**Depends on**: `ops/done/review-and-fix.md`
+**Depends on**: `ops/now/loop-flags.md` (CLI primitives: `fix --loop`, `review --fix`)
 
 **Related Documents**:
+- [Loop Flags](loop-flags.md) - CLI primitives this plugin builds on (`fix --loop`, `review --fix`, `build --loop`)
 - [Review and Fix Commands](../done/review-and-fix.md) - Core review/fix system (implemented)
-- [Review and Fix Non-Task Targets](review-and-fix-files.md) - Spec/implementation review scopes
-- [Needs Review Status](../next/needs-review.md) - Close outcome for unreviewed work
-- [Default Hooks](default-hooks.md) - Hookfile scaffolding and built-in plugin registry (Layer 2 prerequisite)
+- [Default Hooks](default-hooks.md) - Hookfile scaffolding and built-in plugin registry (prerequisite)
+- [Better Include for Plugins](better-include-for-plugins.md) - `include:` directive and composition blocks (prerequisite)
 
 ---
 
 ## Problem
 
-The review-fix cycle exists as individual commands (`aiki review`, `aiki fix`), but there's no integrated workflow that automates the iteration loop. Today a user must manually:
-
-1. Run `aiki review` after work completes
-2. Run `aiki fix` to address findings
-3. Manually re-review to verify fixes
-4. Repeat until clean
-
-This is tedious and error-prone. The user has to remember to re-review, track which iteration they're on, and decide when to stop.
+The CLI primitives (`fix --loop`, `review --fix`) give users explicit control over the review-fix cycle, but the user still has to remember to run them. There's no automated way to trigger the review loop after every agent turn.
 
 ---
 
 ## Summary
 
-The review loop has **two layers** that build on the existing `review` and `fix` commands:
+The `aiki/review-loop` hook plugin automates the review-fix cycle after every agent turn using the flow system. It triggers on `turn.completed` — reviewing tasks completed during the turn rather than firing per-task (which would be too noisy).
 
-1. **CLI primitives** — `aiki fix --loop` and `aiki review --fix` give users and agents explicit control over the review-fix cycle. These are pure Rust implementations with no flow system dependencies.
-
-2. **Hook plugin** — `aiki/review-loop` automates the cycle after every agent turn using the flow system. This builds on the CLI primitives and requires turn stamping on task events plus a `turn.tasks.completed` lazy variable.
-
-The CLI layer ships first and is independently useful. The hook layer adds automation for users who want hands-off review loops.
+This builds on the CLI primitives and requires turn stamping on task events plus a `turn.tasks.completed` lazy variable.
 
 ---
 
@@ -42,175 +31,21 @@ The CLI layer ships first and is independently useful. The hook layer adds autom
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Core primitive | `aiki fix --loop` | Loop logic lives in one place; both CLI and hooks can use it |
-| Review sugar | `aiki review --fix` adds a subtask | Review command stays a task factory; task system handles sequencing |
-| Max iterations | 10 | Generous enough for complex fix chains, tight enough to prevent runaway loops |
 | Hook packaging | `aiki/review-loop` plugin, included via `after:` | Composable — users opt in without modifying their existing hooks |
-| Won't-do fix in loop | `fix --loop` re-reviews after won't-do fix | Verifies the agent's decision to skip a fix was appropriate (note: won't-do *work* tasks are excluded from hook trigger) |
+| Trigger event | `turn.completed` not `task.closed` | Fires once per turn, has native `autoreply:` support, avoids noise |
+| Won't-do work tasks | Excluded from hook trigger | Skipped/declined work doesn't need review |
 
 ---
 
-## Layer 1: CLI Primitives
-
-### `aiki fix --loop`
-
-The core loop primitive. Takes a review task ID and iterates until the code is clean or the depth limit is reached.
-
-**Syntax:**
-
-```
-aiki fix <review-id> --loop
-```
-
-**Algorithm:**
-
-```
-fix_loop(review_id, max_iterations=10):
-  for iteration in 1..=max_iterations:
-    # Step 1: Fix the review's findings
-    result = fix(review_id)
-    if result == approved:
-      return approved  # No issues, loop ends
-
-    followup_id = result.followup_id
-
-    # Step 2: Wait for fix to complete
-    wait(followup_id)  # Blocks until fix task closes
-
-    # Step 3: Re-review the original task
-    new_review = create_review(original_task_id)
-    run_to_completion(new_review)
-    review_id = new_review.id
-
-  return max_iterations_reached
-```
-
-**Behavior at each step:**
-
-1. Calls existing `fix()` logic — if no comments, prints "approved" and exits
-2. If comments found, creates followup task and runs it to completion (blocking)
-3. After fix completes, creates a new review of the original task (same scope)
-4. Runs review to completion (blocking), then loops back to step 1
-5. Depth guard: stops after N iterations (default 10) with a warning
-
-**Execution modes:**
-
-| Flags | Behavior |
-|-------|----------|
-| `fix <review> --loop` | Blocking — waits for entire loop to finish |
-| `fix <review> --loop --async` | Error — async doesn't make sense for `--loop` (use `review --fix --async` instead) |
-| `fix <review> --loop --start` | Agent takes over — runs fix in current session, loops in-session |
-
-**The `--start` variant** is the most interesting for agents. The agent fixes issues in its own session (preserving context), then `--loop` handles the re-review and next fix cycle. Each fix iteration reuses the agent's session.
-
-**Output:**
-
-```
-## Fix Loop
-- **Review:** rvwnmnsmtlvtlsqtyllrtwkqvlrnopqr
-- **Iteration:** 1 of 10
-- **Issues:** 2
-
-1. Potential null pointer dereference in auth handler
-2. Missing error handling in API client
-
-Fixing...
-
-## Fix Loop
-- **Review:** xnvprvxypulsxzqnznsxylrzkkqssytt
-- **Iteration:** 2 of 10
-- **Issues:** 1
-
-1. Error message missing context
-
-Fixing...
-
-## Approved
-- **Review:** qrsvtnmwxypulsxzqnznsxylrzkkqsmn
-- Review approved - no issues found.
-- **Iterations:** 3
-```
-
-### `aiki review --fix`
-
-Sugar that creates a review with a fix-loop subtask. The review command stays a task factory — `--fix` just adds one more subtask to the DAG.
-
-**Syntax:**
-
-```
-aiki review <task-id> --fix
-```
-
-**How it works:**
-
-The `--fix` flag is passed through to the review template via the `options.*` data namespace. The review command sets `options.fix = "true"` in the template data map alongside the existing `scope.*` keys:
-
-```
-scope.kind              = "task"
-scope.id                = "abc123"
-scope.name              = "Task (abc123)"
-options.fix             = "true"
-```
-
-The review template uses a conditional subtask reference to pull in `aiki/fix/loop`:
-
-```markdown
-{% subtask aiki/fix/loop if data.options.fix %}
-```
-
-The subtask template at `.aiki/templates/aiki/fix/loop.md` contains the instructions:
-
-```markdown
-# Fix Loop
-
-Address all issues found during review and iterate until approved.
-
-aiki fix {{parent.id}} --loop
-```
-
-**What it creates:**
-
-```
-Review Task (parent)
-  ├── Digest         (subtask linked via subtask-of — from {% subtask aiki/review/<kind> %})
-  ├── Review         (subtask linked via subtask-of — existing inline subtask)
-  └── Fix Loop       (subtask linked via subtask-of — from {% subtask aiki/fix/loop %})
-              instructions: aiki fix <parent-id> --loop
-```
-
-The fix-loop subtask is blocked by the review subtasks. When the review closes:
-- If issues found → fix-loop subtask becomes ready, runs `fix --loop`
-- If no issues → fix-loop subtask can detect "approved" and close itself as won't-do
-
-**Composition with execution modes:**
-
-| Flags | Behavior |
-|-------|----------|
-| `review <task> --fix` | Blocking — waits for review + entire fix loop |
-| `review <task> --fix --async` | Returns immediately — review + fix loop run in background |
-| `review <task> --fix --start` | Agent takes over the review; fix-loop subtask becomes ready after agent closes review |
-
-The `--start --fix` case is natural: the agent does the review itself, closes it, and the fix-loop subtask appears in their ready queue. No special wiring — the task system handles sequencing.
-
-**Without `--fix`**, the review command works exactly as today (no behavioral change).
-
-### Depth Counting
-
-`fix --loop` maintains a simple iteration counter (hardcoded max of 10). The source chain (`source: task:` links) also provides an audit trail — each review and fix task links to its predecessor, so `aiki task show` reveals the full iteration history.
-
----
-
-## Layer 2: Hook Plugin
-
-The hook-based approach automates the review loop after every agent turn. It triggers on `turn.completed` — reviewing tasks completed during the turn rather than firing per-task (which would be too noisy).
-
-### Why `turn.completed` Instead of `task.closed`
+## Why `turn.completed` Instead of `task.closed`
 
 Triggering on `task.closed` fires a review for every individual task closure — including subtasks, fix tasks, and other intermediate work. This creates noise: multiple reviews per turn, reviews of reviews, and unnecessary churn.
 
 `turn.completed` fires once per agent turn and has native `autoreply:` support. No Event Gap — no engine changes needed for `autoreply:`.
 
-### `turn.tasks.completed` Variable
+---
+
+## `turn.tasks.completed` Variable
 
 The hook needs to know **which tasks were completed this turn** and whether they represent **original work** (not review/fix loop artifacts). We add a new event variable to `turn.completed`:
 
@@ -241,7 +76,9 @@ Concretely, `aiki fix` creates followup tasks with `sourced-from → review_task
 
 > **Note — Reconciliation with `default-hooks.md`:** The default-hooks spec proposes a simpler `$event.tasks.closed` payload field populated in `handle_turn_completed`. That field is general-purpose (all tasks closed this turn, no filtering). `$event.turn.tasks.completed` is a **derived** lazy variable built on top of `tasks.closed` that applies the review-loop-specific filtering rules above. The plugin YAML in default-hooks should reference `$event.turn.tasks.completed`, not `$event.tasks.closed`. (Alternatively, the filtering can be folded into the handler that populates `tasks.closed` — but this couples the general payload to review-loop semantics.)
 
-### Turn Stamping on Task Events
+---
+
+## Turn Stamping on Task Events
 
 Task lifecycle events (`Closed`, `Started`, `Stopped`, etc.) are stamped with `turn` and `turn_id` at write time. This allows `$event.turn.tasks.completed` to join task events to turns without relying on timestamps or cross-process state.
 
@@ -294,7 +131,9 @@ There is no race window because:
 
 **Graceful fallback:** If session detection or turn lookup fails (e.g., `aiki task close` called outside a session), `turn` defaults to 0 and `turn_id` to empty string. These events won't match any `turn.completed`'s `$event.turn.id`, which is fine — untracked tasks simply don't appear in `$event.turn.tasks.completed`.
 
-### The Plugin
+---
+
+## The Plugin
 
 ```yaml
 # .aiki/hooks/aiki/review-loop.yml
@@ -325,38 +164,42 @@ The agent receives the autoreply and runs `aiki review --fix --start`:
 
 **Loop prevention:** When the agent completes a review turn or fix turn, the hook fires again — but `$event.turn.tasks.completed` is empty (only review/fix tasks were closed), so the `if:` guard skips the autoreply. The loop breaks naturally.
 
-### Prerequisites
+---
+
+## Prerequisites
 
 | Component | Status | Needed By |
 |-----------|--------|-----------|
-| `aiki review` command | Implemented | Both |
-| `aiki fix` command | Implemented | Both |
-| `aiki fix --loop` | **Not implemented** | CLI (Layer 1) |
-| `aiki review --fix` | **Not implemented** | CLI (Layer 1) |
-| `autoreply:` on `turn.completed` | Implemented | Hook (Layer 2) |
-| Hook composition (`before:`/`after:`) | Implemented | Hook (Layer 2) |
-| **Turn stamping on task events** | **Not implemented** | **Hook (Layer 2)** |
-| **`turn.tasks.completed` event variable** | **Not implemented** | **Hook (Layer 2)** |
-| **Built-in plugin registry** | **Not implemented** | **Hook (Layer 2)** |
-| **Default hookfile scaffolding** (`aiki init` creates `.aiki/hooks.yml`) | **Not implemented** | **Hook (Layer 2)** |
-| Built-in hook file | **Not created** | Hook (Layer 2) |
+| `aiki review` command | Implemented | — |
+| `aiki fix` command | Implemented | — |
+| `aiki fix --loop` | **Not implemented** | [Loop Flags](loop-flags.md) |
+| `aiki review --fix` | **Not implemented** | [Loop Flags](loop-flags.md) |
+| `autoreply:` on `turn.completed` | Implemented | — |
+| `include:` directive and composition blocks ([Better Include](better-include-for-plugins.md)) | Implemented | — |
+| **Turn stamping on task events** | **Not implemented** | This spec |
+| **`turn.tasks.completed` event variable** | **Not implemented** | This spec |
+| **Built-in plugin registry** | **Not implemented** | [Default Hooks](default-hooks.md) |
+| **Default hookfile scaffolding** (`aiki init` creates `.aiki/hooks.yml`) | **Not implemented** | [Default Hooks](default-hooks.md) |
+| Built-in hook file | **Not created** | This spec |
 
-### Enabling / Disabling
+---
 
-Users add `aiki/review-loop` to their hookfile's `after:` list (created by `aiki init` — see `ops/now/default-hooks.md`):
+## Enabling / Disabling
+
+Users get `aiki/review-loop` automatically via `include: - aiki/default` in their hookfile (created by `aiki init` — see `ops/now/default-hooks.md`). The review loop runs as an `after:` inline handler inside `aiki/default`:
 
 ```yaml
-# .aiki/hooks.yml
+# .aiki/hooks.yml (created by aiki init)
 name: hooks
-version: "1"
-
-after:
-  - aiki/review-loop
+include:
+  - aiki/default  # Includes review loop in its after: block
 ```
 
-Remove the line to disable. The default hookfile ships with `aiki/review-loop` already enabled.
+To disable, users can either remove `aiki/default` from `include:` or override `aiki/default` with a custom version that omits the review loop.
 
-### Customizing
+---
+
+## Customizing
 
 Users can override by creating their own `.aiki/hooks/aiki/review-loop.yml` or creating a different plugin:
 
@@ -373,52 +216,6 @@ turn.completed:
 
           aiki review --fix --start --agent codex --template myorg/security-review
 ```
-
----
-
-## Iteration Lifecycle (CLI)
-
-When a user or agent runs `aiki review <task> --fix`:
-
-### Step 1: Review Created
-
-```
-aiki review <task-id> --fix
-```
-
-Creates the review task with digest, review, and fix-loop subtasks. The review runs (assigned to codex by default).
-
-### Step 2: Codex Reviews
-
-The codex agent:
-1. Reads the task changes with `aiki task diff`
-2. Reviews for bugs, quality, security, performance
-3. Adds comments for each issue found
-4. Closes the review task
-
-### Step 3: Fix Loop Subtask Fires
-
-The fix-loop subtask becomes ready. It runs `aiki fix <review-id> --loop`:
-
-- If codex found issues → creates followup, runs fix, re-reviews
-- If codex found no issues → prints "approved", exits
-
-### Step 4: Loop Iterates
-
-Each iteration:
-1. Fix agent addresses the review comments
-2. Fix agent closes the followup task
-3. `fix --loop` creates a new review of the original task
-4. Review runs to completion
-5. If issues remain → loop continues
-6. If clean → "approved", loop ends
-
-### Step 5: Termination
-
-The loop ends when:
-- A review finds zero issues (natural termination)
-- Max iterations reached (depth guard)
-- User interrupts (Ctrl+C, `aiki task stop`)
 
 ---
 
@@ -492,47 +289,11 @@ aiki task show <id>    # See task details + sources (iteration chain)
 
 ---
 
-## Loop Termination
-
-### Natural Termination
-
-The loop terminates when a review finds **zero issues**:
-
-1. `fix --loop` receives the review task ID
-2. Calls `fix()` — review has no comments
-3. Prints "approved" and exits 0
-4. Loop ends
-
-### Depth Guard
-
-`fix --loop` maintains a simple iteration counter. At the limit (default 10):
-
-```
-## Fix Loop — Max Iterations Reached
-- Reached maximum of 10 iterations without full approval.
-- Run `aiki review list` to see review history.
-```
-
-### Manual Termination
-
-- **Stop the agent** — Ctrl+C
-- **Stop the review task** — `aiki task stop <review-id>`
-- **Close as won't-do** — `aiki task close <fix-id> --wont-do --summary "Acceptable as-is"`
-
----
-
 ## Variants
 
-### Self-Review (No Codex)
+### Self-Review (Default)
 
-For users who don't have codex:
-
-```bash
-# CLI: agent reviews its own work
-aiki review <task-id> --fix --agent claude-code
-```
-
-The default hook plugin already does self-review (the agent reviews its own work via `--start`). To use codex as a separate reviewer instead, override the hook:
+The default hook plugin does self-review (the agent reviews its own work via `--start`). To use codex as a separate reviewer instead, override the hook:
 
 ```yaml
 # .aiki/hooks/aiki/review-loop.yml (codex variant)
@@ -586,14 +347,8 @@ Built into `$event.turn.tasks.completed` — only tasks with outcome "done" are 
 | Scenario | Behavior |
 |----------|----------|
 | Agent closes task with no code changes | `$event.turn.tasks.completed` includes it (outcome done) → review runs |
-| Review task fails/errors | `fix --loop` logs error and stops |
-| Codex is unavailable | Review creation fails; `fix --loop` exits with error |
 | Multiple work tasks closed in same turn | All appear in `$event.turn.tasks.completed`; single review covers all |
 | Agent closes fix task as won't-do | Won't-do outcome → excluded from `$event.turn.tasks.completed` |
-| Network timeout during review | `fix --loop` blocks on review completion; fails on timeout |
-| Depth limit reached | Warning message, loop exits |
-| `fix --loop` called on non-review task | Error: "Task X is not a review task" (existing validation) |
-| `review --fix` with `--start` | Agent does review; fix-loop subtask becomes ready after |
 | Hook fires after review turn | `$event.turn.tasks.completed` empty (review task filtered) → hook skips |
 | Hook fires after fix turn | `$event.turn.tasks.completed` empty (fix task has review in ancestor graph) → hook skips |
 | No tasks closed this turn | `$event.turn.tasks.completed` empty → hook skips |
@@ -603,34 +358,7 @@ Built into `$event.turn.tasks.completed` — only tasks with outcome "done" are 
 
 ## Implementation Plan
 
-### Phase 1: `fix --loop` (CLI primitive)
-
-Add `--loop` flag to `aiki fix`:
-
-1. Add clap arg to fix command in `cli/src/main.rs`
-2. Implement loop logic in `cli/src/commands/fix.rs`:
-   - Wrap existing `run_fix()` in a loop
-   - After fix completes, create new review of original task
-   - Run review to completion
-   - Check for issues, iterate or exit
-3. Track original task ID (extract from review's `scope.id`)
-4. Hardcoded depth guard (max 10 iterations)
-5. Add iteration output messages
-6. Tests
-
-### Phase 2: `review --fix` (CLI sugar)
-
-Add `--fix` flag to `aiki review`:
-
-1. Add clap arg to review command
-2. Pass `options.fix` through `scope_data` to `create_review_task_from_template()`
-3. ~~Add conditional subtask to `aiki/review` template~~ Done: `{% subtask aiki/fix/loop if data.options.fix %}` + `.aiki/templates/aiki/fix/loop.md`
-4. Execution mode composes naturally (blocking/async/start)
-5. Tests
-
-### Phase 3: Turn stamping + `turn.tasks.completed` event variable
-
-**3a: Turn stamping on task events**
+### Phase 1: Turn stamping on task events
 
 Add `turn` and `turn_id` to task lifecycle events:
 
@@ -643,7 +371,7 @@ Add `turn` and `turn_id` to task lifecycle events:
    - Graceful fallback: if session detection or turn lookup fails, `turn=None` / `turn_id=None`
 4. Tests (unit: roundtrip serialization; integration: stamp correctness)
 
-**3b: `turn.tasks.completed` lazy variable**
+### Phase 2: `turn.tasks.completed` lazy variable
 
 Add the lazy variable to `turn.completed` events in the flow engine:
 
@@ -655,24 +383,15 @@ Add the lazy variable to `turn.completed` events in the flow engine:
 3. Return space-separated task IDs (empty string if none)
 4. Tests
 
-### Phase 4: Hook plugin
+### Phase 3: Hook plugin
 
 1. **Embed plugin as built-in** — add `aiki/review-loop` to the built-in plugin registry (see `ops/now/default-hooks.md` Phase 2). The plugin is shipped inside the binary via `include_str!()`, resolved at the loader level when no user override exists on disk.
 2. Tests
-
-### Phase 5: Documentation
-
-Update CLAUDE.md and relevant docs to cover:
-- `fix --loop` usage
-- `review --fix` usage
-- Hook plugin setup (`after: aiki/review-loop`)
 
 ---
 
 ## Open Questions
 
-1. **Default hook inclusion** — Should `aiki init` automatically include `aiki/review-loop` in the default hook's `after:` list? Or should users add it manually?
+1. **Default hook inclusion** — Should `aiki init` automatically include `aiki/review-loop` in the default hook's `include:` list? Or should users add it manually?
 
 2. **Notification on completion** — Should there be a prominent visual signal when the loop terminates? Currently just the "approved" message from `aiki fix`.
-
-3. **Configurable max iterations** — Hardcoded at 10 for now. Add `--max-iterations` flag later if needed.

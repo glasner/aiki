@@ -34,7 +34,7 @@ pub fn handle_commit_message_started(
     let flow_result = execute_hook(
         EventType::CommitMessageStarted,
         &mut state,
-        &core_hook.commit_message_started,
+        &core_hook.handlers.commit_message_started,
     )?;
 
     // Extract failures from state

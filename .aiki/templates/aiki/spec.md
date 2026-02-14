@@ -28,6 +28,8 @@ You are helping the user write a spec at `{{data.spec_path}}`.
 - Use subtasks to track progress through the spec workflow
 - Track open questions as subtasks under "Resolve open questions", NOT in the spec file's "Open Questions" section
 
+Any questions? 
+
 ## Spec Structure (suggested)
 
 Use this structure for new specs:

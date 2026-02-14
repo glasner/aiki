@@ -601,6 +601,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             priority,
             assignee,
             data,
+            instructions,
             timestamp,
         } => {
             add_metadata("event", "updated", &mut lines);
@@ -624,6 +625,10 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
                 for (key, value) in data {
                     add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
                 }
+            }
+            // Add instructions if present (escaped to handle newlines and special chars)
+            if let Some(instr) = instructions {
+                add_metadata_escaped("instructions", instr, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -904,12 +909,19 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                     .collect()
             });
 
+            // Parse instructions (escaped value)
+            let instructions = fields
+                .get("instructions")
+                .and_then(|v| v.first())
+                .map(|s| unescape_metadata_value(s));
+
             Some(TaskEvent::Updated {
                 task_id,
                 name,
                 priority,
                 assignee,
                 data,
+                instructions,
                 timestamp,
             })
         }
@@ -1689,6 +1701,7 @@ timestamp=2026-01-09T10:30:00Z
             priority: None,
             assignee: None,
             data: None,
+            instructions: None,
             timestamp,
         };
 
@@ -1740,6 +1753,7 @@ timestamp=2026-01-09T10:30:00Z
             priority: Some(TaskPriority::P0),
             assignee: None,
             data: None,
+            instructions: None,
             timestamp,
         };
 
@@ -1778,6 +1792,7 @@ timestamp=2026-01-09T10:30:00Z
             priority: Some(TaskPriority::P1),
             assignee: None,
             data: None,
+            instructions: None,
             timestamp: Utc::now(),
         };
 
@@ -1816,6 +1831,7 @@ timestamp=2026-01-09T10:30:00Z
             priority: None,
             assignee: None,
             data: None,
+            instructions: None,
             timestamp: Utc::now(),
         };
 
@@ -1834,6 +1850,95 @@ timestamp=2026-01-09T10:30:00Z
                 assert_eq!(n1, n2);
             }
             _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_with_instructions() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: None,
+            priority: None,
+            assignee: None,
+            data: None,
+            instructions: Some("1. Check token validation in `auth_handler.rs`\n2. Handle the null `claims` field\n3. Write tests".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated { instructions: i1, .. },
+                TaskEvent::Updated { instructions: i2, .. },
+            ) => {
+                assert_eq!(i1, i2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_instructions_with_special_chars() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: None,
+            priority: None,
+            assignee: None,
+            data: None,
+            instructions: Some("Fix bug: x = y + 1\nCheck 100% coverage\nUse `backticks` and \"quotes\"".to_string()),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::Updated { instructions: i1, .. },
+                TaskEvent::Updated { instructions: i2, .. },
+            ) => {
+                assert_eq!(i1, i2);
+            }
+            _ => panic!("Event type mismatch"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_updated_no_instructions() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: Some("Updated".to_string()),
+            priority: None,
+            assignee: None,
+            data: None,
+            instructions: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(!block.contains("instructions="), "Should not contain instructions when None");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Updated { instructions, .. } => {
+                assert!(instructions.is_none());
+            }
+            _ => panic!("Expected Updated event"),
         }
     }
 
@@ -1972,6 +2077,7 @@ timestamp=2026-01-09T10:30:00Z
             priority: Some(TaskPriority::P1),
             assignee: None,
             data: None,
+            instructions: None,
             timestamp: DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
                 .unwrap()
                 .with_timezone(&Utc),

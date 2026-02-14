@@ -483,6 +483,16 @@ impl HookEngine {
         match statement {
             HookStatement::If(if_stmt) => Self::execute_if(if_stmt, state),
             HookStatement::Switch(switch_stmt) => Self::execute_switch(switch_stmt, state),
+            HookStatement::Hook(hook_action) => {
+                // hook: actions should be intercepted by HookComposer, not the engine.
+                // If we reach here, it means the engine was called directly without
+                // the composer's statement interceptor.
+                Err(AikiError::Other(anyhow::anyhow!(
+                    "hook: action '{}' must be handled by HookComposer, not HookEngine directly. \
+                     Use execute_statements_with_hooks() instead.",
+                    hook_action.hook
+                )))
+            }
             HookStatement::Action(action) => {
                 // Execute the action
                 let result = Self::execute_action(action, state)?;

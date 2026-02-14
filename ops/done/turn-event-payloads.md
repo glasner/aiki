@@ -6,7 +6,7 @@
 
 **Related Documents**:
 - [Default Hooks](default-hooks.md) - Init-time hook scaffolding
-- [Review Loop](review-loop.md) - Review-fix cycle plugin
+- [Review Loop Plugin](../now/review-loop-plugin.md) - Review-fix cycle plugin
 
 ---
 

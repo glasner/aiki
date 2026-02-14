@@ -187,6 +187,25 @@ impl AikiState {
         self.variable_metadata.clear();
     }
 
+    /// Save current variables and metadata for later restoration.
+    ///
+    /// Used by `hook:` action to isolate variables: save caller's vars,
+    /// clear for target, then restore after.
+    pub fn save_variables(&self) -> (HashMap<String, String>, HashMap<String, ActionResult>) {
+        (self.let_vars.clone(), self.variable_metadata.clone())
+    }
+
+    /// Restore previously saved variables and metadata.
+    ///
+    /// Must be called unconditionally (even on error) to prevent variable drift.
+    pub fn restore_variables(
+        &mut self,
+        saved: (HashMap<String, String>, HashMap<String, ActionResult>),
+    ) {
+        self.let_vars = saved.0;
+        self.variable_metadata = saved.1;
+    }
+
     /// Register a PID to receive SIGTERM after hooks complete
     ///
     /// Used by session.end action to defer termination until all hooks are done.

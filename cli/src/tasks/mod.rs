@@ -239,6 +239,7 @@ pub fn reassign_task(cwd: &Path, task_id: &str, new_assignee: &str) -> Result<()
         priority: None,
         assignee: Some(Some(new_assignee.to_string())), // Some(Some(x)) = assign to x
         data: None,
+        instructions: None,
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &update_event)?;

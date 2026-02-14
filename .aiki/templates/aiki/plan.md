@@ -32,17 +32,30 @@ The command outputs the task ID on stdout (single line, e.g., `xyxkluynlnonltwtp
 
 **Spec title extraction:** Use the first H1 heading (`# Title`) from the spec file. If no H1 found, use the filename without extension.
 
-## Add Subtasks
-
-For each implementation step identified, create a subtask:
+After creating the plan task, set instructions on it:
 
 ```bash
-aiki task add "<step description>" --parent <plan_task_id>
+aiki task update $PLAN_ID --instructions <<'MD'
+Implementation plan for <spec title>.
+See spec: {{data.spec}}
+MD
+```
+
+## Add Subtasks
+
+For each implementation step identified, create a subtask and set instructions:
+
+```bash
+TASK_ID=$(aiki task add "<step description>" --parent <plan_task_id>)
+aiki task update $TASK_ID --instructions <<'MD'
+<detailed instructions for this step — enough context for an
+executing agent to complete the step without re-reading the spec>
+MD
 ```
 
 **Guidelines for subtasks:**
 - Each subtask should be discrete and actionable
-- Include enough context for the executing agent
+- Include enough context in the instructions for an executing agent
 - Order subtasks logically (dependencies first)
 - Keep subtask names concise but descriptive
 

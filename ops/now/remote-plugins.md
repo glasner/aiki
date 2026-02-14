@@ -12,19 +12,11 @@ Plugin identity follows `owner/repo`, mapping directly to GitHub:
 aiki plugin install owner/repo
 ```
 
-Internally, references carry a host: `github.com/owner/repo`. The host is hidden from users — `github.com` is the implicit default. Git operations use HTTPS URLs: `https://github.com/{owner}/{repo}.git`. An explicit host is supported for future extensibility:
-
-```
-aiki plugin install gitlab.com/myorg/security   # explicit host (future)
-```
-
-**Host detection:** If the first segment contains a dot, it's treated as a host. Otherwise, `github.com` is implied.
-
-**Host restriction (current):** Only `github.com` is supported. Explicit non-GitHub hosts (e.g. `gitlab.com/myorg/security`) are rejected with an error: `"Non-GitHub hosts are not yet supported"`. This avoids storage collisions — see Storage section for details.
+Only GitHub is supported. Git operations use HTTPS URLs: `https://github.com/{owner}/{repo}.git`. References that look like explicit hosts (first segment contains a dot) are rejected with an error: `"Only GitHub plugins are supported"`.
 
 ## Namespace Alias
 
-The `aiki` namespace maps to the `glasner` GitHub owner. This is hardcoded and will never be configurable.
+`aiki` is a **reserved namespace** that maps to the `glasner` GitHub owner. This is hardcoded and will never be configurable.
 
 ```
 aiki plugin install aiki/way
@@ -42,11 +34,10 @@ aiki plugin install somecorp/security
 
 ## Repo Structure
 
-A repo **is** a plugin. The repo root contains `hooks.yaml` and/or `templates/` directly, plus an optional `deps` file:
+A repo **is** a plugin. The repo root contains `hooks.yaml` and/or `templates/` directly:
 
 ```
 # github.com/glasner/way repo contents:
-├── deps                ← optional, declares plugin dependencies
 ├── hooks.yaml
 └── templates/
     ├── fix.md
@@ -57,35 +48,42 @@ One repo = one plugin. No monorepos, no subdirectory extraction.
 
 ## Plugin Dependencies
 
-Plugins can declare dependencies on other plugins via a `deps` file in the repo root.
+Dependencies are **auto-derived** — no manifest file needed. The same three-part reference scanning used for project-level derivation (`ns/plugin/template`) is applied to a plugin's own contents. Any three-part reference found in a plugin's `hooks.yaml` or markdown files under `templates/` (recursively) implies a dependency on `ns/plugin`.
 
-### `deps` file format
+### How it works
 
-One plugin reference per line. Blank lines and `#` comments allowed:
+A plugin's `hooks.yaml` and templates may reference other plugin templates:
 
+```yaml
+# hooks.yaml in aiki/way
+review:
+  template: aiki/core/review-base    # ← implies dependency on aiki/core
 ```
-# deps
-aiki/core
-somecorp/utils
+
+```markdown
+<!-- templates/fix.md in aiki/way -->
+{{> aiki/core/preamble}}             <!-- ← implies dependency on aiki/core -->
 ```
 
-References follow the same format as `aiki plugin install` arguments (including explicit hosts).
-
-No `deps` file = no dependencies. Most plugins won't have one.
+Scanning extracts `aiki/core` as a dependency. Self-references (references to the plugin's own namespace/plugin) are ignored.
 
 ### Transitive resolution
 
-Dependencies are resolved recursively. If `aiki/way` depends on `aiki/core`, and `aiki/core` depends on `aiki/base`, installing `aiki/way` installs all three.
+Dependencies are resolved recursively. If `aiki/way` references `aiki/core`, and `aiki/core` references `aiki/base`, installing `aiki/way` installs all three.
 
 **Cycle detection:** Track visited plugins during resolution. If a plugin appears twice in the walk, skip it (no error).
 
 **Diamond dependencies:** If `A → C` and `B → C`, `C` is installed once. The set of plugins to install is deduplicated before any cloning happens.
 
+### Shared scanning function
+
+The same `derive_plugin_refs(dir)` function works on both project `.aiki/` dirs and plugin dirs — it scans YAML files and all markdown files under `templates/` (recursively) for three-part references and returns unique `namespace/plugin` pairs. This means zero new file formats and zero extra work for plugin authors.
+
 ## Storage
 
 Plugins are installed **user-level** at `~/.aiki/plugins/`. They are shallow clones (`git clone --depth 1`).
 
-**Storage keys on `namespace/plugin` only** — host is not part of the path. This is safe because only `github.com` is currently accepted. When multi-host support is added, the layout must change to `~/.aiki/plugins/{host}/{ns}/{repo}/` to avoid collisions (e.g. `github.com/acme/tool` vs `gitlab.com/acme/tool`).
+**Storage keys on `namespace/plugin` only** — host is not part of the path. This is safe because only `github.com` is supported.
 
 ```
 ~/.aiki/
@@ -97,8 +95,7 @@ Plugins are installed **user-level** at `~/.aiki/plugins/`. They are shallow clo
     │   │       └── base.md
     │   └── way/              # cloned from https://github.com/glasner/way.git
     │       ├── .git/
-    │       ├── deps          # contains: aiki/core
-    │       ├── hooks.yaml
+    │       ├── hooks.yaml    # references aiki/core/review-base → dep on aiki/core
     │       └── templates/
     │           ├── fix.md
     │           └── review.md
@@ -137,7 +134,7 @@ Resolution checks project-level first, then user-level plugins. The reference fo
 "aiki/way/review"       → .aiki/templates/aiki/way/review.md  (wins over plugin)
 ```
 
-The reference is the path relative to `.aiki/templates/`, minus `.md`. No special namespaces, no reserved words. Project templates always win.
+The reference is the path relative to `.aiki/templates/`, minus `.md`. The `aiki` namespace is reserved (see Namespace Alias). Project templates always win.
 
 ## Commands
 
@@ -148,8 +145,8 @@ With argument — install a specific plugin and its dependencies:
 ```bash
 aiki plugin install aiki/way
 # 1. git clone --depth 1 https://github.com/glasner/way.git ~/.aiki/plugins/aiki/way
-# 2. Read ~/.aiki/plugins/aiki/way/deps
-# 3. Install any listed plugins not already present (recursively)
+# 2. Scan hooks.yaml + templates/**/*.md for three-part references
+# 3. Install any referenced plugins not already present (recursively)
 ```
 
 Output:
@@ -159,7 +156,9 @@ Installed: aiki/way
 Installed (dependency): aiki/core
 ```
 
-Already-installed plugins are skipped silently.
+Already-installed plugins (directory exists with `.git/`) are skipped silently. Partial directories (no `.git/`) are removed and re-cloned.
+
+Without argument (outside a repo) — exit with error: `"Not in an aiki project. Use 'aiki plugin install <reference>' to install a specific plugin."`.
 
 Without argument (inside a repo) — derive required plugins from project references and install all missing, including their dependencies:
 
@@ -175,24 +174,25 @@ This same derivation logic is shared by `aiki init` and `aiki doctor`.
 
 ### `aiki plugin update [reference]`
 
-With argument — update a specific plugin and reconcile its dependencies:
+With argument — update a specific plugin and reconcile its dependencies. If the plugin is not installed, exit with error: `"Plugin {ref} is not installed"`.
+
 
 ```bash
 aiki plugin update aiki/way
 # 1. git -C ~/.aiki/plugins/aiki/way pull
-# 2. Re-read deps (may have changed after pull)
-# 3. Install any new deps not already present (recursively)
+# 2. Re-scan for references (may have changed after pull)
+# 3. Install any newly-referenced plugins not already present (recursively)
 # 4. Update existing deps
 ```
 
-Deps that were removed from the `deps` file are **not** auto-deleted — they may be used by other plugins. Use `aiki plugin remove` to clean up.
+References that disappear after an update don't trigger auto-deletion — the formerly-referenced plugin may be used by others. Use `aiki plugin remove` to clean up.
 
 Without argument — update all installed plugins and reconcile dependencies:
 
 ```bash
 aiki plugin update
 # 1. git pull each installed plugin
-# 2. Re-read all deps files
+# 2. Re-scan all plugins for references
 # 3. Install any newly-required deps
 # 4. Update existing deps
 ```
@@ -225,14 +225,16 @@ Installed (~/.aiki/plugins/):
 
 ### `aiki plugin remove <reference>`
 
+If the plugin is not installed, exit with error: `"Plugin {ref} is not installed"`.
+
 Removes the plugin and any of its dependencies that are no longer needed:
 
 ```bash
 aiki plugin remove aiki/way
-# 1. Read aiki/way/deps → [aiki/core]
+# 1. Scan aiki/way for references → [aiki/core, somecorp/utils]
 # 2. rm -rf ~/.aiki/plugins/aiki/way
-# 3. For each dep (aiki/core):
-#    - Scan all remaining installed plugins' deps files
+# 3. For each dep:
+#    - Scan all remaining installed plugins for references to it
 #    - Also check project .aiki/ references
 #    - If nothing else references it → remove it too (recursively)
 #    - If still referenced → keep it
@@ -247,10 +249,23 @@ Kept (still needed): aiki/core ← used by cooldev/linter
 ```
 
 **Reverse dependency check** scans two sources:
-1. `~/.aiki/plugins/*/*/deps` — other installed plugins
+1. All remaining installed plugins' `hooks.yaml` and `templates/**/*.md`
 2. `.aiki/` project references (if inside a repo) — project-level usage
 
 A dependency is only removed if it appears in neither.
+
+## Error Handling
+
+**No rollback.** Install and update operations are not transactional. If a dependency fails to clone or pull, already-installed plugins remain on disk. The command reports which plugins succeeded and which failed, then exits with a non-zero status:
+
+```
+Installed: aiki/way
+Error: failed to clone aiki/core — repository not found
+```
+
+Re-running the same command retries failed plugins (they aren't installed yet, so they won't be skipped). This is the remediation path — no manual cleanup needed.
+
+**Integrity check.** A plugin directory is considered installed only if it contains a `.git/` directory. Directories without `.git/` (e.g. from a previously interrupted clone) are treated as not installed — install will remove the partial directory and re-clone.
 
 ## Deriving Required Plugins
 
@@ -266,12 +281,13 @@ Three shared consumers:
 3. `aiki doctor` — derive + report status (including missing deps)
 
 ```rust
-fn derive_required_plugins(aiki_dir: &Path) -> Vec<PluginRef>
+// Core scanning — works on both project .aiki/ dirs and plugin dirs
+fn derive_plugin_refs(dir: &Path) -> Vec<PluginRef>
+
 fn check_installed(plugins: &[PluginRef]) -> Vec<(PluginRef, InstallStatus)>
 fn install_missing(plugins: &[PluginRef]) -> Result<()>
 
-// Dependency resolution
-fn parse_deps(plugin_dir: &Path) -> Vec<PluginRef>
+// Dependency resolution (uses derive_plugin_refs internally)
 fn resolve_deps_recursive(root: &PluginRef, installed: &HashSet<PluginRef>) -> Vec<PluginRef>
 fn reverse_deps(plugin: &PluginRef, plugins_dir: &Path) -> Vec<PluginRef>
 ```
@@ -290,7 +306,7 @@ This document extends [plugin-directory.md](plugin-directory.md). Key changes to
 ## Deferred
 
 - **Versioning/pinning** — No tags, branches, or lockfiles. Always fetches default branch. Add when the first user complains.
-- **Non-GitHub hosts** — Host detection parses dots in the first segment, but non-GitHub hosts are rejected at install time. When added, storage layout must include host in path to prevent collisions.
-- **Full plugin metadata** — No `plugin.yaml`. The `deps` file handles dependencies; identity comes from directory convention. A full manifest can be introduced later if more metadata is needed.
+- **Non-GitHub hosts** — Only GitHub is supported. If added later, storage layout must include host in path to prevent collisions.
+- **Full plugin metadata** — No `plugin.yaml` or manifest. Dependencies are auto-derived from content references. Identity comes from directory convention. A manifest can be introduced later if explicit metadata is needed.
 - **Plugin search/discovery** — No registry. Users share plugin references directly.
 - **Dependency version constraints** — Deps are unversioned. All plugins track their default branch. Pinning a dep to a tag/branch is deferred.

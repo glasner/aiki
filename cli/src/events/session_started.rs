@@ -65,7 +65,7 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
     let flow_result = execute_hook(
         EventType::SessionStarted,
         &mut state,
-        &core_hook.session_started,
+        &core_hook.handlers.session_started,
     )?;
 
     // Extract failures from state

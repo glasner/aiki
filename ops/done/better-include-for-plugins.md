@@ -6,7 +6,7 @@
 
 **Related Documents**:
 - [Default Hooks](default-hooks.md) - Hookfile scaffolding and `aiki/default` plugin
-- [Review Loop](review-loop.md) - First composable plugin (after-position)
+- [Review Loop Plugin](../now/review-loop-plugin.md) - First composable plugin (after-position)
 - [Plugin Directory](../next/plugin-directory.md) - Future plugin directory structure
 - [Flow Composition](../done/milestone-1.3-flow-composition.md) - Current before/after architecture
 

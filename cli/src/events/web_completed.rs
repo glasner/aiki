@@ -50,7 +50,7 @@ pub fn handle_web_completed(payload: AikiWebCompletedPayload) -> Result<HookResu
     let _flow_result = execute_hook(
         EventType::WebCompleted,
         &mut state,
-        &core_hook.web_completed,
+        &core_hook.handlers.web_completed,
     )?;
 
     // Extract failures from state
