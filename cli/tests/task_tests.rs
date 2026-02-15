@@ -56,6 +56,18 @@ fn aiki_task(path: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Asser
     cmd.assert()
 }
 
+/// Extract short task ID from "Added <id>" output line
+fn extract_short_id(output: &str) -> String {
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("Added ") {
+            // "Added abc1234 — name" or "Added abc1234"
+            let id = rest.split_whitespace().next().unwrap_or("");
+            return id.to_string();
+        }
+    }
+    panic!("Could not find 'Added <id>' in output: {}", output);
+}
+
 // ============================================================================
 // Phase 1: Core Workflow Tests
 // ============================================================================
@@ -229,9 +241,12 @@ fn test_task_close_wont_do() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close as won't do
-    aiki_task(temp_dir.path(), &["close", "--wont-do", "--summary", "Not implementing"])
-        .success()
-        .stdout(predicate::str::contains("Closed"));
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--wont-do", "--summary", "Not implementing"],
+    )
+    .success()
+    .stdout(predicate::str::contains("Closed"));
 
     // Verify the outcome persisted as wont_do via show
     let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
@@ -259,9 +274,12 @@ fn test_task_close_with_outcome_done() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome done (explicit)
-    aiki_task(temp_dir.path(), &["close", "--outcome", "done", "--summary", "Done explicitly"])
-        .success()
-        .stdout(predicate::str::contains("Closed"));
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--outcome", "done", "--summary", "Done explicitly"],
+    )
+    .success()
+    .stdout(predicate::str::contains("Closed"));
 
     // Verify the outcome persisted as done via show
     let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
@@ -289,9 +307,18 @@ fn test_task_close_with_outcome_wont_do() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with --outcome wont_do
-    aiki_task(temp_dir.path(), &["close", "--outcome", "wont_do", "--summary", "Won't do via outcome"])
-        .success()
-        .stdout(predicate::str::contains("Closed"));
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "close",
+            "--outcome",
+            "wont_do",
+            "--summary",
+            "Won't do via outcome",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Closed"));
 
     // Verify the outcome persisted as wont_do via show
     let show_output = aiki_task(temp_dir.path(), &["show", short_id]).success();
@@ -313,10 +340,13 @@ fn test_task_close_with_invalid_outcome() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Close with invalid --outcome should fail
-    aiki_task(temp_dir.path(), &["close", "--outcome", "invalid", "--summary", "Bad outcome"])
-        .failure()
-        .stderr(predicate::str::contains("Invalid outcome: 'invalid'"))
-        .stderr(predicate::str::contains("done, wont_do"));
+    aiki_task(
+        temp_dir.path(),
+        &["close", "--outcome", "invalid", "--summary", "Bad outcome"],
+    )
+    .failure()
+    .stderr(predicate::str::contains("Invalid outcome: 'invalid'"))
+    .stderr(predicate::str::contains("done, wont_do"));
 }
 
 // ============================================================================
@@ -342,9 +372,12 @@ fn test_task_add_with_parent() {
     let parent_id = &stdout[id_start..id_end];
 
     // Add child task
-    aiki_task(temp_dir.path(), &["add", "Child task", "--parent", parent_id])
-        .success()
-        .stdout(predicate::str::contains(&format!("{}.", parent_id))); // Child ID should start with parent.
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Child task", "--parent", parent_id],
+    )
+    .success()
+    .stdout(predicate::str::contains(&format!("{}.", parent_id))); // Child ID should start with parent.
 }
 
 #[test]
@@ -516,9 +549,12 @@ fn test_task_stop_with_blocked() {
     aiki_task(temp_dir.path(), &["start"]).success();
 
     // Stop with --blocked creates a blocker task
-    aiki_task(temp_dir.path(), &["stop", "--blocked", "Need API credentials"])
-        .success()
-        .stdout(predicate::str::contains("<stopped"));
+    aiki_task(
+        temp_dir.path(),
+        &["stop", "--blocked", "Need API credentials"],
+    )
+    .success()
+    .stdout(predicate::str::contains("<stopped"));
 
     // The blocker task should appear in list
     aiki_task(temp_dir.path(), &["list"])
@@ -603,66 +639,159 @@ fn test_task_show_current() {
 }
 
 #[test]
-fn test_task_update_name() {
+fn test_task_set_name() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Create a task
-    aiki_task(temp_dir.path(), &["add", "Original name"]).success();
-
-    // Get the task ID
+    // Create a task and extract short ID from "Added <id>" output
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "list"])
+        .args(["task", "add", "Original name"])
         .output()
         .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
-    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
-    let task_id = &stdout[id_start..id_end];
+    let task_id = extract_short_id(&stdout);
 
-    // Update the name
+    // Set the name
     aiki_task(
         temp_dir.path(),
-        &["update", task_id, "--name", "Updated name"],
+        &["set", &task_id, "--name", "Updated name"],
     )
     .success()
-    .stdout(predicate::str::contains(r#"cmd="update""#));
+    .stdout(predicate::str::contains("Updated name"));
 
     // Verify the name changed
-    aiki_task(temp_dir.path(), &["show", task_id])
+    aiki_task(temp_dir.path(), &["show", &task_id])
         .success()
-        .stdout(predicate::str::contains(r#"name="Updated name""#));
+        .stdout(predicate::str::contains("Updated name"));
 }
 
 #[test]
-fn test_task_update_priority() {
+fn test_task_set_priority() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Create a task (default P2)
-    aiki_task(temp_dir.path(), &["add", "Priority task"]).success();
-
-    // Get the task ID
+    // Create a task (default P2) and extract short ID
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["task", "list"])
+        .args(["task", "add", "Priority task"])
         .output()
         .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let id_start = stdout.find(r#"id=""#).unwrap() + 4;
-    let id_end = stdout[id_start..].find('"').unwrap() + id_start;
-    let task_id = &stdout[id_start..id_end];
+    let task_id = extract_short_id(&stdout);
 
-    // Update to P0
-    aiki_task(temp_dir.path(), &["update", task_id, "--p0"]).success();
+    // Set to P0
+    aiki_task(temp_dir.path(), &["set", &task_id, "--p0"]).success();
 
     // Verify the priority changed
-    aiki_task(temp_dir.path(), &["show", task_id])
+    aiki_task(temp_dir.path(), &["show", &task_id])
         .success()
-        .stdout(predicate::str::contains(r#"priority="p0""#));
+        .stdout(predicate::str::contains("p0"));
+}
+
+#[test]
+fn test_task_unset_assignee() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task with assignee
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "Assigned task", "--assignee", "claude-code"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Unset assignee — should produce confirmation with "Cleared" and field name
+    aiki_task(temp_dir.path(), &["unset", &task_id, "--assignee"])
+        .success()
+        .stdout(predicate::str::contains("Cleared"))
+        .stdout(predicate::str::contains("assignee"));
+}
+
+#[test]
+fn test_task_unset_rejects_name() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "My task"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Attempt to unset name — should fail (no --name flag exists)
+    aiki_task(temp_dir.path(), &["unset", &task_id])
+        .success()
+        .stdout(predicate::str::contains("No fields specified"));
+}
+
+#[test]
+fn test_task_unset_rejects_priority() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "My task"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Attempt to unset priority — should fail (no --priority flag exists)
+    aiki_task(temp_dir.path(), &["unset", &task_id])
+        .success()
+        .stdout(predicate::str::contains("No fields specified"));
+}
+
+#[test]
+fn test_task_unset_rejects_unknown_field() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "My task"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Attempt to unset with unknown flag — should fail at CLI parsing level
+    aiki_task(temp_dir.path(), &["unset", &task_id, "--foobar"]).failure(); // Clap will reject unknown flags
+}
+
+#[test]
+fn test_task_set_rejects_empty_data_value() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "add", "My task"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Start the task first
+    aiki_task(temp_dir.path(), &["start", &task_id]).success();
+
+    // Attempt to set data with empty value
+    aiki_task(temp_dir.path(), &["set", &task_id, "--data", "key="])
+        .success()
+        .stdout(predicate::str::contains("aiki task unset"));
 }
 
 #[test]
@@ -738,7 +867,9 @@ fn test_task_comment_with_data() {
     // Verify task show displays the comment
     aiki_task(temp_dir.path(), &["show", task_id])
         .success()
-        .stdout(predicate::str::contains("Potential null pointer dereference"));
+        .stdout(predicate::str::contains(
+            "Potential null pointer dereference",
+        ));
 
     // Verify the data fields are persisted in jj task events
     // Read the events from the aiki/tasks branch via jj log
@@ -870,11 +1001,7 @@ fn test_context_always_shows_ready_queue() {
     aiki_task(temp_dir.path(), &["add", "Task 2"]).success();
 
     // Every command should have context with ready queue
-    for cmd in [
-        vec!["list"],
-        vec!["list", "--all"],
-        vec!["list", "--open"],
-    ] {
+    for cmd in [vec!["list"], vec!["list", "--all"], vec!["list", "--open"]] {
         let output = aiki_task(temp_dir.path(), &cmd).success();
         let stdout = String::from_utf8_lossy(&output.get_output().stdout);
         assert!(
@@ -907,10 +1034,7 @@ fn test_list_filter_preserves_context_ready_queue() {
 
     // Context should show ready="1" (the open task), not ready="1" (the closed task)
     // The main list shows closed, but context.ready_queue shows what's actually ready
-    assert!(
-        stdout.contains("<context>"),
-        "Should have context element"
-    );
+    assert!(stdout.contains("<context>"), "Should have context element");
     assert!(
         stdout.contains(r#"<list ready="#),
         "Context should show ready count"
@@ -1001,7 +1125,9 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
         .expect("Failed to add parent task");
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Extract short ID from "Added <short-id> → ..."
-    let after_added = stdout.strip_prefix("Added ").expect("Expected 'Added' prefix");
+    let after_added = stdout
+        .strip_prefix("Added ")
+        .expect("Expected 'Added' prefix");
     let parent_id: String = after_added
         .chars()
         .take_while(|c| c.is_ascii_lowercase())
@@ -1073,12 +1199,7 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
 // ============================================================================
 
 /// Helper to create a template file for testing
-fn create_template(
-    templates_dir: &std::path::Path,
-    namespace: &str,
-    name: &str,
-    content: &str,
-) {
+fn create_template(templates_dir: &std::path::Path, namespace: &str, name: &str, content: &str) {
     let ns_dir = templates_dir.join(namespace);
     std::fs::create_dir_all(&ns_dir).expect("Failed to create namespace directory");
     let file_path = ns_dir.join(format!("{}.md", name));
@@ -1360,7 +1481,8 @@ fn test_template_static_subtasks_honor_frontmatter_sources() {
         &templates_dir,
         "test",
         "followup-static",
-        &format!(r#"---
+        &format!(
+            r#"---
 version: 1.0.0
 description: Followup with static subtasks that have sources
 ---
@@ -1386,7 +1508,9 @@ sources:
 ---
 
 Fix the validation issue.
-"#, source_task_id, source_task_id),
+"#,
+            source_task_id, source_task_id
+        ),
     );
 
     // Create task from template
@@ -1412,7 +1536,10 @@ Fix the validation issue.
 
     // Get the ID of one of the subtasks
     let subtask_id_start = stdout.find(r#"name="Fix auth issue""#);
-    assert!(subtask_id_start.is_some(), "Should have subtask 'Fix auth issue'");
+    assert!(
+        subtask_id_start.is_some(),
+        "Should have subtask 'Fix auth issue'"
+    );
 
     // Find a subtask ID
     let subtask_search_start = stdout.find(r#"name="Fix auth issue""#).unwrap();

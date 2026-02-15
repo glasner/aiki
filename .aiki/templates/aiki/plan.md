@@ -35,7 +35,7 @@ The command outputs the task ID on stdout (single line, e.g., `xyxkluynlnonltwtp
 After creating the plan task, set instructions on it:
 
 ```bash
-aiki task update $PLAN_ID --instructions <<'MD'
+aiki task set $PLAN_ID --instructions <<'MD'
 Implementation plan for <spec title>.
 See spec: {{data.spec}}
 MD
@@ -47,7 +47,7 @@ For each implementation step identified, create a subtask and set instructions:
 
 ```bash
 TASK_ID=$(aiki task add "<step description>" --parent <plan_task_id>)
-aiki task update $TASK_ID --instructions <<'MD'
+aiki task set $TASK_ID --instructions <<'MD'
 <detailed instructions for this step — enough context for an
 executing agent to complete the step without re-reading the spec>
 MD

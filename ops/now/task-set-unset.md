@@ -14,7 +14,7 @@ The current `task update` command has accumulated workarounds for clearing field
 
 | Field | Set | Unset | Hack |
 |-------|-----|-------|------|
-| assignee | `--for agent` | `--unassign` | Separate bool flag + `Option<Option<String>>` in event |
+| assignee | `--assignee agent` | `--unassign` | Separate bool flag + `Option<Option<String>>` in event |
 | data | `--data key=value` | `--data key=` (empty value) | Convention: empty string = delete |
 | instructions | `--instructions` (stdin) | ❌ impossible | No mechanism |
 | name | `--name "..."` | ❌ impossible | N/A (probably fine — name is required) |
@@ -31,7 +31,7 @@ The `Option<Option<String>>` pattern for assignee is confusing in both the CLI a
 ```bash
 # Set fields (same as today's update)
 aiki task set <id> --name "New name"
-aiki task set <id> --for claude-code
+aiki task set <id> --assignee claude-code
 aiki task set <id> --p0
 aiki task set <id> --data key=value
 aiki task set <id> --instructions <<'MD'
@@ -39,22 +39,22 @@ Do the thing.
 MD
 ```
 
-**`aiki task unset`** — clear optional fields by name:
+**`aiki task unset`** — clear optional fields using flags:
 
 ```bash
-# Clear fields
-aiki task unset <id> assignee
-aiki task unset <id> instructions
-aiki task unset <id> data.mykey         # remove single data key
-aiki task unset <id> assignee instructions  # multiple at once
+# Clear fields (using flags for consistency with set)
+aiki task unset <id> --assignee
+aiki task unset <id> --instructions
+aiki task unset <id> --data mykey           # remove single data key
+aiki task unset <id> --assignee --instructions --data key1 --data key2  # multiple at once
 ```
 
-The positional args to `unset` are field names. Only optional/clearable fields are valid targets:
-- `assignee`
-- `instructions`
-- `data.<key>` (dot-delimited to target specific data keys)
+Flags specify which fields to clear:
+- `--assignee` — clear assignee field
+- `--instructions` — clear instructions field
+- `--data <key>` — remove a data key (can be specified multiple times)
 
-Non-clearable fields (name, priority, status) are rejected with an error message.
+This matches the flag-based interface of `set`, providing consistency across both commands.
 
 ### Event model
 
@@ -90,9 +90,9 @@ Updated {
 `set` rejects blank/empty values and points users to `unset`:
 
 - `--name ""` → error: "Name cannot be empty"
-- `--for ""` → error: "Use `aiki task unset <id> assignee` to clear the assignee"
-- `--data key=` → error: "Use `aiki task unset <id> data.key` to remove a data key"
-- `--instructions` with empty stdin → error: "Use `aiki task unset <id> instructions` to clear instructions"
+- `--assignee ""` → error: "Use `aiki task unset <id> --assignee` to clear the assignee"
+- `--data key=` → error: "Use `aiki task unset <id> --data key` to remove a data key"
+- `--instructions` with empty stdin → error: "Use `aiki task unset <id> --instructions` to clear instructions"
 
 This keeps things consistent: `set` always sets a non-empty value, `unset` always clears.
 
@@ -100,7 +100,7 @@ This keeps things consistent: `set` always sets a non-empty value, `unset` alway
 
 With `set`/`unset` split:
 - `aiki task set <id> --data key=value` — sets or overwrites a data key (value must be non-empty)
-- `aiki task unset <id> data.mykey` — removes the key
+- `aiki task unset <id> --data mykey` — removes the key
 
 The empty-string-means-delete convention in `Updated` events is removed. Existing events with empty-string values remain valid (backwards compat) but new events won't use that pattern — instead, `FieldsCleared { fields: ["data.mykey"] }` is emitted.
 
@@ -121,9 +121,9 @@ for field in &fields {
 
 ### Backwards compatibility
 
-- `aiki task update` becomes an alias for `aiki task set` (print deprecation warning to stderr on first use, remove after a few versions)
-- Existing `Updated` events with `Option<Option<String>>` assignee and empty-string data values still materialize correctly — the migration is in the CLI and new event generation, not in the event schema
-- Old `Updated` events with `assignee: Some(None)` (unassign) still work via backwards-compat deserialization
+- `aiki task update` is removed entirely — clean break to `set`/`unset` (no deprecation period)
+- Existing `Updated` events with empty-string data values still materialize correctly — the migration is in the CLI and new event generation, not in the event schema
+- Old `Updated` events with `assignee=` (empty value, old unassign encoding) are rejected at parse time — the event is skipped. Unassigning now goes through `FieldsCleared` only.
 
 ## Changes
 
@@ -163,9 +163,17 @@ Unset {
     /// Task ID (defaults to current in-progress task)
     id: Option<String>,
 
-    /// Field names to clear (assignee, instructions, data.<key>)
-    #[arg(required = true)]
-    fields: Vec<String>,
+    /// Clear assignee field
+    #[arg(long)]
+    assignee: bool,
+
+    /// Clear instructions field
+    #[arg(long)]
+    instructions: bool,
+
+    /// Clear data field(s) by key. Can be specified multiple times.
+    #[arg(long, value_name = "KEY", action = clap::ArgAction::Append)]
+    data: Vec<String>,
 },
 ```
 
@@ -182,9 +190,10 @@ Mostly the same as today's `run_update` but:
 
 **File:** `cli/src/commands/task.rs`
 
-- Validate field names against allowed set: `assignee`, `instructions`, `data.*`
-- Reject non-clearable fields (name, priority) with a clear error
-- Write `FieldsCleared` event
+- Convert flags (`clear_assignee`, `clear_instructions`, `data_keys`) into field_names list
+- Build field names in format: `"assignee"`, `"instructions"`, `"data.<key>"`
+- Validate data keys are non-empty
+- Write `FieldsCleared` event with field names list
 - Update in-memory task and print confirmation
 
 ### 7. Wire `FieldsCleared` through storage
@@ -202,7 +211,9 @@ Apply `FieldsCleared` by clearing the specified fields on the task.
 
 ### 9. Remove `update` subcommand entirely
 
-No alias, no deprecation shim. Clean break — `aiki task update` is gone, replaced by `set`/`unset`.
+**File:** `cli/src/commands/task.rs`
+
+Clean break — `aiki task update` is gone, replaced by `set`/`unset`. No alias, no deprecation warning.
 
 ### 10. Remove `--unassign` from docs/CLAUDE.md
 
@@ -213,13 +224,13 @@ Update examples to use `aiki task unset <id> assignee`.
 ## Testing
 
 - Unit test: `FieldsCleared` event round-trips through storage
-- Unit test: `unset assignee` on a task with an assignee → assignee becomes None
-- Unit test: `unset instructions` → instructions becomes None
-- Unit test: `unset data.key` → key removed from data map
-- Unit test: `unset name` → rejected with error
+- Unit test: `unset --assignee` on a task with an assignee → assignee becomes None
+- Unit test: `unset --instructions` → instructions becomes None
+- Unit test: `unset --data key` → key removed from data map
+- Unit test: `unset` with no flags → rejected with error
 - Unit test: backwards compat — old `Updated` events with `assignee: Some(None)` still materialize as unassign
-- Unit test: `set --data key=` now stores empty string (not delete)
-- Manual: `aiki task set <id> --for claude-code` then `aiki task unset <id> assignee` → assignee cleared
+- Unit test: `set --data key=` (empty value) → rejected with error pointing to `unset --data key`
+- Manual: `aiki task set <id> --assignee claude-code` then `aiki task unset <id> --assignee` → assignee cleared
 
 ## Non-goals
 

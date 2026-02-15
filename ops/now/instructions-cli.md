@@ -10,16 +10,16 @@ Currently, `task.instructions` is only populated by the template-based creation 
 
 ## Requirements
 
-1. `aiki task update <id> --instructions` sets instructions on an existing task, reading content from stdin
+1. `aiki task set <id> --instructions` sets instructions on an existing task, reading content from stdin
 2. The plan template uses this to attach context to each subtask after creation
 
 ## Design
 
-Add `--instructions` to the existing `task update` command. When this flag is present, read instructions from stdin:
+Add `--instructions` to the `task set` command. When this flag is present, read instructions from stdin:
 
 ```bash
 TASK_ID=$(aiki task add "Fix auth" --parent $PLAN_ID)
-aiki task update $TASK_ID --instructions <<'MD'
+aiki task set $TASK_ID --instructions <<'MD'
 1. Check token validation in `auth_handler.rs`
 2. Handle the null `claims` field — it can be None
 3. Write tests covering both paths
@@ -36,11 +36,11 @@ Why stdin:
 
 ## Changes
 
-### 1. Add `--instructions` flag to `Update` variant
+### 1. Add `--instructions` flag to `Set` variant
 
 **File:** `cli/src/commands/task.rs`
 
-Add to the `Update` variant of `TaskCommands`:
+Add to the `Set` variant of `TaskCommands`:
 ```rust
 /// Set instructions (reads content from stdin)
 #[arg(long)]
@@ -59,14 +59,16 @@ Updated {
     task_id: String,
     name: Option<String>,
     priority: Option<TaskPriority>,
-    assignee: Option<Option<String>>,
+    assignee: Option<String>,
     data: Option<HashMap<String, String>>,
     instructions: Option<String>,  // NEW
     timestamp: DateTime<Utc>,
 },
 ```
 
-### 3. Read stdin in `run_update`
+Note: `assignee` is `Option<String>` (not `Option<Option<String>>`) — the double-option is removed by the set/unset split. `Some(value)` = set, `None` = no change. Unsetting goes through `FieldsCleared` instead.
+
+### 3. Read stdin in `run_set`
 
 **File:** `cli/src/commands/task.rs`
 
@@ -75,7 +77,7 @@ When `instructions` flag is true:
 - Trim trailing whitespace
 - Pass as `instructions: Some(content)` in the `TaskEvent::Updated`
 
-Update the "nothing to update" check to also consider `instructions`.
+Update the "nothing to set" check to also consider `instructions`.
 
 ### 4. Handle in materialization
 
@@ -96,7 +98,7 @@ Add serialization/deserialization of the `instructions` field in `Updated` event
 
 **File:** `cli/src/commands/task.rs`
 
-Update the match arm for `TaskCommands::Update` to destructure and forward the new `instructions` field.
+Update the match arm for `TaskCommands::Set` to destructure and forward the new `instructions` field.
 
 ### 7. Update `plan.md` template
 
@@ -110,14 +112,14 @@ PLAN_ID=$(aiki task add "Plan: <spec title>" \
   --source task:{{parent.id}} \
   --source file:{{data.spec}} \
   --data spec={{data.spec}})
-aiki task update $PLAN_ID --instructions <<'MD'
+aiki task set $PLAN_ID --instructions <<'MD'
 Implementation plan for <spec title>.
 See spec: {{data.spec}}
 MD
 
 # Each subtask
 TASK_ID=$(aiki task add "<step description>" --parent $PLAN_ID)
-aiki task update $TASK_ID --instructions <<'MD'
+aiki task set $TASK_ID --instructions <<'MD'
 <detailed instructions for this step — enough context for an
 executing agent to complete the step without re-reading the spec>
 MD
@@ -127,11 +129,11 @@ MD
 
 - Unit tests: write `Updated` event with instructions, materialize, verify `task.instructions` is set
 - Unit tests: verify multi-line content with special characters round-trips through storage
-- Manual: create task, update with instructions, `aiki task show <id> --with-instructions` should display them
+- Manual: create task, set instructions, `aiki task show <id> --with-instructions` should display them
 
 ## Non-goals
 
-- No new subcommand (reuse existing `task update`)
 - No new event variant (extend existing `TaskEvent::Updated`)
 - No changes to template-based creation (already supports instructions via template body)
 - No changes to `task show` display (already renders instructions when present)
+- No changes to `task unset` (unsetting instructions via `aiki task unset <id> instructions` is handled by the set/unset split — see `task-set-unset.md`)

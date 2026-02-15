@@ -467,8 +467,8 @@ task.closed:
 
     assert_eq!(hook.name, "Task Handler Flow");
     assert_eq!(hook.description, Some("Handles task lifecycle events".to_string()));
-    assert_eq!(hook.task_started.len(), 1);
-    assert_eq!(hook.task_closed.len(), 1);
+    assert_eq!(hook.handlers.task_started.len(), 1);
+    assert_eq!(hook.handlers.task_closed.len(), 1);
 }
 
 #[test]
@@ -492,10 +492,10 @@ session.ended:
 
     let hook: Hook = serde_yaml::from_str(yaml).unwrap();
 
-    assert_eq!(hook.session_started.len(), 1);
-    assert_eq!(hook.task_started.len(), 1);
-    assert_eq!(hook.task_closed.len(), 1);
-    assert_eq!(hook.session_ended.len(), 1);
+    assert_eq!(hook.handlers.session_started.len(), 1);
+    assert_eq!(hook.handlers.task_started.len(), 1);
+    assert_eq!(hook.handlers.task_closed.len(), 1);
+    assert_eq!(hook.handlers.session_ended.len(), 1);
 }
 
 #[test]
@@ -505,10 +505,12 @@ name: Composed Task Flow
 version: "1"
 
 before:
-  - aiki/setup
+  include:
+    - aiki/setup
 
 after:
-  - aiki/cleanup
+  include:
+    - aiki/cleanup
 
 task.started:
   - log: "Main task handler"
@@ -517,10 +519,10 @@ task.started:
     let hook: Hook = serde_yaml::from_str(yaml).unwrap();
 
     assert_eq!(hook.before.len(), 1);
-    assert_eq!(hook.before[0], "aiki/setup");
+    assert_eq!(hook.before[0].include, vec!["aiki/setup"]);
     assert_eq!(hook.after.len(), 1);
-    assert_eq!(hook.after[0], "aiki/cleanup");
-    assert_eq!(hook.task_started.len(), 1);
+    assert_eq!(hook.after[0].include, vec!["aiki/cleanup"]);
+    assert_eq!(hook.handlers.task_started.len(), 1);
 }
 
 // ============================================================================

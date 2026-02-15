@@ -26,9 +26,9 @@ echo "--- Running test suite $RUNS time(s) ---"
 times=()
 for i in $(seq 1 "$RUNS"); do
     echo -n "Run $i/$RUNS ... "
-    start=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
+    start=$(python3 -c 'import time; print(int(time.time()*1e9))')
     cargo test --manifest-path "$MANIFEST" --lib 2>&1 | tail -1
-    end=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
+    end=$(python3 -c 'import time; print(int(time.time()*1e9))')
     elapsed_ms=$(( (end - start) / 1000000 ))
     elapsed_s=$(awk "BEGIN {printf \"%.2f\", $elapsed_ms / 1000}")
     times+=("$elapsed_ms")

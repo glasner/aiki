@@ -164,11 +164,12 @@ Please ensure:
   3. Zed has completed its one-time package installation
 
 Alternatively, install the agent globally:
-  npm install -g {executable_name}"
+  npm install -g {package_name}"
     )]
     AcpBinaryNotFound {
         agent_type: String,
         executable_name: String,
+        package_name: String,
     },
 
     #[error("Zed installation not found at {0}. Install Zed from https://zed.dev")]

@@ -40,6 +40,9 @@ fn create_test_task(id: &str, name: &str, comments: Vec<TaskComment>) -> Task {
         stopped_reason: None,
         closed_outcome: None,
         summary: None,
+        turn_started: None,
+        turn_closed: None,
+        turn_stopped: None,
         comments,
     }
 }

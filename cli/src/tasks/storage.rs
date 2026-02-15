@@ -612,15 +612,10 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(priority) = priority {
                 add_metadata("priority", priority, &mut lines);
             }
-            // Serialize assignee: Some(Some(a)) = "assignee=<value>", Some(None) = "assignee="
-            if let Some(assignee_value) = assignee {
-                if let Some(ref a) = assignee_value {
-                    add_metadata("assignee", a, &mut lines);
-                } else {
-                    add_metadata("assignee", "", &mut lines); // Explicit unassign
-                }
+            // Serialize assignee: Some(a) = "assignee=<value>", None = no change (omit)
+            if let Some(ref a) = assignee {
+                add_metadata("assignee", a, &mut lines);
             }
-            // If assignee is None, we don't write anything (no change)
             if let Some(data) = data {
                 for (key, value) in data {
                     add_metadata_escaped("data", &format!("{}:{}", key, value), &mut lines);
@@ -630,6 +625,16 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(instr) = instructions {
                 add_metadata_escaped("instructions", instr, &mut lines);
             }
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::FieldsCleared {
+            task_id,
+            fields,
+            timestamp,
+        } => {
+            add_metadata("event", "fields_cleared", &mut lines);
+            add_metadata("task_id", task_id, &mut lines);
+            add_metadata("fields", &fields.join(","), &mut lines);
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::LinkAdded {
@@ -888,15 +893,18 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("priority")
                 .and_then(|v| v.first())
                 .and_then(|s| TaskPriority::from_str(s));
-            // Parse assignee: absent=None, empty=Some(None), value=Some(Some(value))
-            let assignee = fields.get("assignee").map(|v| {
-                let value = v.first().map(|s| *s).unwrap_or("");
-                if value.is_empty() {
-                    None  // Unassign
-                } else {
-                    Some(value.to_string())  // Assign
+            // Parse assignee: absent=None, value=Some(value), empty=error
+            let assignee = match fields.get("assignee") {
+                Some(v) => {
+                    let value = v.first().map(|s| *s).unwrap_or("");
+                    if value.is_empty() {
+                        eprintln!("Warning: ignoring updated event with empty assignee for task {task_id}. Use `aiki task unset <id> assignee` to clear the assignee.");
+                        return None;
+                    }
+                    Some(value.to_string())
                 }
-            });
+                None => None,
+            };
 
             // Parse data fields (key:value pairs) - None if no data= lines present
             let data = fields.get("data").map(|v| {
@@ -922,6 +930,21 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 assignee,
                 data,
                 instructions,
+                timestamp,
+            })
+        }
+        "fields_cleared" => {
+            let task_id = fields.get("task_id")?.first()?.to_string();
+            let fields_str = fields.get("fields")?.first()?;
+            let cleared_fields: Vec<String> = fields_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            Some(TaskEvent::FieldsCleared {
+                task_id,
+                fields: cleared_fields,
                 timestamp,
             })
         }
@@ -2090,6 +2113,142 @@ timestamp=2026-01-09T10:30:00Z
         assert!(block.contains("name=New task name"));
         assert!(block.contains("priority=p1"));
         assert!(block.contains("[/aiki-task]"));
+    }
+
+    #[test]
+    fn test_roundtrip_fields_cleared() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-01-09T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let original = TaskEvent::FieldsCleared {
+            task_id: "a1b2".to_string(),
+            fields: vec![
+                "assignee".to_string(),
+                "instructions".to_string(),
+                "data.mykey".to_string(),
+            ],
+            timestamp,
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match (original, parsed) {
+            (
+                TaskEvent::FieldsCleared {
+                    task_id: id1,
+                    fields: f1,
+                    timestamp: t1,
+                },
+                TaskEvent::FieldsCleared {
+                    task_id: id2,
+                    fields: f2,
+                    timestamp: t2,
+                },
+            ) => {
+                assert_eq!(id1, id2);
+                assert_eq!(f1, f2);
+                assert_eq!(t1, t2);
+            }
+            _ => panic!("Expected FieldsCleared events"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_fields_cleared_single_field() {
+        let original = TaskEvent::FieldsCleared {
+            task_id: "a1b2".to_string(),
+            fields: vec!["assignee".to_string()],
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+        match parsed {
+            TaskEvent::FieldsCleared { fields, .. } => {
+                assert_eq!(fields, vec!["assignee".to_string()]);
+            }
+            _ => panic!("Expected FieldsCleared event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fields_cleared() {
+        let block = r#"
+event=fields_cleared
+task_id=a1b2
+fields=assignee,instructions,data.mykey
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::FieldsCleared {
+                task_id, fields, ..
+            } => {
+                assert_eq!(task_id, "a1b2");
+                assert_eq!(
+                    fields,
+                    vec![
+                        "assignee".to_string(),
+                        "instructions".to_string(),
+                        "data.mykey".to_string()
+                    ]
+                );
+            }
+            _ => panic!("Expected FieldsCleared event"),
+        }
+    }
+
+    #[test]
+    fn test_empty_assignee_is_rejected() {
+        // Empty assignee= is invalid — use `aiki task unset <id> assignee` instead.
+        let block = r#"
+event=updated
+task_id=a1b2
+assignee=
+timestamp=2026-01-09T10:30:00Z
+"#;
+
+        let result = parse_metadata_block(block);
+        assert!(result.is_none(), "Empty assignee should be rejected");
+    }
+
+    #[test]
+    fn test_roundtrip_updated_with_assignee() {
+        let original = TaskEvent::Updated {
+            task_id: "a1b2".to_string(),
+            name: None,
+            priority: None,
+            assignee: Some("claude-code".to_string()),
+            data: None,
+            instructions: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("assignee=claude-code"));
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+
+        let parsed = parse_metadata_block(content).expect("Should parse");
+        match parsed {
+            TaskEvent::Updated { assignee, .. } => {
+                assert_eq!(assignee, Some("claude-code".to_string()));
+            }
+            _ => panic!("Expected Updated event"),
+        }
     }
 
     #[test]
