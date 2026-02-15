@@ -37,6 +37,7 @@ fn bench_create_task(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id,
                     name: black_box("Benchmark task".to_string()),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
                     sources: Vec::new(),
@@ -68,6 +69,7 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id: black_box("test123".to_string()),
                     name: black_box("Test task".to_string()),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
                     sources: Vec::new(),
@@ -95,6 +97,7 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id: task_id.clone(),
                     name: "Task to start".to_string(),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
                     sources: Vec::new(),
@@ -113,6 +116,8 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Started {
                     task_ids: black_box(vec![task_id]),
                     agent_type: black_box("claude-code".to_string()),
+                    session_id: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                     stopped: vec![],
                 };
@@ -134,6 +139,7 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id: task_id.clone(),
                     name: "Task to stop".to_string(),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
                     sources: Vec::new(),
@@ -152,7 +158,7 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Stopped {
                     task_ids: black_box(vec![task_id]),
                     reason: Some(black_box("Need input".to_string())),
-                    blocked_reason: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to write event");
@@ -173,6 +179,7 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id: task_id.clone(),
                     name: "Task to close".to_string(),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
                     sources: Vec::new(),
@@ -191,6 +198,8 @@ fn bench_write_events(c: &mut Criterion) {
                 let event = TaskEvent::Closed {
                     task_ids: black_box(vec![task_id]),
                     outcome: TaskOutcome::Done,
+                    summary: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to write event");
@@ -220,11 +229,13 @@ fn bench_read_events(c: &mut Criterion) {
                     let event = TaskEvent::Created {
                         task_id,
                         name: format!("Task {}", i),
+                        task_type: None,
                         priority: TaskPriority::P2,
                         assignee: None,
                         sources: Vec::new(),
                         template: None,
                         working_copy: None,
+                        instructions: None,
                         data: std::collections::HashMap::new(),
                         timestamp: Utc::now(),
                     };
@@ -259,8 +270,14 @@ fn bench_sequential_tasks(c: &mut Criterion) {
                             let event = TaskEvent::Created {
                                 task_id,
                                 name: black_box(format!("Sequential task {}", i)),
+                                task_type: None,
                                 priority: TaskPriority::P2,
                                 assignee: None,
+                                sources: Vec::new(),
+                                template: None,
+                                working_copy: None,
+                                instructions: None,
+                                data: std::collections::HashMap::new(),
                                 timestamp: Utc::now(),
                             };
                             write_event(cwd, &event).expect("Failed to create task");
@@ -288,8 +305,14 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                 let event = TaskEvent::Created {
                     task_id: task_id.clone(),
                     name: black_box("Lifecycle task".to_string()),
+                    task_type: None,
                     priority: TaskPriority::P2,
                     assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to create task");
@@ -298,6 +321,8 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                 let event = TaskEvent::Started {
                     task_ids: vec![task_id.clone()],
                     agent_type: "claude-code".to_string(),
+                    session_id: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                     stopped: vec![],
                 };
@@ -307,7 +332,7 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                 let event = TaskEvent::Stopped {
                     task_ids: vec![task_id.clone()],
                     reason: Some("Paused".to_string()),
-                    blocked_reason: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to stop task");
@@ -316,6 +341,8 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                 let event = TaskEvent::Closed {
                     task_ids: vec![task_id],
                     outcome: TaskOutcome::Done,
+                    summary: None,
+                    turn_id: None,
                     timestamp: Utc::now(),
                 };
                 write_event(cwd, &event).expect("Failed to close task");
