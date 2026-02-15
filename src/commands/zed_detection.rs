@@ -209,6 +209,7 @@ pub fn resolve_agent_binary(agent_type: &str) -> Result<ResolvedBinary> {
         }
         Err(_) => Err(AikiError::AcpBinaryNotFound {
             agent_type: agent_type.to_string(),
+            package_name: derive_package_name(agent_type),
             executable_name: executable,
         }),
     }
@@ -216,6 +217,16 @@ pub fn resolve_agent_binary(agent_type: &str) -> Result<ResolvedBinary> {
 
 /// Derives the executable name for an agent type (used for PATH fallback)
 fn derive_executable_name(agent_type: &str) -> String {
+    match agent_type {
+        "claude-code" => "cc-acp".to_string(),
+        "codex" => "codex-acp".to_string(),
+        "gemini" => "gemini-cli".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Derives the npm package name for an agent type (used in error messages)
+fn derive_package_name(agent_type: &str) -> String {
     match agent_type {
         "claude-code" => "claude-code-acp".to_string(),
         "codex" => "codex-acp".to_string(),
@@ -269,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_executable_name_derivation() {
-        assert_eq!(derive_executable_name("claude-code"), "claude-code-acp");
+        assert_eq!(derive_executable_name("claude-code"), "cc-acp");
         assert_eq!(derive_executable_name("codex"), "codex-acp");
         assert_eq!(derive_executable_name("gemini"), "gemini-cli");
     }

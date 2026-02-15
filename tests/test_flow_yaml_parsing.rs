@@ -19,10 +19,10 @@ session.started:
     let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
     assert_eq!(hook.name, "test-flow");
-    assert_eq!(hook.session_started.len(), 1);
+    assert_eq!(hook.handlers.session_started.len(), 1);
 
     // Verify it's an if statement
-    match &hook.session_started[0] {
+    match &hook.handlers.session_started[0] {
         HookStatement::If(if_stmt) => {
             assert_eq!(if_stmt.condition, "$SESSION_ID != ''");
             assert_eq!(if_stmt.then.len(), 1);
@@ -51,9 +51,9 @@ turn.started:
 
     let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(hook.turn_started.len(), 1);
+    assert_eq!(hook.handlers.turn_started.len(), 1);
 
-    match &hook.turn_started[0] {
+    match &hook.handlers.turn_started[0] {
         HookStatement::Switch(switch_stmt) => {
             assert_eq!(switch_stmt.expression, "$agent_type");
             assert_eq!(switch_stmt.cases.len(), 2);
@@ -83,7 +83,7 @@ change.completed:
 
     let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &hook.change_completed[0] {
+    match &hook.handlers.change_completed[0] {
         HookStatement::If(if_stmt) => {
             assert_eq!(if_stmt.then.len(), 1);
             match &if_stmt.then[0] {
@@ -115,7 +115,7 @@ session.ended:
 
     let hook: Hook = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    match &hook.session_ended[0] {
+    match &hook.handlers.session_ended[0] {
         HookStatement::Action(Action::Shell(shell_action)) => {
             match &shell_action.on_failure {
                 aiki::flows::types::OnFailure::Statements(stmts) => {

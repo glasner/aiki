@@ -237,7 +237,7 @@ pub fn reassign_task(cwd: &Path, task_id: &str, new_assignee: &str) -> Result<()
         task_id: task_id.to_string(),
         name: None,
         priority: None,
-        assignee: Some(Some(new_assignee.to_string())), // Some(Some(x)) = assign to x
+        assignee: Some(new_assignee.to_string()),
         data: None,
         instructions: None,
         timestamp: chrono::Utc::now(),

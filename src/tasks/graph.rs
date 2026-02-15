@@ -509,7 +509,7 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                     task.priority = *new_priority;
                 }
                 if let Some(new_assignee) = assignee {
-                    task.assignee = new_assignee.clone();
+                    task.assignee = Some(new_assignee.clone());
                 }
                 if let Some(new_data) = data {
                     for (key, value) in new_data {
@@ -522,6 +522,21 @@ fn process_event(event: &TaskEvent, tasks: &mut FastHashMap<String, Task>, edges
                 }
                 if let Some(new_instructions) = instructions {
                     task.instructions = Some(new_instructions.clone());
+                }
+            }
+        }
+        TaskEvent::FieldsCleared {
+            task_id, fields, ..
+        } => {
+            if let Some(task) = tasks.get_mut(task_id) {
+                for field in fields {
+                    if field == "assignee" {
+                        task.assignee = None;
+                    } else if field == "instructions" {
+                        task.instructions = None;
+                    } else if let Some(key) = field.strip_prefix("data.") {
+                        task.data.remove(key);
+                    }
                 }
             }
         }

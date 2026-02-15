@@ -19,12 +19,11 @@ use crate::tasks::types::FastHashMap;
 
 use crate::tasks::{
     generate_task_id, is_task_id, is_task_id_prefix,
-    materialize_graph, materialize_graph_with_ids, TaskGraph,
     manager::{
         find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
-        get_ready_queue_for_scope_set, has_subtasks,
-        resolve_task_id, ScopeSet,
+        get_ready_queue_for_scope_set, has_subtasks, resolve_task_id, ScopeSet,
     },
+    materialize_graph, materialize_graph_with_ids,
     md::{
         aiki_print, build_context, build_list_output, build_transition_context,
         format_action_added, format_action_closed, format_action_commented, format_action_started,
@@ -34,7 +33,7 @@ use crate::tasks::{
     runner::{run_task_with_output, TaskRunOptions},
     storage::{read_events, read_events_with_ids, write_event, write_link_event},
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
-    MdBuilder,
+    MdBuilder, TaskGraph,
 };
 
 /// Valid prefixes for task sources
@@ -384,9 +383,9 @@ pub enum TaskCommands {
         with_instructions: bool,
     },
 
-    /// Update task details
-    Update {
-        /// Task ID to update (defaults to current in-progress task)
+    /// Set fields on a task
+    Set {
+        /// Task ID (defaults to current in-progress task)
         id: Option<String>,
 
         /// Set priority to P0 (critical/urgent)
@@ -405,17 +404,13 @@ pub enum TaskCommands {
         #[arg(long, group = "priority")]
         p3: bool,
 
-        /// Update task name
+        /// Set task name
         #[arg(long)]
         name: Option<String>,
 
-        /// Reassign to specific agent or human (claude-code, codex, cursor, gemini, human)
-        #[arg(long = "assignee", value_name = "AGENT", group = "assign")]
+        /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
+        #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
-
-        /// Remove assignee (make task unassigned)
-        #[arg(long, group = "assign")]
-        unassign: bool,
 
         /// Set or update a data field (can be specified multiple times)
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
@@ -424,6 +419,24 @@ pub enum TaskCommands {
         /// Set instructions (reads content from stdin)
         #[arg(long)]
         instructions: bool,
+    },
+
+    /// Clear optional fields on a task
+    Unset {
+        /// Task ID (defaults to current in-progress task)
+        id: Option<String>,
+
+        /// Clear assignee field
+        #[arg(long)]
+        assignee: bool,
+
+        /// Clear instructions field
+        #[arg(long)]
+        instructions: bool,
+
+        /// Clear data field(s) by key. Can be specified multiple times.
+        #[arg(long, value_name = "KEY", action = clap::ArgAction::Append)]
+        data: Vec<String>,
     },
 
     /// Add a comment to a task
@@ -706,7 +719,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             with_source,
             with_instructions,
         } => run_show(&cwd, id, diff, with_source, with_instructions),
-        TaskCommands::Update {
+        TaskCommands::Set {
             id,
             p0,
             p1,
@@ -714,10 +727,27 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p3,
             name,
             assignee,
-            unassign,
             data,
             instructions,
-        } => run_update(&cwd, id, p0, p1, p2, p3, name, assignee, unassign, data, instructions),
+        } => run_set(&cwd, id, p0, p1, p2, p3, name, assignee, data, instructions),
+        TaskCommands::Unset {
+            id,
+            assignee,
+            instructions,
+            data,
+        } => {
+            // Validate that at least one field is specified
+            if !assignee && !instructions && data.is_empty() {
+                let xml = MdBuilder::new("unset").error().build_error(
+                    "No fields specified. Use --assignee, --instructions, or --data <key>",
+                );
+                aiki_print(&xml);
+                Ok(())
+            } else {
+                run_unset(&cwd, id, assignee, instructions, data)
+            }
+        }
+
         TaskCommands::Comment { id, text, data } => run_comment(&cwd, id, text, data),
         TaskCommands::Run {
             id,
@@ -1551,8 +1581,7 @@ fn run_start(
                 id
             } else {
                 // Create the planning task with a full 32-char ID
-                let id =
-                    generate_task_id("Review all subtasks and start first batch");
+                let id = generate_task_id("Review all subtasks and start first batch");
                 let timestamp = chrono::Utc::now();
                 let working_copy = get_working_copy_change_id(cwd);
                 let planning_event = TaskEvent::Created {
@@ -1709,7 +1738,9 @@ fn run_start(
 
     for task in &started_tasks {
         // Hide name on quick-start (user just typed it), show on start-by-ID
-        let show_name = created_new_task.as_ref().map_or(true, |ct| ct.id != task.id);
+        let show_name = created_new_task
+            .as_ref()
+            .map_or(true, |ct| ct.id != task.id);
         output.push_str(&format_action_started(task, show_name));
     }
 
@@ -1735,9 +1766,8 @@ pub(crate) fn cascade_close_tasks(
 
     // Query current turn ID from session
     let session_match = crate::session::find_active_session(cwd);
-    let turn_id = crate::tasks::current_turn_id(
-        session_match.as_ref().map(|m| m.session_id.as_str()),
-    );
+    let turn_id =
+        crate::tasks::current_turn_id(session_match.as_ref().map(|m| m.session_id.as_str()));
 
     // 1. Write the Closed event
     let close_event = TaskEvent::Closed {
@@ -1827,7 +1857,11 @@ fn run_stop(
     };
 
     // Get the task before stopping (for output)
-    let mut stopped_task = graph.tasks.get(&task_id).expect("Task should exist").clone();
+    let mut stopped_task = graph
+        .tasks
+        .get(&task_id)
+        .expect("Task should exist")
+        .clone();
 
     // Session ownership guard: only owning session can stop (unless --force)
     if let Some(ref claimed_session) = stopped_task.claimed_by_session {
@@ -1850,9 +1884,8 @@ fn run_stop(
 
     // Stop the task
     let session_match = crate::session::find_active_session(cwd);
-    let turn_id = crate::tasks::current_turn_id(
-        session_match.as_ref().map(|m| m.session_id.as_str()),
-    );
+    let turn_id =
+        crate::tasks::current_turn_id(session_match.as_ref().map(|m| m.session_id.as_str()));
     let stop_event = TaskEvent::Stopped {
         task_ids: vec![task_id.clone()],
         reason: reason.clone(),
@@ -1966,9 +1999,9 @@ fn run_stop(
 
     // Get scoped ready queue (blocking is filtered internally)
     let mut ready: Vec<Task> = get_ready_queue_for_scope_set(&graph, &scope_set)
-    .into_iter()
-    .map(|t| (*t).clone())
-    .collect();
+        .into_iter()
+        .map(|t| (*t).clone())
+        .collect();
 
     // Add stopped task if it's in scope
     let stopped_in_scope = match (
@@ -2392,10 +2425,10 @@ fn run_close(
 
     // Get scoped ready queue (with blocked-by filtering)
     let ready: Vec<Task> = get_ready_queue_for_scope_set(&graph, &scope_set)
-    .into_iter()
-    .filter(|t| !ids_to_close.contains(&t.id))
-    .map(|t| (*t).clone())
-    .collect();
+        .into_iter()
+        .filter(|t| !ids_to_close.contains(&t.id))
+        .map(|t| (*t).clone())
+        .collect();
 
     // Build output: action+hint line, then ---/context
     let mut output = String::new();
@@ -2862,8 +2895,7 @@ fn run_undo(
             .iter()
             .filter_map(|id| graph.tasks.get(id))
             .filter(|t| {
-                t.status == TaskStatus::Closed
-                    && t.closed_outcome == Some(TaskOutcome::Done)
+                t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
             })
             .map(|t| t.id.clone())
             .collect();
@@ -3655,7 +3687,7 @@ fn parse_diff_summary_files(output: &str) -> Vec<String> {
 }
 
 /// Update task details
-fn run_update(
+fn run_set(
     cwd: &Path,
     id: Option<String>,
     p0: bool,
@@ -3664,7 +3696,6 @@ fn run_update(
     p3: bool,
     name: Option<String>,
     assignee_arg: Option<String>,
-    unassign: bool,
     data_args: Vec<String>,
     instructions_flag: bool,
 ) -> Result<()> {
@@ -3694,13 +3725,48 @@ fn run_update(
         if let Some(task) = in_progress.first() {
             task.id.clone()
         } else {
-            let xml = MdBuilder::new("update")
+            let xml = MdBuilder::new("set")
                 .error()
                 .build_error("No task in progress to update");
             aiki_print(&xml);
             return Ok(());
         }
     };
+
+    // Reject blank name
+    if let Some(ref n) = name {
+        if n.trim().is_empty() {
+            let xml = MdBuilder::new("set")
+                .error()
+                .build_error("Name cannot be empty");
+            aiki_print(&xml);
+            return Ok(());
+        }
+    }
+
+    // Reject blank assignee
+    if let Some(ref a) = assignee_arg {
+        if a.trim().is_empty() {
+            let xml = MdBuilder::new("set").error().build_error(&format!(
+                "Use `aiki task unset {} assignee` to clear the assignee",
+                task_id
+            ));
+            aiki_print(&xml);
+            return Ok(());
+        }
+    }
+
+    // Reject empty data values
+    for (key, value) in &data_updates {
+        if value.is_empty() {
+            let xml = MdBuilder::new("set").error().build_error(&format!(
+                "Use `aiki task unset {} data.{}` to remove a data key",
+                task_id, key
+            ));
+            aiki_print(&xml);
+            return Ok(());
+        }
+    }
 
     // Determine new priority if any flag is set
     let new_priority = if p0 {
@@ -3715,13 +3781,14 @@ fn run_update(
         None
     };
 
-    // Determine new assignee: Some(Some(a)) = assign, Some(None) = unassign, None = no change
-    let new_assignee: Option<Option<String>> = if unassign {
-        Some(None) // Unassign
-    } else if let Some(ref a) = assignee_arg {
+    // Determine new assignee: Some(a) = assign to a, None = no change
+    let new_assignee: Option<String> = if let Some(ref a) = assignee_arg {
         // Validate and normalize the assignee
         match Assignee::from_str(a) {
-            Some(parsed) => Some(parsed.as_str().map(|s| s.to_string())),
+            Some(parsed) => match parsed.as_str() {
+                Some(s) => Some(s.to_string()),
+                None => None, // "none" assignee means no change
+            },
             None => return Err(AikiError::UnknownAssignee(a.clone())),
         }
     } else {
@@ -3741,7 +3808,12 @@ fn run_update(
             .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read stdin: {}", e)))?;
         let trimmed = content.trim_end().to_string();
         if trimmed.is_empty() {
-            None
+            let xml = MdBuilder::new("set").error().build_error(&format!(
+                "Use `aiki task unset {} instructions` to clear instructions",
+                task_id
+            ));
+            aiki_print(&xml);
+            return Ok(());
         } else {
             Some(trimmed)
         }
@@ -3756,8 +3828,8 @@ fn run_update(
         && new_data.is_none()
         && new_instructions.is_none()
     {
-        let xml = MdBuilder::new("update").error().build_error(
-            "No updates specified. Use --name, --data, --instructions, --assignee, --unassign, or --p0/--p1/--p2/--p3",
+        let xml = MdBuilder::new("set").error().build_error(
+            "No updates specified. Use --name, --data, --instructions, --assignee, or --p0/--p1/--p2/--p3",
         );
         aiki_print(&xml);
         return Ok(());
@@ -3785,15 +3857,11 @@ fn run_update(
             task.priority = new_p;
         }
         if let Some(ref new_a) = new_assignee {
-            task.assignee = new_a.clone();
+            task.assignee = Some(new_a.clone());
         }
         if let Some(ref data) = new_data {
             for (key, value) in data {
-                if value.is_empty() {
-                    task.data.remove(key);
-                } else {
-                    task.data.insert(key.clone(), value.clone());
-                }
+                task.data.insert(key.clone(), value.clone());
             }
         }
         if let Some(ref instr) = new_instructions {
@@ -3830,7 +3898,107 @@ fn run_update(
     let updated_in_progress = get_in_progress(&tasks);
     let in_progress_refs: Vec<_> = updated_in_progress.iter().map(|t| *t).collect();
 
-    let mut builder = MdBuilder::new("update");
+    let mut builder = MdBuilder::new("set");
+    let xml_scopes = scope_set.to_xml_scopes();
+    if !xml_scopes.is_empty() {
+        builder = builder.with_scopes(&xml_scopes);
+    }
+    let xml = builder.build(&content, &in_progress_refs, &ready);
+
+    aiki_print(&xml);
+    Ok(())
+}
+
+/// Clear optional fields on a task
+fn run_unset(
+    cwd: &Path,
+    id: Option<String>,
+    clear_assignee: bool,
+    clear_instructions: bool,
+    data_keys: Vec<String>,
+) -> Result<()> {
+    // Build field_names list from flags
+    let mut field_names = Vec::new();
+
+    if clear_assignee {
+        field_names.push("assignee".to_string());
+    }
+    if clear_instructions {
+        field_names.push("instructions".to_string());
+    }
+    for key in &data_keys {
+        if key.is_empty() {
+            let xml = MdBuilder::new("unset")
+                .error()
+                .build_error("Data key cannot be empty");
+            aiki_print(&xml);
+            return Ok(());
+        }
+        field_names.push(format!("data.{}", key));
+    }
+
+    let events = read_events(cwd)?;
+    let mut tasks = materialize_graph(&events).tasks;
+    let in_progress = get_in_progress(&tasks);
+
+    // Determine which task to update
+    let task_id = if let Some(id) = id {
+        let task = find_task(&tasks, &id)?;
+        task.id.clone()
+    } else {
+        // Default to first in-progress task
+        if let Some(task) = in_progress.first() {
+            task.id.clone()
+        } else {
+            let xml = MdBuilder::new("unset")
+                .error()
+                .build_error("No task in progress to update");
+            aiki_print(&xml);
+            return Ok(());
+        }
+    };
+
+    // Write the FieldsCleared event
+    let event = TaskEvent::FieldsCleared {
+        task_id: task_id.clone(),
+        fields: field_names.clone(),
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &event)?;
+
+    // Update the in-memory task
+    {
+        let task = tasks.get_mut(&task_id).expect("Task should exist");
+        for field in &field_names {
+            if field == "assignee" {
+                task.assignee = None;
+            } else if field == "instructions" {
+                task.instructions = None;
+            } else if let Some(key) = field.strip_prefix("data.") {
+                task.data.remove(key);
+            }
+        }
+    }
+
+    // Get updated task for output
+    let updated_task = tasks.get(&task_id).expect("Task should exist");
+
+    let content = format!(
+        "## Cleared\n- **{}** — {} ({})\n- **Fields:** {}\n",
+        updated_task.id,
+        updated_task.name,
+        updated_task.priority,
+        field_names.join(", ")
+    );
+
+    // Get scope set and ready queue for context
+    let graph = materialize_graph(&events);
+    let scope_set = get_current_scope_set(&graph);
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
+    let updated_in_progress = get_in_progress(&tasks);
+    let in_progress_refs: Vec<_> = updated_in_progress.iter().map(|t| *t).collect();
+
+    let mut builder = MdBuilder::new("unset");
     let xml_scopes = scope_set.to_xml_scopes();
     if !xml_scopes.is_empty() {
         builder = builder.with_scopes(&xml_scopes);
@@ -4933,7 +5101,11 @@ fn has_external_ref_prefix(s: &str) -> bool {
 /// Called at write time — the event always stores canonical IDs.
 /// Kind-aware: task-only kinds reject non-task targets instead of
 /// silently coercing them to file: paths.
-fn normalize_link_target(input: &str, kind: &str, tasks: &FastHashMap<String, Task>) -> Result<String> {
+fn normalize_link_target(
+    input: &str,
+    kind: &str,
+    tasks: &FastHashMap<String, Task>,
+) -> Result<String> {
     use crate::tasks::graph::is_task_only_kind;
 
     // 1. Strip task: prefix if present
@@ -5098,7 +5270,6 @@ fn run_unlink(
     scoped_to: Option<String>,
     supersedes: Option<String>,
 ) -> Result<()> {
-
     let (kind, raw_target) = extract_link_flag(
         blocked_by,
         sourced_from,

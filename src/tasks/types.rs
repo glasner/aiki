@@ -176,12 +176,19 @@ pub enum TaskEvent {
         task_id: String,
         name: Option<String>,
         priority: Option<TaskPriority>,
-        /// New assignee value. Some(Some("agent")) = assign, Some(None) = unassign, None = no change
-        assignee: Option<Option<String>>,
-        /// Data fields to merge (add/update). Empty values mean remove the key.
+        /// New assignee value. Some = set to this, None = no change
+        assignee: Option<String>,
+        /// Data fields to merge (add/update). Empty values mean remove the key (backwards compat).
         data: Option<HashMap<String, String>>,
         /// New instructions content (replaces existing instructions)
         instructions: Option<String>,
+        timestamp: DateTime<Utc>,
+    },
+    /// Fields were cleared on a task
+    FieldsCleared {
+        task_id: String,
+        /// Field names that were cleared (e.g., ["assignee", "instructions", "data.mykey"])
+        fields: Vec<String>,
         timestamp: DateTime<Utc>,
     },
     /// Link added between two nodes
@@ -219,6 +226,7 @@ impl TaskEvent {
             | TaskEvent::Reopened { timestamp, .. }
             | TaskEvent::CommentAdded { timestamp, .. }
             | TaskEvent::Updated { timestamp, .. }
+            | TaskEvent::FieldsCleared { timestamp, .. }
             | TaskEvent::LinkAdded { timestamp, .. }
             | TaskEvent::LinkRemoved { timestamp, .. } => *timestamp,
         }
