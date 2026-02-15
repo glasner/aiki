@@ -200,7 +200,7 @@ pub enum TaskCommands {
         closed: bool,
 
         /// Filter to tasks assigned to specific agent or human
-        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
 
         /// Filter to unassigned tasks only
@@ -247,7 +247,7 @@ pub enum TaskCommands {
         parent: Option<String>,
 
         /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
-        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
 
         /// Source that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
@@ -325,7 +325,7 @@ pub enum TaskCommands {
         source: Vec<String>,
 
         /// Override template assignee
-        #[arg(long = "for", visible_alias = "assignee", value_name = "AGENT")]
+        #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
     },
 
@@ -410,12 +410,7 @@ pub enum TaskCommands {
         name: Option<String>,
 
         /// Reassign to specific agent or human (claude-code, codex, cursor, gemini, human)
-        #[arg(
-            long = "for",
-            visible_alias = "assignee",
-            value_name = "AGENT",
-            group = "assign"
-        )]
+        #[arg(long = "assignee", value_name = "AGENT", group = "assign")]
         assignee: Option<String>,
 
         /// Remove assignee (make task unassigned)
@@ -1044,7 +1039,7 @@ fn run_list(
     };
 
     // Get in-progress tasks, filtered by:
-    // 1. Explicit assignee filter (--for/--unassigned) if specified
+    // 1. Explicit assignee filter (--assignee/--unassigned) if specified
     // 2. Otherwise, auto visibility filter based on session context
     // 3. Session ownership filter
     let in_progress: Vec<&Task> = get_in_progress(&tasks)
@@ -3762,7 +3757,7 @@ fn run_update(
         && new_instructions.is_none()
     {
         let xml = MdBuilder::new("update").error().build_error(
-            "No updates specified. Use --name, --data, --instructions, --for, --unassign, or --p0/--p1/--p2/--p3",
+            "No updates specified. Use --name, --data, --instructions, --assignee, --unassign, or --p0/--p1/--p2/--p3",
         );
         aiki_print(&xml);
         return Ok(());
