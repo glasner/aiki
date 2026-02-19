@@ -1,6 +1,7 @@
 ---
 version: 1.0.0
 type: plan
+slug: plan
 ---
 
 # Plan: {{data.spec}}
@@ -22,13 +23,11 @@ Identify the implementation steps needed. Each step should be a discrete, testab
 Create the plan task (a container for subtasks):
 
 ```bash
-aiki task add "Plan: <spec title from the spec file>" \
+PLAN_ID=$(aiki task add "Plan: <spec title from the spec file>" \
   --source task:{{parent.id}} \
   --source file:{{data.spec}} \
-  --data spec={{data.spec}}
+  --data spec={{data.spec}} | awk 'NR==1{print $2}')
 ```
-
-The command outputs the task ID on stdout (single line, e.g., `xyxkluynlnonltwtprxupswknoquuvnz`). Capture this as the plan task ID.
 
 **Spec title extraction:** Use the first H1 heading (`# Title`) from the spec file. If no H1 found, use the filename without extension.
 
@@ -46,7 +45,7 @@ MD
 For each implementation step identified, create a subtask and set instructions:
 
 ```bash
-TASK_ID=$(aiki task add "<step description>" --parent <plan_task_id>)
+TASK_ID=$(aiki task add "<step description>" --parent $PLAN_ID | awk 'NR==1{print $2}')
 aiki task set $TASK_ID --instructions <<'MD'
 <detailed instructions for this step — enough context for an
 executing agent to complete the step without re-reading the spec>
@@ -64,7 +63,7 @@ MD
 When all subtasks are added, close this planning task and report the plan:
 
 ```bash
-aiki task close --summary "Plan created with N subtasks. Plan ID: <plan_task_id>"
+aiki task close --summary "Plan created with N subtasks. Plan ID: $PLAN_ID"
 ```
 
 Output the plan task ID and subtask summary for the user.

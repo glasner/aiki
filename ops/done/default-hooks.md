@@ -1,7 +1,7 @@
 # Default Hooks: Init-Time Hook Scaffolding
 
 **Date**: 2026-02-11
-**Status**: Draft
+**Status**: Done
 **Priority**: P2
 
 **Related Documents**:
@@ -10,6 +10,7 @@
 - [Loop Flags](loop-flags.md) - CLI primitives (`fix --loop`, `review --fix`, `build --loop`)
 - [Better Include for Plugins](better-include-for-plugins.md) - `include:` directive, `hook:` action, composition blocks (prerequisite)
 - [Built-In Plugin Resolution](built-in-plugin-resolution.md) - Embedded plugin fallback (prerequisite)
+- [Remote Plugin Installation](remote-plugins.md) - GitHub-based plugin installation system
 - [Turn Event Payloads](turn-event-payloads.md) - Task context in turn.completed events (prerequisite)
 - [Rename to Hooks](../done/rename-to-hooks.md) - Hooks terminology and architecture
 - [Workflow Hook Commands](workflow-hook-commands.md) - Flow action integration (spec/plan/build)
@@ -40,6 +41,8 @@ When `aiki init` runs, it creates a **hookfile** at `.aiki/hooks.yml` that:
 3. **Is fully commented** with explanations of each plugin and event, so users understand what's happening and how to customize
 
 The core hooks (`aiki/core`) remain embedded in the binary and always run first. The hookfile runs after core, adding the opinionated automation layer.
+
+**Scope**: This spec covers **built-in plugins only** (embedded in the aiki binary). For remote GitHub-based plugins, see [Remote Plugin Installation](remote-plugins.md). The hookfile can reference both built-in and remote plugins via `include:`.
 
 ---
 
@@ -115,7 +118,6 @@ Users open `.aiki/hooks.yml` and edit directly:
 ```yaml
 # .aiki/hooks.yml
 
-name: hooks
 include:
   - aiki/default  # The opinionated Aiki Way - updated automatically with new releases
 
@@ -141,7 +143,6 @@ include:
 #   aiki hooks --help
 #   https://aiki.sh/help/hooks
 
-name: hooks
 include:
   - aiki/default  # The opinionated Aiki Way (auto-updates with new releases)
 
@@ -246,9 +247,10 @@ The default plugin wraps the opinionated "Aiki Way" workflow automation. It comp
 - Users who want explicit control can replace `aiki/default` with individual plugins
 - Users can override by creating `.aiki/hooks/aiki/default.yml`
 
+**Type**: Built-in (embedded in binary, not a remote plugin)
+
 ```yaml
 # Built-in: aiki/default
-name: aiki/default
 description: "The opinionated Aiki Way - workflow automation that updates automatically"
 
 before:
@@ -258,10 +260,7 @@ before:
 after:
   include:
     - aiki/git-coauthors
-  turn.completed:
-    - if: $event.turn.tasks.completed
-      then:
-        - autoreply: "aiki review --fix --start"
+    - aiki/review-loop
   # Future plugins added here in new releases:
   # - aiki/context-inject
   # - aiki/build-check
@@ -275,23 +274,26 @@ Appends `Co-Authored-By:` trailers to Git commit messages based on AI agent attr
 
 **No prerequisites** — uses the existing `generate_coauthors` function and `commit_message` action.
 
+**Type**: Built-in (embedded in binary, not a remote plugin)
+
 ```yaml
 # Built-in: aiki/git-coauthors
 name: aiki/git-coauthors
 description: "Append AI co-author trailers to Git commit messages"
 version: "1"
 
-commit.message_started:
-  # Generate co-author lines from staged changes
-  - let: coauthors = self.generate_coauthors
-    on_failure:
-      - stop: "Failed to generate co-authors"
+after:
+  commit.message_started:
+    # Generate co-author lines from staged changes
+    - let: coauthors = self.generate_coauthors
+      on_failure:
+        - stop: "Failed to generate co-authors"
 
-  # Append co-authors as Git trailers
-  - commit_message:
-      append_trailer: $coauthors
-    on_failure:
-      - stop: "Failed to append co-author trailers"
+    # Append co-authors as Git trailers
+    - commit_message:
+        append_trailer: "{{coauthors}}"
+      on_failure:
+        - stop: "Failed to append co-author trailers"
 ```
 
 **Implementation**: Remove the `commit.message_started` handler from `cli/src/flows/core/hooks.yaml` and ship it as a built-in plugin instead. The `generate_coauthors` function and `commit_message` action remain in the engine — only the hook wiring moves.
@@ -302,40 +304,90 @@ Already designed in `ops/now/review-loop-plugin.md`. Triggers `aiki review --fix
 
 **Prerequisite**: Requires task context in `turn.completed` payload - see [Turn Event Payloads](turn-event-payloads.md).
 
+**Type**: Built-in (embedded in binary, not a remote plugin)
+
 ```yaml
 # Built-in: aiki/review-loop
 name: aiki/review-loop
 description: "Review and fix code after each agent turn"
 version: "1"
 
-turn.completed:
-  - if: $event.tasks.closed | any(.task_type == null)
-    then:
-      - autoreply: |
-          Original work tasks closed: $event.tasks.closed | filter(.task_type == null) | map(.description)
+after:
+  turn.completed:
+    - if: $event.tasks.closed | any(.task_type == null)
+      then:
+        - autoreply: |
+            Original work tasks closed: $event.tasks.closed | filter(.task_type == null) | map(.description)
 
-          Review your work and fix any issues:
+            Review your work and fix any issues:
 
-          aiki review --fix --start
+            aiki review --fix --start
 ```
 
 ---
 
 ## Plugin Resolution
 
-Plugins are resolved in this order:
+Aiki supports two types of plugins:
 
-1. **Project `.aiki/hooks/{namespace}/{name}.yml`** — user overrides
-2. **User `~/.aiki/hooks/{namespace}/{name}.yml`** — user-global overrides
-3. **Built-in (embedded in binary)** — shipped with aiki
+### Built-In Plugins (Embedded)
+
+Built-in plugins ship inside the aiki binary and are always available without installation. Examples: `aiki/default`, `aiki/git-coauthors`, `aiki/review-loop`.
+
+**Resolution order for built-in plugins:**
+
+1. **Project `.aiki/hooks/{namespace}/{name}.yml`** — project-level override
+2. **Built-in (embedded in binary)** — shipped with aiki
 
 This means:
 
 - `include: aiki/review-loop` resolves to the built-in plugin by default
 - Users can override by creating `.aiki/hooks/aiki/review-loop.yml` in their project
-- The built-in serves as fallback when no user file exists
+- The built-in serves as fallback when no override exists
 
 See [Built-In Plugin Resolution](built-in-plugin-resolution.md) for implementation details.
+
+### Remote Plugins (GitHub)
+
+Remote plugins are installed from GitHub repositories into `~/.aiki/plugins/` (user-level). See [Remote Plugin Installation](remote-plugins.md) for complete details.
+
+**Plugin structure** (from remote-plugins.md):
+```
+~/.aiki/plugins/{namespace}/{plugin}/
+├── .git/
+├── hooks.yaml          # Event handlers
+└── templates/          # Template files (*.md)
+    └── review.md
+```
+
+**Resolution order for remote plugin hooks:**
+
+1. **Project `.aiki/hooks/{namespace}/{name}.yml`** — project-level override
+2. **User `~/.aiki/plugins/{namespace}/{plugin}/hooks.yaml`** — installed remote plugin
+3. **Built-in (embedded in binary)** — fallback if plugin name matches a built-in
+
+**Resolution order for remote plugin templates:**
+
+1. **Project `.aiki/templates/{reference}.md`** — project-local override
+2. **User `~/.aiki/plugins/{ns}/{plugin}/templates/{template}.md`** — installed remote plugin
+
+**Note**: The `aiki` namespace is reserved. Built-in `aiki/*` plugins are embedded in the binary. If a remote `aiki/*` plugin is installed via `aiki plugin install aiki/way`, it fetches from `https://github.com/glasner/way.git` (the `aiki` namespace maps to the `glasner` GitHub org).
+
+### Migration Path: Built-In to Remote
+
+As the plugin ecosystem grows, some built-in plugins may migrate to remote plugins:
+
+1. **Initially**: Plugin ships as built-in (embedded in binary) — e.g., `aiki/review-loop`
+2. **Later**: Plugin is published to GitHub at `glasner/review-loop`
+3. **User installs**: `aiki plugin install aiki/review-loop` fetches from GitHub
+4. **Resolution**: Installed remote plugin takes precedence over built-in fallback
+
+This allows:
+- New users get started quickly (built-ins work immediately)
+- Power users can install specific versions or fork plugins
+- Gradual ecosystem transition from built-in to remote
+
+The resolution order (project override → remote plugin → built-in) ensures this transition is smooth and backwards-compatible.
 
 ---
 
@@ -415,6 +467,16 @@ The `aiki/review-loop` plugin requires task context in `turn.completed` events t
 
 This is a deliberate behavior change: co-authors move out of core into hookfile-driven defaults (`aiki/default`), and are therefore unavailable until the hookfile is present.
 
+**Migration impact on existing repos**: Repositories initialized before this change will not have `.aiki/hooks.yml`. After upgrading to a version with this change, these repos will silently lose co-author trailers on commits because:
+- Co-authors are no longer in `aiki/core` (removed in this phase)
+- Without `.aiki/hooks.yml`, the `aiki/default` plugin (which includes `aiki/git-coauthors`) never loads
+
+**Mitigation**:
+1. `aiki doctor` warns when an initialized repo has no hookfile (see Doctor Validation below)
+2. `aiki doctor --fix` creates the missing hookfile automatically
+3. `aiki init` on an existing repo (without a hookfile) creates one (Phase 1 ensures this)
+4. On first run after upgrade, `aiki doctor` runs automatically (existing behavior) and surfaces the warning
+
 **Files to modify**:
 - `cli/src/flows/core/hooks.yaml` — remove `commit.message_started` handler
 - `cli/src/flows/plugins/` — add `aiki/git-coauthors` plugin YAML (or embed alongside other built-in plugins)
@@ -428,6 +490,8 @@ This is a deliberate behavior change: co-authors move out of core into hookfile-
 3. Also call it in the normal init path further down
 4. Embed hookfile template content in binary
 5. Print confirmation showing which plugins are included
+
+**Note**: This phase only creates the hookfile referencing built-in plugins. Remote plugin installation (via `aiki plugin install`) is covered separately in [Remote Plugin Installation](remote-plugins.md) and is not part of `aiki init` behavior.
 
 **Files to modify**:
 - `cli/src/commands/init.rs` — add `ensure_hooks_yml()`, call before early return and in normal flow
@@ -453,15 +517,17 @@ This is a deliberate behavior change: co-authors move out of core into hookfile-
 
 The hookfile is designed to grow as more plugins are built. Each plugin is independently useful and composable:
 
-| Plugin | Event | Purpose | Status |
-|--------|-------|---------|--------|
-| `aiki/default` | N/A (wrapper) | Opinionated workflow automation | Designed |
-| `aiki/git-coauthors` | `commit.message_started` | Append AI co-author trailers to commits | Designed (extracted from core) |
-| `aiki/review-loop` | `turn.completed` | Review and fix after each turn | Designed (`ops/now/review-loop-plugin.md`) |
-| `aiki/lint-gate` | `shell.permission_asked` | Block git push if lint fails | Future |
-| `aiki/build-check` | `turn.completed` | Run build after changes | Future |
-| `aiki/test-gate` | `shell.permission_asked` | Block git push if tests fail | Future |
-| `aiki/context-inject` | `turn.started` | Inject project context per-turn | Future |
+| Plugin | Type | Event | Purpose | Status |
+|--------|------|-------|---------|--------|
+| `aiki/default` | Built-in | N/A (wrapper) | Opinionated workflow automation | Designed |
+| `aiki/git-coauthors` | Built-in | `commit.message_started` | Append AI co-author trailers to commits | Designed (extracted from core) |
+| `aiki/review-loop` | Built-in | `turn.completed` | Review and fix after each turn | Designed (`ops/now/review-loop-plugin.md`) |
+| `aiki/lint-gate` | Built-in | `shell.permission_asked` | Block git push if lint fails | Future |
+| `aiki/build-check` | Built-in | `turn.completed` | Run build after changes | Future |
+| `aiki/test-gate` | Built-in | `shell.permission_asked` | Block git push if tests fail | Future |
+| `aiki/context-inject` | Built-in | `turn.started` | Inject project context per-turn | Future |
+
+**Note**: All listed plugins start as built-in (embedded). As the ecosystem matures, some may migrate to remote GitHub-based plugins (see [Migration Path: Built-In to Remote](#migration-path-built-in-to-remote)).
 
 **Default users** get automatic updates via `aiki/default`:
 ```yaml
@@ -478,6 +544,14 @@ include:
   - aiki/build-check
 ```
 
+**Remote plugin example** (once ecosystem exists):
+```yaml
+include:
+  - aiki/default           # Built-in wrapper
+  - myorg/security-scan    # Remote plugin from github.com/myorg/security-scan
+  - otheruser/formatter    # Remote plugin from github.com/otheruser/formatter
+```
+
 ---
 
 ## Doctor Validation
@@ -486,14 +560,17 @@ include:
 
 | Check | Severity | Message |
 |-------|----------|---------|
-| File exists | Info | "No hookfile found. Run `aiki init` to create one." |
+| File exists (initialized repo) | Warning | "No hookfile found. Co-author trailers and workflow automation are disabled. Run `aiki init` or `aiki doctor --fix` to create `.aiki/hooks.yml`." |
+| File exists (no `.aiki/` dir) | Info | "No hookfile found. Run `aiki init` to create one." |
 | YAML syntax valid | Error | ".aiki/hooks.yml has invalid YAML: {parse error}" |
 | Referenced plugins exist | Warning | "Plugin 'aiki/lint-gate' not found (referenced in include:)" |
 | Unknown event types | Warning | "Unknown event 'session.starting' in .aiki/hooks.yml (did you mean 'session.started'?)" |
 | Core not in before/after | Info | "No need to reference aiki/core — it always runs automatically" |
 
+The "File exists (initialized repo)" check is elevated to **Warning** (not Info) because an initialized repo without a hookfile will be missing co-author trailers and other workflow automation that was previously provided by `aiki/core`. This is the primary migration detection mechanism for the Phase 0 co-author extraction.
+
 `aiki doctor --fix` can:
-- Recreate a missing `hooks.yml` (same as init behavior)
+- Recreate a missing `hooks.yml` (same as init behavior) — **this restores co-author trailers and workflow automation**
 - Remove references to non-existent plugins (with confirmation)
 
 ---
@@ -528,7 +605,3 @@ When a user customizes the hookfile, those changes are committed and shared with
 | Review loop default | Enabled via `aiki/default` | Opinionated out of the box — users remove `aiki/default` if unwanted or replace with explicit plugins. |
 | Doctor validation | Full validation | `aiki doctor` checks YAML syntax, verifies referenced plugins exist, and warns about unknown event types. |
 | Plugin versioning | Silent update | Built-in fallback always uses latest version. Users who haven't overridden get updates automatically. Simple and low-maintenance. |
-
-## Open Questions
-
-1. **Should there be an `aiki hooks reset` command to regenerate the hookfile?** Useful if users break their hookfile and want to start fresh, but risky if they've made intentional customizations. Could prompt for confirmation or create a backup.

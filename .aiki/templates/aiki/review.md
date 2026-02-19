@@ -5,18 +5,45 @@ type: review
 
 # Review: {{data.scope.name}}
 
-When done with all subtasks close this task with a summary of review:
+Please leave updates as you go using `aiki task comment`.
+
+When done with all subtasks close this task with a summary of your review:
 
 ```bash
-aiki task close {{id}} --summary "Review complete (n issues found)"                # View all code changes
+aiki task close {{id}} --summary "Review complete (n issues found)"
 ```
 
 # Subtasks
 
-{% subtask aiki/review/{{data.scope.kind}} %}
+{% subtask aiki/review/criteria/spec if data.scope.kind == "spec" %}
+{% subtask aiki/review/criteria/code if data.scope.kind != "spec" %}
+
+## Explore Scope
+---
+slug: explore
+---
+
+With your understanding of the criteria for this review from {{parent.subtasks.criteria}}, run the following command to explore the scope. The `--start` flag assigns the explore task to you so the context is available for the review phase:
+
+```bash
+aiki explore {{data.scope.id}} --start
+```
 
 ## Review
+---
+slug: review
+---
 
-Review the work and if any issues are found, leave a comment on {{parent.id}} for each finding.
+With your understanding of the criteria from {{parent.subtasks.criteria}}, review the work found in {{parent.subtasks.explore}}. 
+
+Track **each issue** found using the following command:
+
+```bash
+aiki review issue add {{parent.id}} "Description of the issue"
+```
+
+Each issue becomes a trackable fix item. Regular comments (`aiki task comment`) are for progress notes and won't trigger fixes.
+
+When done, close this subtask.
 
 {% subtask aiki/fix/loop if data.options.fix %}

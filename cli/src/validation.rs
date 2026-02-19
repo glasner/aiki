@@ -58,7 +58,7 @@ pub fn is_valid_template_identifier(name: &str) -> bool {
 /// - Rest must be letters, digits, or underscores: `[A-Za-z0-9_]*`
 ///
 /// This is the canonical validation for:
-/// - Hook/flow `let` bindings: `let: description = $event.file_paths`
+/// - Hook/flow `let` bindings: `let: description = event.file_paths`
 /// - Flow step aliases
 ///
 /// # Examples

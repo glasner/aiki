@@ -7,11 +7,14 @@ mod config;
 mod editors;
 mod error;
 mod event_bus;
+mod expressions;
 mod events;
 mod flows;
+mod interpolation;
 mod global;
 mod history;
 mod jj;
+mod plugins;
 mod provenance;
 mod repo;
 mod repo_id;
@@ -48,6 +51,11 @@ enum Commands {
         /// Automatically fix detected issues
         #[arg(long)]
         fix: bool,
+    },
+    /// Manage plugins (install, update, list, remove)
+    Plugin {
+        #[command(subcommand)]
+        command: commands::plugin::PluginCommands,
     },
     /// Manage Aiki hooks
     #[command(hide = true)]
@@ -126,6 +134,8 @@ enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// Explore a scope (spec, code, task, or session)
+    Explore(commands::explore::ExploreArgs),
     /// Create and run code review tasks
     Review(commands::review::ReviewArgs),
     /// Create an implementation plan from a spec file
@@ -198,6 +208,7 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Init { quiet } => commands::init::run(quiet),
         Commands::Doctor { fix } => commands::doctor::run(fix),
+        Commands::Plugin { command } => commands::plugin::run(command),
         Commands::Hooks { command } => match command {
             HooksCommands::Stdin {
                 agent,
@@ -239,6 +250,7 @@ fn run() -> Result<()> {
             template,
             agent,
         } => commands::fix::run(task_id, run_async, start, template, agent),
+        Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),
         Commands::Plan(args) => commands::plan::run(args),
         Commands::Build(args) => commands::build::run(args),

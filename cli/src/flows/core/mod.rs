@@ -15,4 +15,6 @@ pub use functions::{
     restore_original_files_change, write_ai_files_change,
     // Task system functions
     task_in_progress, task_list_size, task_list_size_for_agent,
+    // Workspace isolation functions
+    workspace_absorb_all, workspace_create_if_concurrent,
 };

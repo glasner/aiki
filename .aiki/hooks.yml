@@ -1,0 +1,97 @@
+# Aiki Hooks
+#
+# This file configures agent hooks for your project.
+#
+# Learn more:
+#   aiki hooks --help
+#   https://aiki.sh/help/hooks
+
+include:
+  - aiki/default  # The opinionated Aiki Way (auto-updates with new releases)
+
+# ============================================================================
+# Custom Hooks
+# ============================================================================
+# Add your own event handlers below. Each event fires at a specific point
+# in the agent lifecycle. Uncomment and modify to customize.
+#
+# --- Session Lifecycle ---
+#
+# session.started:
+#   # Fires when a new agent session begins (after aiki/core initializes)
+#   # Use for: injecting project context, setting up session state
+#   - context: "Remember to run tests before committing"
+#
+# session.resumed:
+#   # Fires when an existing session is resumed (not a fresh start)
+#   # Use for: re-injecting context that may have been lost to compaction
+#
+# session.ended:
+#   # Fires when an agent session ends
+#   # Use for: cleanup, notifications, session summaries
+#
+# --- Turn Lifecycle ---
+#
+# turn.started:
+#   # Fires before each agent turn (user prompt or autoreply)
+#   # Use for: injecting per-turn context, rate limiting
+#   # Note: survives context compaction (re-injected every turn)
+#
+# turn.completed:
+#   # Fires after the agent finishes responding
+#   # Use for: post-turn validation, autoreplies, review triggers
+#   # Supports: autoreply: (send a follow-up message to the agent)
+#
+# --- File Operations ---
+#
+# change.permission_asked:
+#   # Fires before a file write, delete, or move (gateable)
+#   # Use for: blocking writes to protected files, requiring approval
+#   # - if: $event.file_paths | contains(".env")
+#   #   then:
+#   #     - block: "Cannot modify .env files"
+#
+# change.completed:
+#   # Fires after a file mutation completes
+#   # Use for: post-change validation, lint checks
+#
+# read.permission_asked:
+#   # Fires before a file read (gateable)
+#   # Use for: blocking reads of sensitive files (secrets, credentials)
+#
+# --- Shell Commands ---
+#
+# shell.permission_asked:
+#   # Fires before a shell command executes (gateable)
+#   # Use for: blocking dangerous commands, requiring review before push
+#   # - if: $event.command | contains("git push")
+#   #   then:
+#   #     - block: "Run tests before pushing"
+#
+# shell.completed:
+#   # Fires after a shell command completes
+#   # Use for: logging, post-command validation
+#
+# --- Task Lifecycle ---
+#
+# task.started:
+#   # Fires when a task transitions to in_progress
+#   # Use for: notifications, task setup
+#
+# task.closed:
+#   # Fires when a task is closed
+#   # Use for: notifications, triggering follow-up work
+#
+# --- Other Events ---
+#
+# commit.message_started:
+#   # Fires during Git's prepare-commit-msg hook
+#   # Use for: adding trailers, enforcing commit message format
+#
+# mcp.permission_asked:
+#   # Fires before an MCP tool call (gateable)
+#   # Use for: rate limiting, blocking expensive operations
+#
+# web.permission_asked:
+#   # Fires before a web fetch (gateable)
+#   # Use for: blocking external requests, domain allowlisting

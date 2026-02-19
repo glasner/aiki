@@ -10,7 +10,7 @@ SessionStart:
       - shell: "echo 'New session'"
 
 PrePrompt:
-  - switch: $event.agent_type
+  - switch: event.agent_type
     cases:
       claude:
         - log: "Claude agent detected"
@@ -29,9 +29,9 @@ PostFileChange:
           - stop: "Fatal error"
 
 SessionEnd:
-  - if: $event.modified_files != ""
+  - if: event.modified_files != ""
     then:
-      - switch: $event.response
+      - switch: event.response
         cases:
           "success":
             - log: "Changes successful"

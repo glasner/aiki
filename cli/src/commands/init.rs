@@ -13,6 +13,107 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+/// Default content for .aiki/hooks.yml created by `aiki init`.
+/// This is also used by `aiki doctor --fix` to recreate a missing hookfile.
+pub const HOOKS_YML_TEMPLATE: &str = r#"# Aiki Hooks
+#
+# This file configures agent hooks for your project.
+#
+# Learn more:
+#   aiki hooks --help
+#   https://aiki.sh/help/hooks
+
+include:
+  - aiki/default  # The opinionated Aiki Way (auto-updates with new releases)
+
+# ============================================================================
+# Custom Hooks
+# ============================================================================
+# Add your own event handlers below. Each event fires at a specific point
+# in the agent lifecycle. Uncomment and modify to customize.
+#
+# --- Session Lifecycle ---
+#
+# session.started:
+#   # Fires when a new agent session begins (after aiki/core initializes)
+#   # Use for: injecting project context, setting up session state
+#   - context: "Remember to run tests before committing"
+#
+# session.resumed:
+#   # Fires when an existing session is resumed (not a fresh start)
+#   # Use for: re-injecting context that may have been lost to compaction
+#
+# session.ended:
+#   # Fires when an agent session ends
+#   # Use for: cleanup, notifications, session summaries
+#
+# --- Turn Lifecycle ---
+#
+# turn.started:
+#   # Fires before each agent turn (user prompt or autoreply)
+#   # Use for: injecting per-turn context, rate limiting
+#   # Note: survives context compaction (re-injected every turn)
+#
+# turn.completed:
+#   # Fires after the agent finishes responding
+#   # Use for: post-turn validation, autoreplies, review triggers
+#   # Supports: autoreply: (send a follow-up message to the agent)
+#
+# --- File Operations ---
+#
+# change.permission_asked:
+#   # Fires before a file write, delete, or move (gateable)
+#   # Use for: blocking writes to protected files, requiring approval
+#   # - if: $event.file_paths | contains(".env")
+#   #   then:
+#   #     - block: "Cannot modify .env files"
+#
+# change.completed:
+#   # Fires after a file mutation completes
+#   # Use for: post-change validation, lint checks
+#
+# read.permission_asked:
+#   # Fires before a file read (gateable)
+#   # Use for: blocking reads of sensitive files (secrets, credentials)
+#
+# --- Shell Commands ---
+#
+# shell.permission_asked:
+#   # Fires before a shell command executes (gateable)
+#   # Use for: blocking dangerous commands, requiring review before push
+#   # - if: $event.command | contains("git push")
+#   #   then:
+#   #     - block: "Run tests before pushing"
+#
+# shell.completed:
+#   # Fires after a shell command completes
+#   # Use for: logging, post-command validation
+#
+# --- Task Lifecycle ---
+#
+# task.started:
+#   # Fires when a task transitions to in_progress
+#   # Use for: notifications, task setup
+#
+# task.closed:
+#   # Fires when a task is closed
+#   # Use for: notifications, triggering follow-up work
+#
+# --- Other Events ---
+#
+# commit.message_started:
+#   # Fires during Git's prepare-commit-msg hook
+#   # Use for: adding trailers, enforcing commit message format
+#
+# mcp.permission_asked:
+#   # Fires before an MCP tool call (gateable)
+#   # Use for: rate limiting, blocking expensive operations
+#
+# web.permission_asked:
+#   # Fires before a web fetch (gateable)
+#   # Use for: blocking external requests, domain allowlisting
+"#;
+
 pub fn run(quiet: bool) -> Result<()> {
     // Get current directory
     let current_dir = env::current_dir().context("Failed to get current directory")?;
@@ -45,6 +146,9 @@ pub fn run(quiet: bool) -> Result<()> {
 
     if let Some(ref hooks_path) = git_hooks_path {
         if hooks_path.contains(".aiki/githooks") {
+            // Even on re-init, ensure hookfile exists
+            ensure_hooks_yml(&repo_root, quiet)?;
+
             if quiet {
                 // Silent success for auto mode
                 return Ok(());
@@ -312,11 +416,37 @@ pub fn run(quiet: bool) -> Result<()> {
         }
     }
 
+    // Ensure hookfile exists for workflow automation
+    ensure_hooks_yml(&repo_root, quiet)?;
+
     // Ensure AGENTS.md has task system instructions
     if !quiet {
         println!("\nConfiguring agent instructions...");
     }
     ensure_agents_md(&repo_root, quiet)?;
+
+    // Install plugins referenced by project templates
+    let plugin_refs = crate::plugins::project::derive_project_plugin_refs(&repo_root);
+    if !plugin_refs.is_empty() {
+        if !quiet {
+            println!("\nInstalling plugins...");
+        }
+        match crate::plugins::project::install_project_plugins(&repo_root) {
+            Ok(count) => {
+                if !quiet && count > 0 {
+                    println!("✓ Installed {} plugin(s)", count);
+                } else if !quiet {
+                    println!("✓ All plugins already installed");
+                }
+            }
+            Err(e) => {
+                if !quiet {
+                    eprintln!("⚠ Failed to install some plugins: {}", e);
+                    eprintln!("  Run: aiki plugin install");
+                }
+            }
+        }
+    }
 
     if !quiet {
         println!("\n✓ Repository initialized successfully!");
@@ -366,6 +496,34 @@ fn prompt_string(prompt: &str, default: Option<&str>) -> Result<String> {
     }
 
     Ok(input)
+}
+
+/// Ensure .aiki/hooks.yml exists with default workflow automation.
+/// Never overwrites an existing hookfile — user customizations are sacred.
+fn ensure_hooks_yml(repo_root: &Path, quiet: bool) -> Result<()> {
+    let hooks_path = repo_root.join(".aiki/hooks.yml");
+
+    if hooks_path.exists() {
+        if !quiet {
+            println!(".aiki/hooks.yml already exists (skipping)");
+        }
+        return Ok(());
+    }
+
+    // Ensure .aiki directory exists (may not exist on re-init path)
+    let aiki_dir = repo_root.join(".aiki");
+    if !aiki_dir.exists() {
+        return Ok(()); // No .aiki dir yet — will be created later in init flow
+    }
+
+    fs::write(&hooks_path, HOOKS_YML_TEMPLATE)
+        .context("Failed to create .aiki/hooks.yml")?;
+
+    if !quiet {
+        println!("Created .aiki/hooks.yml with default workflow automation");
+    }
+
+    Ok(())
 }
 
 /// Ensure AGENTS.md exists with the <aiki> block for task system instructions

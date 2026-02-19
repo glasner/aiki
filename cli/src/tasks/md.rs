@@ -294,6 +294,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             status,
             priority,
@@ -550,6 +551,7 @@ mod tests {
 
     #[test]
     fn test_format_task_list_closed_with_comment_fallback() {
+        use std::collections::HashMap;
         use crate::tasks::types::TaskComment;
         let mut task = make_task(
             "abcdefghijklmnopqrstuvwxyzabcdef",
@@ -561,6 +563,7 @@ mod tests {
             id: None,
             text: "Fallback comment summary".to_string(),
             timestamp: Utc::now(),
+            data: HashMap::new(),
         });
         let md = format_task_list(&[&task]);
         assert!(md.contains("↳ Fallback comment summary"));

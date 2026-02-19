@@ -1,0 +1,12 @@
+# Built-in: aiki/default
+name: aiki/default
+description: "The opinionated Aiki Way - workflow automation that updates automatically"
+version: "1"
+
+after:
+  include:
+    - aiki/git-coauthors
+    - aiki/review-loop
+  # Future plugins added here in new releases:
+  # - aiki/context-inject
+  # - aiki/build-check

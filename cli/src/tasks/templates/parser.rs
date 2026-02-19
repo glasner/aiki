@@ -92,9 +92,36 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
         data: frontmatter.data,
     };
     template.parent = parent;
+    // Propagate slug from template-level frontmatter to the parent definition.
+    // This allows composed templates (loaded via {% subtask %}) to declare their slug.
+    template.parent.slug = frontmatter.slug;
     template.subtasks = subtasks;
     template.subtasks_source = frontmatter.subtasks;
     template.subtask_template = subtask_template_content;
+    template.spawns = frontmatter.spawns;
+
+    // Validate spawn entries: each must have exactly one of task/subtask
+    for (i, entry) in template.spawns.iter().enumerate() {
+        match (&entry.task, &entry.subtask) {
+            (Some(_), Some(_)) => {
+                return Err(AikiError::TemplateProcessingFailed {
+                    details: format!(
+                        "spawn entry {} in template '{}' has both 'task' and 'subtask' — exactly one is required",
+                        i, name
+                    ),
+                });
+            }
+            (None, None) => {
+                return Err(AikiError::TemplateProcessingFailed {
+                    details: format!(
+                        "spawn entry {} in template '{}' has neither 'task' nor 'subtask' — exactly one is required",
+                        i, name
+                    ),
+                });
+            }
+            _ => {} // Exactly one is set — valid
+        }
+    }
 
     Ok(template)
 }
@@ -219,6 +246,7 @@ fn parse_markdown_body_with_mode(
 
     let parent = TaskDefinition {
         name: task_name,
+        slug: None, // Parent tasks don't have slugs from templates
         task_type: None, // Set from frontmatter by resolver
         instructions: parent_instructions,
         priority: None,
@@ -335,6 +363,7 @@ fn parse_single_subtask(name: &str, lines: &[&str], file_path: &str) -> Result<T
 
     Ok(TaskDefinition {
         name: name.to_string(),
+        slug: frontmatter.slug,
         task_type: None, // Subtasks inherit type from parent
         instructions,
         priority: frontmatter.priority,
@@ -719,5 +748,205 @@ Just instructions, no subtasks section.
             template.subtask_template.is_none(),
             "subtask_template should be None when no # Subtasks section exists"
         );
+    }
+
+    #[test]
+    fn test_subtask_with_slug_frontmatter() {
+        let content = r#"
+# Build task
+
+Parent instructions.
+
+# Subtasks
+
+## Build binary
+
+---
+slug: build
+priority: p0
+---
+
+Build the binary.
+
+## Run tests
+
+---
+slug: run-tests
+---
+
+Run all tests.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(template.subtasks.len(), 2);
+        assert_eq!(template.subtasks[0].slug, Some("build".to_string()));
+        assert_eq!(template.subtasks[0].priority, Some("p0".to_string()));
+        assert_eq!(template.subtasks[1].slug, Some("run-tests".to_string()));
+    }
+
+    #[test]
+    fn test_subtask_without_slug_frontmatter() {
+        let content = r#"
+# Build task
+
+Parent instructions.
+
+# Subtasks
+
+## Step one
+
+Do the first step.
+
+## Step two
+
+Do the second step.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(template.subtasks.len(), 2);
+        assert!(template.subtasks[0].slug.is_none());
+        assert!(template.subtasks[1].slug.is_none());
+    }
+
+    #[test]
+    fn test_parse_template_with_spawns() {
+        let content = r#"---
+version: "1.0.0"
+type: review
+spawns:
+  - when: not approved
+    task:
+      template: aiki/fix
+      priority: p0
+      data:
+        max_iterations: 3
+  - when: data.needs_analysis
+    subtask:
+      template: aiki/analysis
+      assignee: claude-code
+---
+
+# Review task
+
+Review the changes.
+"#;
+
+        let template = parse_template(content, "aiki/review", "review.md").unwrap();
+        assert_eq!(template.spawns.len(), 2);
+
+        // First spawn: standalone task
+        assert_eq!(template.spawns[0].when, "not approved");
+        assert!(template.spawns[0].task.is_some());
+        assert!(template.spawns[0].subtask.is_none());
+        let task_cfg = template.spawns[0].task.as_ref().unwrap();
+        assert_eq!(task_cfg.template, "aiki/fix");
+        assert_eq!(task_cfg.priority, Some("p0".to_string()));
+
+        // Second spawn: subtask
+        assert_eq!(template.spawns[1].when, "data.needs_analysis");
+        assert!(template.spawns[1].task.is_none());
+        assert!(template.spawns[1].subtask.is_some());
+        let subtask_cfg = template.spawns[1].subtask.as_ref().unwrap();
+        assert_eq!(subtask_cfg.template, "aiki/analysis");
+        assert_eq!(subtask_cfg.assignee, Some("claude-code".to_string()));
+    }
+
+    #[test]
+    fn test_parse_template_without_spawns() {
+        let content = r#"---
+version: "1.0.0"
+---
+
+# Simple task
+
+Do something.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert!(template.spawns.is_empty());
+    }
+
+    #[test]
+    fn test_parse_template_spawn_both_task_and_subtask_rejected() {
+        let content = r#"---
+version: "1.0.0"
+spawns:
+  - when: not approved
+    task:
+      template: aiki/fix
+    subtask:
+      template: aiki/analysis
+---
+
+# Review task
+
+Review the changes.
+"#;
+
+        let result = parse_template(content, "aiki/review", "review.md");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("both 'task' and 'subtask'"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_parse_template_spawn_neither_task_nor_subtask_rejected() {
+        let content = r#"---
+version: "1.0.0"
+spawns:
+  - when: not approved
+---
+
+# Review task
+
+Review the changes.
+"#;
+
+        let result = parse_template(content, "aiki/review", "review.md");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("neither 'task' nor 'subtask'"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_template_level_slug_propagates_to_parent() {
+        let content = r#"---
+slug: criteria
+---
+
+# Understand Criteria: Code
+
+Evaluate the implementation.
+"#;
+
+        let template = parse_template(content, "aiki/review/criteria/code", "code.md").unwrap();
+        assert_eq!(template.parent.slug, Some("criteria".to_string()));
+        assert_eq!(template.parent.name, "Understand Criteria: Code");
+    }
+
+    #[test]
+    fn test_template_without_slug_has_none() {
+        let content = r#"---
+version: "1.0.0"
+---
+
+# Simple task
+
+Do something.
+"#;
+
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert!(template.parent.slug.is_none());
+    }
+
+    #[test]
+    fn test_frontmatter_slug_deserialize() {
+        let yaml = r#"
+slug: criteria
+version: "1.0.0"
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fm.slug, Some("criteria".to_string()));
+        assert_eq!(fm.version, Some("1.0.0".to_string()));
     }
 }

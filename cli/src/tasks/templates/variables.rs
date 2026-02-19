@@ -178,6 +178,12 @@ impl VariableContext {
             return self.item.get(key).cloned();
         }
 
+        // Check for spawner.* variables (populated from spawn data for spawned tasks)
+        // These are stored as "spawner.id", "spawner.priority", etc. in the data map
+        if var_ref.starts_with("spawner.") {
+            return self.data.get(var_ref).cloned();
+        }
+
         // Check for source variable (raw source string)
         if var_ref == "source" {
             return self.source.clone();
@@ -206,105 +212,81 @@ pub fn substitute(text: &str, ctx: &VariableContext) -> Result<String> {
 /// Substitute variables with template name for better error messages
 ///
 /// Uses Tera-style `{{var}}` syntax for variable substitution.
+/// Delegates parsing to the shared `interpolation::parse_template` core.
 pub fn substitute_with_template_name(
     text: &str,
     ctx: &VariableContext,
     template_name: Option<&str>,
 ) -> Result<String> {
-    let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    let mut line_number: usize = 1;
+    let refs = crate::interpolation::parse_template(text);
 
-    while let Some(c) = chars.next() {
-        if c == '\n' {
-            line_number += 1;
-            result.push(c);
-            continue;
-        }
-        if c == '{' {
-            if chars.peek() == Some(&'{') {
-                // Start of variable reference: {{
-                chars.next(); // consume second {
-
-                // Read until }}
-                let mut var_ref = String::new();
-                let mut found_close = false;
-
-                while let Some(c2) = chars.next() {
-                    if c2 == '}' {
-                        if chars.peek() == Some(&'}') {
-                            chars.next(); // consume second }
-                            found_close = true;
-                            break;
-                        }
-                        // Single }, not end of variable
-                        var_ref.push(c2);
-                    } else {
-                        var_ref.push(c2);
-                    }
-                }
-
-                let var_ref = var_ref.trim();
-
-                if !found_close {
-                    // Unclosed variable, treat as literal text
-                    result.push_str("{{");
-                    result.push_str(var_ref);
-                } else if var_ref.is_empty() {
-                    // Empty variable reference: {{}} -> {{}}
-                    result.push_str("{{}}");
-                } else {
-                    // Resolve variable
-                    match ctx.resolve(var_ref) {
-                        Some(value) => result.push_str(&value),
-                        None => {
-                            let hint = if var_ref.starts_with("data.") {
-                                format!(
-                                    "Use: --data {}=<value>",
-                                    var_ref.strip_prefix("data.").unwrap_or(var_ref)
-                                )
-                            } else if var_ref.starts_with("source.") {
-                                format!(
-                                    "Variable 'source.{}' requires --source with a valid source string (e.g., --source task:<id>)",
-                                    var_ref.strip_prefix("source.").unwrap_or(var_ref)
-                                )
-                            } else if var_ref.starts_with("parent.") {
-                                format!(
-                                    "Variable 'parent.{}' is only available in subtask templates",
-                                    var_ref.strip_prefix("parent.").unwrap_or(var_ref)
-                                )
-                            } else if var_ref.starts_with("item.") {
-                                format!(
-                                    "Variable 'item.{}' is only available in dynamic subtask templates (when iterating over a data source)",
-                                    var_ref.strip_prefix("item.").unwrap_or(var_ref)
-                                )
-                            } else if var_ref == "source" {
-                                "Use: --source <value>".to_string()
-                            } else {
-                                format!("Variable '{}' is not a recognized built-in variable", var_ref)
-                            };
-
-                            let template_info = match template_name {
-                                Some(n) => format!("\n  In template: {} (line {})", n, line_number),
-                                None => format!("\n  At line: {}", line_number),
-                            };
-
-                            return Err(AikiError::TemplateVariableNotFound {
-                                variable: var_ref.to_string(),
-                                hint,
-                                template_info,
-                            });
-                        }
-                    }
-                }
-            } else {
-                // Single opening brace, keep as-is
-                result.push(c);
-            }
-        } else {
-            result.push(c);
-        }
+    if refs.is_empty() {
+        return Ok(text.to_string());
     }
+
+    let mut result = String::with_capacity(text.len());
+    let mut last_pos = 0;
+
+    for var_ref in &refs {
+        // Add text before this variable
+        result.push_str(&text[last_pos..var_ref.start]);
+
+        // Resolve variable
+        match ctx.resolve(&var_ref.name) {
+            Some(value) => result.push_str(&value),
+            None => {
+                // Compute line number from byte offset
+                let line_number = text[..var_ref.start].matches('\n').count() + 1;
+
+                let hint = if var_ref.name.starts_with("data.") {
+                    format!(
+                        "Use: --data {}=<value>",
+                        var_ref.name.strip_prefix("data.").unwrap_or(&var_ref.name)
+                    )
+                } else if var_ref.name.starts_with("source.") {
+                    format!(
+                        "Variable 'source.{}' requires --source with a valid source string (e.g., --source task:<id>)",
+                        var_ref.name.strip_prefix("source.").unwrap_or(&var_ref.name)
+                    )
+                } else if var_ref.name.starts_with("parent.") {
+                    format!(
+                        "Variable 'parent.{}' is only available in subtask templates",
+                        var_ref.name.strip_prefix("parent.").unwrap_or(&var_ref.name)
+                    )
+                } else if var_ref.name.starts_with("item.") {
+                    format!(
+                        "Variable 'item.{}' is only available in dynamic subtask templates (when iterating over a data source)",
+                        var_ref.name.strip_prefix("item.").unwrap_or(&var_ref.name)
+                    )
+                } else if var_ref.name.starts_with("spawner.") {
+                    format!(
+                        "Variable 'spawner.{}' is only available in spawned task templates (tasks created via spawns: config)",
+                        var_ref.name.strip_prefix("spawner.").unwrap_or(&var_ref.name)
+                    )
+                } else if var_ref.name == "source" {
+                    "Use: --source <value>".to_string()
+                } else {
+                    format!("Variable '{}' is not a recognized built-in variable", var_ref.name)
+                };
+
+                let template_info = match template_name {
+                    Some(n) => format!("\n  In template: {} (line {})", n, line_number),
+                    None => format!("\n  At line: {}", line_number),
+                };
+
+                return Err(AikiError::TemplateVariableNotFound {
+                    variable: var_ref.name.clone(),
+                    hint,
+                    template_info,
+                });
+            }
+        }
+
+        last_pos = var_ref.end;
+    }
+
+    // Add remaining text
+    result.push_str(&text[last_pos..]);
 
     Ok(result)
 }
@@ -312,41 +294,12 @@ pub fn substitute_with_template_name(
 /// Find all variable references in text (for validation)
 ///
 /// Finds all `{{var}}` patterns and returns the variable names.
+/// Delegates parsing to the shared `interpolation::parse_template` core.
 pub fn find_variables(text: &str) -> Vec<String> {
-    let mut vars = Vec::new();
-    let mut chars = text.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            if chars.peek() == Some(&'{') {
-                // Start of variable: {{
-                chars.next(); // consume second {
-
-                let mut var_ref = String::new();
-                let mut found_close = false;
-
-                while let Some(c2) = chars.next() {
-                    if c2 == '}' {
-                        if chars.peek() == Some(&'}') {
-                            chars.next(); // consume second }
-                            found_close = true;
-                            break;
-                        }
-                        var_ref.push(c2);
-                    } else {
-                        var_ref.push(c2);
-                    }
-                }
-
-                let var_ref = var_ref.trim().to_string();
-                if found_close && !var_ref.is_empty() {
-                    vars.push(var_ref);
-                }
-            }
-        }
-    }
-
-    vars
+    crate::interpolation::parse_template(text)
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -681,5 +634,40 @@ mod tests {
         assert_eq!(coerce_to_string("False"), "false");
         assert_eq!(coerce_to_string("42"), "42");
         assert_eq!(coerce_to_string("hello"), "hello");
+    }
+
+    #[test]
+    fn test_spawner_data() {
+        let mut ctx = VariableContext::new();
+        // Spawner data is stored as "spawner.id", "spawner.priority" etc. in the data map
+        ctx.set_data("spawner.id", "abc123spawnerid");
+        ctx.set_data("spawner.priority", "p1");
+        ctx.set_data("spawner.approved", "false");
+
+        assert_eq!(ctx.resolve("spawner.id"), Some("abc123spawnerid".to_string()));
+        assert_eq!(ctx.resolve("spawner.priority"), Some("p1".to_string()));
+        assert_eq!(ctx.resolve("spawner.approved"), Some("false".to_string()));
+        assert_eq!(ctx.resolve("spawner.unknown"), None);
+    }
+
+    #[test]
+    fn test_substitute_spawner_data() {
+        let mut ctx = VariableContext::new();
+        ctx.set_data("spawner.id", "review123");
+        ctx.set_data("spawner.priority", "p0");
+
+        let result = substitute("Fix {{spawner.id}} (priority: {{spawner.priority}})", &ctx).unwrap();
+        assert_eq!(result, "Fix review123 (priority: p0)");
+    }
+
+    #[test]
+    fn test_substitute_spawner_data_missing() {
+        let ctx = VariableContext::new();
+
+        let result = substitute("Spawner: {{spawner.id}}", &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("spawner.id"));
+        assert!(err.to_string().contains("spawned task templates"));
     }
 }

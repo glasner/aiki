@@ -97,20 +97,54 @@ impl HookLoader {
     /// - `AikiError::HookNotFound` if the file doesn't exist
     /// - `AikiError::Other` if YAML parsing fails
     pub fn load(&mut self, path: &str) -> Result<(Hook, PathBuf)> {
-        // Resolve to canonical path
-        let canonical_path = self.resolver.resolve(path)?;
+        // Try resolving from filesystem first
+        match self.resolver.resolve(path) {
+            Ok(canonical_path) => {
+                // Check cache (by canonical path)
+                if let Some(hook) = self.cache.get(&canonical_path) {
+                    return Ok((hook.clone(), canonical_path));
+                }
 
-        // Check cache (by canonical path)
-        if let Some(hook) = self.cache.get(&canonical_path) {
-            return Ok((hook.clone(), canonical_path));
+                // Load and parse hook file
+                let hook = self.load_from_file(&canonical_path, path)?;
+
+                // Cache by canonical path and return both hook and path
+                self.cache.insert(canonical_path.clone(), hook.clone());
+                Ok((hook, canonical_path))
+            }
+            Err(AikiError::HookNotFound { .. }) => {
+                // Fallback: check built-in plugin registry
+                let synthetic_path = PathBuf::from(format!("builtin://{}", path));
+
+                // Check cache for built-in plugins too
+                if let Some(hook) = self.cache.get(&synthetic_path) {
+                    return Ok((hook.clone(), synthetic_path));
+                }
+
+                if let Some(result) = super::bundled::load_builtin_plugin(path) {
+                    let hook = result.map_err(|e| {
+                        AikiError::Other(anyhow::anyhow!(
+                            "Failed to parse built-in plugin '{}': {}",
+                            path,
+                            e
+                        ))
+                    })?;
+                    self.cache.insert(synthetic_path.clone(), hook.clone());
+                    return Ok((hook, synthetic_path));
+                }
+
+                // Not a built-in either — return the original not-found error
+                Err(AikiError::HookNotFound {
+                    path: path.to_string(),
+                    resolved_path: path.to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Hook '{}' not found on disk or as built-in plugin", path),
+                    ),
+                })
+            }
+            Err(e) => Err(e),
         }
-
-        // Load and parse hook file
-        let hook = self.load_from_file(&canonical_path, path)?;
-
-        // Cache by canonical path and return both hook and path
-        self.cache.insert(canonical_path.clone(), hook.clone());
-        Ok((hook, canonical_path))
     }
 
     /// Load a flow from an absolute file path.
@@ -209,6 +243,10 @@ impl HookLoader {
     }
 
     /// Load and parse a flow from a file path.
+    ///
+    /// If the hook has no `name` field in the YAML, autogenerate one from
+    /// `original_path` (e.g. "aiki/default" for namespaced loads, or the
+    /// file path for direct loads).
     fn load_from_file(&self, path: &Path, original_path: &str) -> Result<Hook> {
         let contents = fs::read_to_string(path).map_err(|e| AikiError::HookNotFound {
             path: original_path.to_string(),
@@ -216,14 +254,21 @@ impl HookLoader {
             source: e,
         })?;
 
-        HookParser::parse_str(&contents).map_err(|e| {
+        let mut hook = HookParser::parse_str(&contents).map_err(|e| {
             AikiError::Other(anyhow::anyhow!(
                 "Failed to parse flow '{}' ({}): {}",
                 original_path,
                 path.display(),
                 e
             ))
-        })
+        })?;
+
+        // Autogenerate name from the load path when not specified in YAML
+        if hook.name.is_empty() {
+            hook.name = original_path.to_string();
+        }
+
+        Ok(hook)
     }
 }
 
@@ -399,5 +444,49 @@ version: "1"
     fn test_load_core_hook() {
         let core = HookLoader::load_core_hook();
         assert_eq!(core.name, "Aiki Core");
+    }
+
+    #[test]
+    fn test_load_builtin_fallback() {
+        let temp_dir = create_test_project();
+        // No aiki/default.yml file on disk
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Should fall back to built-in plugin
+        let (hook, path) = loader.load("aiki/default").unwrap();
+        assert_eq!(hook.name, "aiki/default");
+        assert_eq!(path, PathBuf::from("builtin://aiki/default"));
+    }
+
+    #[test]
+    fn test_load_project_overrides_builtin() {
+        let temp_dir = create_test_project();
+        // Create a project-level override for aiki/default
+        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/default.yml");
+        create_flow_file(&flow_path, "Project Override", &[], &[]);
+
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // Should use the project file, not the built-in
+        let (hook, path) = loader.load("aiki/default").unwrap();
+        assert_eq!(hook.name, "Project Override");
+        // Path should be the real file, not builtin://
+        assert!(!path.to_string_lossy().starts_with("builtin://"));
+    }
+
+    #[test]
+    fn test_load_builtin_caching() {
+        let temp_dir = create_test_project();
+        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
+
+        // First load — should cache
+        assert_eq!(loader.cache_size(), 0);
+        let (hook1, _) = loader.load("aiki/default").unwrap();
+        assert_eq!(loader.cache_size(), 1);
+
+        // Second load — should hit cache
+        let (hook2, _) = loader.load("aiki/default").unwrap();
+        assert_eq!(loader.cache_size(), 1);
+        assert_eq!(hook1.name, hook2.name);
     }
 }

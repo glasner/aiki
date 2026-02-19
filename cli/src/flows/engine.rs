@@ -11,7 +11,7 @@ use super::state::{ActionResult, AikiState};
 use super::types::{
     Action, AutoreplyAction, AutoreplyContent, CommitMessageAction, CommitMessageOp, ContextAction,
     HookStatement, IfStatement, JjAction, LetAction, LogAction, OnFailure, OnFailureShortcut,
-    ReviewAction, SelfAction, ShellAction, SwitchStatement, TaskRunAction,
+    ReviewAction, CallAction, ShellAction, SwitchStatement, TaskRunAction,
 };
 use super::variables::VariableResolver;
 use crate::error::{AikiError, Result};
@@ -37,16 +37,16 @@ impl HookEngine {
     /// Create a variable resolver with consistent variable availability
     ///
     /// Makes variables available both with and without `event.` prefix:
-    /// - $event.file_paths (for event variables)
-    /// - $file_path (for event variables, let-bound variables)
-    /// - $description (for let-bound variables)
+    /// - {{event.file_paths}} (for event variables)
+    /// - {{file_path}} (for event variables, let-bound variables)
+    /// - {{description}} (for let-bound variables)
     /// Create a variable resolver with proper variable scoping
     ///
     /// Variable scopes:
-    /// - Event variables (from actual events): $event.file_paths, $event.agent_type
-    /// - Let variables (user-defined): $description, $my_var (no event. prefix)
-    /// - System variables: $cwd
-    /// - Environment variables: $HOME, $PATH
+    /// - Event variables (from actual events): {{event.file_paths}}, {{event.agent_type}}
+    /// - Let variables (user-defined): {{description}}, {{my_var}} (no event. prefix)
+    /// - System variables: {{cwd}}
+    /// - Environment variables: {{HOME}}, {{PATH}}
     fn create_resolver(state: &AikiState) -> VariableResolver {
         let mut resolver = VariableResolver::new();
 
@@ -337,6 +337,26 @@ impl HookEngine {
             }
 
             // Task lifecycle events
+            crate::events::AikiEvent::RepoChanged(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+                resolver.add_var("event.repo.root".to_string(), e.repo.root.clone());
+                resolver.add_var(
+                    "event.repo.path".to_string(),
+                    e.repo.path.display().to_string(),
+                );
+                resolver.add_var("event.repo.id".to_string(), e.repo.id.clone());
+                if let Some(ref prev) = e.previous_repo {
+                    resolver.add_var("event.previous_repo.root".to_string(), prev.root.clone());
+                    resolver.add_var(
+                        "event.previous_repo.path".to_string(),
+                        prev.path.display().to_string(),
+                    );
+                    resolver.add_var("event.previous_repo.id".to_string(), prev.id.clone());
+                }
+            }
             crate::events::AikiEvent::TaskStarted(e) => {
                 // Task info is nested under event.task.*
                 resolver.add_var("event.task.id".to_string(), e.task.id.clone());
@@ -419,7 +439,7 @@ impl HookEngine {
                 } else {
                     String::new()
                 };
-                debug_log(|| format!("task.closed: $session.task.id resolved to '{}'", result));
+                debug_log(|| format!("task.closed: session.task.id resolved to '{}'", result));
                 result
             });
 
@@ -433,7 +453,7 @@ impl HookEngine {
                 } else {
                     String::new()
                 };
-                debug_log(|| format!("task.closed: $session.mode resolved to '{}'", result));
+                debug_log(|| format!("task.closed: session.mode resolved to '{}'", result));
                 result
             });
         }
@@ -517,7 +537,7 @@ impl HookEngine {
             Action::Jj(jj_action) => Self::execute_jj(jj_action, state),
             Action::Log(log_action) => Self::execute_log(log_action, state),
             Action::Let(let_action) => Self::execute_let(let_action, state),
-            Action::Self_(self_action) => Self::execute_self(self_action, state),
+            Action::Call(call_action) => Self::execute_call(call_action, state),
             Action::Context(context_action) => Self::execute_context(context_action, state),
             Action::Autoreply(autoreply_action) => Self::execute_autoreply(autoreply_action, state),
             Action::CommitMessage(commit_msg_action) => {
@@ -544,7 +564,7 @@ impl HookEngine {
             Action::Shell(shell_action) => &shell_action.on_failure,
             Action::Jj(jj_action) => &jj_action.on_failure,
             Action::Let(let_action) => &let_action.on_failure,
-            Action::Self_(self_action) => &self_action.on_failure,
+            Action::Call(call_action) => &call_action.on_failure,
             Action::Context(context_action) => &context_action.on_failure,
             Action::Autoreply(autoreply_action) => &autoreply_action.on_failure,
             Action::CommitMessage(commit_msg_action) => &commit_msg_action.on_failure,
@@ -646,8 +666,8 @@ impl HookEngine {
                     state.store_action_result(alias.clone(), result.clone());
                 }
             }
-            Action::Self_(_) => {
-                // Self actions don't store results (they're fire-and-forget)
+            Action::Call(_) => {
+                // Call actions don't store results (they're fire-and-forget)
             }
             Action::Context(_) => {
                 // Context actions accumulate in state.context directly
@@ -682,7 +702,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in command
-        let command = resolver.resolve(&action.shell);
+        let command = resolver.resolve(&action.shell)?;
 
         debug_log(|| format!("[flows] Executing shell: {}", command));
 
@@ -714,16 +734,16 @@ impl HookEngine {
         if let Some(ref metadata_fn) = action.with_author_and_message {
             let resolved_metadata = if metadata_fn.trim().starts_with("self.") {
                 // Execute the metadata function
-                let self_action = SelfAction {
-                    self_: metadata_fn.trim().to_string(),
+                let call_action = CallAction {
+                    call: metadata_fn.trim().to_string(),
                     on_failure: OnFailure::default(),
                 };
-                let result = Self::execute_self(&self_action, state)?;
+                let result = Self::execute_call(&call_action, state)?;
                 result.stdout.trim().to_string()
             } else {
-                // Resolve variable reference
+                // Resolve variable reference (bare name or {{template}})
                 let mut resolver = Self::create_resolver(state);
-                resolver.resolve(metadata_fn)
+                resolver.resolve_or_lookup(metadata_fn)?
             };
 
             // Parse the JSON result
@@ -744,7 +764,7 @@ impl HookEngine {
                 })?
                 .to_string();
 
-            // Store message in context so it can be referenced as $message
+            // Store message in context so it can be referenced as {{message}}
             state.store_action_result(
                 "message".to_string(),
                 ActionResult {
@@ -768,7 +788,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in command
-        let jj_args = resolver.resolve(&action.jj);
+        let jj_args = resolver.resolve(&action.jj)?;
 
         debug_log(|| format!("[flows] Executing jj: {}", jj_args));
 
@@ -780,15 +800,15 @@ impl HookEngine {
         let (jj_user, jj_email) = if let Some(ref author) = action.with_author {
             let resolved_author = if author.trim().starts_with("self.") {
                 // It's a function call - execute it now (maintains execution order)
-                let self_action = SelfAction {
-                    self_: author.trim().to_string(),
+                let call_action = CallAction {
+                    call: author.trim().to_string(),
                     on_failure: OnFailure::default(),
                 };
-                let result = Self::execute_self(&self_action, state)?;
+                let result = Self::execute_call(&call_action, state)?;
                 result.stdout.trim().to_string()
             } else {
-                // It's a variable reference - resolve it
-                resolver.resolve(author)
+                // It's a variable reference (bare name or {{template}})
+                resolver.resolve_or_lookup(author)?
             };
             parse_author(&resolved_author)?
         } else {
@@ -839,7 +859,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in message
-        let message = resolver.resolve(&action.log);
+        let message = resolver.resolve(&action.log)?;
 
         // Print to stderr (so it appears in hook output)
         eprintln!("[aiki] {}", message);
@@ -862,7 +882,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve task_id (supports variable interpolation)
-        let task_id = resolver.resolve(&action.task_run.task_id);
+        let task_id = resolver.resolve(&action.task_run.task_id)?;
         if task_id.is_empty() {
             return Ok(ActionResult {
                 success: false,
@@ -873,7 +893,7 @@ impl HookEngine {
         }
 
         // Resolve optional agent override
-        let agent_override = action.task_run.agent.as_ref().map(|a| resolver.resolve(a));
+        let agent_override = action.task_run.agent.as_ref().map(|a| resolver.resolve(a)).transpose()?;
 
         // Build options
         let mut options = TaskRunOptions::new();
@@ -927,13 +947,14 @@ impl HookEngine {
             .review
             .task_id
             .as_ref()
-            .map(|id| resolver.resolve(id));
+            .map(|id| resolver.resolve(id))
+            .transpose()?;
 
         // Resolve optional agent override
-        let agent_override = action.review.agent.as_ref().map(|a| resolver.resolve(a));
+        let agent_override = action.review.agent.as_ref().map(|a| resolver.resolve(a)).transpose()?;
 
         // Resolve optional template name
-        let template = action.review.template.as_ref().map(|t| resolver.resolve(t));
+        let template = action.review.template.as_ref().map(|t| resolver.resolve(t)).transpose()?;
 
         // Get cwd from state
         let cwd = state.cwd();
@@ -1016,7 +1037,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in failure text
-        let failure = resolver.resolve(&action.failure);
+        let failure = resolver.resolve(&action.failure)?;
 
         // Always add failure, using default text if empty
         let failure_text = if !failure.is_empty() {
@@ -1044,7 +1065,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in failure text
-        let failure = resolver.resolve(&action.failure);
+        let failure = resolver.resolve(&action.failure)?;
 
         // Always add failure, using default text if empty
         let failure_text = if !failure.is_empty() {
@@ -1072,7 +1093,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in failure text
-        let failure = resolver.resolve(&action.failure);
+        let failure = resolver.resolve(&action.failure)?;
 
         // Always add failure, using default text if empty
         let failure_text = if !failure.is_empty() {
@@ -1106,7 +1127,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve variables in reason text
-        let reason = resolver.resolve(&action.reason);
+        let reason = resolver.resolve(&action.reason)?;
 
         debug_log(|| format!("session.end: {}", reason));
 
@@ -1191,7 +1212,7 @@ impl HookEngine {
                 }
             }
         }
-        .resolve_variables(|s| resolver.resolve(s));
+        .resolve_variables(|s| resolver.resolve(s))?;
 
         // Validate chunk before adding to assembler
         chunk.validate()?;
@@ -1239,7 +1260,7 @@ impl HookEngine {
                 append: append.clone(),
             },
         }
-        .resolve_variables(|s| resolver.resolve(s));
+        .resolve_variables(|s| resolver.resolve(s))?;
 
         // Validate chunk before adding to assembler
         chunk.validate()?;
@@ -1311,7 +1332,7 @@ impl HookEngine {
 
         // Prepend to subject line (before first line)
         if let Some(ref prepend_subject) = op.prepend_subject {
-            let text = resolver.resolve(prepend_subject);
+            let text = resolver.resolve(prepend_subject)?;
             if !text.is_empty() {
                 result = format!("{}{}", text, result);
             }
@@ -1319,7 +1340,7 @@ impl HookEngine {
 
         // Append to body (before trailers)
         if let Some(ref body) = op.append_body {
-            let text = resolver.resolve(body);
+            let text = resolver.resolve(body)?;
             if !text.is_empty() {
                 result = Self::append_to_body(&result, &text);
             }
@@ -1327,7 +1348,7 @@ impl HookEngine {
 
         // Append trailer (after existing trailers)
         if let Some(ref trailer) = op.append_trailer {
-            let text = resolver.resolve(trailer);
+            let text = resolver.resolve(trailer)?;
             if !text.is_empty() {
                 result = Self::append_trailer(&result, &text);
             }
@@ -1335,7 +1356,7 @@ impl HookEngine {
 
         // Append footer (after everything)
         if let Some(ref append_footer) = op.append_footer {
-            let text = resolver.resolve(append_footer);
+            let text = resolver.resolve(append_footer)?;
             if !text.is_empty() {
                 // Ensure blank line before appending
                 if !result.ends_with('\n') {
@@ -1470,7 +1491,7 @@ impl HookEngine {
     ///
     /// Supports two modes:
     /// 1. Function call: `let metadata = aiki/core.build_metadata`
-    /// 2. Variable aliasing: `let desc = $description`
+    /// 2. Variable aliasing: `let desc = description`
 
     /// Execute a conditional if/then/else statement
     fn execute_if(stmt: &IfStatement, state: &mut AikiState) -> Result<HookOutcome> {
@@ -1500,7 +1521,7 @@ impl HookEngine {
     /// Execute a switch/case statement
     fn execute_switch(stmt: &SwitchStatement, state: &mut AikiState) -> Result<HookOutcome> {
         let mut resolver = Self::create_resolver(state);
-        let switch_value = resolver.resolve(&stmt.expression);
+        let switch_value = resolver.resolve(&stmt.expression)?;
 
         debug_log(|| {
             format!(
@@ -1533,234 +1554,184 @@ impl HookEngine {
         Self::execute_statements(statements_to_execute, state)
     }
 
-    /// Evaluate a condition expression
-    /// Supports: ==, !=, >, <, >=, <=, &&, ||, JSON field access ($var.field)
+    /// Evaluate a condition expression using Rhai.
+    ///
+    /// Supports: ==, !=, >, <, >=, <=, &&, ||, field access (event.task.type),
+    /// $var prefix (deprecated, auto-stripped), and/or/not word operators.
+    ///
+    /// Before Rhai evaluation, `self.function` calls are resolved and their
+    /// results substituted into the expression as string literals.
     fn evaluate_condition(condition: &str, state: &mut AikiState) -> Result<bool> {
         let condition = condition.trim();
 
-        // Handle logical AND (&&) - evaluate both sides and return true only if both are true
-        // We split on " && " to avoid matching && inside strings
-        if let Some(pos) = condition.find(" && ") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 4..].trim();
-            debug_log(|| format!("[flows] AND: evaluating left side: '{}'", left));
-            let left_result = Self::evaluate_condition(left, state)?;
-            debug_log(|| format!("[flows] AND: left side = {}", left_result));
-            // Short-circuit: if left is false, don't evaluate right
-            if !left_result {
-                debug_log(|| "[flows] AND: short-circuit - left is false".to_string());
-                return Ok(false);
-            }
-            debug_log(|| format!("[flows] AND: evaluating right side: '{}'", right));
-            let right_result = Self::evaluate_condition(right, state)?;
-            debug_log(|| format!("[flows] AND: right side = {}", right_result));
-            return Ok(right_result);
+        debug_log(|| format!("[flows] Evaluating condition with Rhai: '{}'", condition));
+
+        // Warn about deprecated $var syntax
+        if crate::expressions::uses_dollar_syntax(condition) {
+            eprintln!(
+                "[aiki] Warning: `$var` syntax is deprecated, use `var` instead: {}",
+                condition
+            );
         }
 
-        // Handle logical OR (||) - evaluate both sides and return true if either is true
-        if let Some(pos) = condition.find(" || ") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 4..].trim();
-            let left_result = Self::evaluate_condition(left, state)?;
-            // Short-circuit: if left is true, don't evaluate right
-            if left_result {
-                return Ok(true);
-            }
-            return Self::evaluate_condition(right, state);
-        }
+        // Step 1: Pre-process self.function calls (can't be evaluated by Rhai)
+        let condition = Self::resolve_self_functions_in_condition(condition, state)?;
 
-        // Parse comparison operators (order matters: check >= before >, <= before <)
-        if let Some(pos) = condition.find(">=") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, ">=");
-        }
+        // Step 2: Build Rhai scope from state variables
+        let mut resolver = Self::create_resolver(state);
+        let variables = resolver.collect_variables();
+        let var_map: std::collections::BTreeMap<String, String> =
+            variables.into_iter().collect();
+        let mut scope = crate::expressions::build_scope_from_flat(&var_map);
 
-        if let Some(pos) = condition.find("<=") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, "<=");
-        }
-
-        if let Some(pos) = condition.find("==") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            debug_log(|| {
-                format!(
-                    "[flows] EQ: '{}' == '{}' ? {} (left='{}', right='{}')",
-                    left,
-                    right,
-                    left_val == right_val,
-                    left_val,
-                    right_val
-                )
-            });
-            return Ok(left_val == right_val);
-        }
-
-        if let Some(pos) = condition.find("!=") {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 2..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Ok(left_val != right_val);
-        }
-
-        if let Some(pos) = condition.find('>') {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 1..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, ">");
-        }
-
-        if let Some(pos) = condition.find('<') {
-            let left = condition[..pos].trim();
-            let right = condition[pos + 1..].trim();
-            let left_val = Self::resolve_condition_value(left, state)?;
-            let right_val = Self::resolve_condition_value(right, state)?;
-            return Self::compare_numeric(&left_val, &right_val, "<");
-        }
-
-        // No operator - treat as boolean check (variable exists and is truthy)
-        let val = Self::resolve_condition_value(condition, state)?;
-        // Truthy: non-empty string that's not "false"
-        // Falsy: empty string or literal "false"
-        Ok(!val.is_empty() && val != "false")
+        // Step 3: Evaluate with Rhai
+        // ExpressionEvaluator::evaluate uses lenient mode — Rhai errors are
+        // caught internally (logged + default to false), so it always returns Ok.
+        let result = state
+            .expression_evaluator()
+            .evaluate(&condition, &mut scope)
+            .expect("ExpressionEvaluator::evaluate is infallible in lenient mode");
+        debug_log(|| format!("[flows] Rhai condition result: {}", result));
+        Ok(result)
     }
 
-    /// Compare two values numerically with the given operator
-    fn compare_numeric(left: &str, right: &str, op: &str) -> Result<bool> {
-        // Try to parse both sides as numbers
-        let left_num = left.parse::<f64>().map_err(|_| {
-            AikiError::InvalidCondition(format!(
-                "Cannot compare '{}' with operator '{}': left side is not a number",
-                left, op
-            ))
-        })?;
-        let right_num = right.parse::<f64>().map_err(|_| {
-            AikiError::InvalidCondition(format!(
-                "Cannot compare '{}' with operator '{}': right side is not a number",
-                right, op
-            ))
-        })?;
-
-        match op {
-            ">" => Ok(left_num > right_num),
-            "<" => Ok(left_num < right_num),
-            ">=" => Ok(left_num >= right_num),
-            "<=" => Ok(left_num <= right_num),
-            _ => Err(AikiError::InvalidCondition(format!(
-                "Unsupported comparison operator: '{}'",
-                op
-            ))),
-        }
-    }
-
-    /// Resolve a value in a condition expression
-    /// Supports: variables ($var), JSON field access ($var.field), literals
-    fn resolve_condition_value(expr: &str, state: &mut AikiState) -> Result<String> {
-        let expr = expr.trim();
-
-        // Check for ? suffix truthiness operator
-        // $event.write? returns "true" if $event.write is truthy, "false" otherwise
-        if expr.ends_with('?') {
-            let base_expr = &expr[..expr.len() - 1];
-            let value = Self::resolve_condition_value(base_expr, state)?;
-            // Truthy: non-empty string that's not "false", "null", "0", "[]", "{}"
-            let is_truthy = !value.is_empty()
-                && value != "false"
-                && value != "null"
-                && value != "0"
-                && value != "[]"
-                && value != "{}";
-            return Ok(is_truthy.to_string());
+    /// Pre-process self.function calls in a condition expression.
+    ///
+    /// Finds `self.function` or `self.function.field` references and replaces
+    /// them with their resolved string values (quoted for Rhai).
+    fn resolve_self_functions_in_condition(
+        condition: &str,
+        state: &mut AikiState,
+    ) -> Result<String> {
+        if !condition.contains("self.") {
+            return Ok(condition.to_string());
         }
 
-        // Remove quotes if present
-        if (expr.starts_with('"') && expr.ends_with('"'))
-            || (expr.starts_with('\'') && expr.ends_with('\''))
-        {
-            return Ok(expr[1..expr.len() - 1].to_string());
-        }
+        // Find self.function patterns outside of string literals.
+        // We scan character-by-character to track quote state, collecting
+        // the positions of `self.` references that need resolution.
+        let bytes = condition.as_bytes();
+        let len = bytes.len();
+        let mut positions: Vec<(usize, usize)> = Vec::new(); // (start, end) pairs
+        let mut i = 0;
+        let mut in_string: Option<u8> = None; // b'"' or b'\''
 
-        // Check if it's an inline function call (e.g., self.classify_edits or self.function.field)
-        if expr.starts_with("self.") {
-            // Split into function call and optional field path
-            let parts: Vec<&str> = expr.splitn(2, '.').collect();
-            if parts.len() == 2 {
-                let remaining = parts[1];
+        while i < len {
+            let c = bytes[i];
 
-                // Check if there's a field access after the function name
-                if let Some(field_start) = remaining.find('.') {
-                    let function_name = remaining[..field_start].trim();
-                    let field_path = remaining[field_start + 1..].trim();
-
-                    // Execute the self function
-                    let self_action = SelfAction {
-                        self_: format!("self.{}", function_name),
-                        on_failure: OnFailure::default(),
-                    };
-
-                    let result = Self::execute_self(&self_action, state)?;
-
-                    // Parse the result as JSON and extract the field
-                    let json_value: serde_json::Value = serde_json::from_str(&result.stdout)
-                        .context("Failed to parse function result as JSON")?;
-
-                    // Navigate the field path
-                    let mut current = &json_value;
-                    for field in field_path.split('.') {
-                        current = current.get(field).ok_or_else(|| {
-                            AikiError::Other(anyhow::anyhow!(
-                                "Field '{}' not found in JSON result",
-                                field
-                            ))
-                        })?;
-                    }
-
-                    // Return the field value as a string
-                    return Ok(match current {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        serde_json::Value::Null => "null".to_string(),
-                        _ => current.to_string(),
-                    });
-                } else {
-                    // No field access - just execute the function and return its stdout
-                    let self_action = SelfAction {
-                        self_: expr.to_string(),
-                        on_failure: OnFailure::default(),
-                    };
-
-                    let result = Self::execute_self(&self_action, state)?;
-                    return Ok(result.stdout.trim().to_string());
+            // Track string literal boundaries
+            if in_string.is_some() {
+                if c == b'\\' && i + 1 < len {
+                    i += 2; // skip escaped char
+                    continue;
                 }
+                if Some(c) == in_string {
+                    in_string = None;
+                }
+                i += 1;
+                continue;
             }
 
-            // If we get here, it's a malformed self.function call
+            if c == b'"' || c == b'\'' {
+                in_string = Some(c);
+                i += 1;
+                continue;
+            }
+
+            // Check for "self." outside string literals
+            if i + 5 <= len && &condition[i..i + 5] == "self." {
+                let after_self = &condition[i + 5..];
+                let func_end = after_self
+                    .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+                    .unwrap_or(after_self.len());
+                positions.push((i, i + 5 + func_end));
+                i += 5 + func_end;
+            } else {
+                i += 1;
+            }
+        }
+
+        if positions.is_empty() {
+            return Ok(condition.to_string());
+        }
+
+        // Resolve in reverse order so earlier indices remain valid
+        let mut result = condition.to_string();
+        for &(start, end) in positions.iter().rev() {
+            let self_ref = &condition[start..end];
+            let value = Self::resolve_self_function(self_ref, state)?;
+
+            // Preserve type for Rhai: numeric values and booleans unquoted
+            let replacement = if value.parse::<i64>().is_ok()
+                || value.parse::<f64>().is_ok()
+                || value == "true"
+                || value == "false"
+            {
+                value.clone()
+            } else {
+                format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+            };
+            result = format!("{}{}{}", &result[..start], replacement, &result[end..]);
+        }
+
+        Ok(result)
+    }
+
+    /// Resolve a single self.function reference to its string value.
+    fn resolve_self_function(expr: &str, state: &mut AikiState) -> Result<String> {
+        // Split into "self" and the rest
+        let parts: Vec<&str> = expr.splitn(2, '.').collect();
+        if parts.len() != 2 {
             return Err(AikiError::Other(anyhow::anyhow!(
                 "Invalid inline function call syntax: '{}'",
                 expr
             )));
         }
+        let remaining = parts[1];
 
-        // Check if it's a variable reference
-        if expr.starts_with('$') {
-            // Use the existing variable resolver
-            let mut resolver = Self::create_resolver(state);
-            return Ok(resolver.resolve(expr));
+        // Check if there's a field access after the function name
+        if let Some(field_start) = remaining.find('.') {
+            let function_name = remaining[..field_start].trim();
+            let field_path = remaining[field_start + 1..].trim();
+
+            let call_action = CallAction {
+                call: format!("self.{}", function_name),
+                on_failure: OnFailure::default(),
+            };
+
+            let result = Self::execute_call(&call_action, state)?;
+
+            // Parse result as JSON and extract the field
+            let json_value: serde_json::Value = serde_json::from_str(&result.stdout)
+                .context("Failed to parse function result as JSON")?;
+
+            let mut current = &json_value;
+            for field in field_path.split('.') {
+                current = current.get(field).ok_or_else(|| {
+                    AikiError::Other(anyhow::anyhow!(
+                        "Field '{}' not found in JSON result",
+                        field
+                    ))
+                })?;
+            }
+
+            Ok(match current {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => "null".to_string(),
+                _ => current.to_string(),
+            })
+        } else {
+            // No field access - execute the function and return stdout
+            let call_action = CallAction {
+                call: expr.to_string(),
+                on_failure: OnFailure::default(),
+            };
+
+            let result = Self::execute_call(&call_action, state)?;
+            Ok(result.stdout.trim().to_string())
         }
-
-        // Otherwise, it's a literal value
-        Ok(expr.to_string())
     }
 
     fn execute_let(action: &LetAction, state: &mut AikiState) -> Result<ActionResult> {
@@ -1780,9 +1751,9 @@ impl HookEngine {
 
         debug_log(|| format!("[flows] Let binding: {} = {}", variable_name, expression));
 
-        // Check if this is variable aliasing (starts with $) or a function call
-        if expression.starts_with('$') {
-            // Mode 2: Variable aliasing
+        // Check if this is variable interpolation/aliasing or a function call
+        if expression.contains("{{") || expression.starts_with('$') {
+            // Mode 2: Variable interpolation ({{var}}) or legacy aliasing ($var)
             Self::execute_let_alias(variable_name, expression, state)
         } else {
             // Mode 1: Function call
@@ -1790,7 +1761,7 @@ impl HookEngine {
         }
     }
 
-    /// Execute a let binding for variable aliasing: `let desc = $description`
+    /// Execute a let binding for variable interpolation: `let desc = {{event.file_paths}}`
     fn execute_let_alias(
         variable_name: &str,
         expression: &str,
@@ -1800,7 +1771,7 @@ impl HookEngine {
         let mut resolver = Self::create_resolver(state);
 
         // Resolve the variable reference
-        let value = resolver.resolve(expression);
+        let value = resolver.resolve(expression)?;
 
         debug_log(|| format!("[flows] Variable alias: {} = {}", variable_name, value));
 
@@ -2000,6 +1971,17 @@ impl HookEngine {
                 // It reads from the task branch and returns in-progress task IDs
                 crate::flows::core::task_in_progress(state.cwd())
             }
+            // ========================================================================
+            // Workspace isolation functions
+            // ========================================================================
+            ("core", "workspace_create_if_concurrent") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::workspace_create_if_concurrent(session, state.cwd())
+            }
+            ("core", "workspace_absorb_all") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::workspace_absorb_all(session)
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
@@ -2007,19 +1989,25 @@ impl HookEngine {
         }
     }
 
-    /// Execute a self function call: `self: write_ai_files`
+    /// Execute a call action: `call: self.write_ai_files`
     /// This is like execute_let_function but doesn't store the result in a variable
-    fn execute_self(action: &SelfAction, state: &mut AikiState) -> Result<ActionResult> {
-        let function_path = &action.self_;
+    fn execute_call(action: &CallAction, state: &mut AikiState) -> Result<ActionResult> {
+        let function_path = &action.call;
 
-        debug_log(|| format!("[flows] Self function call: {}", function_path));
+        debug_log(|| format!("[flows] Call action: {}", function_path));
 
-        // Handle self.function syntax
-        let resolved_path = if function_path.starts_with("self.") {
-            // Extract function name from self.function
+        // Resolve function path relative to current hook context.
+        // "call: self.foo" resolves to "aiki/<module>.foo"
+        // "call: aiki/core.foo" is used as-is (fully qualified)
+        // Bare names (e.g., "call: foo") are rejected — must use self. or full namespace
+        let resolved_path = if function_path.starts_with("aiki/") {
+            // Already fully qualified
+            function_path.to_string()
+        } else if function_path.starts_with("self.") {
+            // Strip "self." prefix to get the bare function name
             let function_name = function_path
                 .strip_prefix("self.")
-                .expect("BUG: starts_with('self.') check passed but strip_prefix failed");
+                .expect("BUG: starts_with(\"self.\") check passed but strip_prefix failed");
 
             // Get current hook name from state
             let hook_name = state.hook_name.as_ref().ok_or_else(|| {
@@ -2034,7 +2022,10 @@ impl HookEngine {
             let module = hook_name.split('/').last().unwrap_or(hook_name);
             format!("aiki/{}.{}", module, function_name)
         } else {
-            function_path.to_string()
+            // Bare names are rejected — must use self. or full namespace (aiki/...)
+            return Err(AikiError::InvalidFunctionPath(
+                function_path.to_string(),
+            ));
         };
 
         // Parse function path: namespace/module.function
@@ -2185,11 +2176,50 @@ impl HookEngine {
                 // task_in_progress can be called from any event context
                 crate::flows::core::task_in_progress(state.cwd())
             }
+            // ========================================================================
+            // Workspace isolation functions
+            // ========================================================================
+            ("core", "workspace_create_if_concurrent") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::workspace_create_if_concurrent(session, state.cwd())
+            }
+            ("core", "workspace_absorb_all") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::workspace_absorb_all(session)
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
             )),
         }
+    }
+}
+
+/// Extract the session reference from an AikiEvent.
+///
+/// Most events carry a session field. Returns an error for events
+/// that don't have one (TaskStarted, TaskClosed, Unsupported).
+fn extract_session(event: &AikiEvent) -> Result<&crate::session::AikiSession> {
+    match event {
+        AikiEvent::SessionStarted(e) => Ok(&e.session),
+        AikiEvent::SessionResumed(e) => Ok(&e.session),
+        AikiEvent::SessionEnded(e) => Ok(&e.session),
+        AikiEvent::TurnStarted(e) => Ok(&e.session),
+        AikiEvent::TurnCompleted(e) => Ok(&e.session),
+        AikiEvent::ReadPermissionAsked(e) => Ok(&e.session),
+        AikiEvent::ReadCompleted(e) => Ok(&e.session),
+        AikiEvent::ChangePermissionAsked(e) => Ok(&e.session),
+        AikiEvent::ChangeCompleted(e) => Ok(&e.session),
+        AikiEvent::ShellPermissionAsked(e) => Ok(&e.session),
+        AikiEvent::ShellCompleted(e) => Ok(&e.session),
+        AikiEvent::WebPermissionAsked(e) => Ok(&e.session),
+        AikiEvent::WebCompleted(e) => Ok(&e.session),
+        AikiEvent::McpPermissionAsked(e) => Ok(&e.session),
+        AikiEvent::McpCompleted(e) => Ok(&e.session),
+        AikiEvent::RepoChanged(e) => Ok(&e.session),
+        _ => Err(AikiError::Other(anyhow::anyhow!(
+            "workspace functions require an event with a session"
+        ))),
     }
 }
 
@@ -2437,7 +2467,7 @@ mod tests {
     #[test]
     fn test_execute_log_with_variables() {
         let action = LogAction {
-            log: "File: $event.file_paths".to_string(),
+            log: "File: {{event.file_paths}}".to_string(),
             alias: None,
         };
 
@@ -2466,7 +2496,7 @@ mod tests {
     #[test]
     fn test_execute_shell_with_variables() {
         let action = ShellAction {
-            shell: "echo $event.file_paths".to_string(),
+            shell: "echo {{event.file_paths}}".to_string(),
             timeout: None,
             on_failure: OnFailure::default(),
             alias: None,
@@ -2575,7 +2605,7 @@ mod tests {
     #[test]
     fn test_execute_let_variable_aliasing() {
         let action = LetAction {
-            let_: "desc = $event.file_paths".to_string(),
+            let_: "desc = {{event.file_paths}}".to_string(),
             on_failure: OnFailure::default(),
         };
 
@@ -2637,7 +2667,7 @@ mod tests {
     #[test]
     fn test_execute_let_whitespace_trimming() {
         let action = LetAction {
-            let_: "  description  =  $event.file_paths  ".to_string(),
+            let_: "  description  =  {{event.file_paths}}  ".to_string(),
             on_failure: OnFailure::default(),
         };
 
@@ -2652,11 +2682,11 @@ mod tests {
     fn test_let_variable_storage() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "desc = $event.file_paths".to_string(),
+                let_: "desc = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Log(LogAction {
-                log: "Variable: $desc".to_string(),
+                log: "Variable: {{desc}}".to_string(),
                 alias: None,
             }),
         ];
@@ -2700,7 +2730,7 @@ mod tests {
     #[test]
     fn test_let_creates_structured_metadata() {
         let actions = vec![Action::Let(LetAction {
-            let_: "desc = $event.file_paths".to_string(),
+            let_: "desc = {{event.file_paths}}".to_string(),
             on_failure: OnFailure::default(),
         })];
 
@@ -2763,11 +2793,11 @@ mod tests {
         // Verify aliasing behavior creates copies
         let actions = vec![
             Action::Let(LetAction {
-                let_: "original = $event.file_paths".to_string(),
+                let_: "original = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Let(LetAction {
-                let_: "copy = $original".to_string(),
+                let_: "copy = {{original}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
         ];
@@ -2805,11 +2835,11 @@ mod tests {
         // Verify that reassigning variables works correctly
         let actions = vec![
             Action::Let(LetAction {
-                let_: "x = $event.tool_name".to_string(),
+                let_: "x = {{event.tool_name}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Let(LetAction {
-                let_: "x = $event.session_id".to_string(),
+                let_: "x = {{event.session_id}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
         ];
@@ -2827,11 +2857,11 @@ mod tests {
     fn test_let_aliasing_copies_all_structured_metadata() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "file = $event.file_paths".to_string(),
+                let_: "file = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Let(LetAction {
-                let_: "copy = $file".to_string(),
+                let_: "copy = {{file}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
         ];
@@ -2889,7 +2919,7 @@ mod tests {
     fn test_let_variables_work_in_shell_actions() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "my_var = $event.file_paths".to_string(),
+                let_: "my_var = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Shell(ShellAction {
@@ -2914,11 +2944,11 @@ mod tests {
     fn test_let_variables_work_in_jj_actions() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "msg = $event.message".to_string(),
+                let_: "msg = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Jj(JjAction {
-                jj: "log -r $msg".to_string(),
+                jj: "log -r {{msg}}".to_string(),
                 timeout: None,
                 on_failure: OnFailure::default(),
                 alias: None,
@@ -2942,11 +2972,11 @@ mod tests {
     fn test_let_variables_work_in_log_actions() {
         let actions = vec![
             Action::Let(LetAction {
-                let_: "file = $event.file_paths".to_string(),
+                let_: "file = {{event.file_paths}}".to_string(),
                 on_failure: OnFailure::default(),
             }),
             Action::Log(LogAction {
-                log: "Processing $file".to_string(),
+                log: "Processing {{file}}".to_string(),
                 alias: None,
             }),
         ];
@@ -3174,13 +3204,13 @@ mod tests {
             },
         );
 
-        // Test equality
-        assert!(HookEngine::evaluate_condition("$test == value", &mut state).unwrap());
-        assert!(!HookEngine::evaluate_condition("$test == other", &mut state).unwrap());
+        // Test equality (right side must be quoted for Rhai)
+        assert!(HookEngine::evaluate_condition(r#"$test == "value""#, &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition(r#"$test == "other""#, &mut state).unwrap());
 
         // Test inequality
-        assert!(!HookEngine::evaluate_condition("$test != value", &mut state).unwrap());
-        assert!(HookEngine::evaluate_condition("$test != other", &mut state).unwrap());
+        assert!(!HookEngine::evaluate_condition(r#"$test != "value""#, &mut state).unwrap());
+        assert!(HookEngine::evaluate_condition(r#"$test != "other""#, &mut state).unwrap());
     }
 
     #[test]
@@ -3237,21 +3267,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_condition_value_with_quotes() {
-        let mut state = AikiState::new(create_test_event());
-
-        // Test string literals with quotes
-        assert_eq!(
-            HookEngine::resolve_condition_value("\"hello\"", &mut state).unwrap(),
-            "hello"
-        );
-        assert_eq!(
-            HookEngine::resolve_condition_value("'world'", &mut state).unwrap(),
-            "world"
-        );
-    }
-
-    #[test]
     fn test_switch_matches_case() {
         use std::collections::HashMap;
 
@@ -3277,7 +3292,7 @@ mod tests {
                 alias: Some("status".to_string()),
             })),
             HookStatement::Switch(SwitchStatement {
-                expression: "$status".to_string(),
+                expression: "{{status}}".to_string(),
                 cases,
                 default: None,
             }),
@@ -3312,7 +3327,7 @@ mod tests {
                 alias: Some("status".to_string()),
             })),
             HookStatement::Switch(SwitchStatement {
-                expression: "$status".to_string(),
+                expression: "{{status}}".to_string(),
                 cases,
                 default: Some(vec![HookStatement::Action(Action::Log(LogAction {
                     log: "default case".to_string(),
@@ -3350,7 +3365,7 @@ mod tests {
                 alias: Some("status".to_string()),
             })),
             HookStatement::Switch(SwitchStatement {
-                expression: "$status".to_string(),
+                expression: "{{status}}".to_string(),
                 cases,
                 default: None,
             }),
@@ -3392,7 +3407,7 @@ mod tests {
                 alias: Some("detection".to_string()),
             })),
             HookStatement::Switch(SwitchStatement {
-                expression: "$detection.all_exact_match".to_string(),
+                expression: "{{detection.all_exact_match}}".to_string(),
                 cases,
                 default: None,
             }),
@@ -3583,8 +3598,8 @@ mod tests {
         });
 
         // Create action that calls a self.* function that doesn't exist
-        let actions = vec![Action::Self_(SelfAction {
-            self_: "self.nonexistent_function".to_string(),
+        let actions = vec![Action::Call(CallAction {
+            call: "self.nonexistent_function".to_string(),
             on_failure: OnFailure::default(),
         })];
 
@@ -3882,7 +3897,7 @@ mod tests {
                 alias: Some("value".to_string()),
             })),
             HookStatement::Switch(SwitchStatement {
-                expression: "$value".to_string(),
+                expression: "{{value}}".to_string(),
                 cases: vec![(
                     "case1".to_string(),
                     vec![
@@ -4383,23 +4398,23 @@ mod tests {
         let mut state = AikiState::new(create_test_event());
         state.set_variable("text".to_string(), "not_a_number".to_string());
 
-        // Should return error for non-numeric value
-        let result = HookEngine::evaluate_condition("$text > 5", &mut state);
-        assert!(result.is_err(), "Comparing non-numeric value should error");
-        assert!(result.unwrap_err().to_string().contains("not a number"));
+        // Rhai: type mismatch returns false (lenient mode)
+        let result = HookEngine::evaluate_condition("$text > 5", &mut state).unwrap();
+        assert!(!result, "Comparing non-numeric value should return false (lenient)");
     }
 
     #[test]
-    fn test_numeric_comparison_with_json_field() {
+    fn test_numeric_comparison_with_nested_field() {
         let mut state = AikiState::new(create_test_event());
-        state.set_variable("event".to_string(), r#"{"file_count": 3}"#.to_string());
+        // Use dotted key to simulate how create_resolver sets event fields
+        state.set_variable("event.file_count".to_string(), "3".to_string());
 
-        // $event.file_count > 1 should be true
-        let result = HookEngine::evaluate_condition("$event.file_count > 1", &mut state).unwrap();
-        assert!(result, "$event.file_count (3) > 1 should be true");
+        // event.file_count > 1 should be true
+        let result = HookEngine::evaluate_condition("event.file_count > 1", &mut state).unwrap();
+        assert!(result, "event.file_count (3) > 1 should be true");
 
-        // $event.file_count > 5 should be false
-        let result = HookEngine::evaluate_condition("$event.file_count > 5", &mut state).unwrap();
-        assert!(!result, "$event.file_count (3) > 5 should be false");
+        // event.file_count > 5 should be false
+        let result = HookEngine::evaluate_condition("event.file_count > 5", &mut state).unwrap();
+        assert!(!result, "event.file_count (3) > 5 should be false");
     }
 }

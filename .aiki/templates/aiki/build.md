@@ -18,11 +18,14 @@ aiki task close {{id}} --summary "Build completed: all subtasks done."
 {% subtask aiki/plan if not data.plan %}
 
 ## Execute Subtasks
+---
+slug: execute
+---
 
-Execute each subtask of the plan task sequentially. The plan subtasks are nested under the plan task ({{parent.id}}.1):
+Execute each subtask of the plan task sequentially. The plan task ID is available via `data.plan` ({{data.plan}}):
 
 ```bash
-aiki task run {{parent.id}}.1.<subtask number>
+aiki task run {{data.plan}}.<subtask number>
 ...
 ```
 

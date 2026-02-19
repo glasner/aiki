@@ -129,9 +129,23 @@ pub fn find_task<'a>(tasks: &'a FastHashMap<String, Task>, id_or_prefix: &str) -
         return Ok(task);
     }
 
-    // Try prefix resolution
-    let full_id = resolve_task_id_internal(tasks, id_or_prefix)?;
+    // Try prefix resolution (without slug support — use find_task_in_graph for slug resolution)
+    let full_id = resolve_task_id_internal(tasks, None, id_or_prefix)?;
     tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id))
+}
+
+/// Find a task by ID, prefix, or slug notation (parent:slug).
+///
+/// Like `find_task`, but accepts a `TaskGraph` to enable slug resolution.
+pub fn find_task_in_graph<'a>(graph: &'a super::graph::TaskGraph, id_or_prefix: &str) -> Result<&'a Task> {
+    // Fast path: exact match
+    if let Some(task) = graph.tasks.get(id_or_prefix) {
+        return Ok(task);
+    }
+
+    // Try resolution with slug support
+    let full_id = resolve_task_id_internal(&graph.tasks, Some(&graph.slug_index), id_or_prefix)?;
+    graph.tasks.get(&full_id).ok_or_else(|| AikiError::TaskNotFound(full_id))
 }
 
 /// Resolve a task ID prefix to a full ID
@@ -139,14 +153,39 @@ pub fn find_task<'a>(tasks: &'a FastHashMap<String, Task>, id_or_prefix: &str) -
 /// Use this when you need the resolved ID string (e.g., for batch validation
 /// or before the task map is available). Most call sites should use `find_task`.
 pub fn resolve_task_id(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
-    resolve_task_id_internal(tasks, prefix)
+    resolve_task_id_internal(tasks, None, prefix)
+}
+
+/// Resolve a task ID prefix to a full ID, with slug support.
+pub fn resolve_task_id_in_graph(graph: &super::graph::TaskGraph, prefix: &str) -> Result<String> {
+    resolve_task_id_internal(&graph.tasks, Some(&graph.slug_index), prefix)
 }
 
 /// Internal helper for prefix resolution
-fn resolve_task_id_internal(tasks: &FastHashMap<String, Task>, prefix: &str) -> Result<String> {
+fn resolve_task_id_internal(
+    tasks: &FastHashMap<String, Task>,
+    slug_index: Option<&FastHashMap<(String, String), String>>,
+    prefix: &str,
+) -> Result<String> {
     // Fast path: exact match
     if tasks.contains_key(prefix) {
         return Ok(prefix.to_string());
+    }
+
+    // Colon notation: "parent_ref:slug"
+    if let Some((parent_ref, slug)) = prefix.split_once(':') {
+        if let Some(slug_idx) = slug_index {
+            let parent_id = resolve_task_id_internal(tasks, Some(slug_idx), parent_ref)?;
+            let key = (parent_id.clone(), slug.to_string());
+            if let Some(child_id) = slug_idx.get(&key) {
+                return Ok(child_id.clone());
+            }
+            return Err(AikiError::SubtaskNotFound {
+                root: parent_id,
+                subtask: slug.to_string(),
+            });
+        }
+        // No slug index available — fall through to prefix resolution
     }
 
     // Subtask prefix: "mvslrsp.1"
@@ -542,6 +581,7 @@ mod tests {
         TaskEvent::Created {
             task_id: task_id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             priority,
             assignee: None,
@@ -1147,6 +1187,7 @@ mod tests {
                 task_type: None,
                 task_id: "task_c".to_string(),
                 name: "Task C".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1160,6 +1201,7 @@ mod tests {
                 task_type: None,
                 task_id: "task_a".to_string(),
                 name: "Task A".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1173,6 +1215,7 @@ mod tests {
                 task_type: None,
                 task_id: "task_b".to_string(),
                 name: "Task B".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1498,6 +1541,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1537,6 +1581,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1576,6 +1621,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Original name".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1611,6 +1657,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1646,6 +1693,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Original".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1682,6 +1730,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1751,6 +1800,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1779,6 +1829,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1835,6 +1886,7 @@ mod tests {
                 task_type: None,
                 task_id: "a1b2".to_string(),
                 name: "Test task".to_string(),
+                slug: None,
                 priority: TaskPriority::P2,
                 assignee: None,
                 sources: Vec::new(),
@@ -1905,6 +1957,7 @@ mod tests {
         TaskEvent::Created {
             task_id: task_id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             priority,
             assignee: assignee.map(|s| s.to_string()),
@@ -2332,6 +2385,101 @@ mod tests {
         assert!(matches!(err, AikiError::AmbiguousTaskId { .. }));
     }
 
+    // Tests for slug resolution (find_task_in_graph / resolve_task_id_in_graph)
+
+    fn make_graph_with_slugs() -> crate::tasks::graph::TaskGraph {
+        let events = vec![
+            make_created_event("mvslrspmoynoxyyywqyutmovxpvztkls", "Task Alpha", TaskPriority::P2, 3),
+            TaskEvent::Created {
+                task_id: "mvslrspmoynoxyyywqyutmovxpvztkls.1".to_string(),
+                name: "Build step".to_string(),
+                slug: Some("build".to_string()),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: Vec::new(),
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            TaskEvent::Created {
+                task_id: "mvslrspmoynoxyyywqyutmovxpvztkls.2".to_string(),
+                name: "Test step".to_string(),
+                slug: Some("test".to_string()),
+                task_type: None,
+                priority: TaskPriority::P2,
+                assignee: None,
+                sources: Vec::new(),
+                template: None,
+                working_copy: None,
+                instructions: None,
+                data: std::collections::HashMap::new(),
+                timestamp: Utc::now(),
+            },
+            make_created_event("nrqklspxopmwtryzyzkqnlmsqvpwtkls", "Task Beta", TaskPriority::P2, 3),
+        ];
+        materialize_graph(&events)
+    }
+
+    #[test]
+    fn test_find_task_in_graph_slug_with_prefix() {
+        let graph = make_graph_with_slugs();
+        // Resolve using parent prefix + slug
+        let task = find_task_in_graph(&graph, "mvslrsp:build").unwrap();
+        assert_eq!(task.name, "Build step");
+    }
+
+    #[test]
+    fn test_find_task_in_graph_slug_with_full_id() {
+        let graph = make_graph_with_slugs();
+        // Resolve using full parent ID + slug
+        let task = find_task_in_graph(&graph, "mvslrspmoynoxyyywqyutmovxpvztkls:test").unwrap();
+        assert_eq!(task.name, "Test step");
+    }
+
+    #[test]
+    fn test_find_task_in_graph_slug_not_found() {
+        let graph = make_graph_with_slugs();
+        let err = find_task_in_graph(&graph, "mvslrsp:nonexistent").unwrap_err();
+        match err {
+            AikiError::SubtaskNotFound { root, subtask } => {
+                assert_eq!(root, "mvslrspmoynoxyyywqyutmovxpvztkls");
+                assert_eq!(subtask, "nonexistent");
+            }
+            _ => panic!("Expected SubtaskNotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_find_task_in_graph_parent_not_found() {
+        let graph = make_graph_with_slugs();
+        let err = find_task_in_graph(&graph, "zzzzz:build").unwrap_err();
+        assert!(matches!(err, AikiError::TaskNotFound(_)));
+    }
+
+    #[test]
+    fn test_find_task_in_graph_dot_notation_still_works() {
+        let graph = make_graph_with_slugs();
+        let task = find_task_in_graph(&graph, "mvslrsp.1").unwrap();
+        assert_eq!(task.name, "Build step");
+    }
+
+    #[test]
+    fn test_find_task_in_graph_exact_id_still_works() {
+        let graph = make_graph_with_slugs();
+        let task = find_task_in_graph(&graph, "mvslrspmoynoxyyywqyutmovxpvztkls").unwrap();
+        assert_eq!(task.name, "Task Alpha");
+    }
+
+    #[test]
+    fn test_resolve_task_id_in_graph_slug() {
+        let graph = make_graph_with_slugs();
+        let id = resolve_task_id_in_graph(&graph, "mvslrsp:build").unwrap();
+        assert_eq!(id, "mvslrspmoynoxyyywqyutmovxpvztkls.1");
+    }
+
     fn make_created_event_with_type(
         task_id: &str,
         name: &str,
@@ -2342,6 +2490,7 @@ mod tests {
         TaskEvent::Created {
             task_id: task_id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: Some(task_type.to_string()),
             priority,
             assignee: None,

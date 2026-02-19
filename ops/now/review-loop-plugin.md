@@ -8,7 +8,7 @@
 **Related Documents**:
 - [Loop Flags](loop-flags.md) - CLI primitives this plugin builds on (`fix --loop`, `review --fix`, `build --loop`)
 - [Review and Fix Commands](../done/review-and-fix.md) - Core review/fix system (implemented)
-- [Default Hooks](default-hooks.md) - Hookfile scaffolding and built-in plugin registry (prerequisite)
+- [Default Hooks](../done/default-hooks.md) - Hookfile scaffolding and built-in plugin registry (implemented)
 - [Better Include for Plugins](better-include-for-plugins.md) - `include:` directive and composition blocks (prerequisite)
 
 ---
@@ -178,15 +178,15 @@ The agent receives the autoreply and runs `aiki review --fix --start`:
 | `include:` directive and composition blocks ([Better Include](better-include-for-plugins.md)) | Implemented | — |
 | **Turn stamping on task events** | **Not implemented** | This spec |
 | **`turn.tasks.completed` event variable** | **Not implemented** | This spec |
-| **Built-in plugin registry** | **Not implemented** | [Default Hooks](default-hooks.md) |
-| **Default hookfile scaffolding** (`aiki init` creates `.aiki/hooks.yml`) | **Not implemented** | [Default Hooks](default-hooks.md) |
+| **Built-in plugin registry** | Implemented | [Default Hooks](../done/default-hooks.md) |
+| **Default hookfile scaffolding** (`aiki init` creates `.aiki/hooks.yml`) | Implemented | [Default Hooks](../done/default-hooks.md) |
 | Built-in hook file | **Not created** | This spec |
 
 ---
 
 ## Enabling / Disabling
 
-Users get `aiki/review-loop` automatically via `include: - aiki/default` in their hookfile (created by `aiki init` — see `ops/now/default-hooks.md`). The review loop runs as an `after:` inline handler inside `aiki/default`:
+Users get `aiki/review-loop` automatically via `include: - aiki/default` in their hookfile (created by `aiki init` — see `ops/done/default-hooks.md`). The review loop runs as an `after:` inline handler inside `aiki/default`:
 
 ```yaml
 # .aiki/hooks.yml (created by aiki init)
@@ -385,7 +385,7 @@ Add the lazy variable to `turn.completed` events in the flow engine:
 
 ### Phase 3: Hook plugin
 
-1. **Embed plugin as built-in** — add `aiki/review-loop` to the built-in plugin registry (see `ops/now/default-hooks.md` Phase 2). The plugin is shipped inside the binary via `include_str!()`, resolved at the loader level when no user override exists on disk.
+1. **Embed plugin as built-in** — add `aiki/review-loop` to the built-in plugin registry (see `ops/done/default-hooks.md` Phase 2). The plugin is shipped inside the binary via `include_str!()`, resolved at the loader level when no user override exists on disk.
 2. Tests
 
 ---

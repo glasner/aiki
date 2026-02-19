@@ -3,11 +3,20 @@
 **Date**: 2026-02-14
 **Status**: Draft
 **Priority**: P2
-**Depends on**: `ops/done/review-and-fix.md`
+**Depends on**: 
+- `ops/done/review-and-fix.md`
+- `ops/now/spawn-tasks.md` (conditional spawning + loop implementation)
+- `ops/now/autorun-unblocked-tasks.md` (autorun behavior for blocking links)
 
 **Related Documents**:
 - [Review and Fix Commands](../done/review-and-fix.md) - Core review/fix system (implemented)
+- [Spawn Tasks](spawn-tasks.md) - Spawning and loop primitives (foundation for this workflow)
 - [Review Loop Plugin](review-loop-plugin.md) - Hook-based automation (builds on these primitives)
+- [Semantic Blocking Links](semantic-blockers.md) - Foundation for semantic links
+- [Autorun Unblocked Tasks](autorun-unblocked-tasks.md) - Automatic task start on blocker completion
+
+**Scope**:
+This spec describes how the review-fix workflow USES the spawn and loop primitives defined in spawn-tasks.md. It does NOT implement spawning or loops — that's in spawn-tasks.md.
 
 ---
 
@@ -28,11 +37,83 @@ Similarly, after `aiki build` completes, the user often wants to review and fix 
 
 ## Summary
 
-The `fix` command loops by default, iterating fix → re-review until clean or depth limit. Workflow flags (`--fix`, `--review`) chain commands together:
+The fix workflow uses **semantic task links + nested loops** for automated review-fix cycles:
 
-1. **`aiki fix <review>`** — Fix → re-review → fix until clean (DEFAULT behavior). Use `--once` to opt out of looping.
-2. **`aiki review --fix`** — Review → fix loop (creates review with fix subtask).
-3. **`aiki build --fix`** — Build → review → fix loop in a single command.
+**Coordination layer:**
+- Review **validates** original task (semantic link)
+- Review **spawns** fix task conditionally (via `spawns:` frontmatter if not approved)
+- Fix **spawned-by** review (semantic link with autorun)
+
+**Iteration layer:**
+- Nested loops via `loop:` frontmatter (inner: fix quality, outer: problem solved)
+- `data.loop` metadata (automatic iteration tracking — see spawn-tasks.md)
+- Customizable termination conditions
+- Loop implementation via spawn mechanism (see spawn-tasks.md)
+
+This creates a thorough, **customizable** review-fix workflow:
+
+1. **`aiki review --fix`** — Creates review (validates original) and fix loop (follows up review)
+2. **`aiki build --fix`** — Build → review → fix loops in a single command
+
+**Task structure:**
+```
+Original Task
+  ├── Review Task (validates original)
+  └── Fix Task (follows-up review, autorun if issues found)
+      ├── Iteration 1 (created from aiki/fix template)
+      │   ├── Fix once (aiki/fix/once)
+      │   ├── Quality loop (aiki/fix/quality)
+      │   │   └── Inner iterations...
+      │   └── Re-review original
+      ├── Iteration 2 (spawned by loop:)
+      └── Iteration 3...
+```
+
+**Benefits:**
+- Fix stays as child of original task (preserves current hierarchy)
+- Conditional creation: no fix spawned if review approved (via `spawns` mechanism)
+- Semantic links: queryable, self-documenting task graph
+
+---
+
+## Nested Loop Rationale
+
+**Why two loops instead of one?**
+
+A single loop (fix → re-review original) can propagate low-quality fixes:
+- Fix introduces new bugs
+- Fix is incomplete or incorrect
+- Fix has style/quality issues
+
+The fix itself becomes part of the codebase, so it deserves independent review before we check if it solved the original problem.
+
+**Two-gate approach:**
+
+1. **Inner loop (fix quality)** — "Is this fix well-implemented?"
+   - Reviews the fix task's changes in isolation
+   - Catches bugs in the fix, incomplete implementations, poor approaches
+   - Reviewer: Opposite of fixer (independent perspective)
+   - Iterates until fix is clean
+
+2. **Outer loop (effectiveness)** — "Did the fix solve the original problem?"
+   - Reviews the original task after fix is applied
+   - Verifies fix addressed all original issues
+   - Catches cases where fix was clean but didn't solve the problem
+   - Reviewer: Original reviewer (consistency)
+   - Iterates until original task is clean
+
+**Benefits:**
+- Higher quality fixes (two independent reviews)
+- Prevents cascading issues (bad fix caught before re-reviewing original)
+- Clear separation of concerns (implementation quality vs. problem solving)
+- Natural exit points (inner: fix clean, outer: problem solved)
+
+**Cost:**
+- More reviews per outer iteration (1 original review + N fix reviews)
+- Slightly longer iteration times
+- More complex implementation
+
+The trade-off favors quality — better to catch issues early in the fix than to discover them later in the outer loop or in production.
 
 ---
 
@@ -40,155 +121,347 @@ The `fix` command loops by default, iterating fix → re-review until clean or d
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Core primitive | `aiki fix` loops by default | "Fix" means "fix completely" — looping is the natural behavior |
-| Opt-out flag | `fix --once` | Escape hatch for single-pass fixes (debugging, manual control) |
-| Review sugar | `aiki review --fix` adds a fix subtask | Review command stays a task factory; task system handles sequencing |
-| Build workflow | `aiki build --fix` | Clear workflow chain: build → review → fix (loop) |
-| Max iterations | 10 | Generous enough for complex fix chains, tight enough to prevent runaway loops |
-| Won't-do fix in loop | `fix` re-reviews after won't-do fix | Verifies the agent's decision to skip a fix was appropriate |
-| Reviewer persistence | Re-reviews use original reviewer | If codex reviewed initially, codex re-reviews; maintains consistency |
+| **Coordination** | Semantic links (`validates`, `follows-up`) | Express domain relationships, queryable, self-documenting |
+| Review link | `validates` | Review validates original task (semantic, not just dependency) |
+| Fix link | `follows-up` with `autorun` | Fix follows up review, auto-runs when spawned |
+| Fix task parent | Original task (not review) | Preserves existing hierarchy, fix is child of task being fixed |
+| **Iteration** | `loop:` frontmatter in templates | Declarative, customizable via template overrides |
+| Loop primitive | `loop: {until, data}` in frontmatter | Clean syntax, task system spawns next iteration |
+| Loop metadata | Auto-generated `data.loop` | System provides index, index1, first, last, length |
+| Loop structure | Nested (outer + inner) | Two quality gates: fix must be clean (inner), and fix must solve problem (outer) |
+| Default max outer | 10 iterations | Generous for complex fix chains; customizable via template data |
+| Default max inner | 5 iterations per fix | Enough to refine a fix; customizable via template data |
+| Inner loop reviewer | Opposite of fixer (in template) | Independent review of fix quality (e.g., if claude-code fixes, codex reviews fix) |
+| Outer loop reviewer | Original reviewer (persisted in template data) | Consistency across iterations (if codex found original issues, codex verifies fixes) |
+| Termination conditions | Defined in `loop.until` | Customizable per template (approved, score threshold, manual override) |
 | Build review scope | Implementation review of the spec | Validates the whole result against the spec, not just individual diffs |
-| Build `--fix` + `--async` | Error | A fix loop requires blocking execution; async + fix is contradictory |
-| Build review agent | Default (opposite of builder) | Follows existing `determine_reviewer()` convention |
+| Build `--fix` + `--async` | Allowed (task-based) | Task system handles async execution, no command blocking |
 
 ---
 
-## `aiki fix <review>`
+## Semantic Task Links
 
-The core fix command. **Loops by default** — iterates fix → re-review until the code is clean or the depth limit is reached.
+The review-fix workflow uses two new link types to coordinate tasks:
 
-**Syntax:**
+### `validates` Link
 
+Review task validates another task:
+
+```rust
+add_link(review_task.id, LinkType::Validates {
+    task_id: original_task.id,
+    autorun: true,  // Start review automatically
+});
+```
+
+**Semantics:**
+- This review checks the quality/correctness of that task
+- Creates queryable relationship: "What validates task X?"
+- Bidirectional: task shows "validated by" reviews
+
+**Usage:**
 ```bash
-aiki fix <review-id>          # Fix → re-review → fix until clean (DEFAULT)
-aiki fix <review-id> --once   # Fix once, stop (opt-out of loop)
+# Show what validates this task
+aiki task show <task-id> --validators
+
+# Create review that validates a task
+aiki review <task-id>  # Automatically creates validates link
 ```
 
-**Algorithm:**
+### `spawned-by` Link
 
-```
-fix(review_id, once=false, max_iterations=10):
-  # Extract original task ID and reviewer from initial review
-  original_task_id = review.scope.id
-  original_reviewer = review.agent  # Persist the reviewer across iterations
-  
-  for iteration in 1..=max_iterations:
-    # Step 1: Fix the review's findings
-    result = fix_once(review_id)
-    if result == approved:
-      return approved  # No issues, loop ends
+Fix task spawned by a review:
 
-    followup_id = result.followup_id
-
-    # Step 2: Wait for fix to complete
-    wait(followup_id)  # Blocks until fix task closes
-
-    # If --once flag set, stop here
-    if once:
-      return done
-
-    # Step 3: Re-review the original task with the SAME reviewer
-    new_review = create_review(original_task_id, agent=original_reviewer)
-    run_to_completion(new_review)
-    review_id = new_review.id
-
-  return max_iterations_reached
+```rust
+// On the spawned task (created automatically)
+add_link(fix_task.id, LinkType::SpawnedBy {
+    task_id: review_task.id,
+    autorun: true,  // Spawned task auto-starts
+});
 ```
 
-**Behavior at each step:**
+**Semantics:**
+- This task was conditionally created by that task
+- Links child back to spawning parent
+- Provenance: answers "what created this task?"
+- Automatically runs if `autorun: true`
 
-1. Extracts original task ID and reviewer from the initial review task
-2. Calls `fix_once()` logic — if no comments, prints "approved" and exits
-3. If comments found, creates followup task and runs it to completion (blocking)
-4. If `--once` flag set, stops here (single pass)
-5. Otherwise, creates a new review of the original task with the **same reviewer** as the initial review
-6. Runs review to completion (blocking), then loops back to step 2
-7. Depth guard: stops after N iterations (default 10) with a warning
+**When review closes:**
+1. Evaluate `spawns:` conditions in review's frontmatter
+2. For each condition that is true → instantiate template
+3. Create spawned task with `spawned-by` link
+4. If `autorun: true` → start spawned task
 
-**Execution modes:**
+**Usage:**
+```bash
+# Show what spawned this task
+aiki task show <fix-id>  # Shows spawned-by link
 
-| Flags | Behavior |
-|-------|----------|
-| `fix <review>` | **Default** — loop until clean (blocking) |
-| `fix <review> --once` | Single pass — fix once, stop |
-| `fix <review> --async` | Error — async doesn't make sense for fix loop (use `review --fix --async` instead) |
-| `fix <review> --start` | Agent takes over — runs fix in current session, loops in-session |
+# Show what a task spawned
+aiki task show <review-id> --spawned
 
-**The `--start` variant** is the most interesting for agents. The agent fixes issues in its own session (preserving context), and the loop handles re-review and next fix cycle. Each fix iteration reuses the agent's session.
-
-**Output:**
-
+# Create review that conditionally spawns fix
+aiki review <task> --fix  # Review template has spawns: config
 ```
-## Fix Loop
-- **Review:** rvwnmnsmtlvtlsqtyllrtwkqvlrnopqr
-- **Iteration:** 1 of 10
-- **Issues:** 2
 
-1. Potential null pointer dereference in auth handler
-2. Missing error handling in API client
+### Link Types Summary
 
-Fixing...
+```rust
+enum LinkType {
+    Validates {
+        task_id: TaskId,
+        autorun: bool,
+    },
+    SpawnedBy {
+        task_id: TaskId,  // The task that spawned this one
+        autorun: bool,
+    },
+    // ... existing links (BlockedBy, Source, etc.)
+}
+```
 
-## Fix Loop
-- **Review:** xnvprvxypulsxzqnznsxylrzkkqssytt
-- **Iteration:** 2 of 10
-- **Issues:** 1
+**Note:** The `spawns:` configuration lives in task frontmatter (see [spawn-tasks.md](spawn-tasks.md)), not as a link type. Only the resulting `spawned-by` link is stored.
 
-1. Error message missing context
+---
 
-Fixing...
+## Loop Templates
 
-## Approved
-- **Review:** qrsvtnmwxypulsxzqnznsxylrzkkqsmn
-- Review approved - no issues found.
-- **Iterations:** 3
+The fix workflow is implemented via **task templates** that declare loop behavior in frontmatter. Loops handle iteration, links handle coordination.
+
+**Three templates:**
+- **`aiki/fix`** — Main template with outer loop (looping fix workflow)
+- **`aiki/fix/quality`** — Inner loop for fix quality checking
+- **`aiki/fix/once`** — Single-pass fix (no loop)
+
+**Runtime override:** Create task with `--once` parameter to prevent loop config from being copied (forces single-pass even from looping template).
+
+### `.aiki/templates/aiki/fix.md`
+
+Main fix template with outer loop (fix → review fix quality → re-review original).
+
+```yaml
+---
+template: aiki/fix
+loop:
+  until: subtasks[2].approved or data.loop.index1 >= data.max_outer
+  data: {}  # No manual iteration tracking - system provides data.loop
+---
+
+# Fix Iteration {{data.loop.index1 | default: 1}}/{{data.max_outer | default: 10}}
+
+Fixing issues from review {{data.original_review}}.
+
+## Instructions
+
+1. **Fix the issues:**
+   {% subtask aiki/fix/once with review={{data.original_review}} %}
+
+2. **Ensure fix quality (inner loop):**
+   {% subtask aiki/fix/quality with data={
+     fix_task: "{{subtasks[0].followup_id}}",
+     max_inner: {{data.max_inner | default: 5}}
+   } %}
+
+3. **Re-review original task:**
+   {% subtask aiki/review with scope=task:{{data.original_review.scope.id}} %}
+
+---
+
+**Status:** Iteration {{data.loop.index1 | default: 1}} of {{data.max_outer | default: 10}}
+{% if data.loop.first %}First attempt at fixing issues{% endif %}
+```
+
+**Loop semantics:**
+- When task closes, evaluate `loop.until` condition
+- If false → spawn next iteration with `loop.data` merged, auto-increment `data.loop` metadata
+- If true → loop terminates
+- Task system automatically provides `data.loop.{index, index1, first, last, length}`
+
+**Runtime override:**
+- Create task with `once: true` parameter → `loop_config` not copied to task
+- Runs once even though template has loop config
+- Implementation: detect `loop_disabled` in template data, skip setting `task.loop_config`
+
+### Loop Metadata (`data.loop`)
+
+The task system automatically provides loop metadata to every iteration task:
+
+```yaml
+data:
+  loop:
+    index: 0           # Current iteration (0-indexed)
+    index1: 1          # Current iteration (1-indexed)
+    first: true        # Is this the first iteration?
+    last: false        # Is this the last iteration? (unknown until termination)
+    length: null       # Total iterations (unknown for dynamic loops)
+```
+
+**Usage in templates:**
+- `{{data.loop.index1}}` — Display iteration number (1, 2, 3...)
+- `data.loop.index1 >= data.max_outer` — Loop termination condition
+- `{% if data.loop.first %}...{% endif %}` — Special behavior on first iteration
+
+**Benefits:**
+- No manual iteration tracking in `loop.data`
+- Consistent with Liquid/Jinja loop variables
+- Automatic increment by task system
+- Available in both template body and `loop.until` conditions
+
+### `.aiki/templates/aiki/fix/quality.md`
+
+Inner loop: Review fix quality and refine until clean.
+
+```yaml
+---
+template: aiki/fix/quality
+loop:
+  until: subtasks[0].approved or data.loop.index1 >= data.max_inner
+  data:
+    fix_task: "{{subtasks[0].followup_id}}"
+---
+
+# Fix Quality Loop {{data.loop.index1}}/{{data.max_inner}}
+
+Reviewing fix task {{data.fix_task}} for quality.
+
+## Instructions
+
+1. **Review the fix:**
+   {% subtask aiki/review with scope=task:{{data.fix_task}} %}
+
+2. **Fix issues if found:**
+   {% subtask aiki/fix/once with review={{subtasks[0].id}} if subtasks[0].has_comments %}
+
+---
+
+**Status:** Inner iteration {{data.loop.index1}} of {{data.max_inner}}
+```
+
+**Loop semantics:**
+- After review completes, check if approved
+- If not approved and under max → spawn next iteration with updated `fix_task` and incremented `data.loop`
+- If approved or max reached → exit inner loop
+
+### `.aiki/templates/aiki/fix/once.md`
+
+Single-pass fix (no loop) — agent reads review comments and creates fix subtasks.
+
+```yaml
+---
+template: aiki/fix/once
+# No loop: config - this template never loops
+---
+
+# Fix Issues from Review {{data.review}}
+
+## Instructions
+
+Read review comments and create subtasks to fix each issue.
+
+[Agent instructions for addressing review findings...]
+```
+
+**Usage:**
+- Called by `aiki/fix` template (outer loop needs single-pass fix per iteration)
+- Called by `aiki/fix/quality` template (inner loop needs single-pass fix for fix-the-fix)
+- Can be called directly: `aiki fix <review-id>` (command creates task with this template)
+
+### Customization Examples
+
+**Change iteration limits:**
+```bash
+aiki review <task> --fix --data '{"max_outer": 20, "max_inner": 3}'
+```
+
+**Custom termination condition:**
+
+Override `.aiki/templates/aiki/fix/outer-iteration.md`:
+```yaml
+---
+loop:
+  until: subtasks[2].score >= 90 or data.loop.index1 >= data.max_outer
+---
+```
+
+**No inner loop (single-pass fixes):**
+
+Create custom template without inner-loop subtask:
+```yaml
+---
+loop:
+  until: subtasks[1].approved or data.loop.index1 >= data.max_outer
+---
+# Fix Iteration {{data.loop.index1}}/{{data.max_outer}}
+
+## Instructions
+1. {% subtask aiki/fix with review={{data.original_review}}, once=true %}
+2. {% subtask aiki/review with scope=task:{{data.original_review.scope.id}} %}
+```
+
+**Custom reviewer selection:**
+
+Override template to use specific agent:
+```yaml
+{% subtask aiki/review with scope=task:{{data.fix_task}}, agent=codex-security %}
 ```
 
 ---
 
-## `aiki review --fix` (already implemented)
+## `aiki review --fix`
 
-> **Status: Existing.** The `--fix` flag, data flow, and conditional subtask are already wired. The only fix needed is updating the loop template content (see Phase 2).
-
-Creates a review with a fix-loop subtask. The review command stays a task factory — `--fix` just adds one more subtask to the DAG.
+Creates a review task (validates original) and a fix loop task (follows-up review).
 
 **Syntax:**
 
 ```bash
 aiki review <task-id>          # Just review (no auto-fix)
-aiki review <task-id> --fix    # Review → fix loop
-```
-
-**What already exists in code:**
-
-- `ReviewArgs.fix: bool` — clap flag (`cli/src/commands/review.rs:167-169`)
-- `CreateReviewParams.fix: bool` — passed through to template creation (`review.rs:220-229`)
-- `options.fix = "true"` set in scope_data (`review.rs:408-409`)
-- Review template conditional: `{% subtask aiki/fix/loop if data.options.fix %}` (`review.md:22`)
-- Loop template stub: `.aiki/templates/aiki/fix/loop.md` (currently calls `aiki fix {{parent.id}} --loop` — stale flag)
-
-**Template naming (important):**
-
-The review template references `aiki/fix/loop`, **not** `aiki/fix`. This is correct — `aiki/fix.md` is the single-pass fix template (creates nested subtasks per issue). `aiki/fix/loop.md` is the loop subtask that invokes `aiki fix` in loop mode. These are different contracts:
-
-```
-.aiki/templates/aiki/fix.md       → Single-pass: agent reads comments, creates subtasks, fixes each
-.aiki/templates/aiki/fix/loop.md  → Loop wrapper: calls `aiki fix <parent-id>` (loops by default)
+aiki review <task-id> --fix    # Review + fix loop
 ```
 
 **What it creates:**
 
-```
-Review Task (parent)
-  ├── Digest         (subtask linked via subtask-of — from {% subtask aiki/review/<kind> %})
-  ├── Review         (subtask linked via subtask-of — existing inline subtask)
-  └── Fix Loop       (subtask linked via subtask-of — from {% subtask aiki/fix/loop %})
-              instructions: aiki fix <parent-id>
+```rust
+// 1. Create review task (validates original)
+let review_task = create_review(scope, ...);
+add_link(review_task.id, LinkType::Validates {
+    task_id: original_task_id,
+    autorun: true,
+});
+
+// 2. Create fix task (child of original, follows up review)
+let fix_task = create_task_with_parent(
+    original_task_id,  // Parent is the original task
+    "aiki/fix",        // Template with loop: config
+    data={
+        original_review: review_task.id,
+        max_outer: 10,
+        max_inner: 5,
+    },
+    once: false,  // Copy loop config from template (default)
+);
+add_link(fix_task.id, LinkType::FollowsUp {
+    task_id: review_task.id,
+    autorun: true,  // Auto-start when spawned
+});
 ```
 
-The fix-loop subtask is blocked by the review subtasks. When the review closes:
-- If issues found → fix-loop subtask becomes ready, runs `aiki fix <parent-id>` (loops by default)
-- If no issues → fix-loop subtask can detect "approved" and close itself as won't-do
+**Task structure:**
+
+```
+Original Task
+  ├── Review Task (validates original)
+  └── Fix Task (follows-up review)
+      ├── Iteration 1
+      │   ├── Fix once (aiki/fix/once)
+      │   ├── Quality loop (aiki/fix/quality)
+      │   └── Re-review original
+      ├── Iteration 2 (spawned by loop:)
+      └── Iteration 3...
+```
+
+**When review closes:**
+1. If review approved → fix loop auto-closes as won't-do
+2. If review has issues → fix loop starts automatically
 
 **Composition with execution modes:**
 
@@ -196,15 +469,17 @@ The fix-loop subtask is blocked by the review subtasks. When the review closes:
 |-------|----------|
 | `review <task> --fix` | Blocking — waits for review + entire fix loop |
 | `review <task> --fix --async` | Returns immediately — review + fix loop run in background |
-| `review <task> --fix --start` | Agent takes over the review; fix-loop subtask becomes ready after agent closes review |
-
-The `--start --fix` case is natural: the agent does the review itself, closes it, and the fix-loop subtask appears in their ready queue. No special wiring — the task system handles sequencing.
+| `review <task> --fix --start` | Agent does review; fix loop auto-starts when review closes |
 
 **Without `--fix`**, the review command works exactly as today (no behavioral change).
 
-### Depth Counting
+### Loop Tracking
 
-`aiki fix` maintains a simple iteration counter (hardcoded max of 10). The source chain (`source: task:` links) also provides an audit trail — each review and fix task links to its predecessor, so `aiki task show` reveals the full iteration history.
+The task graph naturally tracks iteration history:
+- Each outer iteration is a separate task (with `source: task:<prev-iteration>`)
+- Each inner iteration is a separate task (with `source: task:<prev-inner>`)
+- `aiki task tree` shows the full loop structure
+- `aiki task show <iteration-id>` reveals iteration number and data
 
 ---
 
@@ -241,15 +516,11 @@ pub fix: bool,
 In `run()`, before dispatching:
 
 ```rust
-if args.fix && args.run_async {
-    return Err(AikiError::InvalidArgument(
-        "--fix and --async are incompatible. --fix requires blocking execution.".to_string(),
-    ));
-}
-
 // --fix implies --review
 let review_after = args.review || args.fix;
 ```
+
+Note: `--fix` and `--async` are now compatible since loops are task-based.
 
 #### 3. Thread the flags through to `run_build_spec` and `run_build_plan`
 
@@ -322,7 +593,7 @@ Or with `--fix`:
 
 ---
 
-## Iteration Lifecycle (CLI)
+## Iteration Lifecycle
 
 When a user or agent runs `aiki review <task> --fix`:
 
@@ -332,7 +603,7 @@ When a user or agent runs `aiki review <task> --fix`:
 aiki review <task-id> --fix
 ```
 
-Creates the review task with digest, review, and fix subtasks. The review runs (assigned to codex by default).
+Creates the review task with digest, review, and fix-loop subtasks. The review runs (assigned to codex by default).
 
 ### Step 2: Codex Reviews
 
@@ -342,29 +613,42 @@ The codex agent:
 3. Adds comments for each issue found
 4. Closes the review task
 
-### Step 3: Fix Subtask Fires
+### Step 3: Fix Loop Starts
 
-The fix subtask becomes ready. It runs `aiki fix <review-id>` (loops by default):
+The fix-loop subtask becomes ready and spawns the first outer iteration task.
 
-- If codex found issues → creates followup, runs fix, re-reviews (loops)
-- If codex found no issues → prints "approved", exits
+### Step 4: Outer Iteration Executes
 
-### Step 4: Fix Loop Iterates
+The outer iteration task has three subtasks:
+1. **Fix original issues** — `aiki fix <review-id> --once` creates fix task
+2. **Inner loop** — Review and refine the fix until clean (see Step 5)
+3. **Re-review original** — Verify fix solved the problem
 
-Each iteration:
-1. Fix agent addresses the review comments
-2. Fix agent closes the followup task
-3. `aiki fix` creates a new review of the original task **using the same reviewer** (e.g., codex)
-4. Review runs to completion
-5. If issues remain → loop continues
-6. If clean → "approved", loop ends
+### Step 5: Inner Loop Iterates
 
-### Step 5: Termination
+The inner loop task reviews the fix and spawns next iteration if needed:
 
-The loop ends when:
-- A review finds zero issues (natural termination)
-- Max iterations reached (depth guard)
-- User interrupts (Ctrl+C, `aiki task stop`)
+1. Review the fix task for quality
+2. If review approved → inner loop terminates
+3. If review has issues:
+   - Create fix task for the issues
+   - Task closes, evaluates `loop.until` condition
+   - If under max iterations → spawns next inner iteration with new fix_task
+   - If at max → terminates with best-effort fix
+
+### Step 6: Outer Loop Continues
+
+After inner loop completes:
+1. Original task is re-reviewed
+2. Outer iteration task closes, evaluates `loop.until` condition
+3. If original still has issues and under max → spawns next outer iteration
+4. If original approved or at max → loop terminates
+
+### Step 7: Termination
+
+**Natural termination:** Original task review is approved  
+**Depth guard:** Max iterations reached  
+**Manual:** User stops task
 
 ---
 
@@ -372,28 +656,41 @@ The loop ends when:
 
 ### Natural Termination
 
-The loop terminates when a review finds **zero issues**:
+**Outer loop** terminates when `loop.until` evaluates to true:
 
-1. `aiki fix` receives the review task ID
-2. Calls `fix_once()` — review has no comments
-3. Prints "approved" and exits 0
-4. Loop ends
-
-### Depth Guard
-
-`aiki fix` maintains a simple iteration counter. At the limit (default 10):
-
+```yaml
+loop:
+  until: subtasks[2].approved or data.iteration >= data.max_outer
 ```
-## Fix Loop — Max Iterations Reached
-- Reached maximum of 10 iterations without full approval.
-- Run `aiki review list` to see review history.
+
+When original task review is approved or max iterations reached, no next iteration spawns.
+
+**Inner loop** terminates when `loop.until` evaluates to true:
+
+```yaml
+loop:
+  until: subtasks[0].approved or data.iteration >= data.max_inner
+```
+
+When fix review is approved or max iterations reached, no next iteration spawns.
+
+### Depth Guards
+
+Loop templates declare max iterations in `loop.until` condition:
+
+**Outer:** `data.iteration >= data.max_outer` (default 10)  
+**Inner:** `data.iteration >= data.max_inner` (default 5)
+
+Users can customize via template data:
+```bash
+aiki review <task> --fix --data '{"max_outer": 20, "max_inner": 3}'
 ```
 
 ### Manual Termination
 
-- **Stop the agent** — Ctrl+C
-- **Stop the fix task** — `aiki task stop <fix-id>`
-- **Close as won't-do** — `aiki task close <fix-id> --wont-do --summary "Acceptable as-is"`
+- **Stop iteration task** — `aiki task stop <iteration-id>`
+- **Stop fix-loop task** — `aiki task stop <fix-loop-id>` (prevents new iterations)
+- **Close as won't-do** — `aiki task close <iteration-id> --wont-do` (loop condition prevents spawn)
 
 ---
 
@@ -414,16 +711,21 @@ aiki review <task-id> --fix --agent claude-code
 
 | Scenario | Behavior |
 |----------|----------|
-| Review task fails/errors | `aiki fix` logs error and stops |
-| Codex is unavailable | Review creation fails; `aiki fix` exits with error |
-| Network timeout during review | `aiki fix` blocks on review completion; fails on timeout |
-| Depth limit reached | Warning message, loop exits |
-| `fix` called on non-review task | Error: "Task X is not a review task" (existing validation) |
-| `review --fix` with `--start` | Agent does review; fix subtask becomes ready after |
-| `build --fix` with `--async` | Error: incompatible flags |
-| `fix --once` on a review with no issues | Prints "approved", exits immediately (no loop) |
-| Initial review by codex, re-review fails | Loop preserves codex as reviewer; if codex unavailable on re-review, loop fails |
-| Review has no explicit agent set | Re-reviews use default reviewer logic (opposite of fixer) |
+| Review task fails/errors | Fix-loop task cannot start (dependency failed) |
+| Codex is unavailable | Review creation fails; fix loop never starts |
+| Network timeout during review | Review subtask fails; outer iteration cannot complete |
+| Outer depth limit reached | `loop.until` evaluates to true, no next iteration spawned |
+| Inner depth limit reached | `loop.until` evaluates to true, inner loop exits, outer continues |
+| Fix task review fails/errors | Inner loop cannot evaluate properly; depends on error handling |
+| Review has no issues | Fix-loop task can check and close as won't-do, or subtask creation is conditional |
+| `review --fix` with `--start` | Agent does review; fix-loop subtask becomes ready after |
+| `build --fix` with `--async` | Allowed (task-based loops support async) |
+| Initial review by specific agent | Template data can preserve reviewer, or use default logic |
+| Fix reviewer unavailable | Inner loop review creation fails; iteration task errors |
+| Fix is clean on first try | Inner loop `loop.until` true on first iteration, exits immediately |
+| Fix introduces new issues in original | Outer loop spawns next iteration with new fix |
+| User overrides max iterations to 0 | `loop.until` immediately true, no iterations spawn |
+| User sets very high max (100+) | Loop continues until approved or manual termination |
 
 ---
 
@@ -431,78 +733,108 @@ aiki review <task-id> --fix --agent claude-code
 
 | File | Change | Status |
 |------|--------|--------|
-| `cli/src/commands/fix.rs` | Make looping default behavior, add `--once` flag, loop logic, depth guard, iteration output | **New work** |
-| `cli/src/main.rs` | Add `once: bool` to Fix command variant | **New work** |
-| `cli/src/commands/build.rs` | Add `--review` and `--fix` flags, validation, `run_build_review()`, output helper | **New work** |
-| `cli/src/commands/review.rs` | No changes needed — `--fix` flag and data flow already exist | **Already done** |
-| `.aiki/templates/aiki/fix/loop.md` | Update: remove stale `--loop` flag (loop is now default behavior) | **Fix existing** |
-| `.aiki/templates/aiki/fix.md` | No changes — single-pass fix template, separate from loop | **No change** |
-| `.aiki/templates/aiki/review.md` | No changes — already references `aiki/fix/loop` correctly | **No change** |
+| **Core task system** | | |
+| Link types | Add `Validates` and `FollowsUp` link types with `autorun` field | **New work** |
+| Task close handler | Handle spawning and autorun triggers | **New work** |
+| Template parser | Add `loop:` frontmatter support | **New work** |
+| Loop handler | Evaluate `loop.until` conditions, spawn next iteration, inject `data.loop` metadata | **New work** |
+| Condition evaluator | Simple expression evaluator for conditions (subtasks[N].approved, data comparisons) | **New work** |
+| Task creation | Support `once` parameter to suppress loop config from template | **New work** |
+| **Commands** | | |
+| `cli/src/commands/review.rs` | When `--fix` flag: create fix task with `follows-up` link and `once` parameter | **Update existing** |
+| `cli/src/commands/build.rs` | Add `--review` and `--fix` flags, `run_build_review()` | **New work** |
+| **Templates** | | |
+| `.aiki/templates/aiki/fix.md` | Outer loop template with `loop:` frontmatter (replaces fix/loop) | **Update existing** |
+| `.aiki/templates/aiki/fix/quality.md` | Inner loop template with `loop:` frontmatter | **New file** |
+| `.aiki/templates/aiki/fix/once.md` | Single-pass fix template (no loop) | **Rename from aiki/fix.md** |
 
 ---
 
+## Prerequisites
+
+- **Conditional task spawning + loops** (`spawn-tasks.md`): Implements `spawns:` frontmatter, `spawned-by` link type, and `loop:` syntactic sugar
+- **Unified expression evaluation** (`rhai-for-conditionals.md`): Required for array indexing (`subtasks[2].approved`) and complex conditions in `loop.until` and spawn condition expressions
+
 ## Implementation Plan
 
-### Phase 1: `fix` loops by default
+**NOTE:** Phases 1-2 are implemented in `spawn-tasks.md`. This spec only describes Phase 3 (applying those primitives to the review-fix workflow).
 
-Make `aiki fix` loop by default with `--once` opt-out:
+### Phase 1: Fix loop templates
 
-1. Add `--once` flag to `cli/src/main.rs` Fix variant (alongside existing `run_async`, `start`, `template`, `agent`)
-2. Refactor `cli/src/commands/fix.rs`:
-   - Rename current `run_fix()` → `fix_once()` (this is the existing single-pass logic)
-   - New `run_fix()` wraps `fix_once()` in a loop:
-     - Extract `scope.id` (original task) and reviewer from initial review
-     - Call `fix_once()` — if approved, exit
-     - If `--once`, stop after first fix
-     - Otherwise: create new review of original task with **same reviewer**, run to completion, loop
-   - Make `--async` error when looping (async only valid with `--once`)
-   - `--start` works as today — agent takes over the fix subtask, loop re-reviews after agent closes
-3. Track original task ID (extract from review's `data.scope.id`)
-4. Track original reviewer (extract from review task's `assignee` field or `last_session_id`)
-5. Hardcoded depth guard (max 10 iterations)
-6. Add iteration output messages (iteration N of 10, issue count)
-7. Tests (unit: loop termination, depth guard, --once opt-out; reviewer persistence)
+Create templates that use spawn + loop primitives from `spawn-tasks.md`:
 
-### Phase 2: Fix existing `review --fix` wiring
+1. **`.aiki/templates/aiki/fix.md`** — Main template with outer loop
+   - Uses `loop:` frontmatter (implemented in spawn-tasks.md)
+   - Spawns itself until `subtasks[2].approved` or max iterations
 
-> The `--fix` flag, data flow, and conditional subtask already exist. This phase just fixes the stale loop template.
+2. **`.aiki/templates/aiki/fix/quality.md`** — Inner loop template
+   - Uses `loop:` frontmatter for quality iteration
+   - Spawns itself until fix is approved
 
-1. Update `.aiki/templates/aiki/fix/loop.md`: change `aiki fix {{parent.id}} --loop` → `aiki fix {{parent.id}}` (loop is now default, `--loop` flag never existed)
-2. Verify end-to-end: `aiki review <task> --fix` creates review with fix-loop subtask, subtask runs `aiki fix` which now loops by default
-3. Tests (integration: review --fix creates correct subtask structure)
+3. **`.aiki/templates/aiki/fix/once.md`** — Single-pass fix (rename from existing `aiki/fix.md`)
+   - No loop, single iteration
 
-### Phase 3: `build --review` and `build --fix`
+4. **Update `.aiki/templates/aiki/review.md`:**
+   - Add `spawns:` frontmatter section:
+     ```yaml
+     spawns:
+       - template: aiki/fix
+         condition: "!this.approved"
+         autorun: true
+     ```
+   - Remove any old fix subtask creation logic
+
+5. **Tests:**
+   - End-to-end: `aiki review --fix` → review approves → no fix spawned
+   - End-to-end: review has issues → fix spawns and starts, loops until clean
+   - Unit: spawn condition evaluation (approved=false triggers spawn)
+   - Integration: nested loops (outer + inner) work correctly
+
+### Phase 2: `build --review` and `build --fix`
 
 Add workflow flags to `aiki build`:
 
-1. Add `review` and `fix` fields to `BuildArgs` with `#[arg(long)]`
-2. Validate `--fix` + `--async` incompatibility
-3. `--fix` implies `--review` (set `review_after = args.review || args.fix`)
-4. Thread flags through `run_build_spec` and `run_build_plan`
-5. Implement `run_build_review()` — creates implementation review with `fix: with_fix`, runs to completion
-6. Add output helper (different messages for `--review` vs `--fix`)
-7. Tests
+1. Add `--review` and `--fix` flags to `BuildArgs`
+2. Implement `run_build_review()` using Phase 1+2 primitives
+3. Tests
 
 ---
 
 ## What This Does NOT Change
 
 - **Build template** (`.aiki/templates/aiki/build.md`) — untouched
-- **Review command internals** — `--fix` flag and data flow already work; `build --fix` uses existing `create_review()` public API
-- **Single-pass fix template** (`.aiki/templates/aiki/fix.md`) — unchanged; this is the agent-facing fix instructions (nested subtasks per issue)
-- **Review template** (`.aiki/templates/aiki/review.md`) — already has correct `{% subtask aiki/fix/loop %}` conditional
-- **Fix command core logic** — The actual fix task creation and execution stays the same; we're just wrapping it in a loop
-- **Hook/plugin system** — these are pure CLI primitives (see [Review Loop Plugin](review-loop-plugin.md) for the hook layer)
+- **Review template** (`.aiki/templates/aiki/review.md`) — gets `spawns:` config added, but core content unchanged
+- **Fix command** — `aiki fix <review>` may become redundant (review templates spawn fixes automatically)
 
 ---
 
 ## Open Questions
 
-1. **Configurable max iterations** — Hardcoded at 10 for now. Add `--max-iterations` flag later if needed.
+1. **Condition expression language** — Use existing library (rhai, cel) or build simple parser? Need: boolean ops, comparisons, field access.
 
-2. **Build review scope** — Implementation review of the spec vs. task review of the plan ID. Implementation review validates the whole result against the spec; task review checks individual diffs. Implementation review seems more useful post-build.
+2. **Task property access in conditions** — How to expose task properties for `loop.until` evaluation?
+   - `subtasks[N].approved` — needs task state inspection
+   - `subtasks[N].has_comments` — needs comment counting
+   - `subtasks[N].score` — if we add review scores later
 
-3. **Build reviewer agent policy** — For `build --fix`, the reviewer defaults to `determine_reviewer()` (which picks the opposite of the worker). The existing review command supports `--agent` override. For build, we use the default reviewer and don't add `--review-agent` unless requested — keeps it simple. If the user needs a specific reviewer, they can run `aiki review` separately after build.
+3. **Loop data merge behavior** — When spawning next iteration:
+   - Full merge: `next_data = task.data.merge(loop.data)` (keeps all fields, updates specified)
+   - Replace only specified: only update fields in `loop.data`
+   - Current design: full merge + auto-update `data.loop` metadata
+
+4. **Error handling in loop conditions** — What if `loop.until` evaluation fails?
+   - Subtask doesn't exist (index out of bounds)
+   - Field doesn't exist on task
+   - Type mismatch in comparison
+   - Treat as "condition false" and continue loop? Or treat as "condition true" and stop?
+
+5. **Conditional subtask creation** — Templates show `{% subtask ... if condition %}`. Does this already exist?
+   - If yes: inner loop can conditionally create fix subtask only if review has issues
+   - If no: need to implement or always create subtask (may be won't-do)
+
+6. **Build review scope** — Implementation review of the spec vs. task review of the plan ID. Implementation review validates the whole result against the spec; task review checks individual diffs. Implementation review seems more useful post-build.
+
+7. **Won't-do handling** — If iteration task closes as won't-do, does `loop.until` still evaluate? Or does task status override loop logic?
 
 ## Resolved Questions
 

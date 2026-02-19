@@ -87,12 +87,13 @@ pub mod conditionals;
 pub mod data_source;
 pub mod parser;
 pub mod resolver;
+pub mod spawn_config;
 pub mod types;
 pub mod variables;
 
 pub use conditionals::{
-    process_conditionals, tokenize as tokenize_conditionals, Condition, ConditionalError,
-    EvalContext, LoopItem, TemplateNode, Token, Value,
+    process_conditionals, tokenize as tokenize_conditionals, ConditionalError, EvalContext,
+    LoopItem, TemplateNode, Token,
 };
 pub use data_source::{parse_data_source, resolve_data_source, DataSource};
 pub use parser::{extract_yaml_frontmatter, parse_template, FrontmatterError};

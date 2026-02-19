@@ -1,14 +1,8 @@
-# Understand the plan described in spec
+---
+slug: criteria
+---
 
-Read the spec file at {{data.scope.id}} to understand plan.
-
-If this spec was created from a task, check the task for additional context:
-
-```bash
-aiki task list --source file:{{data.scope.id}}
-```
-
-## Review Criteria
+# Understand Criteria: Spec
 
 Evaluate the spec against these categories:
 
@@ -31,9 +25,3 @@ Evaluate the spec against these categories:
 - User experience considered where applicable
 - Intuitive command syntax and behavior
 - Error messages and edge cases addressed
-
-When done close this task with a summary of your understanding:
-
-```bash
-aiki task close {{id}} --summary <your summary here>
-```

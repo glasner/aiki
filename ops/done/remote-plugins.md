@@ -48,7 +48,7 @@ One repo = one plugin. No monorepos, no subdirectory extraction.
 
 ## Plugin Dependencies
 
-Dependencies are **auto-derived** — no manifest file needed. The same three-part reference scanning used for project-level derivation (`ns/plugin/template`) is applied to a plugin's own contents. Any three-part reference found in a plugin's `hooks.yaml` or markdown files under `templates/` (recursively) implies a dependency on `ns/plugin`.
+Dependencies are **auto-derived** — no manifest file needed. The same reference scanning used for project-level derivation is applied to a plugin's own contents. References are detected only in **active template syntax**, not in arbitrary prose.
 
 ### How it works
 
@@ -67,6 +67,24 @@ review:
 
 Scanning extracts `aiki/core` as a dependency. Self-references (references to the plugin's own namespace/plugin) are ignored.
 
+### What counts as a reference
+
+Only these syntactic positions are scanned for three-part references:
+
+**In YAML files (`hooks.yaml`):**
+- Values of `template:` keys (e.g. `template: aiki/core/review-base`)
+
+**In markdown files (`templates/**/*.md`):**
+- Partial invocations: `{{> ns/plugin/template}}`
+
+**Excluded from scanning:**
+- Fenced code blocks (`` ``` `` ... `` ``` ``) — examples and documentation
+- HTML comments (`<!-- ... -->`)
+- Inline code (`` ` ... ` ``)
+- Arbitrary prose text — a bare `aiki/core/something` in a sentence is not a reference
+
+This prevents false-positive dependencies from documentation, code examples, and comments that happen to mention three-part paths.
+
 ### Transitive resolution
 
 Dependencies are resolved recursively. If `aiki/way` references `aiki/core`, and `aiki/core` references `aiki/base`, installing `aiki/way` installs all three.
@@ -75,9 +93,22 @@ Dependencies are resolved recursively. If `aiki/way` references `aiki/core`, and
 
 **Diamond dependencies:** If `A → C` and `B → C`, `C` is installed once. The set of plugins to install is deduplicated before any cloning happens.
 
+### Dependency data model
+
+**No persisted dependency metadata.** Dependency edges are always computed on-demand by scanning plugin contents. There is no lockfile, manifest, or cached dependency graph.
+
+This means:
+- `aiki plugin list` scans installed plugins at invocation time to build the dependency tree
+- `aiki plugin install` scans after cloning to discover transitive deps
+- `aiki plugin update` re-scans after pulling to discover new deps
+
+**Trade-off:** Scanning is O(number of installed plugins × files per plugin) on every `list`/`install`/`update`. This is acceptable because plugin counts are small (tens, not thousands) and scanning only touches YAML and markdown files. If this becomes a bottleneck, a cached dependency index can be added later without changing any user-facing behavior.
+
+**Determinism:** Because dependencies are derived from file contents, the dependency graph is always consistent with what's on disk. There is no stale-cache problem.
+
 ### Shared scanning function
 
-The same `derive_plugin_refs(dir)` function works on both project `.aiki/` dirs and plugin dirs — it scans YAML files and all markdown files under `templates/` (recursively) for three-part references and returns unique `namespace/plugin` pairs. This means zero new file formats and zero extra work for plugin authors.
+The same `derive_plugin_refs(dir)` function works on both project `.aiki/` dirs and plugin dirs — it scans YAML `template:` values and markdown partial invocations (`{{> ... }}`) under `templates/` (recursively), skipping fenced code blocks and comments. Returns unique `namespace/plugin` pairs. This means zero new file formats and zero extra work for plugin authors.
 
 ## Storage
 
@@ -180,10 +211,12 @@ With argument — update a specific plugin and reconcile its dependencies. If th
 ```bash
 aiki plugin update aiki/way
 # 1. git -C ~/.aiki/plugins/aiki/way pull
-# 2. Re-scan for references (may have changed after pull)
+# 2. Re-scan aiki/way for references (may have changed after pull)
 # 3. Install any newly-referenced plugins not already present (recursively)
-# 4. Update existing deps
+# 4. git pull existing deps reachable from aiki/way (transitive)
 ```
+
+**Scope:** Only the named plugin and its transitive dependencies are updated. Other installed plugins are not touched. This keeps the blast radius proportional to the request.
 
 References that disappear after an update don't trigger auto-deletion — the formerly-referenced plugin may be used by others. Use `aiki plugin remove` to clean up.
 
@@ -193,8 +226,7 @@ Without argument — update all installed plugins and reconcile dependencies:
 aiki plugin update
 # 1. git pull each installed plugin
 # 2. Re-scan all plugins for references
-# 3. Install any newly-required deps
-# 4. Update existing deps
+# 3. Install any newly-required deps that aren't already present
 ```
 
 No auto-update. Updates are always explicit.
@@ -227,32 +259,26 @@ Installed (~/.aiki/plugins/):
 
 If the plugin is not installed, exit with error: `"Plugin {ref} is not installed"`.
 
-Removes the plugin and any of its dependencies that are no longer needed:
+Removes **only** the named plugin. Dependencies are never auto-pruned:
 
 ```bash
 aiki plugin remove aiki/way
-# 1. Scan aiki/way for references → [aiki/core, somecorp/utils]
-# 2. rm -rf ~/.aiki/plugins/aiki/way
-# 3. For each dep:
-#    - Scan all remaining installed plugins for references to it
-#    - Also check project .aiki/ references
-#    - If nothing else references it → remove it too (recursively)
-#    - If still referenced → keep it
+# 1. rm -rf ~/.aiki/plugins/aiki/way
 ```
 
 Output:
 
 ```
 Removed: aiki/way
-Removed (unused dependency): somecorp/utils
-Kept (still needed): aiki/core ← used by cooldev/linter
 ```
 
-**Reverse dependency check** scans two sources:
-1. All remaining installed plugins' `hooks.yaml` and `templates/**/*.md`
-2. `.aiki/` project references (if inside a repo) — project-level usage
+**No auto-pruning of dependencies.** Because plugins are user-level (`~/.aiki/plugins/`), a dependency may be used by other repos on the same machine. Scanning only the current repo and remaining plugins cannot detect cross-repo usage, so auto-pruning is unsafe. Dependencies must be removed explicitly:
 
-A dependency is only removed if it appears in neither.
+```bash
+aiki plugin remove aiki/core    # explicit removal if no longer needed
+```
+
+To see which plugins are installed and whether they're referenced by the current project, use `aiki plugin list`.
 
 ## Error Handling
 
@@ -271,9 +297,17 @@ Re-running the same command retries failed plugins (they aren't installed yet, s
 
 The core derivation function scans project `.aiki/` files for template references, extracts unique `namespace/plugin` pairs from three-part refs (`ns/plugin/template`), and checks installation status.
 
-References are found in:
-- Hook YAML files (template references like `review: aiki/way/review`)
-- Project configuration that names templates
+### Files scanned
+
+When scanning a **project** (`.aiki/` directory):
+- `.aiki/hooks.yaml` (or `.aiki/hooks.yml`) — values of `template:` keys
+- `.aiki/templates/**/*.md` — partial invocations (`{{> ns/plugin/template}}`)
+
+When scanning a **plugin** (`~/.aiki/plugins/{ns}/{plugin}/`):
+- `hooks.yaml` at plugin root — values of `template:` keys
+- `templates/**/*.md` under plugin root — partial invocations (`{{> ns/plugin/template}}`)
+
+Only these files are scanned. No other YAML keys or file types are considered. The same exclusion rules apply as in [What counts as a reference](#what-counts-as-a-reference): fenced code blocks, HTML comments, and inline code are skipped.
 
 Three shared consumers:
 1. `aiki plugin install` (no args) — derive + install missing (with deps)
@@ -289,7 +323,6 @@ fn install_missing(plugins: &[PluginRef]) -> Result<()>
 
 // Dependency resolution (uses derive_plugin_refs internally)
 fn resolve_deps_recursive(root: &PluginRef, installed: &HashSet<PluginRef>) -> Vec<PluginRef>
-fn reverse_deps(plugin: &PluginRef, plugins_dir: &Path) -> Vec<PluginRef>
 ```
 
 ## Integration with Plugin Directory Design

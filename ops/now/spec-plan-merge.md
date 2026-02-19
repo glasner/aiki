@@ -433,7 +433,7 @@ Every file that needs changes, organized by category. Each entry lists exact lin
 **`ops/now/the-aiki-way.md`:**
 - Line 517: directory listing shows `plan.md` → update to `decompose.md`
 
-**`ops/now/default-hooks.md`:**
+**`ops/done/default-hooks.md`:**
 - Line 13: reference to workflow-hook-commands.md — "(spec/plan/build)" → "(plan/decompose/build)"
 
 ---
@@ -512,7 +512,7 @@ These files are historical records and should NOT be updated:
 25. Update `ops/now/workflow-hook-commands.md`
 26. Update `ops/now/spec-file-frontmatter.md`
 27. Update `ops/now/instructions-cli.md`
-28. Update `ops/now/the-aiki-way.md` and `ops/now/default-hooks.md`
+28. Update `ops/now/the-aiki-way.md` and `ops/done/default-hooks.md`
 29. Update `AGENTS.md` and `cli/src/CLAUDE.md`
 
 ### Phase 5: Validation

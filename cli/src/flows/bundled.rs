@@ -1,7 +1,34 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use anyhow::Result;
 
 use super::parser::HookParser;
 use super::types::Hook;
+
+/// Registry of built-in plugins embedded in the binary.
+/// These serve as fallbacks when no file override exists on disk.
+static BUILTIN_PLUGINS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert("aiki/default", include_str!("plugins/aiki_default.yaml"));
+    m.insert(
+        "aiki/git-coauthors",
+        include_str!("plugins/aiki_git_coauthors.yaml"),
+    );
+    m.insert(
+        "aiki/review-loop",
+        include_str!("plugins/aiki_review_loop.yaml"),
+    );
+    m
+});
+
+/// Look up a built-in plugin by its include path (e.g. "aiki/default").
+/// Returns the parsed Hook if found in the registry, None otherwise.
+pub fn load_builtin_plugin(name: &str) -> Option<Result<Hook>> {
+    BUILTIN_PLUGINS
+        .get(name)
+        .map(|yaml| HookParser::parse_str(yaml))
+}
 
 /// Load the core system hook (uncached).
 ///
@@ -90,7 +117,7 @@ mod tests {
             HookStatement::If(write_if) => {
                 // Verify checks for write operation
                 assert!(
-                    write_if.condition.contains("$event.write"),
+                    write_if.condition.contains("event.write"),
                     "Flow should check for write operation"
                 );
                 // First statement in then block should be the classify_edits check
@@ -108,5 +135,35 @@ mod tests {
             }
             _ => panic!("Expected If statement for write operation check"),
         }
+    }
+
+    #[test]
+    fn test_load_builtin_plugin_exists() {
+        let result = load_builtin_plugin("aiki/default");
+        assert!(result.is_some());
+        let hook = result.unwrap().unwrap();
+        assert_eq!(hook.name, "aiki/default");
+    }
+
+    #[test]
+    fn test_load_builtin_plugin_git_coauthors() {
+        let result = load_builtin_plugin("aiki/git-coauthors");
+        assert!(result.is_some());
+        let hook = result.unwrap().unwrap();
+        assert_eq!(hook.name, "aiki/git-coauthors");
+    }
+
+    #[test]
+    fn test_load_builtin_plugin_review_loop() {
+        let result = load_builtin_plugin("aiki/review-loop");
+        assert!(result.is_some());
+        let hook = result.unwrap().unwrap();
+        assert_eq!(hook.name, "aiki/review-loop");
+    }
+
+    #[test]
+    fn test_load_builtin_plugin_not_found() {
+        let result = load_builtin_plugin("nonexistent/plugin");
+        assert!(result.is_none());
     }
 }

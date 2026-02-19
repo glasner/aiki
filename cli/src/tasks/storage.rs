@@ -45,6 +45,45 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     Ok(())
 }
 
+/// Write multiple task events as a single atomic jj commit.
+///
+/// All events are serialized as separate `[aiki-task]...[/aiki-task]` blocks
+/// within a single commit message. This ensures that either all events are
+/// written or none are — useful for close+spawn sequences where partial
+/// writes would leave the system in an inconsistent state.
+pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    if events.len() == 1 {
+        return write_event(cwd, &events[0]);
+    }
+
+    ensure_tasks_branch(cwd)?;
+
+    let metadata = events
+        .iter()
+        .map(|e| event_to_metadata_block(e))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let result = jj_cmd()
+        .current_dir(cwd)
+        .args(["new", TASKS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to create batch task event: {}", e)))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to write batch task event: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Write a LinkAdded event with mandatory validation.
 ///
 /// This is the canonical way to emit a link. All validation happens here:
@@ -295,15 +334,8 @@ pub fn read_events(cwd: &Path) -> Result<Vec<TaskEvent>> {
             continue;
         }
 
-        // Look for metadata block
-        if let Some(start_idx) = desc.find(METADATA_START) {
-            if let Some(end_idx) = desc.find(METADATA_END) {
-                let block = &desc[start_idx + METADATA_START.len()..end_idx];
-                if let Some(event) = parse_metadata_block(block) {
-                    events.push(event);
-                }
-            }
-        }
+        // Parse all metadata blocks in this commit (supports batch writes)
+        parse_all_metadata_blocks(desc, &mut events);
     }
 
     // Sort by timestamp to ensure consistent ordering (flat model doesn't guarantee position order)
@@ -382,14 +414,11 @@ pub fn read_events_with_ids(cwd: &Path) -> Result<Vec<EventWithId>> {
             continue;
         };
 
-        // Look for metadata block
-        if let Some(start_idx) = entry.find(METADATA_START) {
-            if let Some(end_idx) = entry.find(METADATA_END) {
-                let block = &entry[start_idx + METADATA_START.len()..end_idx];
-                if let Some(event) = parse_metadata_block(block) {
-                    events.push(EventWithId { change_id, event });
-                }
-            }
+        // Parse all metadata blocks in this commit (supports batch writes)
+        let mut commit_events = Vec::new();
+        parse_all_metadata_blocks(entry, &mut commit_events);
+        for event in commit_events {
+            events.push(EventWithId { change_id: change_id.clone(), event });
         }
     }
 
@@ -464,6 +493,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Created {
             task_id,
             name,
+            slug,
             task_type,
             priority,
             assignee,
@@ -477,6 +507,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("event", "created", &mut lines);
             add_metadata("task_id", task_id, &mut lines);
             add_metadata_escaped("name", name, &mut lines);
+            if let Some(slug) = slug {
+                add_metadata("slug", slug, &mut lines);
+            }
             if let Some(task_type) = task_type {
                 add_metadata("type", task_type, &mut lines);
             }
@@ -671,6 +704,26 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
     lines.join("\n")
 }
 
+/// Parse all `[aiki-task]...[/aiki-task]` blocks from a commit description.
+///
+/// Supports both single-event commits and batch commits (from `write_events_batch`)
+/// where multiple metadata blocks are concatenated in a single commit message.
+fn parse_all_metadata_blocks(desc: &str, events: &mut Vec<TaskEvent>) {
+    let mut search_from = 0;
+    while let Some(start_idx) = desc[search_from..].find(METADATA_START) {
+        let abs_start = search_from + start_idx + METADATA_START.len();
+        if let Some(end_offset) = desc[abs_start..].find(METADATA_END) {
+            let block = &desc[abs_start..abs_start + end_offset];
+            if let Some(event) = parse_metadata_block(block) {
+                events.push(event);
+            }
+            search_from = abs_start + end_offset + METADATA_END.len();
+        } else {
+            break;
+        }
+    }
+}
+
 /// Parse a metadata block into a TaskEvent
 fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
     let mut fields: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
@@ -698,6 +751,11 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
         "created" => {
             let task_id = fields.get("task_id")?.first()?.to_string();
             let name = unescape_metadata_value(fields.get("name")?.first()?);
+            // Parse slug
+            let slug = fields
+                .get("slug")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             // Parse task_type
             let task_type = fields
                 .get("type")
@@ -749,6 +807,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Created {
                 task_id,
                 name,
+                slug,
                 task_type,
                 priority,
                 assignee,
@@ -996,6 +1055,7 @@ mod tests {
         let event = TaskEvent::Created {
             task_id: "a1b2".to_string(),
             name: "Fix auth bug".to_string(),
+            slug: None,
             task_type: None,
             priority: TaskPriority::P2,
             assignee: Some("claude-code".to_string()),
@@ -1124,6 +1184,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
             name: "Test task".to_string(),
+            slug: None,
             task_type: None,
             priority: TaskPriority::P1,
             assignee: None,
@@ -1536,6 +1597,7 @@ timestamp=2026-01-09T10:30:00Z
         let original = TaskEvent::Created {
             task_id: "test".to_string(),
             name: "Fix bug = critical\nSee issue #123".to_string(),
+            slug: None,
             task_type: None,
             priority: TaskPriority::P1,
             assignee: None,
@@ -2540,5 +2602,102 @@ timestamp=2026-02-10T14:30:00Z
             }
             _ => panic!("Expected Started event"),
         }
+    }
+
+    #[test]
+    fn test_roundtrip_created_with_slug() {
+        let original = TaskEvent::Created {
+            task_id: "test".to_string(),
+            name: "Build feature".to_string(),
+            slug: Some("build".to_string()),
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: std::collections::HashMap::new(),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("slug=build"), "Serialized block should contain slug");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Created { slug, .. } => {
+                assert_eq!(slug, Some("build".to_string()));
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_backward_compat_created_without_slug() {
+        // Simulate an old-style metadata block without slug field
+        let block = "event=created\ntask_id=test123\nname=Old task\npriority=p2\ntimestamp=2026-01-01T00:00:00Z\n";
+        let parsed = parse_metadata_block(block).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Created { slug, .. } => {
+                assert_eq!(slug, None, "Old events without slug should deserialize as None");
+            }
+            _ => panic!("Expected Created event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_metadata_blocks_single() {
+        let desc = "[aiki-task]\nevent=created\ntask_id=abc\nname=Test\npriority=p2\ntimestamp=2026-01-09T10:30:00Z\n[/aiki-task]";
+        let mut events = Vec::new();
+        parse_all_metadata_blocks(desc, &mut events);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            TaskEvent::Created { task_id, .. } => assert_eq!(task_id, "abc"),
+            _ => panic!("Expected Created"),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_metadata_blocks_batch() {
+        // Simulate a batch commit with two events (close + reopen)
+        let desc = "[aiki-task]\nevent=closed\ntask_id=task1\noutcome=done\ntimestamp=2026-01-09T10:30:00Z\n[/aiki-task]\n[aiki-task]\nevent=reopened\ntask_id=task1\nreason=Spawning subtask\ntimestamp=2026-01-09T10:30:01Z\n[/aiki-task]";
+        let mut events = Vec::new();
+        parse_all_metadata_blocks(desc, &mut events);
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            TaskEvent::Closed { task_ids, .. } => assert_eq!(task_ids, &["task1"]),
+            _ => panic!("Expected Closed, got {:?}", events[0]),
+        }
+        match &events[1] {
+            TaskEvent::Reopened { task_id, reason, .. } => {
+                assert_eq!(task_id, "task1");
+                assert_eq!(reason, "Spawning subtask");
+            }
+            _ => panic!("Expected Reopened, got {:?}", events[1]),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_metadata_blocks_three_events() {
+        let desc = "\
+[aiki-task]\nevent=created\ntask_id=a\nname=Task A\npriority=p2\ntimestamp=2026-01-09T10:30:00Z\n[/aiki-task]\n\
+[aiki-task]\nevent=created\ntask_id=b\nname=Task B\npriority=p1\ntimestamp=2026-01-09T10:30:01Z\n[/aiki-task]\n\
+[aiki-task]\nevent=link_added\nfrom=b\nto=a\nkind=subtask-of\ntimestamp=2026-01-09T10:30:02Z\n[/aiki-task]";
+        let mut events = Vec::new();
+        parse_all_metadata_blocks(desc, &mut events);
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_all_metadata_blocks_empty() {
+        let mut events = Vec::new();
+        parse_all_metadata_blocks("no metadata here", &mut events);
+        assert!(events.is_empty());
     }
 }

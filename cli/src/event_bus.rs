@@ -46,6 +46,8 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             AikiEvent::McpCompleted(_) => "mcp.completed",
             // Git integration
             AikiEvent::CommitMessageStarted(_) => "commit.message_started",
+            // Repo transitions
+            AikiEvent::RepoChanged(_) => "repo.changed",
             // Task lifecycle
             AikiEvent::TaskStarted(_) => "task.started",
             AikiEvent::TaskClosed(_) => "task.closed",
@@ -124,6 +126,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
 
         // Git integration
         AikiEvent::CommitMessageStarted(e) => events::handle_commit_message_started(e),
+
+        // Repo transitions
+        AikiEvent::RepoChanged(e) => events::handle_repo_changed(e),
 
         // Task lifecycle
         AikiEvent::TaskStarted(e) => events::handle_task_started(e),

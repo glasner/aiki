@@ -275,29 +275,34 @@ impl ContextChunk {
     /// # Returns
     ///
     /// A new ContextChunk with all variables resolved
-    #[must_use]
-    pub fn resolve_variables<F>(self, mut resolver: F) -> Self
+    pub fn resolve_variables<F>(self, mut resolver: F) -> crate::error::Result<Self>
     where
-        F: FnMut(&str) -> String,
+        F: FnMut(&str) -> Result<String, crate::error::AikiError>,
     {
-        let resolved_prepend = self.prepend.map(|text_lines| match text_lines {
-            TextLines::Single(s) => TextLines::Single(resolver(&s)),
-            TextLines::Multiple(lines) => {
-                TextLines::Multiple(lines.iter().map(|line| resolver(line)).collect())
+        let resolved_prepend: Option<TextLines> = self.prepend.map(|text_lines| -> crate::error::Result<TextLines> {
+            match text_lines {
+                TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
+                TextLines::Multiple(lines) => {
+                    let resolved: Result<Vec<_>, crate::error::AikiError> = lines.iter().map(|line| resolver(line)).collect();
+                    Ok(TextLines::Multiple(resolved?))
+                }
             }
-        });
+        }).transpose()?;
 
-        let resolved_append = self.append.map(|text_lines| match text_lines {
-            TextLines::Single(s) => TextLines::Single(resolver(&s)),
-            TextLines::Multiple(lines) => {
-                TextLines::Multiple(lines.iter().map(|line| resolver(line)).collect())
+        let resolved_append: Option<TextLines> = self.append.map(|text_lines| -> crate::error::Result<TextLines> {
+            match text_lines {
+                TextLines::Single(s) => Ok(TextLines::Single(resolver(&s)?)),
+                TextLines::Multiple(lines) => {
+                    let resolved: Result<Vec<_>, crate::error::AikiError> = lines.iter().map(|line| resolver(line)).collect();
+                    Ok(TextLines::Multiple(resolved?))
+                }
             }
-        });
+        }).transpose()?;
 
-        Self {
+        Ok(Self {
             prepend: resolved_prepend,
             append: resolved_append,
-        }
+        })
     }
 }
 

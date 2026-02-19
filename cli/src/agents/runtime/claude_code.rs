@@ -39,6 +39,9 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let output = Command::new("claude")
             .current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Unset nesting guard so child Claude Code sessions can start
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .output();
 
         match output {
@@ -79,6 +82,9 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let child = Command::new("claude")
             .current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Unset nesting guard so child Claude Code sessions can start
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
             // Mark as background session for mode detection
@@ -112,6 +118,9 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let child = Command::new("claude")
             .current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
+            // Unset nesting guard so child Claude Code sessions can start
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_ENTRYPOINT")
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
             // Mark as monitored session for mode detection
@@ -153,7 +162,7 @@ fn extract_summary(output: &str) -> String {
         if summary.len() + prepend.len() > 500 {
             break;
         }
-        summary = prepend + &summary;
+        summary = prepend + summary.as_str();
     }
 
     if summary.is_empty() {

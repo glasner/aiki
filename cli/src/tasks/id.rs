@@ -264,6 +264,34 @@ pub fn get_next_subtask_number<'a>(
     max_subtask.map_or(1, |n| n + 1)
 }
 
+/// Check if a string is a valid slug format.
+///
+/// Slugs are stable, human-readable handles for subtask references.
+/// Format: `[a-z0-9]([a-z0-9-]*[a-z0-9])?`, 1–48 characters.
+///
+/// Valid: `build`, `run-tests`, `deploy-staging`, `phase-2`, `a`, `1`
+/// Invalid: `-build`, `build-`, `Build`, `run_tests`, `deploy.staging`, `my slug`
+#[must_use]
+pub fn is_valid_slug(s: &str) -> bool {
+    if s.is_empty() || s.len() > 48 {
+        return false;
+    }
+
+    let bytes = s.as_bytes();
+
+    // Must start and end with alphanumeric
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit() {
+        return false;
+    }
+
+    // All chars must be lowercase alphanumeric or hyphen
+    s.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,5 +689,55 @@ mod tests {
         // Invalid subtask suffix
         assert!(!is_task_id_prefix("mvslrsp.abc"));
         assert!(!is_task_id_prefix("mvslrsp."));
+    }
+
+    // Tests for is_valid_slug
+
+    #[test]
+    fn test_valid_slugs() {
+        assert!(is_valid_slug("build"));
+        assert!(is_valid_slug("run-tests"));
+        assert!(is_valid_slug("deploy-staging"));
+        assert!(is_valid_slug("phase-2"));
+        assert!(is_valid_slug("a"));
+        assert!(is_valid_slug("a1"));
+        assert!(is_valid_slug("1a"));
+        assert!(is_valid_slug("1"));
+        assert!(is_valid_slug("abc123"));
+        assert!(is_valid_slug("a-b-c"));
+    }
+
+    #[test]
+    fn test_invalid_slugs() {
+        assert!(!is_valid_slug("-build"));      // starts with hyphen
+        assert!(!is_valid_slug("build-"));      // ends with hyphen
+        assert!(!is_valid_slug("Build"));       // uppercase
+        assert!(!is_valid_slug("run_tests"));   // underscore
+        assert!(!is_valid_slug("deploy.staging")); // dot
+        assert!(!is_valid_slug("my slug"));     // space
+        assert!(!is_valid_slug(""));            // empty
+        assert!(!is_valid_slug("-"));           // just a hyphen
+    }
+
+    #[test]
+    fn test_slug_boundary_length() {
+        // 48 chars should be valid
+        let slug_48 = "a".repeat(48);
+        assert!(is_valid_slug(&slug_48));
+
+        // 49 chars should be invalid
+        let slug_49 = "a".repeat(49);
+        assert!(!is_valid_slug(&slug_49));
+
+        // Single char should be valid
+        assert!(is_valid_slug("a"));
+        assert!(is_valid_slug("1"));
+    }
+
+    #[test]
+    fn test_slug_consecutive_hyphens() {
+        // Consecutive hyphens are allowed by the format rules
+        assert!(is_valid_slug("a--b"));
+        assert!(is_valid_slug("a---b"));
     }
 }

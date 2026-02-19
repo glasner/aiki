@@ -1,8 +1,8 @@
 //! Sugar pattern expansion for task lifecycle events
 //!
 //! This module handles syntactic sugar for task lifecycle events:
-//! - `{type}.started` expands to `task.started` with `if: $event.task.type == "{type}"`
-//! - `{type}.completed` expands to `task.closed` with `if: $event.task.type == "{type}" && $event.task.outcome == "done"`
+//! - `{type}.started` expands to `task.started` with `if: event.task.type == "{type}"`
+//! - `{type}.completed` expands to `task.closed` with `if: event.task.type == "{type}" && event.task.outcome == "done"`
 
 use anyhow::Result;
 use serde_yaml::{Mapping, Value};
@@ -74,7 +74,7 @@ pub fn expand_sugar_value(trigger: &str, statements: Value) -> Result<Option<(&'
     // Check for {type}.started pattern
     if let Some(task_type) = trigger.strip_suffix(".started") {
         if is_sugar_pattern(trigger) {
-            let filter = format!("$event.task.type == \"{}\"", task_type);
+            let filter = format!("event.task.type == \"{}\"", task_type);
             let wrapped = wrap_with_if_value(filter, statements);
             return Ok(Some(("task.started", wrapped)));
         }
@@ -84,7 +84,7 @@ pub fn expand_sugar_value(trigger: &str, statements: Value) -> Result<Option<(&'
     if let Some(task_type) = trigger.strip_suffix(".completed") {
         if is_sugar_pattern(trigger) {
             let filter = format!(
-                "$event.task.type == \"{}\" && $event.task.outcome == \"done\"",
+                "event.task.type == \"{}\" && event.task.outcome == \"done\"",
                 task_type
             );
             let wrapped = wrap_with_if_value(filter, statements);
@@ -218,7 +218,7 @@ mod tests {
                 let condition = if_map.get(&Value::String("if".to_string())).unwrap();
                 assert_eq!(
                     condition,
-                    &Value::String("$event.task.type == \"review\"".to_string())
+                    &Value::String("event.task.type == \"review\"".to_string())
                 );
             } else {
                 panic!("Expected Mapping");
@@ -253,7 +253,7 @@ mod tests {
                 assert_eq!(
                     condition,
                     &Value::String(
-                        "$event.task.type == \"review\" && $event.task.outcome == \"done\""
+                        "event.task.type == \"review\" && event.task.outcome == \"done\""
                             .to_string()
                     )
                 );

@@ -1,3 +1,15 @@
+
+- semantic blockers
+- rename self
+- autorun for unblocked tasks
+- loop flags
+- spec/plan merge/rename
+- workflow ux -> share with Paul
+- review loop hooks
+
+
+- spec frontmatter
+
 # Aiki Product Roadmap
 
 ## Overview

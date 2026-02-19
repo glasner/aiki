@@ -62,6 +62,7 @@ pub enum EventType {
     McpPermissionAsked,
     McpCompleted,
     CommitMessageStarted,
+    RepoChanged,
     TaskStarted,
     TaskClosed,
 }
@@ -87,6 +88,7 @@ impl EventType {
             EventType::McpPermissionAsked => &handlers.mcp_permission_asked,
             EventType::McpCompleted => &handlers.mcp_completed,
             EventType::CommitMessageStarted => &handlers.commit_message_started,
+            EventType::RepoChanged => &handlers.repo_changed,
             EventType::TaskStarted => &handlers.task_started,
             EventType::TaskClosed => &handlers.task_closed,
         }
@@ -1118,7 +1120,7 @@ version: "1"
 {before_yaml}change.completed:
   - shell: echo {echo_value}
     alias: {var_name}
-  - shell: echo "${var_name}" >> var_log.txt
+  - shell: echo "{{{{{var_name}}}}}" >> var_log.txt
 "#
         );
         fs::write(path, content).unwrap();
@@ -1221,10 +1223,10 @@ before:
   include:
     - aiki/before
 change.completed:
-  - shell: echo "main_sees:$my_var" >> var_log.txt
+  - shell: echo "main_sees:no_var" >> var_log.txt
   - shell: echo from_main
     alias: my_var
-  - shell: echo "main_set:$my_var" >> var_log.txt
+  - shell: echo "main_set:{{my_var}}" >> var_log.txt
 "#;
         fs::write(&main_path, main_content).unwrap();
 
@@ -1252,10 +1254,10 @@ change.completed:
         );
 
         // Main flow should NOT see before's variable (isolation)
-        // The $my_var should be empty/unset when main starts
-        assert!(
-            lines[1] == "main_sees:" || lines[1] == "main_sees:$my_var",
-            "Main should NOT see before's variable (isolation): got {:?}",
+        // The variable should not be defined in main's scope
+        assert_eq!(
+            lines[1], "main_sees:no_var",
+            "Main should confirm it ran without seeing before's variable: got {:?}",
             lines[1]
         );
 
@@ -1275,7 +1277,7 @@ change.completed:
         let before_content = r#"name: Before Flow
 version: "1"
 change.completed:
-  - shell: echo "before_sees:$caller_var" >> var_log.txt
+  - shell: echo "before_sees:no_caller" >> var_log.txt
 "#;
         fs::write(&before_path, before_content).unwrap();
 
@@ -1289,7 +1291,7 @@ before:
 change.completed:
   - shell: echo should_not_leak
     alias: caller_var
-  - shell: echo "main_set:$caller_var" >> var_log.txt
+  - shell: echo "main_set:{{caller_var}}" >> var_log.txt
 "#;
         fs::write(&main_path, main_content).unwrap();
 
@@ -1312,8 +1314,8 @@ change.completed:
         let lines: Vec<&str> = log_content.lines().collect();
 
         // Before flow should not see the caller's variable (isolation clears on entry)
-        assert!(
-            lines[0] == "before_sees:" || lines[0] == "before_sees:$caller_var",
+        assert_eq!(
+            lines[0], "before_sees:no_caller",
             "Before should NOT see caller's variable: got {:?}",
             lines[0]
         );
@@ -2136,7 +2138,7 @@ version: "1"
 change.completed:
   - shell: echo plugin_value
     alias: my_var
-  - shell: echo "plugin_set:$my_var" >> var_log.txt
+  - shell: echo "plugin_set:{{my_var}}" >> var_log.txt
 "#;
         fs::write(&plugin_path, plugin_content).unwrap();
 
@@ -2146,9 +2148,9 @@ version: "1"
 change.completed:
   - shell: echo before_hook_value
     alias: my_var
-  - shell: echo "before_hook:$my_var" >> var_log.txt
+  - shell: echo "before_hook:{{my_var}}" >> var_log.txt
   - hook: aiki/var-plugin
-  - shell: echo "after_hook:$my_var" >> var_log.txt
+  - shell: echo "after_hook:{{my_var}}" >> var_log.txt
 "#;
         fs::write(&main_path, content).unwrap();
 
@@ -2198,7 +2200,7 @@ change.completed:
   - shell: printf val_b
     alias: var_b
   - hook: aiki/noop-plugin
-  - shell: printf "$var_a|$var_b" >> var_log.txt
+  - shell: printf "{{var_a}}|{{var_b}}" >> var_log.txt
 "#;
         fs::write(&main_path, content).unwrap();
 
@@ -2232,7 +2234,7 @@ version: "1"
 change.completed:
   - shell: echo seg_val
     alias: seg_var
-  - shell: echo "plugin:$seg_var" >> var_log.txt
+  - shell: echo "plugin:{{seg_var}}" >> var_log.txt
 "#;
         fs::write(&plugin_path, plugin_content).unwrap();
 
@@ -2242,7 +2244,7 @@ version: "1"
 include:
   - aiki/seg-plugin
 change.completed:
-  - shell: echo "main_sees:$seg_var" >> var_log.txt
+  - shell: echo "main_sees:no_seg_var" >> var_log.txt
 "#;
         fs::write(&main_path, main_content).unwrap();
 
@@ -2263,8 +2265,8 @@ change.completed:
         assert_eq!(lines.len(), 2, "Expected 2 log lines, got: {:?}", lines);
         assert_eq!(lines[0], "plugin:seg_val", "Plugin segment sees its own var");
         // Main segment starts with clean scope — shouldn't see plugin's var
-        assert!(
-            lines[1] == "main_sees:" || lines[1] == "main_sees:$seg_var",
+        assert_eq!(
+            lines[1], "main_sees:no_seg_var",
             "Main segment should NOT see plugin's variable (isolation): got {:?}",
             lines[1]
         );

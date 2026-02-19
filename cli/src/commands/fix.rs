@@ -122,16 +122,37 @@ fn run_fix(
         )));
     }
 
-    // Get all comments from the review task
-    // The closing summary is stored in task.summary, not as a comment,
-    // so any comments here are actual findings/issues.
-    let comments: Vec<TaskComment> = review_task.comments.clone();
+    // Check for structured issues first, fall back to comment count for older reviews
+    let has_issues = if let Some(issues_found) = review_task.data.get("issues_found") {
+        // Structured review: use data.issues_found
+        // On parse failure (malformed value), fall back to counting issue comments
+        // rather than assuming 0 — avoids incorrectly approving when issues exist
+        match issues_found.parse::<usize>() {
+            Ok(n) => n > 0,
+            Err(_) => !super::review::get_issue_comments(review_task).is_empty(),
+        }
+    } else {
+        // Backward compatibility: older reviews without data.issues_found
+        // Treat all comments as issues (existing behavior)
+        !review_task.comments.is_empty()
+    };
 
-    // If no comments, the review found no issues
-    if comments.is_empty() {
+    if !has_issues {
         output_approved(task_id)?;
         return Ok(());
     }
+
+    // Get issue comments to create fix subtasks
+    let comments: Vec<TaskComment> = if review_task.data.contains_key("issues_found") {
+        // Structured: use get_issue_comments()
+        super::review::get_issue_comments(review_task)
+            .into_iter()
+            .cloned()
+            .collect()
+    } else {
+        // Backward compat: all comments are issues
+        review_task.comments.clone()
+    };
 
     // Determine what was reviewed from typed scope data
     let scope = ReviewScope::from_data(&review_task.data)?;
@@ -144,7 +165,7 @@ fn run_fix(
             let template = template_name.as_deref().unwrap_or("aiki/fix");
             create_fix_task(cwd, review_task, &scope, Some(original_task), &assignee, template)?
         }
-        ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
+        ReviewScopeKind::Spec | ReviewScopeKind::Code => {
             // Fix targets a file — create standalone fix task (no parent)
             let assignee = determine_followup_assignee(agent_type, None);
             let template = template_name.as_deref().unwrap_or("aiki/fix");
@@ -296,7 +317,7 @@ fn output_followup_completed(followup_id: &str, scope: &ReviewScope, comments: &
 ///
 /// The fallback to template name provides backward compatibility with review tasks
 /// created before the template set the `type` field in frontmatter.
-fn is_review_task(task: &Task) -> bool {
+pub fn is_review_task(task: &Task) -> bool {
     if task.task_type.as_deref() == Some("review") {
         return true;
     }
@@ -400,6 +421,7 @@ mod tests {
         let task = Task {
             id: "test".to_string(),
             name: "Test".to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -433,6 +455,7 @@ mod tests {
         let reviewed_task = Task {
             id: "reviewed".to_string(),
             name: "Original Work".to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Closed,
             priority: TaskPriority::P2,
@@ -471,6 +494,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: format!("Task {}", id),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -562,15 +586,15 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_description_implementation_scope() {
+    fn test_fix_description_code_scope() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Implementation,
+            kind: ReviewScopeKind::Code,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
         assert_eq!(
             fix_description(&scope),
-            "Created standalone fix task for Implementation (feature.md)"
+            "Created standalone fix task for Code (feature.md)"
         );
     }
 }

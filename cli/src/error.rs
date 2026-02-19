@@ -79,6 +79,9 @@ pub enum AikiError {
     #[error("Unsupported function namespace in '{0}'. Only 'aiki/*' functions are supported")]
     UnsupportedFunctionNamespace(String),
 
+    #[error("Invalid function path '{0}': must use 'self.<function>' or fully qualified 'aiki/<module>.<function>'")]
+    InvalidFunctionPath(String),
+
     #[error("Invalid timeout format: {0}. Use 's', 'm', or 'h' suffix")]
     InvalidTimeoutFormat(String),
 
@@ -98,6 +101,12 @@ pub enum AikiError {
 
     #[error("git diff failed: {0}")]
     GitDiffFailed(String),
+
+    #[error("Failed to create isolated workspace: {0}")]
+    WorkspaceCreationFailed(String),
+
+    #[error("Failed to absorb workspace changes: {0}")]
+    WorkspaceAbsorbFailed(String),
 
     // Signing/GPG errors
     #[error("GPG-SM key generation not yet supported. Use --key to specify an existing key")]
@@ -228,6 +237,16 @@ Alternatively, install the agent globally:
     #[error("Invalid data key: '{0}'. Keys must be lowercase with underscores (e.g., 'my_key')")]
     InvalidDataKey(String),
 
+    #[error("Invalid slug '{0}': must be 1-48 chars of lowercase letters, digits, and hyphens (no leading/trailing hyphens)")]
+    InvalidSlug(String),
+
+    #[error("Slug '{slug}' already exists under parent {parent_id} (task: {existing_task})")]
+    DuplicateSlug {
+        slug: String,
+        parent_id: String,
+        existing_task: String,
+    },
+
     #[error("Invalid link target for '{kind}': '{target}' is not a task. {kind} links require a task ID as target")]
     InvalidLinkTarget {
         kind: String,
@@ -273,6 +292,12 @@ Alternatively, install the agent globally:
         template_info: String,
     },
 
+    #[error("Variable '{variable}' not found: {hint}")]
+    VariableNotFound {
+        variable: String,
+        hint: String,
+    },
+
     #[error("Invalid template frontmatter\n  File: {file}\n  {details}")]
     TemplateFrontmatterInvalid { file: String, details: String },
 
@@ -316,6 +341,16 @@ Alternatively, install the agent globally:
         timeout_secs: u64,
         pending: String,
     },
+
+    // Plugin errors
+    #[error("Invalid plugin reference: '{reference}'. {reason}")]
+    InvalidPluginRef { reference: String, reason: String },
+
+    #[error("Plugin {0} is not installed")]
+    PluginNotInstalled(String),
+
+    #[error("Plugin operation failed for '{plugin}': {details}")]
+    PluginOperationFailed { plugin: String, details: String },
 
     // Generic wrapper for underlying errors
     #[error(transparent)]
