@@ -153,7 +153,7 @@ fn extract_summary(output: &str) -> String {
         if summary.len() + prepend.len() > 500 {
             break;
         }
-        summary = prepend + &summary;
+        summary = prepend + summary.as_str();
     }
 
     if summary.is_empty() {

@@ -24,9 +24,7 @@ impl JJWorkspace {
     /// Searches parent directories for `.jj/` directory.
     /// Returns error if not in a JJ workspace.
     pub fn find(path: &Path) -> Result<Self> {
-        let mut current = path
-            .canonicalize()
-            .context("Failed to resolve path")?;
+        let mut current = path.to_path_buf();
 
         loop {
             let jj_dir = current.join(".jj");

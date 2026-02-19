@@ -1,0 +1,17 @@
+# Built-in: aiki/git-coauthors
+name: aiki/git-coauthors
+description: "Append AI co-author trailers to Git commit messages"
+version: "1"
+
+after:
+  commit.message_started:
+    # Generate co-author lines from staged changes
+    - let: coauthors = self.generate_coauthors
+      on_failure:
+        - stop: "Failed to generate co-authors"
+
+    # Append co-authors as Git trailers
+    - commit_message:
+        append_trailer: "{{coauthors}}"
+      on_failure:
+        - stop: "Failed to append co-author trailers"

@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::spawn_config::SpawnEntry;
+
 /// A task template defining a workflow with parent task and subtasks
 #[derive(Debug, Clone)]
 pub struct TaskTemplate {
@@ -33,6 +35,8 @@ pub struct TaskTemplate {
     /// Raw subtask template content for iteration (populated when frontmatter has `subtasks` field)
     /// Contains the entire `# Subtasks` section including the h2 heading template
     pub subtask_template: Option<String>,
+    /// Spawn configurations: conditional task creation on close
+    pub spawns: Vec<SpawnEntry>,
 }
 
 impl TaskTemplate {
@@ -50,6 +54,7 @@ impl TaskTemplate {
             raw_content: None,
             subtasks_source: None,
             subtask_template: None,
+            spawns: Vec::new(),
         }
     }
 
@@ -83,6 +88,8 @@ pub struct TaskDefaults {
 pub struct TaskDefinition {
     /// Task name (may contain variables like {data.scope})
     pub name: String,
+    /// Stable slug for automation references (e.g., "build", "run-tests")
+    pub slug: Option<String>,
     /// Task type (e.g., "review", "fix") - enables sugar triggers
     pub task_type: Option<String>,
     /// Task instructions (markdown content)
@@ -100,6 +107,8 @@ pub struct TaskDefinition {
 /// YAML frontmatter structure for template files
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TemplateFrontmatter {
+    /// Slug for this template when composed into a parent via {% subtask %}
+    pub slug: Option<String>,
     /// Semantic version
     pub version: Option<String>,
     /// Human-readable description
@@ -116,11 +125,16 @@ pub struct TemplateFrontmatter {
     pub data: HashMap<String, serde_json::Value>,
     /// Data source path for declarative subtask iteration (e.g., "source.comments")
     pub subtasks: Option<String>,
+    /// Spawn configurations: conditional task creation on close
+    #[serde(default)]
+    pub spawns: Vec<SpawnEntry>,
 }
 
 /// YAML frontmatter for subtasks
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SubtaskFrontmatter {
+    /// Stable slug for automation references (e.g., "build", "run-tests")
+    pub slug: Option<String>,
     /// Override priority
     pub priority: Option<String>,
     /// Override assignee

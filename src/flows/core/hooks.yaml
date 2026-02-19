@@ -18,20 +18,20 @@ session.started:
   - jj: diff -r @ --name-only
     alias: init_changes
 
-  - if: $init_changes
+  - if: init_changes
     then:
       - with_author: "Aiki <noreply@aiki.dev>"
-        jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession=$event.session_id\n[/aiki]"
+        jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession={{event.session_id}}\n[/aiki]"
       - jj: new
 
   # Inject task context at session start
   - let: task_count = self.task_list_size
-  - if: $task_count
+  - if: task_count
     then:
       - context:
           append: |
             ---
-            Tasks ($task_count ready)
+            Tasks ({{task_count}} ready)
             Run `aiki task` to view - OR - `aiki task start` to begin work.
   - context: "If you haven't already, read AGENTS.md to learn more about aiki"
 
@@ -40,15 +40,27 @@ session.started:
 session.resumed:
   # Empty by default - can be customized in user flows
 
-# turn.started: Inject task context on every turn (survives context compaction)
+# turn.started: Create workspace isolation and inject task context on every turn
 turn.started:
+  # Create isolated workspace if another session is already running in this repo
+  # Returns workspace path if created/exists, empty string if skipped
+  # Idempotent: no-op if workspace already exists from a prior uncompleted turn
+  - let: ws_path = self.workspace_create_if_concurrent
+  - if: ws_path
+    then:
+      - context: |
+          WORKSPACE ISOLATION: An isolated JJ workspace has been created for your session.
+          You MUST `cd {{ws_path}}` before any file operations and work from that directory.
+          All file reads, writes, and edits must use paths relative to {{ws_path}}.
+          This ensures your changes don't conflict with other concurrent sessions.
+
   - let: task_count = self.task_list_size
-  - if: $task_count
+  - if: task_count
     then:
       - context:
           append: |
             ---
-            Tasks ($task_count ready)
+            Tasks ({{task_count}} ready)
             Run `aiki task` to view - OR - `aiki task start` to begin work.
 
 # ==============================================================================
@@ -58,24 +70,24 @@ turn.started:
 # change.permission_asked: Stash any user changes before AI starts editing files
 change.permission_asked:
   # Only stash for write operations - delete/move don't need pre-stashing
-  - if: $event.write
+  - if: event.write
     then:
       # Check if working copy has any changes
       - jj: diff -r @ --name-only
         alias: changed_files
 
       # If there are changes (non-empty string), stash them before AI starts
-      - if: $changed_files
+      - if: changed_files
         then:
           - with_author_and_message: self.build_human_metadata_change_pre
-            jj: describe --message "$message"
+            jj: describe --message "{{message}}"
 
           - jj: new # Give AI a clean working copy
 
 # change.completed: Record provenance metadata after file mutations (write, delete, move)
 change.completed:
   # Write operations: full provenance tracking with user edit detection
-  - if: $event.write
+  - if: event.write
     then:
       # Classify edits to detect user modifications
       # This compares AI's intended edits with actual file state
@@ -85,15 +97,15 @@ change.completed:
           # User added more changes - separate them into two changes
           - let: prep = self.prepare_separation_change
 
-          - self: write_ai_files_change
+          - call: self.write_ai_files_change
 
-          - with_author: $prep.ai_author
-            jj: split --message "$prep.ai_message" $prep.file_list
+          - with_author: prep.ai_author
+            jj: split --message "{{prep.ai_message}}" {{prep.file_list}}
 
-          - self: restore_original_files_change
+          - call: self.restore_original_files_change
           # Add aiki metadata with git user as author and AI as coauthor
           - with_author_and_message: self.build_human_metadata_change_post
-            jj: metaedit --message "$message"
+            jj: metaedit --message "{{message}}" --ignore-working-copy
 
         else:
           # For ExactMatch or OverlappingUserEdits, set AI metadata
@@ -101,33 +113,33 @@ change.completed:
             on_failure:
               - stop: "Failed to build metadata"
 
-          - with_author_and_message: $metadata
-            jj: metaedit --message "$message"
+          - with_author_and_message: metadata
+            jj: metaedit --message "{{message}}" --ignore-working-copy
 
       # Create a new change for the next edit
       - jj: new
 
   # Delete operations: record provenance and separate from other operations
-  - if: $event.delete
+  - if: event.delete
     then:
       - let: metadata = self.build_delete_metadata
         on_failure:
           - stop: "Failed to build delete metadata"
 
-      - with_author_and_message: $metadata
-        jj: metaedit --message "$message"
+      - with_author_and_message: metadata
+        jj: metaedit --message "{{message}}" --ignore-working-copy
 
       - jj: new
 
   # Move operations: record provenance and separate from other operations
-  - if: $event.move
+  - if: event.move
     then:
       - let: metadata = self.build_move_metadata
         on_failure:
           - stop: "Failed to build move metadata"
 
-      - with_author_and_message: $metadata
-        jj: metaedit --message "$message"
+      - with_author_and_message: metadata
+        jj: metaedit --message "{{message}}" --ignore-working-copy
 
       - jj: new
 
@@ -143,19 +155,13 @@ read.permission_asked:
 read.completed:
   # Empty by default - no provenance needed for reads
 
-# turn.completed: Handle actions after agent finishes a turn (e.g., autoreplies)
+# turn.completed: Absorb workspace changes and handle post-turn actions
 # Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
 # across turns and are only ended explicitly (via session end hooks or TTL cleanup).
 turn.completed:
-  # Inject task reminder after agent responds
-  # - let: task_count = self.task_list_size
-  # - if: $task_count
-  #   then:
-  #     - autoreply:
-  #         append: |
-  #           ---
-  #           Tasks ($task_count ready)
-  #           Run `aiki task` to view - OR - `aiki task start` to begin work.
+  # Absorb isolated workspace changes back into parent/main workspace
+  # so the user can see changes between turns. No-op if no workspaces were created.
+  - call: self.workspace_absorb_all
 
 # shell.permission_asked: Handle actions before shell command execution
 # This is the autonomous review wedge - intercept git commit, run review, provide feedback
@@ -175,24 +181,29 @@ mcp.permission_asked:
 mcp.completed:
   # Empty by default - can be customized in user flows
 
-# commit.message_started: Modify commit message via Git's prepare-commit-msg hook
+# commit.message_started: Handled by aiki/git-coauthors built-in plugin
+# (included via .aiki/hooks.yml → aiki/default → aiki/git-coauthors)
 commit.message_started:
-  # Generate co-author lines from staged changes
-  - let: coauthors = self.generate_coauthors
-    on_failure:
-      - stop: "Failed to generate co-authors"
+  # Moved to aiki/git-coauthors built-in plugin
 
-  # Append co-authors as Git trailers
-  - commit_message:
-      append_trailer: $coauthors
-    on_failure:
-      - stop: "Failed to append co-author trailers"
+# repo.changed: Handle transitions between JJ repos within a session
+# Creates isolated workspace in the new repo if concurrent sessions are detected
+repo.changed:
+  - let: ws_path = self.workspace_create_if_concurrent
+  - if: ws_path
+    then:
+      - context: |
+          WORKSPACE ISOLATION: You have moved to a new repo with concurrent sessions.
+          You MUST `cd {{ws_path}}` before any file operations and work from that directory.
+          All file reads, writes, and edits must use paths relative to {{ws_path}}.
+  - jj: new
 
 # session.ended: Handle actions when agent session ends
 # Session file cleanup is handled automatically by the event handler
-# This section is for user-defined cleanup actions
 session.ended:
-  # Empty by default - can be customized in user flows
+  # Absorb isolated workspace changes back into parent/main workspace
+  # No-op if no workspaces were created (solo session)
+  - call: self.workspace_absorb_all
 
 # ==============================================================================
 # Task Lifecycle Events
@@ -206,8 +217,8 @@ task.started:
 # Auto-ends interactive task-driven sessions when their driving task closes
 task.closed:
   # Check if there's an interactive session driven by this task
-  # $session.task.id is empty if no session found for this task
-  - if: $event.task.id == $session.task.id && $session.mode == "interactive"
+  # session.task.id is empty if no session found for this task
+  - if: event.task.id == session.task.id && session.mode == "interactive"
     then:
-      - log: "Task $event.task.id closed, ending task-driven session"
+      - log: "Task {{event.task.id}} closed, ending task-driven session"
       - session.end: "Task completed"

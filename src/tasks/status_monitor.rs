@@ -363,10 +363,16 @@ impl StatusMonitor {
             String::new()
         };
 
-        // Root task: short ID; Subtasks: .0), .1), .2), etc.
+        // Root task: short ID; Subtasks: slug or .N)
         let id_display = match subtask_index {
             None => format!("[{}]", &task.id[..8.min(task.id.len())]),
-            Some(num) => format!(".{})", num),
+            Some(num) => {
+                if let Some(ref slug) = task.slug {
+                    slug.clone()
+                } else {
+                    format!(".{})", num)
+                }
+            }
         };
 
         let name = &task.name;

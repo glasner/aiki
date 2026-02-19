@@ -25,8 +25,14 @@ pub fn run(fix: bool) -> Result<()> {
 
     let current_dir = env::current_dir().context("Failed to get current directory")?;
 
+    // Resolve the project root by walking up from cwd to find the Git repo root.
+    // This ensures doctor works correctly when run from subdirectories.
+    let project_root = RepoDetector::new(&current_dir)
+        .find_repo_root()
+        .unwrap_or_else(|_| current_dir.clone());
+
     // Check JJ
-    if RepoDetector::has_jj(&current_dir) {
+    if RepoDetector::has_jj(&project_root) {
         println!("  ✓ JJ workspace initialized");
     } else {
         println!("  ✗ JJ workspace not found");
@@ -35,14 +41,14 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     // Check Git
-    if current_dir.join(".git").exists() {
+    if project_root.join(".git").exists() {
         println!("  ✓ Git repository detected");
     } else {
         println!("  ⚠ No Git repository (optional)");
     }
 
     // Check Aiki directory
-    let aiki_dir = current_dir.join(".aiki");
+    let aiki_dir = project_root.join(".aiki");
     if aiki_dir.exists() {
         println!("  ✓ Aiki directory exists");
     } else {
@@ -252,13 +258,13 @@ pub fn run(fix: bool) -> Result<()> {
     println!();
 
     // Check local configuration (only if in a repo)
-    if current_dir.join(".git").exists() {
+    if project_root.join(".git").exists() {
         println!("Local Configuration:");
 
         // Check git core.hooksPath
         let output = std::process::Command::new("git")
             .args(["config", "core.hooksPath"])
-            .current_dir(&current_dir)
+            .current_dir(&project_root)
             .output();
 
         if let Ok(output) = output {
@@ -280,10 +286,10 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     // Check commit signing (only if in a repo)
-    if current_dir.join(".jj").exists() {
+    if project_root.join(".jj").exists() {
         println!("Commit Signing:");
 
-        match signing::read_signing_config(&current_dir) {
+        match signing::read_signing_config(&project_root) {
             Ok(Some(config)) => {
                 println!("  ✓ JJ signing enabled ({:?})", config.backend);
 
@@ -311,7 +317,7 @@ pub fn run(fix: bool) -> Result<()> {
                     let setup = prompt_yes_no("Set up signing", true)?;
 
                     if setup {
-                        let wizard = signing::SignSetupWizard::new(current_dir.clone());
+                        let wizard = signing::SignSetupWizard::new(project_root.clone());
                         wizard.run(None)?;
                     } else {
                         println!("Skipping signing setup.");
@@ -333,7 +339,7 @@ pub fn run(fix: bool) -> Result<()> {
     // Check AGENTS.md for task system instructions
     println!("Agent Instructions:");
 
-    let agents_path = current_dir.join("AGENTS.md");
+    let agents_path = project_root.join("AGENTS.md");
     if agents_path.exists() {
         match fs::read_to_string(&agents_path) {
             Ok(content) => {
@@ -412,6 +418,175 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     println!();
+
+    // Check hookfile
+    println!("Hookfile:");
+
+    let hooks_yml_path = project_root.join(".aiki/hooks.yml");
+    if aiki_dir.exists() {
+        if hooks_yml_path.exists() {
+            // Validate YAML syntax, include references, and event names
+            match fs::read_to_string(&hooks_yml_path) {
+                Ok(content) => {
+                    match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                        Ok(yaml) => {
+                            println!("  ✓ .aiki/hooks.yml exists and is valid YAML");
+
+                            // Validate include references
+                            if let Some(includes) = yaml
+                                .as_mapping()
+                                .and_then(|m| m.get("include"))
+                                .and_then(|v| v.as_sequence())
+                            {
+                                for include in includes {
+                                    if let Some(name) = include.as_str() {
+                                        if name == "aiki/core" {
+                                            println!("  ℹ No need to reference aiki/core — it always runs automatically");
+                                        } else if !is_plugin_resolvable(name, &project_root) {
+                                            println!(
+                                                "  ⚠ Plugin '{}' not found (referenced in include:)",
+                                                name
+                                            );
+                                            issues_found += 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Validate event names (top-level keys and in before/after blocks)
+                            if let Some(mapping) = yaml.as_mapping() {
+                                issues_found += validate_event_keys(mapping, "");
+
+                                // Check before/after composition blocks
+                                for block_key in &["before", "after"] {
+                                    if let Some(block) = mapping
+                                        .get(serde_yaml::Value::String(block_key.to_string()))
+                                        .and_then(|v| v.as_mapping())
+                                    {
+                                        issues_found +=
+                                            validate_event_keys(block, &format!("{}:", block_key));
+
+                                        // Check for aiki/core in composition block includes
+                                        if let Some(block_includes) = block
+                                            .get("include")
+                                            .and_then(|v| v.as_sequence())
+                                        {
+                                            for include in block_includes {
+                                                if include.as_str() == Some("aiki/core") {
+                                                    println!("  ℹ No need to reference aiki/core in {}: — it always runs automatically", block_key);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("  ✗ .aiki/hooks.yml has invalid YAML: {}", e);
+                            issues_found += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("  ✗ Failed to read .aiki/hooks.yml: {}", e);
+                    issues_found += 1;
+                }
+            }
+        } else {
+            println!("  ⚠ No hookfile found");
+            println!("    Co-author trailers and workflow automation are disabled.");
+            if fix {
+                match fs::write(
+                    &hooks_yml_path,
+                    super::init::HOOKS_YML_TEMPLATE,
+                ) {
+                    Ok(()) => {
+                        println!(
+                            "    ✓ Created .aiki/hooks.yml with default workflow automation"
+                        );
+                    }
+                    Err(e) => {
+                        println!("    ✗ Failed to create hookfile: {}", e);
+                        issues_found += 1;
+                    }
+                }
+            } else {
+                println!("    → Run: aiki init or aiki doctor --fix");
+                issues_found += 1;
+            }
+        }
+    } else {
+        println!("  - No hookfile (run aiki init to create one)");
+    }
+
+    println!();
+
+    // Check plugins
+    if aiki_dir.exists() {
+        println!("Plugins:");
+
+        match crate::plugins::project::check_project_plugins(&project_root) {
+            Ok(statuses) => {
+                if statuses.is_empty() {
+                    println!("  - No plugin references found in project");
+                } else {
+                    for (plugin, status) in &statuses {
+                        match status {
+                            crate::plugins::InstallStatus::Installed => {
+                                println!("  ✓ {} installed", plugin);
+                            }
+                            crate::plugins::InstallStatus::PartialInstall => {
+                                println!("  ✗ {} partial install (interrupted clone?)", plugin);
+                                issues_found += 1;
+                                if fix {
+                                    println!("    Reinstalling {}...", plugin);
+                                    match crate::plugins::project::install_project_plugins(
+                                        &project_root,
+                                    ) {
+                                        Ok(_) => {
+                                            println!("    ✓ Reinstalled");
+                                            issues_found -= 1;
+                                        }
+                                        Err(e) => {
+                                            println!("    ✗ Failed: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    println!("    → Run: aiki plugin install {}", plugin);
+                                }
+                            }
+                            crate::plugins::InstallStatus::NotInstalled => {
+                                println!("  ✗ {} not installed", plugin);
+                                issues_found += 1;
+                                if fix {
+                                    println!("    Installing {}...", plugin);
+                                    match crate::plugins::project::install_project_plugins(
+                                        &project_root,
+                                    ) {
+                                        Ok(_) => {
+                                            println!("    ✓ Installed");
+                                            issues_found -= 1;
+                                        }
+                                        Err(e) => {
+                                            println!("    ✗ Failed: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    println!("    → Run: aiki plugin install {}", plugin);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  ✗ Error checking plugins: {}", e);
+                issues_found += 1;
+            }
+        }
+
+        println!();
+    }
 
     // Summary
     if issues_found == 0 {
@@ -685,6 +860,151 @@ fn check_otel_receiver() -> bool {
 
     let addr: SocketAddr = "127.0.0.1:19876".parse().unwrap();
     TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
+}
+
+/// Known hook event names for validation.
+const KNOWN_EVENTS: &[&str] = &[
+    "session.started",
+    "session.resumed",
+    "session.ended",
+    "turn.started",
+    "turn.completed",
+    "read.permission_asked",
+    "read.completed",
+    "change.permission_asked",
+    "change.completed",
+    "shell.permission_asked",
+    "shell.completed",
+    "web.permission_asked",
+    "web.completed",
+    "mcp.permission_asked",
+    "mcp.completed",
+    "commit.message_started",
+    "task.started",
+    "task.closed",
+];
+
+/// Non-event top-level keys that are valid in a hookfile.
+const HOOKFILE_META_KEYS: &[&str] = &[
+    "name",
+    "description",
+    "version",
+    "include",
+    "before",
+    "after",
+];
+
+/// Check if a plugin include reference can be resolved.
+///
+/// Returns true if the plugin exists as:
+/// 1. A file at `.aiki/hooks/{namespace}/{name}.yml` (project level)
+/// 2. A file at `~/.aiki/hooks/{namespace}/{name}.yml` (user level)
+/// 3. A built-in plugin embedded in the binary
+fn is_plugin_resolvable(name: &str, project_root: &std::path::Path) -> bool {
+    // Check built-in plugins first (cheapest check)
+    if crate::flows::bundled::load_builtin_plugin(name).is_some() {
+        return true;
+    }
+
+    // Check file-based resolution
+    let parts: Vec<&str> = name.splitn(2, '/').collect();
+    if parts.len() == 2 {
+        let project_path = project_root
+            .join(".aiki/hooks")
+            .join(parts[0])
+            .join(format!("{}.yml", parts[1]));
+        if project_path.exists() {
+            return true;
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            let user_path = home
+                .join(".aiki/hooks")
+                .join(parts[0])
+                .join(format!("{}.yml", parts[1]));
+            if user_path.exists() {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Validate event keys in a YAML mapping, warning about unknown events.
+/// Returns the number of issues found.
+fn validate_event_keys(mapping: &serde_yaml::Mapping, prefix: &str) -> usize {
+    let mut issues = 0;
+
+    for key in mapping.keys() {
+        if let Some(key_str) = key.as_str() {
+            // Skip non-event keys (metadata, composition)
+            if HOOKFILE_META_KEYS.contains(&key_str) {
+                continue;
+            }
+
+            // Check if it's a known event or a valid sugar pattern
+            if !KNOWN_EVENTS.contains(&key_str)
+                && !crate::flows::sugar::is_sugar_pattern(key_str)
+            {
+                let location = if prefix.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (in {})", prefix)
+                };
+
+                if let Some(suggestion) = suggest_event(key_str) {
+                    println!(
+                        "  ⚠ Unknown event '{}'{} (did you mean '{}'?)",
+                        key_str, location, suggestion
+                    );
+                } else {
+                    println!("  ⚠ Unknown event '{}'{}", key_str, location);
+                }
+                issues += 1;
+            }
+        }
+    }
+
+    issues
+}
+
+/// Suggest the closest known event name for a typo.
+fn suggest_event(unknown: &str) -> Option<&'static str> {
+    let mut best: Option<(&str, usize)> = None;
+
+    for known in KNOWN_EVENTS {
+        let dist = edit_distance(unknown, known);
+        if dist <= 3 {
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((known, dist));
+            }
+        }
+    }
+
+    best.map(|(s, _)| s)
+}
+
+/// Simple Levenshtein edit distance.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
 }
 
 #[cfg(test)]
@@ -1154,5 +1474,84 @@ mod tests {
 
         // Should fail: beforeSubmitPrompt has wrong event (session.started instead of beforeSubmitPrompt)
         assert!(!check_cursor_hooks(file.path()));
+    }
+
+    // Tests for plugin resolution
+
+    #[test]
+    fn test_is_plugin_resolvable_builtin() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(is_plugin_resolvable("aiki/default", temp.path()));
+        assert!(is_plugin_resolvable("aiki/git-coauthors", temp.path()));
+        assert!(is_plugin_resolvable("aiki/review-loop", temp.path()));
+    }
+
+    #[test]
+    fn test_is_plugin_resolvable_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!is_plugin_resolvable("aiki/nonexistent", temp.path()));
+        assert!(!is_plugin_resolvable("unknown/plugin", temp.path()));
+    }
+
+    #[test]
+    fn test_is_plugin_resolvable_project_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join(".aiki/hooks/myorg");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("myplugin.yml"), "name: test\n").unwrap();
+        assert!(is_plugin_resolvable("myorg/myplugin", temp.path()));
+    }
+
+    // Tests for event name validation
+
+    #[test]
+    fn test_suggest_event_typo() {
+        assert_eq!(suggest_event("session.strated"), Some("session.started"));
+        assert_eq!(suggest_event("turn.complted"), Some("turn.completed"));
+        assert_eq!(suggest_event("sesion.started"), Some("session.started"));
+    }
+
+    #[test]
+    fn test_suggest_event_no_match() {
+        assert_eq!(suggest_event("completely.unknown.event"), None);
+    }
+
+    #[test]
+    fn test_edit_distance() {
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("abc", "abd"), 1);
+        assert_eq!(edit_distance("abc", "abcd"), 1);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn test_validate_event_keys_valid() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+            name: test
+            include:
+              - aiki/default
+            session.started:
+              - context: "hello"
+            turn.completed:
+              - context: "done"
+            "#,
+        )
+        .unwrap();
+        let mapping = yaml.as_mapping().unwrap();
+        assert_eq!(validate_event_keys(mapping, ""), 0);
+    }
+
+    #[test]
+    fn test_validate_event_keys_unknown() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+            session.starting:
+              - context: "hello"
+            "#,
+        )
+        .unwrap();
+        let mapping = yaml.as_mapping().unwrap();
+        assert_eq!(validate_event_keys(mapping, ""), 1);
     }
 }

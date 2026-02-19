@@ -245,7 +245,7 @@ impl ChangeOperation {
     }
 
     /// Computed property: returns "true" if this is a Write operation, "" otherwise
-    /// Enables truthiness check via `$event.write` in flow conditions
+    /// Enables truthiness check via `event.write` in flow conditions
     #[must_use]
     pub fn is_write(&self) -> &str {
         match self {
@@ -255,7 +255,7 @@ impl ChangeOperation {
     }
 
     /// Computed property: returns "true" if this is a Delete operation, "" otherwise
-    /// Enables truthiness check via `$event.delete` in flow conditions
+    /// Enables truthiness check via `event.delete` in flow conditions
     #[must_use]
     pub fn is_delete(&self) -> &str {
         match self {
@@ -265,7 +265,7 @@ impl ChangeOperation {
     }
 
     /// Computed property: returns "true" if this is a Move operation, "" otherwise
-    /// Enables truthiness check via `$event.move` in flow conditions
+    /// Enables truthiness check via `event.move` in flow conditions
     #[must_use]
     pub fn is_move(&self) -> &str {
         match self {
@@ -344,6 +344,148 @@ pub struct AikiChangeCompletedPayload {
     pub operation: ChangeOperation,
 }
 
+/// Resolve workspace CWD from file paths in the event.
+///
+/// When an agent runs in an isolated workspace (via context injection), its process
+/// CWD is still the main repo. But the files it edits are inside the workspace dir.
+/// This function detects that case and updates `payload.cwd` to the workspace root
+/// so that subsequent `jj:` hook actions target the correct workspace.
+fn resolve_workspace_cwd(payload: &mut AikiChangeCompletedPayload) {
+    use crate::session::isolation::find_jj_root;
+
+    // Get first file path from the operation
+    let file_path = match &payload.operation {
+        ChangeOperation::Write(op) => op.file_paths.first(),
+        ChangeOperation::Delete(op) => op.file_paths.first(),
+        ChangeOperation::Move(op) => op.destination_paths.first(),
+    };
+
+    let file_path = match file_path {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Resolve to absolute path
+    let abs_path = if std::path::Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        payload.cwd.join(file_path)
+    };
+
+    // Find the JJ root for this file path
+    let file_jj_root = match find_jj_root(&abs_path) {
+        Some(root) => root,
+        None => return,
+    };
+
+    // If the file's JJ root differs from payload.cwd, update it.
+    // This happens when the file is inside an isolated workspace.
+    if file_jj_root != payload.cwd {
+        debug_log(|| {
+            format!(
+                "Workspace CWD correction: {} -> {}",
+                payload.cwd.display(),
+                file_jj_root.display()
+            )
+        });
+        payload.cwd = file_jj_root;
+    }
+}
+
+/// Detect if the changed files belong to a different JJ repo than the session's
+/// current repo root. If so, fire a `repo.changed` event before change.completed.
+///
+/// Uses the `by-repo/<repo-id>/<session-uuid>` sidecar files (persisted on disk)
+/// to track which repo each session is in. This works across process invocations,
+/// unlike the previous in-process static which was always empty.
+fn detect_repo_transition(payload: &AikiChangeCompletedPayload) {
+    use crate::session::isolation::{find_jj_root, find_session_repo,
+        register_session_in_repo, unregister_session_from_repo};
+
+    // Get first file path from the operation to determine the repo
+    let file_path = match &payload.operation {
+        ChangeOperation::Write(op) => op.file_paths.first(),
+        ChangeOperation::Delete(op) => op.file_paths.first(),
+        ChangeOperation::Move(op) => op.destination_paths.first(),
+    };
+
+    let file_path = match file_path {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Resolve to absolute path if relative
+    let abs_path = if std::path::Path::new(file_path).is_absolute() {
+        PathBuf::from(file_path)
+    } else {
+        payload.cwd.join(file_path)
+    };
+
+    let new_root = match find_jj_root(&abs_path) {
+        Some(root) => root,
+        None => return,
+    };
+
+    // Read repo-id for the new root
+    let new_repo_id = match crate::repo_id::read_repo_id(&new_root) {
+        Ok(Some(id)) => id,
+        _ => return,
+    };
+
+    let session_uuid = payload.session.uuid().to_string();
+
+    // Check if sidecar already exists for this session in the new repo — no transition
+    let sidecar = crate::global::global_aiki_dir()
+        .join("sessions")
+        .join("by-repo")
+        .join(&new_repo_id)
+        .join(&session_uuid);
+
+    if sidecar.exists() {
+        return; // Already in this repo, no transition
+    }
+
+    // Find previous repo for this session (scan by-repo dirs)
+    let previous_repo_id = find_session_repo(&session_uuid);
+
+    // Move sidecar: register in new repo, unregister from old
+    register_session_in_repo(&new_repo_id, &session_uuid);
+    if let Some(ref old_repo_id) = previous_repo_id {
+        unregister_session_from_repo(old_repo_id, &session_uuid);
+    }
+
+    // If no previous repo (first change in session): no transition to fire
+    let previous_repo_id = match previous_repo_id {
+        Some(id) => id,
+        None => return,
+    };
+
+    debug_log(|| {
+        format!(
+            "Repo transition detected: {} -> {}",
+            previous_repo_id, new_repo_id
+        )
+    });
+
+    // Fire repo.changed event
+    let root_name = new_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let repo_changed_payload = super::AikiRepoChangedPayload {
+        session: payload.session.clone(),
+        cwd: payload.cwd.clone(),
+        timestamp: chrono::Utc::now(),
+        repo: super::RepoRef::new(root_name, new_root, new_repo_id),
+        previous_repo: None, // Previous root path not available from sidecar
+    };
+
+    if let Err(e) = super::handle_repo_changed(repo_changed_payload) {
+        debug_log(|| format!("repo.changed handler error (non-fatal): {}", e));
+    }
+}
+
 /// Handle change.completed event
 ///
 /// This is the core provenance tracking event for file mutations.
@@ -390,6 +532,16 @@ pub fn handle_change_completed(mut payload: AikiChangeCompletedPayload) -> Resul
             payload.turn.number
         )
     });
+
+    // Repo transition detection: fire repo.changed if file belongs to a different repo
+    detect_repo_transition(&payload);
+
+    // Workspace CWD correction: if the changed file is inside an isolated workspace,
+    // update payload.cwd to the workspace root so that jj: actions in hooks
+    // (e.g. jj metaedit for [aiki] metadata) target the workspace, not default@.
+    // This handles the case where the agent process CWD is the main repo but the
+    // agent was instructed to work in an isolated workspace via context injection.
+    resolve_workspace_cwd(&mut payload);
 
     // Load core hook for fallback
     let core_hook = crate::flows::load_core_hook();

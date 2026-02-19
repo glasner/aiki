@@ -3,6 +3,8 @@
 //! Provides a `CommandOutput` struct and `format_command_output()` that both
 //! review.rs and fix.rs use to produce consistent output.
 
+use std::collections::HashMap;
+
 use crate::commands::review::ReviewScope;
 use crate::tasks::TaskComment;
 
@@ -125,9 +127,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_with_implementation_scope() {
+    fn test_format_with_code_scope() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Implementation,
+            kind: ReviewScopeKind::Code,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
@@ -140,8 +142,8 @@ mod tests {
             hint: None,
         };
         let result = format_command_output(&output);
-        assert!(result.contains("- **Type:** implementation"));
-        assert!(result.contains("- **Scope:** Implementation (feature.md)"));
+        assert!(result.contains("- **Type:** code"));
+        assert!(result.contains("- **Scope:** Code (feature.md)"));
     }
 
     #[test]
@@ -156,11 +158,13 @@ mod tests {
                 text: "Short issue".to_string(),
                 id: None,
                 timestamp: chrono::Utc::now(),
+                data: HashMap::new(),
             },
             TaskComment {
                 text: "A much longer issue description that definitely exceeds the sixty character truncation limit used for display".to_string(),
                 id: None,
                 timestamp: chrono::Utc::now(),
+                data: HashMap::new(),
             },
         ];
         let output = CommandOutput {

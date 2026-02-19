@@ -22,7 +22,7 @@ pub struct AikiState {
     /// The original event that triggered this execution
     pub event: crate::events::AikiEvent,
 
-    /// Let-bound variables (user-defined, accessed without $event prefix)
+    /// Let-bound variables (user-defined, accessed without event. prefix)
     let_vars: HashMap<String, String>,
 
     /// Structured metadata for variables (stores ActionResult for each variable)
@@ -43,6 +43,10 @@ pub struct AikiState {
     /// PIDs to send SIGTERM to after all hooks complete
     /// Used by session.end action to defer termination until hooks are done
     pending_session_ends: Vec<u32>,
+
+    /// Cached expression evaluator for compile-once/eval-many condition evaluation.
+    /// Persists compiled ASTs across multiple condition evaluations within a session.
+    expression_evaluator: crate::expressions::ExpressionEvaluator,
 }
 
 impl AikiState {
@@ -78,6 +82,7 @@ impl AikiState {
             context_assembler,
             failures: Vec::new(),
             pending_session_ends: Vec::new(),
+            expression_evaluator: crate::expressions::ExpressionEvaluator::new(),
         }
     }
 
@@ -85,6 +90,11 @@ impl AikiState {
     #[must_use]
     pub fn cwd(&self) -> &std::path::Path {
         self.event.cwd()
+    }
+
+    /// Get a mutable reference to the cached expression evaluator.
+    pub fn expression_evaluator(&mut self) -> &mut crate::expressions::ExpressionEvaluator {
+        &mut self.expression_evaluator
     }
 
     /// Helper to get the agent type

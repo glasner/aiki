@@ -102,6 +102,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: format!("Test task {}", id),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -130,6 +131,7 @@ mod tests {
             id: None,
             text: text.to_string(),
             timestamp: Utc::now(),
+            data: HashMap::new(),
         }
     }
 

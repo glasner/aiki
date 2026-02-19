@@ -13,6 +13,7 @@ pub mod graph;
 pub mod id;
 pub mod manager;
 pub mod runner;
+pub mod spawner;
 pub mod status_monitor;
 pub mod storage;
 pub mod templates;
@@ -20,19 +21,19 @@ pub mod types;
 pub mod md;
 
 pub use graph::{materialize_graph, materialize_graph_with_ids, EdgeStore, LinkKind, TaskGraph, LINK_KINDS};
-pub use id::{generate_task_id, is_task_id, is_task_id_prefix};
+pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug};
 #[allow(unused_imports)]
 pub use manager::{
-    all_subtasks_closed, find_task, get_subtasks, get_current_scope_set,
+    all_subtasks_closed, find_task, find_task_in_graph, get_subtasks, get_current_scope_set,
     get_in_progress, get_ready_queue, get_ready_queue_for_agent, get_ready_queue_for_agent_scoped,
     get_ready_queue_for_human, get_ready_queue_for_scope_set, get_scoped_ready_queue,
     get_task_activity_by_turn, get_unclosed_subtasks, has_subtasks,
-    resolve_task_id, ScopeSet,
+    resolve_task_id, resolve_task_id_in_graph, ScopeSet,
 };
 #[allow(unused_imports)]
 pub use runner::{run_task_async_with_output, task_run_async, terminate_background_task};
 #[allow(unused_imports)]
-pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_link_event, EventWithId};
+pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_events_batch, write_link_event, EventWithId};
 #[allow(unused_imports)]
 pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskReference, TaskStatus};
 pub use md::MdBuilder;

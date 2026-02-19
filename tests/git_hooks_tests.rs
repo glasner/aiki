@@ -506,16 +506,12 @@ fn test_hook_template_embedded() -> Result<()> {
         "Should have bash shebang"
     );
     assert!(
-        hook_content.contains("aiki authors"),
-        "Should call aiki authors"
+        hook_content.contains("aiki event prepare-commit-msg"),
+        "Should dispatch prepare-commit-msg event"
     );
     assert!(
         hook_content.contains("COMMIT_MSG_FILE"),
         "Should use COMMIT_MSG_FILE variable"
-    );
-    assert!(
-        hook_content.contains("Co-authored-by"),
-        "Should mention co-authors in comments"
     );
 
     Ok(())

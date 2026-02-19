@@ -608,6 +608,7 @@ fn create_spec_task(
     let parent_event = TaskEvent::Created {
         task_id: parent_id.clone(),
         name: parent_def.name.clone(),
+        slug: None,
         task_type,
         priority,
         assignee: assignee
@@ -640,6 +641,7 @@ fn create_spec_task(
         let subtask_event = TaskEvent::Created {
             task_id: subtask_id,
             name: subtask_def.name.clone(),
+            slug: None,
             task_type: Some("spec".to_string()),
             priority: subtask_priority,
             assignee: subtask_def.assignee.clone(),

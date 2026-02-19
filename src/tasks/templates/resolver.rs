@@ -74,15 +74,38 @@ pub fn load_template(name: &str, templates_dir: &Path) -> Result<TaskTemplate> {
     load_template_file(&file_path, name)
 }
 
-/// Resolve a template name to its file path
+/// Resolve a template name to its file path.
+///
+/// Resolution order:
+/// 1. `.aiki/templates/{name}.md` (project-local)
+/// 2. For three-part refs (`ns/plugin/template`):
+///    `~/.aiki/plugins/{ns}/{plugin}/templates/{template}.md` (installed plugin)
 fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
-    // Template name is the path within .aiki/templates/
-    // e.g., "aiki/review" -> .aiki/templates/aiki/review.md
+    // 1. Project-local: .aiki/templates/{name}.md
     let relative_path = format!("{}.md", name);
     let full_path = templates_dir.join(&relative_path);
 
     if full_path.is_file() {
         return Ok(full_path);
+    }
+
+    // 2. For three-part references, check installed plugins
+    let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() == 3 {
+        if let Ok(plugins_base) = crate::plugins::plugins_base_dir() {
+            let ns = parts[0];
+            let plugin = parts[1];
+            let template = parts[2];
+            let plugin_path = plugins_base
+                .join(ns)
+                .join(plugin)
+                .join("templates")
+                .join(format!("{}.md", template));
+
+            if plugin_path.is_file() {
+                return Ok(plugin_path);
+            }
+        }
     }
 
     // Template not found, provide helpful error
@@ -261,6 +284,7 @@ pub fn create_tasks_from_template(
 
     let parent = TaskDefinition {
         name: parent_name,
+        slug: None,
         task_type: template.defaults.task_type.clone(),
         instructions: parent_instructions,
         priority: template.parent.priority.clone(),
@@ -308,6 +332,7 @@ pub fn create_subtask_entries_from_template(
 
     let parent = TaskDefinition {
         name: parent_name,
+        slug: None,
         task_type: template.defaults.task_type.clone(),
         instructions: parent_instructions,
         priority: template.parent.priority.clone(),
@@ -357,6 +382,7 @@ fn create_static_subtasks(
 
         subtasks.push(TaskDefinition {
             name,
+            slug: subtask.slug.clone(),
             task_type: None, // Subtasks inherit type from parent
             instructions,
             priority: subtask.priority.clone(),
@@ -470,6 +496,7 @@ fn create_dynamic_subtasks(
 
         subtasks.push(TaskDefinition {
             name,
+            slug: None, // Dynamic subtasks don't have slugs
             task_type: None, // Subtasks inherit type from parent
             instructions,
             priority,
@@ -647,7 +674,7 @@ pub fn expand_loops(
         };
 
         // Replace the loop marker with expanded content
-        result = result[..loop_start_match.start()].to_string() + &expanded + &result[full_end..];
+        result = format!("{}{}{}", &result[..loop_start_match.start()], expanded, &result[full_end..]);
     }
 
     Ok(result)
@@ -1043,20 +1070,34 @@ fn parse_expanded_subtasks(
                 i += 1;
             }
 
-            let instructions = body_lines.join("\n").trim().to_string();
+            let raw_body = body_lines.join("\n");
+
+            // Parse optional frontmatter from the subtask body (slug, priority, assignee, etc.)
+            let (frontmatter, body) =
+                super::parser::extract_yaml_frontmatter::<super::types::SubtaskFrontmatter>(
+                    &raw_body,
+                )
+                .map_err(|e| AikiError::TemplateFrontmatterInvalid {
+                    file: template_name.unwrap_or("(inline subtask)").to_string(),
+                    details: e.to_string(),
+                })?;
+            let fm = frontmatter.unwrap_or_default();
+            let instructions = body.trim().to_string();
 
             // Substitute variables in name and instructions
             let name = substitute_with_template_name(&name, variables, template_name)?;
-            let instructions = substitute_with_template_name(&instructions, variables, template_name)?;
+            let instructions =
+                substitute_with_template_name(&instructions, variables, template_name)?;
 
             entries.push(SubtaskEntry::Static(TaskDefinition {
                 name,
+                slug: fm.slug,
                 task_type: None,
                 instructions,
-                priority: None,
-                assignee: None,
-                sources: Vec::new(),
-                data: HashMap::new(),
+                priority: fm.priority,
+                assignee: fm.assignee,
+                sources: fm.sources,
+                data: fm.data,
             }));
         } else {
             i += 1;
@@ -1396,11 +1437,13 @@ No frontmatter here.
                 id: None,
                 text: "Variable may be null".to_string(),
                 timestamp: Utc::now(),
+                data: HashMap::new(),
             },
             TaskComment {
                 id: None,
                 text: "Unused import".to_string(),
                 timestamp: Utc::now(),
+                data: HashMap::new(),
             },
         ];
 
@@ -1570,11 +1613,13 @@ Body text."#;
                     id: None,
                     text: "Fix this bug".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
                 TaskComment {
                     id: None,
                     text: "Add tests".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
             ],
         );
@@ -1624,11 +1669,13 @@ No items found.
                     id: None,
                     text: "First".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
                 TaskComment {
                     id: None,
                     text: "Second".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
             ],
         );
@@ -1687,11 +1734,13 @@ No items found.
                     id: None,
                     text: "A".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
                 TaskComment {
                     id: None,
                     text: "B".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
             ],
         );
@@ -1729,11 +1778,13 @@ No items found.
                     id: None,
                     text: "Normal task".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
                 TaskComment {
                     id: None,
                     text: "Urgent task".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
             ],
         );
@@ -1796,11 +1847,13 @@ Fix the issues.
                 id: None,
                 text: "Bug in login".to_string(),
                 timestamp: Utc::now(),
+                data: HashMap::new(),
             },
             TaskComment {
                 id: None,
                 text: "Missing test".to_string(),
                 timestamp: Utc::now(),
+                data: HashMap::new(),
             },
         ];
 
@@ -1873,6 +1926,7 @@ Fix all issues.
             id: None,
             text: "Error here".to_string(),
             timestamp: Utc::now(),
+            data: HashMap::new(),
         }];
 
         let (parent, subtasks) =
@@ -1904,11 +1958,13 @@ Outer: {{loop.index}}
                     id: None,
                     text: "".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
                 TaskComment {
                     id: None,
                     text: "".to_string(),
                     timestamp: Utc::now(),
+                    data: HashMap::new(),
                 },
             ],
         );
@@ -1987,6 +2043,7 @@ Outer: {{loop.index}}
                 id: None,
                 text: "Fix büg".to_string(),
                 timestamp: Utc::now(),
+                data: HashMap::new(),
             }],
         );
 
@@ -2157,5 +2214,80 @@ Instructions.
             SubtaskEntry::Static(def) => assert_eq!(def.name, "Run"),
             _ => panic!("Expected Static"),
         }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_with_inline_frontmatter() {
+        let content = r#"## Explore Scope
+---
+slug: explore
+priority: p1
+assignee: claude-code
+---
+
+Explore the code.
+
+## Review
+---
+slug: review
+---
+
+Review the changes."#;
+
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 2);
+
+        // First subtask should have slug, priority, and assignee from frontmatter
+        match &entries[0] {
+            SubtaskEntry::Static(def) => {
+                assert_eq!(def.name, "Explore Scope");
+                assert_eq!(def.slug, Some("explore".to_string()));
+                assert_eq!(def.priority, Some("p1".to_string()));
+                assert_eq!(def.assignee, Some("claude-code".to_string()));
+                assert!(def.instructions.contains("Explore the code."));
+                // Frontmatter should not appear in instructions
+                assert!(!def.instructions.contains("slug:"));
+            }
+            _ => panic!("Expected Static"),
+        }
+
+        // Second subtask should have slug from frontmatter
+        match &entries[1] {
+            SubtaskEntry::Static(def) => {
+                assert_eq!(def.name, "Review");
+                assert_eq!(def.slug, Some("review".to_string()));
+                assert!(def.instructions.contains("Review the changes."));
+            }
+            _ => panic!("Expected Static"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_without_frontmatter_preserves_behavior() {
+        let content = "## Simple task\n\nJust some instructions.";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Static(def) => {
+                assert_eq!(def.name, "Simple task");
+                assert!(def.slug.is_none());
+                assert!(def.priority.is_none());
+                assert!(def.instructions.contains("Just some instructions."));
+            }
+            _ => panic!("Expected Static"),
+        }
+    }
+
+    #[test]
+    fn test_find_variables_detects_parent_subtasks() {
+        use super::super::variables::find_variables;
+
+        let vars = find_variables("Use {{parent.subtasks.criteria}} and {{parent.subtasks.explore}}");
+        assert!(vars.contains(&"parent.subtasks.criteria".to_string()));
+        assert!(vars.contains(&"parent.subtasks.explore".to_string()));
     }
 }

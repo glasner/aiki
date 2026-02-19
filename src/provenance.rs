@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn test_to_description_with_very_long_session_id() {
         // Test with a very long session ID (e.g., UUID + timestamp)
-        let long_session_id = "claude-session-".to_string() + &"a".repeat(200);
+        let long_session_id = format!("claude-session-{}", "a".repeat(200));
         let record = ProvenanceRecord {
             agent: AgentInfo {
                 agent_type: AgentType::ClaudeCode,

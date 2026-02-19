@@ -44,6 +44,7 @@ crossterm = "0.28"
 ctrlc = "3.4"
 ahash = "0.8"
 hashbrown = "0.14"
+rhai = "1.24"
 
 [dev-dependencies]
 assert_cmd = "2.0"

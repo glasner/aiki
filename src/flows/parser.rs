@@ -11,8 +11,8 @@ impl HookParser {
     /// Parse a flow from a YAML string.
     ///
     /// This function handles sugar pattern expansion for task lifecycle events:
-    /// - `{type}.started` expands to `task.started` with `if: $event.task.type == "{type}"`
-    /// - `{type}.completed` expands to `task.closed` with `if: $event.task.type == "{type}" && $event.task.outcome == "done"`
+    /// - `{type}.started` expands to `task.started` with `if: event.task.type == "{type}"`
+    /// - `{type}.completed` expands to `task.closed` with `if: event.task.type == "{type}" && event.task.outcome == "done"`
     pub fn parse_str(yaml: &str) -> Result<Hook> {
         // First parse to Value for preprocessing
         let mut value: Value =
@@ -85,7 +85,7 @@ change.completed:
 name: Lint Flow
 version: "1"
 change.completed:
-  - shell: ruff check $event.file_paths
+  - shell: ruff check {{event.file_paths}}
 "#;
 
         let hook = HookParser::parse_str(yaml).unwrap();
@@ -112,7 +112,7 @@ change.completed:
 name: Log Flow
 version: "1"
 change.completed:
-  - log: "File edited: $event.file_paths"
+  - log: "File edited: {{event.file_paths}}"
 "#;
 
         let hook = HookParser::parse_str(yaml).unwrap();
@@ -169,7 +169,7 @@ change.completed:
 name: Multi Event Flow
 version: "1"
 change.completed:
-  - shell: ruff check $event.file_paths
+  - shell: ruff check {{event.file_paths}}
 commit.message_started:
   - shell: pytest
 session.started:
@@ -204,8 +204,9 @@ change.completed:
   - shell: echo "test"
 "#;
 
-        let result = HookParser::parse_str(yaml);
-        assert!(result.is_err());
+        let hook = HookParser::parse_str(yaml).unwrap();
+        assert_eq!(hook.name, ""); // Empty; loader will autogenerate from path
+        assert_eq!(hook.handlers.change_completed.len(), 1);
     }
 
     // ========================================================================
@@ -336,7 +337,7 @@ before:
 
 after:
   turn.completed:
-    - if: "$event.turn.tasks.completed"
+    - if: "event.turn.tasks.completed"
       then:
         - log: "triggering review"
 
@@ -356,7 +357,7 @@ session.started:
         assert_eq!(hook.after[0].handlers.turn_completed.len(), 1);
         match &hook.after[0].handlers.turn_completed[0] {
             HookStatement::If(if_stmt) => {
-                assert!(if_stmt.condition.contains("$event.turn.tasks.completed"));
+                assert!(if_stmt.condition.contains("event.turn.tasks.completed"));
             }
             other => panic!("Expected If, got {:?}", other),
         }
@@ -391,7 +392,7 @@ review.completed:
             HookStatement::If(if_stmt) => {
                 assert_eq!(
                     if_stmt.condition,
-                    "$event.task.type == \"review\" && $event.task.outcome == \"done\""
+                    "event.task.type == \"review\" && event.task.outcome == \"done\""
                 );
                 assert_eq!(if_stmt.then.len(), 1);
             }
@@ -419,7 +420,7 @@ feature.started:
         // Verify it's wrapped in an if statement
         match &hook.handlers.task_started[0] {
             HookStatement::If(if_stmt) => {
-                assert_eq!(if_stmt.condition, "$event.task.type == \"feature\"");
+                assert_eq!(if_stmt.condition, "event.task.type == \"feature\"");
                 assert_eq!(if_stmt.then.len(), 1);
             }
             _ => panic!("Expected If statement wrapping the sugar pattern"),
@@ -480,7 +481,7 @@ review.started:
         // Second statement should be the wrapped sugar pattern
         match &hook.handlers.task_started[1] {
             HookStatement::If(if_stmt) => {
-                assert_eq!(if_stmt.condition, "$event.task.type == \"review\"");
+                assert_eq!(if_stmt.condition, "event.task.type == \"review\"");
             }
             _ => panic!("Expected second statement to be If wrapper"),
         }
@@ -521,7 +522,7 @@ review.started:
   - shell: echo "Starting review"
     timeout: 30s
   - log: "Review initiated"
-  - if: "$event.task.priority == 'p0'"
+  - if: "event.task.priority == 'p0'"
     then:
       - log: "High priority review!"
 "#;
@@ -533,7 +534,7 @@ review.started:
 
         match &hook.handlers.task_started[0] {
             HookStatement::If(if_stmt) => {
-                assert_eq!(if_stmt.condition, "$event.task.type == \"review\"");
+                assert_eq!(if_stmt.condition, "event.task.type == \"review\"");
                 // Should have 3 statements inside the then branch
                 assert_eq!(if_stmt.then.len(), 3);
             }

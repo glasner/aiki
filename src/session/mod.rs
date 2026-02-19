@@ -1,3 +1,4 @@
+pub mod isolation;
 pub mod turn_state;
 
 use crate::cache::debug_log;
@@ -842,14 +843,19 @@ pub fn end_session(
 
 /// Get the parent process ID
 ///
-/// Returns the PID of the parent process, or None if it cannot be determined.
+/// Uses `libc::getppid()` directly — a syscall that always succeeds.
+/// Previous implementation used sysinfo's process enumeration, which could
+/// intermittently fail on macOS (returning None) when the system was under
+/// load or due to timing issues with `sysctl`-based process listing.
 #[must_use]
 pub fn get_parent_pid() -> Option<u32> {
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::All, true);
-
-    let current_pid = Pid::from_u32(std::process::id());
-    system.process(current_pid)?.parent().map(|p| p.as_u32())
+    // SAFETY: getppid() is always safe and always returns a valid PID
+    let ppid = unsafe { libc::getppid() };
+    if ppid > 0 {
+        Some(ppid as u32)
+    } else {
+        None // Should never happen — even init has ppid=0
+    }
 }
 
 /// Get all ancestor PIDs from the current process up to init
@@ -1313,6 +1319,12 @@ pub fn find_active_session(jj_cwd: impl AsRef<Path>) -> Option<SessionMatch> {
 ///
 /// Returns the most recent (by JJ activity) session that has the repo_id
 /// from the given path in its `repo` field list.
+///
+/// **Safety:** Only matches sessions that do NOT have a `parent_pid` set.
+/// Sessions with `parent_pid` belong to specific processes and should be
+/// matched by `find_session_by_ancestor_pid` instead. If PID-based detection
+/// didn't match them, we're not that process and must not claim their identity.
+/// This prevents cross-session preemption when multiple agents share a repo.
 fn find_session_by_repo(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
     use crate::repo_id;
 
@@ -1337,6 +1349,18 @@ fn find_session_by_repo(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
             continue;
         }
 
+        // Parse session info first (gives us parent_pid and other fields)
+        let Some(info) = parse_session_file(&path) else {
+            continue;
+        };
+
+        // Skip sessions that have a parent_pid — they belong to specific processes
+        // and should only be matched via PID-based detection. Matching them here
+        // would risk claiming another agent's identity and preempting their tasks.
+        if info.parent_pid.is_some() {
+            continue;
+        }
+
         // Read session file and check if it has the target repo
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
@@ -1352,29 +1376,15 @@ fn find_session_by_repo(repo_path: impl AsRef<Path>) -> Option<SessionMatch> {
             continue;
         }
 
-        // Parse session info
-        if let Some(info) = parse_session_file(&path) {
-            if let (Some(agent_type), Some(session_id)) = (info.agent_type, info.session_id.clone())
-            {
-                // Extract external_session_id from content
-                let external_id = content
-                    .lines()
-                    .find_map(|line| {
-                        let line = line.trim();
-                        if line.starts_with("external_session_id=") {
-                            Some(line.strip_prefix("external_session_id=")?.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
+        if let (Some(agent_type), Some(session_id)) = (info.agent_type, info.session_id.clone())
+        {
+            let external_id = info.external_session_id.unwrap_or_default();
 
-                matching_sessions.push(SessionMatch {
-                    agent_type,
-                    external_session_id: external_id,
-                    session_id,
-                });
-            }
+            matching_sessions.push(SessionMatch {
+                agent_type,
+                external_session_id: external_id,
+                session_id,
+            });
         }
     }
 
@@ -1611,6 +1621,27 @@ pub fn prune_dead_pid_sessions() {
         };
 
         if !pid_alive {
+            // Recover any orphaned workspaces from the dead session
+            if let Some(ref session_uuid) = session_info.session_id {
+                match isolation::recover_orphaned_workspaces(session_uuid) {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        eprintln!(
+                            "[aiki] Recovered {} workspace(s) from crashed session",
+                            n
+                        );
+                    }
+                    Err(e) => {
+                        debug_log(|| {
+                            format!(
+                                "Warning: failed to recover workspaces for dead session {}: {}",
+                                session_uuid, e
+                            )
+                        });
+                    }
+                }
+            }
+
             // Dispatches through event bus → handle_session_ended which
             // records history, runs flows, and deletes the session file.
             emit_synthetic_session_ended(session_info, SessionCleanupReason::PidDead);

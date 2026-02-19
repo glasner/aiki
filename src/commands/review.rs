@@ -21,7 +21,8 @@ use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
-    materialize_graph, read_events, reassign_task, start_task_core, Task, TaskStatus,
+    materialize_graph, read_events, reassign_task, start_task_core, Task,
+    TaskComment, TaskStatus,
 };
 
 /// What kind of review scope this is
@@ -29,7 +30,7 @@ use crate::tasks::{
 pub enum ReviewScopeKind {
     Task,
     Spec,
-    Implementation,
+    Code,
     Session,
 }
 
@@ -39,7 +40,7 @@ impl ReviewScopeKind {
         match self {
             ReviewScopeKind::Task => "task",
             ReviewScopeKind::Spec => "spec",
-            ReviewScopeKind::Implementation => "implementation",
+            ReviewScopeKind::Code => "code",
             ReviewScopeKind::Session => "session",
         }
     }
@@ -49,7 +50,7 @@ impl ReviewScopeKind {
         match s {
             "task" => Ok(ReviewScopeKind::Task),
             "spec" => Ok(ReviewScopeKind::Spec),
-            "implementation" => Ok(ReviewScopeKind::Implementation),
+            "code" => Ok(ReviewScopeKind::Code),
             "session" => Ok(ReviewScopeKind::Session),
             _ => Err(AikiError::UnknownReviewScope(s.to_string())),
         }
@@ -78,12 +79,12 @@ impl ReviewScope {
                     .unwrap_or(&self.id);
                 format!("Spec ({})", filename)
             }
-            ReviewScopeKind::Implementation => {
+            ReviewScopeKind::Code => {
                 let filename = Path::new(&self.id)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(&self.id);
-                format!("Implementation ({})", filename)
+                format!("Code ({})", filename)
             }
             ReviewScopeKind::Session => "Session".to_string(),
         }
@@ -108,7 +109,7 @@ impl ReviewScope {
         })?;
         let kind = ReviewScopeKind::from_str(kind_str)?;
 
-        // scope.id is required for non-Session scopes (Task, Spec, Implementation)
+        // scope.id is required for non-Session scopes (Task, Spec, Code)
         let id = match kind {
             ReviewScopeKind::Session => {
                 data.get("scope.id").cloned().unwrap_or_default()
@@ -137,7 +138,7 @@ impl ReviewScope {
     }
 }
 
-/// Review subcommands (for list and show only)
+/// Review subcommands (for list, show, and issue management)
 #[derive(Subcommand)]
 pub enum ReviewSubcommands {
     /// List review tasks
@@ -152,6 +153,29 @@ pub enum ReviewSubcommands {
         /// Review task ID
         task_id: String,
     },
+
+    /// Manage review issues
+    Issue {
+        #[command(subcommand)]
+        command: ReviewIssueSubcommands,
+    },
+}
+
+/// Subcommands for managing review issues
+#[derive(Subcommand)]
+pub enum ReviewIssueSubcommands {
+    /// Add an issue to a review
+    Add {
+        /// The review task ID
+        review_id: String,
+        /// Description of the issue
+        text: String,
+    },
+    /// List issues on a review
+    List {
+        /// The review task ID
+        review_id: String,
+    },
 }
 
 /// Arguments for the review command (top-level create args)
@@ -162,7 +186,7 @@ pub struct ReviewArgs {
 
     /// Review the codebase implementation described in a spec (only with file targets)
     #[arg(long)]
-    pub implementation: bool,
+    pub code: bool,
 
     /// Review and auto-fix issues in one command
     #[arg(long)]
@@ -199,6 +223,12 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         return match subcommand {
             ReviewSubcommands::List { all } => list_reviews(&cwd, all),
             ReviewSubcommands::Show { task_id } => show_review(&cwd, &task_id),
+            ReviewSubcommands::Issue { command } => match command {
+                ReviewIssueSubcommands::Add { review_id, text } => {
+                    run_issue_add(&cwd, &review_id, &text)
+                }
+                ReviewIssueSubcommands::List { review_id } => run_issue_list(&cwd, &review_id),
+            },
         };
     }
 
@@ -206,7 +236,7 @@ pub fn run(args: ReviewArgs) -> Result<()> {
     run_review(
         &cwd,
         args.target,
-        args.implementation,
+        args.code,
         args.fix,
         args.run_async,
         args.start,
@@ -268,13 +298,13 @@ fn looks_like_task_id(s: &str) -> bool {
 pub fn detect_target(
     cwd: &Path,
     arg: Option<&str>,
-    implementation: bool,
+    code: bool,
 ) -> Result<(ReviewScope, Option<String>)> {
     match arg {
         None => {
-            if implementation {
+            if code {
                 return Err(AikiError::InvalidArgument(
-                    "--implementation flag only applies to file targets".to_string(),
+                    "--code flag only applies to file targets".to_string(),
                 ));
             }
 
@@ -312,17 +342,23 @@ pub fn detect_target(
             }
 
             let task_ids: Vec<String> = closed_tasks.iter().map(|t| t.id.clone()).collect();
+            let fallback_id = {
+                let mut ids = task_ids.clone();
+                ids.sort();
+                let hash_input = ids.join(",");
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, hash_input.as_bytes()).to_string()
+            };
             let scope = ReviewScope {
                 kind: ReviewScopeKind::Session,
-                id: "session".to_string(),
+                id: session_id.unwrap_or(fallback_id),
                 task_ids,
             };
             Ok((scope, session_agent))
         }
 
         Some(s) if s.ends_with(".md") && PathBuf::from(s).exists() => {
-            let kind = if implementation {
-                ReviewScopeKind::Implementation
+            let kind = if code {
+                ReviewScopeKind::Code
             } else {
                 ReviewScopeKind::Spec
             };
@@ -341,9 +377,9 @@ pub fn detect_target(
         }
 
         Some(s) if looks_like_task_id(s) => {
-            if implementation {
+            if code {
                 return Err(AikiError::InvalidArgument(
-                    "--implementation flag only applies to file targets".to_string(),
+                    "--code flag only applies to file targets".to_string(),
                 ));
             }
 
@@ -412,7 +448,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     // Build sources for lineage (not routing)
     let sources = match scope.kind {
         ReviewScopeKind::Task => vec![format!("task:{}", scope.id)],
-        ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
+        ReviewScopeKind::Spec | ReviewScopeKind::Code => {
             vec![format!("file:{}", scope.id)]
         }
         _ => vec![],
@@ -437,7 +473,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 fn run_review(
     cwd: &Path,
     target: Option<String>,
-    implementation: bool,
+    code: bool,
     fix: bool,
     run_async: bool,
     start: bool,
@@ -454,7 +490,7 @@ fn run_review(
     };
 
     // Detect target and resolve scope at CLI layer
-    let (scope, _worker) = match detect_target(cwd, target.as_deref(), implementation) {
+    let (scope, _worker) = match detect_target(cwd, target.as_deref(), code) {
         Ok(r) => r,
         Err(AikiError::NothingToReview) => {
             return Ok(());
@@ -610,6 +646,78 @@ fn output_review_completed(review_id: &str, scope: &ReviewScope) -> Result<()> {
     Ok(())
 }
 
+/// Get all issue comments from a task (comments where data.issue == "true").
+///
+/// This is the canonical function for filtering issue comments — used by both
+/// `aiki review issue list` and `aiki fix`.
+pub fn get_issue_comments(task: &Task) -> Vec<&TaskComment> {
+    task.comments
+        .iter()
+        .filter(|c| c.data.get("issue").map(|v| v == "true").unwrap_or(false))
+        .collect()
+}
+
+/// Add an issue to a review task
+fn run_issue_add(cwd: &Path, review_id: &str, text: &str) -> Result<()> {
+    let events = read_events(cwd)?;
+    let tasks = materialize_graph(&events).tasks;
+    let task = find_task(&tasks, review_id)?;
+
+    // Validate it's a review task
+    if !super::fix::is_review_task(task) {
+        return Err(AikiError::InvalidArgument(format!(
+            "Task {} is not a review task.",
+            review_id
+        )));
+    }
+
+    // Validate it's not closed
+    if task.status == TaskStatus::Closed {
+        return Err(AikiError::InvalidArgument(format!(
+            "Review task {} is already closed.",
+            review_id
+        )));
+    }
+
+    // Use shared comment codepath with issue data
+    let mut data = HashMap::new();
+    data.insert("issue".to_string(), "true".to_string());
+
+    super::task::comment_on_task(cwd, &task.id, text, data)?;
+
+    eprintln!("Added issue to review {}", review_id);
+    Ok(())
+}
+
+/// List issues on a review task
+fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
+    let events = read_events(cwd)?;
+    let tasks = materialize_graph(&events).tasks;
+    let task = find_task(&tasks, review_id)?;
+
+    // Validate it's a review task
+    if !super::fix::is_review_task(task) {
+        return Err(AikiError::InvalidArgument(format!(
+            "Task {} is not a review task.",
+            review_id
+        )));
+    }
+
+    let issues = get_issue_comments(task);
+
+    if issues.is_empty() {
+        eprintln!("No issues found on review {}", review_id);
+        return Ok(());
+    }
+
+    for comment in &issues {
+        let id = comment.id.as_deref().unwrap_or("unknown");
+        eprintln!("{}\t{}", id, &comment.text);
+    }
+
+    Ok(())
+}
+
 /// List review tasks
 fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
     let events = read_events(cwd)?;
@@ -655,7 +763,12 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
             .map(|o| format!("{:?}", o).to_lowercase())
             .unwrap_or_default();
 
-        let issue_count = review.comments.len();
+        let issue_count = if let Some(count) = review.data.get("issues_found") {
+            count.parse::<usize>().unwrap_or(review.comments.len())
+        } else {
+            // Backward compat: fall back to comment count
+            review.comments.len()
+        };
 
         content.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
@@ -725,8 +838,29 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         }
     }
 
-    // Add comments/issues
-    if !task.comments.is_empty() {
+    // Add issues and comments
+    if task.data.contains_key("issues_found") {
+        // Structured: show issues separately from regular comments
+        let issues = get_issue_comments(task);
+        if !issues.is_empty() {
+            content.push_str("\n### Issues\n");
+            for (idx, comment) in issues.iter().enumerate() {
+                content.push_str(&format!("{}. {}\n", idx + 1, &comment.text));
+            }
+        }
+        let regular: Vec<&TaskComment> = task
+            .comments
+            .iter()
+            .filter(|c| c.data.get("issue").map(|v| v != "true").unwrap_or(true))
+            .collect();
+        if !regular.is_empty() {
+            content.push_str("\n### Comments\n");
+            for comment in &regular {
+                content.push_str(&format!("- {}\n", &comment.text));
+            }
+        }
+    } else if !task.comments.is_empty() {
+        // Backward compat: show all comments as issues
         content.push_str("\n### Issues\n");
         for (idx, comment) in task.comments.iter().enumerate() {
             content.push_str(&format!("{}. {}\n", idx + 1, &comment.text));
@@ -804,7 +938,7 @@ mod tests {
     fn test_scope_kind_as_str() {
         assert_eq!(ReviewScopeKind::Task.as_str(), "task");
         assert_eq!(ReviewScopeKind::Spec.as_str(), "spec");
-        assert_eq!(ReviewScopeKind::Implementation.as_str(), "implementation");
+        assert_eq!(ReviewScopeKind::Code.as_str(), "code");
         assert_eq!(ReviewScopeKind::Session.as_str(), "session");
     }
 
@@ -812,7 +946,7 @@ mod tests {
     fn test_scope_kind_from_str() {
         assert_eq!(ReviewScopeKind::from_str("task").unwrap(), ReviewScopeKind::Task);
         assert_eq!(ReviewScopeKind::from_str("spec").unwrap(), ReviewScopeKind::Spec);
-        assert_eq!(ReviewScopeKind::from_str("implementation").unwrap(), ReviewScopeKind::Implementation);
+        assert_eq!(ReviewScopeKind::from_str("code").unwrap(), ReviewScopeKind::Code);
         assert_eq!(ReviewScopeKind::from_str("session").unwrap(), ReviewScopeKind::Session);
     }
 
@@ -845,20 +979,20 @@ mod tests {
     }
 
     #[test]
-    fn test_scope_name_implementation() {
+    fn test_scope_name_code() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Implementation,
+            kind: ReviewScopeKind::Code,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
-        assert_eq!(scope.name(), "Implementation (feature.md)");
+        assert_eq!(scope.name(), "Code (feature.md)");
     }
 
     #[test]
     fn test_scope_name_session() {
         let scope = ReviewScope {
             kind: ReviewScopeKind::Session,
-            id: "session".to_string(),
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             task_ids: vec![],
         };
         assert_eq!(scope.name(), "Session");
@@ -882,7 +1016,7 @@ mod tests {
     fn test_scope_to_data_session_with_task_ids() {
         let scope = ReviewScope {
             kind: ReviewScopeKind::Session,
-            id: "session".to_string(),
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             task_ids: vec!["t1".to_string(), "t2".to_string()],
         };
         let data = scope.to_data();
@@ -908,13 +1042,13 @@ mod tests {
     fn test_scope_roundtrip_session() {
         let scope = ReviewScope {
             kind: ReviewScopeKind::Session,
-            id: "session".to_string(),
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             task_ids: vec!["t1".to_string(), "t2".to_string()],
         };
         let data = scope.to_data();
         let restored = ReviewScope::from_data(&data).unwrap();
         assert_eq!(restored.kind, ReviewScopeKind::Session);
-        assert_eq!(restored.id, "session");
+        assert_eq!(restored.id, "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(restored.task_ids, vec!["t1", "t2"]);
     }
 
@@ -932,15 +1066,15 @@ mod tests {
     }
 
     #[test]
-    fn test_scope_roundtrip_implementation() {
+    fn test_scope_roundtrip_code() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Implementation,
+            kind: ReviewScopeKind::Code,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
         let data = scope.to_data();
         let restored = ReviewScope::from_data(&data).unwrap();
-        assert_eq!(restored.kind, ReviewScopeKind::Implementation);
+        assert_eq!(restored.kind, ReviewScopeKind::Code);
         assert_eq!(restored.id, "ops/now/feature.md");
     }
 
@@ -1008,14 +1142,14 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_target_md_file_implementation() {
+    fn test_detect_target_md_file_code() {
         let dir = tempfile::tempdir().unwrap();
         let md_path = dir.path().join("feature.md");
         std::fs::write(&md_path, "# Feature\n").unwrap();
         let path_str = md_path.to_str().unwrap();
 
         let (scope, worker) = detect_target(dir.path(), Some(path_str), true).unwrap();
-        assert_eq!(scope.kind, ReviewScopeKind::Implementation);
+        assert_eq!(scope.kind, ReviewScopeKind::Code);
         assert_eq!(scope.id, path_str);
         assert!(worker.is_none());
     }
@@ -1029,25 +1163,25 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_target_implementation_flag_no_target() {
+    fn test_detect_target_code_flag_no_target() {
         let dir = tempfile::tempdir().unwrap();
         let result = detect_target(dir.path(), None, true);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("--implementation flag only applies to file targets"));
+            .contains("--code flag only applies to file targets"));
     }
 
     #[test]
-    fn test_detect_target_implementation_flag_task_id() {
+    fn test_detect_target_code_flag_task_id() {
         let dir = tempfile::tempdir().unwrap();
         let result = detect_target(dir.path(), Some("abcdefgh"), true);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("--implementation flag only applies to file targets"));
+            .contains("--code flag only applies to file targets"));
     }
 
     #[test]

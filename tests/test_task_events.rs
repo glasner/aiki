@@ -669,10 +669,10 @@ fn test_task_event_in_hook_composer_context() {
 
 #[test]
 fn test_task_closed_lazy_vars_in_log_statement() {
-    // Test that $event.task.files and $event.task.changes can be used in hooks
+    // Test that {{event.task.files}} and {{event.task.changes}} can be used in hooks
     // (even though they'll be empty without a real JJ repo, the resolution should work)
     let statements = vec![HookStatement::Action(Action::Log(LogAction {
-        log: "Files: $event.task.files, Changes: $event.task.changes".to_string(),
+        log: "Files: {{event.task.files}}, Changes: {{event.task.changes}}".to_string(),
         alias: None,
     }))];
 
@@ -687,23 +687,24 @@ fn test_task_closed_lazy_vars_in_log_statement() {
 fn test_task_started_no_lazy_provenance_vars() {
     // task.started events should NOT have files/changes lazy vars
     // (provenance only makes sense at task close)
+    // With {{var}} syntax, referencing an undefined variable produces an error
     let statements = vec![HookStatement::Action(Action::Log(LogAction {
-        log: "Files: $event.task.files".to_string(),
+        log: "Files: {{event.task.files}}".to_string(),
         alias: None,
     }))];
 
     let mut state = AikiState::new(create_task_started_event());
-    let result = HookEngine::execute_statements(&statements, &mut state).unwrap();
+    let result = HookEngine::execute_statements(&statements, &mut state);
 
-    // Should succeed but $event.task.files won't be resolved (stays as literal)
-    assert!(matches!(result, HookOutcome::Success));
+    // Should error because event.task.files is not defined on task.started events
+    assert!(result.is_err());
 }
 
 #[test]
 fn test_task_closed_lazy_vars_only_computed_when_accessed() {
     // Verify lazy vars don't cause issues when NOT accessed
     let statements = vec![HookStatement::Action(Action::Log(LogAction {
-        log: "Task $event.task.id closed".to_string(), // Doesn't use files/changes
+        log: "Task {{event.task.id}} closed".to_string(), // Doesn't use files/changes
         alias: None,
     }))];
 
@@ -718,9 +719,9 @@ fn test_task_closed_lazy_vars_only_computed_when_accessed() {
 fn test_task_closed_conditional_with_lazy_vars() {
     // Test lazy vars in conditional context
     let statements = vec![HookStatement::If(IfStatement {
-        condition: "$event.task.outcome == \"done\"".to_string(),
+        condition: "event.task.outcome == \"done\"".to_string(),
         then: vec![HookStatement::Action(Action::Log(LogAction {
-            log: "Done! Changed files: $event.task.files".to_string(),
+            log: "Done! Changed files: {{event.task.files}}".to_string(),
             alias: None,
         }))],
         else_: None,

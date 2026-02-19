@@ -339,7 +339,7 @@ pub fn build_move_metadata(
 /// during an AI editing session (AdditiveUserEdits case).
 ///
 /// # Required Event Variables
-/// - `$event.session_id` - Session identifier
+/// - `event.session_id` - Session identifier
 ///
 /// # Returns
 /// An ActionResult with JSON output: `{"author": "...", "message": "..."}`
@@ -747,23 +747,23 @@ pub fn write_ai_files_change(
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "write_ai_files_change requires context with $prep variable"
+            "write_ai_files_change requires context with prep variable"
         ))
     })?;
 
     let prep = ctx.get_variable("prep").ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "write_ai_files_change requires $prep variable from prepare_separation"
+            "write_ai_files_change requires prep variable from prepare_separation"
         ))
     })?;
 
     let prep_json: serde_json::Value = serde_json::from_str(prep)
-        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse prep variable: {}", e)))?;
 
     let files = prep_json
         .get("files")
         .and_then(|f| f.as_object())
-        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in prep")))?;
 
     for (file_path, file_data) in files {
         let ai_only_content = file_data
@@ -808,23 +808,23 @@ pub fn restore_original_files_change(
 ) -> Result<ActionResult> {
     let ctx = context.ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "restore_original_files_change requires context with $prep variable"
+            "restore_original_files_change requires context with prep variable"
         ))
     })?;
 
     let prep = ctx.get_variable("prep").ok_or_else(|| {
         AikiError::Other(anyhow::anyhow!(
-            "restore_original_files_change requires $prep variable from prepare_separation"
+            "restore_original_files_change requires prep variable from prepare_separation"
         ))
     })?;
 
     let prep_json: serde_json::Value = serde_json::from_str(prep)
-        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse $prep variable: {}", e)))?;
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to parse prep variable: {}", e)))?;
 
     let files = prep_json
         .get("files")
         .and_then(|f| f.as_object())
-        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in $prep")))?;
+        .ok_or_else(|| AikiError::Other(anyhow::anyhow!("Missing 'files' in prep")))?;
 
     for (file_path, file_data) in files {
         let original_content = file_data
@@ -1070,6 +1070,237 @@ pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
         success: true,
         exit_code: Some(0),
         stdout: json,
+        stderr: String::new(),
+    })
+}
+
+// =============================================================================
+// Workspace Isolation Functions
+// =============================================================================
+
+/// Create an isolated workspace if concurrent sessions are detected.
+///
+/// Called from `turn.started` and `repo.changed` hooks.
+/// Checks how many sessions are active in the current repo:
+/// - count == 1: skip (zero overhead for solo sessions)
+/// - count > 1: create isolated workspace
+///
+/// Creation is idempotent — no-op if workspace already exists.
+///
+/// # Returns
+/// ActionResult with stdout being the absolute workspace path (if created/exists)
+/// or empty string (if skipped or failed)
+pub fn workspace_create_if_concurrent(
+    session: &crate::session::AikiSession,
+    cwd: &Path,
+) -> Result<ActionResult> {
+    use crate::session::isolation;
+
+    let repo_root = match isolation::find_jj_root(cwd) {
+        Some(root) => root,
+        None => {
+            debug_log(|| "[workspace] Not in a JJ repo, skipping workspace creation");
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+    };
+
+    let repo_id = match crate::repo_id::read_repo_id(&repo_root)? {
+        Some(id) => id,
+        None => {
+            debug_log(|| "[workspace] No repo-id found, skipping workspace creation");
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+    };
+
+    let session_uuid = session.uuid();
+
+    // Register session in repo (for O(1) session counting and repo-transition detection)
+    isolation::register_session_in_repo(&repo_id, session_uuid);
+
+    let session_count = isolation::count_sessions_in_repo(&repo_id);
+
+    // Check if a workspace already exists for this session
+    let workspace_path = crate::global::global_aiki_dir()
+        .join("workspaces")
+        .join(&repo_id)
+        .join(session_uuid);
+
+    if session_count <= 1 && !workspace_path.exists() {
+        debug_log(|| {
+            format!(
+                "[workspace] Only {} session(s) in repo {}, skipping isolation",
+                session_count, repo_id
+            )
+        });
+        return Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+
+    match isolation::create_isolated_workspace(&repo_root, session_uuid) {
+        Ok(ws) => {
+            debug_log(|| {
+                format!(
+                    "[workspace] Workspace '{}' ready at {}",
+                    ws.name,
+                    ws.path.display()
+                )
+            });
+            Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: ws.path.to_string_lossy().to_string(),
+                stderr: String::new(),
+            })
+        }
+        Err(e) => {
+            // Workspace creation failure is non-fatal — fall back to main workspace
+            eprintln!("[aiki] Warning: workspace creation failed, continuing in main workspace: {}", e);
+            Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: format!("fallback: {}", e),
+            })
+        }
+    }
+}
+
+/// Absorb all workspaces for the current session back into parent/main.
+///
+/// Called from `session.ended` hook.
+/// Iterates `~/.aiki/workspaces/*/<session-uuid>/`, absorbs and cleans up each.
+/// No-op if no workspaces exist (solo session that never needed isolation).
+///
+/// # Returns
+/// ActionResult with stdout being the count of absorbed workspaces
+pub fn workspace_absorb_all(
+    session: &crate::session::AikiSession,
+) -> Result<ActionResult> {
+    use crate::session::isolation;
+
+    let session_uuid = session.uuid();
+    let workspaces_dir = crate::global::global_aiki_dir().join("workspaces");
+
+    if !workspaces_dir.exists() {
+        return Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: "0".to_string(),
+            stderr: String::new(),
+        });
+    }
+
+    // TODO: Read parent session UUID from AIKI_PARENT_SESSION_UUID env var
+    // once runner.rs passes it when spawning subagents
+    let parent_session_uuid: Option<String> = std::env::var("AIKI_PARENT_SESSION_UUID").ok();
+    let mut absorbed = 0u32;
+
+    // Scan all repo-id directories for workspaces belonging to this session
+    let entries = match std::fs::read_dir(&workspaces_dir) {
+        Ok(e) => e,
+        Err(_) => {
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: "0".to_string(),
+                stderr: String::new(),
+            });
+        }
+    };
+
+    for entry in entries.flatten() {
+        let repo_id_dir = entry.path();
+        if !repo_id_dir.is_dir() {
+            continue;
+        }
+
+        let session_ws_dir = repo_id_dir.join(session_uuid);
+        if !session_ws_dir.exists() {
+            continue;
+        }
+
+        let workspace_name = format!("aiki-{}", session_uuid);
+
+        // Find repo root from workspace
+        let repo_root = match isolation::find_jj_root(&session_ws_dir) {
+            Some(root) => root,
+            None => {
+                debug_log(|| {
+                    format!(
+                        "[workspace] Could not find repo root for workspace at {}",
+                        session_ws_dir.display()
+                    )
+                });
+                // Clean up directory even if we can't absorb
+                let _ = std::fs::remove_dir_all(&session_ws_dir);
+                continue;
+            }
+        };
+
+        let workspace = isolation::IsolatedWorkspace {
+            name: workspace_name,
+            path: session_ws_dir,
+            repo_root: repo_root.clone(),
+            session_uuid: session_uuid.to_string(),
+        };
+
+        match isolation::absorb_workspace(
+            &repo_root,
+            &workspace,
+            parent_session_uuid.as_deref(),
+        ) {
+            Ok(()) => absorbed += 1,
+            Err(e) => {
+                eprintln!(
+                    "[aiki] Warning: failed to absorb workspace '{}': {}",
+                    workspace.name, e
+                );
+            }
+        }
+
+        let _ = isolation::cleanup_workspace(&repo_root, &workspace);
+
+        // Unregister session from this repo's sidecar
+        if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
+            isolation::unregister_session_from_repo(repo_id, session_uuid);
+        }
+    }
+
+    // Unconditionally unregister this session from any repo it's registered in.
+    // This handles solo sessions that registered in by-repo/ but never created
+    // a workspace (the loop above only covers sessions with workspace dirs).
+    if let Some(repo_id) = isolation::find_session_repo(session_uuid) {
+        isolation::unregister_session_from_repo(&repo_id, session_uuid);
+    }
+
+    // Opportunistically clean up orphaned JJ workspaces for the current repo.
+    // This prevents the jj workspace list from growing unbounded with dead sessions.
+    if let Some(repo_root) = isolation::find_jj_root(&std::env::current_dir().unwrap_or_default()) {
+        if let Err(e) = isolation::cleanup_orphaned_workspaces(&repo_root) {
+            debug_log(|| format!("[workspace] Orphaned workspace cleanup failed: {}", e));
+        }
+    }
+
+    debug_log(|| format!("[workspace] Absorbed {} workspace(s)", absorbed));
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: absorbed.to_string(),
         stderr: String::new(),
     })
 }

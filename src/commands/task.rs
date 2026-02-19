@@ -12,6 +12,16 @@ use std::path::Path;
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
+
+/// Name for the synthetic `.0` subtask auto-created when starting a parent task.
+const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
+
+/// Placeholder prefix/suffix for parent.subtasks.{slug} deferred resolution.
+/// During template processing, {{parent.subtasks.criteria}} becomes
+/// __AIKI_SUBTASK_SLUG_criteria__ which is replaced with the actual task ID
+/// after all sibling subtask IDs are generated.
+const SUBTASK_SLUG_PLACEHOLDER_PREFIX: &str = "__AIKI_SUBTASK_SLUG_";
+const SUBTASK_SLUG_PLACEHOLDER_SUFFIX: &str = "__";
 use crate::events::{AikiEvent, AikiTaskClosedPayload, AikiTaskStartedPayload, TaskEventPayload};
 use std::collections::{HashMap, HashSet};
 
@@ -20,8 +30,9 @@ use crate::tasks::types::FastHashMap;
 use crate::tasks::{
     generate_task_id, is_task_id, is_task_id_prefix,
     manager::{
-        find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_agent_scoped,
-        get_ready_queue_for_scope_set, has_subtasks, resolve_task_id, ScopeSet,
+        find_task, find_task_in_graph, get_current_scope_set, get_in_progress,
+        get_ready_queue_for_agent_scoped, get_ready_queue_for_scope_set, has_subtasks,
+        resolve_task_id_in_graph, ScopeSet,
     },
     materialize_graph, materialize_graph_with_ids,
     md::{
@@ -31,7 +42,9 @@ use crate::tasks::{
     },
     reopen_if_closed,
     runner::{run_task_with_output, TaskRunOptions},
-    storage::{read_events, read_events_with_ids, write_event, write_link_event},
+    storage::{
+        read_events, read_events_with_ids, write_event, write_events_batch, write_link_event,
+    },
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     MdBuilder, TaskGraph,
 };
@@ -245,6 +258,10 @@ pub enum TaskCommands {
         #[arg(long)]
         parent: Option<String>,
 
+        /// Stable slug for this subtask (e.g., "build", "run-tests")
+        #[arg(long)]
+        slug: Option<String>,
+
         /// Assign to specific agent or human (claude-code, codex, cursor, gemini, human)
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
@@ -326,6 +343,10 @@ pub enum TaskCommands {
         /// Override template assignee
         #[arg(long = "assignee", value_name = "AGENT")]
         assignee: Option<String>,
+
+        /// Stable slug for this subtask (for quick-start, e.g., "build", "run-tests")
+        #[arg(long)]
+        slug: Option<String>,
     },
 
     /// Stop the current task
@@ -677,6 +698,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             template,
             data,
             parent,
+            slug,
             assignee,
             source,
             p0,
@@ -684,7 +706,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p2,
             p3,
         } => run_add(
-            &cwd, name, template, data, parent, assignee, source, p0, p1, p2, p3,
+            &cwd, name, template, data, parent, slug, assignee, source, p0, p1, p2, p3,
         ),
         TaskCommands::Start {
             ids,
@@ -698,8 +720,9 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p3,
             source,
             assignee,
+            slug,
         } => run_start(
-            &cwd, ids, template, data, reopen, reason, p0, p1, p2, p3, source, assignee,
+            &cwd, ids, template, data, reopen, reason, p0, p1, p2, p3, source, assignee, slug,
         ),
         TaskCommands::Stop {
             id,
@@ -1109,6 +1132,7 @@ fn run_add(
     template_name: Option<String>,
     data_args: Vec<String>,
     parent: Option<String>,
+    slug: Option<String>,
     assignee_arg: Option<String>,
     sources: Vec<String>,
     p0: bool,
@@ -1220,12 +1244,24 @@ fn run_add(
     let graph = materialize_graph(&events);
     let tasks = &graph.tasks;
 
+    // Validate slug format if provided
+    if let Some(ref s) = slug {
+        if !crate::tasks::is_valid_slug(s) {
+            return Err(AikiError::InvalidSlug(s.clone()));
+        }
+    }
+
     // Determine task ID and possibly inherit parent's assignee
     let (task_id, effective_assignee) = if let Some(ref parent_id) = parent {
         // Validate parent exists; if closed, implicitly reopen it
-        let parent_task = find_task(&tasks, parent_id)?;
+        let parent_task = find_task_in_graph(&graph, parent_id)?;
         let parent_id = &parent_task.id; // rebind to canonical ID
         reopen_if_closed(cwd, parent_id, &tasks, "Subtasks added")?;
+
+        // Validate slug uniqueness within parent
+        if let Some(ref s) = slug {
+            crate::tasks::graph::validate_slug_unique(&graph, parent_id, s)?;
+        }
 
         // Generate subtask ID (full 32-char ID, linked via subtask-of edge)
         let child_id = generate_task_id(&name);
@@ -1250,6 +1286,7 @@ fn run_add(
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: name.clone(),
+        slug: slug.clone(),
         task_type: None,
         priority,
         assignee: effective_assignee.clone(),
@@ -1265,7 +1302,7 @@ fn run_add(
 
     // Emit subtask-of link if this is a child task
     if let Some(ref parent_id) = parent {
-        let parent_id = &find_task(tasks, parent_id)?.id.clone();
+        let parent_id = &find_task_in_graph(&graph, parent_id)?.id.clone();
         write_link_event(cwd, &graph, "subtask-of", &task_id, parent_id)?;
     }
 
@@ -1278,6 +1315,7 @@ fn run_add(
     let new_task = Task {
         id: task_id,
         name,
+        slug,
         task_type: None,
         priority,
         status: TaskStatus::Open,
@@ -1319,6 +1357,7 @@ fn run_start(
     p3: bool,
     sources: Vec<String>,
     assignee_arg: Option<String>,
+    slug: Option<String>,
 ) -> Result<()> {
     use crate::session::find_active_session;
 
@@ -1378,6 +1417,7 @@ fn run_start(
             false,
             Vec::new(),
             None,
+            None,
         );
     }
 
@@ -1398,7 +1438,8 @@ fn run_start(
         TaskPriority::default() // P2
     };
     let events = read_events(cwd)?;
-    let mut tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
+    let mut tasks = graph.tasks.clone();
 
     // Detect current session early - needed for both session filtering and start event
     let session_match = find_active_session(cwd);
@@ -1417,8 +1458,6 @@ fn run_start(
         .map(|t| t.id.clone())
         .collect();
 
-    // Build graph for edge lookups (scope set, blocked-by filtering)
-    let graph = materialize_graph(&events);
     let current_scope_set = get_current_scope_set(&graph);
     let ready = get_ready_queue_for_scope_set(&graph, &current_scope_set);
 
@@ -1436,8 +1475,8 @@ fn run_start(
     } else if ids.len() == 1 && !is_task_id(&ids[0]) {
         // Single arg that's not a full task ID — could be prefix or description
         let mut resolved = None;
-        if is_task_id_prefix(&ids[0]) {
-            match resolve_task_id(&tasks, &ids[0]) {
+        if is_task_id_prefix(&ids[0]) || ids[0].contains(':') {
+            match resolve_task_id_in_graph(&graph, &ids[0]) {
                 Ok(full_id) => resolved = Some(full_id),
                 Err(AikiError::TaskNotFound(_)) => {} // fall through to quick-start
                 Err(e) => return Err(e),              // ambiguous → error
@@ -1453,9 +1492,17 @@ fn run_start(
             let timestamp = chrono::Utc::now();
             let working_copy = get_working_copy_change_id(cwd);
 
+            // Validate slug format if provided for quick-start
+            if let Some(ref s) = slug {
+                if !crate::tasks::is_valid_slug(s) {
+                    return Err(AikiError::InvalidSlug(s.clone()));
+                }
+            }
+
             let create_event = TaskEvent::Created {
                 task_id: task_id.clone(),
                 name: description.clone(),
+                slug: slug.clone(),
                 task_type: None,
                 priority,
                 assignee: None,
@@ -1476,6 +1523,7 @@ fn run_start(
             let new_task = Task {
                 id: task_id.clone(),
                 name: description.clone(),
+                slug: slug.clone(),
                 task_type: None,
                 status: TaskStatus::Open,
                 priority,
@@ -1506,8 +1554,9 @@ fn run_start(
         // Resolve all IDs (prefix → full) and validate
         let mut resolved_ids = Vec::new();
         for id in &ids {
-            let full_id = resolve_task_id(&tasks, id)?;
-            let task = tasks
+            let full_id = resolve_task_id_in_graph(&graph, id)?;
+            let task = graph
+                .tasks
                 .get(&full_id)
                 .ok_or_else(|| AikiError::TaskNotFound(full_id.clone()))?;
             if task.status == TaskStatus::Closed {
@@ -1571,8 +1620,7 @@ fn run_start(
                 .iter()
                 .find(|child_id| {
                     graph.tasks.get(*child_id).is_some_and(|t| {
-                        t.name == "Review all subtasks and start first batch"
-                            && t.status != TaskStatus::Closed
+                        t.name == DIGEST_SUBTASK_NAME && t.status != TaskStatus::Closed
                     })
                 })
                 .cloned();
@@ -1581,12 +1629,13 @@ fn run_start(
                 id
             } else {
                 // Create the planning task with a full 32-char ID
-                let id = generate_task_id("Review all subtasks and start first batch");
+                let id = generate_task_id(DIGEST_SUBTASK_NAME);
                 let timestamp = chrono::Utc::now();
                 let working_copy = get_working_copy_change_id(cwd);
                 let planning_event = TaskEvent::Created {
                     task_id: id.clone(),
-                    name: "Review all subtasks and start first batch".to_string(),
+                    name: DIGEST_SUBTASK_NAME.to_string(),
+                    slug: None,
                     task_type: None,
                     priority: TaskPriority::default(),
                     assignee: None,
@@ -1603,7 +1652,8 @@ fn run_start(
                 // Add to local tasks map for output
                 let task = Task {
                     id: id.clone(),
-                    name: "Review all subtasks and start first batch".to_string(),
+                    name: DIGEST_SUBTASK_NAME.to_string(),
+                    slug: None,
                     task_type: None,
                     status: TaskStatus::Open,
                     priority: TaskPriority::default(),
@@ -1637,10 +1687,16 @@ fn run_start(
 
     // Now that we know which IDs we're actually starting, filter out parent tasks
     // When starting a subtask, preserve its parent (via subtask-of edge) from being auto-stopped
-    let parent_ids_to_preserve: std::collections::HashSet<String> = actual_ids_to_start
+    let mut parent_ids_to_preserve: std::collections::HashSet<String> = actual_ids_to_start
         .iter()
         .filter_map(|id| graph.edges.target(id, "subtask-of").map(|s| s.to_string()))
         .collect();
+
+    // If we just created a .0 subtask for a parent, the subtask-of edge isn't
+    // in the in-memory graph yet (only written to disk). Explicitly preserve the parent.
+    if let Some(ref scope_parent) = new_scope {
+        parent_ids_to_preserve.insert(scope_parent.clone());
+    }
 
     let current_in_progress_ids: Vec<String> = all_in_progress_ids
         .iter()
@@ -1779,7 +1835,31 @@ pub(crate) fn cascade_close_tasks(
     };
     write_event(cwd, &close_event)?;
 
-    // 2. Dispatch task.closed flow events for hook automation
+    // 2. Set data.issues_found for review tasks (before dispatching close events,
+    //    so consumers of task.closed see the correct issue count)
+    for id in task_ids {
+        if let Some(task) = tasks.get(id) {
+            if super::fix::is_review_task(task) {
+                let issue_count = super::review::get_issue_comments(task).len();
+                let data_event = TaskEvent::Updated {
+                    task_id: id.clone(),
+                    name: None,
+                    priority: None,
+                    assignee: None,
+                    data: Some({
+                        let mut m = HashMap::new();
+                        m.insert("issues_found".to_string(), issue_count.to_string());
+                        m
+                    }),
+                    instructions: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                write_event(cwd, &data_event)?;
+            }
+        }
+    }
+
+    // 3. Dispatch task.closed flow events for hook automation
     for id in task_ids {
         if let Some(task) = tasks.get(id) {
             let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
@@ -1801,7 +1881,7 @@ pub(crate) fn cascade_close_tasks(
         }
     }
 
-    // 3. Update in-memory state
+    // 4. Update in-memory state
     for id in task_ids {
         if let Some(task) = tasks.get_mut(id) {
             task.status = TaskStatus::Closed;
@@ -1832,7 +1912,7 @@ fn run_stop(
     // Determine which task to stop
     let task_id = if let Some(id) = id {
         // Verify task exists and is in progress
-        let task = find_task(&graph.tasks, &id)?;
+        let task = find_task_in_graph(&graph, &id)?;
         if task.status != TaskStatus::InProgress {
             if task.status != TaskStatus::Open {
                 return Err(AikiError::TaskNotFound(format!(
@@ -1902,6 +1982,7 @@ fn run_stop(
         let blocker_event = TaskEvent::Created {
             task_id: blocker_id.clone(),
             name: blocked_reason.clone(),
+            slug: None,
             task_type: None,
             priority: TaskPriority::P0, // Blockers are high priority
             assignee: Some("human".to_string()),
@@ -1926,6 +2007,7 @@ fn run_stop(
             Task {
                 id: blocker_id,
                 name: blocked_reason.clone(),
+                slug: None,
                 task_type: None,
                 status: TaskStatus::Open,
                 priority: TaskPriority::P0,
@@ -2056,7 +2138,8 @@ fn run_close(
     }
 
     let events = read_events(cwd)?;
-    let mut tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
+    let mut tasks = graph.tasks.clone();
 
     // Get in-progress task IDs first (to avoid borrow issues)
     let in_progress_ids: Vec<String> = get_in_progress(&tasks)
@@ -2079,16 +2162,13 @@ fn run_close(
         // Resolve all IDs (prefix → full) and validate
         let mut resolved = Vec::new();
         for id in &ids {
-            resolved.push(resolve_task_id(&tasks, id)?);
+            resolved.push(resolve_task_id_in_graph(&graph, id)?);
         }
         resolved
     };
 
     // Keep track of explicitly requested tasks vs cascade-closed descendants
     let explicit_ids = ids_to_close.clone();
-
-    // Build graph for edge lookups (subtask-of, blocked-by, etc.)
-    let graph = materialize_graph(&events);
 
     // Cascade close: collect all unclosed descendants for any parent tasks being closed
     // This allows closing a parent to automatically close all its subtasks
@@ -2187,7 +2267,24 @@ fn run_close(
 
     let close_timestamp = chrono::Utc::now();
 
-    // Close the explicitly requested tasks with user's summary
+    // Build close event but DO NOT write yet — we'll batch it with spawn-related
+    // events (reopen, _spawns_failed) for atomic close+reopen consistency.
+    //
+    // Atomicity model:
+    //   1. Spawned task creation (create_from_template + write_link_event) writes
+    //      individual JJ commits per spawn — these happen BEFORE the batch write.
+    //   2. Close + reopen + _spawns_failed are batch-written atomically.
+    //
+    // If the batch write (step 2) fails after spawns (step 1) succeeded, spawned
+    // tasks persist without the close transition. This is safe because:
+    //   - spawn_key dedup ensures retry won't create duplicates
+    //   - Base child index computation excludes spawner-created children, so
+    //     retried subtask spawns get the same IDs
+    //   - On retry, the correct final state is reached
+    //
+    // True single-commit atomicity would require refactoring create_from_template
+    // to return events instead of writing them — deferred as the failure window
+    // is narrow and recovery is automatic.
     let close_event = TaskEvent::Closed {
         task_ids: explicit_ids.clone(),
         outcome,
@@ -2195,35 +2292,13 @@ fn run_close(
         turn_id: turn_id.clone(),
         timestamp: close_timestamp,
     };
-    write_event(cwd, &close_event)?;
 
     // Note: We intentionally do NOT terminate background processes on close.
     // Close is called by the agent when it finishes work gracefully.
     // Use `aiki task stop` to forcibly terminate a running agent.
 
-    // Emit task.closed flow events for explicitly closed tasks
-    for task_id in &explicit_ids {
-        if let Some(task) = tasks.get(task_id) {
-            let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
-                task: TaskEventPayload {
-                    id: task.id.clone(),
-                    name: task.name.clone(),
-                    task_type: infer_task_type(task),
-                    status: "closed".to_string(),
-                    assignee: task.assignee.clone(),
-                    outcome: Some(outcome.to_string()),
-                    source: task.sources.first().cloned(),
-                    files: None,
-                    changes: None,
-                },
-                cwd: cwd.to_path_buf(),
-                timestamp: close_timestamp,
-            });
-            let _ = crate::event_bus::dispatch(task_event);
-        }
-    }
-
     // Update closed tasks status in local state for explicit IDs
+    // (in-memory only — needed for spawn condition evaluation)
     for task in &mut closed_tasks {
         task.status = TaskStatus::Closed;
         task.closed_outcome = Some(outcome);
@@ -2244,6 +2319,217 @@ fn run_close(
     // Move mutated tasks into graph for accurate subtask-closed checks and edge lookups
     let mut graph = graph;
     graph.tasks = tasks;
+
+    // Set data.issues_found for explicitly closed review tasks.
+    // This must happen BEFORE spawn evaluation so conditions like
+    // `data.issues_found > 0` can be checked, and BEFORE batch_events
+    // is built so the Updated event is included in the atomic write.
+    let mut issues_found_events: Vec<TaskEvent> = Vec::new();
+    for id in &explicit_ids {
+        if let Some(task) = graph.tasks.get(id) {
+            if super::fix::is_review_task(task) {
+                let issue_count = super::review::get_issue_comments(task).len();
+                // Update in-memory state for spawn condition evaluation
+                if let Some(task_mut) = graph.tasks.get_mut(id) {
+                    task_mut
+                        .data
+                        .insert("issues_found".to_string(), issue_count.to_string());
+                }
+                issues_found_events.push(TaskEvent::Updated {
+                    task_id: id.clone(),
+                    name: None,
+                    priority: None,
+                    assignee: None,
+                    data: Some({
+                        let mut m = HashMap::new();
+                        m.insert("issues_found".to_string(), issue_count.to_string());
+                        m
+                    }),
+                    instructions: None,
+                    timestamp: chrono::Utc::now(),
+                });
+            }
+        }
+    }
+
+    // === Spawn evaluation: check if any closed tasks have spawn configs ===
+    // Spawn conditions are evaluated against the post-transition state (including outcome),
+    // so we don't gate on outcome here — let `when` expressions decide.
+    let mut spawn_notices: Vec<String> = Vec::new();
+    // Collect additional events to batch-write with the close event
+    let mut batch_events: Vec<TaskEvent> = vec![close_event];
+    batch_events.extend(issues_found_events);
+    // Track spawners that need reopening (subtask spawns created successfully)
+    let mut spawners_to_reopen: HashSet<String> = HashSet::new();
+
+    for task_id in &explicit_ids {
+        if let Some(task) = graph.tasks.get(task_id) {
+            if let Some(spawns_json) = task.data.get("_spawns").cloned() {
+                if let Ok(spawns_config) = serde_json::from_str::<
+                    Vec<crate::tasks::templates::spawn_config::SpawnEntry>,
+                >(&spawns_json)
+                {
+                    // Spawn depth guard: walk spawned-by chain to check depth
+                    let depth = spawn_chain_depth(&graph, task_id);
+                    if depth >= 10 {
+                        eprintln!(
+                            "[aiki] Warning: spawn depth limit reached ({}) for task {} — skipping spawns",
+                            depth, task_id
+                        );
+                        continue;
+                    }
+
+                    let actions =
+                        crate::tasks::spawner::evaluate_spawns(task, &graph, &spawns_config);
+
+                    // Pre-compute child IDs for ALL subtask spawns before executing any.
+                    // This ensures deterministic index allocation: indices are assigned
+                    // based on spawn entry order, not execution order. If one spawn fails
+                    // but another succeeds, retries produce the same index assignments
+                    // (combined with spawn_key dedup for idempotency).
+                    //
+                    // Pre-generate full 32-char IDs for subtask spawns.
+                    // Idempotency (retry safety) is handled by the _spawn_key check in
+                    // execute_spawn_action — if a spawn already succeeded, its existing
+                    // task is returned and the pre-generated ID is unused.
+                    let mut child_id_map: HashMap<usize, String> = HashMap::new();
+                    for action in &actions {
+                        if let crate::tasks::spawner::SpawnAction::CreateSubtask {
+                            spawn_index,
+                            template,
+                            ..
+                        } = action
+                        {
+                            child_id_map
+                                .insert(*spawn_index, crate::tasks::id::generate_task_id(template));
+                        }
+                    }
+
+                    let mut failed_indices: Vec<usize> = Vec::new();
+                    for action in &actions {
+                        let spawn_index = match action {
+                            crate::tasks::spawner::SpawnAction::CreateTask {
+                                spawn_index, ..
+                            } => *spawn_index,
+                            crate::tasks::spawner::SpawnAction::CreateSubtask {
+                                spawn_index,
+                                ..
+                            } => *spawn_index,
+                        };
+                        // Look up pre-computed child ID for subtask spawns
+                        let child_task_id = child_id_map.get(&spawn_index).cloned();
+                        match execute_spawn_action(cwd, &mut graph, task_id, action, child_task_id)
+                        {
+                            Ok(spawned_id) => {
+                                let (template, is_subtask) = match action {
+                                    crate::tasks::spawner::SpawnAction::CreateTask {
+                                        template,
+                                        ..
+                                    } => (template.as_str(), false),
+                                    crate::tasks::spawner::SpawnAction::CreateSubtask {
+                                        template,
+                                        ..
+                                    } => (template.as_str(), true),
+                                };
+                                if is_subtask {
+                                    spawners_to_reopen.insert(task_id.clone());
+                                }
+                                let kind = if is_subtask { "subtask" } else { "task" };
+                                spawn_notices.push(format!(
+                                    "Spawned {} from template {} (id: {})",
+                                    kind,
+                                    template,
+                                    crate::tasks::md::short_id(&spawned_id),
+                                ));
+                            }
+                            Err(e) => {
+                                failed_indices.push(spawn_index);
+                                eprintln!(
+                                    "[aiki] Warning: spawn execution failed for task {}, index {}: {}",
+                                    task_id, spawn_index, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Record failed spawn indices in the batch so they can be retried
+                    if !failed_indices.is_empty() {
+                        let failed_str = failed_indices
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        batch_events.push(TaskEvent::Updated {
+                            task_id: task_id.clone(),
+                            name: None,
+                            priority: None,
+                            assignee: None,
+                            data: Some({
+                                let mut m = std::collections::HashMap::new();
+                                m.insert("_spawns_failed".to_string(), failed_str.clone());
+                                m
+                            }),
+                            instructions: None,
+                            timestamp: chrono::Utc::now(),
+                        });
+                        eprintln!(
+                            "[aiki] Warning: {} spawn(s) failed for task {} (indices: {}). Spawns are idempotent — re-closing will retry.",
+                            failed_indices.len(), crate::tasks::md::short_id(task_id), failed_str
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // For subtask spawns that succeeded, add reopen events to the batch.
+    // The reopen happens AFTER confirming child creation succeeded — never
+    // before, which avoids incorrectly reopening the spawner on template failure.
+    for spawner_id in &spawners_to_reopen {
+        batch_events.push(TaskEvent::Reopened {
+            task_id: spawner_id.clone(),
+            reason: "Spawning subtask".to_string(),
+            timestamp: chrono::Utc::now(),
+        });
+        // Update local graph state
+        if let Some(task) = graph.tasks.get_mut(spawner_id) {
+            task.status = TaskStatus::Open;
+            task.closed_outcome = None;
+        }
+    }
+
+    // Atomic batch write: close + reopen + _spawns_failed in a single JJ commit.
+    // Note: spawned task creation (create_from_template) is NOT in this batch —
+    // see atomicity model comment above for the rationale and safety guarantees.
+    write_events_batch(cwd, &batch_events)?;
+
+    // Emit task.closed flow events AFTER the batch write succeeds
+    for task_id in &explicit_ids {
+        if let Some(task) = graph.tasks.get(task_id) {
+            // For reopened spawners, emit with their current (reopened) status
+            let status_str = if spawners_to_reopen.contains(task_id) {
+                "open"
+            } else {
+                "closed"
+            };
+            let task_event = AikiEvent::TaskClosed(AikiTaskClosedPayload {
+                task: TaskEventPayload {
+                    id: task.id.clone(),
+                    name: task.name.clone(),
+                    task_type: infer_task_type(task),
+                    status: status_str.to_string(),
+                    assignee: task.assignee.clone(),
+                    outcome: Some(outcome.to_string()),
+                    source: task.sources.first().cloned(),
+                    files: None,
+                    changes: None,
+                },
+                cwd: cwd.to_path_buf(),
+                timestamp: close_timestamp,
+            });
+            let _ = crate::event_bus::dispatch(task_event);
+        }
+    }
 
     // Check each parent for auto-start eligibility
     let mut auto_started_parents: Vec<Task> = Vec::new();
@@ -2444,10 +2730,14 @@ fn run_close(
 
     // Notices and auto-starts
     let has_intermediates = !notices.is_empty()
+        || !spawn_notices.is_empty()
         || !auto_started_parents.is_empty()
         || !auto_started_subtasks.is_empty();
     if has_intermediates {
         for notice in &notices {
+            output.push_str(&format!("> {}\n", notice));
+        }
+        for notice in &spawn_notices {
             output.push_str(&format!("> {}\n", notice));
         }
         for parent in &auto_started_parents {
@@ -2463,6 +2753,164 @@ fn run_close(
 
     aiki_print(&output);
     Ok(())
+}
+
+/// Walk the spawned-by chain to determine spawn depth.
+///
+/// Returns the number of spawned-by hops from this task to the root.
+/// Used to enforce the max spawn depth guard (10 levels).
+fn spawn_chain_depth(graph: &TaskGraph, task_id: &str) -> usize {
+    let mut depth = 0;
+    let mut current = task_id.to_string();
+    loop {
+        match graph.edges.target(&current, "spawned-by") {
+            Some(parent) => {
+                depth += 1;
+                current = parent.to_string();
+                if depth > 20 {
+                    break; // Safety: prevent infinite loop from corrupted data
+                }
+            }
+            None => break,
+        }
+    }
+    depth
+}
+
+/// Execute a single spawn action: create a task from template with appropriate links.
+///
+/// The caller is responsible for:
+/// - Pre-computing `child_task_id` for subtask spawns (deterministic index allocation)
+/// - Writing the close event and reopen event (for atomicity with spawn creation)
+///
+/// Returns the ID of the spawned task, or an error if creation fails.
+fn execute_spawn_action(
+    cwd: &Path,
+    graph: &mut TaskGraph,
+    spawner_id: &str,
+    action: &crate::tasks::spawner::SpawnAction,
+    child_task_id: Option<String>,
+) -> Result<String> {
+    use crate::tasks::spawner::SpawnAction;
+
+    let (template, priority, assignee, data, spawn_index, is_subtask) = match action {
+        SpawnAction::CreateTask {
+            template,
+            priority,
+            assignee,
+            data,
+            spawn_index,
+        } => (template, priority, assignee, data, spawn_index, false),
+        SpawnAction::CreateSubtask {
+            template,
+            priority,
+            assignee,
+            data,
+            spawn_index,
+        } => (template, priority, assignee, data, spawn_index, true),
+    };
+
+    // Idempotency: check if a task with this spawn_key already exists
+    let spawn_key = format!("{}:{}", spawner_id, spawn_index);
+    for task in graph.tasks.values() {
+        if task.data.get("_spawn_key").map(|v| v.as_str()) == Some(&spawn_key) {
+            return Ok(task.id.clone()); // Already spawned
+        }
+    }
+
+    // Get spawner task for context
+    let spawner = graph
+        .tasks
+        .get(spawner_id)
+        .ok_or_else(|| AikiError::TaskNotFound(spawner_id.to_string()))?;
+
+    // Determine priority: spawn config > spawner priority > default
+    let task_priority = if let Some(p) = priority {
+        TaskPriority::from_str(p).unwrap_or(spawner.priority)
+    } else {
+        spawner.priority
+    };
+
+    // Build data map with spawn metadata
+    let mut spawn_data: HashMap<String, String> = data.clone();
+    spawn_data.insert("_spawn_key".to_string(), spawn_key);
+
+    // Add spawner context as data for template variable substitution
+    spawn_data.insert("spawner.id".to_string(), spawner_id.to_string());
+    spawn_data.insert("spawner.name".to_string(), spawner.name.clone());
+    spawn_data.insert("spawner.status".to_string(), spawner.status.to_string());
+    spawn_data.insert("spawner.priority".to_string(), spawner.priority.to_string());
+    let approved = spawner
+        .data
+        .get("approved")
+        .map(|v| v.as_str())
+        .unwrap_or("false");
+    spawn_data.insert("spawner.approved".to_string(), approved.to_string());
+    if let Some(ref outcome) = spawner.closed_outcome {
+        spawn_data.insert("spawner.outcome".to_string(), outcome.to_string());
+    }
+    if let Some(ref assignee) = spawner.assignee {
+        spawn_data.insert("spawner.assignee".to_string(), assignee.clone());
+    }
+    if let Some(ref summary) = spawner.summary {
+        spawn_data.insert("spawner.summary".to_string(), summary.clone());
+    }
+
+    // Add spawner.data.* fields so spawned templates can access spawner's data
+    for (key, value) in &spawner.data {
+        if !key.starts_with('_') {
+            spawn_data.insert(format!("spawner.data.{}", key), value.clone());
+        }
+    }
+
+    // Add spawner.links.{kind}.task_id for each link kind with targets
+    for link_kind in crate::tasks::graph::LINK_KINDS {
+        let targets = graph.edges.targets(spawner_id, link_kind.name);
+        if let Some(first_target) = targets.first() {
+            spawn_data.insert(
+                format!("spawner.links.{}.task_id", link_kind.name),
+                first_target.clone(),
+            );
+        }
+    }
+
+    // Build template params
+    let params = TemplateTaskParams {
+        template_name: template.clone(),
+        data: spawn_data,
+        sources: vec![format!("task:{}", spawner_id)],
+        assignee: assignee.clone(),
+        priority: Some(task_priority),
+        parent_id: if is_subtask {
+            Some(spawner_id.to_string())
+        } else {
+            None
+        },
+        parent_name: if is_subtask {
+            Some(spawner.name.clone())
+        } else {
+            None
+        },
+        source_data: HashMap::new(),
+        builtins: HashMap::new(),
+        task_id: child_task_id,
+    };
+
+    // Create the task from template FIRST — if this fails, no state is changed
+    let spawned_id = create_from_template(cwd, params)?;
+
+    // Add spawned-by link from spawned task to spawner
+    // Re-read events to get updated graph with the new task
+    let fresh_events = read_events(cwd)?;
+    let fresh_graph = materialize_graph(&fresh_events);
+    write_link_event(cwd, &fresh_graph, "spawned-by", &spawned_id, spawner_id)?;
+
+    // Update the in-memory graph with the spawned task
+    if let Some(spawned_task) = fresh_graph.tasks.get(&spawned_id) {
+        graph.tasks.insert(spawned_id.clone(), spawned_task.clone());
+    }
+
+    Ok(spawned_id)
 }
 
 /// Query changes that have a task ID in their provenance
@@ -2699,7 +3147,7 @@ fn run_show(
 
     // Determine which task to show
     let task_id = if let Some(id) = id {
-        let task = find_task(&tasks, &id)?;
+        let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
         // Default to first in-progress task
@@ -2745,10 +3193,14 @@ fn run_show(
     } else {
         task.status.to_string()
     };
-    let mut content = format!(
-        "Task: {}\nID: {}\nStatus: {}\nPriority: {}\n",
-        task.name, task.id, status_display, task.priority,
-    );
+    let mut content = format!("Task: {}\nID: {}\n", task.name, task.id,);
+    if let Some(ref slug) = task.slug {
+        content.push_str(&format!("Slug: {}\n", slug));
+    }
+    content.push_str(&format!(
+        "Status: {}\nPriority: {}\n",
+        status_display, task.priority
+    ));
 
     // Add summary for closed tasks
     if task.status == TaskStatus::Closed {
@@ -2793,6 +3245,30 @@ fn run_show(
         }
     }
 
+    // Add spawned-by link (this task was spawned by another)
+    if let Some(spawner_id) = graph.edges.target(&task_id, "spawned-by") {
+        let spawner_display = graph
+            .tasks
+            .get(spawner_id)
+            .map(|t| format!("{} — {}", short_id(spawner_id), t.name))
+            .unwrap_or_else(|| short_id(spawner_id).to_string());
+        content.push_str(&format!("Spawned by: {}\n", spawner_display));
+    }
+
+    // Add spawned tasks (this task spawned others)
+    let spawned = graph.edges.referrers(&task_id, "spawned-by");
+    if !spawned.is_empty() {
+        content.push_str("\nSpawned:\n");
+        for spawned_id in spawned {
+            let display = graph
+                .tasks
+                .get(spawned_id)
+                .map(|t| format!("{} — {} ({})", short_id(spawned_id), t.name, t.status))
+                .unwrap_or_else(|| short_id(spawned_id).to_string());
+            content.push_str(&format!("- {}\n", display));
+        }
+    }
+
     // Add instructions if present and requested
     if with_instructions {
         if let Some(ref instructions) = task.instructions {
@@ -2818,13 +3294,15 @@ fn run_show(
                 TaskStatus::InProgress => "[>]",
                 _ => "[ ]",
             };
-            // Use relative ID (.N) since parent ID is already shown
-            let relative_id = if let Some(dot_pos) = subtask.id.rfind('.') {
-                &subtask.id[dot_pos..]
+            // Show slug if present, otherwise use relative ID (.N)
+            let label = if let Some(ref slug) = subtask.slug {
+                slug.clone()
+            } else if let Some(dot_pos) = subtask.id.rfind('.') {
+                subtask.id[dot_pos..].to_string()
             } else {
-                &subtask.id
+                subtask.id.clone()
             };
-            content.push_str(&format!("{} {} {}\n", check, relative_id, subtask.name));
+            content.push_str(&format!("{} {} {}\n", check, label, subtask.name));
         }
     }
 
@@ -2885,7 +3363,7 @@ fn run_undo(
                 "--completed requires exactly one plan task ID".to_string(),
             ));
         }
-        let plan_task = find_task(tasks, &ids[0])?;
+        let plan_task = find_task_in_graph(&graph, &ids[0])?;
         let plan_id = &plan_task.id;
 
         // Find completed subtasks (direct children of the plan)
@@ -2908,7 +3386,7 @@ fn run_undo(
         // Resolve all IDs (prefix → full) and validate
         let mut resolved = Vec::new();
         for id in &ids {
-            resolved.push(resolve_task_id(&tasks, id)?);
+            resolved.push(resolve_task_id_in_graph(&graph, id)?);
         }
         resolved
     };
@@ -3135,7 +3613,7 @@ fn run_undo(
     if dry_run {
         eprintln!("[DRY RUN] Would undo {} task(s)", task_ids.len());
         for id in &task_ids {
-            if let Ok(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task_in_graph(&graph, id) {
                 eprintln!("  \"{}\"", task.name);
             }
         }
@@ -3286,21 +3764,21 @@ fn run_undo(
     // Human-readable output to stderr
     eprintln!();
     if task_ids.len() == 1 {
-        if let Ok(task) = find_task(&tasks, &task_ids[0]) {
+        if let Ok(task) = find_task_in_graph(&graph, &task_ids[0]) {
             eprintln!("Undoing task {}", &task_ids[0][..8]);
             eprintln!("  \"{}\"", task.name);
         }
     } else if completed {
         eprintln!("Undoing {} completed subtasks", task_ids.len());
         for id in &task_ids {
-            if let Ok(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task_in_graph(&graph, id) {
                 eprintln!("  - {}: {}", &id[..8], task.name);
             }
         }
     } else {
         eprintln!("Undoing {} tasks", task_ids.len());
         for id in &task_ids {
-            if let Ok(task) = find_task(&tasks, id) {
+            if let Ok(task) = find_task_in_graph(&graph, id) {
                 eprintln!("  - {}: {}", &id[..8], task.name);
             }
         }
@@ -3429,8 +3907,8 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 
     // Verify task exists
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
-    let task = find_task(&tasks, &id)?;
+    let graph = materialize_graph(&events);
+    let task = find_task_in_graph(&graph, &id)?;
     let id = task.id.clone(); // use canonical ID
 
     // Build revset pattern for task
@@ -3713,12 +4191,13 @@ fn run_set(
     }
 
     let events = read_events(cwd)?;
-    let mut tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
+    let mut tasks = graph.tasks.clone();
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to update
     let task_id = if let Some(id) = id {
-        let task = find_task(&tasks, &id)?;
+        let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
         // Default to first in-progress task
@@ -3806,17 +4285,7 @@ fn run_set(
     let new_instructions = if instructions_flag {
         let content = std::io::read_to_string(std::io::stdin())
             .map_err(|e| AikiError::JjCommandFailed(format!("Failed to read stdin: {}", e)))?;
-        let trimmed = content.trim_end().to_string();
-        if trimmed.is_empty() {
-            let xml = MdBuilder::new("set").error().build_error(&format!(
-                "Use `aiki task unset {} instructions` to clear instructions",
-                task_id
-            ));
-            aiki_print(&xml);
-            return Ok(());
-        } else {
-            Some(trimmed)
-        }
+        Some(content.trim_end().to_string())
     } else {
         None
     };
@@ -3938,12 +4407,13 @@ fn run_unset(
     }
 
     let events = read_events(cwd)?;
-    let mut tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
+    let mut tasks = graph.tasks.clone();
     let in_progress = get_in_progress(&tasks);
 
     // Determine which task to update
     let task_id = if let Some(id) = id {
-        let task = find_task(&tasks, &id)?;
+        let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
         // Default to first in-progress task
@@ -4015,12 +4485,12 @@ fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<Stri
     let data = parse_data_flags(&data_args, false)?;
 
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
-    let in_progress = get_in_progress(&tasks);
+    let graph = materialize_graph(&events);
+    let in_progress = get_in_progress(&graph.tasks);
 
     // Determine which task to comment on
     let task_id = if let Some(id) = id {
-        let task = find_task(&tasks, &id)?;
+        let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
         // Default to first in-progress task
@@ -4035,19 +4505,29 @@ fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<Stri
         }
     };
 
-    let timestamp = chrono::Utc::now();
-
-    // Write the comment event (batch operation with single task)
-    let event = TaskEvent::CommentAdded {
-        task_ids: vec![task_id.clone()],
-        text: text.clone(),
-        data,
-        timestamp,
-    };
-    write_event(cwd, &event)?;
+    comment_on_task(cwd, &task_id, &text, data)?;
 
     // Slim output: single line, no context footer
     aiki_print(&format_action_commented());
+    Ok(())
+}
+
+/// Shared implementation for writing a comment event on a task.
+/// Used by both `aiki task comment` and `aiki review issue add` to ensure
+/// behavioral consistency (validation, event format, persistence).
+pub(crate) fn comment_on_task(
+    cwd: &Path,
+    task_id: &str,
+    text: &str,
+    data: HashMap<String, String>,
+) -> Result<()> {
+    let event = TaskEvent::CommentAdded {
+        task_ids: vec![task_id.to_string()],
+        text: text.to_string(),
+        data,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &event)?;
     Ok(())
 }
 
@@ -4093,10 +4573,10 @@ fn run_wait(cwd: &Path, ids: Vec<String>, timeout_secs: u64) -> Result<()> {
 
     // Resolve all task IDs up front (prefix → full)
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
     let mut resolved_ids = Vec::new();
     for id in &ids {
-        resolved_ids.push(resolve_task_id(&tasks, id)?);
+        resolved_ids.push(resolve_task_id_in_graph(&graph, id)?);
     }
     let ids = resolved_ids;
 
@@ -4293,6 +4773,9 @@ pub struct TemplateTaskParams {
     pub source_data: HashMap<String, String>,
     /// Additional builtins for {{key}} variables
     pub builtins: HashMap<String, String>,
+    /// Pre-generated task ID (used by spawn system for deterministic subtask IDs).
+    /// If None, a random ID is generated.
+    pub task_id: Option<String>,
 }
 
 /// Create task(s) from a template (shared logic for all template-based task creation)
@@ -4383,10 +4866,12 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     let parent_name =
         substitute_with_template_name(&template.parent.name, &ctx, Some(template_name))?;
 
-    // Generate task ID (always a full 32-char ID, linked via subtask-of edge if child)
+    // Use pre-generated task ID if provided, otherwise generate a new one
     let events = read_events(cwd)?;
     let mut graph = materialize_graph(&events);
-    let task_id = generate_task_id(&parent_name);
+    let task_id = params
+        .task_id
+        .unwrap_or_else(|| generate_task_id(&parent_name));
 
     // Set id in context for substitution
     ctx.set_builtin("id", &task_id);
@@ -4405,11 +4890,19 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         None
     };
 
+    // Store spawns config on task data so it's available at close time
+    if !template.spawns.is_empty() {
+        if let Ok(spawns_json) = serde_json::to_string(&template.spawns) {
+            data.insert("_spawns".to_string(), spawns_json);
+        }
+    }
+
     // Create parent task event
     let working_copy = get_working_copy_change_id(cwd);
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_name.clone(),
+        slug: None,
         task_type: template.parent.task_type.clone(),
         priority,
         assignee: assignee.clone(),
@@ -4428,6 +4921,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         Task {
             id: task_id.clone(),
             name: parent_name.clone(),
+            slug: None,
             task_type: template.parent.task_type.clone(),
             status: TaskStatus::Open,
             priority,
@@ -4473,6 +4967,22 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         ctx.set_parent(&format!("data.{}", key), value);
     }
 
+    // Pre-scan for parent.subtasks.* references and populate with placeholders.
+    // These get replaced with actual task IDs in the two-phase creation below.
+    if let Some(ref raw_content) = template.raw_content {
+        for var_name in crate::tasks::templates::find_variables(raw_content) {
+            if let Some(slug) = var_name.strip_prefix("parent.subtasks.") {
+                ctx.set_parent(
+                    &format!("subtasks.{}", slug),
+                    &format!(
+                        "{}{}{}",
+                        SUBTASK_SLUG_PLACEHOLDER_PREFIX, slug, SUBTASK_SLUG_PLACEHOLDER_SUFFIX
+                    ),
+                );
+            }
+        }
+    }
+
     // Create subtasks - route based on template type
     if let Some(ref subtasks_source_str) = template.subtasks_source {
         // Dynamic subtasks: iterate over a data source (e.g., comments from a task)
@@ -4513,7 +5023,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &params.builtins,
             &composition_stack,
             1, // depth starts at 1 (parent template is depth 0)
-            &graph,
+            &mut graph,
         )?;
     } else {
         // Static subtasks: use predefined subtasks from template
@@ -4528,7 +5038,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             &data,
             timestamp,
             &params.builtins,
-            &graph,
+            &mut graph,
         )?;
     }
 
@@ -4627,6 +5137,7 @@ fn create_dynamic_subtasks(
         let subtask_event = TaskEvent::Created {
             task_id: subtask_id.clone(),
             name: subtask_def.name.clone(),
+            slug: None,
             task_type: None, // Subtasks inherit type from parent context
             priority: subtask_priority,
             assignee: subtask_assignee,
@@ -4660,7 +5171,7 @@ fn create_static_subtasks(
     parent_data: &std::collections::HashMap<String, String>,
     timestamp: chrono::DateTime<chrono::Utc>,
     extra_builtins: &HashMap<String, String>,
-    graph: &TaskGraph,
+    graph: &mut TaskGraph,
 ) -> Result<()> {
     use crate::tasks::templates::substitute_with_template_name;
 
@@ -4747,9 +5258,18 @@ fn create_static_subtasks(
             .collect::<Result<Vec<_>>>()?;
         subtask_sources.push(format!("task:{}", parent_id));
 
+        // Validate slug if present in template definition
+        if let Some(ref s) = subtask_def.slug {
+            if !crate::tasks::is_valid_slug(s) {
+                return Err(AikiError::InvalidSlug(s.clone()));
+            }
+            crate::tasks::graph::validate_slug_unique(graph, parent_id, s)?;
+        }
+
         let subtask_event = TaskEvent::Created {
             task_id: subtask_id.clone(),
             name: subtask_name,
+            slug: subtask_def.slug.clone(),
             task_type: None, // Subtasks inherit type from parent context
             priority: subtask_priority,
             assignee: subtask_assignee,
@@ -4762,6 +5282,14 @@ fn create_static_subtasks(
         };
         write_event(cwd, &subtask_event)?;
         write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
+
+        // Update in-memory slug index so subsequent subtasks in this batch
+        // see the slug and duplicate detection works within the batch
+        if let Some(ref s) = subtask_def.slug {
+            graph
+                .slug_index
+                .insert((parent_id.to_string(), s.clone()), subtask_id.clone());
+        }
     }
 
     Ok(())
@@ -4770,12 +5298,43 @@ fn create_static_subtasks(
 /// Maximum depth for recursive template composition
 const MAX_COMPOSITION_DEPTH: usize = 4;
 
+/// Replace subtask slug placeholders with actual task IDs
+fn replace_slug_placeholders(text: &str, slug_map: &HashMap<String, String>) -> String {
+    let mut result = text.to_string();
+    for (slug, task_id) in slug_map {
+        let placeholder = format!(
+            "{}{}{}",
+            SUBTASK_SLUG_PLACEHOLDER_PREFIX, slug, SUBTASK_SLUG_PLACEHOLDER_SUFFIX
+        );
+        result = result.replace(&placeholder, task_id);
+    }
+    result
+}
+
+/// Check if text contains any unresolved subtask slug placeholders
+fn check_unresolved_slug_placeholders(text: &str) -> Result<()> {
+    if let Some(start) = text.find(SUBTASK_SLUG_PLACEHOLDER_PREFIX) {
+        let after = &text[start + SUBTASK_SLUG_PLACEHOLDER_PREFIX.len()..];
+        if let Some(end) = after.find(SUBTASK_SLUG_PLACEHOLDER_SUFFIX) {
+            let slug = &after[..end];
+            return Err(AikiError::TemplateProcessingFailed {
+                details: format!(
+                    "Subtask slug '{}' referenced via {{{{parent.subtasks.{}}}}} but no sibling has that slug",
+                    slug, slug
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Create subtasks from a list of SubtaskEntry items (handles both static and composed)
 ///
-/// This function iterates over subtask entries and creates events for each:
-/// - `Static` entries: create subtask events directly (same as create_static_subtasks)
-/// - `Composed` entries: load the referenced template, create a subtask for it,
-///   then recursively create its sub-subtasks
+/// Uses a two-phase approach:
+/// - **Phase A (Plan)**: Generate all task IDs and collect slug→taskID map
+/// - **Phase B (Execute)**: Create events, replacing slug placeholders with actual task IDs
+///
+/// This enables `{{parent.subtasks.{slug}}}` to resolve to sibling task IDs.
 ///
 /// # Arguments
 /// * `cwd` - Working directory
@@ -4809,20 +5368,85 @@ fn create_subtasks_from_entries(
     extra_builtins: &HashMap<String, String>,
     composition_stack: &[String],
     depth: usize,
-    graph: &TaskGraph,
+    graph: &mut TaskGraph,
 ) -> Result<()> {
     use crate::tasks::templates::{
         find_templates_dir, load_template, substitute_with_template_name, SubtaskEntry,
-        VariableContext,
+        TaskTemplate, VariableContext,
     };
 
+    // ── Phase A: Plan ──
+    // Generate all task IDs upfront and collect slug→taskID map.
+    // For Composed entries, load the child template to extract its slug.
+    struct PlannedSubtask {
+        task_id: String,
+        slug: Option<String>,
+        child_template: Option<TaskTemplate>,
+    }
+
+    let mut planned: Vec<PlannedSubtask> = Vec::new();
+    let mut slug_map: HashMap<String, String> = HashMap::new();
+
     for (i, entry) in entries.iter().enumerate() {
-        let _subtask_index = i + 1;
         let subtask_id = generate_task_id(&format!("subtask-{}", i + 1));
+
+        let (slug, child_template) = match entry {
+            SubtaskEntry::Static(def) => (def.slug.clone(), None),
+            SubtaskEntry::Composed {
+                template_name: child_template_name,
+                line,
+            } => {
+                // Validate depth and cycles early
+                if depth > MAX_COMPOSITION_DEPTH {
+                    return Err(AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Template composition depth limit ({}) exceeded at '{}'",
+                            MAX_COMPOSITION_DEPTH, child_template_name
+                        ),
+                    });
+                }
+                if composition_stack.contains(child_template_name) {
+                    let cycle_path = composition_stack.join(" → ");
+                    return Err(AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Template cycle detected: {} → {}",
+                            cycle_path, child_template_name
+                        ),
+                    });
+                }
+
+                let templates_dir = find_templates_dir(cwd)?;
+                let child = load_template(child_template_name, &templates_dir).map_err(|e| {
+                    AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Template '{}' not found in {{% subtask %}} at line {}: {}",
+                            child_template_name, line, e
+                        ),
+                    }
+                })?;
+                let slug = child.parent.slug.clone();
+                (slug, Some(child))
+            }
+        };
+
+        if let Some(ref s) = slug {
+            slug_map.insert(s.clone(), subtask_id.clone());
+        }
+        planned.push(PlannedSubtask {
+            task_id: subtask_id,
+            slug,
+            child_template,
+        });
+    }
+
+    // ── Phase B: Execute ──
+    // Create events for each entry, replacing slug placeholders with actual task IDs.
+    for (i, entry) in entries.iter().enumerate() {
+        let subtask_id = &planned[i].task_id;
+        let entry_slug = &planned[i].slug;
 
         match entry {
             SubtaskEntry::Static(subtask_def) => {
-                // Same logic as create_static_subtasks for a single entry
                 let subtask_priority = if let Some(ref p) = subtask_def.priority {
                     TaskPriority::from_str(p).unwrap_or(parent_priority)
                 } else {
@@ -4848,7 +5472,7 @@ fn create_subtasks_from_entries(
                 for (key, value) in &subtask_data {
                     subtask_ctx.set_data(key, value);
                 }
-                subtask_ctx.set_builtin("id", &subtask_id);
+                subtask_ctx.set_builtin("id", subtask_id);
                 if let Some(ref a) = subtask_assignee {
                     subtask_ctx.set_builtin("assignee", a);
                 }
@@ -4879,11 +5503,15 @@ fn create_subtasks_from_entries(
                     Some(template_name),
                 )?;
                 let subtask_instructions = if !subtask_def.instructions.is_empty() {
-                    Some(substitute_with_template_name(
+                    let resolved = substitute_with_template_name(
                         &subtask_def.instructions,
                         &subtask_ctx,
                         Some(template_name),
-                    )?)
+                    )?;
+                    // Replace slug placeholders with actual sibling task IDs
+                    let replaced = replace_slug_placeholders(&resolved, &slug_map);
+                    check_unresolved_slug_placeholders(&replaced)?;
+                    Some(replaced)
                 } else {
                     None
                 };
@@ -4895,9 +5523,18 @@ fn create_subtasks_from_entries(
                     .collect::<Result<Vec<_>>>()?;
                 subtask_sources.push(format!("task:{}", parent_id));
 
+                // Validate slug if present
+                if let Some(ref s) = subtask_def.slug {
+                    if !crate::tasks::is_valid_slug(s) {
+                        return Err(AikiError::InvalidSlug(s.clone()));
+                    }
+                    crate::tasks::graph::validate_slug_unique(graph, parent_id, s)?;
+                }
+
                 let subtask_event = TaskEvent::Created {
                     task_id: subtask_id.clone(),
                     name: subtask_name,
+                    slug: subtask_def.slug.clone(),
                     task_type: None,
                     priority: subtask_priority,
                     assignee: subtask_assignee,
@@ -4909,47 +5546,26 @@ fn create_subtasks_from_entries(
                     timestamp,
                 };
                 write_event(cwd, &subtask_event)?;
-                write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
+                write_link_event(cwd, graph, "subtask-of", subtask_id, parent_id)?;
+
+                // Update in-memory slug index
+                if let Some(ref s) = subtask_def.slug {
+                    graph
+                        .slug_index
+                        .insert((parent_id.to_string(), s.clone()), subtask_id.clone());
+                }
             }
 
             SubtaskEntry::Composed {
                 template_name: child_template_name,
-                line,
+                ..
             } => {
-                // Check depth limit
-                if depth > MAX_COMPOSITION_DEPTH {
-                    return Err(AikiError::TemplateProcessingFailed {
-                        details: format!(
-                            "Template composition depth limit ({}) exceeded at '{}'",
-                            MAX_COMPOSITION_DEPTH, child_template_name
-                        ),
-                    });
-                }
+                // Child template was already loaded and validated in Phase A
+                let child_template = planned[i]
+                    .child_template
+                    .as_ref()
+                    .expect("child_template should be populated in plan phase");
 
-                // Check for cycles
-                if composition_stack.contains(child_template_name) {
-                    let cycle_path = composition_stack.join(" → ");
-                    return Err(AikiError::TemplateProcessingFailed {
-                        details: format!(
-                            "Template cycle detected: {} → {}",
-                            cycle_path, child_template_name
-                        ),
-                    });
-                }
-
-                // Load the child template
-                let templates_dir = find_templates_dir(cwd)?;
-                let child_template =
-                    load_template(child_template_name, &templates_dir).map_err(|e| {
-                        AikiError::TemplateProcessingFailed {
-                            details: format!(
-                                "Template '{}' not found in {{% subtask %}} at line {}: {}",
-                                child_template_name, line, e
-                            ),
-                        }
-                    })?;
-
-                // Determine child priority and assignee from child template defaults
                 let child_priority = if let Some(ref p) = child_template.defaults.priority {
                     TaskPriority::from_str(p).unwrap_or(parent_priority)
                 } else {
@@ -4961,7 +5577,6 @@ fn create_subtasks_from_entries(
                     parent_assignee.clone()
                 };
 
-                // Merge data: parent data first, then child template defaults override
                 let mut child_data = parent_data.clone();
                 for (key, value) in &child_template.defaults.data {
                     let value_str = match value {
@@ -4973,12 +5588,10 @@ fn create_subtasks_from_entries(
 
                 // Build child variable context (inherits parent's full context)
                 let mut child_ctx = parent_ctx.clone();
-                // Update data.* with merged child data
                 for (key, value) in &child_data {
                     child_ctx.set_data(key, value);
                 }
-                // Set child-specific builtins
-                child_ctx.set_builtin("id", &subtask_id);
+                child_ctx.set_builtin("id", subtask_id);
                 if let Some(ref a) = child_assignee {
                     child_ctx.set_builtin("assignee", a);
                 }
@@ -4988,8 +5601,7 @@ fn create_subtasks_from_entries(
                     child_ctx.set_builtin("type", t);
                 }
 
-                // Set parent.* to point to the outer parent (the task containing {% subtask %})
-                // so the child template's own content can reference {{parent.id}}, etc.
+                // Set parent.* to point to the outer parent
                 child_ctx.set_parent("id", parent_id);
                 child_ctx.set_parent("name", parent_name);
                 if let Some(ref a) = parent_assignee {
@@ -5003,14 +5615,12 @@ fn create_subtasks_from_entries(
                     child_ctx.set_parent("source", source);
                 }
 
-                // Resolve child template's parent name (this becomes the composed subtask name)
                 let child_name = substitute_with_template_name(
                     &child_template.parent.name,
                     &child_ctx,
                     Some(child_template_name),
                 )?;
 
-                // Resolve child template's parent instructions
                 let child_instructions = if !child_template.parent.instructions.is_empty() {
                     Some(substitute_with_template_name(
                         &child_template.parent.instructions,
@@ -5021,8 +5631,16 @@ fn create_subtasks_from_entries(
                     None
                 };
 
-                // Rebind parent.* to point to the composed subtask (for sub-subtasks)
-                child_ctx.set_parent("id", &subtask_id);
+                // Validate and register composed slug
+                if let Some(ref s) = entry_slug {
+                    if !crate::tasks::is_valid_slug(s) {
+                        return Err(AikiError::InvalidSlug(s.clone()));
+                    }
+                    crate::tasks::graph::validate_slug_unique(graph, parent_id, s)?;
+                }
+
+                // Rebind parent.* for sub-subtasks
+                child_ctx.set_parent("id", subtask_id);
                 child_ctx.set_parent("name", &child_name);
                 if let Some(ref a) = child_assignee {
                     child_ctx.set_parent("assignee", a);
@@ -5032,33 +5650,70 @@ fn create_subtasks_from_entries(
                     child_ctx.set_parent(&format!("data.{}", key), value);
                 }
 
-                // Create the composed subtask event
+                // Create the composed subtask event with slug from child template frontmatter
                 let composed_sources = vec![format!("task:{}", parent_id)];
                 let composed_event = TaskEvent::Created {
                     task_id: subtask_id.clone(),
                     name: child_name.clone(),
+                    slug: entry_slug.clone(),
                     task_type: child_template.defaults.task_type.clone(),
                     priority: child_priority,
                     assignee: child_assignee.clone(),
                     sources: composed_sources.clone(),
                     template: Some(child_template.template_id()),
                     working_copy: None,
-                    instructions: child_instructions,
+                    instructions: child_instructions.clone(),
                     data: child_data.clone(),
                     timestamp,
                 };
                 write_event(cwd, &composed_event)?;
-                write_link_event(cwd, graph, "subtask-of", &subtask_id, parent_id)?;
+                write_link_event(cwd, graph, "subtask-of", subtask_id, parent_id)?;
+
+                // Insert into in-memory graph with slug
+                graph.tasks.insert(
+                    subtask_id.clone(),
+                    Task {
+                        id: subtask_id.clone(),
+                        name: child_name.clone(),
+                        slug: entry_slug.clone(),
+                        task_type: child_template.defaults.task_type.clone(),
+                        status: TaskStatus::Open,
+                        priority: child_priority,
+                        assignee: child_assignee.clone(),
+                        sources: composed_sources.clone(),
+                        template: Some(child_template.template_id()),
+                        working_copy: None,
+                        instructions: child_instructions,
+                        data: child_data.clone(),
+                        created_at: timestamp,
+                        started_at: None,
+                        claimed_by_session: None,
+                        last_session_id: None,
+                        stopped_reason: None,
+                        closed_outcome: None,
+                        summary: None,
+                        turn_started: None,
+                        turn_closed: None,
+                        turn_stopped: None,
+                        comments: vec![],
+                    },
+                );
+
+                // Update slug index for the composed subtask
+                if let Some(ref s) = entry_slug {
+                    graph
+                        .slug_index
+                        .insert((parent_id.to_string(), s.clone()), subtask_id.clone());
+                }
 
                 // Recursively create the child template's subtasks
                 let mut child_stack = composition_stack.to_vec();
                 child_stack.push(child_template_name.clone());
 
-                // Get child template's subtask entries
                 let child_entries = crate::tasks::templates::create_subtask_entries_from_template(
-                    &child_template,
+                    child_template,
                     &child_ctx,
-                    None, // No data source for composed subtasks
+                    None,
                 )?;
 
                 if !child_entries.1.is_empty() {
@@ -5068,7 +5723,7 @@ fn create_subtasks_from_entries(
                         child_template_name,
                         &child_template.template_id(),
                         child_template.defaults.task_type.as_deref(),
-                        &subtask_id,
+                        subtask_id,
                         &child_name,
                         &composed_sources,
                         child_priority,
@@ -5101,11 +5756,7 @@ fn has_external_ref_prefix(s: &str) -> bool {
 /// Called at write time — the event always stores canonical IDs.
 /// Kind-aware: task-only kinds reject non-task targets instead of
 /// silently coercing them to file: paths.
-fn normalize_link_target(
-    input: &str,
-    kind: &str,
-    tasks: &FastHashMap<String, Task>,
-) -> Result<String> {
+fn normalize_link_target(input: &str, kind: &str, graph: &TaskGraph) -> Result<String> {
     use crate::tasks::graph::is_task_only_kind;
 
     // 1. Strip task: prefix if present
@@ -5113,7 +5764,7 @@ fn normalize_link_target(
 
     // 2. If it's already a full 32-char task ID, use it directly
     if is_task_id(stripped) {
-        if tasks.contains_key(stripped) {
+        if graph.tasks.contains_key(stripped) {
             return Ok(stripped.to_string());
         }
         // Full-length ID but not found
@@ -5137,8 +5788,8 @@ fn normalize_link_target(
         return Ok(stripped.to_string());
     }
 
-    // 4. Try resolving as a short task ID prefix
-    match resolve_task_id(tasks, stripped) {
+    // 4. Try resolving as a short task ID prefix or slug reference
+    match resolve_task_id_in_graph(graph, stripped) {
         Ok(full_id) => Ok(full_id),
         Err(AikiError::TaskNotFound(_)) if !is_task_only_kind(kind) => {
             // Flexible-target kinds: treat unresolved input as file path
@@ -5234,7 +5885,7 @@ fn run_link(
     let graph = materialize_graph(&events);
 
     // Resolve the subject task
-    let from_task = find_task(&graph.tasks, &id)?;
+    let from_task = find_task_in_graph(&graph, &id)?;
     let from_id = from_task.id.clone();
 
     // Delegate all validation, cardinality, and writing to write_link_event
@@ -5284,11 +5935,11 @@ fn run_unlink(
     let graph = materialize_graph(&events);
 
     // Resolve the subject task
-    let from_task = find_task(&graph.tasks, &id)?;
+    let from_task = find_task_in_graph(&graph, &id)?;
     let from_id = from_task.id.clone();
 
     // Normalize the target
-    let to_id = normalize_link_target(&raw_target, &kind, &graph.tasks)?;
+    let to_id = normalize_link_target(&raw_target, &kind, &graph)?;
 
     // Check the link exists
     if !graph.edges.has_link(&from_id, &to_id, &kind) {
@@ -5459,13 +6110,15 @@ D src/old_file.ts
 
     // --- normalize_link_target tests ---
 
-    fn make_task_map() -> FastHashMap<String, Task> {
+    fn make_task_graph() -> TaskGraph {
+        use crate::tasks::graph::EdgeStore;
         use crate::tasks::types::{TaskPriority, TaskStatus};
 
         let mut tasks = FastHashMap::default();
         let make = |id: &str, name: &str| Task {
             id: id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -5495,46 +6148,50 @@ D src/old_file.ts
             "xyzxyzxyzxyzxyzxyzxyzxyzxyzxyzxy".to_string(),
             make("xyzxyzxyzxyzxyzxyzxyzxyzxyzxyzxy", "Task B"),
         );
-        tasks
+        TaskGraph {
+            tasks,
+            edges: EdgeStore::new(),
+            slug_index: FastHashMap::default(),
+        }
     }
 
     #[test]
     fn test_normalize_link_target_full_task_id() {
-        let tasks = make_task_map();
+        let graph = make_task_graph();
         let result =
-            normalize_link_target("klmnopqrstuvwxyzklmnopqrstuvwxyz", "blocked-by", &tasks);
+            normalize_link_target("klmnopqrstuvwxyzklmnopqrstuvwxyz", "blocked-by", &graph);
         assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
     }
 
     #[test]
     fn test_normalize_link_target_with_task_prefix() {
-        let tasks = make_task_map();
+        let graph = make_task_graph();
         let result = normalize_link_target(
             "task:klmnopqrstuvwxyzklmnopqrstuvwxyz",
             "blocked-by",
-            &tasks,
+            &graph,
         );
         assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
     }
 
     #[test]
     fn test_normalize_link_target_short_prefix() {
-        let tasks = make_task_map();
-        let result = normalize_link_target("klmno", "blocked-by", &tasks);
+        let graph = make_task_graph();
+        let result = normalize_link_target("klmno", "blocked-by", &graph);
         assert_eq!(result.unwrap(), "klmnopqrstuvwxyzklmnopqrstuvwxyz");
     }
 
     #[test]
     fn test_normalize_link_target_external_ref_flexible_kind() {
-        let tasks = make_task_map();
-        let result = normalize_link_target("file:design.md", "sourced-from", &tasks);
+        let graph = make_task_graph();
+        let result = normalize_link_target("file:design.md", "sourced-from", &graph);
         assert_eq!(result.unwrap(), "file:design.md");
     }
 
     #[test]
     fn test_normalize_link_target_external_ref_task_only_kind_rejected() {
-        let tasks = make_task_map();
-        let result = normalize_link_target("file:design.md", "blocked-by", &tasks);
+        let graph = make_task_graph();
+        let result = normalize_link_target("file:design.md", "blocked-by", &graph);
         assert!(result.is_err());
         match result.unwrap_err() {
             AikiError::InvalidLinkTarget { kind, .. } => assert_eq!(kind, "blocked-by"),
@@ -5544,15 +6201,15 @@ D src/old_file.ts
 
     #[test]
     fn test_normalize_link_target_bare_path_flexible_kind() {
-        let tasks = make_task_map();
-        let result = normalize_link_target("design.md", "sourced-from", &tasks);
+        let graph = make_task_graph();
+        let result = normalize_link_target("design.md", "sourced-from", &graph);
         assert_eq!(result.unwrap(), "file:design.md");
     }
 
     #[test]
     fn test_normalize_link_target_nonexistent_task_only_kind() {
-        let tasks = make_task_map();
-        let result = normalize_link_target("nonexistent", "blocked-by", &tasks);
+        let graph = make_task_graph();
+        let result = normalize_link_target("nonexistent", "blocked-by", &graph);
         assert!(result.is_err());
         match result.unwrap_err() {
             AikiError::InvalidLinkTarget { kind, .. } => assert_eq!(kind, "blocked-by"),
@@ -5564,11 +6221,12 @@ D src/old_file.ts
     fn test_normalize_link_target_ambiguous_task_only_kind() {
         use crate::tasks::types::{TaskPriority, TaskStatus};
 
-        let mut tasks = make_task_map();
+        let mut graph = make_task_graph();
         // Add a second task sharing the "klmn" prefix to create ambiguity
         let task_c = Task {
             id: "klmnzzzzzzzzzzzzzzzzzzzzzzzzzzzy".to_string(),
             name: "Task C".to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -5590,9 +6248,9 @@ D src/old_file.ts
             turn_stopped: None,
             comments: Vec::new(),
         };
-        tasks.insert(task_c.id.clone(), task_c);
+        graph.tasks.insert(task_c.id.clone(), task_c);
 
-        let result = normalize_link_target("klmn", "blocked-by", &tasks);
+        let result = normalize_link_target("klmn", "blocked-by", &graph);
         assert!(result.is_err());
         match result.unwrap_err() {
             AikiError::AmbiguousTaskId { prefix, .. } => assert_eq!(prefix, "klmn"),
@@ -5604,10 +6262,11 @@ D src/old_file.ts
     fn test_normalize_link_target_ambiguous_flexible_kind() {
         use crate::tasks::types::{TaskPriority, TaskStatus};
 
-        let mut tasks = make_task_map();
+        let mut graph = make_task_graph();
         let task_c = Task {
             id: "klmnzzzzzzzzzzzzzzzzzzzzzzzzzzzy".to_string(),
             name: "Task C".to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Open,
             priority: TaskPriority::P2,
@@ -5629,10 +6288,10 @@ D src/old_file.ts
             turn_stopped: None,
             comments: Vec::new(),
         };
-        tasks.insert(task_c.id.clone(), task_c);
+        graph.tasks.insert(task_c.id.clone(), task_c);
 
         // Flexible kinds should also error on ambiguous prefixes (not silently file:-prefix)
-        let result = normalize_link_target("klmn", "sourced-from", &tasks);
+        let result = normalize_link_target("klmn", "sourced-from", &graph);
         assert!(result.is_err());
         match result.unwrap_err() {
             AikiError::AmbiguousTaskId { prefix, .. } => assert_eq!(prefix, "klmn"),

@@ -1,0 +1,15 @@
+# Built-in: aiki/review-loop
+name: aiki/review-loop
+description: "Review and fix code after each agent turn"
+version: "1"
+
+after:
+  turn.completed:
+    - if: $event.tasks.closed | any(.task_type == null)
+      then:
+        - autoreply: |
+            Original work tasks closed: $event.tasks.closed | filter(.task_type == null) | map(.description)
+
+            Review your work and fix any issues:
+
+            aiki review --fix --start

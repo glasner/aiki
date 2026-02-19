@@ -112,6 +112,8 @@ pub enum TaskEvent {
     Created {
         task_id: String,
         name: String,
+        /// Stable slug for automation references (e.g., "build", "run-tests")
+        slug: Option<String>,
         /// Task type (e.g., "review", "fix") - enables sugar triggers like review.started
         task_type: Option<String>,
         priority: TaskPriority,
@@ -241,6 +243,8 @@ pub struct TaskComment {
     pub id: Option<String>,
     pub text: String,
     pub timestamp: DateTime<Utc>,
+    /// Custom metadata for this comment (e.g., `issue: "true"` for review issues)
+    pub data: HashMap<String, String>,
 }
 
 /// Materialized task view (computed from events)
@@ -248,6 +252,8 @@ pub struct TaskComment {
 pub struct Task {
     pub id: String,
     pub name: String,
+    /// Stable slug for automation references (e.g., "build", "run-tests")
+    pub slug: Option<String>,
     /// Task type (e.g., "review", "fix") - enables sugar triggers like review.started
     pub task_type: Option<String>,
     pub status: TaskStatus,
@@ -384,6 +390,7 @@ mod tests {
         Task {
             id: "abcdefghijklmnopqrstuvwxyzabcdef".to_string(),
             name: "Test".to_string(),
+            slug: None,
             task_type: None,
             status: TaskStatus::Closed,
             priority: TaskPriority::P2,
@@ -415,6 +422,7 @@ mod tests {
             id: None,
             text: "A comment".to_string(),
             timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
         });
         assert_eq!(task.effective_summary(), Some("The summary"));
     }
@@ -426,11 +434,13 @@ mod tests {
             id: None,
             text: "First comment".to_string(),
             timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
         });
         task.comments.push(TaskComment {
             id: None,
             text: "Last comment".to_string(),
             timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
         });
         assert_eq!(task.effective_summary(), Some("Last comment"));
     }

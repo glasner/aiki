@@ -60,7 +60,7 @@ impl std::fmt::Display for ConditionalError {
             ConditionalError::InvalidCondition { condition, line } => {
                 write!(
                     f,
-                    "Invalid condition at line {}: '{}'. Expected: 'var == \"value\"', 'var', or 'not var'",
+                    "Invalid condition at line {}: '{}'. Expected a valid expression, e.g.: 'var == \"value\"', 'var', '!var', 'a && b'",
                     line, condition
                 )
             }
@@ -125,10 +125,10 @@ pub enum TemplateNode {
     Variable(String),
     /// Conditional block with branches
     Conditional {
-        /// The if condition and its content
-        if_branch: (Condition, Vec<TemplateNode>),
+        /// The if condition (raw expression string) and its content
+        if_branch: (String, Vec<TemplateNode>),
         /// Optional elif branches
-        elif_branches: Vec<(Condition, Vec<TemplateNode>)>,
+        elif_branches: Vec<(String, Vec<TemplateNode>)>,
         /// Optional else branch
         else_branch: Option<Vec<TemplateNode>>,
     },
@@ -148,7 +148,7 @@ pub enum TemplateNode {
         /// Template name (e.g., "aiki/plan", "aiki/review/spec")
         template_name: String,
         /// Optional inline condition (e.g., `{% subtask aiki/plan if data.needs_plan %}`)
-        condition: Option<Condition>,
+        condition: Option<String>,
         /// Source line number for error reporting
         line: usize,
     },
@@ -177,10 +177,10 @@ fn node_to_template(node: &TemplateNode) -> String {
             else_branch,
         } => {
             let mut result = String::new();
-            result.push_str(&format!("{{% if {} %}}", condition_to_string(&if_branch.0)));
+            result.push_str(&format!("{{% if {} %}}", &if_branch.0));
             result.push_str(&nodes_to_template(&if_branch.1));
             for (cond, content) in elif_branches {
-                result.push_str(&format!("{{% elif {} %}}", condition_to_string(cond)));
+                result.push_str(&format!("{{% elif {} %}}", cond));
                 result.push_str(&nodes_to_template(content));
             }
             if let Some(else_content) = else_branch {
@@ -212,89 +212,12 @@ fn node_to_template(node: &TemplateNode) -> String {
             ..
         } => {
             if let Some(cond) = condition {
-                format!("{{% subtask {} if {} %}}", template_name, condition_to_string(cond))
+                format!("{{% subtask {} if {} %}}", template_name, cond)
             } else {
                 format!("{{% subtask {} %}}", template_name)
             }
         }
     }
-}
-
-/// Convert a Condition back to its string representation
-fn condition_to_string(cond: &Condition) -> String {
-    match cond {
-        Condition::Exists(var) => var.clone(),
-        Condition::Not(inner) => format!("not {}", condition_to_string(inner)),
-        Condition::And(left, right) => {
-            format!("{} and {}", condition_to_string(left), condition_to_string(right))
-        }
-        Condition::Or(left, right) => {
-            format!("{} or {}", condition_to_string(left), condition_to_string(right))
-        }
-        Condition::Equals { left, right } => {
-            format!("{} == {}", left, value_to_string(right))
-        }
-        Condition::NotEquals { left, right } => {
-            format!("{} != {}", left, value_to_string(right))
-        }
-        Condition::GreaterThan { left, right } => {
-            format!("{} > {}", left, value_to_string(right))
-        }
-        Condition::LessThan { left, right } => {
-            format!("{} < {}", left, value_to_string(right))
-        }
-        Condition::GreaterOrEqual { left, right } => {
-            format!("{} >= {}", left, value_to_string(right))
-        }
-        Condition::LessOrEqual { left, right } => {
-            format!("{} <= {}", left, value_to_string(right))
-        }
-    }
-}
-
-/// Convert a Value back to its string representation
-fn value_to_string(val: &Value) -> String {
-    match val {
-        Value::String(s) => format!("\"{}\"", s),
-        Value::Number(n) => n.to_string(),
-        Value::Variable(v) => v.clone(),
-    }
-}
-
-/// Condition expression
-#[derive(Debug, Clone, PartialEq)]
-pub enum Condition {
-    /// Equality comparison: var == "value"
-    Equals { left: String, right: Value },
-    /// Inequality: var != "value"
-    NotEquals { left: String, right: Value },
-    /// Greater than: var > value
-    GreaterThan { left: String, right: Value },
-    /// Less than: var < value
-    LessThan { left: String, right: Value },
-    /// Greater or equal: var >= value
-    GreaterOrEqual { left: String, right: Value },
-    /// Less or equal: var <= value
-    LessOrEqual { left: String, right: Value },
-    /// Truthy check: var (exists and is truthy)
-    Exists(String),
-    /// Negation: not condition
-    Not(Box<Condition>),
-    /// Logical AND: cond1 and cond2
-    And(Box<Condition>, Box<Condition>),
-    /// Logical OR: cond1 or cond2
-    Or(Box<Condition>, Box<Condition>),
-}
-
-/// Value in a condition (right-hand side)
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    /// String literal: "value"
-    String(String),
-    /// Numeric literal: 42, 3.14
-    Number(f64),
-    /// Variable reference: data.other
-    Variable(String),
 }
 
 /// Context for evaluating conditions
@@ -342,21 +265,6 @@ impl EvalContext {
         }
     }
 
-    /// Resolve a value for comparison
-    fn resolve_value(&self, value: &Value) -> Option<String> {
-        match value {
-            Value::String(s) => Some(s.clone()),
-            Value::Number(n) => Some(n.to_string()),
-            Value::Variable(var) => self.variables.get(var).cloned(),
-        }
-    }
-
-    /// Compare two values numerically if possible
-    fn compare_numeric(&self, left: &str, right: &str) -> Option<std::cmp::Ordering> {
-        let left_num = left.parse::<f64>().ok()?;
-        let right_num = right.parse::<f64>().ok()?;
-        left_num.partial_cmp(&right_num)
-    }
 }
 
 /// Tokenize a template string into tokens
@@ -541,12 +449,12 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<TemplateNode>, ConditionalError> {
                         block[3..].trim()
                     };
 
-                    let condition = parse_condition(condition_str, line)?;
+                    validate_condition(condition_str, line)?;
                     let (if_content, elif_branches, else_branch) =
                         parse_if_body(&mut iter, &mut line)?;
 
                     result.push(TemplateNode::Conditional {
-                        if_branch: (condition, if_content),
+                        if_branch: (condition_str.to_string(), if_content),
                         elif_branches,
                         else_branch,
                     });
@@ -598,12 +506,12 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<TemplateNode>, ConditionalError> {
 fn parse_if_body<'a, I>(
     iter: &mut Peekable<I>,
     line: &mut usize,
-) -> Result<(Vec<TemplateNode>, Vec<(Condition, Vec<TemplateNode>)>, Option<Vec<TemplateNode>>), ConditionalError>
+) -> Result<(Vec<TemplateNode>, Vec<(String, Vec<TemplateNode>)>, Option<Vec<TemplateNode>>), ConditionalError>
 where
     I: Iterator<Item = &'a Token>,
 {
     let mut if_content: Vec<TemplateNode> = Vec::new();
-    let mut elif_branches: Vec<(Condition, Vec<TemplateNode>)> = Vec::new();
+    let mut elif_branches: Vec<(String, Vec<TemplateNode>)> = Vec::new();
     let mut else_branch: Option<Vec<TemplateNode>> = None;
     let start_line = *line;
 
@@ -653,8 +561,8 @@ where
                     } else {
                         block[5..].trim()
                     };
-                    let condition = parse_condition(condition_str, *line)?;
-                    elif_branches.push((condition, Vec::new()));
+                    validate_condition(condition_str, *line)?;
+                    elif_branches.push((condition_str.to_string(), Vec::new()));
                 } else if block_lower == "else" {
                     if else_branch.is_some() {
                         return Err(ConditionalError::UnexpectedToken {
@@ -670,11 +578,11 @@ where
                     } else {
                         block[3..].trim()
                     };
-                    let condition = parse_condition(condition_str, *line)?;
+                    validate_condition(condition_str, *line)?;
                     let (nested_if, nested_elif, nested_else) = parse_if_body(iter, line)?;
 
                     let nested_node = TemplateNode::Conditional {
-                        if_branch: (condition, nested_if),
+                        if_branch: (condition_str.to_string(), nested_if),
                         elif_branches: nested_elif,
                         else_branch: nested_else,
                     };
@@ -806,11 +714,11 @@ where
                     } else {
                         block[3..].trim()
                     };
-                    let condition = parse_condition(condition_str, *line)?;
+                    validate_condition(condition_str, *line)?;
                     let (if_content, elif_branches, else_branch) = parse_if_body(iter, line)?;
 
                     let nested_node = TemplateNode::Conditional {
-                        if_branch: (condition, if_content),
+                        if_branch: (condition_str.to_string(), if_content),
                         elif_branches,
                         else_branch,
                     };
@@ -881,8 +789,8 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
     let (template_name, condition) = if let Some(if_pos) = content.find(" if ") {
         let name = content[..if_pos].trim();
         let cond_str = content[if_pos + 4..].trim();
-        let condition = parse_condition(cond_str, line)?;
-        (name, Some(condition))
+        validate_condition(cond_str, line)?;
+        (name, Some(cond_str.to_string()))
     } else {
         (content, None)
     };
@@ -931,8 +839,12 @@ fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, Conditi
     })
 }
 
-/// Parse a condition string into a Condition AST
-fn parse_condition(condition_str: &str, line: usize) -> Result<Condition, ConditionalError> {
+/// Validate a condition string at parse time.
+///
+/// Checks that the condition is non-empty and is syntactically valid
+/// Rhai expression syntax (after preprocessing). This catches typos and
+/// malformed expressions early rather than silently evaluating to false.
+fn validate_condition(condition_str: &str, line: usize) -> Result<(), ConditionalError> {
     let condition_str = condition_str.trim();
 
     if condition_str.is_empty() {
@@ -942,224 +854,51 @@ fn parse_condition(condition_str: &str, line: usize) -> Result<Condition, Condit
         });
     }
 
-    // Parse with operator precedence: or < and < not < comparisons
-    parse_or_expr(condition_str, line)
+    // Warn about deprecated $var syntax
+    if crate::expressions::uses_dollar_syntax(condition_str) {
+        eprintln!(
+            "[aiki] Warning: `$var` syntax is deprecated, use `var` instead: {}",
+            condition_str
+        );
+    }
+
+    // Pre-process the same way evaluation does, then try to compile
+    let processed = crate::expressions::preprocess_expression(condition_str);
+    let engine = rhai::Engine::new();
+    if let Err(err) = engine.compile_expression(&processed) {
+        return Err(ConditionalError::InvalidCondition {
+            condition: format!("{} ({})", condition_str, err),
+            line,
+        });
+    }
+
+    Ok(())
 }
 
-/// Parse OR expressions (lowest precedence)
-fn parse_or_expr(s: &str, line: usize) -> Result<Condition, ConditionalError> {
-    // Find " or " that's not inside parentheses
-    if let Some(idx) = find_operator_outside_parens(s, " or ") {
-        let left = parse_or_expr(&s[..idx], line)?;
-        let right = parse_and_expr(&s[idx + 4..], line)?;
-        return Ok(Condition::Or(Box::new(left), Box::new(right)));
-    }
-    parse_and_expr(s, line)
+/// Evaluate a condition expression string against a context using Rhai.
+///
+/// Supports `and`/`or`/`not` operators (rewritten to `&&`/`||`/`!`),
+/// comparison operators, and dotted variable access.
+///
+/// Creates a fresh `ExpressionEvaluator` per call. For repeated evaluations
+/// (e.g., during template rendering), use [`evaluate_condition_with`] with a
+/// shared evaluator to benefit from AST caching.
+#[cfg(test)]
+pub fn evaluate_condition(condition_str: &str, ctx: &EvalContext) -> bool {
+    let mut evaluator = crate::expressions::ExpressionEvaluator::new();
+    evaluate_condition_with(condition_str, ctx, &mut evaluator)
 }
 
-/// Parse AND expressions
-fn parse_and_expr(s: &str, line: usize) -> Result<Condition, ConditionalError> {
-    if let Some(idx) = find_operator_outside_parens(s, " and ") {
-        let left = parse_and_expr(&s[..idx], line)?;
-        let right = parse_not_expr(&s[idx + 5..], line)?;
-        return Ok(Condition::And(Box::new(left), Box::new(right)));
-    }
-    parse_not_expr(s, line)
-}
-
-/// Parse NOT expressions
-fn parse_not_expr(s: &str, line: usize) -> Result<Condition, ConditionalError> {
-    let s = s.trim();
-    if s.starts_with("not ") {
-        let inner = parse_not_expr(&s[4..], line)?;
-        return Ok(Condition::Not(Box::new(inner)));
-    }
-    parse_primary_expr(s, line)
-}
-
-/// Parse primary expressions (comparisons, parenthesized expressions, truthy checks)
-fn parse_primary_expr(s: &str, line: usize) -> Result<Condition, ConditionalError> {
-    let s = s.trim();
-
-    // Handle parenthesized expressions
-    if s.starts_with('(') && s.ends_with(')') {
-        // Find matching closing paren
-        let inner = &s[1..s.len()-1];
-        // Verify it's actually matched (handle nested parens)
-        let mut depth = 0;
-        for (i, c) in s.chars().enumerate() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 && i < s.len() - 1 {
-                        // This closing paren doesn't match the opening one
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if depth == 0 {
-            return parse_or_expr(inner, line);
-        }
-    }
-
-    // Try comparison operators (order matters: >= before >, etc.)
-    // Check for >= and <= before > and <
-    if let Some(idx) = s.find(">=") {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 2..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::GreaterOrEqual { left, right });
-    }
-    if let Some(idx) = s.find("<=") {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 2..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::LessOrEqual { left, right });
-    }
-    if let Some(idx) = s.find("==") {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 2..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::Equals { left, right });
-    }
-    if let Some(idx) = s.find("!=") {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 2..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::NotEquals { left, right });
-    }
-    if let Some(idx) = s.find('>') {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 1..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::GreaterThan { left, right });
-    }
-    if let Some(idx) = s.find('<') {
-        let left = s[..idx].trim().to_string();
-        let right_str = s[idx + 1..].trim();
-        let right = parse_value(right_str, line)?;
-        return Ok(Condition::LessThan { left, right });
-    }
-
-    // Must be a truthy check (variable exists and is truthy)
-    if s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_') {
-        return Ok(Condition::Exists(s.to_string()));
-    }
-
-    Err(ConditionalError::InvalidCondition {
-        condition: s.to_string(),
-        line,
-    })
-}
-
-/// Parse a value (string literal, number, or variable reference)
-fn parse_value(s: &str, line: usize) -> Result<Value, ConditionalError> {
-    let s = s.trim();
-
-    // String literal: "value" or 'value'
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        return Ok(Value::String(s[1..s.len()-1].to_string()));
-    }
-
-    // Number literal
-    if let Ok(n) = s.parse::<f64>() {
-        return Ok(Value::Number(n));
-    }
-
-    // Variable reference
-    if s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_') {
-        return Ok(Value::Variable(s.to_string()));
-    }
-
-    Err(ConditionalError::InvalidCondition {
-        condition: format!("invalid value: {}", s),
-        line,
-    })
-}
-
-/// Find an operator that's not inside parentheses
-fn find_operator_outside_parens(s: &str, op: &str) -> Option<usize> {
-    let mut depth = 0;
-    let op_len = op.len();
-    let s_bytes = s.as_bytes();
-    let op_bytes = op.as_bytes();
-
-    for i in 0..s.len() {
-        match s_bytes[i] {
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            _ => {
-                if depth == 0 && i + op_len <= s.len() && &s_bytes[i..i + op_len] == op_bytes {
-                    return Some(i);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Evaluate a condition against a context
-pub fn evaluate_condition(condition: &Condition, ctx: &EvalContext) -> bool {
-    match condition {
-        Condition::Exists(var) => ctx.is_truthy(var),
-
-        Condition::Not(inner) => !evaluate_condition(inner, ctx),
-
-        Condition::And(left, right) => {
-            evaluate_condition(left, ctx) && evaluate_condition(right, ctx)
-        }
-
-        Condition::Or(left, right) => {
-            evaluate_condition(left, ctx) || evaluate_condition(right, ctx)
-        }
-
-        Condition::Equals { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            left_val == right_val
-        }
-
-        Condition::NotEquals { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            left_val != right_val
-        }
-
-        Condition::GreaterThan { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("0");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            ctx.compare_numeric(left_val, &right_val)
-                .map(|o| o == std::cmp::Ordering::Greater)
-                .unwrap_or(false)
-        }
-
-        Condition::LessThan { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("0");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            ctx.compare_numeric(left_val, &right_val)
-                .map(|o| o == std::cmp::Ordering::Less)
-                .unwrap_or(false)
-        }
-
-        Condition::GreaterOrEqual { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("0");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            ctx.compare_numeric(left_val, &right_val)
-                .map(|o| o != std::cmp::Ordering::Less)
-                .unwrap_or(false)
-        }
-
-        Condition::LessOrEqual { left, right } => {
-            let left_val = ctx.variables.get(left).map(String::as_str).unwrap_or("0");
-            let right_val = ctx.resolve_value(right).unwrap_or_default();
-            ctx.compare_numeric(left_val, &right_val)
-                .map(|o| o != std::cmp::Ordering::Greater)
-                .unwrap_or(false)
-        }
-    }
+/// Evaluate a condition using a shared `ExpressionEvaluator` for AST cache reuse.
+fn evaluate_condition_with(
+    condition_str: &str,
+    ctx: &EvalContext,
+    evaluator: &mut crate::expressions::ExpressionEvaluator,
+) -> bool {
+    let var_map: std::collections::BTreeMap<String, String> =
+        ctx.variables.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut scope = crate::expressions::build_scope_from_flat(&var_map);
+    evaluator.evaluate(condition_str, &mut scope).unwrap_or(false)
 }
 
 /// Render a parsed template with the given context
@@ -1167,7 +906,8 @@ pub fn evaluate_condition(condition: &Condition, ctx: &EvalContext) -> bool {
 /// Returns the rendered string with conditionals evaluated and variables left as-is
 /// (for later substitution by the variable system)
 pub fn render(nodes: &[TemplateNode], ctx: &EvalContext) -> String {
-    render_with_loops(nodes, ctx, &HashMap::new())
+    let mut evaluator = crate::expressions::ExpressionEvaluator::new();
+    render_with_loops(nodes, ctx, &HashMap::new(), &mut evaluator)
 }
 
 /// Internal render function that supports loop iteration context
@@ -1175,6 +915,7 @@ fn render_with_loops(
     nodes: &[TemplateNode],
     ctx: &EvalContext,
     loop_vars: &HashMap<String, LoopItem>,
+    evaluator: &mut crate::expressions::ExpressionEvaluator,
 ) -> String {
     let mut result = String::new();
 
@@ -1201,20 +942,20 @@ fn render_with_loops(
             } => {
                 // Evaluate conditions in order, considering loop variables
                 let eval_ctx = make_loop_aware_context(ctx, loop_vars);
-                if evaluate_condition(&if_branch.0, &eval_ctx) {
-                    result.push_str(&render_with_loops(&if_branch.1, ctx, loop_vars));
+                if evaluate_condition_with(&if_branch.0, &eval_ctx, evaluator) {
+                    result.push_str(&render_with_loops(&if_branch.1, ctx, loop_vars, evaluator));
                 } else {
                     let mut matched = false;
-                    for (cond, content) in elif_branches {
-                        if evaluate_condition(cond, &eval_ctx) {
-                            result.push_str(&render_with_loops(content, ctx, loop_vars));
+                    for (cond_str, content) in elif_branches {
+                        if evaluate_condition_with(cond_str, &eval_ctx, evaluator) {
+                            result.push_str(&render_with_loops(content, ctx, loop_vars, evaluator));
                             matched = true;
                             break;
                         }
                     }
                     if !matched {
                         if let Some(else_content) = else_branch {
-                            result.push_str(&render_with_loops(else_content, ctx, loop_vars));
+                            result.push_str(&render_with_loops(else_content, ctx, loop_vars, evaluator));
                         }
                     }
                 }
@@ -1228,7 +969,7 @@ fn render_with_loops(
                 // Get the collection items - for now we just pass through
                 // The actual iteration is handled by the template resolver
                 // Here we just emit the loop as markers for later processing
-                result.push_str(&render_loop(variable, collection, body, else_body, ctx, loop_vars));
+                result.push_str(&render_loop(variable, collection, body, else_body, ctx, loop_vars, evaluator));
             }
             TemplateNode::SubtaskRef {
                 template_name,
@@ -1236,9 +977,9 @@ fn render_with_loops(
                 line,
             } => {
                 // If there's an inline condition, evaluate it
-                if let Some(cond) = condition {
+                if let Some(cond_str) = condition {
                     let eval_ctx = make_loop_aware_context(ctx, loop_vars);
-                    if !evaluate_condition(cond, &eval_ctx) {
+                    if !evaluate_condition_with(cond_str, &eval_ctx, evaluator) {
                         continue; // Condition false, skip this subtask ref
                     }
                 }
@@ -1359,6 +1100,7 @@ fn render_loop(
     else_body: &Option<Vec<TemplateNode>>,
     _ctx: &EvalContext,
     _loop_vars: &HashMap<String, LoopItem>,
+    _evaluator: &mut crate::expressions::ExpressionEvaluator,
 ) -> String {
     // Emit a special marker that the resolver can process
     // Format: <!-- AIKI_LOOP:var:collection --> body <!-- AIKI_ENDLOOP --> [<!-- AIKI_LOOPELSE --> else <!-- AIKI_ENDLOOPELSE -->]
@@ -1508,7 +1250,7 @@ mod tests {
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::Conditional { if_branch, elif_branches, else_branch } => {
-                assert!(matches!(&if_branch.0, Condition::Exists(v) if v == "x"));
+                assert_eq!(if_branch.0, "x");
                 assert_eq!(if_branch.1.len(), 1);
                 assert!(elif_branches.is_empty());
                 assert!(else_branch.is_none());
@@ -1543,128 +1285,65 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_equality() {
-        let cond = parse_condition("data.type == \"file\"", 1).unwrap();
-        match cond {
-            Condition::Equals { left, right } => {
-                assert_eq!(left, "data.type");
-                assert_eq!(right, Value::String("file".to_string()));
-            }
-            _ => panic!("Expected Equals"),
-        }
-    }
-
-    #[test]
-    fn test_parse_numeric_comparison() {
-        let cond = parse_condition("data.count > 10", 1).unwrap();
-        match cond {
-            Condition::GreaterThan { left, right } => {
-                assert_eq!(left, "data.count");
-                assert_eq!(right, Value::Number(10.0));
-            }
-            _ => panic!("Expected GreaterThan"),
-        }
-    }
-
-    #[test]
-    fn test_parse_and_or() {
-        let cond = parse_condition("a and b or c", 1).unwrap();
-        // Should be: (a and b) or c  due to precedence
-        match cond {
-            Condition::Or(left, _) => {
-                assert!(matches!(*left, Condition::And(_, _)));
-            }
-            _ => panic!("Expected Or"),
-        }
-    }
-
-    #[test]
-    fn test_parse_parentheses() {
-        let cond = parse_condition("a and (b or c)", 1).unwrap();
-        match cond {
-            Condition::And(_, right) => {
-                assert!(matches!(*right, Condition::Or(_, _)));
-            }
-            _ => panic!("Expected And with nested Or"),
-        }
-    }
-
-    #[test]
-    fn test_parse_not() {
-        let cond = parse_condition("not data.skip", 1).unwrap();
-        match cond {
-            Condition::Not(inner) => {
-                assert!(matches!(*inner, Condition::Exists(v) if v == "data.skip"));
-            }
-            _ => panic!("Expected Not"),
-        }
-    }
-
-    // ===== Evaluator Tests =====
-
-    #[test]
-    fn test_eval_exists_true() {
-        let mut ctx = EvalContext::new();
-        ctx.set("data.show", "true");
-
-        let cond = Condition::Exists("data.show".to_string());
-        assert!(evaluate_condition(&cond, &ctx));
-    }
-
-    #[test]
-    fn test_eval_exists_false() {
-        let ctx = EvalContext::new();
-        let cond = Condition::Exists("data.missing".to_string());
-        assert!(!evaluate_condition(&cond, &ctx));
-    }
-
-    #[test]
-    fn test_eval_equals() {
+    fn test_eval_equality() {
         let mut ctx = EvalContext::new();
         ctx.set("data.type", "file");
-
-        let cond = Condition::Equals {
-            left: "data.type".to_string(),
-            right: Value::String("file".to_string()),
-        };
-        assert!(evaluate_condition(&cond, &ctx));
+        assert!(evaluate_condition("data.type == \"file\"", &ctx));
+        assert!(!evaluate_condition("data.type == \"code\"", &ctx));
     }
 
     #[test]
-    fn test_eval_numeric_gt() {
+    fn test_eval_numeric_comparison() {
         let mut ctx = EvalContext::new();
         ctx.set("data.count", "15");
-
-        let cond = Condition::GreaterThan {
-            left: "data.count".to_string(),
-            right: Value::Number(10.0),
-        };
-        assert!(evaluate_condition(&cond, &ctx));
+        assert!(evaluate_condition("data.count > 10", &ctx));
+        assert!(!evaluate_condition("data.count > 20", &ctx));
     }
 
     #[test]
-    fn test_eval_and() {
+    fn test_eval_and_or() {
         let mut ctx = EvalContext::new();
         ctx.set("a", "true");
         ctx.set("b", "true");
+        assert!(evaluate_condition("a and b", &ctx));
 
-        let cond = Condition::And(
-            Box::new(Condition::Exists("a".to_string())),
-            Box::new(Condition::Exists("b".to_string())),
-        );
-        assert!(evaluate_condition(&cond, &ctx));
+        // a and b or c — with only a set, c missing
+        let mut ctx2 = EvalContext::new();
+        ctx2.set("a", "true");
+        // b is missing (falsy), c is missing (falsy)
+        assert!(!evaluate_condition("a and b or c", &ctx2));
+
+        // a or b — a is set
+        assert!(evaluate_condition("a or b", &ctx2));
     }
 
     #[test]
-    fn test_eval_or() {
+    fn test_eval_not() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.skip", "true");
+        assert!(!evaluate_condition("not data.skip", &ctx));
+
+        let ctx2 = EvalContext::new();
+        assert!(evaluate_condition("not data.skip", &ctx2));
+    }
+
+    #[test]
+    fn test_eval_exists_truthy() {
+        let mut ctx = EvalContext::new();
+        ctx.set("data.show", "true");
+        assert!(evaluate_condition("data.show", &ctx));
+
+        let ctx2 = EvalContext::new();
+        assert!(!evaluate_condition("data.missing", &ctx2));
+    }
+
+    #[test]
+    fn test_eval_parentheses() {
         let mut ctx = EvalContext::new();
         ctx.set("a", "true");
-
-        let cond = Condition::Or(
-            Box::new(Condition::Exists("a".to_string())),
-            Box::new(Condition::Exists("b".to_string())),
-        );
-        assert!(evaluate_condition(&cond, &ctx));
+        ctx.set("c", "true");
+        // a and (b or c) — b missing but c is true
+        assert!(evaluate_condition("a and (b or c)", &ctx));
     }
 
     // ===== Integration Tests =====
@@ -2176,14 +1855,7 @@ Content under heading
         match &ast[0] {
             TemplateNode::SubtaskRef { template_name, condition, .. } => {
                 assert_eq!(template_name, "aiki/review/spec");
-                assert!(condition.is_some());
-                match condition.as_ref().unwrap() {
-                    Condition::Equals { left, right } => {
-                        assert_eq!(left, "data.file_type");
-                        assert_eq!(*right, Value::String("spec".to_string()));
-                    }
-                    _ => panic!("Expected Equals condition"),
-                }
+                assert_eq!(condition.as_deref(), Some("data.file_type == \"spec\""));
             }
             _ => panic!("Expected SubtaskRef"),
         }
@@ -2302,10 +1974,7 @@ Content under heading
 
         let node_with_cond = TemplateNode::SubtaskRef {
             template_name: "aiki/review/spec".to_string(),
-            condition: Some(Condition::Equals {
-                left: "data.type".to_string(),
-                right: Value::String("spec".to_string()),
-            }),
+            condition: Some("data.type == \"spec\"".to_string()),
             line: 1,
         };
         assert_eq!(

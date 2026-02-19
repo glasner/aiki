@@ -428,6 +428,7 @@ fn create_planning_task(
     let event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_def.name.clone(),
+        slug: None,
         task_type,
         priority,
         assignee: assignee
@@ -642,6 +643,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             status,
             priority: TaskPriority::P2,

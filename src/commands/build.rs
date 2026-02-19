@@ -788,6 +788,7 @@ mod tests {
         Task {
             id: id.to_string(),
             name: name.to_string(),
+            slug: None,
             task_type: None,
             status,
             priority: TaskPriority::P2,

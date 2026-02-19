@@ -148,6 +148,13 @@ pub enum AikiEvent {
     CommitMessageStarted(AikiCommitMessageStartedPayload),
 
     // ========================================================================
+    // Repo Transition Events
+    // ========================================================================
+    /// Session moved to a different JJ repo
+    #[serde(rename = "repo.changed")]
+    RepoChanged(AikiRepoChangedPayload),
+
+    // ========================================================================
     // Task Lifecycle Events
     // ========================================================================
     /// Task started - task transitioned to in_progress state
@@ -194,6 +201,8 @@ impl AikiEvent {
             Self::McpCompleted(e) => &e.cwd,
             // Commit integration
             Self::CommitMessageStarted(e) => &e.cwd,
+            // Repo transitions
+            Self::RepoChanged(e) => &e.cwd,
             // Task lifecycle
             Self::TaskStarted(e) => &e.cwd,
             Self::TaskClosed(e) => &e.cwd,
@@ -230,6 +239,8 @@ impl AikiEvent {
             Self::McpCompleted(e) => e.session.agent_type(),
             // Commit integration
             Self::CommitMessageStarted(e) => e.agent_type,
+            // Repo transitions
+            Self::RepoChanged(e) => e.session.agent_type(),
             // Task lifecycle (tasks don't have a session, so use Unknown)
             Self::TaskStarted(_) => AgentType::Unknown,
             Self::TaskClosed(_) => AgentType::Unknown,
@@ -260,6 +271,9 @@ mod read_permission_asked;
 mod change_completed;
 mod change_permission_asked;
 mod prelude;
+
+// Repo transitions
+mod repo_changed;
 
 // Shell commands
 mod shell_completed;
@@ -300,6 +314,9 @@ pub use read_permission_asked::*;
 // Change operations (unified mutations: write, delete, move)
 pub use change_completed::*;
 pub use change_permission_asked::*;
+
+// Repo transitions
+pub use repo_changed::*;
 
 // Shared types
 pub use change_completed::EditDetail;
@@ -425,6 +442,12 @@ impl From<AikiMcpPermissionAskedPayload> for AikiEvent {
 impl From<AikiMcpCompletedPayload> for AikiEvent {
     fn from(payload: AikiMcpCompletedPayload) -> Self {
         AikiEvent::McpCompleted(payload)
+    }
+}
+
+impl From<AikiRepoChangedPayload> for AikiEvent {
+    fn from(payload: AikiRepoChangedPayload) -> Self {
+        AikiEvent::RepoChanged(payload)
     }
 }
 

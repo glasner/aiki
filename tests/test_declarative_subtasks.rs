@@ -24,6 +24,7 @@ fn create_test_task(id: &str, name: &str, comments: Vec<TaskComment>) -> Task {
     Task {
         id: id.to_string(),
         name: name.to_string(),
+        slug: None,
         task_type: None,
         status: TaskStatus::Open,
         priority: TaskPriority::P2,
@@ -53,16 +54,17 @@ fn create_comment(text: &str) -> TaskComment {
         id: None,
         text: text.to_string(),
         timestamp: Utc::now(),
+        data: HashMap::new(),
     }
 }
 
-/// Create a task comment (data parameter retained for test compatibility but
-/// TaskComment no longer carries structured data — comment text is used instead)
-fn create_comment_with_data(text: &str, _data: HashMap<String, String>) -> TaskComment {
+/// Create a task comment with data metadata
+fn create_comment_with_data(text: &str, data: HashMap<String, String>) -> TaskComment {
     TaskComment {
         id: None,
         text: text.to_string(),
         timestamp: Utc::now(),
+        data,
     }
 }
 

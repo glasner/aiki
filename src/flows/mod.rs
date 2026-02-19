@@ -1,4 +1,4 @@
-mod bundled;
+pub(crate) mod bundled;
 pub mod composer;
 pub mod context;
 pub mod core;
@@ -8,7 +8,7 @@ pub mod loader;
 pub mod path_resolver;
 mod parser;
 mod state;
-mod sugar;
+pub(crate) mod sugar;
 pub mod types;
 mod variables;
 
