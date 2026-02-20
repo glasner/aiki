@@ -188,41 +188,20 @@ pub fn absorb_workspace(
         }
     };
 
-    // Get the parent of the workspace's working copy (the last real commit)
-    let parent_revset = format!("{}-", ws_change_id);
-    let output = jj_cmd()
-        .current_dir(repo_root)
-        .args([
-            "log",
-            "-r",
-            &parent_revset,
-            "-T",
-            "change_id",
-            "--no-graph",
-            "-l",
-            "1",
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| {
-            AikiError::WorkspaceAbsorbFailed(format!("Failed to query workspace head: {}", e))
-        })?;
+    // Snapshot workspace working copy to capture files written since last snapshot.
+    // All subsequent JJ commands use --ignore-working-copy, so without this,
+    // files written after the last implicit snapshot would be lost.
+    let _ = jj_cmd()
+        .current_dir(&workspace.path)
+        .args(["debug", "snapshot"])
+        .output();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::WorkspaceAbsorbFailed(format!(
-            "Failed to query workspace head: {}",
-            stderr.trim()
-        )));
-    }
+    // Use the workspace's working copy (@) directly as the rebase target.
+    // Previously this resolved @- (parent), which skipped all file changes
+    // in the working copy commit.
+    let ws_head = ws_change_id;
 
-    let ws_head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if ws_head.is_empty() {
-        debug_log(|| "No changes in workspace (empty output), skipping absorb");
-        return Ok(());
-    }
-
-    // Guard against root/empty change heads — these indicate no real commits
+    // Guard against root/empty change heads — these indicate no real changes
     // were made in the workspace. JJ's root change ID is all zeros.
     if ws_head.chars().all(|c| c == '0') {
         debug_log(|| "Workspace head is root change, skipping absorb");
@@ -399,7 +378,6 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
                 if let Ok(Some(ws_cid)) =
                     find_workspace_change_id(&repo_root, &workspace_name)
                 {
-                    let parent_rev = format!("{}-", ws_cid);
                     let _ = jj_cmd()
                         .current_dir(&repo_root)
                         .args([
@@ -407,7 +385,7 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
                             "create",
                             &bookmark_name,
                             "-r",
-                            &parent_rev,
+                            &ws_cid,
                             "--ignore-working-copy",
                         ])
                         .output();
@@ -614,13 +592,17 @@ pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Resul
 
 /// Try to determine the repo root from a workspace directory.
 ///
-/// Reads the JJ workspace config to find the original repo location.
-fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
-    // JJ workspaces store their repo location in .jj/repo -> symlink or path
+/// JJ workspaces store their repo location in `.jj/repo`. In older JJ versions
+/// this was a symlink; in JJ 0.38+ it's a plain text file containing the path.
+/// We try both: read as text first (modern), then as symlink (legacy).
+pub fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
     let repo_link = workspace_path.join(".jj").join("repo");
-    if let Ok(target) = fs::read_link(&repo_link) {
-        // The repo link points to <original_repo>/.jj/repo
-        // Walk up to find the actual repo root
+
+    // Modern JJ (0.38+): .jj/repo is a plain text file containing the repo path
+    // e.g., "/Users/glasner/code/aiki/.jj/repo"
+    if let Ok(contents) = fs::read_to_string(&repo_link) {
+        let target = PathBuf::from(contents.trim());
+        // The path points to <original_repo>/.jj/repo — walk up to repo root
         if let Some(jj_dir) = target.parent() {
             if let Some(repo_root) = jj_dir.parent() {
                 return Some(repo_root.to_path_buf());
@@ -628,8 +610,15 @@ fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
         }
     }
 
-    // Alternative: try reading .jj/working_copy/checkout — less reliable
-    // Fall back to None
+    // Legacy JJ: .jj/repo is a symlink to <original_repo>/.jj/repo
+    if let Ok(target) = fs::read_link(&repo_link) {
+        if let Some(jj_dir) = target.parent() {
+            if let Some(repo_root) = jj_dir.parent() {
+                return Some(repo_root.to_path_buf());
+            }
+        }
+    }
+
     None
 }
 
@@ -755,5 +744,56 @@ mod tests {
             unregister_session_from_repo("repo-1", "session-abc");
             assert_eq!(find_session_repo("session-abc"), None);
         });
+    }
+
+    #[test]
+    fn test_find_repo_root_from_workspace_text_file() {
+        // Simulate modern JJ (0.38+): .jj/repo is a plain text file
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_repo_root = temp_dir.path().join("my-project");
+        let fake_jj_repo = fake_repo_root.join(".jj").join("repo");
+        fs::create_dir_all(&fake_jj_repo).unwrap();
+
+        // Create a workspace directory with .jj/repo as a text file
+        let workspace_dir = temp_dir.path().join("workspace");
+        let ws_jj_dir = workspace_dir.join(".jj");
+        fs::create_dir_all(&ws_jj_dir).unwrap();
+        fs::write(
+            ws_jj_dir.join("repo"),
+            fake_jj_repo.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+
+        let result = find_repo_root_from_workspace(&workspace_dir);
+        assert_eq!(result, Some(fake_repo_root));
+    }
+
+    #[test]
+    fn test_find_repo_root_from_workspace_symlink() {
+        // Simulate legacy JJ: .jj/repo is a symlink
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_repo_root = temp_dir.path().join("my-project");
+        let fake_jj_repo = fake_repo_root.join(".jj").join("repo");
+        fs::create_dir_all(&fake_jj_repo).unwrap();
+
+        let workspace_dir = temp_dir.path().join("workspace");
+        let ws_jj_dir = workspace_dir.join(".jj");
+        fs::create_dir_all(&ws_jj_dir).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&fake_jj_repo, ws_jj_dir.join("repo")).unwrap();
+
+        #[cfg(unix)]
+        {
+            let result = find_repo_root_from_workspace(&workspace_dir);
+            assert_eq!(result, Some(fake_repo_root));
+        }
+    }
+
+    #[test]
+    fn test_find_repo_root_from_workspace_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let result = find_repo_root_from_workspace(temp_dir.path());
+        assert_eq!(result, None);
     }
 }
