@@ -36,10 +36,14 @@ impl AgentRuntime for CodexRuntime {
         // Spawn codex process with prompt
         // Uses `codex exec` for non-interactive execution
         // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
-        let output = Command::new("codex")
-            .current_dir(&options.cwd)
-            .args(["exec", "--full-auto", &prompt])
-            .output();
+        let mut cmd = Command::new("codex");
+        cmd.current_dir(&options.cwd)
+            .args(["exec", "--full-auto", &prompt]);
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let output = cmd.output();
 
         match output {
             Ok(output) => {
@@ -76,8 +80,8 @@ impl AgentRuntime for CodexRuntime {
         // Spawn codex process detached from parent
         // The process runs independently and continues after parent exits
         // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
-        let child = Command::new("codex")
-            .current_dir(&options.cwd)
+        let mut cmd = Command::new("codex");
+        cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt])
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
@@ -86,8 +90,12 @@ impl AgentRuntime for CodexRuntime {
             // Detach stdin/stdout/stderr so process runs independently
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let child = cmd.spawn();
 
         match child {
             Ok(child) => {
@@ -109,8 +117,8 @@ impl AgentRuntime for CodexRuntime {
 
         // Spawn codex process - keep Child handle for monitoring
         // --full-auto enables workspace writes with sandbox protection (-a on-request, --sandbox workspace-write)
-        let child = Command::new("codex")
-            .current_dir(&options.cwd)
+        let mut cmd = Command::new("codex");
+        cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt])
             // Pass task ID so session system can track this as a task-driven session
             .env("AIKI_TASK", &options.task_id)
@@ -120,8 +128,12 @@ impl AgentRuntime for CodexRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             // Capture stderr so we can report errors when the agent fails
-            .stderr(Stdio::piped())
-            .spawn();
+            .stderr(Stdio::piped());
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let child = cmd.spawn();
 
         match child {
             Ok(child) => Ok(MonitoredChild::new(child, &options.task_id)),

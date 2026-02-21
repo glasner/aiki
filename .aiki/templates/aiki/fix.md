@@ -16,7 +16,7 @@ Review task `{{source.id}}` found issues in **{{data.scope.name}}**.
 
 2. Create a nested subtask for EACH issue found (use your current task ID as parent):
    ```bash
-   aiki task add --parent {{id}} "Fix: <brief description of issue>"
+   aiki task add --subtask-of {{id}} "Fix: <brief description of issue>"
    ```
 
 3. Start and work through each nested subtask, closing as you go:

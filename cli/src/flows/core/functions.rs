@@ -1130,8 +1130,7 @@ pub fn workspace_create_if_concurrent(
     let session_count = isolation::count_sessions_in_repo(&repo_id);
 
     // Check if a workspace already exists for this session
-    let workspace_path = crate::global::global_aiki_dir()
-        .join("workspaces")
+    let workspace_path = crate::session::isolation::workspaces_dir()
         .join(&repo_id)
         .join(session_uuid);
 
@@ -1182,7 +1181,7 @@ pub fn workspace_create_if_concurrent(
 /// Absorb all workspaces for the current session back into parent/main.
 ///
 /// Called from `session.ended` hook.
-/// Iterates `~/.aiki/workspaces/*/<session-uuid>/`, absorbs and cleans up each.
+/// Iterates `/tmp/aiki/*/<session-uuid>/`, absorbs and cleans up each.
 /// No-op if no workspaces exist (solo session that never needed isolation).
 ///
 /// # Returns
@@ -1193,7 +1192,7 @@ pub fn workspace_absorb_all(
     use crate::session::isolation;
 
     let session_uuid = session.uuid();
-    let workspaces_dir = crate::global::global_aiki_dir().join("workspaces");
+    let workspaces_dir = crate::session::isolation::workspaces_dir();
 
     if !workspaces_dir.exists() {
         return Ok(ActionResult {
@@ -1204,8 +1203,6 @@ pub fn workspace_absorb_all(
         });
     }
 
-    // TODO: Read parent session UUID from AIKI_PARENT_SESSION_UUID env var
-    // once runner.rs passes it when spawning subagents
     let parent_session_uuid: Option<String> = std::env::var("AIKI_PARENT_SESSION_UUID").ok();
     let mut absorbed = 0u32;
 
@@ -1235,8 +1232,11 @@ pub fn workspace_absorb_all(
 
         let workspace_name = format!("aiki-{}", session_uuid);
 
-        // Find repo root from workspace
-        let repo_root = match isolation::find_jj_root(&session_ws_dir) {
+        // Find the real repo root from the workspace's .jj/repo pointer.
+        // We must NOT use find_jj_root() here because it walks up looking for
+        // .jj/ — and the workspace itself has a .jj/ directory, so it would
+        // return the workspace path instead of the actual repo root.
+        let repo_root = match isolation::find_repo_root_from_workspace(&session_ws_dir) {
             Some(root) => root,
             None => {
                 debug_log(|| {

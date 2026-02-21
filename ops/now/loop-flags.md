@@ -127,7 +127,7 @@ The trade-off favors quality — better to catch issues early in the fix than to
 | Fix task parent | Original task (not review) | Preserves existing hierarchy, fix is child of task being fixed |
 | **Iteration** | `loop:` frontmatter in templates | Declarative, customizable via template overrides |
 | Loop primitive | `loop: {until, data}` in frontmatter | Clean syntax, task system spawns next iteration |
-| Loop metadata | Auto-generated `data.loop` | System provides index, index1, first, last, length |
+| Loop metadata | Auto-generated `data.loop` | System provides index, iteration |
 | Loop structure | Nested (outer + inner) | Two quality gates: fix must be clean (inner), and fix must solve problem (outer) |
 | Default max outer | 10 iterations | Generous for complex fix chains; customizable via template data |
 | Default max inner | 5 iterations per fix | Enough to refine a fix; customizable via template data |
@@ -243,11 +243,11 @@ Main fix template with outer loop (fix → review fix quality → re-review orig
 ---
 template: aiki/fix
 loop:
-  until: subtasks[2].approved or data.loop.index1 >= data.max_outer
+  until: subtasks[2].approved or data.loop.iteration >= data.max_outer
   data: {}  # No manual iteration tracking - system provides data.loop
 ---
 
-# Fix Iteration {{data.loop.index1 | default: 1}}/{{data.max_outer | default: 10}}
+# Fix Iteration {{data.loop.iteration | default: 1}}/{{data.max_outer | default: 10}}
 
 Fixing issues from review {{data.original_review}}.
 
@@ -267,15 +267,14 @@ Fixing issues from review {{data.original_review}}.
 
 ---
 
-**Status:** Iteration {{data.loop.index1 | default: 1}} of {{data.max_outer | default: 10}}
-{% if data.loop.first %}First attempt at fixing issues{% endif %}
+**Status:** Iteration {{data.loop.iteration | default: 1}} of {{data.max_outer | default: 10}}
 ```
 
 **Loop semantics:**
 - When task closes, evaluate `loop.until` condition
 - If false → spawn next iteration with `loop.data` merged, auto-increment `data.loop` metadata
 - If true → loop terminates
-- Task system automatically provides `data.loop.{index, index1, first, last, length}`
+- Task system automatically provides `data.loop.{index, iteration}`
 
 **Runtime override:**
 - Create task with `once: true` parameter → `loop_config` not copied to task
@@ -290,16 +289,12 @@ The task system automatically provides loop metadata to every iteration task:
 data:
   loop:
     index: 0           # Current iteration (0-indexed)
-    index1: 1          # Current iteration (1-indexed)
-    first: true        # Is this the first iteration?
-    last: false        # Is this the last iteration? (unknown until termination)
-    length: null       # Total iterations (unknown for dynamic loops)
+    iteration: 1       # Current iteration (1-indexed)
 ```
 
 **Usage in templates:**
-- `{{data.loop.index1}}` — Display iteration number (1, 2, 3...)
-- `data.loop.index1 >= data.max_outer` — Loop termination condition
-- `{% if data.loop.first %}...{% endif %}` — Special behavior on first iteration
+- `{{data.loop.iteration}}` — Display iteration number (1, 2, 3...)
+- `data.loop.iteration >= data.max_outer` — Loop termination condition
 
 **Benefits:**
 - No manual iteration tracking in `loop.data`
@@ -315,12 +310,12 @@ Inner loop: Review fix quality and refine until clean.
 ---
 template: aiki/fix/quality
 loop:
-  until: subtasks[0].approved or data.loop.index1 >= data.max_inner
+  until: subtasks[0].approved or data.loop.iteration >= data.max_inner
   data:
     fix_task: "{{subtasks[0].followup_id}}"
 ---
 
-# Fix Quality Loop {{data.loop.index1}}/{{data.max_inner}}
+# Fix Quality Loop {{data.loop.iteration}}/{{data.max_inner}}
 
 Reviewing fix task {{data.fix_task}} for quality.
 
@@ -334,7 +329,7 @@ Reviewing fix task {{data.fix_task}} for quality.
 
 ---
 
-**Status:** Inner iteration {{data.loop.index1}} of {{data.max_inner}}
+**Status:** Inner iteration {{data.loop.iteration}} of {{data.max_inner}}
 ```
 
 **Loop semantics:**
@@ -379,7 +374,7 @@ Override `.aiki/templates/aiki/fix/outer-iteration.md`:
 ```yaml
 ---
 loop:
-  until: subtasks[2].score >= 90 or data.loop.index1 >= data.max_outer
+  until: subtasks[2].score >= 90 or data.loop.iteration >= data.max_outer
 ---
 ```
 
@@ -389,9 +384,9 @@ Create custom template without inner-loop subtask:
 ```yaml
 ---
 loop:
-  until: subtasks[1].approved or data.loop.index1 >= data.max_outer
+  until: subtasks[1].approved or data.loop.iteration >= data.max_outer
 ---
-# Fix Iteration {{data.loop.index1}}/{{data.max_outer}}
+# Fix Iteration {{data.loop.iteration}}/{{data.max_outer}}
 
 ## Instructions
 1. {% subtask aiki/fix with review={{data.original_review}}, once=true %}

@@ -293,25 +293,19 @@ pub fn create_tasks_from_template(
         data: template.parent.data.clone(),
     };
 
-    // Handle subtasks based on template type:
-    // 1. subtasks_source in frontmatter -> use old dynamic subtasks approach
-    // 2. inline {% for %} loops or {% subtask %} refs -> process through template engine
-    // 3. neither -> static subtasks
-    let subtasks = if template.subtasks_source.is_some() {
-        // Legacy: Dynamic subtasks using frontmatter declaration
-        create_dynamic_subtasks(template, variables, data_source)?
-    } else if let Some(ref raw_content) = template.raw_content {
+    // Handle subtasks:
+    // 1. inline {% for %} loops or {% subtask %} refs -> process through template engine
+    // 2. otherwise -> H2 subtasks are parsed at task.rs level via create_subtasks_from_entries
+    let subtasks = if let Some(ref raw_content) = template.raw_content {
         if has_inline_loops(raw_content) || has_subtask_refs(raw_content) {
             // Process through conditional/loop engine (handles both loops and subtask refs)
             // For backward compat, filter out Composed entries (handled by Phase 3)
             create_subtasks_from_inline_loops(raw_content, variables, data_source)?
         } else {
-            // Static subtasks: just substitute variables
-            create_static_subtasks(template, variables)?
+            Vec::new()
         }
     } else {
-        // Static subtasks: just substitute variables
-        create_static_subtasks(template, variables)?
+        Vec::new()
     };
 
     Ok((parent, subtasks))
@@ -342,11 +336,7 @@ pub fn create_subtask_entries_from_template(
     };
 
     // Route through the appropriate subtask extraction path
-    let entries = if template.subtasks_source.is_some() {
-        // Legacy: Dynamic subtasks — always static entries
-        let defs = create_dynamic_subtasks(template, variables, data_source)?;
-        defs.into_iter().map(SubtaskEntry::Static).collect()
-    } else if let Some(ref raw_content) = template.raw_content {
+    let entries = if let Some(ref raw_content) = template.raw_content {
         if has_inline_loops(raw_content) || has_subtask_refs(raw_content) {
             // Process through conditional/loop engine (returns mixed Static + Composed entries)
             create_subtask_entries_with_name(
@@ -356,226 +346,13 @@ pub fn create_subtask_entries_from_template(
                 Some(&template.template_id()),
             )?
         } else {
-            // Static subtasks: just substitute variables
-            let defs = create_static_subtasks(template, variables)?;
-            defs.into_iter().map(SubtaskEntry::Static).collect()
+            Vec::new()
         }
     } else {
-        // Static subtasks: just substitute variables
-        let defs = create_static_subtasks(template, variables)?;
-        defs.into_iter().map(SubtaskEntry::Static).collect()
+        Vec::new()
     };
 
     Ok((parent, entries))
-}
-
-/// Create static subtasks by substituting variables in each predefined subtask
-fn create_static_subtasks(
-    template: &TaskTemplate,
-    variables: &VariableContext,
-) -> Result<Vec<TaskDefinition>> {
-    let mut subtasks = Vec::new();
-
-    for subtask in &template.subtasks {
-        let name = substitute(&subtask.name, variables)?;
-        let instructions = substitute(&subtask.instructions, variables)?;
-
-        subtasks.push(TaskDefinition {
-            name,
-            slug: subtask.slug.clone(),
-            task_type: None, // Subtasks inherit type from parent
-            instructions,
-            priority: subtask.priority.clone(),
-            assignee: subtask.assignee.clone(),
-            sources: subtask.sources.clone(),
-            data: subtask.data.clone(),
-        });
-    }
-
-    Ok(subtasks)
-}
-
-/// Create dynamic subtasks by iterating over the data source
-fn create_dynamic_subtasks(
-    template: &TaskTemplate,
-    variables: &VariableContext,
-    data_source: Option<Vec<TaskComment>>,
-) -> Result<Vec<TaskDefinition>> {
-    // If no data source or empty, return empty subtasks
-    let comments = match data_source {
-        Some(comments) if !comments.is_empty() => comments,
-        _ => return Ok(Vec::new()),
-    };
-
-    // Get the subtask template content
-    let subtask_template_content = match &template.subtask_template {
-        Some(content) => content,
-        None => return Ok(Vec::new()),
-    };
-
-    // Parse the subtask template to get heading, frontmatter, and body
-    let parsed = match parse_subtask_template(subtask_template_content)? {
-        Some(parsed) => parsed,
-        None => return Ok(Vec::new()),
-    };
-
-    let mut subtasks = Vec::new();
-
-    for comment in comments {
-        // Create a new VariableContext with parent.* namespace populated from parent variables
-        let mut subtask_ctx = VariableContext::new();
-
-        // Copy parent data into parent.* namespace (accessible as {parent.data.key})
-        // We use the prefix "data." so {parent.data.scope} maps to parent["data.scope"]
-        for (key, value) in &variables.data {
-            subtask_ctx.set_parent(&format!("data.{}", key), value);
-        }
-
-        // Copy parent builtins into parent.* namespace (accessible as {parent.key})
-        for (key, value) in &variables.builtins {
-            subtask_ctx.set_parent(key, value);
-        }
-
-        // Copy parent source info (accessible as {parent.source} and {parent.source.*})
-        if let Some(ref source) = variables.source {
-            subtask_ctx.set_parent("source", source);
-            for (key, value) in &variables.source_data {
-                subtask_ctx.set_parent(&format!("source.{}", key), value);
-            }
-            // Also set source for this subtask (inherits parent source)
-            subtask_ctx.set_source(source);
-        }
-
-        // Add {item.text} variable from comment.text
-        subtask_ctx.set_item("text", &comment.text);
-
-        // Copy parent data as {data.*} (accessible in subtasks for CLI-provided data)
-        for (key, value) in &variables.data {
-            subtask_ctx.set_data(key, value);
-        }
-
-        // Substitute variables in the heading and body
-        let name = substitute(&parsed.heading, &subtask_ctx)?;
-        let instructions = substitute(&parsed.body, &subtask_ctx)?;
-
-        // Start with empty data map (no comment metadata)
-        let mut data: HashMap<String, serde_json::Value> = HashMap::new();
-
-        // Apply frontmatter if present, with variable substitution
-        let (priority, assignee, sources) = if let Some(ref fm) = parsed.frontmatter {
-            let priority = fm
-                .priority
-                .as_ref()
-                .map(|p| substitute(p, &subtask_ctx))
-                .transpose()?;
-            let assignee = fm
-                .assignee
-                .as_ref()
-                .map(|a| substitute(a, &subtask_ctx))
-                .transpose()?;
-            let sources: Vec<String> = fm
-                .sources
-                .iter()
-                .map(|s| substitute(s, &subtask_ctx))
-                .collect::<Result<Vec<_>>>()?;
-            // Substitute variables in frontmatter data values and merge into data
-            // Frontmatter data takes precedence over comment data
-            for (k, v) in &fm.data {
-                let substituted = match v {
-                    serde_json::Value::String(s) => {
-                        substitute(s, &subtask_ctx).map(serde_json::Value::String)?
-                    }
-                    other => other.clone(),
-                };
-                data.insert(k.clone(), substituted);
-            }
-            (priority, assignee, sources)
-        } else {
-            (None, None, Vec::new())
-        };
-
-        subtasks.push(TaskDefinition {
-            name,
-            slug: None, // Dynamic subtasks don't have slugs
-            task_type: None, // Subtasks inherit type from parent
-            instructions,
-            priority,
-            assignee,
-            sources,
-            data,
-        });
-    }
-
-    Ok(subtasks)
-}
-
-/// Parsed subtask template with optional frontmatter
-#[derive(Debug)]
-struct ParsedSubtaskTemplate {
-    /// The heading template (e.g., "Fix: {data.file}:{data.line}")
-    heading: String,
-    /// Optional frontmatter (priority, assignee, sources, data)
-    frontmatter: Option<super::types::SubtaskFrontmatter>,
-    /// The body/instructions template
-    body: String,
-}
-
-/// Parse a subtask template section into heading, optional frontmatter, and body
-///
-/// The subtask template should contain an h2 heading (## ...) optionally followed
-/// by YAML frontmatter, then body content.
-///
-/// # Example without frontmatter
-/// ```ignore
-/// ## Fix: {data.file}:{data.line}
-///
-/// {text}
-/// ```
-///
-/// # Example with frontmatter
-/// ```ignore
-/// ## Fix: {data.file}:{data.line}
-/// ---
-/// sources:
-///   - task:{source.id}
-/// priority: p1
-/// ---
-///
-/// {text}
-/// ```
-fn parse_subtask_template(content: &str) -> Result<Option<ParsedSubtaskTemplate>> {
-    let content = content.trim();
-
-    // Find the h2 heading line
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(heading_text) = trimmed.strip_prefix("## ") {
-            let heading = heading_text.trim().to_string();
-
-            // Find where the heading line ends
-            if let Some(heading_end_pos) = content.find(line) {
-                let after_heading = &content[heading_end_pos + line.len()..];
-                let after_heading = after_heading.trim_start_matches('\n');
-
-                // Check if there's frontmatter after the heading
-                let (frontmatter, body) = super::parser::extract_yaml_frontmatter::<
-                    super::types::SubtaskFrontmatter,
-                >(after_heading)
-                .map_err(|e| AikiError::TemplateFrontmatterInvalid {
-                    file: "(subtask template)".to_string(),
-                    details: e.to_string(),
-                })?;
-
-                return Ok(Some(ParsedSubtaskTemplate {
-                    heading,
-                    frontmatter,
-                    body,
-                }));
-            }
-        }
-    }
-
-    Ok(None)
 }
 
 /// Known collection names that can be used in {% for %} loops
@@ -760,12 +537,9 @@ fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> R
         // Create evaluation context with loop variables for conditional processing
         let mut ctx = EvalContext::new();
 
-        // Add loop metadata to context (for conditional evaluation like {% if loop.first %})
-        ctx.set("loop.index", (index + 1).to_string());
-        ctx.set("loop.index0", index.to_string());
-        ctx.set("loop.first", (index == 0).to_string());
-        ctx.set("loop.last", (index == len - 1).to_string());
-        ctx.set("loop.length", len.to_string());
+        // Add loop metadata to context (for conditional evaluation in conditionals)
+        ctx.set("loop.iteration", (index + 1).to_string());
+        ctx.set("loop.index", index.to_string());
 
         // Add item fields to context for conditional evaluation
         ctx.set(format!("{}.text", variable_name), item.text.clone());
@@ -788,12 +562,9 @@ fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> R
         // Build replacements map for loop metadata and item variables
         let mut replacements = Vec::new();
 
-        // Loop metadata variables ({{loop.index}}, {{loop.first}}, etc.)
-        replacements.push(("{{loop.index}}".to_string(), (index + 1).to_string()));
-        replacements.push(("{{loop.index0}}".to_string(), index.to_string()));
-        replacements.push(("{{loop.first}}".to_string(), (index == 0).to_string()));
-        replacements.push(("{{loop.last}}".to_string(), (index == len - 1).to_string()));
-        replacements.push(("{{loop.length}}".to_string(), len.to_string()));
+        // Loop metadata variables ({{loop.iteration}}, {{loop.index}})
+        replacements.push(("{{loop.iteration}}".to_string(), (index + 1).to_string()));
+        replacements.push(("{{loop.index}}".to_string(), index.to_string()));
 
         // {{var.text}} with the comment text
         let text_pattern = format!("{{{{{}.text}}}}", variable_name);
@@ -1390,7 +1161,7 @@ No frontmatter here.
     }
 
     #[test]
-    fn test_create_tasks_from_template_static_subtasks() {
+    fn test_create_tasks_from_template_resolves_parent() {
         let temp_dir = TempDir::new().unwrap();
         create_test_templates(temp_dir.path());
 
@@ -1406,191 +1177,12 @@ No frontmatter here.
         assert_eq!(parent.name, "Review: Task (abc123)");
         assert!(parent.instructions.contains("Review the changes"));
         assert!(parent.instructions.contains("abc123"));
-        assert_eq!(subtasks.len(), 1);
-        assert_eq!(subtasks[0].name, "Digest");
-        assert!(subtasks[0].instructions.contains("Examine code."));
-    }
-
-    #[test]
-    fn test_create_tasks_from_template_dynamic_subtasks() {
-        use crate::tasks::types::TaskComment;
-        use chrono::Utc;
-
-        // Create a template with dynamic subtasks
-        let mut template = TaskTemplate::new("test/dynamic");
-        template.parent.name = "Review: {{data.scope.name}}".to_string();
-        template.parent.instructions = "Review all issues.".to_string();
-        template.subtasks_source = Some("source.comments".to_string());
-        template.subtask_template = Some(
-            r#"## Fix: {{item.text}}"#
-                .to_string(),
-        );
-
-        let mut variables = VariableContext::new();
-        variables.set_data("scope.name", "Spec (auth.rs)");
-        variables.set_data("scope.id", "src/auth.rs");
-        variables.set_data("scope.kind", "spec");
-
-        // Create comments directly
-        let comments = vec![
-            TaskComment {
-                id: None,
-                text: "Variable may be null".to_string(),
-                timestamp: Utc::now(),
-                data: HashMap::new(),
-            },
-            TaskComment {
-                id: None,
-                text: "Unused import".to_string(),
-                timestamp: Utc::now(),
-                data: HashMap::new(),
-            },
-        ];
-
-        let (parent, subtasks) =
-            create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
-
-        assert_eq!(parent.name, "Review: Spec (auth.rs)");
-        assert_eq!(subtasks.len(), 2);
-
-        // Check first subtask
-        assert_eq!(subtasks[0].name, "Fix: Variable may be null");
-
-        // Check second subtask
-        assert_eq!(subtasks[1].name, "Fix: Unused import");
-    }
-
-    #[test]
-    fn test_create_tasks_from_template_dynamic_empty_data_source() {
-        let mut template = TaskTemplate::new("test/dynamic");
-        template.parent.name = "Review".to_string();
-        template.parent.instructions = "Review all issues.".to_string();
-        template.subtasks_source = Some("source.comments".to_string());
-        template.subtask_template = Some("## Fix: {{item.file}}\n\n{{item.text}}".to_string());
-
-        let variables = VariableContext::new();
-
-        // Test with None data source
-        let (_, subtasks) = create_tasks_from_template(&template, &variables, None).unwrap();
+        // Static H2 subtasks are now handled at the command layer (create_subtasks_from_entries),
+        // not by create_tasks_from_template
         assert!(subtasks.is_empty());
-
-        // Test with empty Vec
-        let (_, subtasks) =
-            create_tasks_from_template(&template, &variables, Some(Vec::new())).unwrap();
-        assert!(subtasks.is_empty());
-    }
-
-    #[test]
-    fn test_parse_subtask_template() {
-        let content = r#"## Fix: {{item.file}}:{{item.line}}
-
-**Severity**: {{item.severity}}
-
-{{item.text}}"#;
-
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert_eq!(parsed.heading, "Fix: {{item.file}}:{{item.line}}");
-        assert!(parsed.frontmatter.is_none());
-        assert!(parsed.body.contains("**Severity**: {{item.severity}}"));
-        assert!(parsed.body.contains("{{item.text}}"));
-    }
-
-    #[test]
-    fn test_parse_subtask_template_simple() {
-        let content = "## Task Name\n\nTask body.";
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert_eq!(parsed.heading, "Task Name");
-        assert!(parsed.frontmatter.is_none());
-        assert_eq!(parsed.body, "Task body.");
-    }
-
-    #[test]
-    fn test_parse_subtask_template_no_heading() {
-        let content = "Just some text without a heading.";
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_parse_subtask_template_h1_not_h2() {
-        let content = "# H1 Heading\n\nBody text.";
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_parse_subtask_template_with_frontmatter() {
-        let content = r#"## Fix: {item.file}
----
-sources:
-  - task:{source.id}
-priority: p1
-assignee: claude-code
----
-
-Fix the issue described above."#;
-
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert_eq!(parsed.heading, "Fix: {item.file}");
-        assert!(parsed.frontmatter.is_some());
-
-        let fm = parsed.frontmatter.unwrap();
-        assert_eq!(fm.priority, Some("p1".to_string()));
-        assert_eq!(fm.assignee, Some("claude-code".to_string()));
-        assert_eq!(fm.sources.len(), 1);
-        assert_eq!(fm.sources[0], "task:{source.id}");
-
-        assert!(parsed.body.contains("Fix the issue"));
-    }
-
-    #[test]
-    fn test_parse_subtask_template_frontmatter_with_data() {
-        let content = r#"## Task
----
-data:
-  severity: "{item.severity}"
-  file: "{item.file}"
----
-
-Body text."#;
-
-        let result = parse_subtask_template(content).unwrap();
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert!(parsed.frontmatter.is_some());
-
-        let fm = parsed.frontmatter.unwrap();
-        assert_eq!(
-            fm.data.get("severity"),
-            Some(&serde_json::json!("{item.severity}"))
-        );
-        assert_eq!(fm.data.get("file"), Some(&serde_json::json!("{item.file}")));
-    }
-
-    #[test]
-    fn test_parse_subtask_template_invalid_yaml() {
-        let content = r#"## Fix: {item.file}
----
-invalid: yaml: : :
-priority: p1
----
-
-Body text."#;
-
-        let result = parse_subtask_template(content);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("Invalid template frontmatter"));
+        // Verify the template still has the parsed subtask definitions
+        assert_eq!(template.subtasks.len(), 1);
+        assert_eq!(template.subtasks[0].name, "Digest");
     }
 
     // ===== Loop Expansion Tests =====
@@ -1658,7 +1250,7 @@ No items found.
         use chrono::Utc;
 
         let content = r#"<!-- AIKI_LOOP:item:source.comments -->
-{{loop.index}}. {{item.text}} (first={{loop.first}}, last={{loop.last}})
+{{loop.iteration}}. {{item.text}} (index={{loop.index}})
 <!-- AIKI_ENDLOOP -->"#;
 
         let mut data_sources = HashMap::new();
@@ -1682,8 +1274,8 @@ No items found.
 
         let result = expand_loops(content, &data_sources).unwrap();
 
-        assert!(result.contains("1. First (first=true, last=false)"));
-        assert!(result.contains("2. Second (first=false, last=true)"));
+        assert!(result.contains("1. First (index=0)"));
+        assert!(result.contains("2. Second (index=1)"));
     }
 
     #[test]

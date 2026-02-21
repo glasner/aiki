@@ -3,34 +3,32 @@ version: 2.0.0
 type: orchestrator
 ---
 
-# Build: {{data.spec}}
+# Build: {{data.spec}} ({{data.plan}})
 
 **Overall Goal**: Execute plan to implement the spec.
 
-When all plan subtasks are complete, close this task:
+The plan is a task ({{data.plan}}) that includes all the necessary steps to build the spec at {{data.spec}}.
+
+Start the plan:
 
 ```bash
-aiki task close {{id}} --summary "Build completed: all subtasks done."
+aiki task start {{data.plan}}
+
+```
+Execute each subtask of the plan sequentially until they are all completed: 
+
+```bash
+aiki task run {{data.plan}} --next-subtask
 ```
 
-# Subtasks
-
-{% subtask aiki/plan if not data.plan %}
-
-## Execute Subtasks
----
-slug: execute
----
-
-Execute each subtask of the plan task sequentially. The plan task ID is available via `data.plan` ({{data.plan}}):
+If a subtask fails **do not continue**, stop all work and report the failure:
 
 ```bash
-aiki task run {{data.plan}}.<subtask number>
-...
+aiki task stop {{data.plan}} {{id}} --reason "Failed subtask <subtask_id>: <reason>"
 ```
 
-Run them in order. If a subtask fails do not continue, stop and report the failure using the following command:
+When **all plan subtasks** are complete, close this the plan and this task:
 
 ```bash
-aiki task stop {{parent.id}} --reason "Failed subtask <subtask_number>: <reason>"
+aiki task close {{data.plan}} {{id}} --summary "Build completed: plan:{{data.plan}}."
 ```

@@ -1,9 +1,12 @@
 
+- spec graph / ensure plan
+- compaction hooks
+- tmp workspaces
 - semantic blockers
-- rename self
 - autorun for unblocked tasks
 - loop flags
-- spec/plan merge/rename
+- rename plan
+- rename spec
 - workflow ux -> share with Paul
 - review loop hooks
 

@@ -51,10 +51,10 @@ Replace generic `blocked-by` with **three semantic blocking link types** that ex
 **Benefits:**
 - **Self-documenting** — Task graph explains relationships, not just ordering
 - **Queryable** — "Show all reviews validating this task" vs "show all blockers"
-- **Automatable** — Domain-specific behavior (conditional skip for follows-up)
+- **Automatable** — Domain-specific behavior (conditional skip for remediates)
 - **Forces clarity** — Must think about *why* dependency exists
 
-**Migration:** Existing `blocked-by` links convert to `depends-on` (closest semantic match for generic prerequisites).
+**Migration:** Existing `blocked-by` links convert to `depends-on` (closest semantic match for generic prerequisites). Existing `follows-up` links convert to `remediates` (direct semantic successor).
 
 ---
 
@@ -88,7 +88,7 @@ pub enum LinkType {
 }
 ```
 
-**Note:** `blocked-by` is removed entirely. All blocking relationships must use one of the three semantic types.
+**Note:** `blocked-by` and `follows-up` are removed entirely. All blocking relationships must use one of the three semantic types. (`follows-up` is superseded by `remediates`.)
 
 ### Integration with Spawned Tasks
 
@@ -327,27 +327,46 @@ aiki task add "Deploy to production" --depends-on <staging-deploy>
 
 **Recommendation:** Option 1 (convert all to `depends-on`) with manual cleanup.
 
+### Existing `follows-up` Links
+
+`follows-up` was introduced in `loop-flags.md` as a semantic link for fix tasks that follow up on reviews. It is the direct predecessor to `remediates` — same semantics, different name. The codebase already treats `follows-up` as an alias for `remediates` in `graph.rs` (backward compat).
+
+**Migration:** Convert all `follows-up` → `remediates`. This is a direct 1:1 rename — no semantic ambiguity.
+
+**What's affected:**
+- `cli/src/tasks/graph.rs` — `TERMINAL_UNBLOCK` array includes `follows-up` for backward compat
+- `cli/src/commands/task.rs` — `BLOCKING_LINK_TYPES` includes `follows-up`
+- `ops/now/loop-flags.md` — references `follows-up` throughout (needs doc update)
+- `ops/now/autorun-unblocked-tasks.md` — references `FollowsUp` variant and `follows-up` string
+
 ### Storage Compatibility
 
 Links are stored as `LinkAdded`/`LinkRemoved` events with a string `kind` field (e.g., `kind: "blocked-by"`). The `LINK_KINDS` registry in `graph.rs` defines recognized kinds. This string-based design means no schema version bump is needed — the new semantic link types (`validates`, `remediates`, `depends-on`) are just new `kind` strings.
 
+**Legacy link types to migrate:**
+- `"blocked-by"` → `"depends-on"` (generic prerequisite)
+- `"follows-up"` → `"remediates"` (direct rename, same semantics)
+
 **Rollout phases:**
 
 1. **Phase A — Read both, write new only (current state)**
-   - `LINK_KINDS` already contains both `"blocked-by"` (legacy) and the three semantic types
-   - Reader: materializes `blocked-by` events as blocking links (existing behavior preserved)
-   - Writer: new CLI flags emit semantic link types; `--blocked-by` flag is removed from CLI
-   - **Compatibility:** Old task branches with `blocked-by` events continue to work. No data rewrite needed.
+   - `LINK_KINDS` already contains legacy types (`"blocked-by"`, `"follows-up"`) and the three semantic types
+   - Reader: materializes `blocked-by` and `follows-up` events as blocking links (existing behavior preserved)
+   - Writer: new CLI flags emit semantic link types; `--blocked-by` and `--follows-up` flags are removed from CLI
+   - **Compatibility:** Old task branches with `blocked-by`/`follows-up` events continue to work. No data rewrite needed.
 
 2. **Phase B — Migrate existing links**
-   - Run a one-time migration that emits `LinkRemoved(kind: "blocked-by")` + `LinkAdded(kind: "depends-on")` event pairs for each existing `blocked-by` link
+   - Run a one-time migration that emits event pairs for each legacy link:
+     - `blocked-by`: `LinkRemoved(kind: "blocked-by")` + `LinkAdded(kind: "depends-on")`
+     - `follows-up`: `LinkRemoved(kind: "follows-up")` + `LinkAdded(kind: "remediates")`
    - This is append-only — original events remain in history for auditability
-   - Migration is idempotent: re-running skips links already converted (the `LinkRemoved` for the old `blocked-by` makes the old link inactive, and the idempotency check in `write_link_event` prevents duplicate `depends-on` links)
+   - Migration is idempotent: re-running skips links already converted (the `LinkRemoved` for the old kind makes the old link inactive, and the idempotency check in `write_link_event` prevents duplicate new links)
 
 3. **Phase C — Remove legacy support**
-   - Remove `"blocked-by"` entry from `LINK_KINDS`
-   - Any unconverted `blocked-by` events in the log become inert (unknown kind strings are ignored by the materializer)
-   - Update cycle detection in `write_link_event` to check all semantic blocking kinds instead of hardcoded `"blocked-by"`
+   - Remove `"blocked-by"` and `"follows-up"` entries from `LINK_KINDS`
+   - Any unconverted legacy events in the log become inert (unknown kind strings are ignored by the materializer)
+   - Update cycle detection in `write_link_event` to check all semantic blocking kinds instead of hardcoded legacy types
+   - Remove `"follows-up"` from `TERMINAL_UNBLOCK` and `BLOCKING_LINK_TYPES` arrays in the codebase
 
 **What does NOT change:**
 - Event format (`LinkAdded`/`LinkRemoved` structs) — no new fields needed
@@ -356,17 +375,21 @@ Links are stored as `LinkAdded`/`LinkRemoved` events with a string `kind` field 
 
 **Migration steps:**
 1. Add new link types to `LINK_KINDS` (already done)
-2. Update CLI to support new link flags, remove `--blocked-by`
-3. Run migration: emit `LinkRemoved`/`LinkAdded` pairs converting `blocked-by` → `depends-on`
-4. Remove `"blocked-by"` from `LINK_KINDS` registry
-5. Update cycle detection to cover all semantic blocking kinds
-6. Update documentation
+2. Update CLI to support new link flags, remove `--blocked-by` and `--follows-up`
+3. Run migration: emit `LinkRemoved`/`LinkAdded` pairs converting:
+   - `blocked-by` → `depends-on`
+   - `follows-up` → `remediates`
+4. Remove `"blocked-by"` and `"follows-up"` from `LINK_KINDS` registry
+5. Remove `"follows-up"` from `TERMINAL_UNBLOCK` in `graph.rs` and `BLOCKING_LINK_TYPES` in `task.rs`
+6. Update cycle detection to cover all semantic blocking kinds
+7. Update documentation (including `loop-flags.md` and `autorun-unblocked-tasks.md` references to `follows-up`)
 
 ### CLI Changes
 
 **Before:**
 ```bash
 aiki task add "Task B" --blocked-by <task-a>
+aiki task add "Fix B" --follows-up <review-task>
 ```
 
 **After:**
@@ -496,10 +519,13 @@ This eliminates the need for conditional fields on links — the task simply isn
 
 ### Phase 5: Migration
 
-1. **Migration script** — convert `blocked-by` → `depends-on` in task storage
-2. **Remove `BlockedBy` variant** from `LinkType` enum
-3. **Update documentation** — remove `--blocked-by` references
-4. **Tests:** Migration tests on sample data
+1. **Migration script** — convert legacy links in task storage:
+   - `blocked-by` → `depends-on`
+   - `follows-up` → `remediates`
+2. **Remove `BlockedBy` and `FollowsUp` variants** from `LinkType` enum
+3. **Remove backward-compat entries** — drop `"follows-up"` from `TERMINAL_UNBLOCK` and `BLOCKING_LINK_TYPES`
+4. **Update documentation** — remove `--blocked-by` and `--follows-up` references; update `loop-flags.md` and `autorun-unblocked-tasks.md`
+5. **Tests:** Migration tests on sample data (covering both `blocked-by` and `follows-up` conversion)
 
 ---
 
@@ -586,7 +612,7 @@ aiki task add "Phase 2: Distributed cache" --depends-on <phase1-id> --autorun
 
 1. ~~**Should remediation links be auto-created by spawns?**~~ **Resolved:** Yes. The `spawns` block in the template defines both the semantic link type and provenance link. When a review template spawns a fix, the `spawns` config explicitly declares the `remediates` link (see "Integration with Spawned Tasks" section). This is not implicit — the template author specifies which links to create.
 
-2. **Subtask remediation semantics?** — Should subtasks of a parent task automatically get `remediates` links if spawned conditionally? E.g., if a review subtask spawns a fix subtask.
+2. ~~**Subtask remediation semantics?** — Should subtasks of a parent task automatically get `remediates` links if spawned conditionally? E.g., if a review subtask spawns a fix subtask.~~ **Resolved:** No implicit behavior needed. The `spawns` config uses `{{ parent.id }}` to reference the spawning task, so a fix spawned by a review subtask gets `remediates` pointing at that specific subtask — not the parent review. This is explicit in the template and works identically for top-level tasks and subtasks. The parent relationship is already captured via `subtask-of`, so no special-casing is required.
 
 3. **Link removal?** — Should users be able to remove links? `aiki task unlink <task-id> <link-id>`
 
@@ -604,7 +630,7 @@ aiki task add "Phase 2: Distributed cache" --depends-on <phase1-id> --autorun
 - **Subtask relationships** — `subtask-of` is unchanged (not a blocking link)
 - **Source tracking** — `source:` links unchanged (lineage, not blocking)
 - **Task lifecycle** — start/stop/close behavior unchanged
-- **Existing templates** — templates using `blocked-by` need updating to use semantic links
+- **Existing templates** — templates using `blocked-by` or `follows-up` need updating to use semantic links
 
 ---
 
@@ -631,6 +657,8 @@ aiki task add "Phase 2: Distributed cache" --depends-on <phase1-id> --autorun
 - [ ] CLI supports creating tasks with semantic links
 - [ ] `aiki review --fix` uses `validates` and `remediates` links
 - [ ] Existing `blocked-by` links migrated to `depends-on`
-- [ ] `BlockedBy` variant removed from codebase
+- [ ] Existing `follows-up` links migrated to `remediates`
+- [ ] `BlockedBy` and `FollowsUp` variants removed from codebase
+- [ ] `follows-up` backward-compat entries removed from `graph.rs` and `task.rs`
 - [ ] Documentation updated
 - [ ] No regressions in task lifecycle or blocking behavior

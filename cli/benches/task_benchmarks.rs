@@ -119,7 +119,6 @@ fn bench_write_events(c: &mut Criterion) {
                     session_id: None,
                     turn_id: None,
                     timestamp: Utc::now(),
-                    stopped: vec![],
                 };
                 write_event(cwd, &event).expect("Failed to write event");
             },
@@ -324,7 +323,6 @@ fn bench_task_lifecycle(c: &mut Criterion) {
                     session_id: None,
                     turn_id: None,
                     timestamp: Utc::now(),
-                    stopped: vec![],
                 };
                 write_event(cwd, &event).expect("Failed to start task");
 

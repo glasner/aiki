@@ -2,15 +2,17 @@
 
 **Date**: 2026-02-14
 **Status**: Draft
-**Purpose**: Add YAML frontmatter to spec/plan files to track lifecycle state and link to the implementation task.
+**Purpose**: Add YAML frontmatter to spec/plan files to mark draft status.
 
 ---
 
 ## Executive Summary
 
-Spec files (the markdown documents authored via `aiki spec` / `aiki plan`) currently have no metadata. This makes it impossible to know a file's lifecycle state (is it a draft? being built? done?) or which task implements it without running `aiki build show`.
+Spec files (the markdown documents authored via `aiki spec` / `aiki plan`) currently have no metadata to indicate whether they're still being authored or ready for implementation.
 
-This spec adds YAML frontmatter to spec files with two fields: `state` (lifecycle) and `plan_task` (implementation task ID). Commands that create or process spec files update the frontmatter at each lifecycle transition.
+This spec adds YAML frontmatter to spec files with a single field: `draft` (boolean flag).
+
+The link between a spec and its implementing task comes from the TaskGraph (via task edges), not from frontmatter.
 
 ---
 
@@ -18,41 +20,24 @@ This spec adds YAML frontmatter to spec files with two fields: `state` (lifecycl
 
 ```yaml
 ---
-state: draft
-plan_task: null
+draft: true
 ---
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `state` | string | Lifecycle state of the spec file |
-| `plan_task` | string \| null | Full 32-char task ID of the implementation epic, set by `aiki build` |
+| `draft` | boolean | If true, spec is still being authored and not ready for implementation |
 
-### States
+### Draft Field
 
-```
-draft → ready → building → reviewing → done
-                    ↓          ↓
-                 failed      fixing
-                               ↓
-                           reviewing
-```
+The `draft` field is a simple boolean:
+- `draft: true` - Spec is still being authored, not ready for implementation
+- `draft: false` (or omitted) - Spec is complete and ready to build
 
-| State | Set By | Meaning |
-|-------|--------|---------|
-| `draft` | `aiki spec` (creation) | Spec is being authored |
-| `ready` | `aiki spec` (session completes) | Spec is complete, ready to build |
-| `building` | `aiki build` (start) | Implementation in progress |
-| `reviewing` | `aiki review` (start) | Code review in progress |
-| `fixing` | `aiki fix` (start) | Applying review fixes |
-| `done` | `aiki review` (no issues / approved) | Lifecycle complete |
-| `failed` | `aiki build` (error) | Build failed |
-
-Notes:
-- `done` → `building` is valid (rebuild). The `plan_task` is overwritten.
-- `failed` → `building` is valid (retry after failure).
-- `reviewing` → `fixing` → `reviewing` can cycle until all issues are resolved.
-- `reviewing` → `done` when the review finds no issues (approved).
+**When to use:**
+- Set `draft: true` when creating a spec that's not yet complete
+- Remove `draft: true` (or set to `false`) when the spec is ready for implementation
+- Specs without `draft` field are assumed to be ready (not drafts)
 
 ---
 
@@ -60,7 +45,7 @@ Notes:
 
 ### `aiki spec <path>` — File Creation
 
-When `aiki spec` creates a new spec file, write frontmatter instead of an empty file.
+When `aiki spec` creates a new spec file, write frontmatter with `draft: true`:
 
 **Current behavior** (`spec.rs:454`):
 ```rust
@@ -69,130 +54,24 @@ fs::write(&spec_path, "").map_err(...)?;
 
 **New behavior**:
 ```rust
-let frontmatter = "---\nstate: draft\n---\n\n";
+let frontmatter = "---\ndraft: true\n---\n\n";
 fs::write(&spec_path, frontmatter).map_err(...)?;
 ```
 
-Only set `state`. `plan_task` is omitted (not `null`) — it appears only after `aiki build` runs.
-
 ### `aiki spec` — Session Completion
 
-When the spec session finishes successfully, update `state: draft` → `state: ready`.
+When the spec session finishes successfully, remove the `draft` field (or set to `false`).
 
 **Where**: After the Claude session exits with success in `run_spec()` (around spec.rs:500-520).
 
-**How**: Read file, update frontmatter state, write file.
-
-### `aiki build <spec.md>` — Build Start
-
-When `aiki build` starts processing a spec file:
-
-1. **Read frontmatter** from the spec file
-2. **Create frontmatter** if missing (for files created without `aiki spec`)
-3. **Set `state: building`**
-4. **Write updated frontmatter** back to the file
-
-**Where**: In `run_build_spec()` (build.rs), after validating the spec path and before creating the build task (~line 142).
-
-**Handling files without frontmatter**: If the spec file has no `---` frontmatter block, prepend one:
-```yaml
----
-state: building
----
-
-(existing file content unchanged)
-```
-
-### `aiki build` — Plan Task Created
-
-When the build's planning subtask creates the implementation (plan/epic) task, write its ID back to the spec file frontmatter.
-
-**How**: `build.rs` already has `find_plan_for_spec()` (line ~413) which finds a plan task by matching `data.spec`. After the planning subtask completes, `build.rs` calls this function to get the plan task ID, then writes it to frontmatter via the Rust utility.
-
-**Where**: In `run_build_spec()`, after the planning subtask completes but before executing implementation subtasks. The build orchestrator can detect plan creation by checking whether `find_plan_for_spec()` returns a result after the planning phase.
+**How**: Read file, remove `draft` field from frontmatter, write file.
 
 ```rust
-// After planning subtask completes:
-if let Some(plan_task_id) = find_plan_for_spec(cwd, &spec_path)? {
-    set_frontmatter_field(&spec_path, "plan_task", Value::String(plan_task_id))?;
-}
+// After successful spec session:
+let (mut frontmatter, body) = read_frontmatter(&spec_path)?;
+frontmatter.remove("draft");  // Spec is now ready
+write_frontmatter(&spec_path, &frontmatter, &body)?;
 ```
-
-No template changes or new CLI commands needed — `build.rs` handles this internally.
-
-### `aiki build` — Build Completion
-
-When build finishes successfully, set `state: reviewing` (next step is review, not done).
-
-**Where**: In `run_build_spec()` (build.rs), after `task_run()` returns success (~line 215).
-
-**On failure**: Set `state: failed`.
-
-### Resolving the Spec File from Review/Fix
-
-Review and fix operate on tasks or files, not spec paths directly. To update frontmatter, they need to resolve the spec file path from their scope:
-
-| `ReviewScopeKind` | How to find spec file |
-|--------------------|-----------------------|
-| `Spec` | `scope.id` IS the spec file path |
-| `Implementation` | `scope.id` IS the spec file path |
-| `Task` | Look up `data.spec` on the target task (`scope.id`) |
-| `Session` | Multiple tasks — skip frontmatter update |
-
-This resolution logic should be a shared helper:
-
-```rust
-/// Resolve the spec file path from a review scope, if one exists.
-fn resolve_spec_path(scope: &ReviewScope, tasks: &TaskMap) -> Option<PathBuf> {
-    match scope.kind {
-        ReviewScopeKind::Spec | ReviewScopeKind::Implementation => {
-            Some(PathBuf::from(&scope.id))
-        }
-        ReviewScopeKind::Task => {
-            let task = tasks.get(&scope.id)?;
-            task.data.get("spec").map(|s| PathBuf::from(s))
-        }
-        ReviewScopeKind::Session => None, // No single spec file
-    }
-}
-```
-
-### `aiki review` — Review Start
-
-When `aiki review` starts, resolve the spec file and set `state: reviewing`.
-
-**Where**: In `create_review()` (review.rs:380), after creating the review task.
-
-```rust
-if let Some(spec_path) = resolve_spec_path(&scope, &tasks) {
-    set_frontmatter_field(&spec_path, "state", Value::String("reviewing".into()))?;
-}
-```
-
-### `aiki review` — Review Completion (No Issues)
-
-When a review completes with no issues (approved), set `state: done`.
-
-**Where**: In `run_review()` (review.rs), after the review task completes and the result indicates no issues.
-
-### `aiki fix` — Fix Start
-
-When `aiki fix` starts, resolve the spec file from the review's scope and set `state: fixing`.
-
-**Where**: In `run_fix()` (fix.rs:90), after creating the fix task.
-
-```rust
-let scope = ReviewScope::from_data(&review_task.data)?;
-if let Some(spec_path) = resolve_spec_path(&scope, &tasks) {
-    set_frontmatter_field(&spec_path, "state", Value::String("fixing".into()))?;
-}
-```
-
-### `aiki fix` — Fix Completion
-
-When fix completes, set `state: reviewing` (next step is re-review).
-
-**Where**: In `run_fix()` (fix.rs), after the fix task completes successfully.
 
 ---
 
@@ -200,7 +79,7 @@ When fix completes, set `state: reviewing` (next step is re-review).
 
 **New file**: `cli/src/frontmatter.rs`
 
-All frontmatter updates are done internally by `spec.rs` and `build.rs` — no new CLI commands. This module provides the shared read/write functions.
+All frontmatter updates are done internally by `spec.rs` — no new CLI commands. This module provides the shared read/write functions.
 
 ```rust
 /// Parsed frontmatter as key-value pairs
@@ -217,18 +96,15 @@ pub fn write_frontmatter(path: &Path, fm: &Frontmatter, body: &str) -> Result<()
 /// Update a single field in a file's frontmatter, preserving body.
 /// Creates frontmatter block if none exists.
 pub fn set_frontmatter_field(path: &Path, key: &str, value: serde_yaml::Value) -> Result<()>;
+
+/// Remove a field from a file's frontmatter, preserving body.
+pub fn remove_frontmatter_field(path: &Path, key: &str) -> Result<()>;
 ```
 
 **Key behavior for `write_frontmatter`**:
 - If file has existing `---` block: replace it, keep body
 - If file has no `---` block: prepend frontmatter + blank line before body
 - Preserve all non-frontmatter content exactly as-is
-
-### No template changes needed
-
-- `aiki/spec` template: frontmatter is written by `spec.rs` before the session starts
-- `aiki/plan` template: no changes — `build.rs` writes `plan_task` after planning completes
-- `aiki/build` template: no changes — `build.rs` handles all state transitions directly
 
 ---
 
@@ -242,7 +118,7 @@ The codebase already has what we need:
 | `serde_yaml` dependency | `cli/Cargo.toml:26` | Yes, no new deps |
 | `serde` with derive | `cli/Cargo.toml:24` | Yes |
 
-The existing `extract_yaml_frontmatter<T>()` in `parser.rs` parses frontmatter into a typed struct. The new utility should use `BTreeMap<String, serde_yaml::Value>` for flexibility — spec file frontmatter has a different schema than template frontmatter and we don't want tight coupling.
+The existing `extract_yaml_frontmatter<T>()` in `parser.rs` parses frontmatter into a typed struct. The new utility should use `BTreeMap<String, serde_yaml::Value>` for flexibility.
 
 ---
 
@@ -250,30 +126,18 @@ The existing `extract_yaml_frontmatter<T>()` in `parser.rs` parses frontmatter i
 
 ### Phase 1: Frontmatter Utility
 
-1. Add `cli/src/frontmatter.rs` with `read_frontmatter()`, `write_frontmatter()`, `set_frontmatter_field()`
+1. Add `cli/src/frontmatter.rs` with `read_frontmatter()`, `write_frontmatter()`, `set_frontmatter_field()`, `remove_frontmatter_field()`
 2. Unit tests for: no frontmatter, existing frontmatter, empty file, frontmatter-only file
 
 ### Phase 2: Spec Integration
 
-3. Update `spec.rs` file creation to write `state: draft` frontmatter
-4. Update `spec.rs` session completion to set `state: ready`
+3. Update `spec.rs` file creation to write `draft: true` frontmatter
+4. Update `spec.rs` session completion to remove `draft` field
 
-### Phase 3: Build Integration
+### Phase 3: Validation
 
-5. Update `build.rs` start to read/create frontmatter and set `state: building`
-6. After planning subtask completes, call `find_plan_for_spec()` and write `plan_task` to frontmatter
-7. Update `build.rs` completion to set `state: reviewing` (or `state: failed` on error)
-
-### Phase 4: Review/Fix Integration
-
-8. Add `resolve_spec_path()` helper (shared between review.rs and fix.rs)
-9. Update `review.rs` to set `state: reviewing` on start, `state: done` on approved (no issues)
-10. Update `fix.rs` to set `state: fixing` on start, `state: reviewing` on completion
-
-### Phase 5: Validation
-
-11. `cargo test` — all unit tests pass
-12. Manual smoke test: full lifecycle `aiki spec` → `aiki build` → `aiki review` → `aiki fix` — verify frontmatter state at each step
+5. `cargo test` — all unit tests pass
+6. Manual smoke test: `aiki spec` — verify frontmatter at each step
 
 ---
 
@@ -286,7 +150,7 @@ $ aiki spec dark-mode.md "Add dark mode toggle"
 
 ```yaml
 ---
-state: draft
+draft: true
 ---
 
 ```
@@ -296,104 +160,9 @@ state: draft
 # Session completes successfully
 ```
 
-```yaml
----
-state: ready
----
+No frontmatter (or empty frontmatter can be omitted):
 
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-$ aiki build ops/now/dark-mode.md
-# Build starts, frontmatter updated
-```
-
-```yaml
----
-state: building
----
-
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-# Planning subtask creates implementation task...
-# build.rs calls find_plan_for_spec() and writes plan_task to frontmatter
-```
-
-```yaml
----
-state: building
-plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
----
-
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-# Build completes successfully
-```
-
-```yaml
----
-state: reviewing
-plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
----
-
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-$ aiki review xtuttnyvykpulsxzqnznsxylrzkkqssy
-# Review starts — state already "reviewing" (set by build completion)
-# Review finds 2 issues
-```
-
-```bash
-$ aiki fix <review-task-id>
-# Fix starts
-```
-
-```yaml
----
-state: fixing
-plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
----
-
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-# Fix completes — state goes back to "reviewing" for re-review
-```
-
-```yaml
----
-state: reviewing
-plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
----
-
-# Dark Mode Toggle
-...spec content...
-```
-
-```bash
-$ aiki review xtuttnyvykpulsxzqnznsxylrzkkqssy
-# Review finds no issues — approved
-```
-
-```yaml
----
-state: done
-plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
----
-
+```markdown
 # Dark Mode Toggle
 ...spec content...
 ```
@@ -402,8 +171,8 @@ plan_task: xtuttnyvykpulsxzqnznsxylrzkkqssy
 
 ## Open Questions
 
-1. **Should `aiki build show` read from frontmatter?** Currently it finds the plan by scanning task events for `data.spec` matches. It could also/instead read `plan_task` from frontmatter for a faster lookup.
+1. **Manual files**: Users might create spec files by hand (no `aiki spec`). Should there be a way to manually mark as draft?
 
-2. **Rebuild behavior**: When running `aiki build` on a file that's already `done` with a `plan_task`, should it warn? Require `--force`? Or just overwrite silently?
+2. **Draft filtering**: Should `aiki spec list` or similar commands filter out drafts by default? Or show them with a `[draft]` indicator?
 
-3. **Manual files**: Users might create spec files by hand (no `aiki spec`). `aiki build` handles this by creating frontmatter if missing. Is that sufficient, or should there be a way to manually set state?
+3. **Abandoned drafts**: How to handle old draft specs that were never completed? Archive command?

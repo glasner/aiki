@@ -3,16 +3,11 @@
 This documents every place the task system automatically starts, stops, or closes a task
 as a side effect of another action.
 
-## 1. Auto-stop previous tasks (on start)
+## 1. No auto-stop on start
 
-**Location:** `mod.rs` — `start_task_core()`
-
-When any task is started, all currently in-progress tasks owned by the **same session**
-are automatically stopped. The stop reason is recorded as `"Started <new-task-id>"`.
-
-- Parent tasks are preserved when starting their subtasks
-- Session filtering prevents one agent from stopping another agent's tasks
-- Triggered by: `task start`, `review --start`, `fix --start`, `spec --start`
+Starting a task does **not** auto-stop other in-progress tasks. Agents are responsible for
+explicitly stopping tasks when switching (`aiki task stop --reason "Switching to X"`) or
+closing them when done (`aiki task close --summary "..."`).
 
 ## 2. Auto-start parent (when last subtask closes)
 
@@ -38,8 +33,7 @@ The `.0` subtask is started **instead of** the parent itself.
 **Location:** `../commands/task.rs` — `run_start()`
 
 When `aiki task start "some description"` receives a non-task-ID string, it creates a
-new task with that description and immediately starts it (which also triggers auto-stop
-per #1).
+new task with that description and immediately starts it.
 
 ## 5. Template quick-start: create from template + start
 
@@ -66,12 +60,10 @@ subtask without the parent.
 
 | Transition            | Trigger                        | Effect                                  |
 |-----------------------|--------------------------------|-----------------------------------------|
-| Auto-stop             | Starting any task              | Previous same-session tasks stopped     |
 | Auto-start parent     | Closing last subtask           | Parent transitions to InProgress        |
 | Auto-start next child | Closing subtask (parent owned) | Next pending subtask started            |
 | Auto-create .0        | Starting parent with subtasks  | Planning subtask created and started    |
 | Quick-start           | `task start "desc"`            | New task created and started            |
 | Template start        | `task start --template X`      | Template task created and started       |
 
-The core chokepoint for auto-stop is `start_task_core()` in `mod.rs`.
 The auto-start-parent and auto-start-next-child logic live in the close handler in `commands/task.rs`.

@@ -42,9 +42,9 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
     // Extract failures from state
     let failures = state.take_failures();
 
-    // session.resumed never blocks - always allow
+    // session.resumed returns context (workspace + tasks) but never blocks
     Ok(HookResult {
-        context: None,
+        context: state.build_context(),
         decision: Decision::Allow,
         failures,
     })

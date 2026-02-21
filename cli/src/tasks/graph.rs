@@ -4,7 +4,7 @@
 //! Tasks are nodes, relationships are edges. Adding a new link kind
 //! requires only a new entry in `LINK_KINDS` — zero changes to EdgeStore.
 
-use super::types::{FastHashMap, Task, TaskComment, TaskEvent, TaskStatus};
+use super::types::{FastHashMap, Task, TaskComment, TaskEvent, TaskOutcome, TaskStatus};
 
 /// Link kind metadata — defines cardinality rules and blocking behavior.
 /// Checked at write time when adding links.
@@ -45,7 +45,7 @@ pub const LINK_KINDS: &[LinkKind] = &[
         task_only: true,
     },
     LinkKind {
-        name: "follows-up",
+        name: "remediates",
         max_forward: None,
         max_reverse: None,
         blocks_ready: true,
@@ -236,29 +236,48 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
-    /// A task is blocked if any of its blockers are not Closed.
+    /// A task is blocked if any of its blocking links are unsatisfied.
     ///
-    /// Blocking link types (all have same blocking semantics):
-    /// - `blocked-by`: Legacy generic blocker (deprecated, use semantic types)
-    /// - `validates`: Task validates/reviews another task
-    /// - `follows-up`: Task follows up on another task (fix, continuation)
-    /// - `depends-on`: Task depends on another task's output
+    /// Unblocking rules differ by link type:
+    /// - `validates` / `remediates`: Unblock on **any** terminal state
+    ///   (Closed regardless of outcome, or Stopped).
+    /// - `depends-on` / `blocked-by`: Unblock **only** when blocker is
+    ///   Closed with Done outcome. Stopped or won't-do keeps the task blocked.
     ///
     /// Parent links (subtask-of) do not block.
     pub fn is_blocked(&self, task_id: &str) -> bool {
-        const BLOCKING_LINK_TYPES: &[&str] =
-            &["blocked-by", "validates", "follows-up", "depends-on"];
+        // Link types that unblock on any terminal state (Closed or Stopped)
+        // "follows-up" kept for backward compat with existing links (renamed to "remediates")
+        const TERMINAL_UNBLOCK: &[&str] = &["validates", "remediates", "follows-up"];
+        // Link types that only unblock on Closed(Done)
+        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on"];
 
-        BLOCKING_LINK_TYPES.iter().any(|link_type| {
+        let terminal_blocked = TERMINAL_UNBLOCK.iter().any(|link_type| {
             self.edges
                 .targets(task_id, link_type)
                 .iter()
                 .any(|blocker_id| {
-                    self.tasks
-                        .get(blocker_id)
-                        .map_or(true, |t| t.status != TaskStatus::Closed)
+                    self.tasks.get(blocker_id).map_or(true, |t| {
+                        // Unblocks when blocker reaches any terminal state
+                        !matches!(t.status, TaskStatus::Closed | TaskStatus::Stopped)
+                    })
                 })
-        })
+        });
+
+        let done_blocked = DONE_ONLY_UNBLOCK.iter().any(|link_type| {
+            self.edges
+                .targets(task_id, link_type)
+                .iter()
+                .any(|blocker_id| {
+                    self.tasks.get(blocker_id).map_or(true, |t| {
+                        // Only unblocks when blocker is Closed with Done outcome
+                        !(t.status == TaskStatus::Closed
+                            && t.closed_outcome == Some(TaskOutcome::Done))
+                    })
+                })
+        });
+
+        terminal_blocked || done_blocked
     }
 
     /// A parent task cannot be closed while it has open children.
@@ -535,7 +554,6 @@ fn process_event(
             session_id,
             turn_id,
             timestamp,
-            stopped,
             ..
         } => {
             for task_id in task_ids {
@@ -547,14 +565,6 @@ fn process_event(
                     task.started_at = Some(*timestamp);
                     task.turn_started = turn_id.clone();
                     task.turn_stopped = None;
-                }
-            }
-            for stopped_id in stopped {
-                if let Some(task) = tasks.get_mut(stopped_id) {
-                    task.status = TaskStatus::Stopped;
-                    task.stopped_reason =
-                        Some(format!("Preempted by task {}", task_ids.join(", ")));
-                    task.claimed_by_session = None;
                 }
             }
         }
@@ -753,6 +763,25 @@ mod tests {
         }
     }
 
+    fn make_closed_wont_do(id: &str) -> TaskEvent {
+        TaskEvent::Closed {
+            task_ids: vec![id.to_string()],
+            outcome: crate::tasks::types::TaskOutcome::WontDo,
+            summary: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_stopped(id: &str) -> TaskEvent {
+        TaskEvent::Stopped {
+            task_ids: vec![id.to_string()],
+            reason: Some("test stop".to_string()),
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
     fn make_link(from: &str, to: &str, kind: &str) -> TaskEvent {
         TaskEvent::LinkAdded {
             from: from.to_string(),
@@ -874,11 +903,11 @@ mod tests {
     }
 
     #[test]
-    fn test_is_blocked_semantic_follows_up() {
+    fn test_is_blocked_semantic_remediates() {
         let events = vec![
             make_created("A", "Review"),
             make_created("B", "Fix"),
-            make_link("B", "A", "follows-up"),
+            make_link("B", "A", "remediates"),
         ];
 
         let graph = materialize_graph(&events);
@@ -916,6 +945,148 @@ mod tests {
         assert!(
             !graph.is_blocked("B"),
             "Implementation should unblock when design closes"
+        );
+    }
+
+    // --- Differential unblocking: depends-on vs validates/remediates ---
+
+    #[test]
+    fn test_depends_on_stays_blocked_when_blocker_stopped() {
+        let events = vec![
+            make_created("A", "Prerequisite"),
+            make_created("B", "Dependent"),
+            make_link("B", "A", "depends-on"),
+            make_stopped("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.is_blocked("B"),
+            "depends-on should stay blocked when prerequisite is stopped"
+        );
+    }
+
+    #[test]
+    fn test_depends_on_stays_blocked_when_blocker_wont_do() {
+        let events = vec![
+            make_created("A", "Prerequisite"),
+            make_created("B", "Dependent"),
+            make_link("B", "A", "depends-on"),
+            make_closed_wont_do("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.is_blocked("B"),
+            "depends-on should stay blocked when prerequisite is closed as won't-do"
+        );
+    }
+
+    #[test]
+    fn test_validates_unblocks_when_blocker_stopped() {
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_link("B", "A", "validates"),
+            make_stopped("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_blocked("B"),
+            "validates should unblock when target is stopped"
+        );
+    }
+
+    #[test]
+    fn test_validates_unblocks_when_blocker_wont_do() {
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_link("B", "A", "validates"),
+            make_closed_wont_do("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_blocked("B"),
+            "validates should unblock when target is closed as won't-do"
+        );
+    }
+
+    #[test]
+    fn test_remediates_unblocks_when_blocker_stopped() {
+        let events = vec![
+            make_created("A", "Review"),
+            make_created("B", "Fix"),
+            make_link("B", "A", "remediates"),
+            make_stopped("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_blocked("B"),
+            "remediates should unblock when target is stopped"
+        );
+    }
+
+    #[test]
+    fn test_remediates_unblocks_when_blocker_wont_do() {
+        let events = vec![
+            make_created("A", "Review"),
+            make_created("B", "Fix"),
+            make_link("B", "A", "remediates"),
+            make_closed_wont_do("A"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_blocked("B"),
+            "remediates should unblock when target is closed as won't-do"
+        );
+    }
+
+    #[test]
+    fn test_mixed_links_validates_stopped_depends_on_closed() {
+        // validates link: A is stopped → unblocked
+        // depends-on link: B is closed (done) → unblocked
+        // Result: C should be READY
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Design"),
+            make_created("C", "Task C"),
+            make_link("C", "A", "validates"),
+            make_link("C", "B", "depends-on"),
+            make_stopped("A"),
+            make_closed("B"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_blocked("C"),
+            "Task C should be ready: validates unblocked (A stopped), depends-on unblocked (B done)"
+        );
+    }
+
+    #[test]
+    fn test_mixed_links_validates_stopped_depends_on_stopped() {
+        // validates link: A is stopped → unblocked
+        // depends-on link: B is stopped → BLOCKED
+        // Result: C should be BLOCKED
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Design"),
+            make_created("C", "Task C"),
+            make_link("C", "A", "validates"),
+            make_link("C", "B", "depends-on"),
+            make_stopped("A"),
+            make_stopped("B"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.is_blocked("C"),
+            "Task C should be blocked: depends-on B is stopped (not closed as done)"
         );
     }
 
@@ -1069,7 +1240,7 @@ mod tests {
         // Task-only blocking links (legacy + semantic)
         assert!(is_task_only_kind("blocked-by"));
         assert!(is_task_only_kind("validates"));
-        assert!(is_task_only_kind("follows-up"));
+        assert!(is_task_only_kind("remediates"));
         assert!(is_task_only_kind("depends-on"));
 
         // Other task-only links
@@ -1099,9 +1270,9 @@ mod tests {
         assert!(validates.blocks_ready);
         assert!(validates.task_only);
 
-        let follows_up = find_link_kind("follows-up").unwrap();
-        assert!(follows_up.blocks_ready);
-        assert!(follows_up.task_only);
+        let remediates = find_link_kind("remediates").unwrap();
+        assert!(remediates.blocks_ready);
+        assert!(remediates.task_only);
 
         let depends_on = find_link_kind("depends-on").unwrap();
         assert!(depends_on.blocks_ready);
@@ -1451,7 +1622,9 @@ mod tests {
 
         // Simulate what run_close does: close A in the tasks map, then
         // update graph.tasks with the mutated map
-        graph.tasks.get_mut("A").unwrap().status = TaskStatus::Closed;
+        let a = graph.tasks.get_mut("A").unwrap();
+        a.status = TaskStatus::Closed;
+        a.closed_outcome = Some(TaskOutcome::Done);
 
         // After updating graph.tasks: B should no longer be blocked
         assert!(
@@ -1476,7 +1649,9 @@ mod tests {
         assert!(graph.is_blocked("C"));
 
         // Close only A
-        graph.tasks.get_mut("A").unwrap().status = TaskStatus::Closed;
+        let a = graph.tasks.get_mut("A").unwrap();
+        a.status = TaskStatus::Closed;
+        a.closed_outcome = Some(TaskOutcome::Done);
 
         // C should still be blocked (B is still open)
         assert!(
@@ -1485,7 +1660,9 @@ mod tests {
         );
 
         // Close B too
-        graph.tasks.get_mut("B").unwrap().status = TaskStatus::Closed;
+        let b = graph.tasks.get_mut("B").unwrap();
+        b.status = TaskStatus::Closed;
+        b.closed_outcome = Some(TaskOutcome::Done);
 
         // Now C should be unblocked
         assert!(
@@ -1504,7 +1681,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
         ];
 
@@ -1525,7 +1701,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Stopped {
                 task_ids: vec!["t1".to_string()],
@@ -1551,7 +1726,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Closed {
                 task_ids: vec!["t1".to_string()],
@@ -1578,7 +1752,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-1".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Stopped {
                 task_ids: vec!["t1".to_string()],
@@ -1592,7 +1765,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-bbb-1".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
         ];
 
@@ -1613,7 +1785,6 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
         ];
 

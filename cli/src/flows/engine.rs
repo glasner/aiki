@@ -124,6 +124,24 @@ impl HookEngine {
                     e.session.external_id().to_string(),
                 );
             }
+            crate::events::AikiEvent::SessionWillCompact(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+            }
+            crate::events::AikiEvent::SessionCompacted(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+            }
+            crate::events::AikiEvent::SessionCleared(e) => {
+                resolver.add_var(
+                    "event.session_id".to_string(),
+                    e.session.external_id().to_string(),
+                );
+            }
             crate::events::AikiEvent::ShellPermissionAsked(e) => {
                 resolver.add_var(
                     "event.session_id".to_string(),

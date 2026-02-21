@@ -483,11 +483,19 @@ fn run_spec(
     output_spec_started(&spec_task_id, &spec_path, is_new, &in_progress, &ready)?;
 
     // Spawn Claude interactively (not using task_run which is for autonomous execution)
-    // The prompt tells Claude to start working on the spec task
-    let prompt = format!(
-        "Run `aiki task start {}` to begin working on this spec task.",
-        spec_task_id
-    );
+    // The prompt includes the user's context so Claude sees it immediately,
+    // rather than requiring it to discover the instructions via `aiki task show`
+    let prompt = if initial_idea.is_empty() {
+        format!(
+            "Run `aiki task start {}` to begin working on this spec task.",
+            spec_task_id
+        )
+    } else {
+        format!(
+            "Run `aiki task start {}` to begin working on this spec task.\n\nUser's request: {}",
+            spec_task_id, initial_idea
+        )
+    };
 
     eprintln!(
         "Spawning Claude agent session for task {}...",

@@ -136,7 +136,7 @@ Evaluate the spec for quality and readiness. For each issue found, add it as a s
 2. Evaluate against each category
 3. For each issue found, add a subtask:
    ```bash
-   aiki task add --parent {{parent.id}} "<Category>: <brief description>"
+   aiki task add --subtask-of {{parent.id}} "<Category>: <brief description>"
    ```
 4. Once all issues are identified, work through each subtask with the user:
    - Discuss the issue

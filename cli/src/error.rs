@@ -310,12 +310,6 @@ Alternatively, install the agent globally:
     #[error("Template processing failed: {details}")]
     TemplateProcessingFailed { details: String },
 
-    #[error("Unknown data source: '{0}'. Supported values: 'source.comments'")]
-    UnknownDataSource(String),
-
-    #[error("{0}")]
-    MissingSourceTask(String),
-
     // Undo errors
     #[error("Task has no file changes to undo")]
     TaskNoChanges,
@@ -335,12 +329,6 @@ Alternatively, install the agent globally:
 
     #[error("Nothing to review - no closed tasks in session")]
     NothingToReview,
-
-    #[error("Timeout after {timeout_secs}s waiting for tasks: {pending}")]
-    TaskWaitTimeout {
-        timeout_secs: u64,
-        pending: String,
-    },
 
     // Plugin errors
     #[error("Invalid plugin reference: '{reference}'. {reason}")]

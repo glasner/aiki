@@ -118,12 +118,23 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
     // Tool matcher for Pre/PostToolUse hooks (covers all file, shell, web, and MCP tools)
     let tool_matcher = "Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|LS|Bash|WebFetch|WebSearch|mcp__.*";
 
-    // SessionStart hook for auto-initialization
+    // SessionStart hook for auto-initialization and context re-injection
+    // Empty matcher matches all sources: startup, resume, compact, clear
     settings["hooks"]["SessionStart"] = json!([{
-        "matcher": "startup",
+        "matcher": "",
         "hooks": [{
             "type": "command",
             "command": format!("{} hooks stdin --agent claude-code --event SessionStart", aiki_path),
+            "timeout": 10
+        }]
+    }]);
+
+    // PreCompact hook for pre-compaction state persistence (future use)
+    settings["hooks"]["PreCompact"] = json!([{
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} hooks stdin --agent claude-code --event PreCompact", aiki_path),
             "timeout": 10
         }]
     }]);
@@ -187,7 +198,8 @@ pub fn install_claude_code_hooks_global() -> Result<()> {
         "✓ Installed Claude Code hooks at {}",
         settings_path.display()
     );
-    println!("  - SessionStart: Auto-initialize repositories");
+    println!("  - SessionStart: Auto-initialize repositories, context re-injection");
+    println!("  - PreCompact: Pre-compaction state persistence");
     println!("  - UserPromptSubmit: Track turn start");
     println!("  - PreToolUse: Track tool permissions");
     println!("  - PostToolUse: Track AI-assisted changes");

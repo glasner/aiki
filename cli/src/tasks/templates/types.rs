@@ -23,18 +23,12 @@ pub struct TaskTemplate {
     pub defaults: TaskDefaults,
     /// Parent task definition (name and instructions)
     pub parent: TaskDefinition,
-    /// Subtask definitions (static, populated when frontmatter has no `subtasks` field)
+    /// Subtask definitions (parsed from H2 sections in the markdown body)
     pub subtasks: Vec<TaskDefinition>,
     /// Source file path (for display purposes)
     pub source_path: Option<String>,
     /// Raw template content (for display purposes)
     pub raw_content: Option<String>,
-    /// Data source path for declarative subtask iteration (e.g., "source.comments")
-    /// Populated from frontmatter's `subtasks` field
-    pub subtasks_source: Option<String>,
-    /// Raw subtask template content for iteration (populated when frontmatter has `subtasks` field)
-    /// Contains the entire `# Subtasks` section including the h2 heading template
-    pub subtask_template: Option<String>,
     /// Spawn configurations: conditional task creation on close
     pub spawns: Vec<SpawnEntry>,
 }
@@ -52,8 +46,6 @@ impl TaskTemplate {
             subtasks: Vec::new(),
             source_path: None,
             raw_content: None,
-            subtasks_source: None,
-            subtask_template: None,
             spawns: Vec::new(),
         }
     }
@@ -123,8 +115,6 @@ pub struct TemplateFrontmatter {
     /// Default data values
     #[serde(default)]
     pub data: HashMap<String, serde_json::Value>,
-    /// Data source path for declarative subtask iteration (e.g., "source.comments")
-    pub subtasks: Option<String>,
     /// Spawn configurations: conditional task creation on close
     #[serde(default)]
     pub spawns: Vec<SpawnEntry>,
@@ -210,25 +200,4 @@ data:
         assert!(fm.data.is_empty());
     }
 
-    #[test]
-    fn test_frontmatter_with_subtasks_data_source() {
-        let yaml = r#"
-version: "1.0.0"
-subtasks: source.comments
-"#;
-        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(fm.version, Some("1.0.0".to_string()));
-        assert_eq!(fm.subtasks, Some("source.comments".to_string()));
-    }
-
-    #[test]
-    fn test_frontmatter_without_subtasks_defaults_to_none() {
-        let yaml = r#"
-version: "1.0.0"
-description: A template without subtasks field
-"#;
-        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(fm.version, Some("1.0.0".to_string()));
-        assert!(fm.subtasks.is_none());
-    }
 }

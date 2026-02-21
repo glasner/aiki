@@ -1015,11 +1015,8 @@ pub struct LoopItem {
     /// The current item's data (field -> value)
     pub data: HashMap<String, String>,
     /// Loop metadata
-    pub index: usize,      // 1-based index
-    pub index0: usize,     // 0-based index
-    pub first: bool,       // Is this the first item?
-    pub last: bool,        // Is this the last item?
-    pub length: usize,     // Total number of items
+    pub iteration: usize,  // 1-based iteration
+    pub index: usize,       // 0-based iteration
 }
 
 /// Resolve a variable that might be a loop variable or loop metadata
@@ -1030,11 +1027,8 @@ fn resolve_loop_variable(var: &str, loop_vars: &HashMap<String, LoopItem>) -> Op
         // Actually, loop.* always refers to the innermost loop
         if let Some((_, item)) = loop_vars.iter().next() {
             return match meta_key {
+                "iteration" => Some(item.iteration.to_string()),
                 "index" => Some(item.index.to_string()),
-                "index0" => Some(item.index0.to_string()),
-                "first" => Some(item.first.to_string()),
-                "last" => Some(item.last.to_string()),
-                "length" => Some(item.length.to_string()),
                 _ => None,
             };
         }
@@ -1067,11 +1061,8 @@ fn make_loop_aware_context(ctx: &EvalContext, loop_vars: &HashMap<String, LoopIt
 
     // Add loop metadata
     if let Some((_, item)) = loop_vars.iter().next() {
+        new_ctx.set("loop.iteration", item.iteration.to_string());
         new_ctx.set("loop.index", item.index.to_string());
-        new_ctx.set("loop.index0", item.index0.to_string());
-        new_ctx.set("loop.first", item.first.to_string());
-        new_ctx.set("loop.last", item.last.to_string());
-        new_ctx.set("loop.length", item.length.to_string());
     }
 
     // Add loop variable fields
