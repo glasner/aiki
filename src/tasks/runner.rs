@@ -12,15 +12,16 @@ use crate::agents::{
     Assignee, BackgroundHandle, MonitoredChild,
 };
 use crate::error::{AikiError, Result};
-use crate::session::find_task_session;
+use crate::session::{find_active_session, find_task_session};
 use crate::tasks::{
     find_task,
     materialize_graph,
     read_events,
     status_monitor::{MonitorExitReason, StatusMonitor},
-    types::{TaskEvent, TaskStatus},
+    types::{Task, TaskEvent, TaskStatus},
     write_event,
     md::MdBuilder,
+    TaskGraph,
 };
 
 /// Options for running a task
@@ -63,6 +64,51 @@ impl TaskRunOptions {
     }
 }
 
+/// Resolve which agent type to use for running a task.
+///
+/// Resolution order:
+/// 1. Explicit `--agent` override from options
+/// 2. Task's assignee field (if set to an agent)
+/// 3. Active session's agent type (cheap file lookup, authoritative)
+/// 4. Process tree detection (expensive, fallback for non-session contexts)
+fn resolve_agent_type(
+    cwd: &Path,
+    task_id: &str,
+    task: &Task,
+    options: &TaskRunOptions,
+) -> Result<AgentType> {
+    // 1. Explicit override
+    if let Some(agent) = options.agent_override {
+        return Ok(agent);
+    }
+
+    // 2. Task assignee
+    if let Some(ref assignee_str) = task.assignee {
+        match Assignee::from_str(assignee_str) {
+            Some(Assignee::Agent(agent)) => return Ok(agent),
+            Some(Assignee::Human) => {
+                return Err(AikiError::TaskNoAssignee(format!(
+                    "Task '{}' is assigned to human, use --agent to specify an agent",
+                    task_id
+                )));
+            }
+            Some(Assignee::Unassigned) | None => {}
+        }
+    }
+
+    // 3. Active session (cheap file lookup, authoritative for aiki-managed sessions)
+    if let Some(session) = find_active_session(cwd) {
+        return Ok(session.agent_type);
+    }
+
+    // 4. Process tree detection (fallback for non-session contexts)
+    if let Some(agent) = detect_agent_from_process_tree() {
+        return Ok(agent);
+    }
+
+    Err(AikiError::TaskNoAssignee(task_id.to_string()))
+}
+
 /// Run a task by spawning an agent session
 ///
 /// This function:
@@ -87,27 +133,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     }
 
     // Determine which agent to use
-    let agent_type = if let Some(agent) = options.agent_override {
-        agent
-    } else if let Some(ref assignee_str) = task.assignee {
-        // Parse assignee to get agent type
-        match Assignee::from_str(assignee_str) {
-            Some(Assignee::Agent(agent)) => agent,
-            Some(Assignee::Human) => {
-                return Err(AikiError::TaskNoAssignee(format!(
-                    "Task '{}' is assigned to human, use --agent to specify an agent",
-                    task_id
-                )));
-            }
-            Some(Assignee::Unassigned) | None => {
-                detect_agent_from_process_tree()
-                    .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
-            }
-        }
-    } else {
-        detect_agent_from_process_tree()
-            .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
-    };
+    let agent_type = resolve_agent_type(cwd, task_id, &task, &options)?;
 
     // Get runtime for the agent
     let runtime = get_runtime(agent_type).ok_or_else(|| {
@@ -121,8 +147,10 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
         task_id
     );
 
-    // Build spawn options
-    let spawn_options = AgentSpawnOptions::new(cwd, task_id);
+    // Build spawn options with parent session UUID for workspace isolation chaining
+    let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
+    let spawn_options = AgentSpawnOptions::new(cwd, task_id)
+        .with_parent_session_uuid(parent_uuid);
 
     // Check if we should show live status updates
     let show_status = std::io::stderr().is_terminal() && !options.quiet;
@@ -437,34 +465,16 @@ pub fn task_run_async(
     }
 
     // Determine which agent to use
-    let agent_type = if let Some(agent) = options.agent_override {
-        agent
-    } else if let Some(ref assignee_str) = task.assignee {
-        // Parse assignee to get agent type
-        match Assignee::from_str(assignee_str) {
-            Some(Assignee::Agent(agent)) => agent,
-            Some(Assignee::Human) => {
-                return Err(AikiError::TaskNoAssignee(format!(
-                    "Task '{}' is assigned to human, use --agent to specify an agent",
-                    task_id
-                )));
-            }
-            Some(Assignee::Unassigned) | None => {
-                detect_agent_from_process_tree()
-                    .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
-            }
-        }
-    } else {
-        detect_agent_from_process_tree()
-            .ok_or_else(|| AikiError::TaskNoAssignee(task_id.to_string()))?
-    };
+    let agent_type = resolve_agent_type(cwd, task_id, &task, &options)?;
 
     // Get runtime for the agent
     let runtime = get_runtime(agent_type)
         .ok_or_else(|| AikiError::AgentNotSupported(agent_type.as_str().to_string()))?;
 
-    // Build spawn options
-    let spawn_options = AgentSpawnOptions::new(cwd, task_id);
+    // Build spawn options with parent session UUID for workspace isolation chaining
+    let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
+    let spawn_options = AgentSpawnOptions::new(cwd, task_id)
+        .with_parent_session_uuid(parent_uuid);
 
     // Spawn agent session in background
     // The agent inherits AIKI_TASK env var which gets recorded in its session file
@@ -496,6 +506,81 @@ pub fn run_task_async_with_output(cwd: &Path, task_id: &str, options: TaskRunOpt
             println!("{}", md);
             Err(e)
         }
+    }
+}
+
+/// Result of resolving the next ready subtask
+pub enum SubtaskResolution<'a> {
+    /// A ready subtask was found
+    Ready(&'a Task),
+    /// All subtasks are closed — nothing left to do
+    AllComplete,
+    /// Subtasks exist but none are ready (all blocked or in-progress)
+    Blocked(Vec<&'a Task>),
+    /// Parent task has no subtasks
+    NoSubtasks,
+}
+
+/// Resolve the next ready subtask of a parent task.
+///
+/// Looks at all subtasks of the parent (excluding the synthetic `.0` digest subtask),
+/// and returns the first ready (open + unblocked) subtask sorted by priority then
+/// creation time.
+///
+/// Returns:
+/// - `Ready(task)` if a ready subtask is found
+/// - `AllComplete` if all non-digest subtasks are closed
+/// - `Blocked(unclosed)` if subtasks exist but none are ready
+/// - `NoSubtasks` if the parent has no subtasks (excluding digest)
+pub fn resolve_next_subtask<'a>(
+    graph: &'a TaskGraph,
+    parent_id: &str,
+) -> SubtaskResolution<'a> {
+    use crate::tasks::manager::get_subtasks;
+
+    // The DIGEST_SUBTASK_NAME constant is defined in commands/task.rs.
+    // Rather than creating a cross-module dependency, we match by the known name.
+    const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
+
+    // Get all subtasks, excluding the synthetic .0 digest
+    let subtasks: Vec<&Task> = get_subtasks(graph, parent_id)
+        .into_iter()
+        .filter(|t| t.name != DIGEST_SUBTASK_NAME)
+        .collect();
+
+    if subtasks.is_empty() {
+        return SubtaskResolution::NoSubtasks;
+    }
+
+    // Filter to ready subtasks (open + unblocked)
+    let mut ready: Vec<&Task> = subtasks
+        .iter()
+        .copied()
+        .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
+        .collect();
+
+    // Sort by priority (P0 first), then by creation time (oldest first)
+    ready.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    if let Some(first) = ready.first() {
+        return SubtaskResolution::Ready(first);
+    }
+
+    // No ready subtasks — check if all are closed vs some are blocked/in-progress
+    let unclosed: Vec<&Task> = subtasks
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Closed)
+        .collect();
+
+    if unclosed.is_empty() {
+        SubtaskResolution::AllComplete
+    } else {
+        SubtaskResolution::Blocked(unclosed)
     }
 }
 

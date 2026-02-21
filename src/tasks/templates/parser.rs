@@ -25,9 +25,7 @@
 
 use crate::error::{AikiError, Result};
 
-use super::types::{
-    SubtaskFrontmatter, TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter,
-};
+use super::types::{SubtaskFrontmatter, TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
 
 /// Errors that can occur when extracting YAML frontmatter
 #[derive(Debug)]
@@ -74,12 +72,8 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
     // Extract frontmatter if present
     let (frontmatter, body) = extract_frontmatter(content, file_path)?;
 
-    // Check if subtasks should be dynamically generated from a data source
-    let has_subtasks_source = frontmatter.subtasks.is_some();
-
-    // Parse the markdown body
-    let (parent, subtasks, subtask_template_content) =
-        parse_markdown_body_with_mode(&body, file_path, has_subtasks_source)?;
+    // Parse the markdown body (always parse H2 subtask sections)
+    let (parent, subtasks) = parse_markdown_body(&body, file_path)?;
 
     // Build the template
     let mut template = TaskTemplate::new(name);
@@ -96,8 +90,6 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
     // This allows composed templates (loaded via {% subtask %}) to declare their slug.
     template.parent.slug = frontmatter.slug;
     template.subtasks = subtasks;
-    template.subtasks_source = frontmatter.subtasks;
-    template.subtask_template = subtask_template_content;
     template.spawns = frontmatter.spawns;
 
     // Validate spawn entries: each must have exactly one of task/subtask
@@ -219,19 +211,6 @@ fn parse_markdown_body(
     body: &str,
     file_path: &str,
 ) -> Result<(TaskDefinition, Vec<TaskDefinition>)> {
-    let (parent, subtasks, _) = parse_markdown_body_with_mode(body, file_path, false)?;
-    Ok((parent, subtasks))
-}
-
-/// Parse the markdown body with optional subtask template extraction mode
-///
-/// When `extract_template` is true (frontmatter has `subtasks` field), the `# Subtasks` section
-/// is extracted as a raw template string instead of being parsed into static subtask definitions.
-fn parse_markdown_body_with_mode(
-    body: &str,
-    file_path: &str,
-    extract_template: bool,
-) -> Result<(TaskDefinition, Vec<TaskDefinition>, Option<String>)> {
     let lines: Vec<&str> = body.lines().collect();
 
     // Find the first h1 heading (# Task Name)
@@ -255,19 +234,12 @@ fn parse_markdown_body_with_mode(
         data: Default::default(),
     };
 
-    // Handle subtasks based on mode
+    // Parse subtasks from H2 sections after the # Subtasks marker
     if let Some(marker_idx) = subtasks_marker_idx {
-        if extract_template {
-            // Extract the raw subtask template content (everything after "# Subtasks")
-            let template_content = extract_subtask_template_section(&lines, marker_idx + 1);
-            Ok((parent, Vec::new(), Some(template_content)))
-        } else {
-            // Parse static subtasks normally
-            let subtasks = parse_subtasks(&lines, marker_idx + 1, file_path)?;
-            Ok((parent, subtasks, None))
-        }
+        let subtasks = parse_subtasks(&lines, marker_idx + 1, file_path)?;
+        Ok((parent, subtasks))
     } else {
-        Ok((parent, Vec::new(), None))
+        Ok((parent, Vec::new()))
     }
 }
 
@@ -306,19 +278,6 @@ fn extract_instructions(lines: &[&str], start: usize, end: usize) -> String {
 
     let end = end.min(lines.len());
     lines[start..end].join("\n").trim().to_string()
-}
-
-/// Extract the entire subtask template section as raw content
-///
-/// When `subtasks` frontmatter is present, the `# Subtasks` section contains a TEMPLATE
-/// for each item, not static subtask definitions. This function extracts the entire
-/// section (including the h2 heading template) as raw content for later template expansion.
-fn extract_subtask_template_section(lines: &[&str], start_idx: usize) -> String {
-    if start_idx >= lines.len() {
-        return String::new();
-    }
-
-    lines[start_idx..].join("\n").trim().to_string()
 }
 
 /// Parse subtasks from lines after the # Subtasks marker
@@ -595,159 +554,6 @@ Subtask instructions.
         // Only one subtask should exist
         assert_eq!(template.subtasks.len(), 1);
         assert_eq!(template.subtasks[0].name, "Real subtask");
-    }
-
-    #[test]
-    fn test_parse_with_subtasks_frontmatter_extracts_template() {
-        let content = r#"---
-version: 1.0.0
-subtasks: source.comments
----
-
-# Followup: {{source.name}}
-
-Fix all issues identified in review.
-
-# Subtasks
-
-## Fix: {{data.file}}:{{data.line}}
-
-**Severity**: {{data.severity}}
-**Category**: {{data.category}}
-
-{{text}}
-"#;
-
-        let template = parse_template(content, "followup", "followup.md").unwrap();
-
-        // Should have subtasks_source set
-        assert_eq!(
-            template.subtasks_source,
-            Some("source.comments".to_string())
-        );
-
-        // Should NOT have static subtasks parsed
-        assert!(
-            template.subtasks.is_empty(),
-            "subtasks should be empty when subtasks_source is set"
-        );
-
-        // Should have raw subtask template content
-        assert!(template.subtask_template.is_some());
-        let subtask_template = template.subtask_template.unwrap();
-
-        // Should include the h2 heading template
-        assert!(
-            subtask_template.contains("## Fix: {{data.file}}:{{data.line}}"),
-            "subtask_template should include the h2 heading"
-        );
-
-        // Should include the body content
-        assert!(
-            subtask_template.contains("**Severity**: {{data.severity}}"),
-            "subtask_template should include the body"
-        );
-        assert!(
-            subtask_template.contains("{{text}}"),
-            "subtask_template should include variable placeholders"
-        );
-
-        // Parent task should still be parsed normally
-        assert_eq!(template.parent.name, "Followup: {{source.name}}");
-        assert!(template
-            .parent
-            .instructions
-            .contains("Fix all issues identified"));
-    }
-
-    #[test]
-    fn test_parse_without_subtasks_frontmatter_parses_static_subtasks() {
-        let content = r#"---
-version: 1.0.0
----
-
-# Review task
-
-Review the code.
-
-# Subtasks
-
-## Check formatting
-
-Verify formatting is correct.
-
-## Check logic
-
-Verify logic is correct.
-"#;
-
-        let template = parse_template(content, "review", "review.md").unwrap();
-
-        // Should NOT have subtasks_source set
-        assert!(
-            template.subtasks_source.is_none(),
-            "subtasks_source should be None when not in frontmatter"
-        );
-
-        // Should NOT have subtask template
-        assert!(
-            template.subtask_template.is_none(),
-            "subtask_template should be None when subtasks_source is not set"
-        );
-
-        // Should have static subtasks parsed
-        assert_eq!(template.subtasks.len(), 2);
-        assert_eq!(template.subtasks[0].name, "Check formatting");
-        assert_eq!(template.subtasks[1].name, "Check logic");
-        assert!(template.subtasks[0]
-            .instructions
-            .contains("Verify formatting"));
-        assert!(template.subtasks[1].instructions.contains("Verify logic"));
-    }
-
-    #[test]
-    fn test_subtasks_source_stored_from_frontmatter() {
-        let content = r#"---
-subtasks: review.findings
----
-
-# Task
-
-Instructions.
-"#;
-
-        let template = parse_template(content, "test", "test.md").unwrap();
-        assert_eq!(
-            template.subtasks_source,
-            Some("review.findings".to_string())
-        );
-    }
-
-    #[test]
-    fn test_subtask_template_no_subtasks_section() {
-        // When subtasks frontmatter is set but there's no # Subtasks section
-        let content = r#"---
-subtasks: source.comments
----
-
-# Task
-
-Just instructions, no subtasks section.
-"#;
-
-        let template = parse_template(content, "test", "test.md").unwrap();
-
-        // subtasks_source should still be set
-        assert_eq!(
-            template.subtasks_source,
-            Some("source.comments".to_string())
-        );
-
-        // But subtask_template should be None (no section to extract)
-        assert!(
-            template.subtask_template.is_none(),
-            "subtask_template should be None when no # Subtasks section exists"
-        );
     }
 
     #[test]

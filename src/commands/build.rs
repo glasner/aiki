@@ -13,9 +13,11 @@ use std::path::Path;
 
 use clap::Subcommand;
 
+use super::OutputFormat;
 use crate::agents::AgentType;
 use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
+use crate::specs::{parse_spec_metadata, SpecGraph};
 use crate::tasks::id::{is_task_id, is_task_id_prefix};
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
@@ -31,6 +33,10 @@ pub enum BuildSubcommands {
     Show {
         /// Spec path to show build status for
         spec_path: String,
+
+        /// Output format (e.g., `id` for bare task ID)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<OutputFormat>,
     },
 }
 
@@ -69,7 +75,7 @@ pub fn run(args: BuildArgs) -> Result<()> {
 
     if let Some(subcommand) = args.subcommand {
         return match subcommand {
-            BuildSubcommands::Show { spec_path } => run_show(&cwd, &spec_path),
+            BuildSubcommands::Show { spec_path, output } => run_show(&cwd, &spec_path, output),
         };
     }
 
@@ -94,21 +100,14 @@ pub fn run(args: BuildArgs) -> Result<()> {
     }
 }
 
-/// User choice when an incomplete plan exists
-enum BuildChoice {
-    Resume,
-    StartFresh,
-}
-
-/// Build from a spec path
+/// Build from a spec path — deterministic find-or-create.
 ///
 /// 1. Validate spec file exists and is .md
 /// 2. Clean up stale builds for this spec
-/// 3. Check for existing plan
-/// 4. Handle existing plan (interactive prompt or --restart)
-/// 5. Create build task
-/// 6. Run build task (sync or async)
-/// 7. Output results
+/// 3. Check for existing plan (deterministic: no interactive prompts)
+/// 4. Create build task
+/// 5. Run build task (sync or async)
+/// 6. Output results
 fn run_build_spec(
     cwd: &Path,
     spec_path: &str,
@@ -119,6 +118,19 @@ fn run_build_spec(
 ) -> Result<()> {
     // Validate spec file exists and is .md
     validate_spec_path(cwd, spec_path)?;
+
+    // Check if spec is a draft
+    let full_path = if spec_path.starts_with('/') {
+        std::path::PathBuf::from(spec_path)
+    } else {
+        cwd.join(spec_path)
+    };
+    let metadata = parse_spec_metadata(&full_path);
+    if metadata.draft {
+        return Err(AikiError::InvalidArgument(
+            "Cannot build draft spec. Remove `draft: true` from frontmatter first.".to_string(),
+        ));
+    }
 
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
@@ -136,39 +148,35 @@ fn run_build_spec(
     // Load current tasks to check for existing plans
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    let tasks = &graph.tasks;
+    let spec_graph = SpecGraph::build(&graph);
 
-    // Check for existing plan with data.spec matching spec_path
-    let existing_plan = find_plan_for_spec(tasks, spec_path);
+    // Deterministic plan lookup (no interactive prompts)
+    let existing_plan = spec_graph.find_plan_for_spec(spec_path, &graph);
 
-    let plan_id = match existing_plan {
-        Some(plan) if plan.status != TaskStatus::Closed => {
-            // Incomplete plan exists
-            if restart {
-                // Undo completed subtask changes, then close existing plan
+    let plan_id = if restart {
+        // --restart: close existing plan and create fresh
+        if let Some(plan) = existing_plan {
+            if plan.status != TaskStatus::Closed {
                 undo_completed_subtasks(cwd, &plan.id)?;
                 close_plan(cwd, &plan.id)?;
-                None
-            } else {
-                // Show interactive prompt or error
-                let subtasks = get_subtasks(&graph, &plan.id);
-                let choice = prompt_existing_plan(plan, &subtasks)?;
-                match choice {
-                    BuildChoice::Resume => Some(plan.id.clone()),
-                    BuildChoice::StartFresh => {
-                        // Undo completed subtask changes, then close existing
-                        undo_completed_subtasks(cwd, &plan.id)?;
-                        close_plan(cwd, &plan.id)?;
-                        None
-                    }
-                }
             }
         }
-        Some(plan) if plan.status == TaskStatus::Closed => {
-            // Plan is closed/completed - create a fresh plan for a new implementation cycle
-            None
+        None
+    } else {
+        match existing_plan {
+            Some(plan) if plan.status != TaskStatus::Closed => {
+                // Valid incomplete plan — use it (deterministic, no prompt)
+                let subtasks = get_subtasks(&graph, &plan.id);
+                if subtasks.is_empty() {
+                    // Invalid plan (no subtasks) — close and create new
+                    close_plan_as_invalid(cwd, &plan.id)?;
+                    None
+                } else {
+                    Some(plan.id.clone())
+                }
+            }
+            _ => None, // No plan or closed plan — create new
         }
-        _ => None,
     };
 
     // Create build task
@@ -214,9 +222,10 @@ fn run_build_spec(
         // After build completes, re-read tasks to get final state
         let events = read_events(cwd)?;
         let graph = materialize_graph(&events);
+        let spec_graph = SpecGraph::build(&graph);
 
         // Find the plan task (may have been created during the build)
-        let final_plan = find_plan_for_spec(&graph.tasks, spec_path);
+        let final_plan = spec_graph.find_plan_for_spec(spec_path, &graph);
         let final_plan_id = final_plan
             .map(|p| p.id.as_str())
             .unwrap_or(display_plan_id);
@@ -343,20 +352,19 @@ fn run_build_plan(
 }
 
 /// Show build/plan status for a spec
-fn run_show(cwd: &Path, spec_path: &str) -> Result<()> {
+fn run_show(cwd: &Path, spec_path: &str, output_format: Option<OutputFormat>) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    let tasks = &graph.tasks;
+    let spec_graph = SpecGraph::build(&graph);
 
-    // Find plan with data.spec matching
-    let plan = find_plan_for_spec(tasks, spec_path).ok_or_else(|| {
+    // Find plan via SpecGraph
+    let plan = spec_graph.find_plan_for_spec(spec_path, &graph).ok_or_else(|| {
         AikiError::InvalidArgument(format!("No plan found for spec: {}", spec_path))
     })?;
 
-    let subtasks = get_subtasks(&graph, &plan.id);
-
     // Find build tasks associated with this spec
-    let build_tasks: Vec<&Task> = tasks
+    let build_tasks: Vec<&Task> = graph
+        .tasks
         .values()
         .filter(|t| {
             t.task_type.as_deref() == Some("orchestrator")
@@ -364,7 +372,22 @@ fn run_show(cwd: &Path, spec_path: &str) -> Result<()> {
         })
         .collect();
 
-    output_build_show(plan, &subtasks, &build_tasks)?;
+    match output_format {
+        Some(OutputFormat::Id) => {
+            if build_tasks.is_empty() {
+                // No builds yet -- emit the plan ID as fallback
+                println!("{}", plan.id);
+            } else {
+                for build in &build_tasks {
+                    println!("{}", build.id);
+                }
+            }
+        }
+        None => {
+            let subtasks = get_subtasks(&graph, &plan.id);
+            output_build_show(plan, &subtasks, &build_tasks)?;
+        }
+    }
 
     Ok(())
 }
@@ -398,46 +421,6 @@ fn validate_spec_path(cwd: &Path, spec_path: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Find the most recent plan task for a given spec path.
-///
-/// A plan task is identified by:
-/// - Having `data.spec` matching the spec path
-/// - Having a `source` containing `task:` (created by a planning task)
-/// - NOT being a planning task itself (type != "plan")
-/// - NOT being an orchestrator task (type != "orchestrator")
-///
-/// If no plan created by a planning task is found, falls back to any task with
-/// `data.spec` matching the spec path that is not a planning or build task.
-fn find_plan_for_spec<'a>(
-    tasks: &'a crate::tasks::types::FastHashMap<String, Task>,
-    spec_path: &str,
-) -> Option<&'a Task> {
-    // First, look for plan tasks created by a planning task (have source: task:...)
-    let plan_from_planning = tasks
-        .values()
-        .filter(|t| {
-            t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
-                && t.task_type.as_deref() != Some("plan")
-                && t.task_type.as_deref() != Some("orchestrator")
-                && t.sources.iter().any(|s| s.starts_with("task:"))
-        })
-        .max_by_key(|t| t.created_at);
-
-    if plan_from_planning.is_some() {
-        return plan_from_planning;
-    }
-
-    // Fallback: any task with data.spec matching, excluding planning and build task types
-    tasks
-        .values()
-        .filter(|t| {
-            t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
-                && t.task_type.as_deref() != Some("plan")
-                && t.task_type.as_deref() != Some("orchestrator")
-        })
-        .max_by_key(|t| t.created_at)
 }
 
 /// Clean up stale build tasks for this spec.
@@ -585,56 +568,17 @@ fn create_build_task(
     Ok(task_id)
 }
 
-/// Prompt user to choose between resuming or starting fresh when an incomplete plan exists.
-///
-/// If stdin is not a TTY (piped input), returns an error with helpful suggestions.
-fn prompt_existing_plan(plan: &Task, subtasks: &[&Task]) -> Result<BuildChoice> {
-    use std::io::{self, Write};
-
-    let stdin = io::stdin();
-    if !stdin.is_terminal() {
-        return Err(AikiError::InvalidArgument(format!(
-            "Incomplete plan exists ({}). Use --restart to start fresh, or run: aiki build show {}",
-            &plan.id[..8.min(plan.id.len())],
-            plan.data.get("spec").map(|s| s.as_str()).unwrap_or(&plan.id)
-        )));
-    }
-
-    let completed = subtasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::Closed)
-        .count();
-    let total = subtasks.len();
-
-    eprintln!("Incomplete plan exists for this spec.\n");
-    eprintln!(
-        "Plan: {} ({}/{} subtasks done)",
-        &plan.id[..20.min(plan.id.len())],
-        completed,
-        total
-    );
-    for subtask in subtasks {
-        let check = if subtask.status == TaskStatus::Closed {
-            "x"
-        } else {
-            " "
-        };
-        eprintln!("  [{}] {}", check, subtask.name);
-    }
-    eprintln!();
-    eprintln!("  1. Resume this plan (build remaining subtasks)");
-    eprintln!("  2. Start fresh (closes existing plan)");
-    eprintln!();
-    eprint!("Choice [1-2]: ");
-    io::stderr().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    match input.trim() {
-        "2" => Ok(BuildChoice::StartFresh),
-        _ => Ok(BuildChoice::Resume),
-    }
+/// Close a plan as invalid (no subtasks created).
+fn close_plan_as_invalid(cwd: &Path, plan_id: &str) -> Result<()> {
+    let close_event = TaskEvent::Closed {
+        task_ids: vec![plan_id.to_string()],
+        outcome: TaskOutcome::WontDo,
+        summary: Some("No subtasks created — plan invalid".to_string()),
+        turn_id: None,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &close_event)?;
+    Ok(())
 }
 
 /// Output build started message to stderr
@@ -780,6 +724,7 @@ fn output_build_show(plan: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::graph::{EdgeStore, TaskGraph};
     use crate::tasks::TaskPriority;
     use crate::tasks::types::FastHashMap;
     use std::collections::HashMap;
@@ -823,54 +768,42 @@ mod tests {
         task
     }
 
-    fn make_task_with_data_and_sources(
-        id: &str,
-        name: &str,
-        status: TaskStatus,
-        data: HashMap<String, String>,
-        sources: Vec<String>,
-    ) -> Task {
-        let mut task = make_task_with_data(id, name, status, data);
-        task.sources = sources;
-        task
+    fn make_graph(tasks: FastHashMap<String, Task>, edges: EdgeStore) -> TaskGraph {
+        TaskGraph {
+            tasks,
+            edges,
+            slug_index: FastHashMap::default(),
+        }
     }
 
-    fn make_task_with_type(
-        id: &str,
-        name: &str,
-        status: TaskStatus,
-        data: HashMap<String, String>,
-        task_type: &str,
-    ) -> Task {
-        let mut task = make_task_with_data(id, name, status, data);
-        task.task_type = Some(task_type.to_string());
-        task
+    /// Helper: find plan for spec via SpecGraph
+    fn find_plan_for_spec_via_graph<'a>(
+        graph: &'a TaskGraph,
+        spec_path: &str,
+    ) -> Option<&'a Task> {
+        let sg = SpecGraph::build(graph);
+        sg.find_plan_for_spec(spec_path, graph)
     }
 
     // --- find_plan_for_spec tests ---
 
     #[test]
     fn test_find_plan_for_spec_none() {
-        let tasks = FastHashMap::default();
-        assert!(find_plan_for_spec(&tasks, "ops/now/feature.md").is_none());
+        let graph = make_graph(FastHashMap::default(), EdgeStore::new());
+        assert!(find_plan_for_spec_via_graph(&graph, "ops/now/feature.md").is_none());
     }
 
     #[test]
-    fn test_find_plan_for_spec_found_with_task_source() {
+    fn test_find_plan_for_spec_via_implements_link() {
         let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
-
-        let task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: Feature",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning1".to_string()],
-        );
+        let task = make_task("plan1", "Plan: Feature", TaskStatus::Open);
         tasks.insert("plan1".to_string(), task);
 
-        let result = find_plan_for_spec(&tasks, "ops/now/feature.md");
+        let mut edges = EdgeStore::new();
+        edges.add("plan1", "file:ops/now/feature.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "plan1");
     }
@@ -878,30 +811,21 @@ mod tests {
     #[test]
     fn test_find_plan_for_spec_excludes_planning_task() {
         let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
-        // This is a planning task (type: "plan") - should be excluded
-        let planning_task = make_task_with_type(
-            "planning1",
-            "Plan: ops/now/feature.md",
-            TaskStatus::Closed,
-            data.clone(),
-            "plan",
-        );
+        let mut planning_task =
+            make_task("planning1", "Plan: ops/now/feature.md", TaskStatus::Closed);
+        planning_task.task_type = Some("plan".to_string());
         tasks.insert("planning1".to_string(), planning_task);
 
-        // This is the actual plan task created by the planning agent
-        let plan_task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: My Feature",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning1".to_string()],
-        );
+        let plan_task = make_task("plan1", "Plan: My Feature", TaskStatus::Open);
         tasks.insert("plan1".to_string(), plan_task);
 
-        let result = find_plan_for_spec(&tasks, "ops/now/feature.md");
+        let mut edges = EdgeStore::new();
+        edges.add("planning1", "file:ops/now/feature.md", "implements");
+        edges.add("plan1", "file:ops/now/feature.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "plan1");
     }
@@ -909,30 +833,42 @@ mod tests {
     #[test]
     fn test_find_plan_for_spec_excludes_build_task() {
         let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
-        // This is a build task (type: "orchestrator") - should be excluded
-        let build_task = make_task_with_type(
-            "build1",
-            "Build: ops/now/feature.md",
-            TaskStatus::InProgress,
-            data.clone(),
-            "orchestrator",
-        );
+        let mut build_task =
+            make_task("build1", "Build: ops/now/feature.md", TaskStatus::InProgress);
+        build_task.task_type = Some("orchestrator".to_string());
         tasks.insert("build1".to_string(), build_task);
 
-        // This is the actual plan task
-        let plan_task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: My Feature",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning1".to_string()],
-        );
+        let plan_task = make_task("plan1", "Plan: My Feature", TaskStatus::Open);
         tasks.insert("plan1".to_string(), plan_task);
 
-        let result = find_plan_for_spec(&tasks, "ops/now/feature.md");
+        let mut edges = EdgeStore::new();
+        edges.add("build1", "file:ops/now/feature.md", "implements");
+        edges.add("plan1", "file:ops/now/feature.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "plan1");
+    }
+
+    #[test]
+    fn test_find_plan_for_spec_ignores_build_subtask_with_inherited_data() {
+        let mut tasks = FastHashMap::default();
+
+        let mut orchestrator = make_task("orch1", "Build: feature", TaskStatus::InProgress);
+        orchestrator.task_type = Some("orchestrator".to_string());
+        tasks.insert("orch1".to_string(), orchestrator);
+
+        let plan = make_task("plan1", "Plan: Feature", TaskStatus::Open);
+        tasks.insert("plan1".to_string(), plan);
+
+        let mut edges = EdgeStore::new();
+        edges.add("orch1", "file:ops/now/feature.md", "implements");
+        edges.add("plan1", "file:ops/now/feature.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "plan1");
     }
@@ -940,69 +876,35 @@ mod tests {
     #[test]
     fn test_find_plan_for_spec_wrong_spec() {
         let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/other.md".to_string());
-
-        let task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: Other",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning1".to_string()],
-        );
+        let task = make_task("plan1", "Plan: Other", TaskStatus::Open);
         tasks.insert("plan1".to_string(), task);
 
-        assert!(find_plan_for_spec(&tasks, "ops/now/feature.md").is_none());
+        let mut edges = EdgeStore::new();
+        edges.add("plan1", "file:ops/now/other.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        assert!(find_plan_for_spec_via_graph(&graph, "ops/now/feature.md").is_none());
     }
 
     #[test]
     fn test_find_plan_for_spec_most_recent() {
         let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
 
-        let mut task1 = make_task_with_data_and_sources(
-            "plan_old",
-            "Plan: Old",
-            TaskStatus::Closed,
-            data.clone(),
-            vec!["task:planning1".to_string()],
-        );
+        let mut task1 = make_task("plan_old", "Plan: Old", TaskStatus::Closed);
         task1.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
         tasks.insert("plan_old".to_string(), task1);
 
-        let task2 = make_task_with_data_and_sources(
-            "plan_new",
-            "Plan: New",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning2".to_string()],
-        );
+        let task2 = make_task("plan_new", "Plan: New", TaskStatus::Open);
         tasks.insert("plan_new".to_string(), task2);
 
-        let result = find_plan_for_spec(&tasks, "ops/now/feature.md");
+        let mut edges = EdgeStore::new();
+        edges.add("plan_old", "file:ops/now/feature.md", "implements");
+        edges.add("plan_new", "file:ops/now/feature.md", "implements");
+
+        let graph = make_graph(tasks, edges);
+        let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "plan_new");
-    }
-
-    #[test]
-    fn test_find_plan_for_spec_fallback_no_task_source() {
-        let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
-
-        // Task without task: source (fallback path)
-        let task = make_task_with_data(
-            "plan_direct",
-            "Plan: Feature",
-            TaskStatus::Open,
-            data,
-        );
-        tasks.insert("plan_direct".to_string(), task);
-
-        let result = find_plan_for_spec(&tasks, "ops/now/feature.md");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().id, "plan_direct");
     }
 
     // --- cleanup_stale_builds helper logic tests ---
@@ -1323,5 +1225,28 @@ mod tests {
         let subtasks: Vec<&Task> = vec![&task];
         let result = output_build_completed("build<1>", "plan&2", &subtasks);
         assert!(result.is_ok());
+    }
+
+    // --- OutputFormat tests ---
+
+    #[test]
+    fn test_output_format_id_variant() {
+        let fmt = OutputFormat::Id;
+        assert!(matches!(fmt, OutputFormat::Id));
+    }
+
+    #[test]
+    fn test_output_format_clap_parse() {
+        use clap::ValueEnum;
+        let parsed = OutputFormat::from_str("id", false);
+        assert!(parsed.is_ok());
+        assert!(matches!(parsed.unwrap(), OutputFormat::Id));
+    }
+
+    #[test]
+    fn test_output_format_clap_rejects_unknown() {
+        use clap::ValueEnum;
+        let parsed = OutputFormat::from_str("unknown_format", false);
+        assert!(parsed.is_err());
     }
 }

@@ -1,26 +1,29 @@
 use super::prelude::*;
 
-/// session.resumed event payload
+/// session.will_compact event payload
 ///
-/// Fires when continuing a previous session (as opposed to starting a new one).
-/// This allows flows to differentiate between fresh starts and continuations.
+/// Fires before context compaction (from Claude Code's PreCompact hook).
+/// Reserved for future state persistence — currently a no-op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiSessionResumedPayload {
+pub struct AikiSessionWillCompactPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
 
-/// Handle session.resumed event
+/// Handle session.will_compact event
 ///
-/// This event fires when a session is being resumed rather than started fresh.
-/// Allows flows to load prior context, apply previous approvals, maintain audit trail continuity.
-pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<HookResult> {
+/// Currently a no-op. In the future, this could persist workspace path
+/// or active task IDs to a recovery file so session.compacted can
+/// recover even if session state is lost.
+pub fn handle_session_will_compact(
+    payload: AikiSessionWillCompactPayload,
+) -> Result<HookResult> {
     use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
-            "Session resumed by {:?}, session: {}",
+            "Session will compact for {:?}, session: {}",
             payload.session.agent_type(),
             payload.session.external_id()
         )
@@ -34,17 +37,17 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
 
     // Execute hook via HookComposer (with fallback to bundled core hook)
     let _flow_result = execute_hook(
-        EventType::SessionResumed,
+        EventType::SessionWillCompact,
         &mut state,
-        &core_hook.handlers.session_resumed,
+        &core_hook.handlers.session_will_compact,
     )?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
-    // session.resumed returns context (workspace + tasks) but never blocks
+    // session.will_compact never blocks and doesn't inject context
     Ok(HookResult {
-        context: state.build_context(),
+        context: None,
         decision: Decision::Allow,
         failures,
     })

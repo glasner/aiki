@@ -601,7 +601,6 @@ mod tests {
             session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
-            stopped: Vec::new(),
         }
     }
 
@@ -867,8 +866,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                stopped: Vec::new(),
-            },
+                },
         ];
         let graph = make_graph(&events);
         let scopes = get_current_scopes(&graph);
@@ -890,8 +888,7 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                stopped: Vec::new(),
-            },
+                },
         ];
         let graph = make_graph(&events);
         let scopes = get_current_scopes(&graph);
@@ -1747,7 +1744,6 @@ mod tests {
                 session_id: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
-                stopped: vec![],
             },
             // Add comment
             TaskEvent::CommentAdded {
@@ -2151,7 +2147,6 @@ mod tests {
             session_id: Some(session_id.to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            stopped: Vec::new(),
         }
     }
 
@@ -2162,7 +2157,6 @@ mod tests {
             session_id: Some(session_id.to_string()),
             turn_id: None,
             timestamp: Utc::now() - chrono::Duration::hours(hours_ago),
-            stopped: Vec::new(),
         }
     }
 
@@ -2822,7 +2816,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
         ];
 
@@ -2842,7 +2835,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Started {
                 task_ids: vec!["t2".to_string()],
@@ -2850,7 +2842,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-bbb".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
         ];
 
@@ -2873,7 +2864,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Closed {
                 task_ids: vec!["t1".to_string()],
@@ -2902,7 +2892,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Stopped {
                 task_ids: vec!["t1".to_string()],
@@ -2931,7 +2920,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-x".to_string()),
                 timestamp: Utc::now(),
-                stopped: vec![],
             },
             TaskEvent::Closed {
                 task_ids: vec!["t2".to_string()],

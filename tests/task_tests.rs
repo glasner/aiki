@@ -950,7 +950,7 @@ fn test_task_start_reopen() {
 // ============================================================================
 
 #[test]
-fn test_task_start_auto_stops_current() {
+fn test_task_start_does_not_stop_other_tasks() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
@@ -980,10 +980,23 @@ fn test_task_start_auto_stops_current() {
         let id_end = ready_section[id_start..].find('"').unwrap() + id_start;
         let second_task_id = &ready_section[id_start..id_end];
 
-        // Start second task - should auto-stop first
+        // Start second task - should NOT auto-stop first (no stopped output)
         aiki_task(temp_dir.path(), &["start", second_task_id])
             .success()
-            .stdout(predicate::str::contains("<stopped"));
+            .stdout(predicate::str::contains("<stopped").not());
+
+        // Verify both tasks are now in progress
+        let list_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+            .current_dir(temp_dir.path())
+            .args(["task", "list", "--in-progress"])
+            .output()
+            .unwrap();
+        let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+        assert!(
+            list_stdout.contains("First task") && list_stdout.contains("Second task"),
+            "Both tasks should be in progress, got: {}",
+            list_stdout
+        );
     }
 }
 
@@ -1563,4 +1576,604 @@ Fix the validation issue.
         "Subtask should have source from frontmatter. Output: {}",
         show_stdout
     );
+}
+
+// ============================================================================
+// Link Flag Tests
+// ============================================================================
+
+#[test]
+fn test_task_add_with_blocked_by() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create blocker task
+    let output = aiki_task(temp_dir.path(), &["add", "Blocker task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let blocker_id = extract_short_id(&stdout);
+
+    // Create task blocked by the first
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Blocked task", "--blocked-by", &blocker_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_multiple_blocked_by() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create two blocker tasks
+    let output1 = aiki_task(temp_dir.path(), &["add", "Blocker 1"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let blocker1_id = extract_short_id(&stdout1);
+
+    let output2 = aiki_task(temp_dir.path(), &["add", "Blocker 2"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let blocker2_id = extract_short_id(&stdout2);
+
+    // Create task blocked by both
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Doubly blocked",
+            "--blocked-by",
+            &blocker1_id,
+            "--blocked-by",
+            &blocker2_id,
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_supersedes() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create old task
+    let output = aiki_task(temp_dir.path(), &["add", "Old approach"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let old_id = extract_short_id(&stdout);
+
+    // Create replacement
+    aiki_task(
+        temp_dir.path(),
+        &["add", "New approach", "--supersedes", &old_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_subtask_of() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent task
+    let output = aiki_task(temp_dir.path(), &["add", "Parent task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let parent_id = extract_short_id(&stdout);
+
+    // Create subtask using --subtask-of
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Child task", "--subtask-of", &parent_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_sourced_from() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Fix bug", "--sourced-from", "file:ops/now/design.md"],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_multiple_sourced_from() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Fix bug",
+            "--sourced-from",
+            "file:ops/now/design.md",
+            "--sourced-from",
+            "file:ops/now/review.md",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_parent_alias_works() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent
+    let output = aiki_task(temp_dir.path(), &["add", "Parent task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let parent_id = extract_short_id(&stdout);
+
+    // --parent is hidden alias for --subtask-of
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Child via parent", "--parent", &parent_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_source_alias_works() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // --source is hidden alias for --sourced-from
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Fix bug", "--source", "file:design.md"],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_both_subtask_of_and_parent_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = aiki_task(temp_dir.path(), &["add", "Parent task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let parent_id = extract_short_id(&stdout);
+
+    // Both --subtask-of and --parent should error
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Child",
+            "--subtask-of",
+            &parent_id,
+            "--parent",
+            &parent_id,
+        ],
+    )
+    .failure();
+}
+
+#[test]
+fn test_task_add_both_sourced_from_and_source_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Both --sourced-from and --source should error
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Fix bug",
+            "--sourced-from",
+            "file:a.md",
+            "--source",
+            "file:b.md",
+        ],
+    )
+    .failure();
+}
+
+#[test]
+fn test_task_add_with_multiple_link_kinds() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create blocker task
+    let output = aiki_task(temp_dir.path(), &["add", "Blocker"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let blocker_id = extract_short_id(&stdout);
+
+    // Create task with both --blocked-by and --sourced-from
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Complex task",
+            "--blocked-by",
+            &blocker_id,
+            "--sourced-from",
+            "file:ops/now/design.md",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_link_with_source_alias() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = aiki_task(temp_dir.path(), &["add", "A task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // --source is hidden alias for --sourced-from on link
+    aiki_task(
+        temp_dir.path(),
+        &["link", &task_id, "--source", "file:design.md"],
+    )
+    .success();
+}
+
+#[test]
+fn test_task_link_with_parent_alias() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let out1 = aiki_task(temp_dir.path(), &["add", "Parent"]).success();
+    let stdout1 = String::from_utf8_lossy(&out1.get_output().stdout);
+    let parent_id = extract_short_id(&stdout1);
+
+    let out2 = aiki_task(temp_dir.path(), &["add", "Child"]).success();
+    let stdout2 = String::from_utf8_lossy(&out2.get_output().stdout);
+    let child_id = extract_short_id(&stdout2);
+
+    // --parent is hidden alias for --subtask-of on link
+    aiki_task(
+        temp_dir.path(),
+        &["link", &child_id, "--parent", &parent_id],
+    )
+    .success();
+}
+
+#[test]
+fn test_task_link_both_sourced_from_and_source_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = aiki_task(temp_dir.path(), &["add", "A task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "link",
+            &task_id,
+            "--sourced-from",
+            "file:a.md",
+            "--source",
+            "file:b.md",
+        ],
+    )
+    .failure();
+}
+
+#[test]
+fn test_task_unlink_with_source_alias() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create task with source
+    let output = aiki_task(
+        temp_dir.path(),
+        &["add", "Task with source", "--source", "file:design.md"],
+    )
+    .success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Unlink using --source alias
+    aiki_task(
+        temp_dir.path(),
+        &["unlink", &task_id, "--source", "file:design.md"],
+    )
+    .success();
+}
+
+// ── Complete link flags tests ──────────────────────────────────────────
+
+#[test]
+fn test_task_add_with_implements() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Plan: Auth system",
+            "--implements",
+            "file:ops/now/auth-spec.md",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_orchestrates() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a plan task to orchestrate
+    let output = aiki_task(temp_dir.path(), &["add", "Plan task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let plan_id = extract_short_id(&stdout);
+
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Build: Auth", "--orchestrates", &plan_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_scoped_to() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Refactor auth handler",
+            "--scoped-to",
+            "file:src/auth.rs",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_multiple_scoped_to() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Refactor auth",
+            "--scoped-to",
+            "file:src/auth.rs",
+            "--scoped-to",
+            "file:src/session.rs",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_depends_on() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create dependency task
+    let output = aiki_task(temp_dir.path(), &["add", "Unit tests"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let dep_id = extract_short_id(&stdout);
+
+    aiki_task(
+        temp_dir.path(),
+        &["add", "Integration tests", "--depends-on", &dep_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_multiple_depends_on() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output1 = aiki_task(temp_dir.path(), &["add", "Dep 1"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let dep1_id = extract_short_id(&stdout1);
+
+    let output2 = aiki_task(temp_dir.path(), &["add", "Dep 2"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let dep2_id = extract_short_id(&stdout2);
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Final task",
+            "--depends-on",
+            &dep1_id,
+            "--depends-on",
+            &dep2_id,
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_add_with_all_new_link_types() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create tasks for link targets
+    let output1 = aiki_task(temp_dir.path(), &["add", "Blocker"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let blocker_id = extract_short_id(&stdout1);
+
+    let output2 = aiki_task(temp_dir.path(), &["add", "Dependency"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let dep_id = extract_short_id(&stdout2);
+
+    // Create task with multiple link kinds at once
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "add",
+            "Complex task",
+            "--blocked-by",
+            &blocker_id,
+            "--depends-on",
+            &dep_id,
+            "--scoped-to",
+            "file:src/main.rs",
+            "--implements",
+            "file:ops/now/spec.md",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Added"));
+}
+
+#[test]
+fn test_task_start_quickstart_with_implements() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "start",
+            "Plan: Auth",
+            "--implements",
+            "file:ops/now/auth-spec.md",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Started"));
+}
+
+#[test]
+fn test_task_start_quickstart_with_depends_on() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = aiki_task(temp_dir.path(), &["add", "Prerequisite"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let dep_id = extract_short_id(&stdout);
+
+    aiki_task(
+        temp_dir.path(),
+        &["start", "Dependent task", "--depends-on", &dep_id],
+    )
+    .success()
+    .stdout(predicate::str::contains("Started"));
+}
+
+#[test]
+fn test_task_start_quickstart_with_scoped_to() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "start",
+            "Fix auth",
+            "--scoped-to",
+            "file:src/auth.rs",
+            "--scoped-to",
+            "file:src/session.rs",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Started"));
+}
+
+#[test]
+fn test_task_start_existing_with_new_link_flags() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create dep task
+    let output1 = aiki_task(temp_dir.path(), &["add", "Dep task"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let dep_id = extract_short_id(&stdout1);
+
+    // Create task to start
+    let output2 = aiki_task(temp_dir.path(), &["add", "Main task"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let task_id = extract_short_id(&stdout2);
+
+    // Start with link flags
+    aiki_task(
+        temp_dir.path(),
+        &[
+            "start",
+            &task_id,
+            "--depends-on",
+            &dep_id,
+            "--scoped-to",
+            "file:src/main.rs",
+        ],
+    )
+    .success()
+    .stdout(predicate::str::contains("Started"));
+}
+
+#[test]
+fn test_task_link_with_depends_on() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output1 = aiki_task(temp_dir.path(), &["add", "Task A"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let task_a_id = extract_short_id(&stdout1);
+
+    let output2 = aiki_task(temp_dir.path(), &["add", "Task B"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let task_b_id = extract_short_id(&stdout2);
+
+    // Link B depends-on A
+    aiki_task(
+        temp_dir.path(),
+        &["link", &task_b_id, "--depends-on", &task_a_id],
+    )
+    .success();
+}
+
+#[test]
+fn test_task_unlink_with_depends_on() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output1 = aiki_task(temp_dir.path(), &["add", "Task A"]).success();
+    let stdout1 = String::from_utf8_lossy(&output1.get_output().stdout);
+    let task_a_id = extract_short_id(&stdout1);
+
+    let output2 = aiki_task(temp_dir.path(), &["add", "Task B"]).success();
+    let stdout2 = String::from_utf8_lossy(&output2.get_output().stdout);
+    let task_b_id = extract_short_id(&stdout2);
+
+    // Link then unlink
+    aiki_task(
+        temp_dir.path(),
+        &["link", &task_b_id, "--depends-on", &task_a_id],
+    )
+    .success();
+
+    aiki_task(
+        temp_dir.path(),
+        &["unlink", &task_b_id, "--depends-on", &task_a_id],
+    )
+    .success();
 }

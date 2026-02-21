@@ -21,6 +21,7 @@ pub mod repo;
 pub mod repo_id;
 pub mod session;
 pub mod signing;
+pub mod specs;
 pub mod tasks;
 pub mod tools;
 pub mod utils;

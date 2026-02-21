@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.14";
+pub const AIKI_BLOCK_VERSION: &str = "1.15";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.14">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.15">
 
 ## ⛔ STOP - Read This First
 
@@ -278,9 +278,9 @@ This is common when:
 aiki task add "Fix issues from code review" --source prompt
 
 # 2. Add a subtask for each item
-aiki task add --parent <parent-id> "Fix null check in auth handler"
-aiki task add --parent <parent-id> "Add missing error handling in API client"
-aiki task add --parent <parent-id> "Remove unused import in utils.rs"
+aiki task add --subtask-of <parent-id> "Fix null check in auth handler"
+aiki task add --subtask-of <parent-id> "Add missing error handling in API client"
+aiki task add --subtask-of <parent-id> "Remove unused import in utils.rs"
 
 # 3. Start the parent to begin work
 aiki task start <parent-id>
@@ -306,9 +306,9 @@ aiki task close <id> --summary "Fixed everything"  # No granularity!
 ### ✅ CORRECT: Parent + subtasks
 ```bash
 aiki task add "Fix review issues" --source prompt
-aiki task add --parent <id> "Fix null check in auth"
-aiki task add --parent <id> "Add error handling in API"
-aiki task add --parent <id> "Remove unused import"
+aiki task add --subtask-of <id> "Fix null check in auth"
+aiki task add --subtask-of <id> "Add error handling in API"
+aiki task add --subtask-of <id> "Remove unused import"
 aiki task start <id>
 # Work through each subtask individually
 ```
@@ -396,11 +396,12 @@ Ready (3):
 
 1. **Start before working** - Run `aiki task start` before implementation
 2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
-3. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
-4. **Close with summary** - Use `aiki task close --summary` to document your work
-5. **Close as won't-do when appropriate** - Use `aiki task close --wont-do --summary` for tasks you skip or decline (not needed, already done, disagree with approach)
-6. **Close immediately** - Don't leave tasks open after finishing
-7. **Report what you did** - Include completed tasks when replying to user
+3. **Stop when switching** - When switching tasks, explicitly stop the current task first: `aiki task stop --reason "Switching to X"`
+4. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
+5. **Close with summary** - Use `aiki task close --summary` to document your work
+6. **Close as won't-do when appropriate** - Use `aiki task close --wont-do --summary` for tasks you skip or decline (not needed, already done, disagree with approach)
+7. **Close immediately** - Don't leave tasks open after finishing
+8. **Report what you did** - Include completed tasks when replying to user
 
 ### Reporting Completed Tasks
 
@@ -438,6 +439,7 @@ Example:
 - **Using the Task tool instead of `aiki task run`** ← Native subagents lack aiki context!
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
+- **Not explicitly stopping tasks before switching to new work** ← Tasks don't auto-stop!
 - Forgetting to `start` a task before you begin work
 - Closing tasks without `--summary` to describe what you did
 - Leaving tasks open after finishing

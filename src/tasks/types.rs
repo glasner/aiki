@@ -139,8 +139,6 @@ pub enum TaskEvent {
         /// Turn ID (UUID v5) from the session's current turn
         turn_id: Option<String>,
         timestamp: DateTime<Utc>,
-        /// Task IDs that were auto-stopped when these tasks started
-        stopped: Vec<String>,
     },
     /// Task(s) were stopped (batch operation)
     Stopped {

@@ -58,13 +58,11 @@ pub fn current_turn_id(session_id: Option<&str>) -> Option<String> {
 pub struct StartTaskResult {
     /// Tasks that were started
     pub started: Vec<Task>,
-    /// Tasks that were auto-stopped
-    pub stopped: Vec<Task>,
     /// The actual task IDs that were started (may differ from input if parent task with subtasks)
     pub started_ids: Vec<String>,
 }
 
-/// Core task start logic. Validates, auto-stops other tasks, emits flow events.
+/// Core task start logic. Validates tasks and emits Started events.
 ///
 /// This is the canonical implementation used by `aiki task start`, `aiki review --start`,
 /// and `aiki fix --start`. All start operations should go through this function to ensure
@@ -72,8 +70,7 @@ pub struct StartTaskResult {
 ///
 /// # What this function does:
 /// - Validates that tasks exist and are not closed
-/// - Auto-stops any currently in-progress tasks
-/// - Creates TaskEvent::Started with the stopped tasks recorded
+/// - Creates TaskEvent::Started
 /// - Emits task.started flow events via event_bus
 ///
 /// # What this function does NOT do:
@@ -87,10 +84,11 @@ pub struct StartTaskResult {
 /// * `task_ids` - Task IDs to start
 ///
 /// # Returns
-/// `StartTaskResult` with the started and stopped tasks
+/// `StartTaskResult` with the started tasks
 pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResult> {
     let events = read_events(cwd)?;
-    let tasks = materialize_graph(&events).tasks;
+    let graph = materialize_graph(&events);
+    let tasks = graph.tasks.clone();
 
     // Validate all tasks exist and are not closed
     for id in task_ids {
@@ -104,39 +102,11 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         }
     }
 
-    // Detect current session early - needed for both session filtering and start event
+    // Detect current session early - needed for start event
     let session_match = find_active_session(cwd);
     let our_session_id = session_match.as_ref().map(|m| m.session_id.clone());
 
-    // Get current in-progress tasks to auto-stop
-    // But exclude parent tasks when starting their subtasks
-    let parent_ids_to_preserve: std::collections::HashSet<String> = task_ids
-        .iter()
-        .filter_map(|id| {
-            // If this is a subtask (contains '.'), preserve its parent
-            id.rsplit_once('.').map(|(parent, _)| parent.to_string())
-        })
-        .collect();
-
-    // Only auto-stop tasks explicitly claimed by THIS session.
-    // Tasks claimed by other sessions or unclaimed tasks are left alone.
-    // This prevents agents from stopping each other's tasks (e.g., Codex agents
-    // that don't create sessions would otherwise auto-stop each other).
-    let current_in_progress_ids: Vec<String> = get_in_progress(&tasks)
-        .iter()
-        .filter(|t| match (&t.claimed_by_session, &our_session_id) {
-            (Some(claimed), Some(ours)) => claimed == ours, // Ours → auto-stop
-            _ => false,                                      // Everything else → leave alone
-        })
-        .map(|t| t.id.clone())
-        .filter(|id| !parent_ids_to_preserve.contains(id))
-        .collect();
-
     // Get tasks for result
-    let stopped_tasks: Vec<Task> = current_in_progress_ids
-        .iter()
-        .filter_map(|id| tasks.get(id).cloned())
-        .collect();
     let started_tasks: Vec<Task> = task_ids
         .iter()
         .filter_map(|id| find_task(&tasks, id).ok().cloned())
@@ -144,18 +114,6 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
 
     // Query current turn ID from session
     let turn_id = current_turn_id(our_session_id.as_deref());
-
-    // Auto-stop current in-progress tasks
-    if !current_in_progress_ids.is_empty() {
-        let stop_reason = format!("Started {}", task_ids.join(", "));
-        let stop_event = TaskEvent::Stopped {
-            task_ids: current_in_progress_ids.clone(),
-            reason: Some(stop_reason),
-            turn_id: turn_id.clone(),
-            timestamp: chrono::Utc::now(),
-        };
-        write_event(cwd, &stop_event)?;
-    }
 
     // Reuse session detected earlier for start event
     let agent_type_str = session_match
@@ -172,7 +130,6 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
         session_id,
         turn_id,
         timestamp,
-        stopped: current_in_progress_ids,
     };
     write_event(cwd, &start_event)?;
 
@@ -202,7 +159,6 @@ pub fn start_task_core(cwd: &Path, task_ids: &[String]) -> Result<StartTaskResul
 
     Ok(StartTaskResult {
         started: started_tasks,
-        stopped: stopped_tasks,
         started_ids: task_ids.to_vec(),
     })
 }

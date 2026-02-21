@@ -112,8 +112,10 @@ pub fn write_link_event(
         return Ok(false);
     }
 
-    // 3. Cycle detection for blocking/hierarchical kinds
-    if kind == "blocked-by" || kind == "subtask-of" {
+    // 3. Cycle detection for blocking and hierarchical kinds
+    let needs_cycle_check = kind == "subtask-of"
+        || find_link_kind(kind).map_or(false, |lk| lk.blocks_ready);
+    if needs_cycle_check {
         if graph.would_create_cycle(from, &to_normalized, kind) {
             return Err(AikiError::LinkCycle {
                 kind: kind.to_string(),
@@ -545,7 +547,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             session_id,
             turn_id,
             timestamp,
-            stopped,
         } => {
             add_metadata("event", "started", &mut lines);
             for task_id in task_ids {
@@ -557,9 +558,6 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             }
             if let Some(tid) = turn_id {
                 add_metadata("turn_id", tid, &mut lines);
-            }
-            for stopped_id in stopped {
-                add_metadata("stopped_task", stopped_id, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -834,10 +832,6 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("session_id")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string());
-            let stopped = fields
-                .get("stopped_task")
-                .map(|v| v.iter().map(|s| s.to_string()).collect())
-                .unwrap_or_else(Vec::new);
             let turn_id = fields
                 .get("turn_id")
                 .and_then(|v| v.first())
@@ -849,7 +843,6 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 session_id,
                 turn_id,
                 timestamp,
-                stopped,
             })
         }
         "stopped" => {
@@ -1115,7 +1108,6 @@ event=started
 task_id=a1b2
 task_id=c3d4
 agent_type=claude-code
-stopped_task=e5f6
 timestamp=2026-01-09T10:30:00Z
 "#;
 
@@ -1124,12 +1116,10 @@ timestamp=2026-01-09T10:30:00Z
             TaskEvent::Started {
                 task_ids,
                 agent_type,
-                stopped,
                 ..
             } => {
                 assert_eq!(task_ids, vec!["a1b2", "c3d4"]);
                 assert_eq!(agent_type, "claude-code");
-                assert_eq!(stopped, vec!["e5f6"]);
             }
             _ => panic!("Expected Started event"),
         }
@@ -1235,7 +1225,6 @@ timestamp=2026-01-09T10:30:00Z
             session_id: Some("test-session-uuid".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            stopped: vec!["stopped1".to_string()],
         };
 
         let block = event_to_metadata_block(&original);
@@ -1250,19 +1239,16 @@ timestamp=2026-01-09T10:30:00Z
                 TaskEvent::Started {
                     task_ids: ids1,
                     agent_type: agent1,
-                    stopped: stopped1,
                     ..
                 },
                 TaskEvent::Started {
                     task_ids: ids2,
                     agent_type: agent2,
-                    stopped: stopped2,
                     ..
                 },
             ) => {
                 assert_eq!(ids1, ids2);
                 assert_eq!(agent1, agent2);
-                assert_eq!(stopped1, stopped2);
             }
             _ => panic!("Event type mismatch"),
         }
@@ -1520,7 +1506,7 @@ timestamp=2026-01-09T10:30:00Z
     }
 
     #[test]
-    fn test_parse_started_with_no_stopped_tasks() {
+    fn test_parse_started_basic() {
         let block = r#"
 event=started
 task_id=a1b2
@@ -1529,8 +1515,8 @@ timestamp=2026-01-09T10:30:00Z
 "#;
         let event = parse_metadata_block(block).expect("Should parse");
         match event {
-            TaskEvent::Started { stopped, .. } => {
-                assert!(stopped.is_empty());
+            TaskEvent::Started { task_ids, .. } => {
+                assert_eq!(task_ids, vec!["a1b2"]);
             }
             _ => panic!("Expected Started event"),
         }
@@ -2506,7 +2492,7 @@ timestamp=2026-02-10T14:30:00Z
             session_id: Some("sess-123".to_string()),
             turn_id: Some("turn-abc-1".to_string()),
             timestamp: Utc::now(),
-            stopped: vec![],
+
         };
 
         let block = event_to_metadata_block(&original);
@@ -2585,7 +2571,7 @@ timestamp=2026-02-10T14:30:00Z
             session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
-            stopped: vec![],
+
         };
 
         let block = event_to_metadata_block(&original);

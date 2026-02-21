@@ -7,8 +7,9 @@ use crate::events::FileOperation;
 use crate::events::{
     parse_mcp_server, AikiChangeCompletedPayload, AikiChangePermissionAskedPayload, AikiEvent,
     AikiMcpCompletedPayload, AikiMcpPermissionAskedPayload, AikiReadCompletedPayload,
-    AikiReadPermissionAskedPayload, AikiSessionEndedPayload, AikiSessionResumedPayload,
-    AikiSessionStartPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
+    AikiReadPermissionAskedPayload, AikiSessionClearedPayload, AikiSessionCompactedPayload,
+    AikiSessionEndedPayload, AikiSessionResumedPayload, AikiSessionStartPayload,
+    AikiSessionWillCompactPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
     AikiTurnCompletedPayload, AikiTurnStartedPayload, AikiWebCompletedPayload,
     AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation,
     WriteOperation,
@@ -51,6 +52,11 @@ enum ClaudeEvent {
     Stop {
         #[serde(flatten)]
         payload: StopPayload,
+    },
+    #[serde(rename = "PreCompact")]
+    PreCompact {
+        #[serde(flatten)]
+        payload: PreCompactPayload,
     },
     #[serde(rename = "SessionEnd")]
     SessionEnd {
@@ -137,6 +143,19 @@ fn default_session_end_reason() -> String {
     "other".to_string()
 }
 
+/// PreCompact hook payload
+///
+/// Claude Code fires this before compaction. The trigger field indicates
+/// whether compaction was manual (/compact) or automatic (context window full).
+#[derive(Deserialize, Debug)]
+struct PreCompactPayload {
+    session_id: String,
+    cwd: String,
+    /// Trigger for compaction: "manual" or "auto"
+    #[serde(default)]
+    trigger: String,
+}
+
 // ============================================================================
 // Event Building
 // ============================================================================
@@ -151,6 +170,7 @@ pub fn build_aiki_event_from_stdin() -> Result<AikiEvent> {
         ClaudeEvent::UserPromptSubmit { payload } => build_turn_started_event(payload),
         ClaudeEvent::PreToolUse { payload } => build_permission_asked_event_for_tool_type(payload),
         ClaudeEvent::PostToolUse { payload } => build_completed_event_for_tool_type(payload),
+        ClaudeEvent::PreCompact { payload } => build_session_will_compact_event(payload),
         ClaudeEvent::Stop { payload } => build_turn_completed_event(payload),
         ClaudeEvent::SessionEnd { payload } => build_session_ended_event(payload),
     };
@@ -184,30 +204,52 @@ fn build_completed_event_for_tool_type(payload: PostToolUsePayload) -> AikiEvent
     }
 }
 
-/// Build session.started or session.resumed event based on source field
+/// Build session event based on SessionStart source field
 ///
-/// Claude Code emits SessionStart for both new and resumed sessions.
+/// Claude Code emits SessionStart for all session lifecycle events.
 /// The `source` field distinguishes them:
+/// - "startup" → session.started event
 /// - "resume" → session.resumed event
-/// - "startup", "clear", "compact" → session.started event
+/// - "compact" → session.compacted event
+/// - "clear" → session.cleared event
 fn build_session_started_event(payload: SessionStartPayload) -> AikiEvent {
     let session = create_session(&payload.session_id, &payload.cwd);
     let cwd = PathBuf::from(&payload.cwd);
     let timestamp = chrono::Utc::now();
 
-    if payload.source == "resume" {
-        AikiEvent::SessionResumed(AikiSessionResumedPayload {
+    match payload.source.as_str() {
+        "resume" => AikiEvent::SessionResumed(AikiSessionResumedPayload {
             session,
             cwd,
             timestamp,
-        })
-    } else {
-        AikiEvent::SessionStarted(AikiSessionStartPayload {
+        }),
+        "compact" => AikiEvent::SessionCompacted(AikiSessionCompactedPayload {
             session,
             cwd,
             timestamp,
-        })
+        }),
+        "clear" => AikiEvent::SessionCleared(AikiSessionClearedPayload {
+            session,
+            cwd,
+            timestamp,
+        }),
+        _ => AikiEvent::SessionStarted(AikiSessionStartPayload {
+            session,
+            cwd,
+            timestamp,
+        }),
     }
+}
+
+/// Build session.will_compact event (maps from PreCompact hook)
+fn build_session_will_compact_event(payload: PreCompactPayload) -> AikiEvent {
+    debug_log(|| format!("PreCompact trigger: {}", payload.trigger));
+    let session = create_session(&payload.session_id, &payload.cwd);
+    AikiEvent::SessionWillCompact(AikiSessionWillCompactPayload {
+        session,
+        cwd: PathBuf::from(&payload.cwd),
+        timestamp: chrono::Utc::now(),
+    })
 }
 
 /// Build turn.started event (maps from UserPromptSubmit hook)
@@ -855,4 +897,115 @@ fn build_session_ended_event(payload: SessionEndPayload) -> AikiEvent {
         timestamp: chrono::Utc::now(),
         reason: payload.reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_session_start(source: &str) -> SessionStartPayload {
+        SessionStartPayload {
+            session_id: "test-session-123".to_string(),
+            cwd: "/tmp/test".to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_session_start_startup_maps_to_session_started() {
+        let event = build_session_started_event(make_session_start("startup"));
+        assert!(
+            matches!(event, AikiEvent::SessionStarted(_)),
+            "SessionStart(source=startup) should map to SessionStarted"
+        );
+    }
+
+    #[test]
+    fn test_session_start_resume_maps_to_session_resumed() {
+        let event = build_session_started_event(make_session_start("resume"));
+        assert!(
+            matches!(event, AikiEvent::SessionResumed(_)),
+            "SessionStart(source=resume) should map to SessionResumed"
+        );
+    }
+
+    #[test]
+    fn test_session_start_compact_maps_to_session_compacted() {
+        let event = build_session_started_event(make_session_start("compact"));
+        assert!(
+            matches!(event, AikiEvent::SessionCompacted(_)),
+            "SessionStart(source=compact) should map to SessionCompacted"
+        );
+    }
+
+    #[test]
+    fn test_session_start_clear_maps_to_session_cleared() {
+        let event = build_session_started_event(make_session_start("clear"));
+        assert!(
+            matches!(event, AikiEvent::SessionCleared(_)),
+            "SessionStart(source=clear) should map to SessionCleared"
+        );
+    }
+
+    #[test]
+    fn test_session_start_unknown_source_maps_to_session_started() {
+        let event = build_session_started_event(make_session_start("unknown"));
+        assert!(
+            matches!(event, AikiEvent::SessionStarted(_)),
+            "SessionStart with unknown source should fall back to SessionStarted"
+        );
+    }
+
+    #[test]
+    fn test_precompact_maps_to_session_will_compact() {
+        let payload = PreCompactPayload {
+            session_id: "test-session-123".to_string(),
+            cwd: "/tmp/test".to_string(),
+            trigger: "auto".to_string(),
+        };
+        let event = build_session_will_compact_event(payload);
+        assert!(
+            matches!(event, AikiEvent::SessionWillCompact(_)),
+            "PreCompact should map to SessionWillCompact"
+        );
+    }
+
+    #[test]
+    fn test_session_start_deserialization_with_source() {
+        // Verify that serde correctly deserializes SessionStart with various sources
+        let json = r#"{"hook_event_name":"SessionStart","session_id":"abc","cwd":"/tmp","source":"compact"}"#;
+        let event: ClaudeEvent = serde_json::from_str(json).unwrap();
+        match event {
+            ClaudeEvent::SessionStart { payload } => {
+                assert_eq!(payload.source, "compact");
+            }
+            _ => panic!("Expected SessionStart variant"),
+        }
+    }
+
+    #[test]
+    fn test_session_start_deserialization_defaults_to_startup() {
+        // When source field is missing, it should default to "startup"
+        let json =
+            r#"{"hook_event_name":"SessionStart","session_id":"abc","cwd":"/tmp"}"#;
+        let event: ClaudeEvent = serde_json::from_str(json).unwrap();
+        match event {
+            ClaudeEvent::SessionStart { payload } => {
+                assert_eq!(payload.source, "startup");
+            }
+            _ => panic!("Expected SessionStart variant"),
+        }
+    }
+
+    #[test]
+    fn test_precompact_deserialization() {
+        let json = r#"{"hook_event_name":"PreCompact","session_id":"abc","cwd":"/tmp","trigger":"manual"}"#;
+        let event: ClaudeEvent = serde_json::from_str(json).unwrap();
+        match event {
+            ClaudeEvent::PreCompact { payload } => {
+                assert_eq!(payload.trigger, "manual");
+            }
+            _ => panic!("Expected PreCompact variant"),
+        }
+    }
 }

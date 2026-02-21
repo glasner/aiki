@@ -112,6 +112,12 @@ pub struct EventHandlers {
     pub session_started: Vec<HookStatement>,
     #[serde(rename = "session.resumed", default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub session_resumed: Vec<HookStatement>,
+    #[serde(rename = "session.will_compact", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_will_compact: Vec<HookStatement>,
+    #[serde(rename = "session.compacted", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_compacted: Vec<HookStatement>,
+    #[serde(rename = "session.cleared", default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub session_cleared: Vec<HookStatement>,
     #[serde(rename = "session.ended", default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub session_ended: Vec<HookStatement>,
 
@@ -300,6 +306,9 @@ impl EventHandlers {
     pub fn has_any(&self) -> bool {
         !self.session_started.is_empty()
             || !self.session_resumed.is_empty()
+            || !self.session_will_compact.is_empty()
+            || !self.session_compacted.is_empty()
+            || !self.session_cleared.is_empty()
             || !self.session_ended.is_empty()
             || !self.turn_started.is_empty()
             || !self.turn_completed.is_empty()

@@ -36,13 +36,17 @@ impl AgentRuntime for ClaudeCodeRuntime {
         // Spawn claude process with prompt via command args
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
         // to allow the agent to run without user confirmation
-        let output = Command::new("claude")
-            .current_dir(&options.cwd)
+        let mut cmd = Command::new("claude");
+        cmd.current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
-            .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            .output();
+            .env_remove("CLAUDE_CODE_ENTRYPOINT");
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let output = cmd.output();
 
         match output {
             Ok(output) => {
@@ -79,8 +83,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
         // Spawn claude process detached from parent
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
         // The process runs independently and continues after parent exits
-        let child = Command::new("claude")
-            .current_dir(&options.cwd)
+        let mut cmd = Command::new("claude");
+        cmd.current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
@@ -92,8 +96,12 @@ impl AgentRuntime for ClaudeCodeRuntime {
             // Detach stdin/stdout/stderr so process runs independently
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let child = cmd.spawn();
 
         match child {
             Ok(child) => {
@@ -115,8 +123,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
 
         // Spawn claude process - keep Child handle for monitoring
         // Uses --print for non-interactive mode and --dangerously-skip-permissions
-        let child = Command::new("claude")
-            .current_dir(&options.cwd)
+        let mut cmd = Command::new("claude");
+        cmd.current_dir(&options.cwd)
             .args(["--print", "--dangerously-skip-permissions", &prompt])
             // Unset nesting guard so child Claude Code sessions can start
             .env_remove("CLAUDECODE")
@@ -129,8 +137,12 @@ impl AgentRuntime for ClaudeCodeRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             // Capture stderr so we can report errors when the agent fails
-            .stderr(Stdio::piped())
-            .spawn();
+            .stderr(Stdio::piped());
+        // Propagate parent session UUID for workspace isolation chaining
+        if let Some(ref uuid) = options.parent_session_uuid {
+            cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
+        }
+        let child = cmd.spawn();
 
         match child {
             Ok(child) => Ok(MonitoredChild::new(child, &options.task_id)),

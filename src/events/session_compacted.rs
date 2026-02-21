@@ -1,26 +1,28 @@
 use super::prelude::*;
 
-/// session.resumed event payload
+/// session.compacted event payload
 ///
-/// Fires when continuing a previous session (as opposed to starting a new one).
-/// This allows flows to differentiate between fresh starts and continuations.
+/// Fires after context compaction. Re-injects workspace path, active tasks,
+/// and workflow reminders that would otherwise be lost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiSessionResumedPayload {
+pub struct AikiSessionCompactedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
 
-/// Handle session.resumed event
+/// Handle session.compacted event
 ///
-/// This event fires when a session is being resumed rather than started fresh.
-/// Allows flows to load prior context, apply previous approvals, maintain audit trail continuity.
-pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<HookResult> {
+/// Re-injects critical state after context compaction:
+/// - Workspace isolation path
+/// - Active task awareness
+/// - Task count / workflow reminders
+pub fn handle_session_compacted(payload: AikiSessionCompactedPayload) -> Result<HookResult> {
     use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
-            "Session resumed by {:?}, session: {}",
+            "Session compacted for {:?}, session: {}",
             payload.session.agent_type(),
             payload.session.external_id()
         )
@@ -34,15 +36,15 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
 
     // Execute hook via HookComposer (with fallback to bundled core hook)
     let _flow_result = execute_hook(
-        EventType::SessionResumed,
+        EventType::SessionCompacted,
         &mut state,
-        &core_hook.handlers.session_resumed,
+        &core_hook.handlers.session_compacted,
     )?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
-    // session.resumed returns context (workspace + tasks) but never blocks
+    // session.compacted returns context (workspace + tasks) but never blocks
     Ok(HookResult {
         context: state.build_context(),
         decision: Decision::Allow,

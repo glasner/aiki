@@ -64,11 +64,8 @@
 //! - `{% for item in collection %}...{% else %}...{% endfor %}` (else for empty collections)
 //!
 //! Loop metadata variables:
-//! - `loop.index` - 1-based index (1, 2, 3, ...)
-//! - `loop.index0` - 0-based index (0, 1, 2, ...)
-//! - `loop.first` - true for first iteration
-//! - `loop.last` - true for last iteration
-//! - `loop.length` - total number of items
+//! - `loop.iteration` - 1-based iteration (1, 2, 3, ...)
+//! - `loop.index` - 0-based iteration (0, 1, 2, ...)
 //!
 //! # Usage
 //!
@@ -84,7 +81,6 @@
 //! ```
 
 pub mod conditionals;
-pub mod data_source;
 pub mod parser;
 pub mod resolver;
 pub mod spawn_config;
@@ -95,7 +91,6 @@ pub use conditionals::{
     process_conditionals, tokenize as tokenize_conditionals, ConditionalError, EvalContext,
     LoopItem, TemplateNode, Token,
 };
-pub use data_source::{parse_data_source, resolve_data_source, DataSource};
 pub use parser::{extract_yaml_frontmatter, parse_template, FrontmatterError};
 pub use resolver::{
     convert_data, create_review_task_from_template, create_subtask_entries,

@@ -174,6 +174,8 @@ pub struct AgentSpawnOptions {
     pub task_id: String,
     /// Override the task's assignee (optional)
     pub agent_override: Option<AgentType>,
+    /// Parent session UUID for workspace isolation chaining
+    pub parent_session_uuid: Option<String>,
 }
 
 impl AgentSpawnOptions {
@@ -184,6 +186,7 @@ impl AgentSpawnOptions {
             cwd: cwd.as_ref().to_path_buf(),
             task_id: task_id.into(),
             agent_override: None,
+            parent_session_uuid: None,
         }
     }
 
@@ -192,6 +195,13 @@ impl AgentSpawnOptions {
     #[allow(dead_code)] // Part of builder API
     pub fn with_agent_override(mut self, agent: AgentType) -> Self {
         self.agent_override = Some(agent);
+        self
+    }
+
+    /// Set the parent session UUID for workspace isolation chaining
+    #[must_use]
+    pub fn with_parent_session_uuid(mut self, uuid: Option<String>) -> Self {
+        self.parent_session_uuid = uuid;
         self
     }
 

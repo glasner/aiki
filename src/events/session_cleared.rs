@@ -1,26 +1,27 @@
 use super::prelude::*;
 
-/// session.resumed event payload
+/// session.cleared event payload
 ///
-/// Fires when continuing a previous session (as opposed to starting a new one).
-/// This allows flows to differentiate between fresh starts and continuations.
+/// Fires after /clear resets the conversation. Re-injects workspace path
+/// and task context since the conversation history is wiped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AikiSessionResumedPayload {
+pub struct AikiSessionClearedPayload {
     pub session: AikiSession,
     pub cwd: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
 
-/// Handle session.resumed event
+/// Handle session.cleared event
 ///
-/// This event fires when a session is being resumed rather than started fresh.
-/// Allows flows to load prior context, apply previous approvals, maintain audit trail continuity.
-pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<HookResult> {
+/// Re-injects critical state after /clear:
+/// - Workspace isolation path
+/// - Task count / workflow reminders
+pub fn handle_session_cleared(payload: AikiSessionClearedPayload) -> Result<HookResult> {
     use super::prelude::execute_hook;
 
     debug_log(|| {
         format!(
-            "Session resumed by {:?}, session: {}",
+            "Session cleared for {:?}, session: {}",
             payload.session.agent_type(),
             payload.session.external_id()
         )
@@ -34,15 +35,15 @@ pub fn handle_session_resumed(payload: AikiSessionResumedPayload) -> Result<Hook
 
     // Execute hook via HookComposer (with fallback to bundled core hook)
     let _flow_result = execute_hook(
-        EventType::SessionResumed,
+        EventType::SessionCleared,
         &mut state,
-        &core_hook.handlers.session_resumed,
+        &core_hook.handlers.session_cleared,
     )?;
 
     // Extract failures from state
     let failures = state.take_failures();
 
-    // session.resumed returns context (workspace + tasks) but never blocks
+    // session.cleared returns context (workspace + tasks) but never blocks
     Ok(HookResult {
         context: state.build_context(),
         decision: Decision::Allow,

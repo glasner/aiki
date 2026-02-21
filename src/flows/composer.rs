@@ -48,6 +48,9 @@ use crate::error::{AikiError, Result};
 pub enum EventType {
     SessionStarted,
     SessionResumed,
+    SessionWillCompact,
+    SessionCompacted,
+    SessionCleared,
     SessionEnded,
     TurnStarted,
     TurnCompleted,
@@ -74,6 +77,9 @@ impl EventType {
         match self {
             EventType::SessionStarted => &handlers.session_started,
             EventType::SessionResumed => &handlers.session_resumed,
+            EventType::SessionWillCompact => &handlers.session_will_compact,
+            EventType::SessionCompacted => &handlers.session_compacted,
+            EventType::SessionCleared => &handlers.session_cleared,
             EventType::SessionEnded => &handlers.session_ended,
             EventType::TurnStarted => &handlers.turn_started,
             EventType::TurnCompleted => &handlers.turn_completed,

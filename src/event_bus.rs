@@ -25,6 +25,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
             // Session lifecycle
             AikiEvent::SessionStarted(_) => "session.started",
             AikiEvent::SessionResumed(_) => "session.resumed",
+            AikiEvent::SessionWillCompact(_) => "session.will_compact",
+            AikiEvent::SessionCompacted(_) => "session.compacted",
+            AikiEvent::SessionCleared(_) => "session.cleared",
             AikiEvent::SessionEnded(_) => "session.ended",
             // Turn lifecycle
             AikiEvent::TurnStarted(_) => "turn.started",
@@ -68,6 +71,9 @@ pub fn dispatch(event: AikiEvent) -> Result<HookResult> {
         // Session lifecycle
         AikiEvent::SessionStarted(e) => events::handle_session_started(e),
         AikiEvent::SessionResumed(e) => events::handle_session_resumed(e),
+        AikiEvent::SessionWillCompact(e) => events::handle_session_will_compact(e),
+        AikiEvent::SessionCompacted(e) => events::handle_session_compacted(e),
+        AikiEvent::SessionCleared(e) => events::handle_session_cleared(e),
         AikiEvent::SessionEnded(e) => events::handle_session_ended(e),
 
         // Turn lifecycle

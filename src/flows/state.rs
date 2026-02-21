@@ -56,8 +56,11 @@ impl AikiState {
 
         // Initialize context assembler based on event type
         let context_assembler = match &event {
-            crate::events::AikiEvent::SessionStarted(_) => {
-                // session.started: build additional context from scratch
+            crate::events::AikiEvent::SessionStarted(_)
+            | crate::events::AikiEvent::SessionResumed(_)
+            | crate::events::AikiEvent::SessionCompacted(_)
+            | crate::events::AikiEvent::SessionCleared(_) => {
+                // session.started/resumed/compacted/cleared: build additional context from scratch
                 Some(crate::flows::context::ContextAssembler::new(None, "\n\n"))
             }
             crate::events::AikiEvent::TurnStarted(e) => {

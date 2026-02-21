@@ -71,6 +71,15 @@ pub enum AikiEvent {
     /// Session resumed - continuing a previous session
     #[serde(rename = "session.resumed")]
     SessionResumed(AikiSessionResumedPayload),
+    /// Session compaction is about to happen (pre-compaction)
+    #[serde(rename = "session.will_compact")]
+    SessionWillCompact(AikiSessionWillCompactPayload),
+    /// Session was compacted — re-inject critical state
+    #[serde(rename = "session.compacted")]
+    SessionCompacted(AikiSessionCompactedPayload),
+    /// Session was cleared via /clear — re-inject critical state
+    #[serde(rename = "session.cleared")]
+    SessionCleared(AikiSessionClearedPayload),
     /// Agent session terminated
     #[serde(rename = "session.ended")]
     SessionEnded(AikiSessionEndedPayload),
@@ -180,6 +189,9 @@ impl AikiEvent {
             // Session lifecycle
             Self::SessionStarted(e) => &e.cwd,
             Self::SessionResumed(e) => &e.cwd,
+            Self::SessionWillCompact(e) => &e.cwd,
+            Self::SessionCompacted(e) => &e.cwd,
+            Self::SessionCleared(e) => &e.cwd,
             Self::SessionEnded(e) => &e.cwd,
             // Turn lifecycle
             Self::TurnStarted(e) => &e.cwd,
@@ -218,6 +230,9 @@ impl AikiEvent {
             // Session lifecycle
             Self::SessionStarted(e) => e.session.agent_type(),
             Self::SessionResumed(e) => e.session.agent_type(),
+            Self::SessionWillCompact(e) => e.session.agent_type(),
+            Self::SessionCompacted(e) => e.session.agent_type(),
+            Self::SessionCleared(e) => e.session.agent_type(),
             Self::SessionEnded(e) => e.session.agent_type(),
             // Turn lifecycle
             Self::TurnStarted(e) => e.session.agent_type(),
@@ -255,9 +270,12 @@ impl AikiEvent {
 // ============================================================================
 
 // Session lifecycle
+mod session_cleared;
+mod session_compacted;
 mod session_ended;
 mod session_resumed;
 mod session_started;
+mod session_will_compact;
 
 // Turn lifecycle
 mod turn_completed;
@@ -299,9 +317,12 @@ mod task_started;
 // ============================================================================
 
 // Session lifecycle
+pub use session_cleared::*;
+pub use session_compacted::*;
 pub use session_ended::*;
 pub use session_resumed::*;
 pub use session_started::*;
+pub use session_will_compact::*;
 
 // Turn lifecycle
 pub use turn_completed::*;
@@ -406,6 +427,24 @@ impl From<AikiSessionEndedPayload> for AikiEvent {
 impl From<AikiSessionResumedPayload> for AikiEvent {
     fn from(payload: AikiSessionResumedPayload) -> Self {
         AikiEvent::SessionResumed(payload)
+    }
+}
+
+impl From<AikiSessionWillCompactPayload> for AikiEvent {
+    fn from(payload: AikiSessionWillCompactPayload) -> Self {
+        AikiEvent::SessionWillCompact(payload)
+    }
+}
+
+impl From<AikiSessionCompactedPayload> for AikiEvent {
+    fn from(payload: AikiSessionCompactedPayload) -> Self {
+        AikiEvent::SessionCompacted(payload)
+    }
+}
+
+impl From<AikiSessionClearedPayload> for AikiEvent {
+    fn from(payload: AikiSessionClearedPayload) -> Self {
+        AikiEvent::SessionCleared(payload)
     }
 }
 

@@ -5,7 +5,7 @@
 //! session, with lazy creation (only when concurrent), automatic merge-back
 //! at session end, and crash recovery.
 //!
-//! Workspace paths follow: `~/.aiki/workspaces/<repo-id>/<session-uuid>/`
+//! Workspace paths follow: `/tmp/aiki/<repo-id>/<session-uuid>/`
 
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
@@ -15,12 +15,22 @@ use crate::repo_id;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Base directory for isolated workspaces: `/tmp/aiki/`
+///
+/// Respects `AIKI_WORKSPACES_DIR` env var for testing.
+pub fn workspaces_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("AIKI_WORKSPACES_DIR") {
+        return PathBuf::from(dir);
+    }
+    PathBuf::from("/tmp/aiki")
+}
+
 /// An isolated JJ workspace for a specific session/repo pair
 #[derive(Debug, Clone)]
 pub struct IsolatedWorkspace {
     /// Workspace name: "aiki-<session-uuid>"
     pub name: String,
-    /// Workspace path: ~/.aiki/workspaces/<repo-id>/<session-uuid>/
+    /// Workspace path: /tmp/aiki/<repo-id>/<session-uuid>/
     pub path: PathBuf,
     /// Project root this workspace belongs to
     pub repo_root: PathBuf,
@@ -42,7 +52,7 @@ pub fn find_jj_root(path: &Path) -> Option<PathBuf> {
 /// Idempotent: returns existing workspace if directory already exists.
 ///
 /// - workspace_name: "aiki-<session-uuid>"
-/// - workspace_path: ~/.aiki/workspaces/<repo-id>/<session-uuid>/
+/// - workspace_path: /tmp/aiki/<repo-id>/<session-uuid>/
 /// - Forks from repo's main workspace @- (parent of working copy, starts clean)
 pub fn create_isolated_workspace(
     repo_root: &Path,
@@ -56,8 +66,7 @@ pub fn create_isolated_workspace(
             ))
         })?;
 
-    let workspace_path = global::global_aiki_dir()
-        .join("workspaces")
+    let workspace_path = workspaces_dir()
         .join(&repo_id)
         .join(session_uuid);
     let workspace_name = format!("aiki-{}", session_uuid);
@@ -216,8 +225,7 @@ pub fn absorb_workspace(
     let target_dir = if let Some(parent_uuid) = parent_session_uuid {
         let repo_id = repo_id::read_repo_id(repo_root)?
             .unwrap_or_default();
-        let parent_ws_path = global::global_aiki_dir()
-            .join("workspaces")
+        let parent_ws_path = workspaces_dir()
             .join(&repo_id)
             .join(parent_uuid);
         if parent_ws_path.exists() {
@@ -230,9 +238,14 @@ pub fn absorb_workspace(
     };
 
     // Rebase: jj rebase -b @ -d <ws_head>
+    // IMPORTANT: Do NOT use --ignore-working-copy here. The rebase moves the
+    // target's @ on top of ws_head, and JJ must update the target's filesystem
+    // to reflect the new state. With --ignore-working-copy, the filesystem
+    // wouldn't be updated, and the next JJ snapshot would see the workspace's
+    // files as "deleted" — silently reverting the absorbed changes.
     let output = jj_cmd()
         .current_dir(&target_dir)
-        .args(["rebase", "-b", "@", "-d", &ws_head, "--ignore-working-copy"])
+        .args(["rebase", "-b", "@", "-d", &ws_head])
         .output()
         .map_err(|e| {
             AikiError::WorkspaceAbsorbFailed(format!("Failed to run jj rebase: {}", e))
@@ -302,25 +315,34 @@ pub fn cleanup_workspace(
         }
     }
 
+    // Clean up empty parent directory (e.g., /tmp/aiki/<repo-id>/)
+    if let Some(parent) = workspace.path.parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            if entries.count() == 0 {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+
     debug_log(|| format!("Cleaned up workspace '{}'", workspace.name));
     Ok(())
 }
 
 /// Find and recover all workspaces for a dead session across all repos.
 ///
-/// Scans `~/.aiki/workspaces/*/<session-uuid>/` (where * is repo-id).
+/// Scans `/tmp/aiki/*/<session-uuid>/` (where * is repo-id).
 /// For each: absorb into main, then cleanup.
 /// If absorb fails, creates a recovery bookmark and warns.
 pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
-    let workspaces_dir = global::global_aiki_dir().join("workspaces");
-    if !workspaces_dir.exists() {
+    let ws_dir = workspaces_dir();
+    if !ws_dir.exists() {
         return Ok(0);
     }
 
     let mut recovered = 0u32;
 
     // Scan repo-id directories
-    let entries = fs::read_dir(&workspaces_dir).map_err(|e| {
+    let entries = fs::read_dir(&ws_dir).map_err(|e| {
         AikiError::Other(anyhow::anyhow!(
             "Failed to read workspaces dir: {}",
             e
@@ -351,6 +373,12 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
                 );
                 // Clean up the directory even if we can't absorb
                 let _ = fs::remove_dir_all(&session_ws_dir);
+                // Clean up empty parent directory
+                if let Ok(entries) = fs::read_dir(&repo_id_dir) {
+                    if entries.count() == 0 {
+                        let _ = fs::remove_dir(&repo_id_dir);
+                    }
+                }
                 continue;
             }
         };
@@ -466,12 +494,18 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
 
         // Also clean up workspace directory if it exists
         if let Ok(Some(repo_id)) = crate::repo_id::read_repo_id(repo_root) {
-            let ws_dir = global::global_aiki_dir()
-                .join("workspaces")
+            let ws_dir = workspaces_dir()
                 .join(&repo_id)
                 .join(uuid);
             if ws_dir.exists() {
                 let _ = fs::remove_dir_all(&ws_dir);
+            }
+            // Clean up empty parent directory (e.g., /tmp/aiki/<repo-id>/)
+            let repo_dir = workspaces_dir().join(&repo_id);
+            if let Ok(entries) = fs::read_dir(&repo_dir) {
+                if entries.count() == 0 {
+                    let _ = fs::remove_dir(&repo_dir);
+                }
             }
         }
     }
@@ -795,5 +829,34 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let result = find_repo_root_from_workspace(temp_dir.path());
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_workspaces_dir_default() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var("AIKI_WORKSPACES_DIR").ok();
+        std::env::remove_var("AIKI_WORKSPACES_DIR");
+
+        let dir = workspaces_dir();
+        assert_eq!(dir, PathBuf::from("/tmp/aiki"));
+
+        if let Some(v) = original {
+            std::env::set_var("AIKI_WORKSPACES_DIR", v);
+        }
+    }
+
+    #[test]
+    fn test_workspaces_dir_override() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var("AIKI_WORKSPACES_DIR").ok();
+        std::env::set_var("AIKI_WORKSPACES_DIR", "/custom/workspaces");
+
+        let dir = workspaces_dir();
+        assert_eq!(dir, PathBuf::from("/custom/workspaces"));
+
+        match original {
+            Some(v) => std::env::set_var("AIKI_WORKSPACES_DIR", v),
+            None => std::env::remove_var("AIKI_WORKSPACES_DIR"),
+        }
     }
 }
