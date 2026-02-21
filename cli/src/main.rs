@@ -20,6 +20,7 @@ mod repo;
 mod repo_id;
 mod session;
 mod signing;
+mod specs;
 mod tasks;
 mod tools;
 mod utils;
