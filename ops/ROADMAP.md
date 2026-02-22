@@ -1,8 +1,6 @@
 
-- spec graph / ensure plan
-- compaction hooks
+
 - tmp workspaces
-- semantic blockers
 - autorun for unblocked tasks
 - loop flags
 - rename plan

@@ -3,7 +3,7 @@
 ## Problem
 
 When Claude Code compacts context mid-turn, the agent loses:
-1. **Workspace isolation path** — forgets it's in `~/.aiki/workspaces/<repo>/<session>/`
+1. **Workspace isolation path** — forgets it's in `/tmp/aiki/<repo>/<session>/`
 2. **Active task awareness** — forgets which aiki task it was working on
 3. **Workflow reminders** — forgets to use `aiki task` at all
 

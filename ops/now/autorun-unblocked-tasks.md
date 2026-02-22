@@ -76,6 +76,20 @@ Add **autorun** capability across all workflow contexts: blocking links, spawned
 
 Autorun is implemented in three distinct contexts, each with its own trigger mechanism but sharing the same core behavior: automatically starting tasks when preconditions are met.
 
+### Link Direction Convention
+
+Blocking links are stored on the **dependent task** (the one that is blocked) and point to the **blocker task** (the one that must complete first):
+
+```
+Task B  --depends-on-->  Task A    (link stored on B, B.link.target = A)
+Task R  --validates-->   Task I    (link stored on R, R.link.target = I)
+Task F  --follows-up-->  Task R    (link stored on F, F.link.target = R)
+```
+
+When Task A closes, we need a **reverse lookup**: find all tasks whose links point to Task A (i.e., tasks blocked by A). In the pseudocode below:
+- `find_blocked_by(task_id)` — returns tasks that have a blocking link targeting `task_id`
+- `task.blocking_links()` — returns the blocking links owned by a specific task (forward lookup)
+
 ### Context 1: Blocking Link Autorun
 
 Add an `autorun` boolean field to all blocking link types:
@@ -83,33 +97,38 @@ Add an `autorun` boolean field to all blocking link types:
 ```rust
 pub enum LinkType {
     Validates {
-        task_id: TaskId,
-        autorun: bool,  // Start this task when target completes
+        target: TaskId,   // The task being validated (blocker)
+        autorun: bool,    // Start the owner of this link when target completes
     },
-    
+
     FollowsUp {
-        task_id: TaskId,
-        autorun: bool,  // Start this task when target completes
+        target: TaskId,   // The task being followed up on (blocker)
+        autorun: bool,    // Start the owner of this link when target completes
     },
-    
+
     DependsOn {
-        task_id: TaskId,
-        autorun: bool,  // Start this task when target completes
+        target: TaskId,   // The task depended upon (blocker)
+        autorun: bool,    // Start the owner of this link when target completes
     },
 }
 ```
 
-**Trigger:** When a task closes, check for tasks with autorun blocking links pointing to it.
+**Trigger:** When a task closes, find tasks blocked by it that have autorun enabled.
 
 **Implementation:**
 
 ```rust
-fn handle_task_close(task: &Task) {
-    // Find all tasks that have autorun links to this task
-    for link in find_reverse_links(task.id, &["validates", "follows-up", "depends-on"]) {
-        if link.autorun {
-            // Start the linked task (idempotent — no-op if already started/closed)
-            start_task(&link.from_task);
+fn handle_task_close(closed_task: &Task, graph: &TaskGraph) {
+    // Reverse lookup: find tasks that have blocking links targeting the closed task
+    for candidate in find_blocked_by(closed_task.id) {
+        let has_autorun = candidate.blocking_links()
+            .iter()
+            .any(|link| link.target == closed_task.id && link.autorun);
+
+        if has_autorun && !graph.is_blocked(candidate.id) {
+            // Start the candidate (idempotent — no-op if already started/closed)
+            // Note: is_blocked checks ALL blockers, not just the one that just closed
+            start_task(candidate.id);
         }
     }
 }
@@ -512,20 +531,22 @@ aiki task add "Deploy" --depends-on <tests-id> --depends-on <review-id> --autoru
 **Implementation:**
 
 ```rust
-fn should_autorun(task: &Task, graph: &TaskGraph) -> bool {
-    // Check if this task has autorun enabled on ANY link
-    let has_autorun = find_links_from(task.id)
+fn should_autorun(candidate: &Task, graph: &TaskGraph) -> bool {
+    // Forward lookup: check if this task has autorun enabled on ANY of its blocking links
+    let has_autorun = candidate.blocking_links()
         .iter()
         .any(|link| link.autorun);
-    
+
     if !has_autorun {
         return false;
     }
-    
+
     // Only autorun if ALL blockers are closed
-    !graph.is_blocked(task.id)
+    !graph.is_blocked(candidate.id)
 }
 ```
+
+Note: `should_autorun` is a helper used by `handle_task_close` (see Context 1). The close handler performs the reverse lookup to find candidates, then calls this function on each one.
 
 ---
 
@@ -541,12 +562,12 @@ fn should_autorun(task: &Task, graph: &TaskGraph) -> bool {
 
 ### Phase 2: Blocking Link Autorun
 
-1. **Task close handler** — find reverse links with autorun enabled:
+1. **Task close handler** — reverse lookup for autorun candidates:
    ```rust
-   fn handle_task_close(task_id: &str, graph: &TaskGraph) {
-       for link in find_reverse_blocking_links(task_id, graph) {
-           if link.autorun && !graph.is_blocked(&link.from_task) {
-               start_task(&link.from_task);
+   fn handle_task_close(closed_task_id: &str, graph: &TaskGraph) {
+       for candidate in find_blocked_by(closed_task_id) {
+           if should_autorun(&candidate, graph) {
+               start_task(candidate.id);
            }
        }
    }

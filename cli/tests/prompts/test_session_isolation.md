@@ -20,7 +20,7 @@ You are testing aiki's workspace isolation system with concurrent agents. Run th
   ## 2. Monitor workspaces while agents run
   While agents are running (before they finish), check:
 
-      ls ~/.aiki/workspaces/
+      ls /tmp/aiki/
 
   - Verify there are workspace directories for each agent session
   - Run `jj workspace list` from the repo root — you should see the agent workspaces listed
@@ -41,7 +41,7 @@ You are testing aiki's workspace isolation system with concurrent agents. Run th
     - Each change references the correct task ID
 
   ## 4. Verify cleanup
-  - Run `ls ~/.aiki/workspaces/` — agent workspace dirs should be gone
+  - Run `ls /tmp/aiki/` — agent workspace dirs should be gone
   - Run `jj workspace list` — only `default` should remain
   - Run `ls ~/.aiki/sessions/by-repo/` — agent session sidecars should be cleaned up
 

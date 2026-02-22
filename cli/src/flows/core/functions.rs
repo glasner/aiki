@@ -1109,9 +1109,9 @@ pub fn workspace_create_if_concurrent(
         }
     };
 
-    let repo_id = match crate::repo_id::read_repo_id(&repo_root)? {
-        Some(id) => id,
-        None => {
+    let repo_id = match crate::repo_id::ensure_repo_id(&repo_root) {
+        Ok(id) => id,
+        Err(_) => {
             debug_log(|| "[workspace] No repo-id found, skipping workspace creation");
             return Ok(ActionResult {
                 success: true,
@@ -1381,20 +1381,24 @@ mod tests {
         assert_eq!(json["author"], "Claude <noreply@anthropic.com>");
         assert!(json["message"].as_str().unwrap().contains("[aiki]"));
         assert!(json["message"].as_str().unwrap().contains("author=claude"));
-        // Session ID is now a UUID (deterministic hash of agent_type + external_id)
-        // Check that it contains a session= field with a UUID-like format (36 chars with hyphens)
+        // Session ID is a truncated UUID v5 hash (8 hex chars)
         let message = json["message"].as_str().unwrap();
         let session_start = message.find("session=").expect("Should have session=");
-        let session_value = &message[session_start + 8..session_start + 44]; // 36 char UUID
+        let session_end = message[session_start + 8..]
+            .find('\n')
+            .map(|i| session_start + 8 + i)
+            .unwrap_or(message.len());
+        let session_value = &message[session_start + 8..session_end];
         assert_eq!(
             session_value.len(),
-            36,
-            "Session ID should be 36 chars (UUID format)"
+            8,
+            "Session ID should be 8 hex chars, got: {}",
+            session_value
         );
-        assert_eq!(
-            session_value.chars().filter(|c| *c == '-').count(),
-            4,
-            "Session ID should have 4 hyphens (UUID format)"
+        assert!(
+            session_value.chars().all(|c| c.is_ascii_hexdigit()),
+            "Session ID should be hex, got: {}",
+            session_value
         );
     }
 

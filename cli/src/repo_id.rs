@@ -48,9 +48,9 @@ pub fn read_repo_id(repo_path: &Path) -> Result<Option<String>> {
 /// Uses the root commit hash (first commit) as the stable identifier.
 /// Falls back to `local-{hash(canonical_path)}` for repos without commits.
 pub fn compute_repo_id(repo_path: &Path) -> Result<String> {
-    // Try to get the root commit hash
+    // Try to get the root commit hash (truncated to 8 hex chars)
     if let Some(root_hash) = get_git_root_commit(repo_path)? {
-        return Ok(root_hash);
+        return Ok(root_hash[..8].to_string());
     }
 
     // Fallback: Use path-based hash for repos without commits
@@ -67,8 +67,8 @@ pub fn compute_repo_id(repo_path: &Path) -> Result<String> {
     hasher.update(path_str.as_bytes());
     let hash = hasher.finalize();
 
-    // Use first 12 hex characters for the hash
-    let short_hash = hex::encode(&hash[..6]);
+    // Use first 8 hex characters for the hash
+    let short_hash = hex::encode(&hash[..4]);
     Ok(format!("local-{}", short_hash))
 }
 
@@ -118,10 +118,16 @@ pub fn ensure_repo_id(repo_path: &Path) -> Result<String> {
     let existing = read_repo_id(repo_path)?;
 
     match existing {
+        Some(id) if is_long_hex_id(&id) => {
+            // Truncate legacy 40-char hex IDs to 8 chars
+            let short = id[..8].to_string();
+            fs::write(&path, format!("{}\n", short)).map_err(|e| {
+                AikiError::Other(anyhow::anyhow!("Failed to write repo-id file: {}", e))
+            })?;
+            Ok(short)
+        }
         Some(id) => {
             // File exists with content - keep it (idempotent)
-            // Note: We don't upgrade local-* to root hash automatically here.
-            // That would change the ID mid-session, which could cause issues.
             Ok(id)
         }
         None => {
@@ -146,33 +152,42 @@ pub fn ensure_repo_id(repo_path: &Path) -> Result<String> {
 pub fn try_upgrade_repo_id(repo_path: &Path) -> Result<Option<String>> {
     let existing = read_repo_id(repo_path)?;
 
-    // Only upgrade local-* IDs
-    let existing = match existing {
-        Some(id) if id.starts_with("local-") => id,
-        _ => return Ok(None),
-    };
+    match &existing {
+        // Truncate legacy 40-char hex IDs to 8 chars
+        Some(id) if is_long_hex_id(id) => {
+            let short = id[..8].to_string();
+            let path = repo_id_path(repo_path);
+            fs::write(&path, format!("{}\n", short)).map_err(|e| {
+                AikiError::Other(anyhow::anyhow!("Failed to upgrade repo-id file: {}", e))
+            })?;
+            crate::cache::debug_log(|| {
+                format!("Truncated repo-id from {} to {}", id, short)
+            });
+            Ok(Some(short))
+        }
+        // Upgrade local-* to root commit hash (truncated)
+        Some(id) if id.starts_with("local-") => {
+            let root_hash = match get_git_root_commit(repo_path)? {
+                Some(h) => h,
+                None => return Ok(None),
+            };
+            let short = root_hash[..8].to_string();
+            let path = repo_id_path(repo_path);
+            fs::write(&path, format!("{}\n", short)).map_err(|e| {
+                AikiError::Other(anyhow::anyhow!("Failed to upgrade repo-id file: {}", e))
+            })?;
+            crate::cache::debug_log(|| {
+                format!("Upgraded repo-id from {} to {}", id, short)
+            });
+            Ok(Some(short))
+        }
+        _ => Ok(None),
+    }
+}
 
-    // Check if we now have a root commit
-    let root_hash = match get_git_root_commit(repo_path)? {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-
-    // Upgrade the file
-    let path = repo_id_path(repo_path);
-    fs::write(&path, format!("{}\n", root_hash)).map_err(|e| {
-        AikiError::Other(anyhow::anyhow!("Failed to upgrade repo-id file: {}", e))
-    })?;
-
-    // Log the upgrade for debugging
-    crate::cache::debug_log(|| {
-        format!(
-            "Upgraded repo-id from {} to {}",
-            existing, root_hash
-        )
-    });
-
-    Ok(Some(root_hash))
+/// Check if a repo ID is a legacy long hex string (e.g., 40-char SHA-1).
+fn is_long_hex_id(id: &str) -> bool {
+    id.len() > 8 && !id.starts_with("local-") && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -275,7 +290,7 @@ mod tests {
 
         let id = compute_repo_id(temp_dir.path()).unwrap();
         assert!(!id.starts_with("local-"), "Should be root hash with commits: {}", id);
-        assert_eq!(id.len(), 40, "Git hash should be 40 chars: {}", id);
+        assert_eq!(id.len(), 8, "Truncated hash should be 8 chars: {}", id);
     }
 
     #[test]
@@ -334,12 +349,29 @@ mod tests {
     }
 
     #[test]
-    fn test_try_upgrade_non_local_id() {
+    fn test_try_upgrade_non_local_short_id() {
         let temp_dir = setup_test_repo();
-        fs::write(repo_id_path(temp_dir.path()), "abc123hash\n").unwrap();
+        // 8-char hex ID is already short — no upgrade needed
+        fs::write(repo_id_path(temp_dir.path()), "abc12345\n").unwrap();
 
         let result = try_upgrade_repo_id(temp_dir.path()).unwrap();
-        assert!(result.is_none(), "Should not upgrade non-local IDs");
+        assert!(result.is_none(), "Should not upgrade already-short IDs");
+    }
+
+    #[test]
+    fn test_try_upgrade_truncates_long_hex_id() {
+        let temp_dir = setup_test_repo();
+        fs::write(
+            repo_id_path(temp_dir.path()),
+            "7f50e06340e462ecc2f0b28447d532bfe719267c\n",
+        )
+        .unwrap();
+
+        let result = try_upgrade_repo_id(temp_dir.path()).unwrap();
+        assert_eq!(result, Some("7f50e063".to_string()));
+
+        let content = fs::read_to_string(repo_id_path(temp_dir.path())).unwrap();
+        assert_eq!(content.trim(), "7f50e063");
     }
 
     #[test]
@@ -359,7 +391,7 @@ mod tests {
 
         let new_id = result.unwrap();
         assert!(!new_id.starts_with("local-"));
-        assert_eq!(new_id.len(), 40);
+        assert_eq!(new_id.len(), 8, "Upgraded ID should be 8 chars: {}", new_id);
 
         // Verify file was updated
         let content = fs::read_to_string(repo_id_path(temp_dir.path())).unwrap();

@@ -60,8 +60,8 @@ This creates a thorough, **customizable** review-fix workflow:
 Original Task
   ├── Review Task (validates original)
   └── Fix Task (follows-up review, autorun if issues found)
-      ├── Iteration 1 (created from aiki/fix template)
-      │   ├── Fix once (aiki/fix/once)
+      ├── Iteration 1 (created from aiki/fix/loop template)
+      │   ├── Fix once (aiki/fix)
       │   ├── Quality loop (aiki/fix/quality)
       │   │   └── Inner iterations...
       │   └── Re-review original
@@ -229,19 +229,19 @@ enum LinkType {
 The fix workflow is implemented via **task templates** that declare loop behavior in frontmatter. Loops handle iteration, links handle coordination.
 
 **Three templates:**
-- **`aiki/fix`** — Main template with outer loop (looping fix workflow)
+- **`aiki/fix/loop`** — Main template with outer loop (looping fix workflow, already wired in review.md)
 - **`aiki/fix/quality`** — Inner loop for fix quality checking
-- **`aiki/fix/once`** — Single-pass fix (no loop)
+- **`aiki/fix`** — Single-pass fix (no loop, existing template)
 
 **Runtime override:** Create task with `--once` parameter to prevent loop config from being copied (forces single-pass even from looping template).
 
-### `.aiki/templates/aiki/fix.md`
+### `.aiki/templates/aiki/fix/loop.md`
 
-Main fix template with outer loop (fix → review fix quality → re-review original).
+Main fix template with outer loop (fix → review fix quality → re-review original). This is the existing `aiki/fix/loop` template, updated with `loop:` frontmatter.
 
 ```yaml
 ---
-template: aiki/fix
+template: aiki/fix/loop
 loop:
   until: subtasks[2].approved or data.loop.iteration >= data.max_outer
   data: {}  # No manual iteration tracking - system provides data.loop
@@ -254,7 +254,7 @@ Fixing issues from review {{data.original_review}}.
 ## Instructions
 
 1. **Fix the issues:**
-   {% subtask aiki/fix/once with review={{data.original_review}} %}
+   {% subtask aiki/fix with review={{data.original_review}} %}
 
 2. **Ensure fix quality (inner loop):**
    {% subtask aiki/fix/quality with data={
@@ -325,25 +325,27 @@ Reviewing fix task {{data.fix_task}} for quality.
    {% subtask aiki/review with scope=task:{{data.fix_task}} %}
 
 2. **Fix issues if found:**
-   {% subtask aiki/fix/once with review={{subtasks[0].id}} if subtasks[0].has_comments %}
+   {% subtask aiki/fix with review={{subtasks[0].id}} if subtasks[0].has_comments %}
 
 ---
 
 **Status:** Inner iteration {{data.loop.iteration}} of {{data.max_inner}}
 ```
 
+**Note:** The `{% subtask ... if condition %}` syntax on line 2 depends on conditional subtask creation (Open Question #5). If this syntax is not supported by the template evaluator at runtime, the fallback is to always create the fix subtask and let the agent close it as won't-do when no issues are found.
+
 **Loop semantics:**
 - After review completes, check if approved
 - If not approved and under max → spawn next iteration with updated `fix_task` and incremented `data.loop`
 - If approved or max reached → exit inner loop
 
-### `.aiki/templates/aiki/fix/once.md`
+### `.aiki/templates/aiki/fix.md`
 
 Single-pass fix (no loop) — agent reads review comments and creates fix subtasks.
 
 ```yaml
 ---
-template: aiki/fix/once
+template: aiki/fix
 # No loop: config - this template never loops
 ---
 
@@ -351,13 +353,31 @@ template: aiki/fix/once
 
 ## Instructions
 
-Read review comments and create subtasks to fix each issue.
+1. Read the review comments to understand what issues were found:
+   ```bash
+   aiki task show {{data.review}} --with-source
+   ```
 
-[Agent instructions for addressing review findings...]
+2. Create a subtask for EACH issue found:
+   ```bash
+   aiki task add --subtask-of {{id}} "Fix: <brief description>"
+   ```
+
+3. Work through each subtask, closing as you go:
+   - Start each subtask before working on it
+   - Close with `--summary` when fixed
+   - Close with `--wont-do --summary` if out of scope
+
+4. Close this task when all subtasks are done:
+   ```bash
+   aiki task close {{id}} --summary "<summary of all fixes>"
+   ```
 ```
 
+**Note:** This is the existing `aiki/fix.md` template. It already works for single-pass fixes and does not need modification for the loop workflow — it is called as a subtask by `aiki/fix/loop` and `aiki/fix/quality`.
+
 **Usage:**
-- Called by `aiki/fix` template (outer loop needs single-pass fix per iteration)
+- Called by `aiki/fix/loop` template (outer loop needs single-pass fix per iteration)
 - Called by `aiki/fix/quality` template (inner loop needs single-pass fix for fix-the-fix)
 - Can be called directly: `aiki fix <review-id>` (command creates task with this template)
 
@@ -370,7 +390,7 @@ aiki review <task> --fix --data '{"max_outer": 20, "max_inner": 3}'
 
 **Custom termination condition:**
 
-Override `.aiki/templates/aiki/fix/outer-iteration.md`:
+Override `.aiki/templates/aiki/fix/loop.md`:
 ```yaml
 ---
 loop:
@@ -426,7 +446,7 @@ add_link(review_task.id, LinkType::Validates {
 // 2. Create fix task (child of original, follows up review)
 let fix_task = create_task_with_parent(
     original_task_id,  // Parent is the original task
-    "aiki/fix",        // Template with loop: config
+    "aiki/fix/loop",   // Template with loop: config
     data={
         original_review: review_task.id,
         max_outer: 10,
@@ -447,7 +467,7 @@ Original Task
   ├── Review Task (validates original)
   └── Fix Task (follows-up review)
       ├── Iteration 1
-      │   ├── Fix once (aiki/fix/once)
+      │   ├── Fix once (aiki/fix)
       │   ├── Quality loop (aiki/fix/quality)
       │   └── Re-review original
       ├── Iteration 2 (spawned by loop:)
@@ -655,7 +675,7 @@ After inner loop completes:
 
 ```yaml
 loop:
-  until: subtasks[2].approved or data.iteration >= data.max_outer
+  until: subtasks[2].approved or data.loop.iteration >= data.max_outer
 ```
 
 When original task review is approved or max iterations reached, no next iteration spawns.
@@ -664,7 +684,7 @@ When original task review is approved or max iterations reached, no next iterati
 
 ```yaml
 loop:
-  until: subtasks[0].approved or data.iteration >= data.max_inner
+  until: subtasks[0].approved or data.loop.iteration >= data.max_inner
 ```
 
 When fix review is approved or max iterations reached, no next iteration spawns.
@@ -673,8 +693,8 @@ When fix review is approved or max iterations reached, no next iteration spawns.
 
 Loop templates declare max iterations in `loop.until` condition:
 
-**Outer:** `data.iteration >= data.max_outer` (default 10)  
-**Inner:** `data.iteration >= data.max_inner` (default 5)
+**Outer:** `data.loop.iteration >= data.max_outer` (default 10)
+**Inner:** `data.loop.iteration >= data.max_inner` (default 5)
 
 Users can customize via template data:
 ```bash
@@ -739,9 +759,9 @@ aiki review <task-id> --fix --agent claude-code
 | `cli/src/commands/review.rs` | When `--fix` flag: create fix task with `follows-up` link and `once` parameter | **Update existing** |
 | `cli/src/commands/build.rs` | Add `--review` and `--fix` flags, `run_build_review()` | **New work** |
 | **Templates** | | |
-| `.aiki/templates/aiki/fix.md` | Outer loop template with `loop:` frontmatter (replaces fix/loop) | **Update existing** |
+| `.aiki/templates/aiki/fix/loop.md` | Add `loop:` frontmatter for outer loop iteration | **Update existing** |
 | `.aiki/templates/aiki/fix/quality.md` | Inner loop template with `loop:` frontmatter | **New file** |
-| `.aiki/templates/aiki/fix/once.md` | Single-pass fix template (no loop) | **Rename from aiki/fix.md** |
+| `.aiki/templates/aiki/fix.md` | Single-pass fix template (no changes needed) | **Unchanged** |
 
 ---
 
@@ -758,26 +778,27 @@ aiki review <task-id> --fix --agent claude-code
 
 Create templates that use spawn + loop primitives from `spawn-tasks.md`:
 
-1. **`.aiki/templates/aiki/fix.md`** — Main template with outer loop
+1. **`.aiki/templates/aiki/fix/loop.md`** — Update existing template with outer loop
    - Uses `loop:` frontmatter (implemented in spawn-tasks.md)
    - Spawns itself until `subtasks[2].approved` or max iterations
+   - Already wired in review.md line 41
 
 2. **`.aiki/templates/aiki/fix/quality.md`** — Inner loop template
    - Uses `loop:` frontmatter for quality iteration
    - Spawns itself until fix is approved
 
-3. **`.aiki/templates/aiki/fix/once.md`** — Single-pass fix (rename from existing `aiki/fix.md`)
+3. **`.aiki/templates/aiki/fix.md`** — Keep existing single-pass fix template (no rename needed)
    - No loop, single iteration
 
 4. **Update `.aiki/templates/aiki/review.md`:**
    - Add `spawns:` frontmatter section:
      ```yaml
      spawns:
-       - template: aiki/fix
+       - template: aiki/fix/loop
          condition: "!this.approved"
          autorun: true
      ```
-   - Remove any old fix subtask creation logic
+   - Review already references `aiki/fix/loop` via `{% subtask %}` on line 41
 
 5. **Tests:**
    - End-to-end: `aiki review --fix` → review approves → no fix spawned
@@ -824,8 +845,9 @@ Add workflow flags to `aiki build`:
    - Treat as "condition false" and continue loop? Or treat as "condition true" and stop?
 
 5. **Conditional subtask creation** — Templates show `{% subtask ... if condition %}`. Does this already exist?
-   - If yes: inner loop can conditionally create fix subtask only if review has issues
-   - If no: need to implement or always create subtask (may be won't-do)
+   - Existing review.md already uses this pattern (e.g., `{% subtask aiki/review/criteria/spec if data.scope.kind == "spec" %}`)
+   - If the evaluator handles simple equality conditions but not property access like `subtasks[0].has_comments`, the `fix/quality.md` template needs a simpler condition or a fallback (always create subtask, agent closes as won't-do)
+   - **Blocker for:** `aiki/fix/quality.md` template (line 2 of Instructions uses `if subtasks[0].has_comments`)
 
 6. **Build review scope** — Implementation review of the spec vs. task review of the plan ID. Implementation review validates the whole result against the spec; task review checks individual diffs. Implementation review seems more useful post-build.
 
@@ -835,4 +857,4 @@ Add workflow flags to `aiki build`:
 
 4. ~~**Should we support `--review` without `--fix`?**~~ — Yes. `build --review` runs review once, `build --fix` runs review + fix loop.
 
-5. ~~**Template naming for fix loop subtask**~~ — Use `aiki/fix/loop` (already wired in review.md:22). Don't touch `aiki/fix.md` (single-pass fix template with different contract).
+5. ~~**Template naming for fix loop subtask**~~ — Use `aiki/fix/loop` (already wired in review.md:41). Don't touch `aiki/fix.md` (single-pass fix template with different contract). Spec body updated to match.

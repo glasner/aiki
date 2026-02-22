@@ -74,13 +74,13 @@ pub fn run(fix: bool) -> Result<()> {
         issues_found += 1;
     }
 
-    // Check Claude Code hooks - verify file exists AND contains hooks
+    // Check Claude Code hooks - verify file exists AND contains all required hooks
     let claude_settings = home_dir.join(".claude/settings.json");
-    let claude_hooks_ok = check_claude_code_hooks(&claude_settings);
-    if claude_hooks_ok {
+    let missing_claude_hooks = find_missing_claude_code_hooks(&claude_settings);
+    if missing_claude_hooks.is_empty() {
         println!("  ✓ Claude Code hooks configured");
     } else {
-        println!("  ✗ Claude Code hooks not configured");
+        println!("  ✗ Claude Code hooks: missing {}", missing_claude_hooks.join(", "));
         if fix {
             println!("    Installing Claude Code hooks...");
             match config::install_claude_code_hooks_global() {
@@ -678,39 +678,39 @@ fn is_aiki_hooks_command_with_params(
     true
 }
 
-/// Check if Claude Code hooks are properly configured
+/// Find which Claude Code hooks are missing from ~/.claude/settings.json
 ///
-/// Returns true if ~/.claude/settings.json exists AND contains both:
-/// - hooks.SessionStart with aiki command
-/// - hooks.PostToolUse with aiki command
-fn check_claude_code_hooks(settings_path: &std::path::Path) -> bool {
-    if !settings_path.exists() {
-        return false;
-    }
-
-    let content = match fs::read_to_string(settings_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-
-    let settings: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    let hooks = match settings.get("hooks") {
-        Some(h) => h,
-        None => return false,
-    };
-
-    // Required Claude Code hooks
-    let required_hooks = [
+/// Returns a list of missing hook names. Empty list means all hooks are configured.
+fn find_missing_claude_code_hooks(settings_path: &std::path::Path) -> Vec<&'static str> {
+    // Required Claude Code hooks (must match what config::install_claude_code_hooks_global installs)
+    let required_hooks: &[&str] = &[
         "SessionStart",
+        "PreCompact",
         "UserPromptSubmit",
         "PreToolUse",
         "PostToolUse",
         "Stop",
+        "SessionEnd",
     ];
+
+    if !settings_path.exists() {
+        return required_hooks.to_vec();
+    }
+
+    let content = match fs::read_to_string(settings_path) {
+        Ok(c) => c,
+        Err(_) => return required_hooks.to_vec(),
+    };
+
+    let settings: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return required_hooks.to_vec(),
+    };
+
+    let hooks = match settings.get("hooks") {
+        Some(h) => h,
+        None => return required_hooks.to_vec(),
+    };
 
     // Helper to check if a Claude Code hook entry contains aiki command with correct params
     let has_hook = |hook_name: &str| -> bool {
@@ -742,7 +742,11 @@ fn check_claude_code_hooks(settings_path: &std::path::Path) -> bool {
             .unwrap_or(false)
     };
 
-    required_hooks.iter().all(|name| has_hook(name))
+    required_hooks
+        .iter()
+        .filter(|name| !has_hook(name))
+        .copied()
+        .collect()
 }
 
 /// Check if Cursor hooks are properly configured
@@ -1014,7 +1018,68 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_check_claude_code_hooks_complete() {
+    fn test_find_missing_claude_code_hooks_complete() {
+        let mut file = NamedTempFile::new().unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event SessionStart"
+                    }]
+                }],
+                "PreCompact": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event PreCompact"
+                    }]
+                }],
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event UserPromptSubmit"
+                    }]
+                }],
+                "PreToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event PreToolUse"
+                    }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "Edit|Write|Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event PostToolUse"
+                    }]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event Stop"
+                    }]
+                }],
+                "SessionEnd": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event SessionEnd"
+                    }]
+                }]
+            }
+        });
+        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
+
+        assert!(find_missing_claude_code_hooks(file.path()).is_empty());
+    }
+
+    #[test]
+    fn test_find_missing_claude_code_hooks_missing_pre_compact_and_session_end() {
         let mut file = NamedTempFile::new().unwrap();
         let settings = serde_json::json!({
             "hooks": {
@@ -1057,11 +1122,12 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(check_claude_code_hooks(file.path()));
+        let missing = find_missing_claude_code_hooks(file.path());
+        assert_eq!(missing, vec!["PreCompact", "SessionEnd"]);
     }
 
     #[test]
-    fn test_check_claude_code_hooks_missing_post_tool_use() {
+    fn test_find_missing_claude_code_hooks_missing_post_tool_use() {
         let mut file = NamedTempFile::new().unwrap();
         let settings = serde_json::json!({
             "hooks": {
@@ -1069,37 +1135,21 @@ mod tests {
                     "matcher": "startup",
                     "hooks": [{
                         "type": "command",
-                        "command": "/path/to/aiki hooks stdin --agent claude-code --event session.started"
+                        "command": "/path/to/aiki hooks stdin --agent claude-code --event SessionStart"
                     }]
                 }]
             }
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(!check_claude_code_hooks(file.path()));
+        let missing = find_missing_claude_code_hooks(file.path());
+        assert!(missing.contains(&"PostToolUse"));
+        assert!(missing.contains(&"PreCompact"));
+        assert!(missing.contains(&"SessionEnd"));
     }
 
     #[test]
-    fn test_check_claude_code_hooks_missing_session_start() {
-        let mut file = NamedTempFile::new().unwrap();
-        let settings = serde_json::json!({
-            "hooks": {
-                "PostToolUse": [{
-                    "matcher": "Edit|Write",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "/path/to/aiki hooks stdin --agent claude-code --event afterFileEdit"
-                    }]
-                }]
-            }
-        });
-        write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
-
-        assert!(!check_claude_code_hooks(file.path()));
-    }
-
-    #[test]
-    fn test_check_claude_code_hooks_wrong_command() {
+    fn test_find_missing_claude_code_hooks_wrong_command() {
         let mut file = NamedTempFile::new().unwrap();
         let settings = serde_json::json!({
             "hooks": {
@@ -1121,13 +1171,14 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(!check_claude_code_hooks(file.path()));
+        let missing = find_missing_claude_code_hooks(file.path());
+        assert!(missing.contains(&"SessionStart")); // wrong command
     }
 
     #[test]
-    fn test_check_claude_code_hooks_no_file() {
+    fn test_find_missing_claude_code_hooks_no_file() {
         let path = std::path::Path::new("/nonexistent/path/settings.json");
-        assert!(!check_claude_code_hooks(path));
+        assert_eq!(find_missing_claude_code_hooks(path).len(), 7); // all hooks missing
     }
 
     #[test]
@@ -1349,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_claude_code_hooks_with_exe() {
+    fn test_find_missing_claude_code_hooks_with_exe() {
         let mut file = NamedTempFile::new().unwrap();
         let settings = serde_json::json!({
             "hooks": {
@@ -1358,6 +1409,13 @@ mod tests {
                     "hooks": [{
                         "type": "command",
                         "command": "aiki.exe hooks stdin --agent claude-code --event SessionStart"
+                    }]
+                }],
+                "PreCompact": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "aiki.exe hooks stdin --agent claude-code --event PreCompact"
                     }]
                 }],
                 "UserPromptSubmit": [{
@@ -1387,12 +1445,19 @@ mod tests {
                         "type": "command",
                         "command": "C:\\Users\\foo\\aiki.exe hooks stdin --agent claude-code --event Stop"
                     }]
+                }],
+                "SessionEnd": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "C:\\Users\\foo\\aiki.exe hooks stdin --agent claude-code --event SessionEnd"
+                    }]
                 }]
             }
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        assert!(check_claude_code_hooks(file.path()));
+        assert!(find_missing_claude_code_hooks(file.path()).is_empty());
     }
 
     #[test]
@@ -1430,7 +1495,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_claude_code_hooks_wrong_agent() {
+    fn test_find_missing_claude_code_hooks_wrong_agent() {
         let mut file = NamedTempFile::new().unwrap();
         let settings = serde_json::json!({
             "hooks": {
@@ -1452,8 +1517,9 @@ mod tests {
         });
         write!(file, "{}", serde_json::to_string(&settings).unwrap()).unwrap();
 
-        // Should fail: SessionStart has wrong agent (cursor instead of claude-code)
-        assert!(!check_claude_code_hooks(file.path()));
+        // Should report SessionStart as missing (wrong agent: cursor instead of claude-code)
+        let missing = find_missing_claude_code_hooks(file.path());
+        assert!(missing.contains(&"SessionStart"));
     }
 
     #[test]

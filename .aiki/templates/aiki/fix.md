@@ -19,16 +19,14 @@ Review task `{{source.id}}` found issues in **{{data.scope.name}}**.
    aiki task add --subtask-of {{id}} "Fix: <brief description of issue>"
    ```
 
-3. Start and work through each nested subtask, closing as you go:
+3. Work through each nested subtask using `--next-subtask`:
    ```bash
-   aiki task start {{id}}.1
-   # ... do the work to fix the issue ...
-   aiki task close {{id}}.1 --summary "Fixed by doing X"
+   aiki task run {{id}} --next-subtask
    ```
-   - **You MUST start each subtask before working on it**
-   - Close with `--summary` when fixed
-   - Close with `--wont-do --summary` if out of scope or adds too much complexity
-   - Continue until all nested subtasks are completed
+   - This automatically starts the next ready subtask and delegates it
+   - The subagent will do the work and close the subtask with a summary
+   - Repeat `aiki task run --next-subtask` until all subtasks are completed
+   - If a subtask should be skipped, manually close it with `--wont-do --summary`
 
 4. Return to this fix subtask and close it:
    ```bash
