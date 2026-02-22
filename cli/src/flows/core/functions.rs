@@ -1205,6 +1205,7 @@ pub fn workspace_absorb_all(
 
     let parent_session_uuid: Option<String> = std::env::var("AIKI_PARENT_SESSION_UUID").ok();
     let mut absorbed = 0u32;
+    let mut has_conflicts = false;
 
     // Scan all repo-id directories for workspaces belonging to this session
     let entries = match std::fs::read_dir(&workspaces_dir) {
@@ -1263,20 +1264,36 @@ pub fn workspace_absorb_all(
             &workspace,
             parent_session_uuid.as_deref(),
         ) {
-            Ok(()) => absorbed += 1,
+            Ok(isolation::AbsorbResult::Absorbed) => {
+                absorbed += 1;
+                let _ = isolation::cleanup_workspace(&repo_root, &workspace);
+                // Unregister session from this repo's sidecar
+                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
+                    isolation::unregister_session_from_repo(repo_id, session_uuid);
+                }
+            }
+            Ok(isolation::AbsorbResult::Conflicts) => {
+                // Don't cleanup — workspace stays alive for conflict resolution
+                has_conflicts = true;
+            }
+            Ok(isolation::AbsorbResult::Skipped) => {
+                let _ = isolation::cleanup_workspace(&repo_root, &workspace);
+                // Unregister session from this repo's sidecar
+                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
+                    isolation::unregister_session_from_repo(repo_id, session_uuid);
+                }
+            }
             Err(e) => {
                 eprintln!(
                     "[aiki] Warning: failed to absorb workspace '{}': {}",
                     workspace.name, e
                 );
+                let _ = isolation::cleanup_workspace(&repo_root, &workspace);
+                // Unregister session from this repo's sidecar
+                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
+                    isolation::unregister_session_from_repo(repo_id, session_uuid);
+                }
             }
-        }
-
-        let _ = isolation::cleanup_workspace(&repo_root, &workspace);
-
-        // Unregister session from this repo's sidecar
-        if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
-            isolation::unregister_session_from_repo(repo_id, session_uuid);
         }
     }
 
@@ -1297,10 +1314,137 @@ pub fn workspace_absorb_all(
 
     debug_log(|| format!("[workspace] Absorbed {} workspace(s)", absorbed));
 
+    let stdout = if has_conflicts {
+        "conflicts".to_string()
+    } else if absorbed > 0 {
+        "ok".to_string()
+    } else {
+        "0".to_string()
+    };
+
     Ok(ActionResult {
         success: true,
         exit_code: Some(0),
-        stdout: absorbed.to_string(),
+        stdout,
+        stderr: String::new(),
+    })
+}
+
+/// Detect conflicts in the agent's workspace and return formatted details.
+///
+/// Finds the workspace for the current session, runs `jj resolve --list`
+/// to get conflicted files, reads each file's content showing conflict markers,
+/// and returns a formatted string for the autoreply.
+pub fn detect_workspace_conflicts(
+    session: &crate::session::AikiSession,
+) -> Result<ActionResult> {
+    use crate::session::isolation;
+
+    let session_uuid = session.uuid();
+    let workspaces_dir = isolation::workspaces_dir();
+
+    if !workspaces_dir.exists() {
+        return Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+
+    // Find workspace path for this session (scan repo-id dirs)
+    let mut workspace_path: Option<std::path::PathBuf> = None;
+    if let Ok(entries) = std::fs::read_dir(&workspaces_dir) {
+        for entry in entries.flatten() {
+            let repo_id_dir = entry.path();
+            if !repo_id_dir.is_dir() {
+                continue;
+            }
+            let session_ws_dir = repo_id_dir.join(session_uuid);
+            if session_ws_dir.exists() {
+                workspace_path = Some(session_ws_dir);
+                break;
+            }
+        }
+    }
+
+    let workspace_path: std::path::PathBuf = match workspace_path {
+        Some(p) => p,
+        None => {
+            return Ok(ActionResult {
+                success: true,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+    };
+
+    // Run jj resolve --list to get conflicted files
+    let conflict_output = crate::jj::jj_cmd()
+        .current_dir(&workspace_path)
+        .args(["resolve", "--list"])
+        .output()
+        .map_err(|e| {
+            crate::error::AikiError::Other(anyhow::anyhow!(
+                "Failed to list conflicts: {}",
+                e
+            ))
+        })?;
+
+    let conflict_list = String::from_utf8_lossy(&conflict_output.stdout);
+    if conflict_list.trim().is_empty() {
+        return Ok(ActionResult {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+
+    let mut output = String::from("Conflicted files:\n");
+    let max_lines_per_file = 100;
+
+    for line in conflict_list.lines() {
+        // jj resolve --list output format: "filename    <description>"
+        let file_path = line.split_whitespace().next().unwrap_or("").trim();
+        if file_path.is_empty() {
+            continue;
+        }
+
+        output.push_str(&format!("\n--- {} ---\n", file_path));
+
+        // Read file content from workspace
+        let full_path = workspace_path.join(file_path);
+        match std::fs::read_to_string(&full_path) {
+            Ok(content) => {
+                let lines: Vec<&str> = content.lines().collect();
+                if lines.len() > max_lines_per_file {
+                    for line in &lines[..max_lines_per_file] {
+                        output.push_str(line);
+                        output.push('\n');
+                    }
+                    output.push_str(&format!(
+                        "\n... truncated ({} more lines) ...\n",
+                        lines.len() - max_lines_per_file
+                    ));
+                } else {
+                    output.push_str(&content);
+                    if !content.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+            }
+            Err(e) => {
+                output.push_str(&format!("(could not read file: {})\n", e));
+            }
+        }
+    }
+
+    Ok(ActionResult {
+        success: true,
+        exit_code: Some(0),
+        stdout: output,
         stderr: String::new(),
     })
 }

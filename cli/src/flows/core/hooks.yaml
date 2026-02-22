@@ -140,9 +140,35 @@ turn.started:
 # Note: turn.completed does NOT auto-trigger session.ended. Sessions persist
 # across turns and are only ended explicitly (via session end hooks or TTL cleanup).
 turn.completed:
-    # Absorb isolated workspace changes back into parent/main workspace
-    # so the user can see changes between turns. No-op if no workspaces were created.
-    - call: self.workspace_absorb_all
+    # Absorb isolated workspace changes back into parent/main workspace.
+    # Returns "conflicts" if pre-rebase detected conflicts, "ok" if absorbed, "0" if no workspaces.
+    # Retry counting and force-absorb after 3 attempts are handled inside workspace_absorb_all.
+    - let: absorb_result = self.workspace_absorb_all
+
+    - if: absorb_result == "conflicts"
+      then:
+          # Workspace was NOT absorbed — conflicts detected during pre-rebase.
+          # Workspace is still alive with conflict markers in files.
+          - let: conflicts = self.detect_workspace_conflicts
+          - autoreply: |
+                CONFLICT RESOLUTION REQUIRED: Your changes conflict with changes from
+                other concurrent agents. The conflicts are in your workspace files:
+
+                {{conflicts}}
+
+                Fix each file by editing it to remove the JJ conflict markers and
+                produce the correct merged content. The markers look like:
+
+                <<<<<<< Conflict N of M
+                %%%%%%% Changes from base to side #1
+                -old content
+                +new content from side 1
+                +++++++ Contents of side #2
+                new content from side 2
+                >>>>>>> Conflict N of M ends
+
+                Replace the entire conflict block with the correct merged content.
+                Once all conflicts are resolved, your changes will be absorbed automatically.
 
 # ==============================================================================
 # Change Operation Events (unified mutations: write, delete, move)

@@ -2000,6 +2000,10 @@ impl HookEngine {
                 let session = extract_session(&state.event)?;
                 crate::flows::core::workspace_absorb_all(session)
             }
+            ("core", "detect_workspace_conflicts") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::detect_workspace_conflicts(session)
+            }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),
                 module.to_string(),
@@ -2204,6 +2208,10 @@ impl HookEngine {
             ("core", "workspace_absorb_all") => {
                 let session = extract_session(&state.event)?;
                 crate::flows::core::workspace_absorb_all(session)
+            }
+            ("core", "detect_workspace_conflicts") => {
+                let session = extract_session(&state.event)?;
+                crate::flows::core::detect_workspace_conflicts(session)
             }
             _ => Err(AikiError::FunctionNotFoundInNamespace(
                 function.to_string(),

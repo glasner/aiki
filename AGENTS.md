@@ -54,6 +54,19 @@ When concurrent agent sessions are detected, aiki creates an isolated JJ workspa
 2. If your cwd contains `/tmp/aiki/`, you are in an isolated workspace
 3. The workspace path will be re-confirmed on the next turn via hook context
 
+### Conflict Resolution
+
+If you receive a `CONFLICT RESOLUTION REQUIRED` message after completing a turn:
+
+1. You are still in your isolated workspace — check the conflicted files listed in the message
+2. Open each conflicted file and find the JJ conflict markers:
+   - `<<<<<<< Conflict N of M` — start of conflict block
+   - `%%%%%%% Changes from base` — diff showing one side's changes
+   - `+++++++ Contents of side #2` — the other side's content
+   - `>>>>>>> Conflict N of M ends` — end of conflict block
+3. Replace each entire conflict block with the correct merged content
+4. Once all conflicts are resolved, your changes will be absorbed automatically on the next turn
+
 ---
 
 ## Aiki Task System
