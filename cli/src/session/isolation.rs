@@ -5,7 +5,7 @@
 //! session, with lazy creation (only when concurrent), automatic merge-back
 //! at session end, and crash recovery.
 //!
-//! Workspace paths follow: `/tmp/aiki/<repo-id>/<session-uuid>/`
+//! Workspace paths follow: `/tmp/aiki/<repo-id>/<session-id>/`
 
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
@@ -14,6 +14,7 @@ use crate::jj::{jj_cmd, JJWorkspace};
 use crate::repo_id;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Base directory for isolated workspaces: `/tmp/aiki/`
 ///
@@ -28,9 +29,9 @@ pub fn workspaces_dir() -> PathBuf {
 /// An isolated JJ workspace for a specific session/repo pair
 #[derive(Debug, Clone)]
 pub struct IsolatedWorkspace {
-    /// Workspace name: "aiki-<session-uuid>"
+    /// Workspace name: "aiki-<session-id>"
     pub name: String,
-    /// Workspace path: /tmp/aiki/<repo-id>/<session-uuid>/
+    /// Workspace path: /tmp/aiki/<repo-id>/<session-id>/
     pub path: PathBuf,
     /// Project root this workspace belongs to
     pub repo_root: PathBuf,
@@ -51,20 +52,14 @@ pub fn find_jj_root(path: &Path) -> Option<PathBuf> {
 ///
 /// Idempotent: returns existing workspace if directory already exists.
 ///
-/// - workspace_name: "aiki-<session-uuid>"
-/// - workspace_path: /tmp/aiki/<repo-id>/<session-uuid>/
+/// - workspace_name: "aiki-<session-id>"
+/// - workspace_path: /tmp/aiki/<repo-id>/<session-id>/
 /// - Forks from repo's main workspace @- (parent of working copy, starts clean)
 pub fn create_isolated_workspace(
     repo_root: &Path,
     session_uuid: &str,
 ) -> Result<IsolatedWorkspace> {
-    let repo_id = repo_id::read_repo_id(repo_root)?
-        .ok_or_else(|| {
-            AikiError::WorkspaceCreationFailed(format!(
-                "No repo-id found at {}",
-                repo_root.display()
-            ))
-        })?;
+    let repo_id = repo_id::ensure_repo_id(repo_root)?;
 
     let workspace_path = workspaces_dir()
         .join(&repo_id)
@@ -169,13 +164,92 @@ pub fn create_isolated_workspace(
     Ok(workspace)
 }
 
+/// RAII guard that removes the lock file on drop.
+struct AbsorbLock {
+    path: PathBuf,
+}
+
+impl Drop for AbsorbLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Get the absorb lock file path for a repo.
+fn absorb_lock_path(repo_root: &Path) -> Result<PathBuf> {
+    let repo_id = repo_id::ensure_repo_id(repo_root)?;
+    let lock_dir = workspaces_dir().join(&repo_id);
+    let _ = fs::create_dir_all(&lock_dir);
+    Ok(lock_dir.join(".absorb.lock"))
+}
+
+/// Acquire an exclusive file lock for workspace absorption.
+///
+/// Uses atomic file creation (O_CREAT|O_EXCL) via `hard_link` as a
+/// cross-platform advisory lock. Retries with backoff for up to 30 seconds.
+fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
+    let max_wait = Duration::from_secs(30);
+    let poll_interval = Duration::from_millis(100);
+    let start = std::time::Instant::now();
+
+    loop {
+        // Try to atomically create the lock file.
+        // OpenOptions with create_new is atomic (O_CREAT|O_EXCL).
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+        {
+            Ok(_file) => {
+                debug_log(|| format!("Acquired absorb lock at {}", lock_path.display()));
+                return Ok(AbsorbLock {
+                    path: lock_path.to_path_buf(),
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start.elapsed() > max_wait {
+                    // Stale lock — another agent may have crashed. Force-remove and retry.
+                    debug_log(|| {
+                        format!(
+                            "Absorb lock timed out after {:?}, removing stale lock",
+                            max_wait
+                        )
+                    });
+                    let _ = fs::remove_file(lock_path);
+                    continue;
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                return Err(AikiError::WorkspaceAbsorbFailed(format!(
+                    "Failed to acquire absorb lock: {}",
+                    e
+                )));
+            }
+        }
+    }
+}
+
 /// Absorb workspace changes into the target workspace.
 ///
 /// Target is parent session's workspace if it exists, otherwise main.
 ///
-/// 1. Resolve workspace head via JJ
-/// 2. If no changes, return early
-/// 3. Rebase main/parent onto workspace head
+/// Two-step rebase with file lock to safely chain multiple absorptions:
+/// 1. Acquire absorb lock (serializes concurrent absorptions)
+/// 2. Rebase workspace chain onto target's @- (inserts changes before @)
+/// 3. Rebase target's @ onto workspace head (moves @ after the changes)
+/// 4. Release lock
+///
+/// Why two steps: Workspaces may fork from different ancestors (because
+/// workspace creation at different times sees different @-). A single
+/// `jj rebase -b @ -d <ws_head>` drags intermediate default-workspace
+/// ancestors along, cascading rewrites to sibling workspaces and creating
+/// divergent changes. The two-step approach moves only workspace-specific
+/// commits and then repositions @, avoiding cross-workspace rewrites.
+///
+/// Why a lock: Without serialization, concurrent step-2s (`-s @ -d <ws_head>`)
+/// each move @ to their own target, disconnecting from previous absorptions.
+/// The lock ensures absorptions chain correctly: each one builds on the last.
 pub fn absorb_workspace(
     repo_root: &Path,
     workspace: &IsolatedWorkspace,
@@ -217,13 +291,9 @@ pub fn absorb_workspace(
         return Ok(());
     }
 
-    // Note: we skip a separate "verify changes exist" jj log call — jj rebase
-    // is a no-op when there's nothing to rebase, and the subprocess overhead
-    // of the check (~30ms) exceeds the cost of a no-op rebase.
-
     // Determine absorb target directory
     let target_dir = if let Some(parent_uuid) = parent_session_uuid {
-        let repo_id = repo_id::read_repo_id(repo_root)?
+        let repo_id = repo_id::ensure_repo_id(repo_root)
             .unwrap_or_default();
         let parent_ws_path = workspaces_dir()
             .join(&repo_id)
@@ -237,24 +307,67 @@ pub fn absorb_workspace(
         repo_root.to_path_buf()
     };
 
-    // Rebase: jj rebase -b @ -d <ws_head>
-    // IMPORTANT: Do NOT use --ignore-working-copy here. The rebase moves the
-    // target's @ on top of ws_head, and JJ must update the target's filesystem
-    // to reflect the new state. With --ignore-working-copy, the filesystem
-    // wouldn't be updated, and the next JJ snapshot would see the workspace's
-    // files as "deleted" — silently reverting the absorbed changes.
+    // Acquire file lock to serialize absorptions across concurrent agents.
+    // Without this, concurrent absorptions interleave their two-step rebases,
+    // causing each to disconnect from the previous absorption's changes.
+    let lock_path = absorb_lock_path(repo_root)?;
+    let _lock = acquire_absorb_lock(&lock_path)?;
+
+    // Step 1: Rebase workspace chain onto target's @-
+    //
+    // Uses -b (branch) to move the entire workspace chain (from fork point to
+    // ws_head) onto @-. This inserts the workspace's changes just before @ in
+    // the graph. Uses --ignore-working-copy since we don't need to update the
+    // filesystem yet (step 2 handles that).
+    //
+    // This is safe because the workspace chain contains only workspace-specific
+    // commits (no shared ancestors), so -b doesn't cascade rewrites to other
+    // workspaces.
     let output = jj_cmd()
         .current_dir(&target_dir)
-        .args(["rebase", "-b", "@", "-d", &ws_head])
+        .args([
+            "rebase", "-b", &ws_head, "-d", "@-",
+            "--ignore-working-copy",
+        ])
         .output()
         .map_err(|e| {
-            AikiError::WorkspaceAbsorbFailed(format!("Failed to run jj rebase: {}", e))
+            AikiError::WorkspaceAbsorbFailed(format!(
+                "Failed to rebase workspace chain onto @-: {}", e
+            ))
         })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(AikiError::WorkspaceAbsorbFailed(format!(
-            "jj rebase failed: {}",
+            "jj rebase (step 1: workspace chain onto @-) failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    // Step 2: Rebase target's @ onto workspace head
+    //
+    // Uses -s (source) to move only @ (a leaf node) onto ws_head, which is now
+    // a descendant of @- (thanks to step 1). This completes the chain:
+    //   @- → ws_changes → ws_head → @
+    //
+    // IMPORTANT: Do NOT use --ignore-working-copy here. JJ must update the
+    // target's filesystem to reflect the new state. Without this, the next JJ
+    // snapshot would see the workspace's files as "deleted" — silently reverting
+    // the absorbed changes.
+    let output = jj_cmd()
+        .current_dir(&target_dir)
+        .args(["rebase", "-s", "@", "-d", &ws_head])
+        .output()
+        .map_err(|e| {
+            AikiError::WorkspaceAbsorbFailed(format!(
+                "Failed to rebase @ onto workspace head: {}", e
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::WorkspaceAbsorbFailed(format!(
+            "jj rebase (step 2: @ onto ws_head) failed: {}",
             stderr.trim()
         )));
     }
@@ -330,7 +443,7 @@ pub fn cleanup_workspace(
 
 /// Find and recover all workspaces for a dead session across all repos.
 ///
-/// Scans `/tmp/aiki/*/<session-uuid>/` (where * is repo-id).
+/// Scans `/tmp/aiki/*/<session-id>/` (where * is repo-id).
 /// For each: absorb into main, then cleanup.
 /// If absorb fails, creates a recovery bookmark and warns.
 pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
@@ -493,7 +606,7 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
         }
 
         // Also clean up workspace directory if it exists
-        if let Ok(Some(repo_id)) = crate::repo_id::read_repo_id(repo_root) {
+        if let Ok(repo_id) = crate::repo_id::ensure_repo_id(repo_root) {
             let ws_dir = workspaces_dir()
                 .join(&repo_id)
                 .join(uuid);
@@ -538,7 +651,7 @@ fn by_repo_dir() -> PathBuf {
 
 /// Register a session as active in a specific repo.
 ///
-/// Creates an empty marker file at `~/.aiki/sessions/by-repo/<repo-id>/<session-uuid>`.
+/// Creates an empty marker file at `~/.aiki/sessions/by-repo/<repo-id>/<session-id>`.
 /// Idempotent — no-op if already registered.
 pub fn register_session_in_repo(repo_id: &str, session_uuid: &str) {
     let sidecar = by_repo_dir().join(repo_id).join(session_uuid);
@@ -553,7 +666,7 @@ pub fn register_session_in_repo(repo_id: &str, session_uuid: &str) {
 
 /// Unregister a session from a specific repo.
 ///
-/// Removes `~/.aiki/sessions/by-repo/<repo-id>/<session-uuid>`.
+/// Removes `~/.aiki/sessions/by-repo/<repo-id>/<session-id>`.
 /// Cleans up the repo-id directory if empty.
 /// Idempotent — no-op if not registered.
 pub fn unregister_session_from_repo(repo_id: &str, session_uuid: &str) {
@@ -570,7 +683,7 @@ pub fn unregister_session_from_repo(repo_id: &str, session_uuid: &str) {
 
 /// Find which repo a session is currently registered in.
 ///
-/// Scans `~/.aiki/sessions/by-repo/*/` for a file named `<session-uuid>`.
+/// Scans `~/.aiki/sessions/by-repo/*/` for a file named `<session-id>`.
 /// Returns the repo-id if found. Typically 1-2 directories to scan.
 pub fn find_session_repo(session_uuid: &str) -> Option<String> {
     let base = by_repo_dir();
