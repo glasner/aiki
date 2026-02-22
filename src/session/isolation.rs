@@ -230,6 +230,17 @@ fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
     }
 }
 
+/// Result of attempting to absorb a workspace
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbsorbResult {
+    /// Workspace absorbed successfully
+    Absorbed,
+    /// Conflicts detected — workspace kept alive for agent resolution
+    Conflicts,
+    /// Nothing to absorb (workspace not found, empty, or root change)
+    Skipped,
+}
+
 /// Absorb workspace changes into the target workspace.
 ///
 /// Target is parent session's workspace if it exists, otherwise main.
@@ -254,7 +265,7 @@ pub fn absorb_workspace(
     repo_root: &Path,
     workspace: &IsolatedWorkspace,
     parent_session_uuid: Option<&str>,
-) -> Result<()> {
+) -> Result<AbsorbResult> {
     // Get workspace working copy change ID by parsing `jj workspace list`
     // (workspace_id() revset doesn't exist in JJ 0.38)
     let ws_change_id = find_workspace_change_id(repo_root, &workspace.name)?;
@@ -267,7 +278,7 @@ pub fn absorb_workspace(
                     workspace.name
                 )
             });
-            return Ok(());
+            return Ok(AbsorbResult::Skipped);
         }
     };
 
@@ -288,7 +299,7 @@ pub fn absorb_workspace(
     // were made in the workspace. JJ's root change ID is all zeros.
     if ws_head.chars().all(|c| c == '0') {
         debug_log(|| "Workspace head is root change, skipping absorb");
-        return Ok(());
+        return Ok(AbsorbResult::Skipped);
     }
 
     // Determine absorb target directory
@@ -306,6 +317,91 @@ pub fn absorb_workspace(
     } else {
         repo_root.to_path_buf()
     };
+
+    // Step 0: Pre-rebase workspace onto target @- to detect conflicts early.
+    // This runs OUTSIDE the absorb lock — only the fast-path steps 1+2 hold the lock.
+    let target_at_minus = jj_cmd()
+        .current_dir(&target_dir)
+        .args([
+            "log", "-r", "@-", "--no-graph", "-T", "change_id",
+            "--limit", "1", "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::WorkspaceAbsorbFailed(format!("Failed to get target @-: {}", e))
+        })?;
+    let target_at_minus_id = String::from_utf8_lossy(&target_at_minus.stdout)
+        .trim()
+        .to_string();
+
+    if !target_at_minus_id.is_empty() {
+        // Rebase workspace chain onto target @- (pulls in other agents' absorbed changes)
+        let rebase_output = jj_cmd()
+            .current_dir(&workspace.path)
+            .args([
+                "rebase", "-b", &ws_head, "-d", &target_at_minus_id,
+                "--ignore-working-copy",
+            ])
+            .output()
+            .map_err(|e| {
+                AikiError::WorkspaceAbsorbFailed(format!("Pre-rebase failed: {}", e))
+            })?;
+
+        if !rebase_output.status.success() {
+            let stderr = String::from_utf8_lossy(&rebase_output.stderr);
+            debug_log(|| format!("Pre-rebase warning: {}", stderr.trim()));
+            // Non-fatal — continue with absorption attempt
+        }
+
+        // Snapshot to materialize any conflict markers in working copy
+        let _ = jj_cmd()
+            .current_dir(&workspace.path)
+            .args(["debug", "snapshot"])
+            .output();
+
+        // Check for conflicts in workspace
+        let conflict_check = jj_cmd()
+            .current_dir(&workspace.path)
+            .args(["resolve", "--list"])
+            .output()
+            .map_err(|e| {
+                AikiError::WorkspaceAbsorbFailed(format!("Conflict check failed: {}", e))
+            })?;
+        let conflicts = String::from_utf8_lossy(&conflict_check.stdout);
+
+        if !conflicts.trim().is_empty() {
+            // Conflicts detected — check retry count
+            let retries_path = workspace.path.join(".conflict_retries");
+            let conflict_retry_count = fs::read_to_string(&retries_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+
+            if conflict_retry_count >= 3 {
+                // Force absorb — too many retries, let human resolve
+                debug_log(|| {
+                    format!("Force-absorbing after {} retries", conflict_retry_count)
+                });
+                // Fall through to normal absorption
+            } else {
+                // Increment retry count and return Conflicts
+                fs::write(&retries_path, (conflict_retry_count + 1).to_string())
+                    .map_err(|e| {
+                        AikiError::WorkspaceAbsorbFailed(format!(
+                            "Failed to write retry count: {}",
+                            e
+                        ))
+                    })?;
+                debug_log(|| {
+                    format!(
+                        "Conflicts detected (retry {}), deferring absorption",
+                        conflict_retry_count + 1
+                    )
+                });
+                return Ok(AbsorbResult::Conflicts);
+            }
+        }
+    }
 
     // Acquire file lock to serialize absorptions across concurrent agents.
     // Without this, concurrent absorptions interleave their two-step rebases,
@@ -386,7 +482,7 @@ pub fn absorb_workspace(
         )
     });
 
-    Ok(())
+    Ok(AbsorbResult::Absorbed)
 }
 
 /// Forget workspace in JJ and delete its directory.
@@ -505,8 +601,18 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
 
         // Try to absorb into main
         match absorb_workspace(&repo_root, &workspace, None) {
-            Ok(()) => {
+            Ok(AbsorbResult::Absorbed) => {
                 recovered += 1;
+            }
+            Ok(AbsorbResult::Conflicts) => {
+                // Orphaned workspace — force cleanup even with conflicts
+                eprintln!(
+                    "[aiki] Warning: orphaned workspace '{}' has conflicts, cleaning up anyway",
+                    workspace_name
+                );
+            }
+            Ok(AbsorbResult::Skipped) => {
+                // Nothing to absorb
             }
             Err(e) => {
                 // Fallback: create recovery bookmark
