@@ -50,6 +50,11 @@ pub struct ExploreArgs {
 
 /// Check if a string looks like a UUID (8-4-4-4-12 hex pattern)
 fn looks_like_uuid(s: &str) -> bool {
+    // Match new 8-char hex session IDs
+    if s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    // Match legacy full UUID format (8-4-4-4-12)
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 5 {
         return false;

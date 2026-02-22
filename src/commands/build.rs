@@ -14,6 +14,7 @@ use std::path::Path;
 use clap::Subcommand;
 
 use super::OutputFormat;
+use super::plan::find_or_create_plan;
 use crate::agents::AgentType;
 use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
@@ -179,6 +180,13 @@ fn run_build_spec(
         }
     };
 
+    // Ensure we always have a plan before creating the build task.
+    // If no existing plan was found, create one via the planning agent.
+    let plan_id = match plan_id {
+        Some(id) => id,
+        None => find_or_create_plan(cwd, spec_path)?,
+    };
+
     // Create build task
     let template = template_name.as_deref().unwrap_or("aiki/build");
     let assignee = agent_type
@@ -187,10 +195,9 @@ fn run_build_spec(
         .or_else(|| Some("claude-code".to_string()));
 
     let build_task_id =
-        create_build_task(cwd, spec_path, plan_id.as_deref(), template, assignee)?;
+        create_build_task(cwd, spec_path, Some(&plan_id), template, assignee)?;
 
-    // Determine the plan_id for output (use existing or "pending")
-    let display_plan_id = plan_id.as_deref().unwrap_or("pending");
+    let display_plan_id = plan_id.as_str();
 
     // Run build task
     if run_async {

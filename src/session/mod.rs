@@ -328,9 +328,10 @@ impl AikiSession {
 
     /// Create a new Aiki session ID from agent type and external session ID
     ///
-    /// Uses UUID v5 (SHA-1 hash) for deterministic ID generation:
+    /// Uses UUID v5 (SHA-1 hash) for deterministic ID generation, truncated to
+    /// 8 hex characters:
     /// ```text
-    /// session_id = UUIDv5(NAMESPACE, "{agent_type}:{external_session_id}")
+    /// session_id = UUIDv5(NAMESPACE, "{agent_type}:{external_session_id}")[..8]
     /// ```
     ///
     /// # Arguments
@@ -461,20 +462,21 @@ impl AikiSession {
         .with_task_from_env()
     }
 
-    /// Generate a deterministic UUID v5 for a session
+    /// Generate a deterministic short ID for a session
     ///
-    /// Creates a UUID v5 by hashing: "{agent_type}:{external_session_id}"
-    /// This ensures the same agent and external session always produce the same UUID.
+    /// Hashes "{agent_type}:{external_session_id}" with UUID v5, then takes the
+    /// first 8 hex characters (32 bits). Collision-safe for <10K concurrent sessions.
     ///
-    /// This is useful when you need to compute a session UUID without creating
+    /// This is useful when you need to compute a session ID without creating
     /// a full AikiSession object (e.g., for cache lookups).
     #[must_use]
     pub fn generate_uuid(agent_type: AgentType, external_id: &str) -> String {
         // Create deterministic hash input: "agent_type:external_session_id"
         let hash_input = format!("{}:{}", agent_type.to_metadata_string(), external_id);
 
-        // Generate UUID v5 (SHA-1 based, deterministic)
-        uuid::Uuid::new_v5(&Self::NAMESPACE, hash_input.as_bytes()).to_string()
+        // Generate UUID v5 (SHA-1 based, deterministic), take first 8 hex chars
+        let uuid = uuid::Uuid::new_v5(&Self::NAMESPACE, hash_input.as_bytes());
+        uuid.to_string()[..8].to_string()
     }
 
     /// Add client (IDE) information to the session

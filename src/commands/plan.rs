@@ -18,10 +18,7 @@ use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
 use crate::tasks::id::is_task_id;
 use crate::tasks::runner::{task_run, TaskRunOptions};
-use crate::tasks::templates::{
-    convert_data, create_tasks_from_template, find_templates_dir, get_working_copy_change_id,
-    load_template, parse_priority, VariableContext,
-};
+use crate::tasks::templates::get_working_copy_change_id;
 use crate::specs::{parse_spec_metadata, SpecGraph};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
@@ -144,7 +141,8 @@ fn run_plan(
                 close_plan(cwd, &plan.id)?;
             }
         }
-        return create_new_plan(cwd, spec_path, template_name, agent_type);
+        let plan_id = create_plan(cwd, spec_path, template_name.as_deref(), agent_type)?;
+        return output_plan_result(cwd, &plan_id, true);
     }
 
     // Find-or-create: check for existing plan
@@ -157,7 +155,8 @@ fn run_plan(
             if subtasks.is_empty() {
                 // Invalid plan (no subtasks) — planning agent failed
                 close_plan_as_invalid(cwd, &plan.id)?;
-                return create_new_plan(cwd, spec_path, template_name, agent_type);
+                let plan_id = create_plan(cwd, spec_path, template_name.as_deref(), agent_type)?;
+                return output_plan_result(cwd, &plan_id, true);
             }
 
             // Valid incomplete plan — return it (deterministic, no prompt)
@@ -169,25 +168,38 @@ fn run_plan(
         }
         _ => {
             // No plan, or plan is closed — create new
-            create_new_plan(cwd, spec_path, template_name, agent_type)
+            let plan_id = create_plan(cwd, spec_path, template_name.as_deref(), agent_type)?;
+            output_plan_result(cwd, &plan_id, true)
         }
     }
 }
 
 /// Create a new plan by running the planning agent.
-fn create_new_plan(
+///
+/// 1. Creates the plan task (container for subtasks)
+/// 2. Creates and runs the planning agent task with `data.plan` pointing to it
+/// 3. Returns the plan task ID
+fn create_plan(
     cwd: &Path,
     spec_path: &str,
-    template_name: Option<String>,
+    template_name: Option<&str>,
     agent_type: Option<AgentType>,
-) -> Result<()> {
-    let template = template_name.as_deref().unwrap_or("aiki/plan");
+) -> Result<String> {
+    // Create the plan task first so the planning agent can add subtasks to it
+    let plan_id = create_plan_task(cwd, spec_path)?;
+
+    let template = template_name.unwrap_or("aiki/plan");
     let assignee = agent_type
         .as_ref()
         .map(|a| a.as_str().to_string())
         .or_else(|| Some("claude-code".to_string()));
 
-    let planning_task_id = create_planning_task(cwd, spec_path, template, assignee)?;
+    let planning_task_id = create_planning_task(cwd, spec_path, &plan_id, template, assignee)?;
+
+    // Plan task depends on planning task — blocked until planning finishes
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    write_link_event(cwd, &graph, "depends-on", &plan_id, &planning_task_id)?;
 
     // Run the planning task to completion
     let options = if let Some(agent) = agent_type {
@@ -197,41 +209,94 @@ fn create_new_plan(
     };
     task_run(cwd, &planning_task_id, options)?;
 
-    // After the planning agent finishes, find the plan task it created
+    Ok(plan_id)
+}
+
+/// Create the plan task — the container that holds subtasks.
+///
+/// Extracts the spec title from the H1 heading (or filename as fallback).
+/// Sets `data.spec`, `implements` link, and source.
+fn create_plan_task(cwd: &Path, spec_path: &str) -> Result<String> {
+    let full_path = if spec_path.starts_with('/') {
+        std::path::PathBuf::from(spec_path)
+    } else {
+        cwd.join(spec_path)
+    };
+    let metadata = parse_spec_metadata(&full_path);
+
+    // Use H1 title from spec, or fall back to filename without extension
+    let spec_title = metadata.title.unwrap_or_else(|| {
+        Path::new(spec_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    });
+
+    let plan_name = format!("Plan: {}", spec_title);
+    let plan_id = generate_task_id(&plan_name);
+    let timestamp = chrono::Utc::now();
+    let working_copy = get_working_copy_change_id(cwd);
+
+    let mut data = std::collections::HashMap::new();
+    data.insert("spec".to_string(), spec_path.to_string());
+
+    let event = TaskEvent::Created {
+        task_id: plan_id.clone(),
+        name: plan_name,
+        slug: None,
+        task_type: None,
+        priority: TaskPriority::P2,
+        assignee: None,
+        sources: vec![format!("file:{}", spec_path)],
+        template: None,
+        working_copy,
+        instructions: None,
+        data,
+        timestamp,
+    };
+    write_event(cwd, &event)?;
+
+    // Emit implements link
+    let spec_target = if spec_path.starts_with("file:") {
+        spec_path.to_string()
+    } else {
+        format!("file:{}", spec_path)
+    };
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
+    write_link_event(cwd, &graph, "implements", &plan_id, &spec_target)?;
 
-    let plan_task = find_created_plan(&graph.tasks, spec_path, &planning_task_id);
+    Ok(plan_id)
+}
 
-    match plan_task {
-        Some(plan) => {
-            // Defensive: emit implements link if the planning agent didn't
-            let spec_target = if spec_path.starts_with("file:") {
-                spec_path.to_string()
-            } else {
-                format!("file:{}", spec_path)
-            };
-            let _ = write_link_event(cwd, &graph, "implements", &plan.id, &spec_target);
+/// Find an existing plan or create a new one for the given spec.
+///
+/// Deterministic behavior (no interactive prompts):
+/// - Valid incomplete plan exists (has subtasks) → return its ID
+/// - Invalid plan exists (no subtasks, still open) → close as wont_do, create new
+/// - No plan or closed plan → create new via planning agent
+///
+/// Returns the plan task ID.
+pub fn find_or_create_plan(cwd: &Path, spec_path: &str) -> Result<String> {
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let spec_graph = SpecGraph::build(&graph);
 
+    let existing_plan = spec_graph.find_plan_for_spec(spec_path, &graph);
+
+    match existing_plan {
+        Some(plan) if plan.status != TaskStatus::Closed => {
             let subtasks = get_subtasks(&graph, &plan.id);
-            output_plan_created(&plan.id, &subtasks)?;
-
-            if !std::io::stdout().is_terminal() {
-                println!("<aiki_plan plan_id=\"{}\"/>", plan.id);
+            if subtasks.is_empty() {
+                close_plan_as_invalid(cwd, &plan.id)?;
+                create_plan(cwd, spec_path, None, None)
+            } else {
+                Ok(plan.id.clone())
             }
         }
-        None => {
-            eprintln!(
-                "Warning: Planning task completed but no plan task found with data.spec={}",
-                spec_path
-            );
-            if !std::io::stdout().is_terminal() {
-                println!("<aiki_plan plan_id=\"{}\"/>", planning_task_id);
-            }
-        }
+        _ => create_plan(cwd, spec_path, None, None),
     }
-
-    Ok(())
 }
 
 /// Close a plan as invalid (no subtasks — planning agent failed).
@@ -309,26 +374,6 @@ fn validate_spec_path(cwd: &Path, spec_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Find the plan task created by a specific planning task.
-///
-/// After the planning agent runs, it creates a plan task with:
-/// - `data.spec=<spec-path>`
-/// - `source: task:<planning_task_id>`
-fn find_created_plan<'a>(
-    tasks: &'a crate::tasks::types::FastHashMap<String, Task>,
-    spec_path: &str,
-    planning_task_id: &str,
-) -> Option<&'a Task> {
-    let source_prefix = format!("task:{}", planning_task_id);
-    tasks
-        .values()
-        .filter(|t| {
-            t.data.get("spec").map(|s| s.as_str()) == Some(spec_path)
-                && t.sources.iter().any(|s| s == &source_prefix)
-        })
-        .max_by_key(|t| t.created_at)
-}
-
 /// Undo file changes made by completed subtasks of a plan.
 ///
 /// Invokes `aiki task undo <plan-id> --completed` to revert changes before
@@ -390,67 +435,29 @@ fn close_plan(cwd: &Path, plan_id: &str) -> Result<()> {
 /// Create the planning task from template.
 ///
 /// The planning task is an ephemeral task that runs the planning agent.
-/// The agent reads the spec and creates the actual plan task with subtasks.
+/// The agent adds subtasks to the pre-created plan task at `plan_id`.
 fn create_planning_task(
     cwd: &Path,
     spec_path: &str,
+    plan_id: &str,
     template_name: &str,
     assignee: Option<String>,
 ) -> Result<String> {
-    let timestamp = chrono::Utc::now();
-    let working_copy = get_working_copy_change_id(cwd);
+    use super::task::{create_from_template, TemplateTaskParams};
 
-    let templates_dir = find_templates_dir(cwd)?;
-    let template = load_template(template_name, &templates_dir)?;
-
-    let mut variables = VariableContext::new();
-    variables.set_data("spec", spec_path);
-
-    let (parent_def, _subtask_defs) = create_tasks_from_template(&template, &variables, None)?;
-
-    let task_id = generate_task_id(&parent_def.name);
-
-    let task_type = parent_def
-        .task_type
-        .or_else(|| template.defaults.task_type.clone());
-
-    let priority = parent_def
-        .priority
-        .as_ref()
-        .and_then(|p| parse_priority(p))
-        .or_else(|| {
-            template
-                .defaults
-                .priority
-                .as_ref()
-                .and_then(|p| parse_priority(p))
-        })
-        .unwrap_or(TaskPriority::P2);
-
-    let mut sources = parent_def.sources.clone();
-    sources.push(format!("file:{}", spec_path));
-
-    // Merge spec into the task data so planning tasks are queryable by spec
-    let mut data = convert_data(&parent_def.data);
+    let mut data = std::collections::HashMap::new();
     data.insert("spec".to_string(), spec_path.to_string());
+    data.insert("plan".to_string(), plan_id.to_string());
 
-    let event = TaskEvent::Created {
-        task_id: task_id.clone(),
-        name: parent_def.name.clone(),
-        slug: None,
-        task_type,
-        priority,
-        assignee: assignee
-            .or_else(|| template.defaults.assignee.clone())
-            .or_else(|| Some("claude-code".to_string())),
-        sources,
-        template: Some(template.template_id()),
-        working_copy,
-        instructions: Some(parent_def.instructions.clone()),
+    let params = TemplateTaskParams {
+        template_name: template_name.to_string(),
         data,
-        timestamp,
+        sources: vec![format!("file:{}", spec_path)],
+        assignee: assignee.or_else(|| Some("claude-code".to_string())),
+        ..Default::default()
     };
-    write_event(cwd, &event)?;
+
+    let task_id = create_from_template(cwd, params)?;
 
     // Emit scoped-to link for the spec (dual-write with data.spec attribute)
     let spec_target = if spec_path.starts_with("file:") {
@@ -463,6 +470,25 @@ fn create_planning_task(
     write_link_event(cwd, &graph, "scoped-to", &task_id, &spec_target)?;
 
     Ok(task_id)
+}
+
+/// Output plan result (created or found) to stderr and stdout.
+fn output_plan_result(cwd: &Path, plan_id: &str, created: bool) -> Result<()> {
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let subtasks = get_subtasks(&graph, plan_id);
+
+    if created {
+        output_plan_created(plan_id, &subtasks)?;
+    } else {
+        output_plan_resumed(plan_id, &subtasks)?;
+    }
+
+    if !std::io::stdout().is_terminal() {
+        println!("<aiki_plan plan_id=\"{}\"/>", plan_id);
+    }
+
+    Ok(())
 }
 
 /// Output plan created message to stderr
@@ -625,19 +651,6 @@ mod tests {
         }
     }
 
-    fn make_task_with_data_and_sources(
-        id: &str,
-        name: &str,
-        status: TaskStatus,
-        data: HashMap<String, String>,
-        sources: Vec<String>,
-    ) -> Task {
-        let mut task = make_task(id, name, status);
-        task.data = data;
-        task.sources = sources;
-        task
-    }
-
     fn make_graph(tasks: FastHashMap<String, Task>, edges: EdgeStore) -> TaskGraph {
         TaskGraph {
             tasks,
@@ -761,46 +774,6 @@ mod tests {
         let result = find_plan_for_spec_via_graph(&graph, "ops/now/feature.md");
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "plan_new");
-    }
-
-    #[test]
-    fn test_find_created_plan() {
-        let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
-
-        let task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: Feature",
-            TaskStatus::Open,
-            data,
-            vec!["task:planning123".to_string()],
-        );
-        tasks.insert("plan1".to_string(), task);
-
-        let result = find_created_plan(&tasks, "ops/now/feature.md", "planning123");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().id, "plan1");
-    }
-
-    #[test]
-    fn test_find_created_plan_wrong_planning_id() {
-        let mut tasks = FastHashMap::default();
-        let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
-
-        let task = make_task_with_data_and_sources(
-            "plan1",
-            "Plan: Feature",
-            TaskStatus::Open,
-            data,
-            vec!["task:other_planning".to_string()],
-        );
-        tasks.insert("plan1".to_string(), task);
-
-        // Looking for a different planning task ID
-        let result = find_created_plan(&tasks, "ops/now/feature.md", "planning123");
-        assert!(result.is_none());
     }
 
     #[test]

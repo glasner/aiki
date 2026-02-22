@@ -21,7 +21,7 @@ use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress,
     get_ready_queue_for_scope_set, materialize_graph, materialize_graph_with_ids,
     read_events, read_events_with_ids, reassign_task,
-    reopen_if_closed, start_task_core, Task, TaskComment,
+    reopen_if_closed, start_task_core, write_link_event, Task, TaskComment,
 };
 
 /// Run the fix command
@@ -392,7 +392,14 @@ fn create_fix_task(
         ..Default::default()
     };
 
-    create_from_template(cwd, params)
+    let task_id = create_from_template(cwd, params)?;
+
+    // Emit remediates link: fix task remediates the review task
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    write_link_event(cwd, &graph, "remediates", &task_id, &review_task.id)?;
+
+    Ok(task_id)
 }
 
 

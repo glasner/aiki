@@ -427,8 +427,8 @@ fn detect_repo_transition(payload: &AikiChangeCompletedPayload) {
     };
 
     // Read repo-id for the new root
-    let new_repo_id = match crate::repo_id::read_repo_id(&new_root) {
-        Ok(Some(id)) => id,
+    let new_repo_id = match crate::repo_id::ensure_repo_id(&new_root) {
+        Ok(id) => id,
         _ => return,
     };
 
