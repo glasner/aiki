@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Status — Terminal Mockups</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 40px;
+  }
+
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    font-weight: 700;
+    color: #888;
+    text-align: center;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .subtitle {
+    color: #444;
+    font-size: 11px;
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  .scene-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: #555;
+    text-align: center;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: -22px;
+  }
+
+  .terminal {
+    background: #101014;
+    border: 1px solid #1e1e26;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 780px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; }
+
+  .screen {
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #999;
+  }
+
+  pre {
+    white-space: pre;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  /* Palette — muted, functional, no neon */
+  .grn { color: #5fcc68; }
+  .red { color: #e05555; }
+  .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; }
+  .mag { color: #c470b0; }
+  .org { color: #cc8844; }
+  .blu { color: #5588cc; }
+  .wht { color: #cccccc; }
+  .dim { color: #3a3a44; }
+  .dim2 { color: #252530; }
+  .fg { color: #888888; }
+  .bold { font-weight: 700; }
+  .heading { color: #666; font-weight: 700; }
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+
+  .log-area {
+    border-top: 1px solid #1e1e26;
+    margin-top: 8px;
+    padding-top: 6px;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  .log-entry { opacity: 0.45; }
+  .log-entry:last-child { opacity: 0.9; }
+
+  .note {
+    max-width: 780px;
+    width: 100%;
+    padding: 16px 20px;
+    background: #101014;
+    border: 1px solid #1e1e26;
+    border-radius: 8px;
+    color: #555;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  .note strong { color: #888; }
+  .note code {
+    color: #5bb8c9;
+    background: #151520;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>aiki status</h1>
+  <div class="subtitle">Terminal mockups for ratatui implementation</div>
+</div>
+
+<!-- ========== SCENE 1: BUILD IN PROGRESS ========== -->
+<div class="scene-label">Build in progress</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="heading">Add authentication to API</span>                  <span class="cyn">claude-code</span>   <span class="dim">14s</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">build</span>   <span class="grn">● ━━ ● ━━ ● ━━</span> <span class="wht bold">◉</span><span class="dim"> ━━ ○ ━━ ○ ━━ ○ ━━ ○</span>             <span class="grn">3</span><span class="dim">/8</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                       <span class="dim2">│</span>                                          <span class="dim">│</span>
+ <span class="dim">│</span>                  <span class="fg">Route handlers</span>                                   <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">review</span>  <span class="dim">○ ━━ ○ ━━ ○ ━━ ○ ━━ ○</span>                               <span class="dim">—</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">fix</span>     <span class="dim">—</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">subtasks</span>    <span class="grn">✓ Parse spec</span>  <span class="grn">✓ Gen types</span>  <span class="grn">✓ Auth middleware</span>  <span class="yel">▸ Route handlers</span>
+             <span class="dim">○ Token logic   ○ Error handling   ○ Tests   ○ Integration</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:03</span>  <span class="grn">✓</span> <span class="dim">Parse spec</span></pre>
+<pre class="log-entry"> <span class="dim">00:06</span>  <span class="grn">✓</span> <span class="dim">Gen types</span></pre>
+<pre class="log-entry"> <span class="dim">00:10</span>  <span class="grn">✓</span> <span class="dim">Auth middleware</span></pre>
+<pre class="log-entry"> <span class="dim">00:14</span>  <span class="yel blink">▸</span> <span class="fg">Route handlers</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 2: REVIEW FAILED ========== -->
+<div class="scene-label">Review failed — issues found</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="heading">Add authentication to API</span>                  <span class="cyn">claude-code</span>   <span class="dim">28s</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>   <span class="grn">● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ●</span>             <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">review</span>  <span class="cyn">● ━━ ● ━━ ● ━━ ● ━━ ●</span>                      <span class="red bold">✗ 3</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">fix</span>     <span class="dim">—</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="red bold"> 3 issues</span>
+
+   <span class="red">●</span> <span class="red bold">error</span>     <span class="fg">Missing return type on verify_token()</span>
+   <span class="mag">●</span> <span class="mag bold">security</span>  <span class="fg">API key hardcoded in auth.py:45</span>
+   <span class="org">●</span> <span class="org bold">warning</span>   <span class="fg">Cyclomatic complexity 18 (limit: 10)</span>
+</pre>
+<pre>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+  <span class="grn bold">[r] fix</span>          <span class="yel">[e] escalate</span>          <span class="dim">[i] ignore &amp; commit</span>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:24</span>  <span class="grn">✓</span> <span class="dim">build complete — 8 subtasks</span></pre>
+<pre class="log-entry"> <span class="dim">00:25</span>  <span class="cyn">◆</span> <span class="dim">review started</span></pre>
+<pre class="log-entry"> <span class="dim">00:28</span>  <span class="red">✗</span> <span class="fg">review failed — 3 issues found</span></pre>
+<pre class="log-entry"> <span class="dim">00:28</span>  <span class="dim blink">  awaiting action</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 3: FIX IN PROGRESS ========== -->
+<div class="scene-label">Fix in progress — clearing issues</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="heading">Add authentication to API</span>                  <span class="cyn">claude-code</span>   <span class="dim">31s   iter 2</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>   <span class="grn">● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ●</span>             <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">review</span>  <span class="cyn">● ━━ ● ━━ ● ━━ ● ━━ ●</span>                      <span class="red">✗ 3</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>     <span class="grn">● ━━</span> <span class="wht bold">◉</span><span class="dim"> ━━ ○</span>        <span class="dim">╌╌╌╌╌╌╌╌</span> <span class="red">▪</span> <span class="dim">╌╌</span> <span class="org">▪</span>        <span class="grn">1</span><span class="dim">/3</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                <span class="dim2">│</span>              <span class="dim2">│        │</span>                    <span class="dim">│</span>
+ <span class="dim">│</span>           <span class="fg">Move secrets</span>    <span class="dim">security  complexity</span>               <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">issues</span>   <span class="grn">✓ error — Fixed return type</span>
+          <span class="yel">▸ security — Moving secrets to env</span>
+          <span class="dim">○ warning — Cyclomatic complexity 18</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:28</span>  <span class="red">✗</span> <span class="dim">review failed — 3 issues</span></pre>
+<pre class="log-entry"> <span class="dim">00:29</span>  <span class="cyn">◆</span> <span class="dim">fix started — iteration 2</span></pre>
+<pre class="log-entry"> <span class="dim">00:30</span>  <span class="grn">✓</span> <span class="fg">Fixed return type annotation</span></pre>
+<pre class="log-entry"> <span class="dim">00:31</span>  <span class="yel blink">▸</span> <span class="fg">Moving API key to environment variable</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 4: ALL CLEAR ========== -->
+<div class="scene-label">All clear — clean commit</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="heading">Add authentication to API</span>                  <span class="cyn">claude-code</span>   <span class="dim">34s   iter 2</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>   <span class="grn">● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ●</span>             <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">review</span>  <span class="grn">● ━━ ● ━━ ● ━━ ● ━━ ●</span>                          <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">fix</span>     <span class="grn">● ━━ ● ━━ ●</span>                                      <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="grn bold">✓ commit</span> <span class="dim">main</span> <span class="fg">abc1234</span>  <span class="dim">Add authentication to API</span>
+</pre>
+<pre>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+  <span class="fg">8 built</span>  <span class="dim">│</span>  <span class="fg">5 reviewed</span>  <span class="dim">│</span>  <span class="fg">3 fixed</span>  <span class="dim">│</span>  <span class="fg">0 escalated</span>  <span class="dim">│</span>  <span class="fg">34.2s</span>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:32</span>  <span class="grn">✓</span> <span class="dim">Moved API key to env</span></pre>
+<pre class="log-entry"> <span class="dim">00:33</span>  <span class="grn">✓</span> <span class="dim">Refactored complexity</span></pre>
+<pre class="log-entry"> <span class="dim">00:33</span>  <span class="grn">✓</span> <span class="dim">re-review passed</span></pre>
+<pre class="log-entry"> <span class="dim">00:34</span>  <span class="grn bold">✓</span> <span class="grn">committed abc1234</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 5: MULTI-TASK ========== -->
+<div class="scene-label">Multi-task view — aiki status --all</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status --all</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">3 tasks</span>  <span class="dim">│</span>  <span class="dim">2 agents</span>  <span class="dim">│</span>  <span class="grn">1 building</span>  <span class="cyn">1 reviewing</span>  <span class="yel">1 fixing</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Add authentication to API</span>               <span class="cyn">claude-code</span>  <span class="dim">iter 2</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ● ● ● ● ● ● ●</span> <span class="grn">✓</span>    <span class="cyn">review</span> <span class="cyn">● ● ● ● ●</span> <span class="red">✗3</span>    <span class="grn bold">fix</span> <span class="grn">●</span><span class="wht bold">◉</span><span class="dim">○</span> <span class="red">▪▪</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">├──────────────────────────────────────────────────────────────────┤</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Refactor payment service</span>                    <span class="mag">cursor</span>  <span class="dim">iter 1</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">build</span>  <span class="grn">● ● ●</span><span class="wht bold">◉</span><span class="dim">○ ○</span>          <span class="dim">review</span> <span class="dim">○ ○ ○ ○ ○</span>       <span class="dim">fix</span> <span class="dim">—</span>      <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">├──────────────────────────────────────────────────────────────────┤</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Update API documentation</span>                <span class="cyn">claude-code</span>  <span class="dim">iter 1</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ● ● ●</span> <span class="grn">✓</span>            <span class="cyn bold">review</span> <span class="cyn">● ●</span><span class="wht bold">◉</span><span class="dim">○ ○</span>        <span class="dim">fix</span> <span class="dim">—</span>      <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[1-3] focus</span>   <span class="dim">[b] new build</span>   <span class="dim">[s] stop</span>   <span class="dim">[f] follow</span>   <span class="dim">[q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">T1</span>  <span class="grn">✓</span> <span class="dim">Fixed return type annotation</span></pre>
+<pre class="log-entry"> <span class="dim">T2</span>  <span class="grn">✓</span> <span class="dim">Extract interface</span></pre>
+<pre class="log-entry"> <span class="dim">T3</span>  <span class="cyn">◆</span> <span class="dim">Security scan</span></pre>
+<pre class="log-entry"> <span class="dim">T1</span>  <span class="yel blink">▸</span> <span class="fg">Moving secrets to env</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 6: ESCALATION ========== -->
+<div class="scene-label">Escalation — agent can't resolve</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="heading">Refactor payment service</span>                       <span class="mag">cursor</span>   <span class="dim">1m42s   iter 3</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>   <span class="grn">● ━━ ● ━━ ● ━━ ● ━━ ● ━━ ●</span>                      <span class="grn">✓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">review</span>  <span class="cyn">● ━━ ● ━━ ● ━━ ● ━━ ●</span>                      <span class="red">✗ 1</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">fix</span>     <span class="grn">● ━━ ●</span> <span class="dim">━━</span> <span class="red bold">✗</span>              <span class="dim">╌╌╌╌╌</span> <span class="org">▪</span>             <span class="red">2</span><span class="dim">/3</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                  <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="org bold"> agent stuck</span>  <span class="dim">—</span>  <span class="fg">3 attempts, 1 remaining issue</span>
+
+   <span class="grn">✓</span> <span class="dim">error</span>     <span class="dim">Fixed missing import</span>
+   <span class="grn">✓</span> <span class="dim">coverage</span>  <span class="dim">Added test cases</span>
+   <span class="org">✗</span> <span class="org bold">warning</span>   <span class="fg">Cyclomatic complexity 14 (limit: 10)</span>
+                 <span class="dim italic">"Requires architectural decision about function splitting"</span>
+</pre>
+<pre>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+  <span class="grn bold">[r] review &amp; fix manually</span>    <span class="yel">[i] override &amp; commit</span>    <span class="dim">[c] cancel</span>
+ <span class="dim">────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">01:20</span>  <span class="grn">✓</span> <span class="dim">Fixed missing import</span></pre>
+<pre class="log-entry"> <span class="dim">01:30</span>  <span class="grn">✓</span> <span class="dim">Added test coverage</span></pre>
+<pre class="log-entry"> <span class="dim">01:38</span>  <span class="org">✗</span> <span class="fg">Fix attempt 3 — complexity still 14</span></pre>
+<pre class="log-entry"> <span class="dim">01:42</span>  <span class="org bold">◆</span> <span class="org">agent escalated — needs human decision</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 7: CONDENSED / MINIMAL OUTPUT ========== -->
+<div class="scene-label">Non-interactive — aiki status --short</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status --short</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="grn">●</span> Add authentication     <span class="grn">● ● ● ● ● ● ● ●</span>  <span class="cyn">● ● ● ● ●</span>  <span class="grn">●</span><span class="wht bold">◉</span><span class="dim">○</span> <span class="red">▪▪</span>   <span class="dim">fix 1/3    31s</span>
+ <span class="grn">●</span> Refactor payment       <span class="grn">● ● ●</span><span class="wht bold">◉</span><span class="dim">○ ○</span>        <span class="dim">○ ○ ○ ○ ○</span>  <span class="dim">—</span>        <span class="dim">build 3/6  14s</span>
+ <span class="cyn">●</span> Update API docs        <span class="grn">● ● ● ●</span>          <span class="cyn">● ●</span><span class="wht bold">◉</span><span class="dim">○ ○</span>    <span class="dim">—</span>        <span class="dim">review 2/5 22s</span>
+</pre>
+  </div>
+</div>
+
+<!-- ========== Design Notes ========== -->
+<div class="note">
+  <strong>Visual vocabulary for ratatui:</strong><br><br>
+
+  <strong>Track markers:</strong><br>
+  <code>●</code> completed step &nbsp;&nbsp; <code>◉</code> active step &nbsp;&nbsp; <code>○</code> pending step &nbsp;&nbsp; <code>━━</code> connector &nbsp;&nbsp; <code>▪</code> issue/blocker<br><br>
+
+  <strong>Status icons:</strong><br>
+  <code>✓</code> passed/done &nbsp;&nbsp; <code>✗</code> failed &nbsp;&nbsp; <code>▸</code> in progress &nbsp;&nbsp; <code>◆</code> event marker &nbsp;&nbsp; <code>—</code> not started<br><br>
+
+  <strong>Colors (muted, not neon):</strong><br>
+  • green (#5fcc68) — completed, passing, build phase<br>
+  • cyan (#5bb8c9) — review phase, informational<br>
+  • red (#e05555) — errors, failures<br>
+  • magenta (#c470b0) — security issues<br>
+  • orange (#cc8844) — warnings, agent name (Cursor)<br>
+  • yellow (#d4a840) — active/in-progress<br>
+  • dim (#3a3a44) — inactive, pending, chrome<br><br>
+
+  <strong>Three density levels:</strong><br>
+  • <code>aiki status</code> — focused single-task view with expanded lanes, subtask list, log<br>
+  • <code>aiki status --all</code> — multi-task board, compressed lanes per task, shared log<br>
+  • <code>aiki status --short</code> — one line per task, all three lanes inline, no log<br><br>
+
+  <strong>The fix lane shows issues as blockers on the track:</strong><br>
+  <code>● ━━ ◉ ━━ ○ ╌╌╌╌ ▪ ╌╌ ▪</code><br>
+  Completed fixes are solid dots. The dashed section (<code>╌╌</code>) between fixes and issues visually separates "work done" from "work remaining." Issue markers (<code>▪</code>) sit on the track as obstacles to clear. When fixed, they become regular dots.<br><br>
+
+  <strong>ratatui widgets:</strong><br>
+  • Lanes → custom widget using <code>Span</code> sequences in a <code>Line</code><br>
+  • Box → <code>Block</code> with <code>Borders::ALL</code> and rounded corners<br>
+  • Log → <code>List</code> widget with styled items<br>
+  • Multi-task → <code>Layout</code> with vertical splits per task<br>
+  • Short mode → just raw <code>Paragraph</code> lines, no widgets needed
+</div>
+
+</body>
+</html>

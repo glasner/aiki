@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Status — Scaling from 1 to 100+ Agents</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 44px;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #888; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  .subtitle { color: #444; font-size: 11px; text-align: center; margin-top: 4px; }
+
+  .scene-label {
+    font-size: 10px; font-weight: 700; color: #555; text-align: center;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: -24px;
+  }
+
+  .terminal {
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    width: 100%; max-width: 860px; overflow: hidden;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418; padding: 8px 14px; display: flex;
+    align-items: center; gap: 7px; border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; }
+
+  .screen { padding: 12px 16px; font-size: 13px; line-height: 1.45; color: #999; }
+
+  pre { white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.45; }
+
+  .grn { color: #5fcc68; } .red { color: #e05555; } .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; } .mag { color: #c470b0; } .org { color: #cc8844; }
+  .blu { color: #5588cc; } .wht { color: #cccccc; } .dim { color: #3a3a44; }
+  .dim2 { color: #252530; } .fg { color: #777; } .bold { font-weight: 700; }
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .log-area {
+    border-top: 1px solid #1e1e26; margin-top: 8px; padding-top: 6px;
+    font-size: 11px; line-height: 1.6;
+  }
+  .log-entry { opacity: 0.45; }
+  .log-entry:last-child { opacity: 0.9; }
+
+  .note {
+    max-width: 860px; width: 100%; padding: 16px 20px;
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    color: #555; font-size: 11px; line-height: 1.8;
+  }
+  .note strong { color: #888; }
+  .note code { color: #5bb8c9; background: #151520; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .divider { border: none; border-top: 1px dashed #252530; max-width: 860px; width: 100%; }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>aiki status at scale</h1>
+  <div class="subtitle">Progressive density — 1 task to 100+ agents</div>
+</div>
+
+<!-- ======================== TIER EXPLANATION ======================== -->
+<div class="note">
+  <strong>Four density tiers — auto-selected by task count:</strong><br><br>
+  <strong>1–3 tasks</strong> → Full DAG view with parallel streams, subtask labels, inline issues<br>
+  <strong>4–15 tasks</strong> → One row per task, phase bars instead of DAGs, issue counts<br>
+  <strong>16–50 tasks</strong> → Grouped by status, sparkline bars, only outliers named<br>
+  <strong>50+ tasks</strong> → Fleet dashboard — histogram, counts, only stuck/failed tasks listed<br><br>
+  User can always <code>[number]</code> to zoom into a single task at full DAG detail, or <code>--density=full|row|group|fleet</code> to override.
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 1: 1-3 TASKS — FULL DAG (already designed) ========== -->
+<div class="scene-label">Tier 1 — Full DAG (1–3 tasks, current design)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 2 tasks</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">2 tasks</span>  <span class="dim">│</span>  <span class="dim">2 agents</span>  <span class="dim">│</span>  <span class="grn">1 building</span>  <span class="yel">1 fixing</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="wht bold">Add authentication to API</span>                <span class="cyn">claude-code</span>    <span class="dim">iter 2</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">├──────────────────────────────────────────────────────────────────────┤</span>
+ <span class="dim">│</span>  <span class="wht bold">Migrate payment service</span>                       <span class="mag">cursor</span>    <span class="dim">iter 1</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                                                                      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">build</span>  <span class="grn">● ━┬━ ● ━┬━ ●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span>        <span class="dim">review</span>  <span class="dim">○ ○ ○ ○ ○</span>              <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="dim">├━</span> <span class="grn">● ━╯</span>   <span class="dim">├━</span> <span class="yel bold">◉</span>        <span class="dim">fix</span>     <span class="dim">—</span>                          <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="dim">╰━</span> <span class="grn">●</span>  <span class="grn">●</span>  <span class="dim">╰━</span> <span class="dim">○</span> <span class="dim">━┬━ ○</span>                                     <span class="dim">│</span>
+ <span class="dim">│</span>                             <span class="dim">╰━ ○</span>                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 2: 4-15 TASKS — ROW PER TASK ========== -->
+<div class="scene-label">Tier 2 — Row per task (4–15 tasks)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 10 tasks</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">10 tasks</span>  <span class="dim">│</span>  <span class="dim">3 agents</span>  <span class="dim">│</span>  <span class="grn">4 building</span>  <span class="cyn">2 reviewing</span>  <span class="yel">2 fixing</span>  <span class="grn">1 done</span>  <span class="red">1 stuck</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>      <span class="dim">TASK                          BUILD       REVIEW       FIX</span>         <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">✓</span>  Auth endpoints       <span class="cyn">cc</span>   <span class="grn">████████████</span>  <span class="grn">██████████</span>  <span class="grn">██████</span>  <span class="dim">42s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Payment migration    <span class="mag">cur</span>  <span class="grn">████████████</span>  <span class="red">████████</span><span class="red bold">✗2</span>  <span class="yel">██</span><span class="dim">░░░░</span>  <span class="dim">1m02</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  API documentation    <span class="cyn">cc</span>   <span class="grn">████████████</span>  <span class="cyn">██████</span><span class="dim">░░░░</span>  <span class="dim">—</span>       <span class="dim">28s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Rate limiting        <span class="cyn">cc</span>   <span class="grn">████████████</span>  <span class="red">██████████</span><span class="red bold">✗1</span>  <span class="yel">████</span><span class="dim">░░</span>  <span class="dim">55s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  User permissions     <span class="mag">cur</span>  <span class="grn">████████</span><span class="dim">░░░░</span>  <span class="dim">░░░░░░░░░░</span>  <span class="dim">—</span>       <span class="dim">33s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  WebSocket handlers   <span class="cyn">cc</span>   <span class="grn">██████</span><span class="dim">░░░░░░</span>  <span class="dim">░░░░░░░░░░</span>  <span class="dim">—</span>       <span class="dim">20s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Cache layer          <span class="blu">dv</span>   <span class="grn">████</span><span class="dim">░░░░░░░░</span>  <span class="dim">░░░░░░░░░░</span>  <span class="dim">—</span>       <span class="dim">12s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Error refactor       <span class="mag">cur</span>  <span class="grn">██</span><span class="dim">░░░░░░░░░░</span>  <span class="dim">░░░░░░░░░░</span>  <span class="dim">—</span>       <span class="dim">8s</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  DB connection pool   <span class="blu">dv</span>   <span class="grn">████████████</span>  <span class="red">██████████</span><span class="red bold">✗3</span>  <span class="red">██████</span><span class="red bold">✗</span>  <span class="dim">2m41</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Logging middleware    <span class="cyn">cc</span>   <span class="grn">██████████</span><span class="dim">░░</span>  <span class="dim">░░░░░░░░░░</span>  <span class="dim">—</span>       <span class="dim">18s</span>   <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[1-10] focus</span>   <span class="dim">[b] new</span>   <span class="dim">[s] stop</span>   <span class="dim">[f] follow</span>   <span class="dim">[/] filter</span>   <span class="dim">[q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">T9</span>  <span class="red">!</span> <span class="red">DB connection pool — agent stuck, 3 fix attempts failed</span></pre>
+<pre class="log-entry"> <span class="dim">T2</span>  <span class="grn">✓</span> <span class="dim">Fixed missing import</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">Reducing complexity</span></pre>
+<pre class="log-entry"> <span class="dim">T3</span>  <span class="cyn">◆</span> <span class="dim">Style check started</span></pre>
+<pre class="log-entry"> <span class="dim">T6</span>  <span class="grn">✓</span> <span class="dim">Parse WebSocket protocol</span>  <span class="dim">(2 streams parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 2 VARIANT: FILTER VIEW ========== -->
+<div class="scene-label">Tier 2 — Filtered to stuck/failing only</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status --stuck</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">10 tasks total</span>  <span class="dim">│</span>  <span class="red bold">1 stuck</span>  <span class="yel">2 fixing</span>  <span class="dim">│</span>  <span class="dim">showing 3 tasks needing attention</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red bold">!</span>  <span class="red bold">DB connection pool</span>          <span class="blu">devin</span>     <span class="dim">2m41s   iter 3</span>             <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="grn">build ✓</span>   <span class="red">review ✗3</span>   <span class="red">fix ✗ stuck after 3 attempts</span>               <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="grn">✓</span> <span class="dim">error — Fixed missing import</span>                                    <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="grn">✓</span> <span class="dim">coverage — Added test cases</span>                                     <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="red">✗</span> <span class="red bold">complexity</span> <span class="fg">— Cyclomatic 22 (limit: 10), 3 attempts</span>            <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">"Requires splitting across service boundaries"</span>                    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">├──────────────────────────────────────────────────────────────────────────┤</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Payment migration            <span class="mag">cursor</span>    <span class="dim">1m02s   iter 2</span>             <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="grn">build ✓</span>   <span class="red">review ✗2</span>   <span class="yel bold">fix 1/2</span> <span class="dim">(2 parallel)</span>                    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">├──────────────────────────────────────────────────────────────────────────┤</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">▸</span>  Rate limiting                <span class="cyn">claude-code</span>  <span class="dim">55s   iter 2</span>           <span class="dim">│</span>
+ <span class="dim">│</span>     <span class="grn">build ✓</span>   <span class="red">review ✗1</span>   <span class="yel bold">fix 2/3</span>                                <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[9] focus stuck task</span>   <span class="grn bold">[r] fix manually</span>   <span class="yel">[i] override</span>   <span class="dim">[a] show all</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 3: 16-50 TASKS — GROUPED ========== -->
+<div class="scene-label">Tier 3 — Grouped summary (16–50 tasks)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 32 tasks</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">32 tasks</span>  <span class="dim">│</span>  <span class="dim">5 agents</span>  <span class="dim">│</span>  <span class="dim">avg 48s/task</span>  <span class="dim">│</span>  <span class="dim">uptime 12m</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">PHASE        COUNT    PROGRESS</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">building</span>      <span class="wht">12</span>      <span class="grn">███████████████████████████████████</span><span class="dim">░░░░░░░░░░</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn bold">reviewing</span>      <span class="wht">6</span>      <span class="cyn">████████████████████</span><span class="dim">░░░░░░░░░░░░░░░░░░░░░░░</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel bold">fixing</span>         <span class="wht">4</span>      <span class="yel">████████████</span><span class="dim">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">done</span>           <span class="wht">8</span>      <span class="grn">████████████████████████</span>                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red bold">stuck</span>          <span class="wht">2</span>      <span class="red">██████</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">BY AGENT</span>                                                               <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">claude-code</span>  <span class="dim">14 tasks</span>   <span class="grn">████</span><span class="cyn">██</span><span class="yel">█</span><span class="grn">████</span><span class="dim">░░░</span>  <span class="grn">6✓</span> <span class="yel">3▸</span> <span class="cyn">3◆</span> <span class="grn">2●</span>            <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="mag">cursor</span>        <span class="dim">8 tasks</span>   <span class="grn">███</span><span class="cyn">█</span><span class="yel">██</span><span class="red">█</span><span class="dim">░</span>        <span class="grn">3✓</span> <span class="yel">2▸</span> <span class="cyn">1◆</span> <span class="red">1!</span> <span class="grn">1●</span>         <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="blu">devin</span>         <span class="dim">6 tasks</span>   <span class="grn">██</span><span class="yel">█</span><span class="red">█</span><span class="grn">██</span>          <span class="grn">2✓</span> <span class="yel">1▸</span> <span class="red">1!</span> <span class="grn">2●</span>            <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="org">copilot</span>       <span class="dim">3 tasks</span>   <span class="grn">██</span><span class="cyn">█</span>              <span class="grn">2✓</span> <span class="cyn">1◆</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="fg">aider</span>         <span class="dim">1 task</span>    <span class="grn">█</span>                <span class="grn">1✓</span>                         <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red bold">NEEDS ATTENTION</span>                                                        <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  DB connection pool    <span class="blu">devin</span>    <span class="red">stuck iter 3</span>   <span class="dim">— complexity (3 attempts)</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  Auth token refresh    <span class="mag">cursor</span>   <span class="red">stuck iter 2</span>   <span class="dim">— race condition</span>          <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[n] focus task</span>  <span class="dim">[/] filter</span>  <span class="dim">[a] agent view</span>  <span class="dim">[l] list all</span>  <span class="dim">[q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">T14</span>  <span class="grn">✓</span> <span class="grn">Cache layer — committed abc1234</span></pre>
+<pre class="log-entry"> <span class="dim">T22</span>  <span class="red">!</span> <span class="red">Auth token refresh — agent stuck, needs human</span></pre>
+<pre class="log-entry"> <span class="dim">T07</span>  <span class="grn">✓</span> <span class="dim">API docs — review passed</span></pre>
+<pre class="log-entry"> <span class="dim">T19</span>  <span class="yel blink">▸</span> <span class="fg">WebSocket auth — fixing security issue (2 parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 4: 50+ TASKS — FLEET DASHBOARD ========== -->
+<div class="scene-label">Tier 4 — Fleet dashboard (50+ tasks)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 127 tasks across 8 agents</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">127</span> <span class="dim">tasks</span>  <span class="dim">│</span>  <span class="wht bold">8</span> <span class="dim">agents</span>  <span class="dim">│</span>  <span class="dim">throughput</span> <span class="grn bold">3.2</span><span class="dim">/min</span>  <span class="dim">│</span>  <span class="dim">avg</span> <span class="wht">41s</span><span class="dim">/task</span>  <span class="dim">│</span>  <span class="dim">uptime 48m</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">PIPELINE</span>                                                               <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">building</span>    <span class="wht">34</span>  <span class="grn">▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn bold">reviewing</span>   <span class="wht">18</span>  <span class="cyn">▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓</span>                                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel bold">fixing</span>      <span class="wht">11</span>  <span class="yel">▓▓▓▓▓▓▓▓▓▓▓</span>                                        <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">done</span>        <span class="wht">58</span>  <span class="grn">▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red bold">stuck</span>        <span class="wht">4</span>  <span class="red">▓▓▓▓</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">queued</span>       <span class="wht">2</span>  <span class="dim">▓▓</span>                                                 <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">AGENTS                  TASKS   RATE    BUILD  REVIEW  FIX  DONE  STUCK</span> <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">claude-code ×3</span>           <span class="wht">52</span>   <span class="grn">1.4/m</span>     <span class="wht">14</span>     <span class="wht">8</span>    <span class="wht">4</span>    <span class="wht">25</span>    <span class="red">1</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="mag">cursor ×2</span>                <span class="wht">38</span>   <span class="grn">0.9/m</span>     <span class="wht">10</span>     <span class="wht">5</span>    <span class="wht">4</span>    <span class="wht">17</span>    <span class="red">2</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="blu">devin ×2</span>                 <span class="wht">28</span>   <span class="grn">0.7/m</span>      <span class="wht">8</span>     <span class="wht">4</span>    <span class="wht">2</span>    <span class="wht">13</span>    <span class="red">1</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="org">copilot ×1</span>                <span class="wht">9</span>   <span class="dim">0.2/m</span>      <span class="wht">2</span>     <span class="wht">1</span>    <span class="wht">1</span>     <span class="wht">3</span>    <span class="dim">0</span>    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">THROUGHPUT                                           last 10 minutes</span>   <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 │</span>                                  <span class="grn">▄</span>                                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">4 │</span>        <span class="grn">▄</span>     <span class="grn">▄</span>        <span class="grn">▄</span>       <span class="grn">█</span>  <span class="grn">▄</span>                             <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">3 │</span>  <span class="grn">▄</span>  <span class="grn">▄</span>  <span class="grn">█</span>  <span class="grn">▄</span>  <span class="grn">█</span>  <span class="grn">▄</span>     <span class="grn">█</span>  <span class="grn">▄</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">▄</span>                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 │</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">▄</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">▄</span>                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">1 │</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>  <span class="grn">█</span>                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">  └──────────────────────────────────────  commits/min</span>               <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red bold">NEEDS ATTENTION (4)</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  <span class="red bold">T009</span>  DB connection pool      <span class="blu">devin</span>    <span class="dim">2m41</span>  <span class="dim">complexity (3 attempts)</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  <span class="red bold">T022</span>  Auth token refresh      <span class="mag">cursor</span>   <span class="dim">1m55</span>  <span class="dim">race condition</span>           <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  <span class="red bold">T044</span>  Session migration       <span class="mag">cursor</span>   <span class="dim">1m30</span>  <span class="dim">schema mismatch</span>          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="red">!</span>  <span class="red bold">T051</span>  Payment webhooks        <span class="cyn">cc</span>       <span class="dim">1m12</span>  <span class="dim">timeout in test suite</span>    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[n] focus</span>  <span class="dim">[/] filter</span>  <span class="dim">[a] agents</span>  <span class="dim">[l] list</span>  <span class="dim">[g] graph</span>  <span class="dim">[q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">T088</span>  <span class="grn bold">✓</span> <span class="grn">committed — API versioning [a3f21c]</span></pre>
+<pre class="log-entry"> <span class="dim">T044</span>  <span class="red">!</span> <span class="red">Session migration — stuck on schema mismatch</span></pre>
+<pre class="log-entry"> <span class="dim">T091</span>  <span class="grn">✓</span> <span class="dim">review passed — Config validation</span></pre>
+<pre class="log-entry"> <span class="dim">T073</span>  <span class="yel blink">▸</span> <span class="fg">fixing 2 issues (3 parallel streams)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== TIER 4 VARIANT: AGENT-FOCUSED VIEW ========== -->
+<div class="scene-label">Tier 4 — Agent-focused view ([a] from fleet)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status --agent claude-code</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="cyn bold">claude-code</span>  <span class="dim">×3 instances</span>  <span class="dim">│</span>  <span class="dim">52 tasks</span>  <span class="dim">│</span>  <span class="grn">1.4/min</span>  <span class="dim">│</span>  <span class="dim">avg 38s</span>  <span class="dim">│</span>  <span class="dim">25 done</span>
+</pre>
+<pre>
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">INSTANCE     TASKS   CURRENT</span>                                            <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">cc-1</span>         <span class="wht">18</span>     <span class="yel">▸ WebSocket handlers</span>        <span class="dim">build 6/9 (2‖)</span>       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">cc-2</span>         <span class="wht">17</span>     <span class="yel">▸ Error refactor</span>            <span class="dim">fix 2/3</span>               <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">cc-3</span>         <span class="wht">17</span>     <span class="yel">▸ Logging middleware</span>        <span class="dim">review 3/5 (4‖)</span>      <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">HEALTH                                                   last 10 min</span>    <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">first-pass success:</span>   <span class="grn">62%</span>  <span class="grn">▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓</span><span class="dim">░░░░░░░░░░░░░░░</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">avg fix iterations:</span>   <span class="wht">1.8</span>                                              <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">stuck rate:</span>           <span class="grn">1.9%</span> <span class="dim">(1 of 52)</span>                                 <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">common issues:</span>        <span class="dim">complexity (8), types (5), security (3)</span>          <span class="dim">│</span>
+ <span class="dim">│</span>                                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[1-3] focus instance</span>  <span class="dim">[l] list tasks</span>  <span class="dim">[b] back to fleet</span>  <span class="dim">[q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== Design Notes ========== -->
+<div class="note">
+  <strong>Progressive density model:</strong><br><br>
+
+  <strong>Tier 1 (1–3 tasks):</strong> Full DAG with parallel streams, subtask labels, inline issue details. You care about every subtask.<br><br>
+
+  <strong>Tier 2 (4–15 tasks):</strong> One row per task, phase shown as a bar (<code>████░░░░</code>) not a DAG. Parallel work collapsed to bar fill rate. Issue counts inline. You care about which tasks are progressing vs stuck. Key addition: <code>[/] filter</code> and <code>--stuck</code> to slice the list.<br><br>
+
+  <strong>Tier 3 (16–50 tasks):</strong> Grouped by status (building/reviewing/fixing/done/stuck). Per-agent breakdown with mini stacked bars. Only stuck tasks shown individually. You care about fleet throughput and bottlenecks.<br><br>
+
+  <strong>Tier 4 (50+ tasks):</strong> Fleet dashboard — histogram bars for pipeline stages, agent table with rates, throughput sparkline, only stuck/failed listed individually. You care about system health, not individual tasks. Agent-focused sub-view shows per-instance health and common failure patterns.<br><br>
+
+  <strong>Drill-down always available:</strong> Any tier can zoom to any single task at Tier 1 detail via <code>[n] focus</code>. You go fleet → agent → task → subtask DAG. And <code>[b] back</code> zooms out.<br><br>
+
+  <strong>Auto-selection logic:</strong><br>
+  <code>aiki status</code> picks tier based on active task count. Override with:<br>
+  • <code>aiki status --density=full</code> (force Tier 1 for everything — may be long)<br>
+  • <code>aiki status --density=row</code> (force Tier 2)<br>
+  • <code>aiki status --density=group</code> (force Tier 3)<br>
+  • <code>aiki status --density=fleet</code> (force Tier 4)<br>
+  • <code>aiki status --stuck</code> (filter to problems only at any tier)<br>
+  • <code>aiki status --agent cursor</code> (filter to one agent)<br><br>
+
+  <strong>Key insight:</strong> The information you need changes with scale. At 3 tasks you want "what subtask is running." At 100 tasks you want "what's the throughput and what's stuck." The transition from bar to sparkline to histogram is the same visual vocabulary at different densities — <code>████░░</code> works whether it's one task's build phase or an entire agent's completion rate.
+</div>
+
+</body>
+</html>

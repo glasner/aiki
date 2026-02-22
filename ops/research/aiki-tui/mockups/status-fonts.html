@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Status — Font Comparison</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&family=Source+Code+Pro:wght@400;700&family=IBM+Plex+Mono:wght@400;700&family=Inconsolata:wght@400;700&family=Geist+Mono:wght@400;700&family=Victor+Mono:wght@400;700&family=Commit+Mono:wght@400;700&family=Recursive:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 40px;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #888; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  .subtitle { color: #444; font-size: 11px; text-align: center; margin-top: 4px; max-width: 700px; line-height: 1.6; }
+
+  .scene-label {
+    font-size: 10px; font-weight: 700; color: #555; text-align: center;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: -24px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .terminal {
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    width: 100%; max-width: 860px; overflow: hidden;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418; padding: 8px 14px; display: flex;
+    align-items: center; gap: 7px; border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; font-family: 'JetBrains Mono', monospace; }
+
+  .screen { padding: 14px 18px; font-size: 13px; line-height: 1.5; color: #999; }
+
+  pre { white-space: pre; font-size: 13px; line-height: 1.5; }
+
+  .grn { color: #5fcc68; } .red { color: #e05555; } .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; } .mag { color: #c470b0; } .org { color: #cc8844; }
+  .blu { color: #5588cc; } .wht { color: #cccccc; } .dim { color: #3a3a44; }
+  .fg { color: #777; } .bold { font-weight: 700; }
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .note {
+    max-width: 860px; width: 100%; padding: 16px 20px;
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    color: #555; font-size: 11px; line-height: 1.9;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .note strong { color: #999; }
+  .note code { color: #5bb8c9; background: #151520; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .divider { border: none; border-top: 1px dashed #252530; max-width: 860px; width: 100%; }
+
+  .font-jetbrains pre, .font-jetbrains .screen { font-family: 'JetBrains Mono', monospace; }
+  .font-firacode pre, .font-firacode .screen { font-family: 'Fira Code', monospace; }
+  .font-geist pre, .font-geist .screen { font-family: 'Geist Mono', monospace; }
+  .font-ibmplex pre, .font-ibmplex .screen { font-family: 'IBM Plex Mono', monospace; }
+  .font-sourcecode pre, .font-sourcecode .screen { font-family: 'Source Code Pro', monospace; }
+  .font-inconsolata pre, .font-inconsolata .screen { font-family: 'Inconsolata', monospace; }
+  .font-victormono pre, .font-victormono .screen { font-family: 'Victor Mono', monospace; }
+  .font-commitmono pre, .font-commitmono .screen { font-family: 'Commit Mono', monospace; }
+  .font-recursive pre, .font-recursive .screen { font-family: 'Recursive', monospace; }
+
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+    margin-left: 8px; vertical-align: middle;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .tag-default { background: #1a2a1a; color: #5fcc68; }
+  .tag-premium { background: #2a1a2a; color: #c470b0; }
+  .tag-new { background: #1a2a2a; color: #5bb8c9; }
+  .tag-popular { background: #2a2a1a; color: #d4a840; }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>aiki status — font options</h1>
+  <div class="subtitle">
+    Same status screen in 9 monospace fonts. Focus on: box-drawing alignment,
+    dot/bullet clarity, Unicode symbol rendering, and density at 13px.
+  </div>
+</div>
+
+<!-- ========== 1. JetBrains Mono ========== -->
+<div class="scene-label">JetBrains Mono <span class="tag tag-default">default</span> <span class="tag tag-popular">most popular</span></div>
+<div class="terminal font-jetbrains">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">JetBrains Mono — Ghostty default, Claude Code, JetBrains IDEs</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 2. Geist Mono ========== -->
+<div class="scene-label">Geist Mono <span class="tag tag-new">new wave</span></div>
+<div class="terminal font-geist">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Geist Mono — Vercel/Next.js ecosystem, Swiss minimalism</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 3. Fira Code ========== -->
+<div class="scene-label">Fira Code <span class="tag tag-popular">popular</span></div>
+<div class="terminal font-firacode">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Fira Code — Ligature pioneer, VS Code classic</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 4. IBM Plex Mono ========== -->
+<div class="scene-label">IBM Plex Mono</div>
+<div class="terminal font-ibmplex">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">IBM Plex Mono — IBM Carbon design system</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 5. Source Code Pro ========== -->
+<div class="scene-label">Source Code Pro</div>
+<div class="terminal font-sourcecode">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Source Code Pro — Adobe, widely bundled</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 6. Inconsolata ========== -->
+<div class="scene-label">Inconsolata</div>
+<div class="terminal font-inconsolata">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Inconsolata — Classic, narrow, high information density</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 7. Victor Mono ========== -->
+<div class="scene-label">Victor Mono</div>
+<div class="terminal font-victormono">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Victor Mono — ChatGPT code input, cursive italics</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 8. Commit Mono ========== -->
+<div class="scene-label">Commit Mono <span class="tag tag-new">new wave</span></div>
+<div class="terminal font-commitmono">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Commit Mono — Neutral, smart kerning, rising</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<!-- ========== 9. Recursive ========== -->
+<div class="scene-label">Recursive Mono</div>
+<div class="terminal font-recursive">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">Recursive — Variable axes, personality, customizable</div>
+  </div>
+  <div class="screen">
+<pre> <span class="wht bold">Add authentication to API</span>                       <span class="cyn">claude-code</span>   <span class="dim">32s   iter 2</span>
+
+ <span class="dim">╭──────────────────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>  <span class="grn">build</span>  <span class="grn">● ━┬━ ● ━━ ● ━━ ● ━┬━ ●</span>  <span class="grn">✓</span>   <span class="cyn">review</span>  <span class="grn">┬●</span> <span class="grn">┬●</span> <span class="red">┬●</span> <span class="grn">┬●</span> <span class="org">┬●</span> <span class="red">✗2</span>   <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">├━ ●    ●    ● ━╯</span>                                               <span class="dim">│</span>
+ <span class="dim">│</span>            <span class="grn">╰━ ●    ●</span>                                                    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn bold">fix</span>  <span class="grn">┬━ ●</span> <span class="grn">✓</span>                                                       <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>  <span class="dim">━━</span> <span class="dim">○</span> re-review                                      <span class="dim">│</span>
+ <span class="dim">│</span>       <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="yel blink">▸</span>                                                        <span class="dim">│</span>
+ <span class="dim">╰──────────────────────────────────────────────────────────────────────╯</span></pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ========== Analysis ========== -->
+<div class="note">
+  <strong>What modern coding agents actually ship:</strong><br><br>
+
+  <strong>Ghostty</strong> (Mitchell's terminal) → <strong>JetBrains Mono</strong> embedded + built-in Nerd Fonts fallback<br>
+  <strong>Claude Code</strong> → inherits terminal font, uses Unicode ⏵ (broke on Linux — lesson learned)<br>
+  <strong>OpenCode/Crush</strong> → BubbleTea renderer, inherits terminal, truecolor themes<br>
+  <strong>ChatGPT</strong> → Segoe UI (interface) + <strong>Victor Mono</strong> (code input)<br>
+  <strong>Warp</strong> → custom font based on Hack<br>
+  <strong>VS Code</strong> → Consolas (Win) / Menlo (Mac) — most devs change this<br><br>
+
+  <strong>The cult favorites developers actually use:</strong><br>
+  • <strong>JetBrains Mono</strong> — dominant default. Tall x-height, free, the "safe pick"<br>
+  • <strong>Berkeley Mono</strong> — $75 premium, cult following. Tobi Lutke endorses. The Mitchell Hashimoto + Ghostty crowd. <em>Can't bundle it (license prohibits terminals/IDEs)</em><br>
+  • <strong>Monaspace</strong> — GitHub's superfamily, 5 faces, "texture healing." Ambitious<br>
+  • <strong>Fira Code</strong> — ligature pioneer, still massive in VS Code<br>
+  • <strong>Geist Mono</strong> — Vercel's entry. Swiss minimalism. Growing fast<br>
+  • <strong>Maple Mono</strong> — rising newcomer, popular italic complement to Berkeley<br>
+  • <strong>MonoLisa</strong> — premium, designer favorite<br><br>
+
+  <strong>Not demoed above (not on Google Fonts):</strong> Berkeley Mono, Monaspace, Cascadia Code, MonoLisa, Maple Mono, Iosevka. These are GitHub/self-hosted only.<br><br>
+
+  <hr style="border:none;border-top:1px dashed #252530;margin:12px 0"><br>
+
+  <strong>The real question for Aiki — it's not about the font, it's about the characters:</strong><br><br>
+
+  Aiki doesn't choose the font. The user's terminal does. What we control is <em>which Unicode codepoints we emit</em>. Claude Code learned this the hard way — they used ⏵ (U+23F5, Miscellaneous Technical block) and it broke on minimal Linux installs.<br><br>
+
+  <strong>Safe Unicode tiers for our symbols:</strong><br><br>
+
+  <strong>Tier 1 — works everywhere:</strong> ASCII only<br>
+  <code>* + - = | [ ] # > .</code><br><br>
+
+  <strong>Tier 2 — works in all modern coding fonts:</strong> Box Drawing + Geometric Shapes<br>
+  <code>● ○ ✓ ✗ ─ │ ┬ ├ ╯ ╭ ╰ █ ░ ▸ ▪</code><br><br>
+
+  <strong>Tier 3 — needs a good font:</strong> Misc Symbols<br>
+  <code>◉ ◆ ▓ ━ ╌</code><br><br>
+
+  <strong>Tier 4 — risky, avoid:</strong> Miscellaneous Technical<br>
+  <code>⏵ ⎔ ⎡</code> ← Claude Code's mistake<br><br>
+
+  Our design uses Tier 2–3. The main risk is <code>◉</code> (U+25C9, "fisheye") for active nodes. Fallback: use <code>●</code> with bright/bold color to distinguish active from completed.<br><br>
+
+  <strong>Recommendation:</strong><br>
+  • Design targeting <strong>JetBrains Mono</strong> (Ghostty default, what Mitchell uses)<br>
+  • Test against <strong>Fira Code</strong> + <strong>Source Code Pro</strong> as common alternatives<br>
+  • Ship <code>--ascii</code> fallback mode for degraded environments<br>
+  • Never use codepoints above U+2600 without a fallback path<br>
+  • Box-drawing chars (<code>╭╰┬├━─│</code>) are universally safe in monospace fonts
+</div>
+
+</body>
+</html>

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Arcade Status — Terminal Mockup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 32px;
+  }
+
+  h1 {
+    font-family: 'Press Start 2P', monospace;
+    color: #ffff00;
+    font-size: 14px;
+    text-align: center;
+    text-shadow: 0 0 10px rgba(255, 255, 0, 0.5);
+    letter-spacing: 2px;
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    color: #666;
+    font-size: 12px;
+    text-align: center;
+    margin-top: 6px;
+  }
+
+  .scenario-label {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 10px;
+    color: #00ffff;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: -16px;
+    text-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
+  }
+
+  .terminal {
+    background: #0c0c0c;
+    border: 2px solid #333;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 760px;
+    overflow: hidden;
+    position: relative;
+    box-shadow:
+      0 0 30px rgba(0, 0, 0, 0.8),
+      inset 0 0 60px rgba(0, 0, 0, 0.3);
+  }
+
+  .terminal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.08) 0px,
+      rgba(0, 0, 0, 0.08) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .terminal-bar {
+    background: #1a1a1a;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid #333;
+  }
+
+  .terminal-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .terminal-title {
+    flex: 1;
+    text-align: center;
+    color: #666;
+    font-size: 11px;
+  }
+
+  .screen {
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ccc;
+    min-height: 320px;
+  }
+
+  /* Color classes matching ANSI terminal colors */
+  .yellow { color: #ffff00; }
+  .cyan { color: #00ffff; }
+  .green { color: #00ff00; }
+  .red { color: #ff0000; }
+  .magenta { color: #ff69b4; }
+  .orange { color: #ffb852; }
+  .blue { color: #5555ff; }
+  .dim { color: #555555; }
+  .white { color: #ffffff; }
+  .bold { font-weight: 700; }
+
+  .blink {
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .pulse {
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .power-pellet {
+    animation: pulse 0.6s ease-in-out infinite;
+  }
+
+  /* Ghost "scared" flash */
+  @keyframes scared {
+    0%, 100% { color: #5555ff; }
+    50% { color: #ffffff; }
+  }
+
+  .scared {
+    animation: scared 0.4s step-end infinite;
+  }
+
+  .row {
+    white-space: pre;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .maze-wall {
+    color: #2121de;
+  }
+
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 9px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2121de;
+    margin-bottom: 8px;
+  }
+
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid #1a1a2a;
+    margin-bottom: 2px;
+  }
+
+  .log-area {
+    border-top: 1px solid #2121de;
+    margin-top: 8px;
+    padding-top: 6px;
+    font-size: 11px;
+  }
+
+  .log-entry {
+    opacity: 0.7;
+    white-space: pre;
+  }
+
+  .log-entry:last-child {
+    opacity: 1;
+  }
+
+  .lives-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 0;
+    font-size: 11px;
+  }
+
+  .note {
+    max-width: 760px;
+    width: 100%;
+    padding: 12px 16px;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    color: #666;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  .note strong {
+    color: #888;
+  }
+
+  .note code {
+    color: #00ffff;
+    background: #1a1a2a;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<h1>AIKI ARCADE STATUS</h1>
+<div class="subtitle">Terminal mockups — what ratatui rendering would look like</div>
+
+<!-- ==================== SCENARIO 1: Build in progress ==================== -->
+<div class="scenario-label">SCENE 1 — BUILD IN PROGRESS</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre class="row"><span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">1UP</span>    <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">000300</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">HIGH SCORE</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">ITER</span>  <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">1</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="cyan">AGENT:</span> <span class="white">Claude Code</span>        <span class="orange">Add authentication to API</span>     <span class="dim">12.4s</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="yellow bold"> BUILD </span>  <span class="maze-wall">║</span><span class="yellow"> ᗧ</span><span class="dim">··</span> <span class="green">●</span> <span class="dim">·</span> <span class="green">●</span> <span class="dim">·</span> <span class="green">●</span> <span class="dim">··········</span> <span class="dim">·</span> <span class="power-pellet orange">◉</span> <span class="maze-wall">║</span>  <span class="yellow">3</span><span class="dim">/8</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">▴       ▴       ▴</span>                  <span class="maze-wall">║</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">Parse   Gen     Auth</span>                  <span class="maze-wall">║</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">spec    types   middleware</span>             <span class="maze-wall">║</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="dim"> REVIEW </span> <span class="maze-wall">║</span><span class="dim">·· · · · · · · · · · · · · · · · · · ◉ </span><span class="maze-wall">║</span>  <span class="dim">—</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="dim"> FIX    </span> <span class="maze-wall">║</span><span class="dim">·· · · · · · · · · · · · · · · · · · ◉ </span><span class="maze-wall">║</span>  <span class="dim">—</span></pre>
+<pre class="row"> </pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="dim">RETRIES:</span> <span class="yellow">ᗧ ᗧ ᗧ</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<div class="log-area">
+<pre class="log-entry"><span class="dim">00:00</span> <span class="yellow">READY PLAYER ONE</span></pre>
+<pre class="log-entry"><span class="dim">00:01</span> <span class="green">BUILD ● Parse spec</span></pre>
+<pre class="log-entry"><span class="dim">00:04</span> <span class="green">BUILD ● Gen types</span></pre>
+<pre class="log-entry"><span class="dim">00:09</span> <span class="green">BUILD ● Auth middleware</span></pre>
+<pre class="log-entry"><span class="dim">12:40</span> <span class="yellow blink">▸ Route handlers...</span></pre>
+</div>
+  </div>
+</div>
+
+<!-- ==================== SCENARIO 2: Review found issues (ghosts!) ==================== -->
+<div class="scenario-label">SCENE 2 — REVIEW FAILED (GHOSTS APPEAR)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre class="row"><span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">1UP</span>    <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">001800</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">HIGH SCORE</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">ITER</span>  <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">1</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="cyan">AGENT:</span> <span class="white">Claude Code</span>        <span class="orange">Add authentication to API</span>     <span class="dim">28.1s</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> BUILD </span>  <span class="maze-wall">║</span>  <span class="green">●   ●   ●   ●   ●   ●   ●   ●</span>       <span class="green">✓</span> <span class="maze-wall">║</span>  <span class="green">8</span><span class="dim">/8</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="cyan bold"> REVIEW </span><span class="maze-wall">║</span>  <span class="cyan">●   ●   ●   ●   ●</span>                  <span class="cyan">✓</span> <span class="maze-wall">║</span>  <span class="cyan">5</span><span class="dim">/5</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="red bold"> ⚠ ISSUES FOUND                                       </span></pre>
+<pre class="row"> </pre>
+<pre class="row">  <span class="red">ᗣ</span> <span class="red">BLINKY</span>  <span class="dim">Missing return type on verify_token()</span></pre>
+<pre class="row">  <span class="magenta">ᗣ</span> <span class="magenta">PINKY</span>   <span class="dim">API key hardcoded in auth.py:45</span></pre>
+<pre class="row">  <span class="orange">ᗣ</span> <span class="orange">CLYDE</span>   <span class="dim">Cyclomatic complexity 18 (limit: 10)</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="dim"> FIX    </span> <span class="maze-wall">║</span><span class="dim">·· · · · · · · · · · · · · · · · · · ◉ </span><span class="maze-wall">║</span>  <span class="dim">—</span></pre>
+<pre class="row"> </pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="dim">RETRIES:</span> <span class="yellow">ᗧ ᗧ ᗧ</span>              <span class="white blink">[r] FIX  [e] ESCALATE  [i] IGNORE</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<div class="log-area">
+<pre class="log-entry"><span class="dim">24:00</span> <span class="green">BUILD COMPLETE ✓</span></pre>
+<pre class="log-entry"><span class="dim">24:02</span> <span class="cyan">REVIEW ● Type check</span></pre>
+<pre class="log-entry"><span class="dim">24:03</span> <span class="cyan">REVIEW ● Security scan</span></pre>
+<pre class="log-entry"><span class="dim">27:80</span> <span class="red">REVIEW FAILED — 3 issues found!</span></pre>
+<pre class="log-entry"><span class="dim">27:80</span> <span class="red blink">▸ Awaiting action...</span></pre>
+</div>
+  </div>
+</div>
+
+<!-- ==================== SCENARIO 3: Fix in progress (ghosts scared) ==================== -->
+<div class="scenario-label">SCENE 3 — FIX RUNNING (GHOSTS ARE SCARED)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre class="row"><span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">1UP</span>    <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">002400</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">HIGH SCORE</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">ITER</span>  <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">2</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="cyan">AGENT:</span> <span class="white">Claude Code</span>        <span class="orange">Add authentication to API</span>     <span class="dim">31.5s</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> BUILD </span>  <span class="maze-wall">║</span>  <span class="green">●   ●   ●   ●   ●   ●   ●   ●</span>       <span class="green">✓</span> <span class="maze-wall">║</span>  <span class="green">8</span><span class="dim">/8</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="cyan bold"> REVIEW </span><span class="maze-wall">║</span>  <span class="cyan">●   ●   ●   ●   ●</span>        <span class="red">✗ 3 issues</span>   <span class="maze-wall">║</span>  <span class="cyan">5</span><span class="dim">/5</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> FIX </span>    <span class="maze-wall">║</span><span class="green"> ᗧ</span><span class="dim">··</span> <span class="green">●</span> <span class="dim">·················</span> <span class="scared">ᗣ</span>  <span class="scared">ᗣ</span>  <span class="scared">ᗣ</span>  <span class="maze-wall">║</span>  <span class="green">1</span><span class="dim">/3</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">▴</span>                          <span class="dim scared">▴    ▴    ▴</span>  <span class="maze-wall">║</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">Fix</span>                        <span class="dim scared">CLY  PNK  BLK</span> <span class="maze-wall">║</span></pre>
+<pre class="row">         <span class="maze-wall">║</span>  <span class="dim">types</span>                                    <span class="maze-wall">║</span></pre>
+<pre class="row"> </pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="dim">RETRIES:</span> <span class="yellow">ᗧ ᗧ</span> <span class="dim">ᗧ</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<div class="log-area">
+<pre class="log-entry"><span class="dim">27:80</span> <span class="red">REVIEW FAILED — 3 issues found!</span></pre>
+<pre class="log-entry"><span class="dim">28:00</span> <span class="yellow">POWER PELLET — Fix task started!</span></pre>
+<pre class="log-entry"><span class="dim">28:02</span> <span class="blue">Ghosts are scared! Hunting issues...</span></pre>
+<pre class="log-entry"><span class="dim">30:10</span> <span class="green">FIX ● Fix types — ate BLINKY! +200</span></pre>
+<pre class="log-entry"><span class="dim">31:50</span> <span class="yellow blink">▸ Move secrets...</span></pre>
+</div>
+  </div>
+</div>
+
+<!-- ==================== SCENARIO 4: All clear ==================== -->
+<div class="scenario-label">SCENE 4 — ALL CLEAR (CLEAN COMMIT)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre class="row"><span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">1UP</span>    <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">004200</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">HIGH SCORE</span>          <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">ITER</span>  <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">2</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="cyan">AGENT:</span> <span class="white">Claude Code</span>        <span class="orange">Add authentication to API</span>     <span class="dim">34.2s</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> BUILD </span>  <span class="maze-wall">║</span>  <span class="green">●   ●   ●   ●   ●   ●   ●   ●</span>       <span class="green">✓</span> <span class="maze-wall">║</span>  <span class="green">8</span><span class="dim">/8</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> REVIEW </span><span class="maze-wall">║</span>  <span class="green">●   ●   ●   ●   ●</span>                  <span class="green">✓</span> <span class="maze-wall">║</span>  <span class="green">5</span><span class="dim">/5</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="green bold"> FIX </span>    <span class="maze-wall">║</span>  <span class="green">●   ●   ●</span>                          <span class="green">✓</span> <span class="maze-wall">║</span>  <span class="green">3</span><span class="dim">/3</span></pre>
+<pre class="row"> </pre>
+<pre class="row"> </pre>
+<pre class="row" style="text-align:center"><span class="yellow bold" style="font-family:'Press Start 2P',monospace;font-size:12px">  ALL CLEAR!</span></pre>
+<pre class="row" style="text-align:center"><span class="green">  ✓ Clean commit → main [abc1234]</span></pre>
+<pre class="row" style="text-align:center"><span class="dim">  3 issues caught · 3 issues fixed · 0 human interventions</span></pre>
+<pre class="row"> </pre>
+<pre class="row" style="text-align:center"><span class="yellow">  ᗧ</span><span class="dim"> ate </span><span class="red">ᗣ</span><span class="dim"> BLINKY  </span><span class="magenta">ᗣ</span><span class="dim"> PINKY  </span><span class="orange">ᗣ</span><span class="dim"> CLYDE</span>      <span class="yellow bold">BONUS +1000</span></pre>
+<pre class="row"> </pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="dim">RETRIES:</span> <span class="yellow">ᗧ ᗧ</span> <span class="dim">ᗧ</span>                        <span class="dim">34.2s total</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<div class="log-area">
+<pre class="log-entry"><span class="dim">31:50</span> <span class="green">FIX ● Move secrets — ate PINKY! +200</span></pre>
+<pre class="log-entry"><span class="dim">33:20</span> <span class="green">FIX ● Add tests — ate CLYDE! +200</span></pre>
+<pre class="log-entry"><span class="dim">33:80</span> <span class="cyan">RE-REVIEW ● All checks passed ✓</span></pre>
+<pre class="log-entry"><span class="dim">34:00</span> <span class="green bold">COMMIT [abc1234] Add authentication to API</span></pre>
+<pre class="log-entry"><span class="dim">34:20</span> <span class="yellow">GAME OVER — Insert coin to continue</span></pre>
+</div>
+  </div>
+</div>
+
+<!-- ==================== SCENARIO 5: Multi-task board view ==================== -->
+<div class="scenario-label">SCENE 5 — MULTI-TASK BOARD (aiki status --all)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status --all</div>
+  </div>
+  <div class="screen">
+<pre class="row"><span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">SESSION SCORE</span>  <span class="white" style="font-family:'Press Start 2P',monospace;font-size:9px">012400</span>        <span class="dim" style="font-family:'Press Start 2P',monospace;font-size:9px">3 TASKS  ·  2 AGENTS</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="white bold"> 1 ▸ Add authentication to API</span>          <span class="cyan">Claude Code</span>  <span class="dim">ITER 2</span></pre>
+<pre class="row">   <span class="green bold">BUILD</span>  <span class="green">● ● ● ● ● ● ● ●</span>  <span class="green">✓</span>    <span class="cyan bold">REVIEW</span> <span class="cyan">● ● ● ● ●</span> <span class="red">✗</span>    <span class="green bold">FIX</span> <span class="green">ᗧ</span><span class="dim">··</span><span class="green">●</span><span class="dim">·</span><span class="scared">ᗣᗣᗣ</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="white bold"> 2 ▸ Refactor payment service</span>            <span class="magenta">Cursor</span>       <span class="dim">ITER 1</span></pre>
+<pre class="row">   <span class="yellow bold">BUILD</span>  <span class="yellow">ᗧ</span><span class="dim">·</span><span class="green">● ● ●</span><span class="dim">·····</span><span class="power-pellet orange">◉</span>       <span class="dim">REVIEW</span> <span class="dim">· · · · ·</span>      <span class="dim">FIX</span>  <span class="dim">—</span></pre>
+<pre class="row"> </pre>
+<pre class="row"><span class="white bold"> 3 ▸ Update API documentation</span>            <span class="cyan">Claude Code</span>  <span class="dim">ITER 1</span></pre>
+<pre class="row">   <span class="green bold">BUILD</span>  <span class="green">● ● ● ●</span>  <span class="green">✓</span>            <span class="cyan bold">REVIEW</span> <span class="cyan">ᗧ</span><span class="dim">··</span><span class="cyan">● ●</span><span class="dim">···</span><span class="power-pellet orange">◉</span>   <span class="dim">FIX</span>  <span class="dim">—</span></pre>
+<pre class="row"> </pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<pre class="row"><span class="dim">  [1-3] Focus task  [b] New build  [s] Stop  [f] Follow agent  [q] Quit</span></pre>
+<pre class="row dim">─────────────────────────────────────────────────────────────────</pre>
+<div class="log-area">
+<pre class="log-entry"><span class="dim">T1</span> <span class="green">FIX ● Fix types — ate BLINKY! +200</span></pre>
+<pre class="log-entry"><span class="dim">T2</span> <span class="green">BUILD ● Extract interface</span></pre>
+<pre class="log-entry"><span class="dim">T3</span> <span class="cyan">REVIEW ● Security scan ✓</span></pre>
+<pre class="log-entry"><span class="dim">T1</span> <span class="yellow blink">▸ Hunting PINKY...</span></pre>
+</div>
+  </div>
+</div>
+
+<!-- ==================== Design Notes ==================== -->
+<div class="note">
+  <strong>Implementation notes for ratatui:</strong><br><br>
+  • <strong>Characters:</strong> <code>ᗧ</code> (Pac-Man), <code>ᗣ</code> (ghost), <code>●</code> (eaten dot), <code>·</code> (pending dot), <code>◉</code> (power pellet/milestone), <code>║</code> (lane walls)<br>
+  • <strong>Colors:</strong> Standard ANSI 16 — yellow (Pac-Man), blue (maze walls), red/pink/orange/cyan (ghosts map to issue severity), green (completed)<br>
+  • <strong>Animation:</strong> Pac-Man mouth alternates <code>ᗧ</code> / <code>ᗤ</code> on 100ms tick. Scared ghosts alternate blue/white. Power pellet pulses.<br>
+  • <strong>Score mapping:</strong> BUILD subtask = 100pts, REVIEW check = 200pts, FIX issue = 300pts, ALL CLEAR bonus = 1000pts<br>
+  • <strong>Ghost → Issue mapping:</strong> BLINKY (red) = errors, PINKY (pink) = security, CLYDE (orange) = warnings, INKY (cyan) = info<br>
+  • <strong>Retries as lives:</strong> Each <code>ᗧ</code> in the lives row = one remaining retry attempt. Dimmed = used.<br>
+  • <strong>The metaphor holds:</strong> Building = eating dots. Issues = ghosts blocking path. Fix task = power pellet that lets you eat ghosts.
+</div>
+
+</body>
+</html>

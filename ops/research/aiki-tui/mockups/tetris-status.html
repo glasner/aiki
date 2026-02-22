@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki × Tetris — Terminal Status Mockups</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #08080c;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 40px;
+  }
+
+  h1 {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 14px;
+    text-align: center;
+    letter-spacing: 3px;
+    background: linear-gradient(180deg, #ff4444 0%, #ff8800 20%, #ffff00 40%, #44ff44 60%, #4444ff 80%, #ff44ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 12px rgba(255,255,255,0.15));
+  }
+
+  .subtitle {
+    color: #444;
+    font-size: 11px;
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  .scene-label {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 9px;
+    color: #888;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: -22px;
+  }
+
+  .terminal {
+    background: #0a0a0e;
+    border: 2px solid #252530;
+    border-radius: 6px;
+    width: 100%;
+    max-width: 780px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 50px rgba(0,0,0,0.9), inset 0 0 60px rgba(0,0,0,0.3);
+  }
+
+  .terminal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(0deg,
+      rgba(0,0,0,0.05) 0px, rgba(0,0,0,0.05) 1px,
+      transparent 1px, transparent 3px
+    );
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .tbar {
+    background: #111115;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid #252530;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#444; font-size:11px; }
+
+  .screen {
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #ccc;
+  }
+
+  pre {
+    white-space: pre;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  /* Tetromino colors — classic NES palette */
+  .I { color: #00ffff; } /* cyan */
+  .O { color: #ffff00; } /* yellow */
+  .T { color: #cc66ff; } /* purple */
+  .S { color: #66ff66; } /* green */
+  .Z { color: #ff4444; } /* red */
+  .J { color: #4488ff; } /* blue */
+  .L { color: #ff8800; } /* orange */
+
+  /* Garbage / issue lines */
+  .garbage { color: #666666; }
+  .garb-red { color: #883333; }
+  .garb-mag { color: #884466; }
+  .garb-org { color: #886633; }
+
+  .grn { color: #44ff44; }
+  .red { color: #ff4444; }
+  .yel { color: #ffff00; }
+  .cyn { color: #00ffff; }
+  .mag { color: #ff66aa; }
+  .org { color: #ff8800; }
+  .pur { color: #cc66ff; }
+  .blu { color: #4488ff; }
+  .wht { color: #ffffff; }
+  .dim { color: #444444; }
+  .dim2 { color: #2a2a35; }
+  .wall { color: #556; }
+  .bold { font-weight: 700; }
+
+  .blink { animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .flash-clear {
+    animation: lineclear 0.6s ease-out;
+  }
+  @keyframes lineclear {
+    0% { color: #ffffff; }
+    50% { color: #ffffff; opacity: 0; }
+    100% { opacity: 0; }
+  }
+
+  .pulse { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+  .log-area {
+    border-top: 1px solid #252530;
+    margin-top: 6px;
+    padding-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .log-entry { opacity: 0.55; }
+  .log-entry:last-child { opacity: 1; }
+
+  .note {
+    max-width: 780px;
+    width: 100%;
+    padding: 14px 18px;
+    background: #0e0e12;
+    border: 1px solid #1e1e28;
+    border-radius: 6px;
+    color: #555;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+  .note strong { color: #888; }
+  .note code {
+    color: #00ddff;
+    background: #151520;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>AIKI × TETRIS</h1>
+  <div class="subtitle">Terminal status screens — ratatui mockups</div>
+</div>
+
+<!-- ========== SCENE 1: BUILD — PIECES FALLING, LINES CLEARING ========== -->
+<div class="scene-label">SCENE 1 — BUILD IN PROGRESS (LINES CLEARING)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre>
+<span class="dim" style="font-family:'Press Start 2P',monospace;font-size:8px">  SCORE            LEVEL   LINES     PHASE</span>
+<span class="wht" style="font-family:'Press Start 2P',monospace;font-size:8px">  000300           01      03        BUILD</span>
+</pre>
+<pre>
+<span class="dim">  AGENT: <span class="cyn">Claude Code</span>     <span class="org">Add authentication to API</span>     00:14</span>
+</pre>
+<pre>
+<span class="wall">  ┌────────────────────┐</span>   <span class="dim">NEXT</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">┌──────┐</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">│</span> <span class="T">██</span>   <span class="dim">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">│</span><span class="T">████</span>  <span class="dim">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">└──────┘</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">HOLD</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">┌──────┐</span>
+<span class="wall">  │</span><span class="dim2">··········</span><span class="S">██</span><span class="dim2">········</span><span class="wall">│</span>   <span class="dim">│</span>      <span class="dim">│</span>
+<span class="wall">  │</span><span class="dim2">········</span><span class="S">████</span><span class="dim2">········</span><span class="wall">│</span>   <span class="dim">│</span> <span class="dim2">empty</span> <span class="dim">│</span>
+<span class="wall">  │</span><span class="dim2">····</span><span class="I">████████</span><span class="dim2">········</span><span class="wall">│</span>   <span class="dim">└──────┘</span>
+<span class="wall">  │</span><span class="dim2">··</span><span class="O">████</span><span class="L">██</span><span class="J">██</span><span class="dim2">··</span><span class="T">████</span><span class="dim2">····</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="J">██</span><span class="O">████</span><span class="L">████</span><span class="Z">██</span><span class="T">██████</span><span class="dim2">··</span><span class="wall">│</span>   <span class="dim">SUBTASKS</span>
+<span class="wall">  │</span><span class="L">██████</span><span class="I">████████</span><span class="Z">████</span><span class="S">██</span><span class="wall">│</span>  <span class="grn"> ✓ Parse spec</span>
+<span class="wall">  │</span><span class="S">██</span><span class="T">████</span><span class="O">████</span><span class="J">██████</span><span class="I">██</span><span class="L">██</span><span class="wall">│</span>  <span class="grn"> ✓ Gen types</span>
+<span class="wall">  │</span><span class="I">██</span><span class="Z">████</span><span class="S">██</span><span class="O">████</span><span class="L">██</span><span class="T">██</span><span class="J">████</span><span class="wall">│</span>  <span class="grn"> ✓ Auth middleware</span>
+<span class="wall">  └────────────────────┘</span>  <span class="yel"> ▸ Route handlers</span>
+<span class="dim">                              Token logic</span>
+<span class="dim">  ████████████████░░░░░░</span>     <span class="dim"> Error handling</span>
+<span class="dim">  BUILD          </span><span class="yel">3</span><span class="dim">/8</span>        <span class="dim"> Tests</span>
+<span class="dim">                              Integration</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:00</span>  <span class="yel">GAME START — Build task kicked off</span></pre>
+<pre class="log-entry"><span class="dim">00:03</span>  <span class="grn">LINE CLEAR ● Parse spec</span></pre>
+<pre class="log-entry"><span class="dim">00:06</span>  <span class="grn">LINE CLEAR ● Gen types</span></pre>
+<pre class="log-entry"><span class="dim">00:10</span>  <span class="grn">LINE CLEAR ● Auth middleware</span></pre>
+<pre class="log-entry"><span class="dim">00:14</span>  <span class="yel blink">▸ Dropping Route handlers...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 2: REVIEW FAILURE — GARBAGE LINES RECEIVED ========== -->
+<div class="scene-label">SCENE 2 — REVIEW FAILED (GARBAGE LINES RECEIVED!)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre>
+<span class="dim" style="font-family:'Press Start 2P',monospace;font-size:8px">  SCORE            LEVEL   LINES     PHASE</span>
+<span class="wht" style="font-family:'Press Start 2P',monospace;font-size:8px">  001300           01      13        REVIEW</span>
+</pre>
+<pre>
+<span class="dim">  AGENT: <span class="cyn">Claude Code</span>     <span class="org">Add authentication to API</span>     00:28</span>
+</pre>
+<pre>
+<span class="wall">  ┌────────────────────┐</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">REVIEW</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:9px">FAILED!</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="red">3 GARBAGE</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="red">LINES SENT!</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">SCOUTING</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">REPORT:</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="red">█ TYPE</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">  Missing return</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">  type annotation</span>
+<span class="wall">  │</span><span class="garb-red">██████████████</span><span class="dim2">··</span><span class="garb-red">████</span><span class="wall">│</span>   <span class="mag">█ SECURITY</span>
+<span class="wall">  │</span><span class="garb-mag">████████</span><span class="dim2">··</span><span class="garb-mag">██████████</span><span class="wall">│</span>   <span class="dim">  Hardcoded API</span>
+<span class="wall">  │</span><span class="garb-org">██████████████████</span><span class="dim2">··</span><span class="wall">│</span>   <span class="dim">  key in auth.py</span>
+<span class="wall">  └────────────────────┘</span>   <span class="org">█ COMPLEXITY</span>
+<span class="dim">                             Cyclomatic 18</span>
+<span class="dim">  ████████████████████░░</span>     <span class="dim">  (limit: 10)</span>
+<span class="dim">  BUILD ✓  REVIEW </span><span class="red">✗ 3</span>
+</pre>
+
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────────</span>
+<span class="wht bold"> CALL:</span>  <span class="grn bold">[r] CLEAR LINES</span>  <span class="yel">[e] FORFEIT (escalate)</span>  <span class="dim">[i] KEEP PLAYING (ignore)</span>
+<span class="dim">────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:24</span>  <span class="grn">BUILD COMPLETE ✓ — 8 lines cleared</span></pre>
+<pre class="log-entry"><span class="dim">00:25</span>  <span class="cyn">REVIEW ● Type check... Security scan... Complexity...</span></pre>
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="red bold">GARBAGE × 3! Review sent 3 issue lines!</span></pre>
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="yel blink">▸ Board rising — choose your play...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 3: FIX — CLEARING GARBAGE LINES ========== -->
+<div class="scene-label">SCENE 3 — FIX IN PROGRESS (CLEARING GARBAGE)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre>
+<span class="dim" style="font-family:'Press Start 2P',monospace;font-size:8px">  SCORE            LEVEL   LINES     PHASE</span>
+<span class="wht" style="font-family:'Press Start 2P',monospace;font-size:8px">  001600           02      14        FIX</span>
+</pre>
+<pre>
+<span class="dim">  AGENT: <span class="cyn">Claude Code</span>     <span class="org">Add authentication to API</span>     00:31</span>
+</pre>
+<pre>
+<span class="wall">  ┌────────────────────┐</span>   <span class="dim">NEXT</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">┌──────┐</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">│</span><span class="I">████████</span><span class="dim">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">└──────┘</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">↑ Move secrets</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">GARBAGE</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">REMAINING:</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="dim">██ TYPE</span>  <span class="grn">CLEARED✓</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="mag pulse">██ SECURITY</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="org">██ COMPLEXITY</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····</span><span class="I bold">████████</span><span class="dim2">········</span><span class="wall">│</span>   <span class="dim">HOLD</span>
+<span class="wall">  │</span><span class="garb-mag">████████</span><span class="dim2">··</span><span class="garb-mag">██████████</span><span class="wall">│</span>   <span class="dim">┌──────┐</span>
+<span class="wall">  │</span><span class="garb-org">██████████████████</span><span class="dim2">··</span><span class="wall">│</span>   <span class="dim">│</span><span class="L">████</span>  <span class="dim">│</span>
+<span class="wall">  └────────────────────┘</span>   <span class="dim">│</span><span class="L">██</span>    <span class="dim">│</span>
+<span class="dim">                            </span>  <span class="dim">└──────┘</span>
+<span class="dim">  ████████████████████</span><span class="grn">██</span>    <span class="dim">↑ Add tests</span>
+<span class="dim">  BUILD ✓  REVIEW ✗  </span><span class="grn">FIX</span> <span class="grn">1</span><span class="dim">/3</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="yel">PLAY CALLED: CLEAR LINES — Fix task started</span></pre>
+<pre class="log-entry"><span class="dim">00:29</span>  <span class="I">I-PIECE DROP ● Fix types</span></pre>
+<pre class="log-entry"><span class="dim">00:30</span>  <span class="grn bold">LINE CLEAR! ████████████████████ — Type error resolved!</span></pre>
+<pre class="log-entry"><span class="dim">00:31</span>  <span class="yel blink">▸ Dropping I-piece for security fix...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 4: ALL CLEAR — PERFECT CLEAR / CLEAN COMMIT ========== -->
+<div class="scene-label">SCENE 4 — PERFECT CLEAR! CLEAN COMMIT</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+<pre>
+<span class="dim" style="font-family:'Press Start 2P',monospace;font-size:8px">  SCORE            LEVEL   LINES     PHASE</span>
+<span class="wht" style="font-family:'Press Start 2P',monospace;font-size:8px">  003800           02      16        DONE</span>
+</pre>
+<pre>
+<span class="dim">  AGENT: <span class="cyn">Claude Code</span>     <span class="org">Add authentication to API</span>     00:34</span>
+</pre>
+<pre>
+<span class="wall">  ┌────────────────────┐</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="grn bold" style="font-family:'Press Start 2P',monospace;font-size:12px">PERFECT</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="grn bold" style="font-family:'Press Start 2P',monospace;font-size:12px">CLEAR!</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="grn">✓ main [abc1234]</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>   <span class="yel bold">BONUS × 1000</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">····················</span><span class="wall">│</span>
+<span class="wall">  └────────────────────┘</span>
+</pre>
+
+<pre style="text-align:center">
+<span class="dim">───────────────────────────────────────</span>
+<span class="dim">   8 build lines</span>  <span class="dim">│</span>  <span class="dim">5 review checks</span>  <span class="dim">│</span>  <span class="grn">3 garbage cleared</span>
+<span class="dim">   3 issues found  │  3 issues fixed   │  0 human calls</span>
+<span class="dim">   2 iterations    │  34.2s total      │  1 hold used</span>
+<span class="dim">───────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:32</span>  <span class="grn bold">LINE CLEAR! ████████████ — Security fixed!</span></pre>
+<pre class="log-entry"><span class="dim">00:33</span>  <span class="grn bold">LINE CLEAR! ████████████ — Complexity fixed!</span></pre>
+<pre class="log-entry"><span class="dim">00:33</span>  <span class="cyn">RE-REVIEW ● All checks passed ✓</span></pre>
+<pre class="log-entry"><span class="dim">00:34</span>  <span class="grn bold" style="font-family:'Press Start 2P',monospace;font-size:8px">PERFECT CLEAR!</span> <span class="grn">commit [abc1234]</span></pre>
+<pre class="log-entry"><span class="dim">00:34</span>  <span class="yel">ALL GARBAGE CLEARED — BONUS × 1000</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 5: MULTI-TASK — TETRIS 99 STYLE ========== -->
+<div class="scene-label">SCENE 5 — TETRIS 99 (aiki status --all)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status --all — 3 games active</div>
+  </div>
+  <div class="screen">
+<pre style="text-align:center;margin-bottom:4px">
+<span class="wht bold" style="font-family:'Press Start 2P',monospace;font-size:9px">SESSION</span>  <span class="dim" style="font-family:'Press Start 2P',monospace;font-size:7px">SCORE: 008400  ·  GAMES: 3  ·  AGENTS: 2</span>
+</pre>
+<pre>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+</pre>
+<pre>
+  <span class="wht bold">GAME 1</span>  <span class="cyn">Claude Code</span>           <span class="wht bold">GAME 2</span>  <span class="mag">Cursor</span>             <span class="wht bold">GAME 3</span>  <span class="cyn">Claude Code</span>
+  <span class="dim">Add authentication</span>            <span class="dim">Refactor payment</span>           <span class="dim">Update API docs</span>
+</pre>
+<pre>
+  <span class="wall">┌──────────┐</span>              <span class="wall">┌──────────┐</span>              <span class="wall">┌──────────┐</span>
+  <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>
+  <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>
+  <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>
+  <span class="wall">│</span><span class="dim2">····</span><span class="I bold">████</span><span class="dim2">··</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··········</span><span class="wall">│</span>
+  <span class="wall">│</span><span class="garb-mag">████</span><span class="dim2">··</span><span class="garb-mag">████</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">····</span><span class="S">██</span><span class="dim2">····</span><span class="wall">│</span>              <span class="wall">│</span><span class="dim2">··</span><span class="T">██</span><span class="dim2">······</span><span class="wall">│</span>
+  <span class="wall">│</span><span class="garb-org">████████</span><span class="dim2">··</span><span class="wall">│</span>              <span class="wall">│</span><span class="O">████</span><span class="S">████</span><span class="J">██</span><span class="wall">│</span>              <span class="wall">│</span><span class="T">████</span><span class="O">████</span><span class="I">██</span><span class="wall">│</span>
+  <span class="wall">└──────────┘</span>              <span class="wall">└──────────┘</span>              <span class="wall">└──────────┘</span>
+  <span class="dim">LV:</span><span class="wht">02</span> <span class="dim">LN:</span><span class="wht">14</span> <span class="garb-mag">▲2</span>          <span class="dim">LV:</span><span class="wht">01</span> <span class="dim">LN:</span><span class="wht">03</span>              <span class="dim">LV:</span><span class="wht">01</span> <span class="dim">LN:</span><span class="wht">07</span>
+  <span class="yel">FIX 1/3</span>                   <span class="grn">BUILD 3/6</span>                 <span class="cyn">REVIEW 2/5</span>
+</pre>
+<pre>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span class="dim">  [1-3] Focus game  [b] New game  [s] Stop  [f] Follow agent  [q] Quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">G1</span>  <span class="grn bold">LINE CLEAR! Type error garbage cleared</span></pre>
+<pre class="log-entry"><span class="dim">G2</span>  <span class="grn">LINE CLEAR ● Extract interface</span></pre>
+<pre class="log-entry"><span class="dim">G3</span>  <span class="cyn">REVIEW ● Security scan ✓</span></pre>
+<pre class="log-entry"><span class="dim">G1</span>  <span class="yel blink">▸ Dropping fix for security garbage...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 6: ESCALATION — TOPPED OUT ========== -->
+<div class="scene-label">SCENE 6 — TOPPED OUT (ESCALATE TO HUMAN)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — Refactor payment service</div>
+  </div>
+  <div class="screen">
+<pre>
+<span class="dim" style="font-family:'Press Start 2P',monospace;font-size:8px">  SCORE            LEVEL   LINES     PHASE</span>
+<span class="wht" style="font-family:'Press Start 2P',monospace;font-size:8px">  002100           03      11        FIX</span>
+</pre>
+<pre>
+<span class="dim">  AGENT: <span class="mag">Cursor</span>             <span class="org">Refactor payment service</span>      01:42</span>
+</pre>
+<pre>
+<span class="wall">  ┌────────────────────┐</span>
+<span class="wall">  │</span><span class="Z">██</span><span class="dim2">··</span><span class="T">████</span><span class="dim2">····</span><span class="J">██</span><span class="dim2">····</span><span class="S">██</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="Z">████</span><span class="T">██</span><span class="O">████</span><span class="dim2">··</span><span class="J">████</span><span class="S">████</span><span class="wall">│</span>   <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:10px">TOPPED</span>
+<span class="wall">  │</span><span class="I">██████████</span><span class="L">████</span><span class="S">██</span><span class="T">████</span><span class="wall">│</span>   <span class="red bold" style="font-family:'Press Start 2P',monospace;font-size:10px">OUT!</span>
+<span class="wall">  │</span><span class="O">████</span><span class="I">██</span><span class="Z">████</span><span class="J">██████</span><span class="L">████</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="T">██████</span><span class="S">██</span><span class="O">████</span><span class="L">██</span><span class="I">██████</span><span class="wall">│</span>   <span class="dim">Agent attempted</span>
+<span class="wall">  │</span><span class="L">████</span><span class="Z">██████</span><span class="T">██</span><span class="J">████</span><span class="S">████</span><span class="wall">│</span>   <span class="dim">3 fix iterations.</span>
+<span class="wall">  │</span><span class="J">██</span><span class="I">████</span><span class="O">████</span><span class="S">██</span><span class="Z">██</span><span class="T">██████</span><span class="wall">│</span>   <span class="dim">Board is full.</span>
+<span class="wall">  │</span><span class="S">████</span><span class="T">██</span><span class="L">██████</span><span class="I">████</span><span class="O">████</span><span class="wall">│</span>
+<span class="wall">  │</span><span class="dim2">··</span><span class="I">██</span><span class="Z">██</span><span class="O">██████</span><span class="J">████</span><span class="L">██</span><span class="dim2">··</span><span class="wall">│</span>   <span class="dim">Remaining:</span>
+<span class="wall">  │</span><span class="garb-red">████</span><span class="dim2">··</span><span class="garb-red">██████████████</span><span class="wall">│</span>   <span class="org">█ Cyclomatic 14</span>
+<span class="wall">  │</span><span class="garb-red">██████████</span><span class="dim2">··</span><span class="garb-red">████████</span><span class="wall">│</span>   <span class="dim">  (limit: 10)</span>
+<span class="wall">  │</span><span class="garb-org">████████████████</span><span class="dim2">··</span><span class="garb-org">██</span><span class="wall">│</span>   <span class="dim">  "Needs architectural</span>
+<span class="wall">  │</span><span class="garb-org">██</span><span class="dim2">··</span><span class="garb-org">████████████████</span><span class="wall">│</span>   <span class="dim">   decision about</span>
+<span class="wall">  │</span><span class="garb-red">████████</span><span class="dim2">··</span><span class="garb-red">██████████</span><span class="wall">│</span>   <span class="dim">   function splitting"</span>
+<span class="wall">  │</span><span class="garb-org">██████████████████</span><span class="dim2">··</span><span class="wall">│</span>
+<span class="wall">  └────────────────────┘</span>
+</pre>
+
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────────</span>
+<span class="red bold"> AGENT FORFEITS.</span>  <span class="dim">Resolved: 2/3 issues. Remaining: 1 (complexity).</span>
+<span class="dim">────────────────────────────────────────────────────────────────────────</span>
+<span class="wht bold"> YOUR TURN:</span>  <span class="grn">[r] Review &amp; fix manually</span>  <span class="yel">[i] Override &amp; commit</span>  <span class="dim">[c] Cancel</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">01:20</span>  <span class="grn">LINE CLEAR! Missing import garbage cleared</span></pre>
+<pre class="log-entry"><span class="dim">01:30</span>  <span class="grn">LINE CLEAR! Test coverage garbage cleared</span></pre>
+<pre class="log-entry"><span class="dim">01:38</span>  <span class="org">FIX attempt 3 — complexity still 14 (limit: 10)</span></pre>
+<pre class="log-entry"><span class="dim">01:42</span>  <span class="red bold">TOPPED OUT — Agent cannot clear remaining garbage</span></pre>
+<pre class="log-entry"><span class="dim">01:42</span>  <span class="yel blink">▸ Human intervention required...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== Design Notes ========== -->
+<div class="note">
+  <strong>Tetris → Aiki mapping for ratatui:</strong><br><br>
+
+  <strong>Core metaphor:</strong><br>
+  • The well = the task workspace<br>
+  • Pieces falling = subtasks being worked on<br>
+  • Line clear = subtask completed<br>
+  • <strong>Garbage lines from opponent = issues found during review</strong> (the killer feature of this metaphor)<br>
+  • Clearing garbage = fixing issues<br>
+  • Perfect clear (empty board) = clean commit<br>
+  • Topped out = agent can't fix, escalates to human<br>
+  • HOLD piece = next queued subtask<br>
+  • NEXT piece = upcoming work<br>
+  • Level = iteration number<br>
+  • Lines = total subtasks completed<br><br>
+
+  <strong>Why Tetris > other metaphors:</strong><br>
+  • <strong>Garbage lines</strong> — competitive Tetris sends garbage to your opponent. Review failures sending garbage to the board is <em>exactly</em> how it feels when issues get injected into your clean work. No other game metaphor has this.<br>
+  • <strong>Clearing lines is satisfying</strong> — watching a full row flash and disappear maps perfectly to the dopamine of resolving an issue<br>
+  • <strong>Board state = project health</strong> — a clean board means clean code. A messy board with gaps means tech debt. A topped-out board means escalation. The visual is immediately intuitive<br>
+  • <strong>Tetris 99 for multi-task</strong> — multiple mini-boards side by side is a well-known visual pattern from Tetris 99/Tetris Battle<br>
+  • <strong>Topped out = escalation</strong> — the game-over state naturally maps to "agent gives up, human takes over"<br><br>
+
+  <strong>Tetromino colors (NES palette):</strong><br>
+  <code>I</code>=cyan, <code>O</code>=yellow, <code>T</code>=purple, <code>S</code>=green, <code>Z</code>=red, <code>J</code>=blue, <code>L</code>=orange<br><br>
+
+  <strong>Garbage line colors by issue type:</strong><br>
+  • <code>garb-red</code> (#833) = errors (type, syntax)<br>
+  • <code>garb-mag</code> (#846) = security issues<br>
+  • <code>garb-org</code> (#863) = warnings (complexity, style)<br>
+  Garbage lines have holes (the <code>··</code> gaps) — just like real Tetris garbage. The hole position is random, making each line clearable but requiring the right piece.<br><br>
+
+  <strong>Characters:</strong> <code>██</code> (filled cell), <code>··</code> (empty cell), <code>▲</code> (garbage indicator on mini-board)<br><br>
+
+  <strong>ratatui implementation:</strong> Each cell is 2 chars wide for square-ish proportions. The well is a 10-wide × 16-tall grid (20 chars × 16 rows). Mini-boards for Tetris 99 view are 5-wide × 6-tall. Use <code>ratatui::widgets::canvas</code> or raw <code>Buffer</code> writes for the block grid.
+</div>
+
+</body>
+</html>

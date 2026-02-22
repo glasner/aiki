@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki × Tecmo Bowl — Terminal Status Mockups</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 36px;
+  }
+
+  h1 {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 13px;
+    text-align: center;
+    letter-spacing: 2px;
+    background: linear-gradient(180deg, #ff6644 0%, #ff2200 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(0 0 8px rgba(255, 40, 0, 0.4));
+  }
+
+  .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    color: #555;
+    font-size: 11px;
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  .scene-label {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 9px;
+    color: #ffcc00;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: -20px;
+    text-shadow: 0 0 6px rgba(255, 204, 0, 0.3);
+  }
+
+  .terminal {
+    background: #0c0c0c;
+    border: 2px solid #2a2a2a;
+    border-radius: 6px;
+    width: 100%;
+    max-width: 780px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.9), inset 0 0 80px rgba(0, 0, 0, 0.2);
+  }
+
+  .terminal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.06) 0px,
+      rgba(0, 0, 0, 0.06) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .terminal-bar {
+    background: #161616;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+
+  .terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .terminal-title {
+    flex: 1;
+    text-align: center;
+    color: #555;
+    font-size: 11px;
+  }
+
+  .screen {
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #ccc;
+  }
+
+  pre {
+    white-space: pre;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  /* Tecmo-style scoreboard */
+  .scoreboard {
+    background: #111;
+    border: 2px solid #444;
+    border-radius: 2px;
+    padding: 0;
+    margin-bottom: 6px;
+    overflow: hidden;
+  }
+
+  .sb-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #1a1a1a;
+    padding: 5px 10px;
+    border-bottom: 2px solid #444;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 8px;
+  }
+
+  .sb-main {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 24px;
+    padding: 8px 12px;
+    font-family: 'Press Start 2P', monospace;
+  }
+
+  .sb-team {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 100px;
+  }
+
+  .sb-team-name {
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+
+  .sb-team-score {
+    font-size: 18px;
+  }
+
+  .sb-vs {
+    font-size: 7px;
+    color: #555;
+  }
+
+  .sb-info {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    padding: 5px 10px;
+    border-top: 1px solid #333;
+    font-family: 'Press Start 2P', monospace;
+    font-size: 7px;
+    color: #888;
+    background: #0f0f0f;
+  }
+
+  /* Colors */
+  .grn { color: #22cc44; }
+  .field-grn { color: #1a7a2e; }
+  .yel { color: #ffcc00; }
+  .red { color: #ff3333; }
+  .cyn { color: #00ddff; }
+  .mag { color: #ff66aa; }
+  .org { color: #ff9933; }
+  .wht { color: #ffffff; }
+  .dim { color: #444444; }
+  .dim2 { color: #333333; }
+  .blu { color: #4488ff; }
+  .bold { font-weight: 700; }
+
+  .blink { animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .pulse { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .flash { animation: flash 0.3s ease-in-out 3; }
+  @keyframes flash { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+  .field-row {
+    position: relative;
+  }
+
+  .log-area {
+    border-top: 2px solid #333;
+    margin-top: 6px;
+    padding-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .log-entry { opacity: 0.6; }
+  .log-entry:last-child { opacity: 1; }
+
+  .note {
+    max-width: 780px;
+    width: 100%;
+    padding: 14px 18px;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    color: #666;
+    font-size: 11px;
+    line-height: 1.7;
+  }
+
+  .note strong { color: #999; }
+  .note code {
+    color: #00ddff;
+    background: #1a1a2a;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>AIKI × TECMO BOWL</h1>
+  <div class="subtitle">Terminal status screens — ratatui mockups</div>
+</div>
+
+<!-- ========== SCENE 1: BUILD DRIVE IN PROGRESS ========== -->
+<div class="scene-label">SCENE 1 — BUILD DRIVE IN PROGRESS</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+
+    <!-- Scoreboard -->
+    <div class="scoreboard">
+      <div class="sb-top">
+        <span class="cyn">◆ CLAUDE CODE</span>
+        <span class="dim">Add authentication to API</span>
+        <span class="org">VS CODEBASE ◆</span>
+      </div>
+      <div class="sb-main">
+        <div class="sb-team">
+          <span class="sb-team-name cyn">AGENT</span>
+          <span class="sb-team-score wht">03</span>
+        </div>
+        <div style="text-align:center">
+          <div class="sb-vs">TASKS DONE</div>
+        </div>
+        <div class="sb-team">
+          <span class="sb-team-name red">ISSUES</span>
+          <span class="sb-team-score dim">00</span>
+        </div>
+      </div>
+      <div class="sb-info">
+        <span>QTR: <span class="wht">1ST</span></span>
+        <span>ITER: <span class="wht">1</span></span>
+        <span>TIME: <span class="wht">00:14</span></span>
+        <span>DOWN: <span class="yel">1ST &amp; 10</span></span>
+      </div>
+    </div>
+
+    <!-- Field -->
+<pre>
+<span class="dim2">  BUILD                        REVIEW                     FIX</span>
+<span class="dim2">  ◂─────────────────────────▸  ◂──────────────────────▸  ◂──────▸</span>
+
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░</span><span class="grn">◈  ◈  ◈</span><span class="field-grn">░░</span><span class="yel bold">☻ ▸</span><span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+
+<span class="dim2">        ▴     ▴     ▴</span>     <span class="yel">▴</span>
+<span class="dim2">       Parse  Gen   Auth</span>  <span class="yel">Route</span>
+<span class="dim2">       spec   types  mid</span>  <span class="yel">handlers</span>
+</pre>
+
+    <!-- Status bar -->
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+<span class="dim">BALL ON:</span> <span class="yel bold">35 YD LINE</span>   <span class="dim">│</span> <span class="dim">PLAY:</span> <span class="cyn">Route handlers</span>   <span class="dim">│</span> <span class="dim">TIMEOUT:</span> <span class="wht">3</span>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:00</span>  <span class="yel">KICKOFF — Build task started</span></pre>
+<pre class="log-entry"><span class="dim">00:03</span>  <span class="grn">1ST DOWN ● Parse spec — GAIN 10</span></pre>
+<pre class="log-entry"><span class="dim">00:06</span>  <span class="grn">1ST DOWN ● Gen types — GAIN 10</span></pre>
+<pre class="log-entry"><span class="dim">00:10</span>  <span class="grn">1ST DOWN ● Auth middleware — GAIN 10</span></pre>
+<pre class="log-entry"><span class="dim">00:14</span>  <span class="yel blink">▸ Route handlers — driving...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 2: REVIEW SACK — ISSUES ON THE FIELD ========== -->
+<div class="scene-label">SCENE 2 — SACKED! REVIEW FINDS ISSUES</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+
+    <div class="scoreboard">
+      <div class="sb-top">
+        <span class="cyn">◆ CLAUDE CODE</span>
+        <span class="dim">Add authentication to API</span>
+        <span class="org">VS CODEBASE ◆</span>
+      </div>
+      <div class="sb-main">
+        <div class="sb-team">
+          <span class="sb-team-name cyn">AGENT</span>
+          <span class="sb-team-score wht">13</span>
+        </div>
+        <div style="text-align:center">
+          <div class="sb-vs">TASKS DONE</div>
+        </div>
+        <div class="sb-team">
+          <span class="sb-team-name red">ISSUES</span>
+          <span class="sb-team-score red">03</span>
+        </div>
+      </div>
+      <div class="sb-info">
+        <span>QTR: <span class="wht">2ND</span></span>
+        <span>ITER: <span class="wht">1</span></span>
+        <span>TIME: <span class="wht">00:28</span></span>
+        <span>DOWN: <span class="red bold">SACKED!</span></span>
+      </div>
+    </div>
+
+<pre>
+<span class="dim2">  BUILD                        REVIEW                     FIX</span>
+<span class="dim2">  ◂─────────────────────────▸  ◂──────────────────────▸  ◂──────▸</span>
+
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="red bold">✖</span><span class="yel"> ☻</span><span class="field-grn">░</span><span class="red">⛨</span><span class="field-grn">░</span><span class="mag">⛨</span><span class="field-grn">░</span><span class="org">⛨</span><span class="field-grn">░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+</pre>
+
+<pre>
+<span class="red bold">  ╔══════════════════════════════════════════════════════════════╗</span>
+<span class="red bold">  ║  SACKED AT THE 60!  Review found 3 defenders in the backfield  ║</span>
+<span class="red bold">  ╚══════════════════════════════════════════════════════════════╝</span>
+
+  <span class="red">⛨ #99 BLITZ</span>    <span class="dim">Missing return type on verify_token()</span>
+  <span class="mag">⛨ #44 ZONE</span>    <span class="dim">API key hardcoded in auth.py:45</span>
+  <span class="org">⛨ #77 SWEEP</span>   <span class="dim">Cyclomatic complexity 18 (limit: 10)</span>
+</pre>
+
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+<span class="wht bold"> CALL THE PLAY:</span>  <span class="grn bold">[r] RUN IT BACK</span>  <span class="yel">[e] PUNT (escalate)</span>  <span class="dim">[i] HURDLE (ignore)</span>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+<span class="dim">TIMEOUTS:</span> <span class="yel">⚑ ⚑ ⚑</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:24</span>  <span class="grn">BUILD COMPLETE ✓ — crossed the 40</span></pre>
+<pre class="log-entry"><span class="dim">00:25</span>  <span class="cyn">REVIEW ● Type check... Security scan... Complexity...</span></pre>
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="red bold">SACKED! 3 issues broke through the line!</span></pre>
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="yel blink">▸ Awaiting play call...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 3: FIX DRIVE — RUNNING IT BACK ========== -->
+<div class="scene-label">SCENE 3 — RUNNING IT BACK (FIX IN PROGRESS)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+
+    <div class="scoreboard">
+      <div class="sb-top">
+        <span class="cyn">◆ CLAUDE CODE</span>
+        <span class="dim">Add authentication to API</span>
+        <span class="org">VS CODEBASE ◆</span>
+      </div>
+      <div class="sb-main">
+        <div class="sb-team">
+          <span class="sb-team-name cyn">AGENT</span>
+          <span class="sb-team-score wht">14</span>
+        </div>
+        <div style="text-align:center">
+          <div class="sb-vs">TASKS DONE</div>
+        </div>
+        <div class="sb-team">
+          <span class="sb-team-name red">ISSUES</span>
+          <span class="sb-team-score org">02</span>
+        </div>
+      </div>
+      <div class="sb-info">
+        <span>QTR: <span class="wht">3RD</span></span>
+        <span>ITER: <span class="wht">2</span></span>
+        <span>TIME: <span class="wht">00:31</span></span>
+        <span>DOWN: <span class="yel">2ND &amp; GOAL</span></span>
+      </div>
+    </div>
+
+<pre>
+<span class="dim2">  BUILD                        REVIEW                     FIX</span>
+<span class="dim2">  ◂─────────────────────────▸  ◂──────────────────────▸  ◂──────▸</span>
+
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="grn">◈</span><span class="field-grn">░░</span><span class="yel bold">☻ ▸</span><span class="field-grn">░░░</span><span class="dim">⛨</span><span class="field-grn">░</span><span class="dim">⛨</span><span class="field-grn">░░░░░░░░░░</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+
+<span class="dim">                                             ▴</span>
+<span class="dim">                                            Fix</span>
+<span class="dim">                                            types</span><span class="grn"> ✓</span>
+</pre>
+
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+<span class="dim">BALL ON:</span> <span class="yel bold">85 YD LINE</span>   <span class="dim">│</span> <span class="dim">PLAY:</span> <span class="cyn">Move secrets to env</span>  <span class="dim">│</span> <span class="dim">TIMEOUT:</span> <span class="wht">2</span>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:28</span>  <span class="yel">PLAY CALLED: RUN IT BACK — Fix task started</span></pre>
+<pre class="log-entry"><span class="dim">00:29</span>  <span class="grn bold">TACKLE BROKEN! Fix types — beat #99 BLITZ for 5 yds</span></pre>
+<pre class="log-entry"><span class="dim">00:31</span>  <span class="yel blink">▸ Move secrets — juking #44 ZONE...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 4: TOUCHDOWN — CLEAN COMMIT ========== -->
+<div class="scene-label">SCENE 4 — TOUCHDOWN! CLEAN COMMIT</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — Add authentication to API</div>
+  </div>
+  <div class="screen">
+
+    <div class="scoreboard">
+      <div class="sb-top">
+        <span class="cyn">◆ CLAUDE CODE</span>
+        <span class="dim">Add authentication to API</span>
+        <span class="org">VS CODEBASE ◆</span>
+      </div>
+      <div class="sb-main">
+        <div class="sb-team">
+          <span class="sb-team-name cyn">AGENT</span>
+          <span class="sb-team-score grn">16</span>
+        </div>
+        <div style="text-align:center">
+          <div class="sb-vs">TASKS DONE</div>
+        </div>
+        <div class="sb-team">
+          <span class="sb-team-name red">ISSUES</span>
+          <span class="sb-team-score dim">00</span>
+        </div>
+      </div>
+      <div class="sb-info">
+        <span>QTR: <span class="wht">4TH</span></span>
+        <span>ITER: <span class="wht">2</span></span>
+        <span>TIME: <span class="wht">00:34</span></span>
+        <span class="grn bold">TOUCHDOWN!</span>
+      </div>
+    </div>
+
+<pre>
+<span class="dim2">  BUILD                        REVIEW                     FIX</span>
+<span class="dim2">  ◂─────────────────────────▸  ◂──────────────────────▸  ◂──────▸</span>
+
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="grn">◈ ◈ ◈ ◈ ◈</span><span class="field-grn">░░</span><span class="grn">◈ ◈ ◈</span><span class="field-grn">░░░░░░░░░░░░░</span><span class="yel bold">☻ ★</span>
+<span class="field-grn">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+<span class="dim">  ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊     ┊</span>
+<span class="dim2">  0    10    20    30    40    50    60    70    80    90    </span><span class="grn">TD</span>
+</pre>
+
+<pre style="text-align:center">
+<span class="grn bold" style="font-family:'Press Start 2P',monospace;font-size:14px">★  TOUCHDOWN  ★</span>
+
+<span class="grn">✓ Clean commit → main [abc1234]</span>
+
+<span class="dim">DRIVE SUMMARY</span>
+<span class="dim">──────────────────────────────────</span>
+<span class="cyn">  8 build plays</span>  <span class="dim">│</span>  <span class="cyn">5 review checks</span>  <span class="dim">│</span>  <span class="grn">3 fixes</span>
+<span class="dim">  3 issues found  │  3 issues resolved │  0 human calls</span>
+<span class="dim">  2 iterations    │  34.2s total drive │  1 timeout used</span>
+<span class="dim">──────────────────────────────────</span>
+</pre>
+
+<pre>
+<span class="dim">────────────────────────────────────────────────────────────────────</span>
+<span class="dim">TIMEOUTS:</span> <span class="yel">⚑ ⚑</span> <span class="dim">⚑</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">00:32</span>  <span class="grn bold">TACKLE BROKEN! Move secrets — beat #44 ZONE</span></pre>
+<pre class="log-entry"><span class="dim">00:33</span>  <span class="grn bold">TACKLE BROKEN! Add tests — beat #77 SWEEP</span></pre>
+<pre class="log-entry"><span class="dim">00:33</span>  <span class="cyn">RE-REVIEW — All checks passed ✓</span></pre>
+<pre class="log-entry"><span class="dim">00:34</span>  <span class="grn bold">★ TOUCHDOWN! commit [abc1234] Add authentication to API</span></pre>
+<pre class="log-entry"><span class="dim">00:34</span>  <span class="yel">EXTRA POINT GOOD — provenance recorded</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 5: MULTI-GAME SCOREBOARD ========== -->
+<div class="scene-label">SCENE 5 — MULTI-GAME SCOREBOARD (aiki status --all)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status --all</div>
+  </div>
+  <div class="screen">
+
+<pre style="text-align:center;margin-bottom:8px">
+<span class="yel bold" style="font-family:'Press Start 2P',monospace;font-size:9px">SUNDAY SCOREBOARD</span>   <span class="dim" style="font-family:'Press Start 2P',monospace;font-size:7px">3 GAMES · 2 AGENTS</span>
+</pre>
+
+<pre>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span class="wht bold"> GAME 1</span>  <span class="cyn">Claude Code</span> <span class="dim">vs</span> <span class="org">Add authentication</span>         <span class="dim">QTR:</span> <span class="wht">3RD</span>  <span class="dim">ITER:</span> <span class="wht">2</span>
+<span class="dim">         0····10····20····30····40····50····60····70····80····90····TD</span>
+         <span class="grn">◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈</span><span class="yel bold">☻▸</span><span class="dim">·······</span><span class="dim">⛨⛨</span><span class="dim">·····</span>
+         <span class="dim">AGENT:</span> <span class="wht">14</span>  <span class="dim">ISSUES:</span> <span class="org">2</span>  <span class="dim">│</span>  <span class="yel">Driving — Move secrets to env</span>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span class="wht bold"> GAME 2</span>  <span class="mag">Cursor</span> <span class="dim">vs</span> <span class="org">Refactor payment svc</span>            <span class="dim">QTR:</span> <span class="wht">1ST</span>  <span class="dim">ITER:</span> <span class="wht">1</span>
+<span class="dim">         0····10····20····30····40····50····60····70····80····90····TD</span>
+         <span class="grn">◈◈◈◈◈◈◈◈◈◈◈◈</span><span class="yel bold">☻▸</span><span class="dim">·················································</span>
+         <span class="dim">AGENT:</span> <span class="wht">03</span>  <span class="dim">ISSUES:</span> <span class="dim">0</span>  <span class="dim">│</span>  <span class="grn">Building — Extract interface</span>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span class="wht bold"> GAME 3</span>  <span class="cyn">Claude Code</span> <span class="dim">vs</span> <span class="org">Update API docs</span>              <span class="dim">QTR:</span> <span class="wht">2ND</span>  <span class="dim">ITER:</span> <span class="wht">1</span>
+<span class="dim">         0····10····20····30····40····50····60····70····80····90····TD</span>
+         <span class="grn">◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈◈</span><span class="cyn bold">☻▸</span><span class="dim">·········································</span>
+         <span class="dim">AGENT:</span> <span class="wht">07</span>  <span class="dim">ISSUES:</span> <span class="dim">0</span>  <span class="dim">│</span>  <span class="cyn">Reviewing — Security scan</span>
+<span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+</pre>
+
+<pre>
+<span class="dim">  [1-3] Focus game   [b] Kickoff new   [s] Stop   [f] Follow agent   [q] Quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"><span class="dim">G1</span>  <span class="grn bold">TACKLE BROKEN! Fix types — beat #99 BLITZ</span></pre>
+<pre class="log-entry"><span class="dim">G2</span>  <span class="grn">1ST DOWN ● Extract interface — GAIN 10</span></pre>
+<pre class="log-entry"><span class="dim">G3</span>  <span class="cyn">REVIEW ● Type check ✓</span></pre>
+<pre class="log-entry"><span class="dim">G1</span>  <span class="yel blink">▸ Driving toward the end zone...</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ========== SCENE 6: PLAY CALL SCREEN ========== -->
+<div class="scene-label">SCENE 6 — PLAY CALL SCREEN (CHOOSING ACTION)</div>
+<div class="terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot" style="background:#ff5f56"></div>
+    <div class="terminal-dot" style="background:#ffbd2e"></div>
+    <div class="terminal-dot" style="background:#27c93f"></div>
+    <div class="terminal-title">aiki status — CALL THE PLAY</div>
+  </div>
+  <div class="screen">
+
+<pre style="text-align:center;margin-bottom:12px">
+<span class="yel bold" style="font-family:'Press Start 2P',monospace;font-size:10px">SELECT PLAY</span>
+<span class="dim">ITER 1 · 3 issues found · QTR 2ND</span>
+</pre>
+
+<pre>
+<span class="dim">  ┌─────────────────────────────────────────────────────────────┐</span>
+<span class="dim">  │                                                             │</span>
+<span class="dim">  │</span>   <span class="grn bold" style="font-family:'Press Start 2P',monospace;font-size:10px"> ▸ [R] RUN IT BACK</span>                               <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="dim">Agent reads feedback, fixes issues, tries again</span>       <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="grn">Best for: 1-5 clear, fixable issues</span>                  <span class="dim">│</span>
+<span class="dim">  │                                                             │</span>
+<span class="dim">  │</span>     <span class="yel" style="font-family:'Press Start 2P',monospace;font-size:10px">   [E] PUNT</span>                                      <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="dim">Escalate to human — agent can't solve this alone</span>   <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="yel">Best for: Architectural decisions, complex tradeoffs</span> <span class="dim">│</span>
+<span class="dim">  │                                                             │</span>
+<span class="dim">  │</span>     <span class="dim" style="font-family:'Press Start 2P',monospace;font-size:10px">   [I] HURDLE</span>                                    <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="dim">Ignore warnings, commit anyway</span>                      <span class="dim">│</span>
+<span class="dim">  │</span>     <span class="dim">Best for: Non-critical warnings you'll fix later</span>    <span class="dim">│</span>
+<span class="dim">  │                                                             │</span>
+<span class="dim">  └─────────────────────────────────────────────────────────────┘</span>
+</pre>
+
+<pre>
+<span class="dim">  SCOUTING REPORT:</span>
+
+  <span class="red">⛨ #99 BLITZ</span>    <span class="red">ERROR</span>    <span class="dim">Missing return type on verify_token()</span>
+  <span class="mag">⛨ #44 ZONE</span>    <span class="mag">SECURITY</span> <span class="dim">API key hardcoded in auth.py:45</span>
+  <span class="org">⛨ #77 SWEEP</span>   <span class="org">WARNING</span>  <span class="dim">Cyclomatic complexity 18 (limit: 10)</span>
+</pre>
+
+  </div>
+</div>
+
+<!-- ========== Design Notes ========== -->
+<div class="note">
+  <strong>Tecmo Bowl → Aiki mapping for ratatui implementation:</strong><br><br>
+  <strong>Characters:</strong> <code>☻</code> (agent/player), <code>⛨</code> (defender/issue), <code>◈</code> (completed subtask), <code>★</code> (touchdown/commit), <code>⚑</code> (timeout/retry)<br><br>
+  <strong>The field = the pipeline:</strong><br>
+  • 0–40 yard line = BUILD phase (subtasks as yard markers)<br>
+  • 40–80 yard line = REVIEW phase<br>
+  • 80–end zone = FIX phase<br>
+  • Touchdown = clean commit to Git<br><br>
+  <strong>Football → Dev mapping:</strong><br>
+  • Quarters = iteration number (1st QTR = first attempt, 2nd = after review, etc.)<br>
+  • Down & distance = current subtask progress within a phase<br>
+  • Sack = review finds issues (agent stopped in their tracks)<br>
+  • Tackle broken = issue fixed (agent breaks through a defender)<br>
+  • Punt = escalate to human (giving up possession of the problem)<br>
+  • Hurdle = ignore warning and commit anyway<br>
+  • Timeouts = retries remaining<br>
+  • Drive summary = provenance record<br><br>
+  <strong>Multi-game view</strong> = the "Sunday Scoreboard" showing all concurrent tasks as simultaneous games. Each game is a compressed single-line field view.<br><br>
+  <strong>Play call screen</strong> = the action selection when review fails. Mirrors the original Tecmo Bowl play selection UI with the cursor highlighting options.<br><br>
+  <strong>Scoreboard</strong> = ratatui <code>Block</code> widget with the classic AGENT vs ISSUES layout, quarter/iteration, and game clock (elapsed time).
+</div>
+
+</body>
+</html>
