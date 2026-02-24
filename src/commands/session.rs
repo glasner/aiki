@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::global;
 use crate::history;
 use crate::history::types::ConversationEvent;
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use crate::session::{self, SessionMode};
 use clap::Subcommand;
 use std::collections::HashMap;

@@ -1,4 +1,4 @@
-use crate::authors;
+use crate::provenance::authors;
 use crate::error::{AikiError, Result};
 use anyhow::Context;
 use std::env;

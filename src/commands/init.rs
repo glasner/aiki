@@ -4,8 +4,8 @@ use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::global;
 use crate::jj;
-use crate::repo::RepoDetector;
-use crate::repo_id;
+use crate::repos::RepoDetector;
+use crate::repos;
 use crate::signing;
 use anyhow::Context;
 use std::env;
@@ -192,7 +192,7 @@ pub fn run(quiet: bool) -> Result<()> {
     fs::create_dir_all(&aiki_dir).context("Failed to create .aiki directory")?;
 
     // Generate repository ID for global state tracking
-    let repo_id = repo_id::ensure_repo_id(&repo_root)?;
+    let repo_id = repos::ensure_repo_id(&repo_root)?;
     if !quiet {
         if repo_id.starts_with("local-") {
             println!("✓ Generated repository ID (local): {}", repo_id);

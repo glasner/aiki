@@ -101,6 +101,22 @@ pub fn write_link_event(
     from: &str,
     to: &str,
 ) -> Result<bool> {
+    write_link_event_with_autorun(cwd, graph, kind, from, to, None)
+}
+
+/// Write a LinkAdded event with an optional autorun flag.
+///
+/// Like `write_link_event` but allows setting autorun on the created link.
+/// When `autorun` is `Some(true)`, the `from` task will auto-start when
+/// the `to` (blocker) task closes.
+pub fn write_link_event_with_autorun(
+    cwd: &Path,
+    graph: &super::graph::TaskGraph,
+    kind: &str,
+    from: &str,
+    to: &str,
+    autorun: Option<bool>,
+) -> Result<bool> {
     use super::graph::find_link_kind;
     use super::md::short_id;
 
@@ -125,7 +141,7 @@ pub fn write_link_event(
 
     // 4. Cardinality enforcement with auto-replace
     let link_kind = find_link_kind(kind);
-    let emit_supersedes = kind == "implements" || kind == "orchestrates";
+    let emit_supersedes = kind == "implements-plan" || kind == "orchestrates";
     let timestamp = chrono::Utc::now();
 
     if let Some(lk) = link_kind {
@@ -150,13 +166,14 @@ pub fn write_link_event(
                                 from: from.to_string(),
                                 to: old_target.clone(),
                                 kind: "supersedes".to_string(),
+                                autorun: None,
                                 timestamp,
                             };
                             write_event(cwd, &supersedes_event)?;
                             eprintln!(
                                 "Superseded: {} previously {} {}",
                                 short_id(old_target),
-                                if kind == "implements" { "implemented" } else { "orchestrated" },
+                                if kind == "implements-plan" { "implemented" } else { "orchestrated" },
                                 short_id(&to_normalized)
                             );
                         }
@@ -197,6 +214,7 @@ pub fn write_link_event(
                             from: from.to_string(),
                             to: old_from.clone(),
                             kind: "supersedes".to_string(),
+                            autorun: None,
                             timestamp,
                         };
                         write_event(cwd, &supersedes_event)?;
@@ -217,6 +235,7 @@ pub fn write_link_event(
         from: from.to_string(),
         to: to_normalized,
         kind: kind.to_string(),
+        autorun,
         timestamp,
     };
     write_event(cwd, &event)?;
@@ -672,12 +691,16 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             from,
             to,
             kind,
+            autorun,
             timestamp,
         } => {
             add_metadata("event", "link_added", &mut lines);
             add_metadata("from", from, &mut lines);
             add_metadata_escaped("to", to, &mut lines);
             add_metadata("kind", kind, &mut lines);
+            if let Some(ar) = autorun {
+                add_metadata("autorun", ar, &mut lines);
+            }
             add_metadata_timestamp(timestamp, &mut lines);
         }
         TaskEvent::LinkRemoved {
@@ -1007,11 +1030,16 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s))?;
             let kind = fields.get("kind")?.first()?.to_string();
+            let autorun = fields
+                .get("autorun")
+                .and_then(|v| v.first())
+                .map(|s| *s == "true");
 
             Some(TaskEvent::LinkAdded {
                 from,
                 to,
                 kind,
+                autorun,
                 timestamp,
             })
         }
@@ -2305,6 +2333,7 @@ timestamp=2026-01-09T10:30:00Z
             from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
             to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
             kind: "blocked-by".to_string(),
+            autorun: None,
             timestamp: Utc::now(),
         };
 
@@ -2344,6 +2373,7 @@ timestamp=2026-01-09T10:30:00Z
             from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
             to: "file:ops/now/design.md".to_string(),
             kind: "sourced-from".to_string(),
+            autorun: None,
             timestamp: Utc::now(),
         };
 
@@ -2453,6 +2483,91 @@ timestamp=2026-02-10T14:30:00Z
             }
             _ => panic!("Expected LinkAdded event"),
         }
+    }
+
+    #[test]
+    fn test_roundtrip_link_added_with_autorun() {
+        let original = TaskEvent::LinkAdded {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "validates".to_string(),
+            autorun: Some(true),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("autorun=true"), "Serialized block should contain autorun=true");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::LinkAdded { autorun, .. } => {
+                assert_eq!(autorun, Some(true));
+            }
+            _ => panic!("Expected LinkAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_link_added_autorun_false() {
+        let original = TaskEvent::LinkAdded {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "depends-on".to_string(),
+            autorun: Some(false),
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("autorun=false"), "Serialized block should contain autorun=false");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::LinkAdded { autorun, .. } => {
+                assert_eq!(autorun, Some(false));
+            }
+            _ => panic!("Expected LinkAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_link_added_without_autorun_backward_compat() {
+        // Old events without autorun field should parse with autorun=None
+        let block = r#"
+event=link_added
+from=mvslrspmoynoxyyywqyutmovxpvztkls
+to=nqrtxsypzkwolmnrstvuqxyzplmrwknos
+kind=blocked-by
+timestamp=2026-02-10T14:30:00Z
+"#;
+        let event = parse_metadata_block(block).expect("Should parse");
+        match event {
+            TaskEvent::LinkAdded { autorun, .. } => {
+                assert_eq!(autorun, None, "Missing autorun field should parse as None");
+            }
+            _ => panic!("Expected LinkAdded event"),
+        }
+    }
+
+    #[test]
+    fn test_link_added_no_autorun_omitted_in_serialization() {
+        let original = TaskEvent::LinkAdded {
+            from: "mvslrspmoynoxyyywqyutmovxpvztkls".to_string(),
+            to: "nqrtxsypzkwolmnrstvuqxyzplmrwknos".to_string(),
+            kind: "blocked-by".to_string(),
+            autorun: None,
+            timestamp: Utc::now(),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(!block.contains("autorun"), "None autorun should not be serialized");
     }
 
     #[test]

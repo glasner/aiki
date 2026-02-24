@@ -1,28 +1,28 @@
-//! Parse spec metadata from markdown files
+//! Parse plan metadata from markdown files
 
 use std::path::Path;
 
-/// Parsed metadata from a spec markdown file.
+/// Parsed metadata from a plan markdown file.
 #[derive(Debug, Clone)]
-pub struct SpecMetadata {
+pub struct PlanMetadata {
     /// Title extracted from first H1 heading
     pub title: Option<String>,
     /// First paragraph after the H1 heading
     pub description: Option<String>,
-    /// Whether the spec is marked as a draft in frontmatter
+    /// Whether the plan is marked as a draft in frontmatter
     pub draft: bool,
 }
 
-/// Parse spec metadata from a markdown file.
+/// Parse plan metadata from a markdown file.
 ///
 /// Extracts:
 /// - Title: first `# ` heading
 /// - Description: first non-empty paragraph after the title
-pub fn parse_spec_metadata(path: &Path) -> SpecMetadata {
+pub fn parse_plan_metadata(path: &Path) -> PlanMetadata {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => {
-            return SpecMetadata {
+            return PlanMetadata {
                 title: None,
                 description: None,
                 draft: false,
@@ -30,7 +30,7 @@ pub fn parse_spec_metadata(path: &Path) -> SpecMetadata {
         }
     };
 
-    parse_spec_content(&content)
+    parse_plan_content(&content)
 }
 
 /// Strip YAML frontmatter from content, returning (frontmatter_yaml, body).
@@ -86,8 +86,8 @@ fn parse_draft_from_yaml(yaml: &str) -> bool {
     false
 }
 
-/// Parse spec metadata from markdown content string.
-fn parse_spec_content(content: &str) -> SpecMetadata {
+/// Parse plan metadata from markdown content string.
+fn parse_plan_content(content: &str) -> PlanMetadata {
     let (frontmatter_yaml, body) = strip_frontmatter(content);
 
     let draft = frontmatter_yaml.map_or(false, parse_draft_from_yaml);
@@ -130,7 +130,7 @@ fn parse_spec_content(content: &str) -> SpecMetadata {
         description = Some(desc_lines.join(" "));
     }
 
-    SpecMetadata {
+    PlanMetadata {
         title,
         description,
         draft,
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn test_parse_basic() {
         let content = "# My Feature\n\nThis is the description of my feature.\n\n## Details\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("My Feature"));
         assert_eq!(
             meta.description.as_deref(),
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn test_parse_multiline_description() {
         let content = "# Feature X\n\nFirst line of desc.\nSecond line of desc.\n\n## Next\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("Feature X"));
         assert_eq!(
             meta.description.as_deref(),
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn test_parse_no_description() {
         let content = "# Title Only\n\n## Immediately a heading\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("Title Only"));
         assert_eq!(meta.description, None);
     }
@@ -176,14 +176,14 @@ mod tests {
     #[test]
     fn test_parse_no_h1() {
         let content = "## Not an H1\n\nSome text.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title, None);
         assert_eq!(meta.description, None);
     }
 
     #[test]
     fn test_parse_empty() {
-        let meta = parse_spec_content("");
+        let meta = parse_plan_content("");
         assert_eq!(meta.title, None);
         assert_eq!(meta.description, None);
         assert!(!meta.draft);
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_parse_title_with_extra_spaces() {
         let content = "#   Spaced Title  \n\nDesc.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("Spaced Title"));
     }
 
@@ -200,17 +200,17 @@ mod tests {
     fn test_parse_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.md");
-        std::fs::write(&path, "# Test Spec\n\nA description.\n").unwrap();
+        std::fs::write(&path, "# Test Plan\n\nA description.\n").unwrap();
 
-        let meta = parse_spec_metadata(&path);
-        assert_eq!(meta.title.as_deref(), Some("Test Spec"));
+        let meta = parse_plan_metadata(&path);
+        assert_eq!(meta.title.as_deref(), Some("Test Plan"));
         assert_eq!(meta.description.as_deref(), Some("A description."));
         assert!(!meta.draft);
     }
 
     #[test]
     fn test_parse_nonexistent_file() {
-        let meta = parse_spec_metadata(Path::new("/nonexistent/path.md"));
+        let meta = parse_plan_metadata(Path::new("/nonexistent/path.md"));
         assert_eq!(meta.title, None);
         assert_eq!(meta.description, None);
     }
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn test_parse_with_frontmatter() {
         let content = "---\ndraft: true\n---\n\n# My Feature\n\nDescription here.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("My Feature"));
         assert_eq!(meta.description.as_deref(), Some("Description here."));
         assert!(meta.draft);
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_parse_with_frontmatter_draft_false() {
         let content = "---\ndraft: false\n---\n\n# My Feature\n\nDescription here.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("My Feature"));
         assert!(!meta.draft);
     }
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_parse_with_frontmatter_no_draft() {
         let content = "---\nstatus: Draft\n---\n\n# My Feature\n\nDescription here.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("My Feature"));
         assert_eq!(meta.description.as_deref(), Some("Description here."));
         assert!(!meta.draft);
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_parse_with_empty_frontmatter() {
         let content = "---\n---\n\n# My Feature\n\nDescription here.\n";
-        let meta = parse_spec_content(content);
+        let meta = parse_plan_content(content);
         assert_eq!(meta.title.as_deref(), Some("My Feature"));
         assert!(!meta.draft);
     }
@@ -255,11 +255,11 @@ mod tests {
     fn test_parse_frontmatter_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("draft.md");
-        std::fs::write(&path, "---\ndraft: true\n---\n\n# Draft Spec\n\nStill writing.\n")
+        std::fs::write(&path, "---\ndraft: true\n---\n\n# Draft Plan\n\nStill writing.\n")
             .unwrap();
 
-        let meta = parse_spec_metadata(&path);
-        assert_eq!(meta.title.as_deref(), Some("Draft Spec"));
+        let meta = parse_plan_metadata(&path);
+        assert_eq!(meta.title.as_deref(), Some("Draft Plan"));
         assert_eq!(meta.description.as_deref(), Some("Still writing."));
         assert!(meta.draft);
     }

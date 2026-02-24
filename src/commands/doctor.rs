@@ -3,7 +3,7 @@ use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
-use crate::repo::RepoDetector;
+use crate::repos::RepoDetector;
 use crate::signing;
 use anyhow::Context;
 use std::env;

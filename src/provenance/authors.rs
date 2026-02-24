@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::blame::BlameContext;
-use crate::provenance::AgentType;
+use crate::provenance::blame::BlameContext;
+use crate::provenance::record::AgentType;
 
 /// Author information
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

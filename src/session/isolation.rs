@@ -11,7 +11,7 @@ use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::global;
 use crate::jj::{jj_cmd, JJWorkspace};
-use crate::repo_id;
+use crate::repos;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -59,7 +59,7 @@ pub fn create_isolated_workspace(
     repo_root: &Path,
     session_uuid: &str,
 ) -> Result<IsolatedWorkspace> {
-    let repo_id = repo_id::ensure_repo_id(repo_root)?;
+    let repo_id = repos::ensure_repo_id(repo_root)?;
 
     let workspace_path = workspaces_dir()
         .join(&repo_id)
@@ -177,7 +177,7 @@ impl Drop for AbsorbLock {
 
 /// Get the absorb lock file path for a repo.
 fn absorb_lock_path(repo_root: &Path) -> Result<PathBuf> {
-    let repo_id = repo_id::ensure_repo_id(repo_root)?;
+    let repo_id = repos::ensure_repo_id(repo_root)?;
     let lock_dir = workspaces_dir().join(&repo_id);
     let _ = fs::create_dir_all(&lock_dir);
     Ok(lock_dir.join(".absorb.lock"))
@@ -236,7 +236,12 @@ pub enum AbsorbResult {
     /// Workspace absorbed successfully
     Absorbed,
     /// Conflicts detected — workspace kept alive for agent resolution
-    Conflicts,
+    Conflicts {
+        /// JJ change ID of the conflicted workspace change
+        conflict_id: String,
+        /// Files with unresolved conflicts
+        conflicted_files: Vec<String>,
+    },
     /// Nothing to absorb (workspace not found, empty, or root change)
     Skipped,
 }
@@ -304,7 +309,7 @@ pub fn absorb_workspace(
 
     // Determine absorb target directory
     let target_dir = if let Some(parent_uuid) = parent_session_uuid {
-        let repo_id = repo_id::ensure_repo_id(repo_root)
+        let repo_id = repos::ensure_repo_id(repo_root)
             .unwrap_or_default();
         let parent_ws_path = workspaces_dir()
             .join(&repo_id)
@@ -370,35 +375,75 @@ pub fn absorb_workspace(
         let conflicts = String::from_utf8_lossy(&conflict_check.stdout);
 
         if !conflicts.trim().is_empty() {
-            // Conflicts detected — check retry count
-            let retries_path = workspace.path.join(".conflict_retries");
-            let conflict_retry_count = fs::read_to_string(&retries_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0);
+            // Try auto-resolve for simple conflicts (append-only, non-overlapping)
+            let _ = jj_cmd()
+                .current_dir(&workspace.path)
+                .args(["resolve", "--all"])
+                .output();
 
-            if conflict_retry_count >= 3 {
-                // Force absorb — too many retries, let human resolve
-                debug_log(|| {
-                    format!("Force-absorbing after {} retries", conflict_retry_count)
-                });
-                // Fall through to normal absorption
+            // Snapshot to materialize any resolution
+            let _ = jj_cmd()
+                .current_dir(&workspace.path)
+                .args(["debug", "snapshot"])
+                .output();
+
+            // Re-check if conflicts remain after auto-resolve
+            let recheck = jj_cmd()
+                .current_dir(&workspace.path)
+                .args(["resolve", "--list"])
+                .output()
+                .map_err(|e| {
+                    AikiError::WorkspaceAbsorbFailed(format!(
+                        "Conflict re-check failed: {}",
+                        e
+                    ))
+                })?;
+            let remaining = String::from_utf8_lossy(&recheck.stdout);
+
+            if remaining.trim().is_empty() {
+                // Auto-resolve fixed everything — fall through to normal absorption
+                debug_log(|| "Auto-resolved all conflicts, continuing absorption");
             } else {
-                // Increment retry count and return Conflicts
-                fs::write(&retries_path, (conflict_retry_count + 1).to_string())
-                    .map_err(|e| {
-                        AikiError::WorkspaceAbsorbFailed(format!(
-                            "Failed to write retry count: {}",
-                            e
-                        ))
-                    })?;
-                debug_log(|| {
-                    format!(
-                        "Conflicts detected (retry {}), deferring absorption",
-                        conflict_retry_count + 1
-                    )
-                });
-                return Ok(AbsorbResult::Conflicts);
+                // Parse conflicted files from remaining conflicts
+                let conflicted_files: Vec<String> = remaining
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next())
+                    .map(String::from)
+                    .collect();
+
+                // Conflicts detected — check retry count
+                let retries_path = workspace.path.join(".conflict_retries");
+                let conflict_retry_count = fs::read_to_string(&retries_path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .unwrap_or(0);
+
+                if conflict_retry_count >= 3 {
+                    // Force absorb — too many retries, let human resolve
+                    debug_log(|| {
+                        format!("Force-absorbing after {} retries", conflict_retry_count)
+                    });
+                    // Fall through to normal absorption
+                } else {
+                    // Increment retry count and return Conflicts
+                    fs::write(&retries_path, (conflict_retry_count + 1).to_string())
+                        .map_err(|e| {
+                            AikiError::WorkspaceAbsorbFailed(format!(
+                                "Failed to write retry count: {}",
+                                e
+                            ))
+                        })?;
+                    debug_log(|| {
+                        format!(
+                            "Conflicts detected (retry {}), deferring absorption",
+                            conflict_retry_count + 1
+                        )
+                    });
+                    return Ok(AbsorbResult::Conflicts {
+                        conflict_id: ws_head.clone(),
+                        conflicted_files,
+                    });
+                }
             }
         }
     }
@@ -604,7 +649,7 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
             Ok(AbsorbResult::Absorbed) => {
                 recovered += 1;
             }
-            Ok(AbsorbResult::Conflicts) => {
+            Ok(AbsorbResult::Conflicts { .. }) => {
                 // Orphaned workspace — force cleanup even with conflicts
                 eprintln!(
                     "[aiki] Warning: orphaned workspace '{}' has conflicts, cleaning up anyway",
@@ -712,7 +757,7 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
         }
 
         // Also clean up workspace directory if it exists
-        if let Ok(repo_id) = crate::repo_id::ensure_repo_id(repo_root) {
+        if let Ok(repo_id) = crate::repos::ensure_repo_id(repo_root) {
             let ws_dir = workspaces_dir()
                 .join(&repo_id)
                 .join(uuid);

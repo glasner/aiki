@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn test_format_with_spec_scope() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Spec,
+            kind: ReviewScopeKind::Plan,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
@@ -121,8 +121,8 @@ mod tests {
             hint: Some("Run `aiki fix review456` to remediate.".to_string()),
         };
         let result = format_command_output(&output);
-        assert!(result.contains("- **Type:** spec"));
-        assert!(result.contains("- **Scope:** Spec (feature.md)"));
+        assert!(result.contains("- **Type:** plan"));
+        assert!(result.contains("- **Scope:** Plan (feature.md)"));
         assert!(result.contains("---\nRun `aiki fix review456` to remediate."));
     }
 

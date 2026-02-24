@@ -1006,6 +1006,7 @@ impl HookEngine {
                 agent_override,
                 template,
                 fix: false,
+                autorun: false,
             },
         ) {
             Ok(r) => r,
@@ -2394,7 +2395,7 @@ fn execute_with_timeout(
 mod tests {
     use super::*;
     use crate::events::{AikiChangeCompletedPayload, ChangeOperation, WriteOperation};
-    use crate::provenance::AgentType;
+    use crate::provenance::record::AgentType;
     use crate::session::{AikiSession, SessionMode};
 
     // Helper to create a simple test event

@@ -21,15 +21,15 @@ use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
-    materialize_graph, read_events, reassign_task, start_task_core, Task,
-    TaskComment, TaskStatus,
+    materialize_graph, read_events, reassign_task, start_task_core, write_link_event,
+    write_link_event_with_autorun, Task, TaskComment, TaskStatus,
 };
 
 /// What kind of review scope this is
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewScopeKind {
     Task,
-    Spec,
+    Plan,
     Code,
     Session,
 }
@@ -39,7 +39,7 @@ impl ReviewScopeKind {
     pub fn as_str(&self) -> &str {
         match self {
             ReviewScopeKind::Task => "task",
-            ReviewScopeKind::Spec => "spec",
+            ReviewScopeKind::Plan => "plan",
             ReviewScopeKind::Code => "code",
             ReviewScopeKind::Session => "session",
         }
@@ -49,7 +49,7 @@ impl ReviewScopeKind {
     pub fn from_str(s: &str) -> Result<Self> {
         match s {
             "task" => Ok(ReviewScopeKind::Task),
-            "spec" => Ok(ReviewScopeKind::Spec),
+            "plan" => Ok(ReviewScopeKind::Plan),
             "code" => Ok(ReviewScopeKind::Code),
             "session" => Ok(ReviewScopeKind::Session),
             _ => Err(AikiError::UnknownReviewScope(s.to_string())),
@@ -72,12 +72,12 @@ impl ReviewScope {
     pub fn name(&self) -> String {
         match self.kind {
             ReviewScopeKind::Task => format!("Task ({})", &self.id),
-            ReviewScopeKind::Spec => {
+            ReviewScopeKind::Plan => {
                 let filename = Path::new(&self.id)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(&self.id);
-                format!("Spec ({})", filename)
+                format!("Plan ({})", filename)
             }
             ReviewScopeKind::Code => {
                 let filename = Path::new(&self.id)
@@ -109,7 +109,7 @@ impl ReviewScope {
         })?;
         let kind = ReviewScopeKind::from_str(kind_str)?;
 
-        // scope.id is required for non-Session scopes (Task, Spec, Code)
+        // scope.id is required for non-Session scopes (Task, Plan, Code)
         let id = match kind {
             ReviewScopeKind::Session => {
                 data.get("scope.id").cloned().unwrap_or_default()
@@ -184,7 +184,7 @@ pub struct ReviewArgs {
     /// Target to review: task ID, file path (.md), or nothing for session review
     pub target: Option<String>,
 
-    /// Review the codebase implementation described in a spec (only with file targets)
+    /// Review the codebase implementation described in a plan (only with file targets)
     #[arg(long)]
     pub code: bool,
 
@@ -207,6 +207,10 @@ pub struct ReviewArgs {
     /// Agent for review assignment (default: opposite of task worker)
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Enable autorun (auto-start this review when its target closes)
+    #[arg(long)]
+    pub autorun: bool,
 
     /// Subcommand (list or show)
     #[command(subcommand)]
@@ -242,6 +246,7 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         args.start,
         args.template,
         args.agent,
+        args.autorun,
     )
 }
 
@@ -256,6 +261,8 @@ pub struct CreateReviewParams {
     pub template: Option<String>,
     /// Whether to auto-fix issues (sets data.options.fix)
     pub fix: bool,
+    /// Enable autorun on the validates link (default: false, opt-in only)
+    pub autorun: bool,
 }
 
 /// Result of creating a review task
@@ -360,7 +367,7 @@ pub fn detect_target(
             let kind = if code {
                 ReviewScopeKind::Code
             } else {
-                ReviewScopeKind::Spec
+                ReviewScopeKind::Plan
             };
             Ok((
                 ReviewScope {
@@ -448,7 +455,7 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     // Build sources for lineage (not routing)
     let sources = match scope.kind {
         ReviewScopeKind::Task => vec![format!("task:{}", scope.id)],
-        ReviewScopeKind::Spec | ReviewScopeKind::Code => {
+        ReviewScopeKind::Plan | ReviewScopeKind::Code => {
             vec![format!("file:{}", scope.id)]
         }
         _ => vec![],
@@ -461,6 +468,15 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
         &assignee,
         template,
     )?;
+
+    // Emit validates link for task-scoped reviews: review validates the original task
+    // Autorun is opt-in only (--autorun flag); default is no autorun
+    if scope.kind == ReviewScopeKind::Task {
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        let autorun = if params.autorun { Some(true) } else { None };
+        write_link_event_with_autorun(cwd, &graph, "validates", &review_id, &scope.id, autorun)?;
+    }
 
     Ok(CreateReviewResult {
         review_task_id: review_id,
@@ -479,6 +495,7 @@ fn run_review(
     start: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    autorun: bool,
 ) -> Result<()> {
     // Parse agent if provided
     let agent_override = if let Some(ref agent_str) = agent {
@@ -513,6 +530,7 @@ fn run_review(
             agent_override,
             template: template_name,
             fix,
+            autorun,
         },
     ) {
         Ok(r) => r,
@@ -937,7 +955,7 @@ mod tests {
     #[test]
     fn test_scope_kind_as_str() {
         assert_eq!(ReviewScopeKind::Task.as_str(), "task");
-        assert_eq!(ReviewScopeKind::Spec.as_str(), "spec");
+        assert_eq!(ReviewScopeKind::Plan.as_str(), "plan");
         assert_eq!(ReviewScopeKind::Code.as_str(), "code");
         assert_eq!(ReviewScopeKind::Session.as_str(), "session");
     }
@@ -945,7 +963,7 @@ mod tests {
     #[test]
     fn test_scope_kind_from_str() {
         assert_eq!(ReviewScopeKind::from_str("task").unwrap(), ReviewScopeKind::Task);
-        assert_eq!(ReviewScopeKind::from_str("spec").unwrap(), ReviewScopeKind::Spec);
+        assert_eq!(ReviewScopeKind::from_str("plan").unwrap(), ReviewScopeKind::Plan);
         assert_eq!(ReviewScopeKind::from_str("code").unwrap(), ReviewScopeKind::Code);
         assert_eq!(ReviewScopeKind::from_str("session").unwrap(), ReviewScopeKind::Session);
     }
@@ -971,11 +989,11 @@ mod tests {
     #[test]
     fn test_scope_name_spec() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Spec,
+            kind: ReviewScopeKind::Plan,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
-        assert_eq!(scope.name(), "Spec (feature.md)");
+        assert_eq!(scope.name(), "Plan (feature.md)");
     }
 
     #[test]
@@ -1055,13 +1073,13 @@ mod tests {
     #[test]
     fn test_scope_roundtrip_spec() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Spec,
+            kind: ReviewScopeKind::Plan,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
         let data = scope.to_data();
         let restored = ReviewScope::from_data(&data).unwrap();
-        assert_eq!(restored.kind, ReviewScopeKind::Spec);
+        assert_eq!(restored.kind, ReviewScopeKind::Plan);
         assert_eq!(restored.id, "ops/now/feature.md");
     }
 
@@ -1135,7 +1153,7 @@ mod tests {
         let path_str = md_path.to_str().unwrap();
 
         let (scope, worker) = detect_target(dir.path(), Some(path_str), false).unwrap();
-        assert_eq!(scope.kind, ReviewScopeKind::Spec);
+        assert_eq!(scope.kind, ReviewScopeKind::Plan);
         assert_eq!(scope.id, path_str);
         assert!(scope.task_ids.is_empty());
         assert!(worker.is_none());

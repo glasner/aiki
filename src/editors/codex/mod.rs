@@ -7,7 +7,7 @@ use crate::event_bus;
 use crate::events::{AikiEvent, AikiTurnCompletedPayload, AikiTurnStartedPayload};
 use crate::global;
 use crate::history;
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use crate::session::{AikiSession, AikiSessionFile};
 use chrono::Utc;
 use serde::Deserialize;

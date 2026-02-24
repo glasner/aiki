@@ -3,7 +3,7 @@ use crate::editors::codex::otel::{self, CodexOtelContext, CodexOtelEvent};
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiSessionStartPayload, AikiTurnStartedPayload};
-use crate::provenance::{AgentType, DetectionMethod};
+use crate::provenance::record::{AgentType, DetectionMethod};
 use crate::session::{AikiSession, AikiSessionFile, SessionMode};
 use chrono::Utc;
 use std::io::{self, Read, Write};

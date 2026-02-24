@@ -29,7 +29,7 @@ use crate::events::{
     AikiSessionStartPayload, AikiTurnCompletedPayload, AikiTurnStartedPayload, ChangeOperation,
     DeleteOperation, MoveOperation, WriteOperation,
 };
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use crate::session::AikiSession;
 
 /// A JSON-RPC autoreply message to be sent to the agent

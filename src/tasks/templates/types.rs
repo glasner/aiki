@@ -96,6 +96,16 @@ pub struct TaskDefinition {
     pub data: HashMap<String, serde_json::Value>,
 }
 
+/// Loop configuration for repeating templates
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoopConfig {
+    /// Rhai expression — loop terminates when this evaluates to true
+    pub until: String,
+    /// Additional data to pass to each iteration
+    #[serde(default)]
+    pub data: HashMap<String, serde_yaml::Value>,
+}
+
 /// YAML frontmatter structure for template files
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TemplateFrontmatter {
@@ -118,6 +128,9 @@ pub struct TemplateFrontmatter {
     /// Spawn configurations: conditional task creation on close
     #[serde(default)]
     pub spawns: Vec<SpawnEntry>,
+    /// Loop configuration: sugar for self-spawn with autorun
+    #[serde(default, rename = "loop")]
+    pub loop_config: Option<LoopConfig>,
 }
 
 /// YAML frontmatter for subtasks
@@ -200,4 +213,57 @@ data:
         assert!(fm.data.is_empty());
     }
 
+    #[test]
+    fn test_loop_config_deserialize() {
+        let yaml = r#"
+loop:
+  until: "subtasks.review.approved or data.loop.index1 >= 10"
+  data:
+    custom_field: value
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert!(fm.loop_config.is_some());
+        let lc = fm.loop_config.unwrap();
+        assert_eq!(
+            lc.until,
+            "subtasks.review.approved or data.loop.index1 >= 10"
+        );
+        assert_eq!(lc.data.len(), 1);
+    }
+
+    #[test]
+    fn test_loop_config_minimal() {
+        let yaml = r#"
+loop:
+  until: approved
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        let lc = fm.loop_config.unwrap();
+        assert_eq!(lc.until, "approved");
+        assert!(lc.data.is_empty());
+    }
+
+    #[test]
+    fn test_frontmatter_without_loop() {
+        let yaml = r#"
+version: "1.0.0"
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert!(fm.loop_config.is_none());
+    }
+
+    #[test]
+    fn test_frontmatter_with_both_loop_and_spawns() {
+        let yaml = r#"
+loop:
+  until: approved
+spawns:
+  - when: "not approved"
+    task:
+      template: aiki/fix
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert!(fm.loop_config.is_some());
+        assert_eq!(fm.spawns.len(), 1);
+    }
 }

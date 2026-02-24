@@ -1,4 +1,4 @@
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

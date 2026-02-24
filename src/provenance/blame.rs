@@ -14,7 +14,7 @@ use crate::error::AikiError;
 type Result<T> = anyhow::Result<T>;
 
 use crate::jj::JJWorkspace;
-use crate::provenance::{AgentType, AttributionConfidence, ProvenanceRecord};
+use crate::provenance::record::{AgentType, AttributionConfidence, ProvenanceRecord};
 use crate::verify;
 
 /// Line-by-line attribution information for a file

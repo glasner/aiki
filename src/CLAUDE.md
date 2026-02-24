@@ -826,12 +826,12 @@ When creating new link types for the task DAG, follow these rules so that the CL
 
 | Link | Reads as |
 |------|----------|
-| `link plan --implements spec.md` | "plan implements spec.md" |
-| `link build --orchestrates plan` | "build orchestrates plan" |
-| `link review --scoped-to task` | "review is scoped-to task" |
+| `link epic --implements plan.md` | "epic implements-plan plan.md" |
+| `link build --orchestrates epic` | "build orchestrates epic" |
 | `link task --blocked-by other` | "task is blocked-by other" |
 | `link subtask --subtask-of parent` | "subtask is subtask-of parent" |
 | `link task --sourced-from file` | "task is sourced-from file" |
+| `link fix --fixes task:target` | "fix fixes task:target" |
 | `link new-plan --supersedes old-plan` | "new-plan supersedes old-plan" |
 
 ### Argument Roles
@@ -845,11 +845,13 @@ Link predicates use one of these patterns:
 
 | Pattern | Examples |
 |---------|----------|
-| `[active-verb]` | `implements`, `orchestrates`, `supersedes` |
+| `[active-verb]` | `orchestrates`, `supersedes`, `fixes` |
+| `[active-verb]-[noun]` | `implements-plan`, `decomposes-plan`, `adds-plan` |
 | `[noun]-of` | `subtask-of` |
-| `[past-participle]-by` | `blocked-by` |
+| `[past-participle]-by` | `blocked-by`, `spawned-by` |
 | `[past-participle]-from` | `sourced-from` |
-| `[past-participle]-to` | `scoped-to` |
+| `[active-verb]-on` | `depends-on` |
+| `[active-verb]` | `validates`, `remediates` |
 
 ### Adding a New Link Type
 

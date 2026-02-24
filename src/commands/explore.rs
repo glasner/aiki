@@ -2,7 +2,7 @@
 //!
 //! This module provides the `aiki explore` command which:
 //! - Creates an explore task from scope-specific templates
-//! - Supports different scopes: spec, code, task, session
+//! - Supports different scopes: plan, code, task, session
 //! - Supports run modes: blocking (default), --async, --start
 
 use std::env;
@@ -27,7 +27,7 @@ pub struct ExploreArgs {
     /// Target to explore: file path (.md), task ID (32 lowercase letters), or session UUID
     pub target: String,
 
-    /// Explore the codebase implementation described in a spec (only with file targets)
+    /// Explore the codebase implementation described in a plan (only with file targets)
     #[arg(long)]
     pub code: bool,
 
@@ -144,7 +144,7 @@ pub fn run(args: ExploreArgs) -> Result<()> {
     // Build sources for lineage
     let sources = match scope.kind {
         ReviewScopeKind::Task => vec![format!("task:{}", scope.id)],
-        ReviewScopeKind::Spec | ReviewScopeKind::Code => {
+        ReviewScopeKind::Plan | ReviewScopeKind::Code => {
             vec![format!("file:{}", scope.id)]
         }
         _ => vec![],
@@ -314,7 +314,7 @@ mod tests {
 
         let (scope, _worker) =
             detect_explore_target(dir.path(), path_str, false).unwrap();
-        assert_eq!(scope.kind, ReviewScopeKind::Spec);
+        assert_eq!(scope.kind, ReviewScopeKind::Plan);
     }
 
     #[test]

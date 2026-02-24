@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use crate::jj::jj_cmd;
 use std::path::Path;
 
-use crate::provenance::ProvenanceRecord;
+use crate::provenance::record::ProvenanceRecord;
 
 /// Signature verification status
 #[derive(Debug, Clone, PartialEq)]
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_verification_result_is_verified() {
-        use crate::provenance::{AgentInfo, AgentType, AttributionConfidence, DetectionMethod};
+        use crate::provenance::record::{AgentInfo, AgentType, AttributionConfidence, DetectionMethod};
         use chrono::Utc;
 
         let prov = ProvenanceRecord {

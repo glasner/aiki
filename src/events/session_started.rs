@@ -1,7 +1,7 @@
 use super::prelude::*;
 use crate::global;
 use crate::history;
-use crate::repo_id;
+use crate::repos;
 use crate::session::{prune_dead_pid_sessions, AikiSessionFile};
 
 /// session.started event payload
@@ -36,7 +36,7 @@ pub fn handle_session_started(payload: AikiSessionStartPayload) -> Result<HookRe
     // Write repo ID to session file so find_session_by_repo works as a fallback
     // when PID-based detection fails (e.g., Codex sandboxed tool execution)
     let cwd_str = payload.cwd.to_string_lossy();
-    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    let repo_id = repos::compute_repo_id(&payload.cwd).ok();
     if let Some(ref id) = repo_id {
         if let Err(e) = session_file.add_repo(id) {
             debug_log(|| format!("Failed to add repo to session file: {}", e));

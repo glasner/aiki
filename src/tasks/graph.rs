@@ -16,7 +16,7 @@ pub struct LinkKind {
     pub max_forward: Option<usize>,
     /// Max active reverse links per `to` node.
     /// None = unlimited, Some(1) = single reverse (e.g., orchestrates: one
-    /// orchestrator per plan).
+    /// orchestrator per epic).
     pub max_reverse: Option<usize>,
     /// Whether unresolved links of this kind exclude the `from` task
     /// from the ready queue.
@@ -74,7 +74,7 @@ pub const LINK_KINDS: &[LinkKind] = &[
         task_only: true,
     },
     LinkKind {
-        name: "implements",
+        name: "implements-plan",
         max_forward: Some(1),
         max_reverse: Some(1),
         blocks_ready: false,
@@ -88,7 +88,21 @@ pub const LINK_KINDS: &[LinkKind] = &[
         task_only: true,
     },
     LinkKind {
-        name: "scoped-to",
+        name: "decomposes-plan",
+        max_forward: None,
+        max_reverse: None,
+        blocks_ready: false,
+        task_only: false,
+    },
+    LinkKind {
+        name: "adds-plan",
+        max_forward: None,
+        max_reverse: None,
+        blocks_ready: false,
+        task_only: false,
+    },
+    LinkKind {
+        name: "fixes",
         max_forward: None,
         max_reverse: None,
         blocks_ready: false,
@@ -111,6 +125,13 @@ pub const LINK_KINDS: &[LinkKind] = &[
     },
 ];
 
+/// Per-link metadata stored alongside edges.
+#[derive(Debug, Clone, Default)]
+pub struct LinkMeta {
+    /// Whether to auto-start the `from` task when the `to` (blocker) completes.
+    pub autorun: bool,
+}
+
 /// Generic edge store — indexes all links by kind.
 ///
 /// Two parallel maps: forward (from → [to]) and reverse (to → [from]),
@@ -121,6 +142,8 @@ pub struct EdgeStore {
     forward: FastHashMap<String, FastHashMap<String, Vec<String>>>,
     /// kind → (to_id → [from_id])
     reverse: FastHashMap<String, FastHashMap<String, Vec<String>>>,
+    /// Per-link metadata keyed by (from, to, kind)
+    link_meta: FastHashMap<(String, String, String), LinkMeta>,
 }
 
 impl EdgeStore {
@@ -129,6 +152,7 @@ impl EdgeStore {
         Self {
             forward: FastHashMap::default(),
             reverse: FastHashMap::default(),
+            link_meta: FastHashMap::default(),
         }
     }
 
@@ -172,6 +196,9 @@ impl EdgeStore {
                 referrers.retain(|r| r != from);
             }
         }
+
+        // Clean up metadata
+        self.link_meta.remove(&(from.to_string(), to.to_string(), kind.to_string()));
     }
 
     /// Forward lookup: given a `from` node and kind, return all targets.
@@ -212,6 +239,19 @@ impl EdgeStore {
     /// Check if a specific forward link exists.
     pub fn has_link(&self, from: &str, to: &str, kind: &str) -> bool {
         self.targets(from, kind).contains(&to.to_string())
+    }
+
+    /// Set metadata for a specific link.
+    pub fn set_meta(&mut self, from: &str, to: &str, kind: &str, meta: LinkMeta) {
+        self.link_meta.insert(
+            (from.to_string(), to.to_string(), kind.to_string()),
+            meta,
+        );
+    }
+
+    /// Get metadata for a specific link.
+    pub fn get_meta(&self, from: &str, to: &str, kind: &str) -> Option<&LinkMeta> {
+        self.link_meta.get(&(from.to_string(), to.to_string(), kind.to_string()))
     }
 }
 
@@ -345,6 +385,51 @@ impl TaskGraph {
     pub fn find_by_slug(&self, parent_id: &str, slug: &str) -> Option<&Task> {
         let key = (parent_id.to_string(), slug.to_string());
         self.slug_index.get(&key).and_then(|id| self.tasks.get(id))
+    }
+
+    /// Find tasks that should be auto-started after a task closes.
+    ///
+    /// Performs a reverse lookup across all blocking link kinds to find tasks
+    /// that have a blocking link pointing to `closed_task_id`. For each candidate:
+    /// 1. Check if ANY of its blocking links has `autorun: true` in metadata
+    /// 2. Check if ALL blockers are now closed (via `is_blocked`)
+    ///
+    /// Returns task IDs that should be auto-started.
+    pub fn find_autorun_candidates(&self, closed_task_id: &str) -> Vec<String> {
+        const BLOCKING_KINDS: &[&str] = &["validates", "remediates", "follows-up", "depends-on", "blocked-by"];
+
+        let mut candidates = std::collections::HashSet::new();
+
+        for kind in BLOCKING_KINDS {
+            // Reverse lookup: find tasks that have a link of this kind pointing to closed_task_id
+            for candidate_id in self.edges.referrers(closed_task_id, kind) {
+                // Skip if already checked or task doesn't exist
+                if candidates.contains(candidate_id) {
+                    continue;
+                }
+                if let Some(task) = self.tasks.get(candidate_id) {
+                    // Only auto-start tasks that are Open or Stopped
+                    if task.status != TaskStatus::Open && task.status != TaskStatus::Stopped {
+                        continue;
+                    }
+                }
+
+                // Check if this candidate has autorun on ANY of its blocking links
+                let has_autorun = BLOCKING_KINDS.iter().any(|k| {
+                    self.edges.targets(candidate_id, k).iter().any(|target| {
+                        self.edges
+                            .get_meta(candidate_id, target, k)
+                            .map_or(false, |m| m.autorun)
+                    })
+                });
+
+                if has_autorun && !self.is_blocked(candidate_id) {
+                    candidates.insert(candidate_id.clone());
+                }
+            }
+        }
+
+        candidates.into_iter().collect()
     }
 
     /// Full provenance chain: walk `sourced-from` links.
@@ -482,24 +567,32 @@ fn process_event(
                 edges.add(task_id, source, "sourced-from");
             }
 
-            // Index old-style data attributes as edges (backward compat).
-            if let Some(spec) = data.get("spec") {
-                let target = if spec.starts_with("file:") {
-                    spec.clone()
-                } else {
-                    format!("file:{}", spec)
-                };
-                edges.add(task_id, &target, "implements");
+            // Index old-style data attributes as edges.
+            // Synthesize implements-plan only for epic tasks:
+            // - Must have data.plan (the plan file path)
+            // - Must NOT have data.epic (decompose/build tasks have this)
+            // - data.plan must be a file path, not a task ID (old system used
+            //   data.plan for epic task IDs)
+            if let Some(plan) = data.get("plan") {
+                let plan_raw = plan.strip_prefix("file:").unwrap_or(plan);
+                if !data.contains_key("epic") && plan_raw.contains('/') {
+                    let target = if plan.starts_with("file:") {
+                        plan.clone()
+                    } else {
+                        format!("file:{}", plan)
+                    };
+                    edges.add(task_id, &target, "implements-plan");
+                }
             }
 
-            if let Some(plan_id) = data.get("plan") {
-                edges.add(task_id, plan_id, "orchestrates");
+            if let Some(epic_id) = data.get("epic") {
+                edges.add(task_id, epic_id, "orchestrates");
             }
 
             if let Some(scope_id) = data.get("scope.id") {
                 let scope_kind = data.get("scope.kind").map(|s| s.as_str());
                 let target = match scope_kind {
-                    Some("spec") | Some("implementation") => {
+                    Some("plan") | Some("implementation") => {
                         if scope_id.starts_with("file:") {
                             scope_id.clone()
                         } else {
@@ -672,8 +765,19 @@ fn process_event(
                 }
             }
         }
-        TaskEvent::LinkAdded { from, to, kind, .. } => {
-            edges.add(from, to, kind);
+        TaskEvent::LinkAdded { from, to, kind, autorun, .. } => {
+            // Map renamed link kinds for backward compatibility
+            let effective_kind = match kind.as_str() {
+                "implements" => "implements-plan",
+                _ => kind.as_str(),
+            };
+            edges.add(from, to, effective_kind);
+            // Store link metadata if autorun is explicitly set
+            if let Some(ar) = autorun {
+                if *ar {
+                    edges.set_meta(from, to, effective_kind, LinkMeta { autorun: true });
+                }
+            }
             // When a subtask-of link is added, index the child's slug under the parent
             if kind == "subtask-of" {
                 if let Some(task) = tasks.get(from) {
@@ -684,7 +788,12 @@ fn process_event(
             }
         }
         TaskEvent::LinkRemoved { from, to, kind, .. } => {
-            edges.remove(from, to, kind);
+            // Map renamed link kinds for backward compatibility
+            let effective_kind = match kind.as_str() {
+                "implements" => "implements-plan",
+                _ => kind.as_str(),
+            };
+            edges.remove(from, to, effective_kind);
             // When a subtask-of link is removed, clean up the slug index
             // to prevent stale slug mappings after reparenting
             if kind == "subtask-of" {
@@ -787,6 +896,7 @@ mod tests {
             from: from.to_string(),
             to: to.to_string(),
             kind: kind.to_string(),
+            autorun: None,
             timestamp: Utc::now(),
         }
     }
@@ -1250,15 +1360,17 @@ mod tests {
 
         // Non-task-only links
         assert!(!is_task_only_kind("sourced-from"));
-        assert!(!is_task_only_kind("implements"));
-        assert!(!is_task_only_kind("scoped-to"));
+        assert!(!is_task_only_kind("implements-plan"));
+        assert!(!is_task_only_kind("decomposes-plan"));
+        assert!(!is_task_only_kind("adds-plan"));
+        assert!(!is_task_only_kind("fixes"));
         assert!(!is_task_only_kind("unknown-kind"));
     }
 
     #[test]
     fn test_link_kinds_registry() {
-        // Verify all 11 kinds are registered (7 original + 3 semantic blocking + spawned-by)
-        assert_eq!(LINK_KINDS.len(), 11);
+        // Verify all 13 kinds are registered
+        assert_eq!(LINK_KINDS.len(), 13);
 
         let blocked = find_link_kind("blocked-by").unwrap();
         assert!(blocked.blocks_ready);
@@ -1285,6 +1397,30 @@ mod tests {
         let orchestrates = find_link_kind("orchestrates").unwrap();
         assert_eq!(orchestrates.max_forward, Some(1));
         assert_eq!(orchestrates.max_reverse, Some(1));
+
+        let implements_plan = find_link_kind("implements-plan").unwrap();
+        assert_eq!(implements_plan.max_forward, Some(1));
+        assert_eq!(implements_plan.max_reverse, Some(1));
+        assert!(!implements_plan.blocks_ready);
+        assert!(!implements_plan.task_only);
+
+        let decomposes_plan = find_link_kind("decomposes-plan").unwrap();
+        assert!(decomposes_plan.max_forward.is_none());
+        assert!(!decomposes_plan.blocks_ready);
+        assert!(!decomposes_plan.task_only);
+
+        let adds_plan = find_link_kind("adds-plan").unwrap();
+        assert!(adds_plan.max_forward.is_none());
+        assert!(!adds_plan.blocks_ready);
+        assert!(!adds_plan.task_only);
+
+        let fixes = find_link_kind("fixes").unwrap();
+        assert!(fixes.max_forward.is_none());
+        assert!(!fixes.blocks_ready);
+        assert!(!fixes.task_only);
+
+        // scoped-to should no longer exist
+        assert!(find_link_kind("scoped-to").is_none());
 
         let spawned_by = find_link_kind("spawned-by").unwrap();
         assert_eq!(spawned_by.max_forward, Some(1));
@@ -1347,6 +1483,7 @@ mod tests {
                 from: "task1".to_string(),
                 to: "file:design.md".to_string(),
                 kind: "sourced-from".to_string(),
+                autorun: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -1359,15 +1496,16 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_compat_data_spec_as_implements() {
+    fn test_data_plan_synthesizes_implements_plan_for_epics() {
+        // A task with data.plan but NO data.epic is an epic — should get synthesis.
         let mut data = HashMap::new();
-        data.insert("spec".to_string(), "ops/now/feature.md".to_string());
+        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
 
         let events = vec![TaskEvent::Created {
-            task_id: "plan1".to_string(),
-            name: "Plan task".to_string(),
+            task_id: "epic1".to_string(),
+            name: "Epic: Feature".to_string(),
             slug: None,
-            task_type: Some("plan".to_string()),
+            task_type: None,
             priority: TaskPriority::P2,
             assignee: None,
             sources: Vec::new(),
@@ -1380,22 +1518,48 @@ mod tests {
 
         let graph = materialize_graph(&events);
         assert_eq!(
-            graph.edges.target("plan1", "implements"),
-            Some("file:ops/now/feature.md")
-        );
-        assert_eq!(
-            graph
-                .edges
-                .referrers("file:ops/now/feature.md", "implements"),
-            &["plan1"]
+            graph.edges.target("epic1", "implements-plan"),
+            Some("file:ops/now/feature.md"),
+            "data.plan without data.epic should synthesize implements-plan"
         );
     }
 
     #[test]
-    fn test_backward_compat_data_plan_as_orchestrates() {
+    fn test_data_plan_with_epic_does_not_synthesize_implements_plan() {
+        // A task with BOTH data.plan and data.epic is a helper task
+        // (decompose/build) — should NOT get implements-plan synthesis.
         let mut data = HashMap::new();
-        data.insert("spec".to_string(), "feature.md".to_string());
-        data.insert("plan".to_string(), "plan_task_id".to_string());
+        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
+        data.insert("epic".to_string(), "some_epic_id".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "decompose1".to_string(),
+            name: "Decompose: ops/now/feature.md".to_string(),
+            slug: None,
+            task_type: Some("decompose".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.target("decompose1", "implements-plan"),
+            None,
+            "data.plan with data.epic should not synthesize implements-plan"
+        );
+    }
+
+    #[test]
+    fn test_data_epic_as_orchestrates() {
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), "feature.md".to_string());
+        data.insert("epic".to_string(), "epic_task_id".to_string());
 
         let events = vec![TaskEvent::Created {
             task_id: "build1".to_string(),
@@ -1415,16 +1579,16 @@ mod tests {
         let graph = materialize_graph(&events);
         assert_eq!(
             graph.edges.target("build1", "orchestrates"),
-            Some("plan_task_id")
+            Some("epic_task_id")
         );
     }
 
     #[test]
-    fn test_backward_compat_data_scope_as_scoped_to() {
+    fn test_data_scope_as_scoped_to() {
         let mut data = HashMap::new();
-        data.insert("scope.kind".to_string(), "spec".to_string());
+        data.insert("scope.kind".to_string(), "plan".to_string());
         data.insert("scope.id".to_string(), "ops/now/auth.md".to_string());
-        data.insert("scope.name".to_string(), "Auth spec".to_string());
+        data.insert("scope.name".to_string(), "Auth plan".to_string());
 
         let events = vec![TaskEvent::Created {
             task_id: "review1".to_string(),
@@ -2058,5 +2222,374 @@ mod tests {
             graph.find_by_slug("parent", "build").is_none(),
             "Slug index should be cleaned up after LinkRemoved"
         );
+    }
+
+    #[test]
+    fn test_backward_compat_old_implements_link_mapped_to_implements_plan() {
+        // Old events have kind: "implements" — should be materialized as "implements-plan"
+        let events = vec![
+            make_created("epic1", "Epic: Feature"),
+            make_link("epic1", "file:ops/now/feature.md", "implements"),
+        ];
+
+        let graph = materialize_graph(&events);
+        // Old "implements" should be indexed under "implements-plan"
+        assert_eq!(
+            graph.edges.target("epic1", "implements-plan"),
+            Some("file:ops/now/feature.md"),
+            "Old implements link should be mapped to implements-plan"
+        );
+        // No edge under the old kind name
+        assert!(
+            graph.edges.targets("epic1", "implements").is_empty(),
+            "Old implements kind should not be indexed directly"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_old_implements_link_removed() {
+        // Old LinkRemoved with kind: "implements" should remove the implements-plan edge
+        let events = vec![
+            make_created("epic1", "Epic: Feature"),
+            make_link("epic1", "file:ops/now/feature.md", "implements"),
+            make_unlink("epic1", "file:ops/now/feature.md", "implements"),
+        ];
+
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.edges.targets("epic1", "implements-plan").is_empty(),
+            "Old implements LinkRemoved should remove the implements-plan edge"
+        );
+    }
+
+    // --- LinkMeta / autorun tests ---
+
+    #[test]
+    fn test_link_meta_set_and_get() {
+        let mut store = EdgeStore::new();
+        store.add("A", "B", "blocked-by");
+        store.set_meta("A", "B", "blocked-by", LinkMeta { autorun: true });
+
+        let meta = store.get_meta("A", "B", "blocked-by");
+        assert!(meta.is_some());
+        assert!(meta.unwrap().autorun);
+
+        // Non-existent link should return None
+        assert!(store.get_meta("A", "C", "blocked-by").is_none());
+        assert!(store.get_meta("A", "B", "validates").is_none());
+    }
+
+    #[test]
+    fn test_link_meta_removed_with_link() {
+        let mut store = EdgeStore::new();
+        store.add("A", "B", "blocked-by");
+        store.set_meta("A", "B", "blocked-by", LinkMeta { autorun: true });
+
+        // Remove the link — metadata should also be removed
+        store.remove("A", "B", "blocked-by");
+        assert!(store.get_meta("A", "B", "blocked-by").is_none());
+    }
+
+    #[test]
+    fn test_link_meta_default() {
+        let meta = LinkMeta::default();
+        assert!(!meta.autorun, "Default LinkMeta should have autorun=false");
+    }
+
+    #[test]
+    fn test_materialize_autorun_link() {
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            TaskEvent::LinkAdded {
+                from: "B".to_string(),
+                to: "A".to_string(),
+                kind: "validates".to_string(),
+                autorun: Some(true),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        // Link should exist
+        assert!(graph.edges.has_link("B", "A", "validates"));
+        // Autorun metadata should be set
+        let meta = graph.edges.get_meta("B", "A", "validates");
+        assert!(meta.is_some(), "Autorun metadata should be stored");
+        assert!(meta.unwrap().autorun);
+    }
+
+    #[test]
+    fn test_materialize_no_autorun_link() {
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            TaskEvent::LinkAdded {
+                from: "B".to_string(),
+                to: "A".to_string(),
+                kind: "validates".to_string(),
+                autorun: None,
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        // Link should exist
+        assert!(graph.edges.has_link("B", "A", "validates"));
+        // No autorun metadata
+        assert!(
+            graph.edges.get_meta("B", "A", "validates").is_none(),
+            "No metadata should be stored when autorun is None"
+        );
+    }
+
+    #[test]
+    fn test_materialize_autorun_false_no_meta() {
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            TaskEvent::LinkAdded {
+                from: "B".to_string(),
+                to: "A".to_string(),
+                kind: "validates".to_string(),
+                autorun: Some(false),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let graph = materialize_graph(&events);
+        // Link should exist
+        assert!(graph.edges.has_link("B", "A", "validates"));
+        // autorun: false should not store metadata (saves space)
+        assert!(
+            graph.edges.get_meta("B", "A", "validates").is_none(),
+            "autorun=false should not store metadata"
+        );
+    }
+
+    fn make_autorun_link(from: &str, to: &str, kind: &str) -> TaskEvent {
+        TaskEvent::LinkAdded {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            autorun: Some(true),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_basic() {
+        // B validates A with autorun. When A closes, B should be a candidate.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_no_autorun_flag() {
+        // B validates A without autorun. B should NOT be a candidate.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_link("B", "A", "validates"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_still_blocked() {
+        // C validates both A and B with autorun. When only A closes, C is still blocked by B.
+        let events = vec![
+            make_created("A", "Impl A"),
+            make_created("B", "Impl B"),
+            make_created("C", "Review both"),
+            make_autorun_link("C", "A", "validates"),
+            make_autorun_link("C", "B", "validates"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty(), "C still blocked by B");
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_all_blockers_closed() {
+        // C validates both A and B with autorun. When both close, C is a candidate.
+        let events = vec![
+            make_created("A", "Impl A"),
+            make_created("B", "Impl B"),
+            make_created("C", "Review both"),
+            make_autorun_link("C", "A", "validates"),
+            make_autorun_link("C", "B", "validates"),
+            make_closed("A"),
+            make_closed("B"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("B");
+        assert_eq!(candidates, vec!["C".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_skips_closed_tasks() {
+        // B validates A with autorun. But B is already closed. Should not be a candidate.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            make_closed("B"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty(), "Already-closed tasks should not auto-start");
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_skips_in_progress() {
+        // B validates A with autorun. But B is already in progress. Should not be a candidate.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            TaskEvent::Started {
+                task_ids: vec!["B".to_string()],
+                agent_type: "test".to_string(),
+                session_id: None,
+                turn_id: None,
+                timestamp: Utc::now(),
+            },
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty(), "In-progress tasks should not auto-start");
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_stopped_task_eligible() {
+        // B validates A with autorun. B was stopped. Should be a candidate (restart).
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            TaskEvent::Started {
+                task_ids: vec!["B".to_string()],
+                agent_type: "test".to_string(),
+                session_id: None,
+                turn_id: None,
+                timestamp: Utc::now(),
+            },
+            make_stopped("B"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_multiple_link_kinds() {
+        // Test with depends-on link kind
+        let events = vec![
+            make_created("A", "Dependency"),
+            make_created("B", "Dependent"),
+            make_autorun_link("B", "A", "depends-on"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_non_blocking_kind_ignored() {
+        // A non-blocking link kind (like "related-to") should not trigger autorun
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            TaskEvent::LinkAdded {
+                from: "B".to_string(),
+                to: "A".to_string(),
+                kind: "related-to".to_string(),
+                autorun: Some(true),
+                timestamp: Utc::now(),
+            },
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty(), "Non-blocking kinds should not trigger autorun");
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_wont_do_still_triggers() {
+        // B validates A with autorun. When A closes as wont_do, B should still auto-start.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            make_closed_wont_do("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_mixed_autorun_flags() {
+        // C depends on A (autorun) and B (no autorun). When both close,
+        // C should auto-start because at least one link has autorun.
+        let events = vec![
+            make_created("A", "Task A"),
+            make_created("B", "Task B"),
+            make_created("C", "Dependent"),
+            make_autorun_link("C", "A", "depends-on"),
+            make_link("C", "B", "depends-on"),
+            make_closed("A"),
+            make_closed("B"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("B");
+        assert_eq!(candidates, vec!["C".to_string()]);
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_no_duplicates() {
+        // B has two autorun links to A (different kinds). Should only appear once.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review & Fix"),
+            make_autorun_link("B", "A", "validates"),
+            make_autorun_link("B", "A", "remediates"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates.len(), 1, "Should not have duplicate candidates");
+        assert_eq!(candidates[0], "B");
+    }
+
+    #[test]
+    fn test_find_autorun_candidates_link_removed() {
+        // B validates A with autorun, then link is removed. No candidate.
+        let events = vec![
+            make_created("A", "Implementation"),
+            make_created("B", "Review"),
+            make_autorun_link("B", "A", "validates"),
+            make_unlink("B", "A", "validates"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert!(candidates.is_empty(), "Removed link should not trigger autorun");
     }
 }

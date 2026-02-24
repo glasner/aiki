@@ -320,11 +320,11 @@ Alternatively, install the agent globally:
     #[error("Cannot undo - in-progress tasks have modified the same files:\n{0}")]
     UndoInProgressConflict(String),
 
-    #[error("Plan has no completed subtasks to undo")]
+    #[error("Epic has no completed subtasks to undo")]
     NoCompletedSubtasks,
 
     // Review system errors
-    #[error("Unknown review scope type: '{0}'. Valid values: 'task', 'spec', 'implementation', 'session'")]
+    #[error("Unknown review scope type: '{0}'. Valid values: 'task', 'plan', 'implementation', 'session'")]
     UnknownReviewScope(String),
 
     #[error("Nothing to review - no closed tasks in session")]

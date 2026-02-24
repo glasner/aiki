@@ -295,18 +295,18 @@ impl StatusMonitor {
             }
         }
 
-        // If root task has data.plan, render the plan task tree below
-        if let Some(plan_id) = root_task.data.get("plan") {
-            if let Some(plan_task) = graph.tasks.get(plan_id) {
+        // If root task has data.epic, render the epic task tree below
+        if let Some(epic_id) = root_task.data.get("epic") {
+            if let Some(epic_task) = graph.tasks.get(epic_id) {
                 lines.push(String::new());
-                let plan_line = self.format_task_line(plan_task, "", None);
-                lines.push(plan_line);
+                let epic_line = self.format_task_line(epic_task, "", None);
+                lines.push(epic_line);
 
-                let plan_subtasks = self.get_sorted_subtasks(graph, plan_id);
-                let plan_subtask_count = plan_subtasks.len();
+                let epic_subtasks = self.get_sorted_subtasks(graph, epic_id);
+                let epic_subtask_count = epic_subtasks.len();
 
-                for (idx, subtask) in plan_subtasks.iter().enumerate() {
-                    let is_last = idx == plan_subtask_count - 1;
+                for (idx, subtask) in epic_subtasks.iter().enumerate() {
+                    let is_last = idx == epic_subtask_count - 1;
                     let prefix = if is_last { "└─ " } else { "├─ " };
                     let child_prefix = if is_last { "   " } else { "│  " };
 

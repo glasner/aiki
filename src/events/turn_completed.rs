@@ -3,7 +3,7 @@ use super::Turn;
 use crate::global;
 use crate::history;
 use crate::history::TurnSource;
-use crate::repo_id;
+use crate::repos;
 use crate::session::turn_state::generate_turn_id;
 
 /// turn.completed event payload
@@ -98,7 +98,7 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
         .collect();
 
     let cwd_str = payload.cwd.to_string_lossy().to_string();
-    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    let repo_id = repos::compute_repo_id(&payload.cwd).ok();
     if let Err(e) = history::record_response(
         &global::global_aiki_dir(),
         &payload.session,
@@ -153,7 +153,7 @@ pub fn handle_turn_completed(mut payload: AikiTurnCompletedPayload) -> Result<Ho
     if let Some(autoreply_content) = context.as_ref() {
         // Best-effort - log and continue on failure (matches existing error handling)
         let autoreply_cwd = payload_cwd.to_string_lossy();
-        let autoreply_repo_id = repo_id::compute_repo_id(&payload_cwd).ok();
+        let autoreply_repo_id = repos::compute_repo_id(&payload_cwd).ok();
         if let Err(e) = history::record_autoreply(
             &global::global_aiki_dir(),
             &payload_session,
