@@ -20,7 +20,7 @@ pub mod templates;
 pub mod types;
 pub mod md;
 
-pub use graph::{materialize_graph, materialize_graph_with_ids, EdgeStore, LinkKind, TaskGraph, LINK_KINDS};
+pub use graph::{materialize_graph, materialize_graph_with_ids, EdgeStore, LinkKind, LinkMeta, TaskGraph, LINK_KINDS};
 pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug};
 #[allow(unused_imports)]
 pub use manager::{
@@ -33,7 +33,7 @@ pub use manager::{
 #[allow(unused_imports)]
 pub use runner::{run_task_async_with_output, task_run_async, terminate_background_task};
 #[allow(unused_imports)]
-pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_events_batch, write_link_event, EventWithId};
+pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_events_batch, write_link_event, write_link_event_with_autorun, EventWithId};
 #[allow(unused_imports)]
 pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskReference, TaskStatus};
 pub use md::MdBuilder;
@@ -77,7 +77,7 @@ pub struct StartTaskResult {
 /// - Quick-start (description → new task) - caller should create task first
 /// - Template creation - caller should create from template first
 /// - Reopen logic - caller should reopen before calling this
-/// - Parent/subtask handling (.0 planning task) - caller should handle this
+/// - Parent/subtask handling (.0 decompose task) - caller should handle this
 ///
 /// # Arguments
 /// * `cwd` - Working directory

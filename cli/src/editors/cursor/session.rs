@@ -1,4 +1,4 @@
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use crate::session::AikiSession;
 
 /// Create a session from Cursor payload fields

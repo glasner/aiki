@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Fix commit.message_started Event Payload
 
 ## Problem

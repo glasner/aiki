@@ -28,12 +28,13 @@ pub mod event;
 pub mod fix;
 pub mod hooks;
 pub mod output;
-pub mod plan;
+pub mod decompose;
+pub mod epic;
 pub mod plugin;
 pub mod init;
 pub mod otel_receive;
 pub mod review;
-pub mod spec;
+pub mod plan;
 
 pub mod task;
 pub mod verify;

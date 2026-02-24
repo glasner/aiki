@@ -26,7 +26,7 @@
 //! ## Utility Functions
 //! - [`get_git_user`] - Get the git user (name + email) from git config
 
-use crate::authors::{AuthorScope, AuthorsCommand, OutputFormat};
+use crate::provenance::authors::{AuthorScope, AuthorsCommand, OutputFormat};
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::events::{
@@ -34,7 +34,7 @@ use crate::events::{
     ChangeOperation,
 };
 use crate::flows::state::ActionResult;
-use crate::provenance::ProvenanceRecord;
+use crate::provenance::record::ProvenanceRecord;
 use crate::tasks::{manager, storage};
 use anyhow::Context;
 use std::collections::HashSet;
@@ -1109,7 +1109,7 @@ pub fn workspace_create_if_concurrent(
         }
     };
 
-    let repo_id = match crate::repo_id::ensure_repo_id(&repo_root) {
+    let repo_id = match crate::repos::ensure_repo_id(&repo_root) {
         Ok(id) => id,
         Err(_) => {
             debug_log(|| "[workspace] No repo-id found, skipping workspace creation");
@@ -1206,6 +1206,8 @@ pub fn workspace_absorb_all(
     let parent_session_uuid: Option<String> = std::env::var("AIKI_PARENT_SESSION_UUID").ok();
     let mut absorbed = 0u32;
     let mut has_conflicts = false;
+    let mut last_conflict_id: Option<String> = None;
+    let mut last_conflicted_files: Vec<String> = Vec::new();
 
     // Scan all repo-id directories for workspaces belonging to this session
     let entries = match std::fs::read_dir(&workspaces_dir) {
@@ -1272,9 +1274,17 @@ pub fn workspace_absorb_all(
                     isolation::unregister_session_from_repo(repo_id, session_uuid);
                 }
             }
-            Ok(isolation::AbsorbResult::Conflicts) => {
+            Ok(isolation::AbsorbResult::Conflicts { conflict_id, conflicted_files }) => {
                 // Don't cleanup — workspace stays alive for conflict resolution
                 has_conflicts = true;
+                debug_log(|| {
+                    format!(
+                        "[workspace] Conflicts remain after auto-resolve: conflict_id={}, files={:?}",
+                        conflict_id, conflicted_files
+                    )
+                });
+                last_conflict_id = Some(conflict_id);
+                last_conflicted_files = conflicted_files;
             }
             Ok(isolation::AbsorbResult::Skipped) => {
                 let _ = isolation::cleanup_workspace(&repo_root, &workspace);
@@ -1315,7 +1325,15 @@ pub fn workspace_absorb_all(
     debug_log(|| format!("[workspace] Absorbed {} workspace(s)", absorbed));
 
     let stdout = if has_conflicts {
-        "conflicts".to_string()
+        // Return JSON so the hook can access fields via {{absorb_result.conflict_id}}
+        let conflict_id = last_conflict_id.unwrap_or_default();
+        let files = last_conflicted_files.join(", ");
+        serde_json::json!({
+            "status": "conflicts",
+            "conflict_id": conflict_id,
+            "conflicted_files": files,
+        })
+        .to_string()
     } else if absorbed > 0 {
         "ok".to_string()
     } else {
@@ -1457,7 +1475,7 @@ pub fn detect_workspace_conflicts(
 mod tests {
     use super::*;
     use crate::events::{ChangeOperation, EditDetail, WriteOperation};
-    use crate::provenance::AgentType;
+    use crate::provenance::record::AgentType;
     use crate::session::{AikiSession, SessionMode};
     use tempfile::TempDir;
 

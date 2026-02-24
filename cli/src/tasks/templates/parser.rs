@@ -92,6 +92,52 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
     template.subtasks = subtasks;
     template.spawns = frontmatter.spawns;
 
+    // Desugar loop: config into a self-spawn with autorun
+    if let Some(loop_config) = frontmatter.loop_config {
+        use super::spawn_config::{SpawnEntry, SpawnTaskConfig};
+        let mut spawn_data = loop_config.data;
+        // Add loop metadata expressions that increment from the spawner's current values
+        // These are Rhai expressions evaluated against the spawner's post-close scope
+        spawn_data.insert(
+            "loop.index".to_string(),
+            serde_yaml::Value::String("data.loop.index + 1".to_string()),
+        );
+        spawn_data.insert(
+            "loop.index1".to_string(),
+            serde_yaml::Value::String("data.loop.index1 + 1".to_string()),
+        );
+        spawn_data.insert(
+            "loop.first".to_string(),
+            serde_yaml::Value::Bool(false),
+        );
+        let spawn_entry = SpawnEntry {
+            when: format!("not ({})", loop_config.until),
+            task: Some(SpawnTaskConfig {
+                template: "self".to_string(),
+                priority: None,
+                assignee: None,
+                autorun: true,
+                data: spawn_data,
+            }),
+            subtask: None,
+        };
+        template.spawns.push(spawn_entry);
+
+        // Add initial loop metadata to template defaults
+        template.defaults.data.insert(
+            "loop.index".to_string(),
+            serde_json::json!(0),
+        );
+        template.defaults.data.insert(
+            "loop.index1".to_string(),
+            serde_json::json!(1),
+        );
+        template.defaults.data.insert(
+            "loop.first".to_string(),
+            serde_json::json!(true),
+        );
+    }
+
     // Validate spawn entries: each must have exactly one of task/subtask
     for (i, entry) in template.spawns.iter().enumerate() {
         match (&entry.task, &entry.subtask) {
@@ -754,5 +800,99 @@ version: "1.0.0"
         let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(fm.slug, Some("criteria".to_string()));
         assert_eq!(fm.version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_template_with_loop_desugars_to_spawn() {
+        let content = r#"---
+version: "1.0.0"
+loop:
+  until: approved
+---
+
+# Looping task
+
+Do something repeatedly.
+"#;
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(template.spawns.len(), 1);
+        let entry = &template.spawns[0];
+        assert_eq!(entry.when, "not (approved)");
+        let task_cfg = entry.task.as_ref().unwrap();
+        assert_eq!(task_cfg.template, "self");
+        assert!(task_cfg.autorun);
+    }
+
+    #[test]
+    fn test_parse_template_with_loop_and_spawns() {
+        let content = r#"---
+version: "1.0.0"
+loop:
+  until: approved
+spawns:
+  - when: "not approved"
+    task:
+      template: aiki/fix
+---
+
+# Looping task with spawns
+
+Do something.
+"#;
+        let template = parse_template(content, "test", "test.md").unwrap();
+        // Explicit spawn + desugared loop spawn
+        assert_eq!(template.spawns.len(), 2);
+        assert_eq!(template.spawns[0].when, "not approved");
+        assert_eq!(
+            template.spawns[0].task.as_ref().unwrap().template,
+            "aiki/fix"
+        );
+        assert_eq!(template.spawns[1].when, "not (approved)");
+        assert_eq!(
+            template.spawns[1].task.as_ref().unwrap().template,
+            "self"
+        );
+        assert!(template.spawns[1].task.as_ref().unwrap().autorun);
+    }
+
+    #[test]
+    fn test_parse_template_with_loop_data() {
+        let content = r#"---
+version: "1.0.0"
+loop:
+  until: data.iterations >= 5
+  data:
+    max_retries: 3
+---
+
+# Looping task with data
+
+Do something.
+"#;
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(template.spawns.len(), 1);
+        let task_cfg = template.spawns[0].task.as_ref().unwrap();
+        assert_eq!(task_cfg.template, "self");
+        assert!(task_cfg.autorun);
+        // 1 user data + 3 loop metadata (loop.index, loop.index1, loop.first)
+        assert_eq!(task_cfg.data.len(), 4);
+        assert!(task_cfg.data.contains_key("max_retries"));
+        assert!(task_cfg.data.contains_key("loop.index"));
+        assert!(task_cfg.data.contains_key("loop.index1"));
+        assert!(task_cfg.data.contains_key("loop.first"));
+
+        // Verify initial loop defaults are set on template
+        assert_eq!(
+            template.defaults.data.get("loop.index"),
+            Some(&serde_json::json!(0))
+        );
+        assert_eq!(
+            template.defaults.data.get("loop.index1"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            template.defaults.data.get("loop.first"),
+            Some(&serde_json::json!(true))
+        );
     }
 }

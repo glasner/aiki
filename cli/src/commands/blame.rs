@@ -1,4 +1,4 @@
-use crate::blame;
+use crate::provenance::blame;
 use crate::error::{AikiError, Result};
 use crate::provenance;
 use anyhow::Context;

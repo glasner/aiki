@@ -66,6 +66,13 @@
 //! - Ensures autoreplies are sent even when IDE is idle
 //! - Writes autoreply JSON-RPC requests to agent stdin
 //!
+//! ## Parent-PID Watchdog Thread
+//!
+//! - Polls every 5s to check if the parent process (IDE) is still alive
+//! - If parent is gone (crash/force-quit), kills the agent child and exits
+//! - Coordinated with normal shutdown via `AtomicBool` flag
+//! - Prevents orphaned processes from accumulating after IDE crashes
+//!
 //! # State Synchronization
 //!
 //! The proxy uses **message-passing channels** for thread communication:
@@ -77,14 +84,23 @@
 //!
 //! # Shutdown Protocol
 //!
-//! When the agent process exits:
+//! ## Normal shutdown (agent exits):
 //!
 //! 1. Agent→IDE thread detects EOF on agent stdout and exits its forwarding loop
-//! 2. Main thread sends `Shutdown` messages to both autoreply and metadata channels
-//! 3. Agent→IDE thread (if still running) exits on `StateMessage::Shutdown`
-//! 4. Autoreply forwarder thread exits on `AutoreplyMessage::Shutdown`
-//! 5. IDE→Agent thread exits when IDE closes stdin (natural EOF on stdin.lock().lines())
-//! 6. Main thread joins all threads before exiting
+//! 2. Main thread sets the `shutdown` flag (signals watchdog to exit)
+//! 3. Main thread sends `Shutdown` messages to both autoreply and metadata channels
+//! 4. Agent→IDE thread (if still running) exits on `StateMessage::Shutdown`
+//! 5. Autoreply forwarder thread exits on `AutoreplyMessage::Shutdown`
+//! 6. IDE→Agent thread exits when IDE closes stdin, setting the `shutdown` flag
+//! 7. Watchdog thread sees the flag and exits its polling loop
+//! 8. Main thread joins all threads before exiting
+//!
+//! ## Orphan cleanup (parent IDE crashes/force-quits):
+//!
+//! 1. IDE stdin hangs (no EOF sent)
+//! 2. Watchdog thread detects parent PID is gone (within ~5s)
+//! 3. Watchdog sends SIGTERM to agent child, waits 2s, then SIGKILL
+//! 4. Watchdog calls `process::exit(0)` to terminate the proxy
 //!
 //! Note: IDE→Agent thread shutdown is driven by stdin EOF, not by the Shutdown message,
 //! because it's blocked on stdin.lock().lines() and cannot check the metadata channel.
@@ -127,14 +143,16 @@ use crate::editors::acp::state::{
 use crate::error::{AikiError, Result};
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiSessionEndedPayload};
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use agent_client_protocol::{ContentBlock, SessionUpdate, ToolCallId};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 /// Run the ACP bidirectional proxy
 ///
@@ -205,6 +223,73 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
     let agent_stdout = agent.stdout.take().expect(
         "Failed to acquire agent stdout - this should never happen as we set Stdio::piped()",
     );
+
+    // Shared shutdown flag for coordinated cleanup between normal shutdown and watchdog
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_ide_thread = Arc::clone(&shutdown);
+    let shutdown_main = Arc::clone(&shutdown);
+
+    // Watchdog thread: detect orphaned proxy when parent IDE crashes or force-quits.
+    // Only available on Unix (requires getppid() and kill(pid, 0) for liveness checks).
+    // On non-Unix platforms, orphan detection is skipped — the proxy relies solely on
+    // stdin EOF for shutdown.
+    #[cfg(unix)]
+    let watchdog_thread = {
+        // Capture parent PID before spawning watchdog.
+        // IMPORTANT: parent_id() calls getppid(), which returns the *current* parent at call time.
+        // We must capture it here (before any reparenting could occur) to get the IDE's PID.
+        let parent_pid = std::os::unix::process::parent_id();
+        let agent_child_id = agent.id();
+        let shutdown_watchdog = Arc::clone(&shutdown);
+
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(5));
+
+                // Check if normal shutdown has already occurred
+                if shutdown_watchdog.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                if !is_process_alive(parent_pid) {
+                    eprintln!(
+                        "ACP Proxy: Parent process (PID {}) gone, shutting down",
+                        parent_pid
+                    );
+                    eprintln!("ACP Proxy: Watchdog triggered orphan cleanup");
+
+                    // Kill the agent child process
+                    // Note: If the agent has already exited, SIGTERM will fail with ESRCH (harmless)
+                    unsafe {
+                        libc::kill(agent_child_id as i32, libc::SIGTERM);
+                    }
+
+                    // Give it a moment to clean up, then force kill
+                    thread::sleep(Duration::from_secs(2));
+                    unsafe {
+                        libc::kill(agent_child_id as i32, libc::SIGKILL);
+                    }
+
+                    // Exit the proxy process (kills all threads, including stdin handler)
+                    std::process::exit(0);
+                }
+            }
+        })
+    };
+
+    #[cfg(not(unix))]
+    let watchdog_thread = {
+        let shutdown_watchdog = Arc::clone(&shutdown);
+        thread::spawn(move || {
+            // Non-Unix: no orphan detection available. Wait for shutdown signal.
+            loop {
+                thread::sleep(Duration::from_secs(5));
+                if shutdown_watchdog.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+        })
+    };
 
     // Thread 1: Autoreply forwarder (dedicated thread to drain autoreply channel)
     // This ensures autoreplies are sent even when IDE is idle
@@ -282,6 +367,8 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
             if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&line) {
                 // Capture metadata from IDE requests
                 if let Some(method) = &msg.method {
+                    // DEBUG: Log all IDE→Agent methods for duplicate session investigation
+                    eprintln!("[DEBUG IDE→Agent] method={} id={:?}", method, msg.id);
                     match method.as_str() {
                         "initialize" => {
                             if let Some(params) = &msg.params {
@@ -309,6 +396,19 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
                             }
                         }
                         "session/new" => {
+                            // DEBUG: Log session/new request for duplicate session investigation
+                            eprintln!(
+                                "[DEBUG session/new] request_id={:?} params={:?}",
+                                msg.id,
+                                msg.params.as_ref().map(|p| {
+                                    // Log key fields without full params
+                                    format!(
+                                        "cwd={:?} agent_pid={:?}",
+                                        p.get("cwd").and_then(|v| v.as_str()),
+                                        p.get("agent_pid").and_then(|v| v.as_u64()),
+                                    )
+                                })
+                            );
                             // Extract working directory and agent_pid from session requests
                             let mut agent_pid: Option<u32> = None;
                             if let Some(params) = &msg.params {
@@ -345,6 +445,12 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
                             }
                         }
                         "session/load" => {
+                            // DEBUG: Log session/load for duplicate session investigation
+                            eprintln!(
+                                "[DEBUG session/load] request_id={:?} params.sessionId={:?}",
+                                msg.id,
+                                msg.params.as_ref().and_then(|p| p.get("sessionId").and_then(|v| v.as_str()))
+                            );
                             // Extract working directory from session requests
                             if let Some(params) = &msg.params {
                                 if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
@@ -371,6 +477,13 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
                                     .get("sessionId")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or_default();
+
+                                // DEBUG: Log session/prompt for duplicate session investigation
+                                eprintln!(
+                                    "[DEBUG session/prompt] sessionId={} request_id={:?}",
+                                    session_id_str,
+                                    msg.id
+                                );
 
                                 if !session_id_str.is_empty() {
                                     let session_id = session_id(session_id_str);
@@ -451,6 +564,10 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
             }
         }
         debug_log(|| "ACP Proxy: IDE stdin closed, stopping IDE → Agent thread");
+
+        // Signal watchdog that normal shutdown is underway
+        shutdown_ide_thread.store(true, Ordering::Relaxed);
+
         Ok(())
     });
 
@@ -557,6 +674,11 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
                                 if let Some(session_id) =
                                     result.get("sessionId").and_then(|v| v.as_str())
                                 {
+                                    // DEBUG: Log session/new response for duplicate session investigation
+                                    eprintln!(
+                                        "[DEBUG session/new response] sessionId={} agent_pid={:?} request_id={:?}",
+                                        session_id, agent_pid, response_id
+                                    );
                                     // Fire session.started event with agent_pid for PID-based detection
                                     if let Err(e) = fire_session_start_event(
                                         session_id,
@@ -654,6 +776,14 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
                 }
 
                 if let Some(method) = &msg.method {
+                    // DEBUG: Log all Agent→IDE methods for duplicate session investigation
+                    if method.starts_with("session/") {
+                        eprintln!(
+                            "[DEBUG Agent→IDE] method={} sessionId={:?}",
+                            method,
+                            msg.params.as_ref().and_then(|p| p.get("sessionId").and_then(|v| v.as_str()))
+                        );
+                    }
                     // Handle session/request_permission - fire change.permission_asked for file-modifying tools
                     if method == "session/request_permission" {
                         if let Some(perm_context) = parse_permission_request(&msg) {
@@ -737,6 +867,9 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
         eprintln!("ACP Proxy: Error in Agent → IDE forwarding: {}", e);
     }
 
+    // Signal watchdog that normal shutdown is underway (agent stdout closed)
+    shutdown_main.store(true, Ordering::Relaxed);
+
     debug_log(|| "ACP Proxy: Agent stdout closed, stopping Agent → IDE thread");
 
     // ALWAYS wait for agent process to exit, even if there was an error
@@ -811,6 +944,16 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
         }
     }
 
+    // Join watchdog thread (it should have exited via the shutdown flag)
+    match watchdog_thread.join() {
+        Ok(()) => {
+            debug_log(|| "ACP Proxy: Watchdog thread exited cleanly");
+        }
+        Err(e) => {
+            eprintln!("Warning: Watchdog thread panicked: {:?}", e);
+        }
+    }
+
     // Now propagate the original error if there was one
     loop_result?;
 
@@ -832,6 +975,30 @@ fn parse_agent_type(agent: &str) -> Result<AgentType> {
         "cursor" => Ok(AgentType::Cursor),
         "gemini" => Ok(AgentType::Gemini),
         _ => Err(AikiError::UnknownAgentType(agent.to_string())),
+    }
+}
+
+// ============================================================================
+// Process liveness check (Unix only)
+// ============================================================================
+
+/// Check if a process is alive using `kill(pid, 0)`.
+///
+/// Returns `true` if the process exists. Handles EPERM (process exists but we
+/// lack permission to signal it) as alive — this can happen when the parent
+/// process runs as a different user or has elevated privileges.
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    // kill(pid, 0) checks if process exists without sending a signal.
+    // Returns 0 if alive and we have permission, or -1 with errno:
+    // - ESRCH: process does not exist
+    // - EPERM: process exists but we lack permission (still alive)
+    let ret = unsafe { libc::kill(pid as i32, 0) };
+    if ret == 0 {
+        true
+    } else {
+        // EPERM means process exists but we can't signal it — still alive
+        io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }
 
@@ -2027,4 +2194,74 @@ mod tests {
     }
 
     // Note: derive_executable tests moved to zed_detection module tests
+
+    // ========================================================================
+    // Watchdog / process liveness tests (Unix only)
+    // ========================================================================
+
+    #[cfg(unix)]
+    mod watchdog_tests {
+        use super::*;
+        use std::sync::atomic::Ordering;
+
+        #[test]
+        fn test_is_process_alive_current_process() {
+            // Our own process should always be alive
+            let pid = std::process::id();
+            assert!(is_process_alive(pid));
+        }
+
+        #[test]
+        fn test_is_process_alive_dead_process() {
+            // Spawn a child and wait for it to exit, then check liveness
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("failed to spawn 'true'");
+            let pid = child.id();
+            child.wait().expect("failed to wait for child");
+
+            // After the child exits and we've reaped it, the PID should be gone
+            // (or reused, but extremely unlikely in a test)
+            assert!(!is_process_alive(pid));
+        }
+
+        #[test]
+        fn test_is_process_alive_init_process() {
+            // PID 1 (launchd/init) should always be alive.
+            // kill(1, 0) returns EPERM on macOS — tests the EPERM handling path.
+            assert!(is_process_alive(1));
+        }
+
+        #[test]
+        fn test_is_process_alive_nonexistent_pid() {
+            // PID 0 is special (kernel), but a very high PID is likely unused
+            // Use a PID that's almost certainly not in use
+            assert!(!is_process_alive(4_000_000));
+        }
+
+        #[test]
+        fn test_shutdown_flag_stops_watchdog() {
+            // Verify the shutdown flag mechanism works for watchdog coordination
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown_clone = Arc::clone(&shutdown);
+
+            let handle = thread::spawn(move || {
+                // Simulate watchdog loop checking the flag
+                for _ in 0..10 {
+                    if shutdown_clone.load(Ordering::Relaxed) {
+                        return true; // Exited due to shutdown
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                false // Timed out
+            });
+
+            // Set shutdown flag after a short delay
+            thread::sleep(Duration::from_millis(30));
+            shutdown.store(true, Ordering::Relaxed);
+
+            let exited_cleanly = handle.join().expect("watchdog thread panicked");
+            assert!(exited_cleanly, "Watchdog should have exited due to shutdown flag");
+        }
+    }
 }

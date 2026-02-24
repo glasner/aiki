@@ -218,7 +218,7 @@ pub fn substitute_with_template_name(
     ctx: &VariableContext,
     template_name: Option<&str>,
 ) -> Result<String> {
-    let refs = crate::interpolation::parse_template(text);
+    let refs = crate::parsing::interpolation::parse_template(text);
 
     if refs.is_empty() {
         return Ok(text.to_string());
@@ -296,7 +296,7 @@ pub fn substitute_with_template_name(
 /// Finds all `{{var}}` patterns and returns the variable names.
 /// Delegates parsing to the shared `interpolation::parse_template` core.
 pub fn find_variables(text: &str) -> Vec<String> {
-    crate::interpolation::parse_template(text)
+    crate::parsing::interpolation::parse_template(text)
         .into_iter()
         .map(|r| r.name)
         .collect()

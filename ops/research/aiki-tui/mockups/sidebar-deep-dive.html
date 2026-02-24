@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Status — Sidebar Deep Dive (Option A)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 44px;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #888; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  .subtitle { color: #444; font-size: 11px; text-align: center; margin-top: 4px; max-width: 780px; line-height: 1.6; }
+
+  .scene-label {
+    font-size: 10px; font-weight: 700; color: #555; text-align: center;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: -24px;
+  }
+
+  .terminal {
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    width: 100%; max-width: 860px; overflow: hidden;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418; padding: 8px 14px; display: flex;
+    align-items: center; gap: 7px; border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; }
+
+  .screen { padding: 12px 16px; font-size: 13px; line-height: 1.45; color: #999; }
+
+  pre { white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.45; }
+
+  .grn { color: #5fcc68; } .red { color: #e05555; } .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; } .mag { color: #c470b0; } .org { color: #cc8844; }
+  .blu { color: #5588cc; } .wht { color: #cccccc; } .dim { color: #3a3a44; }
+  .dim2 { color: #252530; } .fg { color: #777; } .bold { font-weight: 700; }
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .log-area {
+    border-top: 1px solid #1e1e26; margin-top: 8px; padding-top: 6px;
+    font-size: 11px; line-height: 1.6;
+  }
+  .log-entry { opacity: 0.45; }
+  .log-entry:last-child { opacity: 0.9; }
+
+  .note {
+    max-width: 860px; width: 100%; padding: 16px 20px;
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    color: #555; font-size: 11px; line-height: 1.8;
+  }
+  .note strong { color: #888; }
+  .note code { color: #5bb8c9; background: #151520; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .divider { border: none; border-top: 1px dashed #252530; max-width: 860px; width: 100%; }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>sidebar deep dive</h1>
+  <div class="subtitle">Option A explorations: cwd in sidebar, planless tasks, filter interactions</div>
+</div>
+
+<!-- ================================================================== -->
+<!--  SCENE 1: CWD AS SIDEBAR HEADER                                    -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>CWD in the sidebar</strong><br><br>
+  The original Option A had <code>aiki status ops/now</code> in the title bar, but the sidebar header just said "plans".
+  The sidebar IS the directory — its header should say so. The plan filenames are then relative paths within that dir.
+  This makes the sidebar feel like a scoped file-tree, not a generic list.
+</div>
+
+<div class="scene-label">Scene 1 — CWD as sidebar header, plan selected</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="wht bold">Payment migration</span>          <span class="mag">cursor</span>   <span class="dim">1m14s</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">7</span><span class="dim">/12</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>    <span class="grn">●</span> Analyze <span class="dim">━┬━</span> <span class="grn">●</span> Types <span class="dim">━┬━</span> <span class="grn">●</span> Client <span class="dim">━┬━</span> <span class="yel bold">◉</span> Hooks  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">│</span>           <span class="dim">│</span>              <span class="dim">├━</span> <span class="yel bold">◉</span> Cart   <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">├━</span> <span class="grn">●</span> Schema <span class="dim">━╯</span>              <span class="dim">╰━</span> <span class="dim">○</span> Refund <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">│</span>                                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>               <span class="dim">╰━</span> <span class="grn">●</span> Config <span class="dim">━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span> Migrate<span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>         <span class="dim">││</span>                                                <span class="dim">╰━</span> <span class="dim">○</span> Tests  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○ ○ ○ ○ ○</span>                     <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [b] build  [n] drill  [q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:58</span>  <span class="grn">✓</span> <span class="dim">Stripe client</span>  <span class="dim">│</span>  <span class="grn">✓</span> <span class="dim">Remove old</span></pre>
+<pre class="log-entry"> <span class="dim">01:14</span>  <span class="yel blink">▸</span> <span class="fg">Webhooks</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">Checkout</span>  <span class="dim">(parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 2: PLANLESS TASKS IN SIDEBAR                                -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Planless tasks</strong><br><br>
+  Not every task comes from a plan file. <code>aiki task start "Fix login redirect"</code> creates a task with no
+  plan backing it. These need a home in the sidebar. Three options explored below:<br><br>
+  <strong>Option 1:</strong> A <code>── tasks ──</code> divider below plans, listing planless tasks by name<br>
+  <strong>Option 2:</strong> A virtual <code>(no plan)</code> entry that acts like a plan but groups all loose tasks<br>
+  <strong>Option 3:</strong> Planless tasks only appear in the main pane; sidebar shows a count badge
+</div>
+
+<!-- Option 1: Tasks divider -->
+<div class="scene-label">Scene 2a — Planless tasks as sidebar section</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="wht bold">Fix login redirect</span>         <span class="cyn">claude-code</span>  <span class="dim">22s</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">2</span><span class="dim">/3</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>    <span class="grn">●</span> Find bug <span class="dim">━━</span> <span class="grn">●</span> Write fix <span class="dim">━━</span> <span class="yel bold">◉</span> Update tests    <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○</span>                                 <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Bump deps</span>   <span class="grn">✓</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>  <span class="dim">2 tasks</span> <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">2 done</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [b] build  [n] drill  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<!-- Option 2: Virtual (no plan) entry -->
+<div class="scene-label">Scene 2b — Virtual "(no plan)" group entry</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="wht bold">Payment migration</span>          <span class="mag">cursor</span>   <span class="dim">1m14s</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">7</span><span class="dim">/12</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>    <span class="grn">●</span> Analyze <span class="dim">━┬━</span> <span class="grn">●</span> Types <span class="dim">━┬━</span> <span class="grn">●</span> Client <span class="dim">━┬━</span> <span class="yel bold">◉</span> Hooks  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">│</span>           <span class="dim">│</span>              <span class="dim">├━</span> <span class="yel bold">◉</span> Cart   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">(no plan)</span>  <span class="dim">2</span>     <span class="dim">││</span>               <span class="dim">├━</span> <span class="grn">●</span> Schema <span class="dim">━╯</span>              <span class="dim">╰━</span> <span class="dim">○</span> Refund <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">│</span>                                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>               <span class="dim">╰━</span> <span class="grn">●</span> Config <span class="dim">━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span> Migrate<span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>  <span class="dim">2 loose</span> <span class="dim">││</span>                                                <span class="dim">╰━</span> <span class="dim">○</span> Tests  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○ ○ ○ ○ ○</span>                     <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [b] build  [n] drill  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3: PLANLESS TASK FOCUSED                                    -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Planless task focused</strong><br><br>
+  User navigated to an ad-hoc task in the sidebar and pressed Enter. The main pane shows that task's
+  pipeline. Note: no <code>[e] edit</code> affordance since there's no plan file to edit. The header
+  shows the task name instead of a plan filename. The <code>[p] create plan</code> action lets you
+  promote an ad-hoc task into a plan-backed one.
+</div>
+
+<div class="scene-label">Scene 3 — Planless task selected, pipeline view</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="wht bold">Fix login redirect</span>         <span class="cyn">claude-code</span>  <span class="dim">22s</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">no plan</span>                                              <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">2</span><span class="dim">/3</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>    <span class="grn">●</span> Find bug <span class="dim">━━</span> <span class="grn">●</span> Write fix <span class="dim">━━</span> <span class="yel bold">◉</span> Update tests    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○</span>                                 <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Bump deps</span>   <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>  <span class="dim">2 tasks</span> <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">2 done</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">2 building</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [p] create plan  [n] drill  [q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:08</span>  <span class="grn">✓</span> <span class="dim">Find bug</span></pre>
+<pre class="log-entry"> <span class="dim">00:15</span>  <span class="grn">✓</span> <span class="dim">Write fix</span></pre>
+<pre class="log-entry"> <span class="dim">00:22</span>  <span class="yel blink">▸</span> <span class="fg">Update tests</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4: MULTI-TASK VIEW — MIXED PLAN + PLANLESS                  -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Multi-task compressed view — mixed sources</strong><br><br>
+  No specific plan or task is selected. Main pane shows all active work. Each task row shows its source
+  in a <code>plan</code> column — plan-backed tasks show the plan name, planless tasks show <code>—</code>.
+  This makes the provenance visible at a glance without cluttering the sidebar.
+</div>
+
+<div class="scene-label">Scene 4 — All tasks view, plan column shows provenance</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">5 tasks</span>  <span class="dim">│</span>  <span class="grn">2 building</span>  <span class="cyn">1 reviewing</span>  <span class="yel">1 fixing</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>  <span class="wht bold">Add auth</span>        <span class="cyn">cc</span>   <span class="dim">iter 2</span>                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="red">review ✗3</span>  <span class="yel bold">fix 1/3</span> <span class="dim">[2‖]</span>            <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="wht bold">Payment migration</span>  <span class="mag">cur</span>  <span class="dim">iter 1</span>                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="yel bold">build 7/12</span> <span class="dim">[2‖]</span>  <span class="dim">review —</span>  <span class="dim">fix —</span>             <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Bump deps</span>   <span class="grn">✓</span>    <span class="dim">││</span>  <span class="wht bold">Fix login redirect</span>  <span class="cyn">cc</span>   <span class="dim">iter 1</span>   <span class="dim">no plan</span>   <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="yel bold">build 2/3</span>  <span class="dim">review —</span>  <span class="dim">fix —</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>  <span class="dim">2 tasks</span> <span class="dim">││</span>  <span class="wht bold">Update API docs</span>    <span class="cyn">cc</span>   <span class="dim">iter 1</span>                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">2 done</span>          <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="cyn bold">review 2/4</span> <span class="dim">[3‖]</span>  <span class="dim">fix —</span>            <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">2 building</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [/] filter  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 5: ROW VIEW AT SCALE — PLAN COLUMN                         -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Row view at scale with plan provenance</strong><br><br>
+  At Tier 2 density, each task is one row. The <code>PLAN</code> column shows the source plan (truncated).
+  Planless tasks show <code>—</code> in the plan column. Sidebar is still present but the plan column in the
+  main pane gives provenance without having to cross-reference the sidebar.
+</div>
+
+<div class="scene-label">Scene 5 — Row view, plan column, 10 tasks</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 10 tasks</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭──────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">TASK                PLAN      BUILD      REVIEW     FIX</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="yel">▸</span>    <span class="dim">││</span>  <span class="grn">✓</span> Auth endpts   <span class="dim">auth</span>     <span class="grn">████████</span>  <span class="grn">██████</span>  <span class="grn">████</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span> <span class="yel">▸</span>    <span class="dim">││</span>  <span class="yel">▸</span> Pay migrate   <span class="dim">payments</span>  <span class="grn">████████</span>  <span class="red">████</span><span class="red bold">✗2</span>  <span class="yel">██</span><span class="dim">░░</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>  <span class="yel">▸</span>    <span class="dim">││</span>  <span class="yel">▸</span> API docs      <span class="dim">payments</span>  <span class="grn">████████</span>  <span class="cyn">████</span><span class="dim">░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-limit.md</span>    <span class="dim">││</span>  <span class="yel">▸</span> Rate limit    <span class="dim">rate-lim</span>  <span class="grn">████████</span>  <span class="red">██████</span><span class="red bold">✗1</span>  <span class="yel">██</span><span class="dim">░░</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">websockets.md</span>    <span class="dim">││</span>  <span class="yel">▸</span> Fix login     <span class="dim">—</span>         <span class="grn">██████</span><span class="dim">░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="yel">▸</span> WebSockets    <span class="dim">websock</span>   <span class="grn">████</span><span class="dim">░░░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="yel">▸</span> Cache layer   <span class="dim">caching</span>   <span class="grn">██</span><span class="dim">░░░░░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="red">!</span> DB pool       <span class="dim">caching</span>   <span class="grn">████████</span>  <span class="red">██████</span><span class="red bold">✗3</span>  <span class="red">████</span><span class="red bold">✗</span> <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Cleanup tmp</span> <span class="grn">✓</span>    <span class="dim">││</span>  <span class="yel">▸</span> Error refctr  <span class="dim">—</span>         <span class="grn">██</span><span class="dim">░░░░░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">7 plans</span>  <span class="dim">2 tasks</span> <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">5 building</span>      <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">1 idle</span>          <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰──────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Tab] pane  [Enter] focus  [/] filter  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 6: PLAN SELECTED — FILTERED MAIN PANE                      -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Plan selected = main pane filtered</strong><br><br>
+  When a plan is highlighted in the sidebar, the main pane shows only tasks from that plan. This is the
+  filtering behavior that makes the sidebar a navigation element. The header shows the plan name
+  and task count. Press <code>[a]</code> to show all tasks again, or <code>[Esc]</code> to deselect.
+</div>
+
+<div class="scene-label">Scene 6 — Plan selected, main pane filtered to its tasks</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">showing</span> <span class="wht bold">payments.md</span> <span class="dim">— 3 tasks</span>                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span> <span class="yel">◀</span>  <span class="dim">││</span>  <span class="wht bold">Payment migration</span>  <span class="mag">cur</span>  <span class="dim">iter 1</span>                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">││</span>  <span class="yel bold">build 7/12</span> <span class="dim">[2‖]</span>  <span class="dim">review —</span>  <span class="dim">fix —</span>             <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">││</span>  <span class="wht bold">Refactor checkout</span>  <span class="mag">cur</span>  <span class="dim">iter 1</span>                <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="red">review ✗2</span>  <span class="yel bold">fix 1/3</span> <span class="dim">[2‖]</span>            <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="wht bold">Update API docs</span>    <span class="cyn">cc</span>   <span class="dim">iter 1</span>                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Bump deps</span>   <span class="grn">✓</span>    <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="cyn bold">review 2/4</span> <span class="dim">[3‖]</span>  <span class="dim">fix —</span>            <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">5 plans</span>  <span class="dim">2 tasks</span> <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">2 done</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">2 building</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">1 planning</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 idle</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [a] show all  [Esc] deselect  [e] edit  [b] build  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 7: ALL AD-HOC — NO PLANS EXIST                             -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>No plans exist — all tasks are ad-hoc</strong><br><br>
+  Early in a project, or in a quick-fix session, there may be no plan files at all. The sidebar gracefully
+  degrades: no plans section, just a task list. The <code>ops/now/</code> header is still shown (it's the cwd)
+  but the content is all tasks. This should feel natural, not like an error state.
+</div>
+
+<div class="scene-label">Scene 7 — No plans, tasks only</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">no plans</span>         <span class="dim">││</span>  <span class="wht bold">Fix login redirect</span>         <span class="cyn">claude-code</span>  <span class="dim">22s</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">2</span><span class="dim">/3</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Update deps</span> <span class="yel">▸</span>    <span class="dim">││</span>    <span class="grn">●</span> Find bug <span class="dim">━━</span> <span class="grn">●</span> Write fix <span class="dim">━━</span> <span class="yel bold">◉</span> Update tests    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Clean cache</span> <span class="grn">✓</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○</span>                                 <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">3 tasks</span>          <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>           <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">2 building</span>       <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [p] create plan  [n] drill  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 8: REPO ROOT — NO DIRECTORY SCOPING                        -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>No directory argument — repo root</strong><br><br>
+  When you run <code>aiki status</code> without a path, the sidebar shows everything from the repo.
+  Plans come from <code>ops/now/</code> (or wherever they live). The header shows the repo name or
+  just <code>./</code>. This is the "global dashboard" mode.
+</div>
+
+<div class="scene-label">Scene 8 — Repo root, global view</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">aiki</span> <span class="dim">──────────────╮╭──────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                      <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">ops/now/</span>             <span class="dim">││</span>  <span class="dim">8 tasks</span>  <span class="dim">│</span>  <span class="dim">3 agents</span>                       <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">auth.md</span>      <span class="grn">✓</span>    <span class="dim">││</span>  <span class="grn">3 building</span>  <span class="cyn">2 reviewing</span>  <span class="yel">2 fixing</span>      <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">payments.md</span>  <span class="yel">▸</span>    <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">tui.md</span>       <span class="cyn">●</span>    <span class="dim">││</span>  <span class="wht bold">Add auth</span>        <span class="cyn">cc</span>   <span class="dim">iter 2</span>               <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">webhooks.md</span>       <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="red">review ✗3</span>  <span class="yel bold">fix 1/3</span>             <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">caching.md</span>        <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">│</span>                      <span class="dim">││</span>  <span class="wht bold">Payment migration</span>  <span class="mag">cur</span>  <span class="dim">iter 1</span>             <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">ops/next/</span>            <span class="dim">││</span>  <span class="yel bold">build 7/12</span> <span class="dim">[2‖]</span>  <span class="dim">review —</span>  <span class="dim">fix —</span>          <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">plugin-dir.md</span>     <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">│</span>    <span class="dim">registry.md</span>       <span class="dim">││</span>  <span class="wht bold">Fix login redirect</span>  <span class="cyn">cc</span>  <span class="dim">no plan</span>            <span class="dim">│</span>
+ <span class="dim">│</span>                      <span class="dim">││</span>  <span class="yel bold">build 2/3</span>  <span class="dim">review —</span>  <span class="dim">fix —</span>                <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>     <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>      <span class="yel">▸</span>    <span class="dim">││</span>  <span class="wht bold">Update API docs</span>    <span class="cyn">cc</span>   <span class="dim">iter 1</span>             <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Bump deps</span>      <span class="grn">✓</span>    <span class="dim">││</span>  <span class="grn">build ✓</span>  <span class="cyn bold">review 2/4</span> <span class="dim">[3‖]</span>  <span class="dim">fix —</span>         <span class="dim">│</span>
+ <span class="dim">│</span>                      <span class="dim">││</span>                                                  <span class="dim">│</span>
+ <span class="dim">╰─────────────────────╯╰──────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [/] filter  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 9: SIDEBAR SELECTION INDICATOR VARIATIONS                   -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Selection indicator alternatives</strong><br><br>
+  How does the sidebar show what's currently selected? Three sub-options:<br><br>
+  <strong>9a:</strong> Bold text + <code>◀</code> arrow (used in Scene 6 above) — familiar, visible<br>
+  <strong>9b:</strong> Highlight bar (inverse colors) — like lazygit, more visible at a glance<br>
+  <strong>9c:</strong> Bracket indicator <code>[payments.md]</code> — ASCII-safe, no ambiguity
+</div>
+
+<div class="scene-label">Scene 9a — Arrow indicator</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span> <span class="yel">◀</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯</span>
+</pre>
+  </div>
+</div>
+
+<div class="scene-label">Scene 9b — Highlight bar (inverse)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">│</span>
+ <span class="dim">│</span> <span style="background:#1e1e2e;color:#d4a840;font-weight:700"> payments.md ▸   </span> <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯</span>
+</pre>
+  </div>
+</div>
+
+<div class="scene-label">Scene 9c — Bracket indicator</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel bold">[payments.md]</span> <span class="yel">▸</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="cyn">●</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">webhooks.md</span>      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">caching.md</span>       <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 10: PLAN LIFECYCLE STATES                                   -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Draft vs ready plans</strong><br><br>
+  Not all plan files are ready to build. A plan goes through a lifecycle:<br><br>
+  <code>○</code> <strong>draft</strong> <span style="color:#3a3a44">(dim)</span> — file exists, still being written. Can't build yet.<br>
+  <code>●</code> <strong>ready</strong> <span style="color:#5bb8c9">(cyan)</span> — plan is complete, waiting for someone to run <code>aiki build</code>.<br>
+  <code>◉</code> <strong>editing</strong> <span style="color:#c470b0">(magenta, blink)</span> — someone has it open in an active session right now.<br>
+  <code>▸</code> <strong>building</strong> <span style="color:#d4a840">(yellow)</span> — <code>aiki build</code> is running, tasks in progress.<br>
+  <code>✓</code> <strong>done</strong> <span style="color:#5fcc68">(green)</span> — all tasks complete.<br><br>
+  The key UX consequence: <code>[b] build</code> is only available on <strong>ready</strong> plans. You can't accidentally
+  kick off a build from a half-written draft. Drafts show <code>[e] edit</code> and <code>[r] mark ready</code> instead.
+</div>
+
+<div class="scene-label">Scene 10 — All lifecycle states visible</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">6 plans</span>  <span class="dim">│</span>  <span class="grn">1 done</span>  <span class="yel">1 building</span>  <span class="cyn">2 ready</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">webhooks.md</span> <span class="cyn">●</span>    <span class="dim">││</span>  <span class="wht bold">Payment migration</span>          <span class="mag">cursor</span>   <span class="dim">1m14s</span>    <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">caching.md</span>  <span class="cyn">●</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="dim">○</span>    <span class="dim">││</span>  <span class="grn bold">build</span>                                       <span class="grn">7</span><span class="dim">/12</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-lim.md</span> <span class="dim">○</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>    <span class="grn">●</span> Analyze <span class="dim">━┬━</span> <span class="grn">●</span> Types <span class="dim">━┬━</span> <span class="grn">●</span> Client <span class="dim">━┬━</span> <span class="yel bold">◉</span> Hooks  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>               <span class="dim">│</span>           <span class="dim">│</span>              <span class="dim">├━</span> <span class="yel bold">◉</span> Cart   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>               <span class="dim">├━</span> <span class="grn">●</span> Schema <span class="dim">━╯</span>              <span class="dim">╰━</span> <span class="dim">○</span> Refund <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>               <span class="dim">│</span>                                       <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>               <span class="dim">╰━</span> <span class="grn">●</span> Config <span class="dim">━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span> Migrate<span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>                                                <span class="dim">╰━</span> <span class="dim">○</span> Tests  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">2 ready</span>         <span class="dim">││</span>  <span class="dim">review</span>   <span class="dim">○ ○ ○ ○ ○ ○</span>                     <span class="dim">—</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 draft</span>         <span class="dim">││</span>  <span class="dim">fix</span>      <span class="dim">—</span>                                         <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] focus  [e] edit  [b] build  [n] drill  [q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:58</span>  <span class="grn">✓</span> <span class="dim">Stripe client</span>  <span class="dim">│</span>  <span class="grn">✓</span> <span class="dim">Remove old</span></pre>
+<pre class="log-entry"> <span class="dim">01:14</span>  <span class="yel blink">▸</span> <span class="fg">Webhooks</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">Checkout</span>  <span class="dim">(parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!--  SCENE 11: DRAFT PLAN FOCUSED                                      -->
+<!-- ================================================================== -->
+
+<div class="scene-label">Scene 11 — Draft plan focused</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">tui.md</span>                                   <span class="dim">draft</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">webhooks.md</span> <span class="cyn">●</span>    <span class="dim">││</span>  <span class="dim">╭──────────────────────────────────────────────────╮</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">caching.md</span>  <span class="cyn">●</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="wht bold">TUI status screen</span>                              <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="wht bold">tui.md</span>      <span class="dim">○</span> <span class="dim">◀</span>  <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-lim.md</span> <span class="dim">○</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">Ratatui-based terminal UI for aiki status.</span>     <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">Shows pipeline progress (build → review →</span>      <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">fix) with DAG visualization for parallel</span>      <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">subtasks...</span>                                   <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="org">TODO: acceptance criteria</span>                     <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>  <span class="dim">│</span>  <span class="org">TODO: subtask breakdown</span>                       <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">2 ready</span>         <span class="dim">││</span>  <span class="dim">│</span>  <span class="dim">0 tasks  │  last edited 2m ago</span>                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 draft</span>         <span class="dim">││</span>  <span class="dim">╰──────────────────────────────────────────────────╯</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[e] edit plan  [r] mark ready  [j/k] navigate  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!--  SCENE 12: READY PLAN FOCUSED                                      -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Ready plan = buildable</strong><br><br>
+  When a <strong>ready</strong> plan is selected, the main pane shows a summary and the <code>[b] build</code>
+  action is prominent. This is the "green light" moment — the plan is complete, reviewed, and waiting
+  to be executed. The preview shows what will happen: task breakdown, estimated scope.<br><br>
+  The <code>[e] edit</code> action is still available (you can always go back to draft). And
+  <code>[b] build</code> transitions the plan to "building" and kicks off task creation.
+</div>
+
+<div class="scene-label">Scene 12 — Ready plan focused, build available</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="cyn bold">webhooks.md</span>                              <span class="cyn">ready</span>   <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn bold">webhooks.md</span> <span class="cyn">●</span> <span class="cyn">◀</span>  <span class="dim">││</span>  <span class="dim">╭──────────────────────────────────────────────────╮</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">caching.md</span>  <span class="cyn">●</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="wht bold">Webhook event handling</span>                         <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">tui.md</span>      <span class="dim">○</span>    <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-lim.md</span> <span class="dim">○</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">Add Stripe webhook verification, event</span>        <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">routing, and idempotency handling. Support</span>    <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">payment_intent and checkout.session events.</span>   <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>  <span class="grn">✓ acceptance criteria</span>                        <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="grn">✓ subtask breakdown (6 subtasks)</span>              <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>  <span class="dim">│</span>  <span class="grn">✓ reviewed</span>                                   <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">2 ready</span>         <span class="dim">││</span>  <span class="dim">│</span>  <span class="dim">0 tasks  │  ready since 10m ago</span>               <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">2 draft</span>         <span class="dim">││</span>  <span class="dim">╰──────────────────────────────────────────────────╯</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[</span><span class="cyn bold">b</span><span class="dim">] build  [e] edit  [j/k] navigate  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!--  SCENE 13: EDITING STATE — ACTIVE SESSION                          -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Editing state</strong><br><br>
+  When someone has a plan open in an active editor session (via <code>aiki plan edit</code>
+  or <code>[e]</code> from the TUI), the sidebar shows the <code>◉</code> fisheye with a blink
+  indicator. This is distinct from "draft" (no one's working on it) and "ready" (it's done).
+  The main pane shows who's editing and offers <code>[f] attach</code> to join the session.
+</div>
+
+<div class="scene-label">Scene 13 — Plan being actively edited</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭─────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="mag bold">tui.md</span>                             <span class="mag">editing</span>      <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">webhooks.md</span> <span class="cyn">●</span>    <span class="dim">││</span>  <span class="dim">╭──────────────────────────────────────────────────╮</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">caching.md</span>  <span class="cyn">●</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="wht bold">TUI status screen</span>                              <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="mag bold">tui.md</span>      <span class="mag bold">◉</span> <span class="mag">◀</span>  <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-lim.md</span> <span class="dim">○</span>    <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">Ratatui-based terminal UI for aiki status.</span>     <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">Shows pipeline progress (build → review →</span>      <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="dim">│</span>  <span class="fg">fix) with DAG visualization...</span>                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="dim">│</span>  <span class="mag blink">▸</span> <span class="fg">claude-code editing</span>  <span class="dim">— 4m active</span>         <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>  <span class="dim">│</span>                                                <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>          <span class="dim">││</span>  <span class="dim">│</span>  <span class="dim">0 tasks  │  draft</span>                            <span class="dim">│</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="yel">1 building</span>      <span class="dim">││</span>  <span class="dim">╰──────────────────────────────────────────────────╯</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">2 ready</span>         <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="mag">1 editing</span>       <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">1 draft</span>         <span class="dim">││</span>                                                     <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰─────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[f] attach to session  [j/k] navigate  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!--  SCENE 14: ROW VIEW WITH LIFECYCLE                                 -->
+<!-- ================================================================== -->
+
+<div class="scene-label">Scene 14 — Row view with lifecycle + plan provenance</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — 8 tasks</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">╭─</span> <span class="fg">ops/now/</span> <span class="dim">────────╮╭──────────────────────────────────────────────────────────╮</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn dim">auth.md</span>     <span class="grn">✓</span>    <span class="dim">││</span>  <span class="dim">TASK                PLAN      BUILD      REVIEW     FIX</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">payments.md</span> <span class="yel">▸</span>    <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">webhooks.md</span> <span class="cyn">●</span>    <span class="dim">││</span>  <span class="grn">✓</span> Auth endpts   <span class="dim">auth</span>     <span class="grn">████████</span>  <span class="grn">██████</span>  <span class="grn">████</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">caching.md</span>  <span class="cyn">●</span>    <span class="dim">││</span>  <span class="yel">▸</span> Pay migrate   <span class="dim">payments</span>  <span class="grn">████████</span>  <span class="red">████</span><span class="red bold">✗2</span>  <span class="yel">██</span><span class="dim">░░</span>  <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="mag bold">tui.md</span>      <span class="mag bold">◉</span>    <span class="dim">││</span>  <span class="yel">▸</span> API docs      <span class="dim">payments</span>  <span class="grn">████████</span>  <span class="cyn">████</span><span class="dim">░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">rate-lim.md</span> <span class="dim">○</span>    <span class="dim">││</span>  <span class="yel">▸</span> Rate limit    <span class="dim">rate-lim</span>  <span class="grn">████████</span>  <span class="red">██████</span><span class="red bold">✗1</span>  <span class="yel">██</span><span class="dim">░░</span>  <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>  <span class="yel">▸</span> Fix login     <span class="dim">—</span>         <span class="grn">██████</span><span class="dim">░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">── tasks ──────</span>  <span class="dim">││</span>  <span class="yel">▸</span> Cache layer   <span class="dim">caching</span>   <span class="grn">██</span><span class="dim">░░░░░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Fix login</span>   <span class="yel">▸</span>    <span class="dim">││</span>  <span class="red">!</span> DB pool       <span class="dim">caching</span>   <span class="grn">████████</span>  <span class="red">██████</span><span class="red bold">✗3</span>  <span class="red">████</span><span class="red bold">✗</span> <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">Error refctr</span> <span class="yel">▸</span>   <span class="dim">││</span>  <span class="yel">▸</span> Error refctr  <span class="dim">—</span>         <span class="grn">██</span><span class="dim">░░░░░░</span>  <span class="dim">░░░░░░</span>  <span class="dim">—</span>     <span class="dim">│</span>
+ <span class="dim">│</span>                   <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">────────────</span>    <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="grn">1 done</span>  <span class="yel">1 bld</span>   <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="cyn">2 ready</span> <span class="mag">1 edit</span>  <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">│</span>  <span class="dim">1 draft</span>         <span class="dim">││</span>                                                          <span class="dim">│</span>
+ <span class="dim">╰──────────────────╯╰──────────────────────────────────────────────────────────╯</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Tab] pane  [Enter] focus  [/] filter  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 15: LIFECYCLE LEGEND                                        -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Plan lifecycle — visual reference</strong><br><br>
+<pre style="color:#777;font-size:12px;line-height:1.8">
+  <span style="color:#3a3a44">○</span> <span style="color:#3a3a44">draft</span>      Plan file exists, still being written
+                 Actions: <span style="color:#5bb8c9">[e] edit</span>  <span style="color:#5bb8c9">[r] mark ready</span>
+
+  <span style="color:#c470b0">◉</span> <span style="color:#c470b0">editing</span>    Someone has it open in an active session
+                 Actions: <span style="color:#5bb8c9">[f] attach to session</span>
+
+  <span style="color:#5bb8c9">●</span> <span style="color:#5bb8c9">ready</span>      Plan is complete, waiting to be built
+                 Actions: <span style="color:#5bb8c9">[b] build</span>  <span style="color:#5bb8c9">[e] edit</span>
+
+  <span style="color:#d4a840">▸</span> <span style="color:#d4a840">building</span>   aiki build running, tasks in progress
+                 Actions: <span style="color:#5bb8c9">[n] drill</span>  <span style="color:#5bb8c9">[s] stop</span>  <span style="color:#5bb8c9">[Enter] focus</span>
+
+  <span style="color:#5fcc68">✓</span> <span style="color:#5fcc68">done</span>       All tasks complete
+                 Actions: <span style="color:#5bb8c9">[n] drill</span>  (inspect completed work)
+</pre><br>
+  <strong>Transitions:</strong><br>
+  <code>draft → ready</code> — user runs <code>[r] mark ready</code> or <code>aiki plan ready &lt;file&gt;</code><br>
+  <code>ready → building</code> — user runs <code>[b] build</code> or <code>aiki build &lt;file&gt;</code><br>
+  <code>building → done</code> — all tasks complete (automatic)<br>
+  <code>ready → draft</code> — user runs <code>[e] edit</code> (plan re-opens for changes)<br>
+  <code>done → building</code> — user re-runs build (new iteration)<br><br>
+
+  <strong>How does a plan become "ready"?</strong><br>
+  Explicit: <code>aiki plan ready payments.md</code> or frontmatter <code>status: ready</code><br>
+  The plan file itself defines what "complete" means — aiki doesn't enforce structure.
+  It's a human decision: "I'm done writing this, it's ready to build."<br><br>
+
+  <strong>What about plans that skip the draft stage?</strong><br>
+  If you write a plan in one shot and immediately mark it ready, that's fine.
+  <code>aiki plan add --ready "Quick fix for login bug"</code> creates a ready plan directly.
+  The draft state exists for plans that need iteration, not as a mandatory gate.
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  DESIGN NOTES                                                      -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Design decisions and open questions</strong><br><br>
+
+  <strong>CWD in sidebar</strong><br>
+  The sidebar header IS the cwd. <code>╭─ ops/now/ ────────╮</code> tells you the scope immediately.
+  At repo root (Scene 8), it shows the repo name with subdirectories as nested groups.
+  Title bar is just <code>aiki status</code> — no redundancy.<br><br>
+
+  <strong>Planless tasks: "tasks" section wins</strong><br>
+  Scene 2a (explicit task list with <code>── tasks ──</code> divider) is the strongest option because:<br>
+  - Tasks are named, so they're navigable (unlike a count badge)<br>
+  - They live in the same j/k navigation flow as plans<br>
+  - The divider creates a clear visual break — you know what's planned vs ad-hoc<br>
+  - Degrades gracefully to "all tasks" when no plans exist (Scene 7)<br><br>
+
+  The virtual <code>(no plan)</code> entry (Scene 2b) is too abstract — it's a group pretending to be a single entry.
+  A count badge hides the tasks and requires switching panes to see them.<br><br>
+
+  <strong>"no plan" label in main pane</strong><br>
+  When showing all tasks in compressed view (Scene 4), planless tasks show <code>no plan</code> in dim
+  on the task header line. In the row view (Scene 5), the PLAN column shows <code>—</code>. Both are subtle
+  enough not to nag — ad-hoc tasks are fine, not an error state.<br><br>
+
+  <strong>Plan filtering</strong><br>
+  Selecting a plan in the sidebar filters the main pane (Scene 6). The <code>◀</code> arrow and
+  <code>showing payments.md — 3 tasks</code> header make the filter state obvious. <code>[a]</code> to
+  show all, <code>[Esc]</code> to deselect. Selecting a task in the "tasks" section filters to that single
+  task's pipeline view.<br><br>
+
+  <strong>[p] create plan</strong><br>
+  When a planless task is focused, the hotbar shows <code>[p] create plan</code> — promotes
+  ad-hoc work into planned work. Opens <code>$EDITOR</code> with a plan template pre-filled
+  from the task description. This makes the plan/planless distinction feel like a natural
+  workflow progression, not a rigid categorization.<br><br>
+
+  <strong>Plan lifecycle in sidebar (Scenes 10–15)</strong><br>
+  Five distinct states: <code>○ draft</code>, <code>◉ editing</code>, <code>● ready</code>,
+  <code>▸ building</code>, <code>✓ done</code>. The key UX gate: <code>[b] build</code> is only
+  available on ready plans. Draft plans show <code>[e] edit</code> + <code>[r] mark ready</code>.
+  This prevents accidentally building from half-written plans.<br><br>
+
+  The draft/ready distinction replaces the old "idle" state. Previously, a plan with no icon could be
+  either incomplete or ready-but-unbuilt — ambiguous. Now the intent is explicit.<br><br>
+
+  <strong>Open questions:</strong><br>
+  - Should completed plans (all tasks done) auto-collapse or stay visible?<br>
+  - Should the sidebar show task counts per plan? e.g., <code>payments.md ▸ 3</code><br>
+  - At Tier 3/4 scale, should the sidebar collapse to just plans (hiding individual tasks)?<br>
+  - How should the sidebar handle nested directories? (Scene 8 hints at this with subdirectory groups)<br>
+  - Should <code>[e] edit</code> on a ready plan transition it back to draft, or stay ready?<br>
+  - Can agents mark plans ready, or is it always a human decision?
+</div>
+
+</body>
+</html>

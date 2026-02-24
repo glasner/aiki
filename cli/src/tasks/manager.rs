@@ -2501,7 +2501,7 @@ mod tests {
     fn test_orchestrator_is_orchestrator() {
         let events = vec![make_created_event_with_type(
             "parent",
-            "Build: spec.md",
+            "Build: plan.md",
             "orchestrator",
             TaskPriority::P2,
             1,
@@ -2530,12 +2530,12 @@ mod tests {
         let events = vec![
             make_created_event_with_type(
                 "parent",
-                "Build: spec.md",
+                "Build: plan.md",
                 "orchestrator",
                 TaskPriority::P2,
                 5,
             ),
-            make_created_event("parent.1", "Plan", TaskPriority::P2, 4),
+            make_created_event("parent.1", "Decompose", TaskPriority::P2, 4),
             make_created_event("parent.2", "Execute", TaskPriority::P2, 3),
             make_created_event("parent.2.1", "Step 1", TaskPriority::P2, 2),
             make_created_event("parent.2.2", "Step 2", TaskPriority::P2, 1),
@@ -2586,8 +2586,8 @@ mod tests {
         // 4. Verify descendants are closed with WontDo and correct summary
         let summary = "Parent orchestrator stopped";
         let events = vec![
-            make_created_event_with_type("parent", "Build: spec.md", "orchestrator", TaskPriority::P2, 5),
-            make_created_event("parent.1", "Plan", TaskPriority::P2, 4),
+            make_created_event_with_type("parent", "Build: plan.md", "orchestrator", TaskPriority::P2, 5),
+            make_created_event("parent.1", "Decompose", TaskPriority::P2, 4),
             make_created_event("parent.2", "Execute", TaskPriority::P2, 3),
             make_created_event("parent.2.1", "Step 1", TaskPriority::P2, 2),
             make_created_event("parent.2.2", "Step 2", TaskPriority::P2, 1),
@@ -2739,6 +2739,7 @@ mod tests {
                 from: "blocked".to_string(),
                 to: "blocker".to_string(),
                 kind: "blocked-by".to_string(),
+                autorun: None,
                 timestamp: Utc::now(),
             },
         ];
@@ -2761,6 +2762,7 @@ mod tests {
                 from: "blocked".to_string(),
                 to: "blocker".to_string(),
                 kind: "blocked-by".to_string(),
+                autorun: None,
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
@@ -2791,6 +2793,7 @@ mod tests {
                 from: "parent.1".to_string(),
                 to: "blocker".to_string(),
                 kind: "blocked-by".to_string(),
+                autorun: None,
                 timestamp: Utc::now(),
             },
         ];

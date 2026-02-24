@@ -1901,7 +1901,7 @@ fn test_task_add_with_implements() {
             "add",
             "Plan: Auth system",
             "--implements",
-            "file:ops/now/auth-spec.md",
+            "file:ops/now/auth-plan.md",
         ],
     )
     .success()
@@ -2037,7 +2037,7 @@ fn test_task_add_with_all_new_link_types() {
             "--scoped-to",
             "file:src/main.rs",
             "--implements",
-            "file:ops/now/spec.md",
+            "file:ops/now/plan.md",
         ],
     )
     .success()
@@ -2055,7 +2055,7 @@ fn test_task_start_quickstart_with_implements() {
             "start",
             "Plan: Auth",
             "--implements",
-            "file:ops/now/auth-spec.md",
+            "file:ops/now/auth-plan.md",
         ],
     )
     .success()

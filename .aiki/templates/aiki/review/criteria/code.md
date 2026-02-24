@@ -6,10 +6,10 @@ slug: criteria
 
 Evaluate the implementation against these categories:
 
-**Spec Coverage**
-- All requirements from the spec exist in the codebase
+**Plan Coverage**
+- All requirements from the plan exist in the codebase
 - No missing features or unimplemented sections
-- No scope creep beyond what the spec describes
+- No scope creep beyond what the plan describes
 
 **Code Quality**
 - Logic errors, incorrect assumptions, edge cases
@@ -21,7 +21,7 @@ Evaluate the implementation against these categories:
 - Authentication and authorization issues
 - Data exposure or crypto misuse
 
-**Spec Alignment**
-- UX matches spec design (commands, flags, output format)
-- Architecture follows spec's prescribed approach
-- Acceptance criteria from spec are met
+**Plan Alignment**
+- UX matches plan design (commands, flags, output format)
+- Architecture follows plan's prescribed approach
+- Acceptance criteria from plan are met

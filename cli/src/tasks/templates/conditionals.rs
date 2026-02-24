@@ -145,9 +145,9 @@ pub enum TemplateNode {
     },
     /// Subtask reference for template composition
     SubtaskRef {
-        /// Template name (e.g., "aiki/plan", "aiki/review/spec")
+        /// Template name (e.g., "aiki/decompose", "aiki/review/plan")
         template_name: String,
-        /// Optional inline condition (e.g., `{% subtask aiki/plan if data.needs_plan %}`)
+        /// Optional inline condition (e.g., `{% subtask aiki/decompose if data.needs_plan %}`)
         condition: Option<String>,
         /// Source line number for error reporting
         line: usize,
@@ -773,7 +773,7 @@ where
 /// Parse a subtask reference: `<template_name>` or `<template_name> if <condition>`
 ///
 /// Template name segments: `[a-z0-9][a-z0-9._-]*` separated by `/`
-/// Examples: `aiki/plan`, `aiki/review/spec`, `myorg/v2.0`
+/// Examples: `aiki/decompose`, `aiki/review/plan`, `myorg/v2.0`
 fn parse_subtask_ref(content: &str, line: usize) -> Result<TemplateNode, ConditionalError> {
     let content = content.trim();
 
@@ -1816,21 +1816,21 @@ Content under heading
 
     #[test]
     fn test_tokenize_subtask_ref() {
-        let tokens = tokenize("{% subtask aiki/plan %}").unwrap();
+        let tokens = tokenize("{% subtask aiki/decompose %}").unwrap();
         assert_eq!(
             tokens,
-            vec![Token::ControlBlock("subtask aiki/plan".to_string())]
+            vec![Token::ControlBlock("subtask aiki/decompose".to_string())]
         );
     }
 
     #[test]
     fn test_parse_subtask_ref_simple() {
-        let tokens = tokenize("{% subtask aiki/plan %}").unwrap();
+        let tokens = tokenize("{% subtask aiki/decompose %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::SubtaskRef { template_name, condition, line } => {
-                assert_eq!(template_name, "aiki/plan");
+                assert_eq!(template_name, "aiki/decompose");
                 assert!(condition.is_none());
                 assert_eq!(*line, 1);
             }
@@ -1840,13 +1840,13 @@ Content under heading
 
     #[test]
     fn test_parse_subtask_ref_with_condition() {
-        let tokens = tokenize("{% subtask aiki/review/spec if data.file_type == \"spec\" %}").unwrap();
+        let tokens = tokenize("{% subtask aiki/review/plan if data.file_type == \"plan\" %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::SubtaskRef { template_name, condition, .. } => {
-                assert_eq!(template_name, "aiki/review/spec");
-                assert_eq!(condition.as_deref(), Some("data.file_type == \"spec\""));
+                assert_eq!(template_name, "aiki/review/plan");
+                assert_eq!(condition.as_deref(), Some("data.file_type == \"plan\""));
             }
             _ => panic!("Expected SubtaskRef"),
         }
@@ -1854,12 +1854,12 @@ Content under heading
 
     #[test]
     fn test_parse_subtask_ref_inside_conditional() {
-        let tokens = tokenize("{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}").unwrap();
+        let tokens = tokenize("{% if data.needs_plan %}{% subtask aiki/decompose %}{% endif %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::Conditional { if_branch, .. } => {
-                assert!(if_branch.1.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/plan")));
+                assert!(if_branch.1.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/decompose")));
             }
             _ => panic!("Expected Conditional"),
         }
@@ -1867,12 +1867,12 @@ Content under heading
 
     #[test]
     fn test_parse_subtask_ref_inside_loop() {
-        let tokens = tokenize("{% for item in list %}{% subtask aiki/plan %}{% endfor %}").unwrap();
+        let tokens = tokenize("{% for item in list %}{% subtask aiki/decompose %}{% endfor %}").unwrap();
         let ast = parse(&tokens).unwrap();
         assert_eq!(ast.len(), 1);
         match &ast[0] {
             TemplateNode::Loop { body, .. } => {
-                assert!(body.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/plan")));
+                assert!(body.iter().any(|n| matches!(n, TemplateNode::SubtaskRef { template_name, .. } if template_name == "aiki/decompose")));
             }
             _ => panic!("Expected Loop"),
         }
@@ -1891,10 +1891,10 @@ Content under heading
     #[test]
     fn test_subtask_ref_template_name_validation() {
         // Valid names
-        let result = parse_subtask_ref("aiki/plan", 1);
+        let result = parse_subtask_ref("aiki/decompose", 1);
         assert!(result.is_ok());
 
-        let result = parse_subtask_ref("aiki/review/spec", 1);
+        let result = parse_subtask_ref("aiki/review/plan", 1);
         assert!(result.is_ok());
 
         let result = parse_subtask_ref("myorg/v2.0", 1);
@@ -1957,39 +1957,39 @@ Content under heading
     fn test_subtask_ref_roundtrip() {
         // SubtaskRef should serialize back to template syntax correctly
         let node = TemplateNode::SubtaskRef {
-            template_name: "aiki/plan".to_string(),
+            template_name: "aiki/decompose".to_string(),
             condition: None,
             line: 1,
         };
-        assert_eq!(node_to_template(&node), "{% subtask aiki/plan %}");
+        assert_eq!(node_to_template(&node), "{% subtask aiki/decompose %}");
 
         let node_with_cond = TemplateNode::SubtaskRef {
-            template_name: "aiki/review/spec".to_string(),
-            condition: Some("data.type == \"spec\"".to_string()),
+            template_name: "aiki/review/plan".to_string(),
+            condition: Some("data.type == \"plan\"".to_string()),
             line: 1,
         };
         assert_eq!(
             node_to_template(&node_with_cond),
-            "{% subtask aiki/review/spec if data.type == \"spec\" %}"
+            "{% subtask aiki/review/plan if data.type == \"plan\" %}"
         );
     }
 
     #[test]
     fn test_process_subtask_ref_unconditional() {
         let ctx = EvalContext::new();
-        let result = process_conditionals("{% subtask aiki/plan %}", &ctx).unwrap();
-        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+        let result = process_conditionals("{% subtask aiki/decompose %}", &ctx).unwrap();
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/decompose:"));
     }
 
     #[test]
     fn test_process_subtask_ref_conditional_true() {
         let mut ctx = EvalContext::new();
-        ctx.set("data.file_type", "spec");
+        ctx.set("data.file_type", "plan");
         let result = process_conditionals(
-            "{% subtask aiki/review/spec if data.file_type == \"spec\" %}",
+            "{% subtask aiki/review/plan if data.file_type == \"plan\" %}",
             &ctx,
         ).unwrap();
-        assert!(result.contains("AIKI_SUBTASK_REF:aiki/review/spec:"));
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/review/plan:"));
     }
 
     #[test]
@@ -1997,7 +1997,7 @@ Content under heading
         let mut ctx = EvalContext::new();
         ctx.set("data.file_type", "code");
         let result = process_conditionals(
-            "{% subtask aiki/review/spec if data.file_type == \"spec\" %}",
+            "{% subtask aiki/review/plan if data.file_type == \"plan\" %}",
             &ctx,
         ).unwrap();
         assert!(!result.contains("AIKI_SUBTASK_REF"));
@@ -2008,15 +2008,15 @@ Content under heading
         let mut ctx = EvalContext::new();
         ctx.set("data.needs_plan", "true");
         let result = process_conditionals(
-            "{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}",
+            "{% if data.needs_plan %}{% subtask aiki/decompose %}{% endif %}",
             &ctx,
         ).unwrap();
-        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/decompose:"));
 
         // False branch
         let ctx2 = EvalContext::new();
         let result2 = process_conditionals(
-            "{% if data.needs_plan %}{% subtask aiki/plan %}{% endif %}",
+            "{% if data.needs_plan %}{% subtask aiki/decompose %}{% endif %}",
             &ctx2,
         ).unwrap();
         assert!(!result2.contains("AIKI_SUBTASK_REF"));
@@ -2028,14 +2028,14 @@ Content under heading
         let template = r#"## Setup environment
 Install dependencies.
 
-{% subtask aiki/plan %}
+{% subtask aiki/decompose %}
 
 ## Execute plan
 Run each plan subtask."#;
 
         let result = process_conditionals(template, &ctx).unwrap();
         assert!(result.contains("## Setup environment"));
-        assert!(result.contains("AIKI_SUBTASK_REF:aiki/plan:"));
+        assert!(result.contains("AIKI_SUBTASK_REF:aiki/decompose:"));
         assert!(result.contains("## Execute plan"));
     }
 }

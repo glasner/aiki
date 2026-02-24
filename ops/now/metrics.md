@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Aiki Metrics: The Learning Layer
 
 > Implementing Evans' three-tier measurement architecture within aiki's event-sourced model.
@@ -6,7 +10,7 @@
 
 Aiki captures rich event streams — task lifecycle, session history, turn events, provenance — but provides no aggregation, analysis, or learning layer. Users can't answer:
 
-- Why did Task A cost 90K tokens when Task B cost 12K?
+- Why did Task A take 90 minutes when Task B took 12 minutes?
 - Which agents produce the highest-quality work?
 - Are agents improving over time or degrading?
 - What makes some tasks fast vs. slow?
@@ -14,7 +18,7 @@ Aiki captures rich event streams — task lifecycle, session history, turn event
 
 ## Design Principles
 
-1. **Event-sourced, not database-backed** — Metrics live on `aiki/metrics` branch (same pattern as tasks and conversations)
+1. **Event-sourced, not database-backed** — Metrics are stored on `aiki/tasks` branch as part of task events
 2. **Computed from existing events** — Tier 2 (execution tracking) derives from session/turn/task events already captured
 3. **Agent-reported for Tier 1** — Self-assessment is reported via `aiki task comment` with structured data
 4. **Materialized on demand** — `aiki metrics` command replays events and computes signals (like `TaskGraph`)
@@ -31,7 +35,7 @@ Aiki captures rich event streams — task lifecycle, session history, turn event
                         ↓
 ┌─────────────────────────────────────────────────────┐
 │ TIER 2: EXECUTION TRACKING                          │
-│ Stored: metrics events on aiki/metrics branch       │
+│ Stored: ExecutionMetrics in TaskEvent::Closed        │
 │ Source: computed from turn/session/change events     │
 └─────────────────────────────────────────────────────┘
                         ↓
@@ -141,122 +145,66 @@ Confidence guide:
 | Agent type | `session.agent_type` | Every event |
 | Session duration | `SessionStart.timestamp` → `SessionEnd.timestamp` | `aiki/conversations` |
 
-### What's Missing: Token & Cost Tracking
 
-Aiki does not currently capture token counts or costs. Two approaches:
+### Future Work: Token & Cost Tracking
 
-#### Option A: Hook-Based Capture (Recommended)
+Token and cost tracking is deferred to future work. See [ops/future/token-cost-metrics.md](../future/token-cost-metrics.md) for the full design.
 
-Add token tracking to `turn.completed` event payloads. Claude Code and Cursor expose usage info in their hook payloads — aiki can extract this:
+**Summary**: Neither Claude Code nor Cursor currently expose token usage in hook payloads. When needed, the recommended approach is transcript parsing (parsing JSONL files that contain API responses with usage data).
+### Metrics Event Storage
+
+Execution metrics are stored on the `aiki/tasks` branch as part of task events (not a separate branch).
+
+**On task close**, execution metrics are computed and added to the `TaskEvent::Closed` event:
 
 ```rust
-// In AikiTurnCompletedPayload (new optional fields)
-pub struct AikiTurnCompletedPayload {
-    // ... existing fields ...
-
-    /// Token usage for this turn (if available from editor)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<TurnUsage>,
+pub enum TaskEvent {
+    // ... other variants ...
+    
+    Closed {
+        task_id: String,
+        status: ClosedStatus,
+        summary: Option<String>,
+        timestamp: DateTime<Utc>,
+        
+        /// Computed execution metrics (populated on close)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metrics: Option<ExecutionMetrics>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnUsage {
-    /// Input tokens consumed
-    pub input_tokens: Option<u64>,
-    /// Output tokens generated
-    pub output_tokens: Option<u64>,
-    /// Model used for this turn
-    pub model: Option<String>,
-    /// Estimated cost in USD (computed from model pricing)
-    pub cost_usd: Option<f64>,
+pub struct ExecutionMetrics {
+    /// Duration from start to close (seconds)
+    pub duration_seconds: Option<f64>,
+    /// Number of turns in the session(s) that worked on this task
+    pub turn_count: Option<u32>,
+    /// Files created or modified
+    pub files_changed: Option<u32>,
+    /// Model(s) used during task execution
+    pub models: Vec<String>,
 }
 ```
 
-The flow engine can populate this from editor-specific payloads:
-
-```yaml
-# In aiki/default flow
-turn.completed:
-  - let:
-      usage: $event.usage
-    if: $event.usage
-    then:
-      - action:
-          type: task.comment
-          task: $task.current
-          data:
-            turn_input_tokens: $usage.input_tokens
-            turn_output_tokens: $usage.output_tokens
-            turn_model: $usage.model
-            turn_cost_usd: $usage.cost_usd
-```
-
-#### Option B: Agent Self-Report
-
-Agents report their own token usage when closing tasks (simpler, less accurate):
-
-```bash
-aiki task close <id> --summary "Done" \
-  --data input_tokens=45000 \
-  --data output_tokens=8200 \
-  --data model=claude-sonnet-4-5 \
-  --data cost_usd=0.18
-```
-
-#### Recommendation: Option A First, Option B as Fallback
-
-Option A is more accurate (editor provides real numbers) and requires less agent training. Option B is a good fallback for editors that don't expose usage.
-
-### Metrics Event Storage
-
-New event type on `aiki/metrics` branch for per-task aggregated execution data:
-
-```rust
-/// Events stored on aiki/metrics branch
-pub enum MetricsEvent {
-    /// Execution metrics for a completed task
-    TaskMetrics {
-        task_id: String,
-        /// Duration from start to close (seconds)
-        duration_seconds: Option<f64>,
-        /// Number of turns in the session(s) that worked on this task
-        turn_count: Option<u32>,
-        /// Files created or modified
-        files_changed: Option<u32>,
-        /// Total input tokens across all turns
-        total_input_tokens: Option<u64>,
-        /// Total output tokens across all turns
-        total_output_tokens: Option<u64>,
-        /// Total estimated cost in USD
-        total_cost_usd: Option<f64>,
-        /// Model(s) used
-        models: Vec<String>,
-        /// Agent type
-        agent_type: String,
-        timestamp: DateTime<Utc>,
-    },
-}
-```
-
-**Storage pattern:** Same as tasks — `[aiki-metrics]...[/aiki-metrics]` blocks in JJ change descriptions on `aiki/metrics` branch.
-
-### When Metrics Events Are Written
-
-**On task close** — the `task.closed` event handler computes and writes execution metrics:
+**Computation logic** (triggered on task close):
 
 ```rust
 // In handle_task_closed:
-// 1. Look up task from graph (has started_at, timestamps)
-// 2. Query session history for turn count
-// 3. Sum token usage from task data/comments
-// 4. Write MetricsEvent::TaskMetrics to aiki/metrics branch
+// 1. Look up task from graph (has started_at timestamp)
+// 2. Compute duration: closed_at - started_at
+// 3. Query session history for turn count
+// 4. Count files changed from change events
+// 5. Collect models used from session/turn data
+// 6. Add ExecutionMetrics to TaskEvent::Closed
 ```
 
-This is triggered automatically by the flow engine when tasks close — no manual action needed.
+**Storage pattern:** Same as other task events — `[aiki-tasks]...[/aiki-tasks]` blocks in JJ change descriptions on `aiki/tasks` branch.
 
----
-
-## Tier 3: Learning Signals
+**Benefits of colocation:**
+- Simpler implementation (one branch, one write)
+- Better locality (metrics with the tasks they describe)
+- Atomic updates (task close + metrics happen together)
+- Easier queries (`aiki task show` can include metrics without cross-branch lookup)
 
 ### Nine Signals (Computed, Not Stored)
 
@@ -362,8 +310,6 @@ Status: closed (done)
 Duration: 42m 18s
 Turns: 12
 Files changed: 8
-Tokens: 90,200 input / 12,400 output
-Cost: $0.38
 Model: claude-sonnet-4-5
 
 Self-Assessment:
@@ -379,12 +325,6 @@ Complexity: medium
 
 ```
 Metrics Summary (last 30 days, 20 tasks)
-─────────────────────────────────────────
-
-Cost:
-  Total: $41.20
-  Average: $2.06/task
-  Range: $0.45 — $2.80
   Most expensive phase: architecture ($1.01 avg with Opus)
 
 Quality:
@@ -402,7 +342,6 @@ Complexity Distribution:
 
 Trends (10-task rolling average):
   Duration: 48min → 38min (↓21%)
-  Cost: $2.40 → $1.85 (↓23%)
   Quality: 0.89 → 0.94 (↑6%)
 ```
 
@@ -420,9 +359,6 @@ Trends (10-task rolling average):
         "duration_seconds": 2538,
         "turn_count": 12,
         "files_changed": 8,
-        "total_input_tokens": 90200,
-        "total_output_tokens": 12400,
-        "total_cost_usd": 0.38,
         "models": ["claude-sonnet-4-5"],
         "agent_type": "claude-code"
       },
@@ -445,8 +381,6 @@ Trends (10-task rolling average):
     }
   ],
   "summary": {
-    "total_cost_usd": 41.20,
-    "avg_cost_usd": 2.06,
     "avg_duration_seconds": 2520,
     "avg_confidence": 0.93,
     "complexity_distribution": {
@@ -477,43 +411,39 @@ Trends (10-task rolling average):
 
 **Estimated scope:** ~500 lines of new code. No changes to existing types.
 
-### Phase 2: Execution Tracking (Tier 2)
+### Phase 2: Learning Signals (Tier 3)
 
-**Goal:** Capture token usage and compute per-task cost.
+### Phase 1.5: Add Execution Metrics Storage
 
-1. Add `TurnUsage` struct to `turn.completed` payload (optional fields)
-2. Update flow engine to extract usage from editor payloads
-3. Add `aiki/metrics` branch and `MetricsEvent` type
-4. Write `TaskMetrics` events on task close
-5. Incorporate token/cost data into `aiki metrics` output
+**Goal:** Store computed execution metrics with task close events.
+
+1. Add `ExecutionMetrics` struct and `metrics` field to `TaskEvent::Closed`
+2. Update task close handler to compute and populate metrics
+3. Update `aiki metrics` command to read metrics from `Closed` events
+4. Update `aiki task show` to display execution metrics
 
 **Files changed:**
-- `cli/src/events/turn_completed.rs` — add `usage` field
-- `cli/src/metrics/` (new module) — types, storage, computation
-- `cli/src/flows/core/functions.rs` — add `extract_usage()` native function
-- `cli/src/events/task_closed.rs` — trigger metrics computation
+- `cli/src/tasks/mod.rs` — add `ExecutionMetrics` struct, update `TaskEvent::Closed`
+- `cli/src/tasks/manager.rs` — compute metrics on task close
+- `cli/src/commands/metrics.rs` — read metrics from task events
+- `cli/src/commands/task.rs` — display metrics in `aiki task show`
 
-**Estimated scope:** ~800 lines. Minimal changes to existing types (one optional field).
-
-### Phase 3: Learning Signals (Tier 3)
+**Estimated scope:** ~300 lines of new code. One new optional field on existing type.
 
 **Goal:** Compute aggregated signals, enable trend analysis and predictions.
 
 1. Implement complexity classification
 2. Add rolling-average trend computation
-3. Add cost prediction from similar tasks
-4. Add pattern detection (which skills correlate with quality)
-5. Add `aiki metrics compare` for A/B analysis
+3. Add pattern detection (which skills correlate with quality)
+4. Add `aiki metrics compare` for A/B analysis
 
 **Files changed:**
 - `cli/src/commands/metrics.rs` — extend with signals + trends
 - `cli/src/metrics/signals.rs` (new) — signal computation
 - `cli/src/metrics/trends.rs` (new) — trend analysis
 
-**Estimated scope:** ~600 lines. No changes to existing types.
 
-### Phase 4: Learning Loop (Future)
-
+### Phase 3: Learning Loop (Future)
 **Goal:** Auto-improving skills and predictive quality gates.
 
 1. Violation pattern detection → auto-suggest Sacred Rules
@@ -551,13 +481,6 @@ Agent self-assessment uses the existing `data` HashMap with key conventions rath
 - No migration needed when adding new assessment dimensions
 - `aiki metrics` simply ignores unknown keys
 
-### Why `aiki/metrics` Branch (Not Task Data)?
-
-Tier 2 execution metrics go on a separate branch because:
-- They're derived/computed, not primary data
-- Recomputation should be possible without affecting task history
-- Different retention policies may apply
-- Keeps task events focused on task lifecycle
 
 ---
 
@@ -568,9 +491,8 @@ Tier 2 execution metrics go on a separate branch because:
 | orchestration.json | `aiki metrics <task-id> --json` output |
 | Agent self-assessment | `--data confidence=X` on task close |
 | Per-phase tracking | Parent task with subtasks, each with own metrics |
-| Execution tracking | Turn events + TurnUsage + MetricsEvent |
+| Execution tracking | ExecutionMetrics in Closed events |
 | Learning signals | Computed by `aiki metrics summary` |
-| Cost prediction | `aiki metrics compare` with complexity matching |
 | Quality prediction | Input quality → confidence → outcome correlation |
 | Pattern detection | Skills/patterns aggregation across tasks |
 | Continuous improvement | Rolling-average trends in summary output |

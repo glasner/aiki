@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Claude Code Agent Teams: Integration Research
 
 > Research into Claude Code's new "agent teams" feature and how it maps onto aiki's architecture.

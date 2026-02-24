@@ -4,7 +4,7 @@
 use crate::events::{
     AikiChangeCompletedPayload, AikiEvent, AikiSessionStartPayload, ChangeOperation, WriteOperation,
 };
-use crate::provenance::{AgentType, DetectionMethod};
+use crate::provenance::record::{AgentType, DetectionMethod};
 use crate::session::{AikiSession, SessionMode};
 use std::path::PathBuf;
 

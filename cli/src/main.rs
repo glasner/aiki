@@ -1,6 +1,6 @@
 mod agents;
-mod authors;
-mod blame;
+
+
 mod cache;
 mod commands;
 mod config;
@@ -10,17 +10,17 @@ mod event_bus;
 mod expressions;
 mod events;
 mod flows;
-mod interpolation;
+mod parsing;
 mod global;
 mod history;
 mod jj;
 mod plugins;
 mod provenance;
-mod repo;
-mod repo_id;
+mod repos;
+
 mod session;
 mod signing;
-mod specs;
+mod plans;
 mod tasks;
 mod tools;
 mod utils;
@@ -134,26 +134,48 @@ enum Commands {
         /// Agent for task assignment (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
+        /// Enable autorun (auto-start this fix task when its target closes)
+        #[arg(long)]
+        autorun: bool,
+        /// Skip loop iterations (sets data.options.once = true)
+        #[arg(long)]
+        once: bool,
     },
-    /// Explore a scope (spec, code, task, or session)
+    /// Explore a scope (plan, code, task, or session)
     Explore(commands::explore::ExploreArgs),
     /// Create and run code review tasks
     Review(commands::review::ReviewArgs),
-    /// Create an implementation plan from a spec file
-    Plan(commands::plan::PlanArgs),
-    /// Build from a spec file (create plan and execute all subtasks)
+    /// Manage epics (create from plan files, show status, list)
+    Epic {
+        #[command(subcommand)]
+        command: commands::epic::EpicCommands,
+    },
+    /// (deprecated alias for 'aiki epic add')
+    #[command(hide = true)]
+    Decompose(commands::decompose::DecomposeArgs),
+    /// Build from a plan file (decompose and execute all subtasks)
     Build(commands::build::BuildArgs),
-    /// Interactive spec authoring with AI agent
-    Spec {
-        /// Path to spec file and/or description text (variadic - quotes optional).
-        /// Examples: `aiki spec feature.md`, `aiki spec feature.md add JWT auth`,
-        /// `aiki spec Add user authentication`
+    /// Interactive plan authoring with AI agent
+    Plan {
+        /// Path to plan file and/or description text (variadic - quotes optional).
+        /// Examples: `aiki plan feature.md`, `aiki plan feature.md add JWT auth`,
+        /// `aiki plan Add user authentication`
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
-        /// Spec template to use (default: aiki/spec)
+        /// Plan template to use (default: aiki/plan)
         #[arg(long)]
         template: Option<String>,
-        /// Agent for spec session (default: claude-code)
+        /// Agent for plan session (default: claude-code)
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// (deprecated alias for 'aiki plan')
+    #[command(hide = true)]
+    Spec {
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        #[arg(long)]
+        template: Option<String>,
         #[arg(long)]
         agent: Option<String>,
     },
@@ -250,15 +272,29 @@ fn run() -> Result<()> {
             start,
             template,
             agent,
-        } => commands::fix::run(task_id, run_async, start, template, agent),
+            autorun,
+            once,
+        } => commands::fix::run(task_id, run_async, start, template, agent, autorun, once),
         Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),
-        Commands::Plan(args) => commands::plan::run(args),
+        Commands::Epic { command } => commands::epic::run(command),
+        Commands::Decompose(args) => {
+            eprintln!("Warning: 'aiki decompose' is deprecated, use 'aiki epic add' instead.");
+            commands::decompose::run(args)
+        }
         Commands::Build(args) => commands::build::run(args),
+        Commands::Plan {
+            args,
+            template,
+            agent,
+        } => commands::plan::run(args, template, agent),
         Commands::Spec {
             args,
             template,
             agent,
-        } => commands::spec::run(args, template, agent),
+        } => {
+            eprintln!("Warning: 'aiki spec' is deprecated, use 'aiki plan' instead.");
+            commands::plan::run(args, template, agent)
+        }
     }
 }

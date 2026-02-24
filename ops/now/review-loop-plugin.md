@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Review Loop Plugin
 
 **Date**: 2026-02-11

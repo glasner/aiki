@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::event_bus;
 use crate::events::result::{Decision, Failure, HookResult};
 use crate::events::{AikiCommitMessageStartedPayload, AikiEvent};
-use crate::provenance::AgentType;
+use crate::provenance::record::AgentType;
 use chrono::Utc;
 use std::env;
 use std::path::PathBuf;

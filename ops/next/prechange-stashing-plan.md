@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Plan: Add PreChange hook to stash user edits + Make if conditions truthy for non-empty strings
 
 > **Note:** After implementation, `PreChange` and `PostFileChange` were renamed to `PreChange` and `PostFileChange` for better clarity. See [rename-to-prefilechange-postfilechange.md](rename-to-prefilechange-postfilechange.md) for details.

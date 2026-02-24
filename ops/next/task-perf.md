@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Task Performance Optimization
 
 **Status**: 🔴 Design Phase  

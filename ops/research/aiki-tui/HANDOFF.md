@@ -28,6 +28,9 @@ Extended the clean design to show **parallel subtasks within phases** using DAG 
 ### 6. `status-scale.html` — Progressive density tiers (1→100+ agents)
 Four auto-selecting density tiers based on active task count. 9 scenes. This defines how the UI scales.
 
+### 8. `plans-integration.html` — **PLANS IN THE TUI** ⭐
+Three options for integrating plan files into the pipeline model: (A) sidebar/header nav, (B) plan as "phase 0" on the track, (C) separate tabs with `[P] Plans` / `[T] Tasks` switching. Includes comparison summary with pros/cons. 10 scenes across all three options.
+
 ### 7. `status-fonts.html` — Font comparison
 Same screen rendered in 9 monospace fonts. Analysis of Unicode character safety tiers. Key finding: design for JetBrains Mono (Ghostty default), implement `--ascii` fallback.
 
@@ -258,6 +261,7 @@ mockups/
   status-parallel.html    — ⭐ Parallel work streams (8 scenes)
   status-scale.html       — ⭐ Progressive density tiers (9 scenes)
   status-fonts.html       — Font comparison + Unicode analysis
+  plans-integration.html  — ⭐ Plans integration into pipeline (3 options)
 HANDOFF.md                — This file
 ```
 

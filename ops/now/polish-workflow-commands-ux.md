@@ -1,8 +1,12 @@
+---
+status: draft
+---
+
 # Polish Workflow Commands UX
 
 **Date**: 2025-02-14
 **Status**: Draft
-**Purpose**: Improve the UX and output of `aiki spec`, `aiki build`, `aiki review`, and `aiki fix` for wider release. Migrate terminal UI from raw crossterm to ratatui.
+**Purpose**: Improve the UX and output of `aiki plan`, `aiki build`, `aiki review`, and `aiki fix` for wider release. Migrate terminal UI from raw crossterm to ratatui.
 
 **Related Documents**:
 - [TUI Kanban Board](tui.md) - Full TUI vision (ratatui)
@@ -11,20 +15,20 @@
 
 ## Executive Summary
 
-The four workflow commands (`spec`, `build`, `review`, `fix`) are functional but have inconsistent output formatting, a confirmed bug in `spec`, and several UX rough edges that would confuse new users. Additionally, the two places that use raw `crossterm` for terminal control (spec prompt and status monitor) should be migrated to ratatui, which will both improve the immediate UX and lay groundwork for the full TUI kanban board.
+The four workflow commands (`plan`, `build`, `review`, `fix`) are functional but have inconsistent output formatting, a confirmed bug in `plan`, and several UX rough edges that would confuse new users. Additionally, the two places that use raw `crossterm` for terminal control (plan prompt and status monitor) should be migrated to ratatui, which will both improve the immediate UX and lay groundwork for the full TUI kanban board.
 
 ---
 
-## Bug: `aiki spec` Doesn't Feed Interactive Prompt Text to the Agent
+## Bug: `aiki plan` Doesn't Feed Interactive Prompt Text to the Agent
 
 **Severity**: High (confirmed by user)
-**Location**: `cli/src/commands/spec.rs`
+**Location**: `cli/src/commands/plan.rs`
 
 ### Root Cause (two issues)
 
 **Issue 1 — Prompt passthrough:** When the user types text in the interactive prompt (`prompt_multiline_input` at line 379), that text is NOT included in the prompt sent to the spawned Claude process. The Claude process receives only:
 ```
-Run `aiki task start <id>` to begin working on this spec task.
+Run `aiki task start <id>` to begin working on this plan task.
 ```
 
 **Issue 2 — Tangled data flow:** The code maintains three overlapping variables (`args_idea`, `user_text`, `initial_idea`) that get merged in confusing ways:
@@ -36,7 +40,7 @@ user_text    = interactive prompt OR args_text (fallback)
 initial_idea = merge(args_idea, user_text) via colon separator
 ```
 
-Then `create_spec_task` receives BOTH the merged `initial_idea` AND raw `user_text`, and `build_user_context` tries to format them as separate Topic/Guidance — producing duplication when both exist:
+Then `create_plan_task` receives BOTH the merged `initial_idea` AND raw `user_text`, and `build_user_context` tries to format them as separate Topic/Guidance — producing duplication when both exist:
 ```
 **Topic:** Dark Mode: add JWT auth     ← merged, contains user text
 **User guidance:**
@@ -51,13 +55,13 @@ Collapse everything into one context string. The interactive prompt is just anot
 
 | Command | `initial_idea` | Interactive prompt? |
 |---------|---------------|-------------------|
-| `aiki spec dark-mode.md add JWT auth` | "Dark Mode: add JWT auth" | No (text on CLI) |
-| `aiki spec dark-mode.md` | "Dark Mode" + interactive text | Yes (no text on CLI) |
-| `aiki spec dark-mode.md` → user types "add JWT auth" | "Dark Mode: add JWT auth" | Yes |
-| `aiki spec dark-mode.md` → user presses Esc | "Dark Mode" | Yes (skipped) |
-| `aiki spec Add user authentication` | "Add user authentication" | No (autogen) |
+| `aiki plan dark-mode.md add JWT auth` | "Dark Mode: add JWT auth" | No (text on CLI) |
+| `aiki plan dark-mode.md` | "Dark Mode" + interactive text | Yes (no text on CLI) |
+| `aiki plan dark-mode.md` → user types "add JWT auth" | "Dark Mode: add JWT auth" | Yes |
+| `aiki plan dark-mode.md` → user presses Esc | "Dark Mode" | Yes (skipped) |
+| `aiki plan Add user authentication` | "Add user authentication" | No (autogen) |
 
-**Code changes in `run_spec()`:**
+**Code changes in `run_plan()`:**
 
 ```rust
 // 1. Compute initial_idea from args first
@@ -72,8 +76,9 @@ let mut initial_idea = if !args_text.is_empty() {
 };
 
 // 2. Interactive prompt only fires when no text was provided on CLI
-if initial_idea_needs_input(&mode, &initial_idea) && io::stdin().is_terminal() {
-    let header = format!("Spec: {}", spec_path.display());
+let has_cli_text = !args_text.is_empty();
+if initial_idea_needs_input(&mode, has_cli_text) && io::stdin().is_terminal() {
+    let header = format!("Plan: {}", plan_path.display());
     if let Some(text) = prompt_multiline_input(&header)? {
         if initial_idea.is_empty() {
             initial_idea = text;
@@ -84,22 +89,22 @@ if initial_idea_needs_input(&mode, &initial_idea) && io::stdin().is_terminal() {
 }
 
 // 3. Single value flows downstream — no separate user_text
-create_spec_task(cwd, &spec_path, &initial_idea, is_new, ...);
+create_plan_task(cwd, &plan_path, &initial_idea, is_new, ...);
 
 // 4. Include in Claude prompt
 let prompt = if initial_idea.is_empty() {
-    format!("Run `aiki task start {}` to begin working on this spec task.", spec_task_id)
+    format!("Run `aiki task start {}` to begin working on this plan task.", plan_task_id)
 } else {
     format!(
-        "Run `aiki task start {}` to begin working on this spec task.\n\nUser's guidance: {}",
-        spec_task_id, initial_idea
+        "Run `aiki task start {}` to begin working on this plan task.\n\nUser's guidance: {}",
+        plan_task_id, initial_idea
     )
 };
 ```
 
 **Downstream simplifications:**
 
-- Remove `user_text` parameter from `create_spec_task()`
+- Remove `user_text` parameter from `create_plan_task()`
 - Remove `build_user_context()` — replaced by single `{{data.initial_idea}}` in template
 - Template uses `{{data.initial_idea}}` directly instead of `{{data.user_context}}`
 - No more duplication in template output
@@ -109,14 +114,20 @@ let prompt = if initial_idea.is_empty() {
 ```rust
 /// Interactive prompt fires when:
 /// - Not autogen mode (description IS the idea)
-/// - No text was provided as trailing CLI args
-/// - initial_idea is only from filename (user may want to add guidance)
-fn initial_idea_needs_input(mode: &SpecMode, initial_idea: &str) -> bool {
-    !matches!(mode, SpecMode::Autogen { .. })
+/// - No trailing CLI text was provided (args_text was empty)
+///
+/// When args_text is non-empty, initial_idea already contains the user's
+/// guidance merged in, so we skip the prompt. When args_text is empty,
+/// initial_idea is only the filename-derived topic (e.g., "Dark Mode"),
+/// and the user may want to add more specific guidance interactively.
+fn initial_idea_needs_input(mode: &PlanMode, has_cli_text: bool) -> bool {
+    !matches!(mode, PlanMode::Autogen { .. }) && !has_cli_text
 }
 ```
 
-Note: even in Edit/CreateAtPath modes where `initial_idea` comes from the filename, we still prompt — the filename-derived idea ("Dark Mode") is a topic, and the user might want to add more specific guidance. The prompt is the opportunity to do so.
+The caller passes `has_cli_text: !args_text.is_empty()` so the function has a clear boolean signal rather than trying to infer intent from the merged `initial_idea` string. This avoids the contradiction where the prose says "only prompt when no CLI text" but the implementation would prompt unconditionally for all non-autogen modes.
+
+Note: even in Edit/CreateAtPath modes where `initial_idea` comes from the filename, we still prompt *when no CLI text was given* — the filename-derived idea ("Dark Mode") is a topic, and the user might want to add more specific guidance. The prompt is the opportunity to do so.
 
 ---
 
@@ -128,13 +139,13 @@ Note: even in Edit/CreateAtPath modes where `initial_idea` comes from the filena
 
 | File | Usage | What It Does |
 |------|-------|-------------|
-| `cli/src/commands/spec.rs` | `prompt_multiline_input()` | Raw mode text input (Enter/Shift+Enter/Esc/Backspace handling) |
+| `cli/src/commands/plan.rs` | `prompt_multiline_input()` | Raw mode text input (Enter/Shift+Enter/Esc/Backspace handling) |
 | `cli/src/tasks/status_monitor.rs` | `StatusMonitor` | Cursor save/restore + clear for live task tree display during `task run` |
 
 ### Why Migrate
 
 1. **ratatui includes crossterm** — ratatui 0.30 re-exports crossterm (0.28 or 0.29 via feature flags), so adding ratatui and removing the direct crossterm dep is a clean swap
-2. **Better input widgets** — The hand-rolled `prompt_multiline_input` in spec.rs is fragile (no cursor movement, no word wrap, no paste support). Ratatui's ecosystem has proper text input widgets (tui-textarea, tui-input)
+2. **Better input widgets** — The hand-rolled `prompt_multiline_input` in plan.rs is fragile (no cursor movement, no word wrap, no paste support). Ratatui's ecosystem has proper text input widgets (tui-textarea, tui-input)
 3. **Better status display** — The status monitor's manual cursor save/restore is brittle. Ratatui's frame-based rendering handles redraws cleanly
 4. **Foundation for TUI** — Both components become natural building blocks for the full kanban TUI (see tui.md)
 
@@ -147,10 +158,10 @@ crossterm = "0.28"
 
 # Add:
 ratatui = { version = "0.30", default-features = true }  # includes crossterm backend
-tui-textarea = "0.7"  # for spec prompt input widget
+tui-textarea = "0.7"  # for plan prompt input widget
 ```
 
-**spec.rs prompt → ratatui text area:**
+**plan.rs prompt → ratatui text area:**
 - Replace `prompt_multiline_input()` with a ratatui mini-app
 - Use `tui-textarea` for proper multi-line input with cursor movement, word wrap, paste
 - Render in an inline area (not full-screen) — just the prompt section
@@ -166,7 +177,7 @@ tui-textarea = "0.7"  # for spec prompt input widget
 
 ### Inline Viewport Pattern
 
-Both the spec prompt and status monitor should use ratatui's **inline viewport** — this renders a fixed-height region in the terminal without taking over the full screen. Perfect for CLI tools that need a small interactive region within normal command output.
+Both the plan prompt and status monitor should use ratatui's **inline viewport** — this renders a fixed-height region in the terminal without taking over the full screen. Perfect for CLI tools that need a small interactive region within normal command output.
 
 ```rust
 // Inline viewport: renders N lines at current cursor position
@@ -189,12 +200,12 @@ Each command formats its output differently:
 
 | Command | Output Style | Uses `CommandOutput`? | Uses `MdBuilder`? |
 |---------|-------------|----------------------|-------------------|
-| `spec` | Custom markdown with `## Spec Started/Completed/Error` | No | Yes (wrapper only) |
+| `plan` | Custom markdown with `## Plan Started/Completed/Error` | No | Yes (wrapper only) |
 | `build` | Custom markdown with `## Build Started/Completed` | No | Yes (wrapper only) |
 | `review` | Structured via `CommandOutput` | Yes | Yes |
 | `fix` | Structured via `CommandOutput` | Yes | Yes |
 
-`review` and `fix` share the `CommandOutput` struct from `output.rs`, but `spec` and `build` have their own ad-hoc formatting.
+`review` and `fix` share the `CommandOutput` struct from `output.rs`, but `plan` and `build` have their own ad-hoc formatting.
 
 ### Fix
 
@@ -249,20 +260,28 @@ Review started for task abcdefg
 
 `fix.rs:52-62` still parses XML `task_id=""` attributes from stdin, a leftover from the pre-markdown output era. This should be cleaned up to only handle plain task IDs (or short IDs).
 
+**Deprecation strategy:** Before removing XML parsing, audit whether any existing automation, scripts, or agent prompts rely on the XML `task_id=""` format. Specifically:
+1. Search the codebase and templates for anything that emits XML-formatted task IDs
+2. If callers exist, add a deprecation warning (to stderr) when XML input is detected: `"Warning: XML task_id format is deprecated, use plain task IDs instead"`
+3. Keep XML parsing functional for one release cycle with the warning
+4. Remove XML parsing in the following release
+
+If no callers are found (likely, since output was already migrated to markdown), the XML parsing can be removed directly — but document this in the commit message as a breaking change for anyone who may have been scraping the old output format.
+
 ---
 
 ## UX Issues
 
-### Issue 1: `aiki spec` with No Args Returns an Error
+### Issue 1: `aiki plan` with No Args Returns an Error
 
-Running `aiki spec` with no arguments returns:
+Running `aiki plan` with no arguments returns:
 ```
-Error: No spec path or description provided.
+Error: No plan path or description provided.
 ```
 
 For an interactive tool, this is unfriendly. It should prompt for input or show usage examples.
 
-### Issue 2: `aiki build` Output Doesn't Show Spec Path
+### Issue 2: `aiki build` Output Doesn't Show Plan Path
 
 When running `aiki build ops/now/feature.md`, the output says:
 ```
@@ -271,7 +290,7 @@ When running `aiki build ops/now/feature.md`, the output says:
 - **Plan ID:** pending
 ```
 
-But doesn't echo back the spec path the user provided. The user should see confirmation of *what* is being built.
+But doesn't echo back the plan path the user provided. The user should see confirmation of *what* is being built.
 
 ### Issue 3: Progress During Long-Running Commands
 
@@ -289,49 +308,57 @@ Running `aiki review` (no target) reviews "all closed tasks in the current sessi
 
 ## Implementation Plan
 
-### Phase 1: Fix the Bug + Add Ratatui + Non-TTY (P0)
+### Phase 1a: Fix the Plan Guidance Bug (P0)
 
-1. **Simplify spec data flow** — Collapse `args_idea`/`user_text`/`initial_idea` into single `initial_idea`. Remove `user_text` param from `create_spec_task()`, remove `build_user_context()`. Update spec template: `{{data.user_context}}` → `{{data.initial_idea}}`. Include `initial_idea` in Claude prompt.
-2. **Add ratatui dependency** — Add `ratatui = "0.30"` and `tui-textarea = "0.7"` to Cargo.toml, remove direct `crossterm = "0.28"` dep
-3. **Migrate spec prompt to ratatui** — Replace `prompt_multiline_input()` with ratatui inline viewport + tui-textarea widget
+This phase is a standalone bugfix that can be landed independently without any dependency changes.
+
+1. **Simplify plan data flow** — Collapse `args_idea`/`user_text`/`initial_idea` into single `initial_idea`. Remove `user_text` param from `create_plan_task()`, remove `build_user_context()`. Update plan template: `{{data.user_context}}` → `{{data.initial_idea}}`. Include `initial_idea` in Claude prompt.
+2. **Test**: Run `aiki plan new-feature.md`, type guidance in the interactive prompt, verify text reaches the spawned agent. Test all scenarios from the table above (CLI text, filename only, interactive, Esc, autogen).
+
+### Phase 1b: Ratatui Migration + Non-TTY Hardening (P1)
+
+Depends on Phase 1a being landed. This is a larger change that swaps the terminal rendering layer and adds non-TTY support.
+
+3. **Add ratatui dependency** — Add `ratatui = "0.30"` and `tui-textarea = "0.7"` to Cargo.toml, remove direct `crossterm = "0.28"` dep
+4. **Migrate plan prompt to ratatui** — Replace `prompt_multiline_input()` with ratatui inline viewport + tui-textarea widget
    - Proper multi-line editing (arrow keys, Home/End, paste)
    - Same keybindings: Enter = submit, Shift+Enter = newline, Esc = skip
    - Renders inline (not full-screen)
    - Non-TTY: skip prompt with feedback message
-4. **Migrate status monitor to ratatui** — Replace manual cursor ops in `StatusMonitor` with ratatui inline viewport
+5. **Migrate status monitor to ratatui** — Replace manual cursor ops in `StatusMonitor` with ratatui inline viewport
    - Task tree as ratatui widget
    - Clean terminal restore on exit
    - `RenderMode::Ratatui` vs `RenderMode::PlainText` — internal TTY guard
    - Plain text fallback: one-line appended updates (no cursor manipulation)
-5. **Non-TTY hardening** — Add `is_interactive()` utility, `--no-interactive` flag / `AIKI_NO_INTERACTIVE` env var. Auto-resume incomplete plans when stdin is not a TTY. Add feedback messages when interactive prompts are skipped.
-6. **Test**: Run `aiki spec new-feature.md`, verify prompt works and text reaches agent. Run `aiki task run`, verify status monitor renders correctly. Test with piped stdin/stdout/stderr to verify graceful degradation.
+6. **Non-TTY hardening** — Add `is_interactive()` utility, `--no-interactive` flag / `AIKI_NO_INTERACTIVE` env var. Auto-resume incomplete plans when stdin is not a TTY. Add feedback messages when interactive prompts are skipped.
+7. **Test**: Run `aiki plan new-feature.md`, verify ratatui prompt works. Run `aiki task run`, verify status monitor renders correctly. Test with piped stdin/stdout/stderr to verify graceful degradation.
 
 ### Phase 2: Unify Output Format (P1)
 
-6. **Extend `CommandOutput` for all commands** — Make it usable by `spec` and `build` too
-   - Add optional `target` field (spec path, plan ID)
+6. **Extend `CommandOutput` for all commands** — Make it usable by `plan` and `build` too
+   - Add optional `target` field (plan path, plan ID)
    - Make `scope` more generic (not review-specific)
 7. **Use short IDs everywhere** — Replace full task IDs with `short_id()` in all output
-8. **Simplify build output** — Show spec path, use short IDs, drop "pending" plan ID
+8. **Simplify build output** — Show plan path, use short IDs, drop "pending" plan ID
 9. **Simplify review/fix output** — Replace Type/Scope with natural language description
 
 ### Phase 3: Polish Interactions (P2)
 
-10. **Better no-args behavior for `spec`** — Show usage examples or prompt interactively
-11. **Clean up XML parsing in `fix`** — Remove legacy XML extraction from `extract_task_id`
+10. **Better no-args behavior for `plan`** — Show usage examples or prompt interactively
+11. **Deprecate XML parsing in `fix`** — Audit callers of the XML `task_id=""` format. If callers exist, add a deprecation warning and keep parsing for one release, then remove. If no callers exist, remove directly with a breaking-change note in the commit (see Problem 5 deprecation strategy above)
 12. **Add next-step hints** — All commands should suggest what to do next:
-    - `spec` completed → "Run `aiki build <path>` to implement"
+    - `plan` completed → "Run `aiki build <path>` to implement"
     - `build` completed → "Run `aiki review <task-id>` to review"
     - `review` completed → "Run `aiki fix <review-id>` to remediate" (already done)
     - `fix` completed → "Run `aiki review` to verify"
-13. **Confirm spec path in build output** — Echo the spec being built
+13. **Confirm plan path in build output** — Echo the plan being built
 
 ### Phase 4: Enhanced Rendering (P3)
 
 14. **Ratatui status monitor widgets** — Progress bar, spinner, color-coded status symbols
 15. **Better session review messaging** — Explain what "session review" means
 16. **Discoverable subcommands** — Mention `build show`, `review list`, `review show` in output hints
-17. **Spec prompt enhancements** — Syntax highlighting, auto-complete for file paths
+17. **Plan prompt enhancements** — Syntax highlighting, auto-complete for file paths
 
 ---
 
@@ -340,10 +367,10 @@ Running `aiki review` (no target) reviews "all closed tasks in the current sessi
 | File | Changes |
 |------|---------|
 | `cli/Cargo.toml` | Add ratatui + tui-textarea, remove direct crossterm dep |
-| `cli/src/commands/spec.rs` | Simplify to single initial_idea, fix prompt passthrough, replace crossterm prompt with ratatui, non-TTY feedback |
-| `.aiki/templates/aiki/spec.md` | Replace `{{data.user_context}}` with `{{data.initial_idea}}` |
+| `cli/src/commands/plan.rs` | Simplify to single initial_idea, fix prompt passthrough, replace crossterm prompt with ratatui, non-TTY feedback |
+| `.aiki/templates/aiki/plan.md` | Replace `{{data.user_context}}` with `{{data.initial_idea}}` |
 | `cli/src/tasks/status_monitor.rs` | Replace crossterm cursor ops with ratatui inline viewport, add `RenderMode` + plain text fallback |
-| `cli/src/commands/build.rs` | Unify output format, show spec path, use short IDs, auto-resume in non-TTY |
+| `cli/src/commands/build.rs` | Unify output format, show plan path, use short IDs, auto-resume in non-TTY |
 | `cli/src/commands/review.rs` | Simplify output, use short IDs |
 | `cli/src/commands/fix.rs` | Simplify output, use short IDs, clean up XML parsing |
 | `cli/src/commands/output.rs` | Extend `CommandOutput` for all commands |
@@ -382,17 +409,17 @@ Reviewed apps from [ratatui.rs/showcase/apps](https://ratatui.rs/showcase/apps/)
 
 ## Output Examples: Current vs Proposed
 
-### Full Lifecycle: `aiki spec` → `aiki build` → `aiki review` → `aiki fix`
+### Full Lifecycle: `aiki plan` → `aiki build` → `aiki review` → `aiki fix`
 
 These examples show the complete user experience across a typical workflow, including incremental status updates during long-running operations.
 
 ---
 
-### Stage 1: `aiki spec dark-mode.md`
+### Stage 1: `aiki plan dark-mode.md`
 
 **Prompt stage (ratatui text area):**
 ```
-Spec: ops/now/dark-mode.md (Dark Mode)
+Plan: ops/now/dark-mode.md (Dark Mode)
 ┌─────────────────────────────────────────────────────────┐
 │ I want a dark mode toggle in the settings               │
 │ panel. It should respect the OS preference by           │
@@ -403,7 +430,7 @@ Spec: ops/now/dark-mode.md (Dark Mode)
 
 **After submit — spawning:**
 ```
-Spec: ops/now/dark-mode.md (qotyswo)
+Plan: ops/now/dark-mode.md (qotyswo)
 Spawning interactive session...
 ```
 
@@ -411,19 +438,19 @@ Spawning interactive session...
 
 **Completed:**
 ```
-Spec completed: ops/now/dark-mode.md (qotyswo)
+Plan completed: ops/now/dark-mode.md (qotyswo)
 ---
 Run `aiki build ops/now/dark-mode.md` to implement.
 ```
 
 **Error:**
 ```
-Error: Spec session failed (qotyswo): Claude exited with code 1
+Error: Plan session failed (qotyswo): Claude exited with code 1
 ```
 
 **Cancelled (Ctrl+C):**
 ```
-Spec session cancelled by user (qotyswo).
+Plan session cancelled by user (qotyswo).
 ```
 
 ---
@@ -439,8 +466,8 @@ Planning and executing...
 **Status monitor — planning stage (live, redraws in place):**
 ```
 ● [mvslrsp] Build: dark-mode.md                           5s
-├─ ●  .0) Review spec and create plan                      5s
-│      └─ Reading spec file...
+├─ ●  .0) Review plan and create subtasks                      5s
+│      └─ Reading plan file...
 └─ (planning...)
                                                   Ctrl+C: detach
 ```
@@ -448,7 +475,7 @@ Planning and executing...
 **Status monitor — plan created, subtasks appear:**
 ```
 ● [mvslrsp] Build: dark-mode.md                          18s
-├─ ✓  .0) Review spec and create plan
+├─ ✓  .0) Review plan and create subtasks
 │      └─ Created 3 subtasks
 ├─ ●  .1) Implement theme context and CSS variables       12s
 │      └─ Adding CSS custom properties
@@ -460,7 +487,7 @@ Planning and executing...
 **Status monitor — subtask 1 done, subtask 2 in progress:**
 ```
 ● [mvslrsp] Build: dark-mode.md                          47s
-├─ ✓  .0) Review spec and create plan
+├─ ✓  .0) Review plan and create subtasks
 │      └─ Created 3 subtasks
 ├─ ✓  .1) Implement theme context and CSS variables
 │      └─ Added ThemeProvider with light/dark tokens
@@ -473,7 +500,7 @@ Planning and executing...
 **Status monitor — all subtasks done:**
 ```
 ✓ [mvslrsp] Build: dark-mode.md                        1m 23s
-├─ ✓  .0) Review spec and create plan
+├─ ✓  .0) Review plan and create subtasks
 │      └─ Created 3 subtasks
 ├─ ✓  .1) Implement theme context and CSS variables
 │      └─ Added ThemeProvider with light/dark tokens
@@ -648,8 +675,8 @@ Ready (2):
 When stderr isn't a TTY (agent-spawned, CI/CD, piped), the status monitor emits appended lines instead of live redraws:
 
 ```
-[0s] ● Build: dark-mode.md — Review spec and create plan
-[15s] ✓ Build: dark-mode.md — Review spec and create plan (Created 3 subtasks)
+[0s] ● Build: dark-mode.md — Review plan and create subtasks
+[15s] ✓ Build: dark-mode.md — Review plan and create subtasks (Created 3 subtasks)
 [15s] ● Build: dark-mode.md — Implement theme context and CSS variables
 [38s] ✓ Build: dark-mode.md — Implement theme context and CSS variables
 [38s] ● Build: dark-mode.md — Add settings toggle component
@@ -668,9 +695,9 @@ No cursor manipulation, no clearing — just appended lines that work in any log
 When stdout is piped, commands emit bare task IDs for scripting:
 
 ```bash
-# Capture spec task ID
-SPEC_TASK=$(aiki spec dark-mode.md "Add dark mode toggle")
-echo $SPEC_TASK  # → qotyswo...
+# Capture plan task ID
+PLAN_TASK=$(aiki plan dark-mode.md "Add dark mode toggle")
+echo $PLAN_TASK  # → qotyswo...
 
 # Capture build task ID
 BUILD_TASK=$(aiki build ops/now/dark-mode.md)
@@ -693,7 +720,7 @@ Stderr still shows human-readable status (or Tier 3 plain text if also piped).
 | Fields | `- **Field:** value` dumps | Natural sentence: `action: target (id)` |
 | Task IDs | Full 32-char IDs | 7-char short IDs |
 | Next steps | Only review→fix has a hint | Every command suggests what's next |
-| Build IDs | Build ID + Plan ID shown | Single task ID + spec path |
+| Build IDs | Build ID + Plan ID shown | Single task ID + plan path |
 | Scope info | `Type: task`, `Scope: Task(...)` | Just the target: `task xqrmnps` |
 | Status symbols | Emoji (💬) that misalign | Unicode symbols (✓ ● ○ ✗) |
 | Input prompt | Raw crossterm, no cursor nav | Ratatui text area with full editing |
@@ -712,7 +739,7 @@ Aiki commands run in several non-interactive contexts:
 
 | Context | stdin | stdout | stderr | Example |
 |---------|-------|--------|--------|---------|
-| **Human at terminal** | TTY | TTY | TTY | `aiki spec dark-mode.md` |
+| **Human at terminal** | TTY | TTY | TTY | `aiki plan dark-mode.md` |
 | **Agent-spawned** | pipe | pipe | pipe | `aiki task run` spawns Claude, which calls `aiki build` |
 | **Piped output** | TTY | pipe | TTY | `aiki review \| jq` |
 | **CI/CD** | pipe | pipe | pipe | GitHub Actions running `aiki build` |
@@ -724,8 +751,8 @@ The ratatui migration makes this critical: ratatui needs a terminal to render, s
 
 | File | Check | What It Gates |
 |------|-------|---------------|
-| `spec.rs:372` | `stdin.is_terminal()` | Interactive text prompt — skips if no TTY |
-| `spec.rs:534` | `stdout.is_terminal()` | Writes bare task ID to stdout when piped |
+| `plan.rs:372` | `stdin.is_terminal()` | Interactive text prompt — skips if no TTY |
+| `plan.rs:534` | `stdout.is_terminal()` | Writes bare task ID to stdout when piped |
 | `build.rs:198,231,310,334` | `stdout.is_terminal()` | Machine-readable output (task ID) when piped |
 | `build.rs:595` | `stdin.is_terminal()` | Resume/fresh plan prompt — skips if no TTY |
 | `review.rs:516,525,566` | `stdout.is_terminal()` | Machine-readable output when piped |
@@ -739,7 +766,7 @@ The ratatui migration makes this critical: ratatui needs a terminal to render, s
 
 1. **Status monitor has no TTY guard internally** — `runner.rs` gates it externally, but `StatusMonitor` itself blindly writes cursor escape sequences. If anyone constructs a `StatusMonitor` directly without the `runner.rs` gate, it'll corrupt piped stderr. The ratatui migration should add an internal guard.
 
-2. **Spec prompt fails silently** — When stdin isn't a TTY, the interactive prompt is skipped and `user_text` defaults to empty. This is correct behavior but isn't communicated — the user gets no feedback that the prompt was skipped. In agent-spawned contexts, a debug log line would help.
+2. **Plan prompt fails silently** — When stdin isn't a TTY, the interactive prompt is skipped and `user_text` defaults to empty. This is correct behavior but isn't communicated — the user gets no feedback that the prompt was skipped. In agent-spawned contexts, a debug log line would help.
 
 3. **Build resume prompt has no non-TTY fallback** — When `build.rs:595` detects non-TTY stdin and an incomplete plan exists, it should auto-resume (or auto-fresh with a flag) rather than silently falling through.
 
@@ -797,7 +824,7 @@ When stderr isn't a TTY, the monitor prints one-line updates on state change ins
 
 No cursor manipulation, no clearing — just appended lines. This works in CI logs, piped output, and agent contexts.
 
-**3. Spec prompt: non-TTY means no prompt, with feedback**
+**3. Plan prompt: non-TTY means no prompt, with feedback**
 
 ```rust
 if initial_idea_needs_input(&mode, &initial_idea) {
@@ -819,7 +846,7 @@ if initial_idea_needs_input(&mode, &initial_idea) {
 if !stdin.is_terminal() {
     // Non-interactive: auto-resume incomplete plans
     eprintln!("Resuming incomplete plan (non-TTY stdin).");
-    return resume_plan(cwd, &spec_path, &plan_task).await;
+    return resume_plan(cwd, &plan_path, &plan_task).await;
 }
 ```
 
@@ -849,7 +876,7 @@ All commands already follow this pattern but it should be codified:
 
 This enables scripting:
 ```bash
-TASK_ID=$(aiki spec dark-mode.md)
+TASK_ID=$(aiki plan dark-mode.md)
 aiki build ops/now/dark-mode.md
 aiki review $TASK_ID
 ```
@@ -859,7 +886,7 @@ aiki review $TASK_ID
 | File | Change |
 |------|--------|
 | `cli/src/tasks/status_monitor.rs` | Add `RenderMode`, internal TTY guard, plain text fallback |
-| `cli/src/commands/spec.rs` | Add non-TTY feedback message |
+| `cli/src/commands/plan.rs` | Add non-TTY feedback message |
 | `cli/src/commands/build.rs` | Auto-resume in non-TTY, log message |
 | `cli/src/main.rs` | Add `--no-interactive` flag |
 | `cli/src/commands/mod.rs` or `lib.rs` | Add `is_interactive()` utility |
@@ -869,5 +896,5 @@ aiki review $TASK_ID
 This work fits into **Phase 1** (alongside the ratatui migration) since:
 - The ratatui migration creates the need for graceful degradation
 - The `RenderMode` enum is part of the ratatui status monitor rewrite
-- Non-TTY spec prompt feedback is part of the data flow fix
+- Non-TTY plan prompt feedback is part of the data flow fix
 - Auto-resume is a small addition to the build prompt logic

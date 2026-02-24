@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Autorun: Automatic Task Start for Workflows and Loops
 
 **Date**: 2026-02-16
@@ -118,21 +122,20 @@ pub enum LinkType {
 **Implementation:**
 
 ```rust
-fn handle_task_close(closed_task: &Task, graph: &TaskGraph) {
+fn trigger_blocking_autorun(closed_task_id: &str, graph: &TaskGraph) {
     // Reverse lookup: find tasks that have blocking links targeting the closed task
-    for candidate in find_blocked_by(closed_task.id) {
-        let has_autorun = candidate.blocking_links()
-            .iter()
-            .any(|link| link.target == closed_task.id && link.autorun);
-
-        if has_autorun && !graph.is_blocked(candidate.id) {
-            // Start the candidate (idempotent — no-op if already started/closed)
-            // Note: is_blocked checks ALL blockers, not just the one that just closed
+    // (i.e., tasks that depend on the closed task)
+    for candidate in find_blocked_by(closed_task_id) {
+        if should_autorun(&candidate, graph) {
             start_task(candidate.id);
         }
     }
 }
 ```
+
+Note: `should_autorun` (defined in the [Multiple Blockers](#multiple-blockers) section) checks whether ANY of the candidate's blocking links has `autorun: true`, then verifies ALL blockers are closed via `is_blocked`. This ensures autorun triggers correctly regardless of which blocker closes last.
+
+Both `trigger_blocking_autorun` and `trigger_spawn_autorun` (Context 2) are called from the unified `handle_task_close` entry point — see [Unified Entry Point](#unified-entry-point) below.
 
 ### Context 2: Spawned Task Autorun
 
@@ -155,19 +158,33 @@ spawns:
 **Implementation:**
 
 ```rust
-fn handle_task_close(task: &Task) {
-    // Evaluate spawn conditions
-    for spawn_config in task.spawns {
-        if evaluate_condition(&spawn_config.when, task) {
+fn trigger_spawn_autorun(closed_task: &Task) {
+    // Forward lookup: evaluate the closed task's own spawn conditions
+    for spawn_config in closed_task.spawns {
+        if evaluate_condition(&spawn_config.when, closed_task) {
             // Create spawned task
-            let spawned_task_id = create_spawned_task(&spawn_config.task, task);
-            
+            let spawned_task_id = create_spawned_task(&spawn_config.task, closed_task);
+
             // Auto-start if configured
             if spawn_config.task.autorun {
                 start_task(&spawned_task_id);
             }
         }
     }
+}
+```
+
+### Unified Entry Point
+
+Both autorun contexts are triggered from a single close handler:
+
+```rust
+fn handle_task_close(closed_task: &Task, graph: &TaskGraph) {
+    // 1. Reverse lookup: auto-start tasks that were blocked by the closed task
+    trigger_blocking_autorun(closed_task.id, graph);
+
+    // 2. Forward lookup: evaluate the closed task's own spawn configs
+    trigger_spawn_autorun(closed_task);
 }
 ```
 
@@ -562,24 +579,15 @@ Note: `should_autorun` is a helper used by `handle_task_close` (see Context 1). 
 
 ### Phase 2: Blocking Link Autorun
 
-1. **Task close handler** — reverse lookup for autorun candidates:
-   ```rust
-   fn handle_task_close(closed_task_id: &str, graph: &TaskGraph) {
-       for candidate in find_blocked_by(closed_task_id) {
-           if should_autorun(&candidate, graph) {
-               start_task(candidate.id);
-           }
-       }
-   }
-   ```
-
-2. **Add `--autorun` flag** to `task add` command:
+1. **Implement `trigger_blocking_autorun`** — reverse lookup for autorun candidates (see [Context 1](#context-1-blocking-link-autorun))
+2. **Implement `should_autorun` helper** — check ANY link for autorun, verify ALL blockers closed (see [Multiple Blockers](#multiple-blockers))
+3. **Add `--autorun` flag** to `task add` command:
    ```rust
    #[arg(long)]
    pub autorun: bool,
    ```
 
-3. **Default autorun for review commands**:
+4. **Default autorun for review commands**:
    - `aiki review <task-id>` → `autorun: true`
    - `aiki review <task-id> --fix` → `autorun: true`
    - Add `--no-autorun` flag to disable
@@ -587,20 +595,8 @@ Note: `should_autorun` is a helper used by `handle_task_close` (see Context 1). 
 ### Phase 3: Spawned Task Autorun
 
 1. **Parse `spawns:` frontmatter** with `autorun` field (depends on spawn-tasks.md implementation)
-2. **Spawn evaluation on task close**:
-   ```rust
-   fn handle_task_close(task: &Task) {
-       for spawn_config in task.spawns {
-           if evaluate_condition(&spawn_config.when, task) {
-               let spawned_task_id = create_spawned_task(&spawn_config.task, task);
-               
-               if spawn_config.task.autorun {
-                   start_task(&spawned_task_id);
-               }
-           }
-       }
-   }
-   ```
+2. **Implement `trigger_spawn_autorun`** — evaluate closed task's spawn conditions and auto-start (see [Context 2](#context-2-spawned-task-autorun))
+3. **Wire up unified `handle_task_close`** entry point that calls both `trigger_blocking_autorun` and `trigger_spawn_autorun` (see [Unified Entry Point](#unified-entry-point))
 
 ### Phase 4: Loop Autorun
 

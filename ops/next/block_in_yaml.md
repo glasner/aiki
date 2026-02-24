@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Plan: Validate `on_failure: block` in YAML Parsing
 
 ## Problem

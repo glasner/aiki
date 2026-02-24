@@ -44,6 +44,7 @@ use crate::tasks::{
     runner::{run_task_with_output, TaskRunOptions},
     storage::{
         read_events, read_events_with_ids, write_event, write_events_batch, write_link_event,
+        write_link_event_with_autorun,
     },
     types::{Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus},
     MdBuilder, TaskGraph,
@@ -334,17 +335,25 @@ pub enum TaskCommands {
         #[arg(long)]
         subtask_of: Option<String>,
 
-        /// Spec file this task implements (plan → spec)
+        /// Plan file this task implements (emits implements-plan link)
         #[arg(long)]
         implements: Option<String>,
 
-        /// Plan task this orchestrator drives (orchestrator → plan)
+        /// Epic this orchestrator drives (orchestrator → epic)
         #[arg(long)]
         orchestrates: Option<String>,
 
-        /// Target this task operates on (e.g., file:src/main.rs). Can be specified multiple times.
+        /// Target(s) this task fixes (file or task). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
-        scoped_to: Vec<String>,
+        fixes: Vec<String>,
+
+        /// Plan file this task decomposes
+        #[arg(long)]
+        decomposes_plan: Option<String>,
+
+        /// Plan file this task adds
+        #[arg(long)]
+        adds_plan: Option<String>,
 
         /// Task(s) this depends on (blocks ready state). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
@@ -357,6 +366,14 @@ pub enum TaskCommands {
         /// Task(s) this remediates (fix relationship, blocks ready state). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
         remediates: Vec<String>,
+
+        /// Auto-start this task when its blocker(s) close
+        #[arg(long)]
+        autorun: bool,
+
+        /// Skip loop iterations (sets data.options.once = true)
+        #[arg(long)]
+        once: bool,
 
         /// Set priority to P0 (critical/urgent)
         #[arg(long, group = "priority")]
@@ -455,17 +472,25 @@ pub enum TaskCommands {
         #[arg(long)]
         slug: Option<String>,
 
-        /// Spec file this task implements (plan → spec)
+        /// Plan file this task implements (emits implements-plan link)
         #[arg(long)]
         implements: Option<String>,
 
-        /// Plan task this orchestrator drives (orchestrator → plan)
+        /// Epic this orchestrator drives (orchestrator → epic)
         #[arg(long)]
         orchestrates: Option<String>,
 
-        /// Target this task operates on (e.g., file:src/main.rs). Can be specified multiple times.
+        /// Target(s) this task fixes (file or task). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
-        scoped_to: Vec<String>,
+        fixes: Vec<String>,
+
+        /// Plan file this task decomposes
+        #[arg(long)]
+        decomposes_plan: Option<String>,
+
+        /// Plan file this task adds
+        #[arg(long)]
+        adds_plan: Option<String>,
 
         /// Task(s) this depends on (blocks ready state). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
@@ -478,6 +503,14 @@ pub enum TaskCommands {
         /// Task(s) this remediates (fix relationship, blocks ready state). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
         remediates: Vec<String>,
+
+        /// Auto-start this task when its blocker(s) close
+        #[arg(long)]
+        autorun: bool,
+
+        /// Skip loop iterations (sets data.options.once = true)
+        #[arg(long)]
+        once: bool,
     },
 
     /// Stop task(s)
@@ -651,14 +684,14 @@ pub enum TaskCommands {
     /// Examples:
     ///   aiki task undo abc123...                    # Undo a single task
     ///   aiki task undo abc123 def456                # Undo multiple tasks
-    ///   aiki task undo abc123 --completed           # Undo completed subtasks of a plan
+    ///   aiki task undo abc123 --completed           # Undo completed subtasks of an epic
     ///   aiki task undo abc123 --dry-run             # Preview what would be undone
     Undo {
         /// Task ID(s) to undo
         #[arg(required = true, value_name = "ID")]
         ids: Vec<String>,
 
-        /// For plan tasks: undo all completed subtasks
+        /// For epic tasks: undo all completed subtasks
         #[arg(long)]
         completed: bool,
 
@@ -720,21 +753,29 @@ pub enum TaskCommands {
         #[arg(long, hide = true)]
         parent: Option<String>,
 
-        /// Spec file this task implements
+        /// Plan file this task implements (emits implements-plan link)
         #[arg(long)]
         implements: Option<String>,
 
-        /// Plan task this orchestrator drives
+        /// Epic this orchestrator drives
         #[arg(long)]
         orchestrates: Option<String>,
-
-        /// Target this task operates on
-        #[arg(long)]
-        scoped_to: Option<String>,
 
         /// Predecessor this task replaces
         #[arg(long)]
         supersedes: Option<String>,
+
+        /// Target this task fixes (file or task)
+        #[arg(long)]
+        fixes: Option<String>,
+
+        /// Plan file this task decomposes
+        #[arg(long)]
+        decomposes_plan: Option<String>,
+
+        /// Plan file this task adds
+        #[arg(long)]
+        adds_plan: Option<String>,
     },
 
     /// Remove a link between tasks
@@ -777,7 +818,7 @@ pub enum TaskCommands {
         #[arg(long, hide = true)]
         parent: Option<String>,
 
-        /// Remove implements link to this target
+        /// Remove implements-plan link to this target
         #[arg(long)]
         implements: Option<String>,
 
@@ -785,13 +826,21 @@ pub enum TaskCommands {
         #[arg(long)]
         orchestrates: Option<String>,
 
-        /// Remove scoped-to link to this target
-        #[arg(long)]
-        scoped_to: Option<String>,
-
         /// Remove supersedes link to this target
         #[arg(long)]
         supersedes: Option<String>,
+
+        /// Remove fixes link to this target
+        #[arg(long)]
+        fixes: Option<String>,
+
+        /// Remove decomposes-plan link to this target
+        #[arg(long)]
+        decomposes_plan: Option<String>,
+
+        /// Remove adds-plan link to this target
+        #[arg(long)]
+        adds_plan: Option<String>,
     },
 
     /// Show diff of changes made while working on a task
@@ -818,6 +867,19 @@ pub enum TaskCommands {
         /// Show only changed file names
         #[arg(long)]
         name_only: bool,
+    },
+
+    /// Reset all tasks (close as won't-do)
+    ///
+    /// Requires `--confirm reset` to proceed. This is a destructive operation
+    /// that closes all non-closed tasks.
+    ///
+    /// Examples:
+    ///   aiki task reset --confirm reset
+    Reset {
+        /// Type "reset" to confirm (required)
+        #[arg(long)]
+        confirm: Option<String>,
     },
 }
 
@@ -879,10 +941,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             subtask_of,
             implements,
             orchestrates,
-            scoped_to,
+            fixes,
+            decomposes_plan,
+            adds_plan,
             depends_on,
             validates,
             remediates,
+            autorun,
+            once,
             p0,
             p1,
             p2,
@@ -900,15 +966,18 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             supersedes,
             implements,
             orchestrates,
-            scoped_to,
+            fixes,
+            decomposes_plan,
+            adds_plan,
             depends_on,
             validates,
             remediates,
+            autorun,
+            once,
             p0,
             p1,
             p2,
             p3,
-        ),
         TaskCommands::Start {
             ids,
             template,
@@ -929,10 +998,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             slug,
             implements,
             orchestrates,
-            scoped_to,
+            fixes,
+            decomposes_plan,
+            adds_plan,
             depends_on,
             validates,
             remediates,
+            autorun,
+            once,
         } => run_start(
             &cwd,
             ids,
@@ -952,10 +1025,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             slug,
             implements,
             orchestrates,
-            scoped_to,
+            fixes,
+            decomposes_plan,
+            adds_plan,
             depends_on,
             validates,
             remediates,
+            autorun,
+            once,
         ),
         TaskCommands::Stop {
             ids,
@@ -1031,8 +1108,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             parent,
             implements,
             orchestrates,
-            scoped_to,
             supersedes,
+            fixes,
+            decomposes_plan,
+            adds_plan,
         } => run_link(
             &cwd,
             id,
@@ -1044,8 +1123,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             resolve_subtask_of_alias(subtask_of, parent)?,
             implements,
             orchestrates,
-            scoped_to,
             supersedes,
+            fixes,
+            decomposes_plan,
+            adds_plan,
         ),
         TaskCommands::Unlink {
             id,
@@ -1059,8 +1140,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             parent,
             implements,
             orchestrates,
-            scoped_to,
             supersedes,
+            fixes,
+            decomposes_plan,
+            adds_plan,
         } => run_unlink(
             &cwd,
             id,
@@ -1072,8 +1155,10 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             resolve_subtask_of_alias(subtask_of, parent)?,
             implements,
             orchestrates,
-            scoped_to,
             supersedes,
+            fixes,
+            decomposes_plan,
+            adds_plan,
         ),
         TaskCommands::Diff {
             id,
@@ -1081,6 +1166,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             stat,
             name_only,
         } => run_diff(&cwd, id, summary, stat, name_only),
+        TaskCommands::Reset { confirm } => run_reset(&cwd, confirm),
     }
 }
 
@@ -1389,16 +1475,32 @@ fn run_add(
     supersedes: Option<String>,
     implements: Option<String>,
     orchestrates: Option<String>,
-    scoped_to: Vec<String>,
+    fixes: Vec<String>,
+    decomposes_plan: Option<String>,
+    adds_plan: Option<String>,
     depends_on: Vec<String>,
     validates: Vec<String>,
     remediates: Vec<String>,
+    autorun: bool,
+    once: bool,
     p0: bool,
     p1: bool,
     _p2: bool,
     p3: bool,
 ) -> Result<()> {
     use crate::agents::Assignee;
+
+    // Validate --autorun requires at least one blocking link flag
+    if autorun
+        && blocked_by.is_empty()
+        && depends_on.is_empty()
+        && validates.is_empty()
+        && remediates.is_empty()
+    {
+        return Err(AikiError::InvalidArgument(
+            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, or --remediates)".to_string()
+        ));
+    }
 
     // If --template is provided, delegate to template-based creation
     if let Some(ref template) = template_name {
@@ -1418,6 +1520,11 @@ fn run_add(
         // Parse data arguments (with type coercion for template variable substitution)
         let data = parse_data_flags(&data_args, true)?;
 
+        // Add options.once if flag is set
+        let mut data = data;
+        if once {
+            data.insert("options.once".to_string(), "true".to_string());
+        }
         // Resolve assignee
         let assignee = if let Some(ref a) = assignee_arg {
             match crate::agents::Assignee::from_str(a) {
@@ -1581,7 +1688,10 @@ fn run_add(
         &supersedes,
         &implements,
         &orchestrates,
-        &scoped_to,
+        &fixes,
+        &decomposes_plan,
+        &adds_plan,
+        autorun,
     )?;
 
     // Build new task from event (avoid re-reading)
@@ -1636,12 +1746,28 @@ fn run_start(
     slug: Option<String>,
     implements: Option<String>,
     orchestrates: Option<String>,
-    scoped_to: Vec<String>,
+    fixes: Vec<String>,
+    decomposes_plan: Option<String>,
+    adds_plan: Option<String>,
     depends_on: Vec<String>,
     validates: Vec<String>,
     remediates: Vec<String>,
+    autorun: bool,
+    once: bool,
 ) -> Result<()> {
     use crate::session::find_active_session;
+
+    // Validate --autorun requires at least one blocking link flag
+    if autorun
+        && blocked_by.is_empty()
+        && depends_on.is_empty()
+        && validates.is_empty()
+        && remediates.is_empty()
+    {
+        return Err(AikiError::InvalidArgument(
+            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, or --remediates)".to_string()
+        ));
+    }
 
     // If --template is provided, create from template and start
     if let Some(ref template) = template_name {
@@ -1654,6 +1780,11 @@ fn run_start(
         // Parse data arguments
         let data = parse_data_flags(&data_args, true)?;
 
+        // Add options.once if flag is set
+        let mut data = data;
+        if once {
+            data.insert("options.once".to_string(), "true".to_string());
+        }
         // Resolve assignee
         let assignee = if let Some(ref a) = assignee_arg {
             match crate::agents::Assignee::from_str(a) {
@@ -1706,9 +1837,13 @@ fn run_start(
             None,
             None,
             Vec::new(),
+            None,
+            None,
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            false,
+            false, // once
         );
     }
 
@@ -1816,7 +1951,11 @@ fn run_start(
                 &supersedes,
                 &implements,
                 &orchestrates,
-                &scoped_to,
+                &fixes,
+                &decomposes_plan,
+                &adds_plan,
+                autorun,
+            once,
             )?;
 
             let new_task = Task {
@@ -2039,7 +2178,11 @@ fn run_start(
                 &supersedes,
                 &implements,
                 &orchestrates,
-                &scoped_to,
+                &fixes,
+                &decomposes_plan,
+                &adds_plan,
+                autorun,
+            once,
             )?;
         }
     }
@@ -2669,6 +2812,8 @@ fn run_close(
     batch_events.extend(issues_found_events);
     // Track spawners that need reopening (subtask spawns created successfully)
     let mut spawners_to_reopen: HashSet<String> = HashSet::new();
+    // Track tasks auto-started via autorun (both spawn autorun and blocking link autorun)
+    let mut autorun_started: Vec<Task> = Vec::new();
 
     for task_id in &explicit_ids {
         if let Some(task) = graph.tasks.get(task_id) {
@@ -2729,15 +2874,19 @@ fn run_close(
                         match execute_spawn_action(cwd, &mut graph, task_id, action, child_task_id)
                         {
                             Ok(spawned_id) => {
-                                let (template, is_next_subtask) = match action {
+                                let (template, is_next_subtask, should_autorun) = match action {
                                     crate::tasks::spawner::SpawnAction::CreateTask {
                                         template,
+                                        autorun,
+            once,
                                         ..
-                                    } => (template.as_str(), false),
+                                    } => (template.as_str(), false, *autorun),
                                     crate::tasks::spawner::SpawnAction::CreateSubtask {
                                         template,
+                                        autorun,
+            once,
                                         ..
-                                    } => (template.as_str(), true),
+                                    } => (template.as_str(), true, *autorun),
                                 };
                                 if is_next_subtask {
                                     spawners_to_reopen.insert(task_id.clone());
@@ -2749,6 +2898,44 @@ fn run_close(
                                     template,
                                     crate::tasks::md::short_id(&spawned_id),
                                 ));
+
+                                // Auto-start spawned task if autorun: true
+                                if should_autorun {
+                                    if let Some(spawned_task) = graph.tasks.get(&spawned_id) {
+                                        if spawned_task.status == TaskStatus::Open || spawned_task.status == TaskStatus::Stopped {
+                                            let auto_start_ts = chrono::Utc::now();
+                                            let agent_type_str = session_match
+                                                .as_ref()
+                                                .map(|m| m.agent_type.as_str().to_string())
+                                                .unwrap_or_else(|| "unknown".to_string());
+                                            let start_event = TaskEvent::Started {
+                                                task_ids: vec![spawned_id.clone()],
+                                                agent_type: agent_type_str,
+                                                session_id: our_session_id.clone(),
+                                                turn_id: turn_id.clone(),
+                                                timestamp: auto_start_ts,
+                                            };
+                                            if let Err(e) = write_event(cwd, &start_event) {
+                                                eprintln!(
+                                                    "[aiki] Warning: failed to auto-start spawned task {}: {}",
+                                                    crate::tasks::md::short_id(&spawned_id), e
+                                                );
+                                            } else {
+                                                // Update local state
+                                                if let Some(task) = graph.tasks.get_mut(&spawned_id) {
+                                                    task.status = TaskStatus::InProgress;
+                                                    task.claimed_by_session = our_session_id.clone();
+                                                    autorun_started.push(task.clone());
+                                                }
+                                                spawn_notices.push(format!(
+                                                    "Auto-started (autorun): {} (id: {})",
+                                                    graph.tasks.get(&spawned_id).map(|t| t.name.as_str()).unwrap_or("?"),
+                                                    crate::tasks::md::short_id(&spawned_id),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => {
                                 failed_indices.push(spawn_index);
@@ -2839,9 +3026,72 @@ fn run_close(
         }
     }
 
+    // === Blocking link autorun: auto-start tasks that were blocked by the closed tasks ===
+    for task_id in &explicit_ids {
+        let autorun_candidates = graph.find_autorun_candidates(task_id);
+        for candidate_id in &autorun_candidates {
+            if let Some(task) = graph.tasks.get(candidate_id) {
+                // Idempotent: only start if Open or Stopped
+                if task.status != TaskStatus::Open && task.status != TaskStatus::Stopped {
+                    continue;
+                }
+            }
+
+            let auto_start_timestamp = chrono::Utc::now();
+            let agent_type_str = session_match
+                .as_ref()
+                .map(|m| m.agent_type.as_str().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let start_event = TaskEvent::Started {
+                task_ids: vec![candidate_id.clone()],
+                agent_type: agent_type_str,
+                session_id: our_session_id.clone(),
+                turn_id: turn_id.clone(),
+                timestamp: auto_start_timestamp,
+            };
+            write_event(cwd, &start_event)?;
+
+            // Emit flow event
+            if let Some(task) = graph.tasks.get(candidate_id) {
+                let task_event = AikiEvent::TaskStarted(AikiTaskStartedPayload {
+                    task: TaskEventPayload {
+                        id: task.id.clone(),
+                        name: task.name.clone(),
+                        task_type: infer_task_type(task),
+                        status: "in_progress".to_string(),
+                        assignee: task.assignee.clone(),
+                        outcome: None,
+                        source: task.sources.first().cloned(),
+                        files: None,
+                        changes: None,
+                    },
+                    cwd: cwd.to_path_buf(),
+                    timestamp: auto_start_timestamp,
+                });
+                let _ = crate::event_bus::dispatch(task_event);
+            }
+
+            // Update local state
+            if let Some(task) = graph.tasks.get_mut(candidate_id) {
+                task.status = TaskStatus::InProgress;
+                task.claimed_by_session = our_session_id.clone();
+                autorun_started.push(task.clone());
+            }
+        }
+    }
+
     // Check each parent for auto-start eligibility
     let mut auto_started_parents: Vec<Task> = Vec::new();
     let mut notices: Vec<String> = Vec::new();
+
+    // Add autorun notices
+    for task in &autorun_started {
+        notices.push(format!(
+            "Auto-started (autorun): {} (id: {})",
+            task.name, crate::tasks::md::short_id(&task.id)
+        ));
+    }
 
     for parent_id in &unique_parent_ids {
         // Check if all subtasks are now closed
@@ -3000,6 +3250,11 @@ fn run_close(
         updated_in_progress.push(subtask.clone());
     }
 
+    // Add autorun-started tasks to in_progress
+    for task in &autorun_started {
+        updated_in_progress.push(task.clone());
+    }
+
     // Determine output scope set based on updated in-progress tasks
     let mut include_root = false;
     let mut output_scopes: Vec<String> = Vec::new();
@@ -3108,6 +3363,7 @@ fn execute_spawn_action(
             assignee,
             data,
             spawn_index,
+            ..
         } => (template, priority, assignee, data, spawn_index, false),
         SpawnAction::CreateSubtask {
             template,
@@ -3115,6 +3371,7 @@ fn execute_spawn_action(
             assignee,
             data,
             spawn_index,
+            ..
         } => (template, priority, assignee, data, spawn_index, true),
     };
 
@@ -3182,9 +3439,28 @@ fn execute_spawn_action(
         }
     }
 
+    // Resolve "self" template to the spawner's own template
+    let resolved_template = if template == "self" {
+        spawner
+            .template
+            .as_ref()
+            .map(|t| {
+                // Strip version suffix (e.g., "aiki/review@1.0.0" -> "aiki/review")
+                t.split('@').next().unwrap_or(t).to_string()
+            })
+            .ok_or_else(|| AikiError::TemplateProcessingFailed {
+                details: format!(
+                    "spawn config uses template: \"self\" but spawner task {} has no template",
+                    spawner_id
+                ),
+            })?
+    } else {
+        template.clone()
+    };
+
     // Build template params
     let params = TemplateTaskParams {
-        template_name: template.clone(),
+        template_name: resolved_template,
         data: spawn_data,
         sources: vec![format!("task:{}", spawner_id)],
         assignee: assignee.clone(),
@@ -3668,16 +3944,16 @@ fn run_undo(
     let task_ids = if completed {
         if ids.len() != 1 {
             return Err(AikiError::InvalidArgument(
-                "--completed requires exactly one plan task ID".to_string(),
+                "--completed requires exactly one epic task ID".to_string(),
             ));
         }
-        let plan_task = find_task_in_graph(&graph, &ids[0])?;
-        let plan_id = &plan_task.id;
+        let epic_task = find_task_in_graph(&graph, &ids[0])?;
+        let epic_id = &epic_task.id;
 
-        // Find completed subtasks (direct children of the plan)
+        // Find completed subtasks (direct children of the epic)
         let completed_subtasks: Vec<String> = graph
             .edges
-            .referrers(plan_id, "subtask-of")
+            .referrers(epic_id, "subtask-of")
             .iter()
             .filter_map(|id| graph.tasks.get(id))
             .filter(|t| {
@@ -5968,31 +6244,43 @@ fn emit_link_flags(
     supersedes: &Option<String>,
     implements: &Option<String>,
     orchestrates: &Option<String>,
-    scoped_to: &[String],
+    fixes: &[String],
+    decomposes_plan: &Option<String>,
+    adds_plan: &Option<String>,
+    autorun: bool,
 ) -> Result<()> {
+    // Blocking links: use autorun variant when --autorun is set
+    let autorun_opt = if autorun { Some(true) } else { None };
     for target in blocked_by {
-        write_link_event(cwd, graph, "blocked-by", task_id, target)?;
+        write_link_event_with_autorun(cwd, graph, "blocked-by", task_id, target, autorun_opt)?;
     }
     for target in depends_on {
-        write_link_event(cwd, graph, "depends-on", task_id, target)?;
+        write_link_event_with_autorun(cwd, graph, "depends-on", task_id, target, autorun_opt)?;
     }
     for target in validates {
-        write_link_event(cwd, graph, "validates", task_id, target)?;
+        write_link_event_with_autorun(cwd, graph, "validates", task_id, target, autorun_opt)?;
     }
     for target in remediates {
-        write_link_event(cwd, graph, "remediates", task_id, target)?;
+        write_link_event_with_autorun(cwd, graph, "remediates", task_id, target, autorun_opt)?;
     }
+    // Non-blocking links: autorun not applicable
     if let Some(target) = supersedes {
         write_link_event(cwd, graph, "supersedes", task_id, target)?;
     }
     if let Some(target) = implements {
-        write_link_event(cwd, graph, "implements", task_id, target)?;
+        write_link_event(cwd, graph, "implements-plan", task_id, target)?;
     }
     if let Some(target) = orchestrates {
         write_link_event(cwd, graph, "orchestrates", task_id, target)?;
     }
-    for target in scoped_to {
-        write_link_event(cwd, graph, "scoped-to", task_id, target)?;
+    for target in fixes {
+        write_link_event(cwd, graph, "fixes", task_id, target)?;
+    }
+    if let Some(target) = decomposes_plan {
+        write_link_event(cwd, graph, "decomposes-plan", task_id, target)?;
+    }
+    if let Some(target) = adds_plan {
+        write_link_event(cwd, graph, "adds-plan", task_id, target)?;
     }
     Ok(())
 }
@@ -6008,8 +6296,10 @@ fn extract_link_flag(
     subtask_of: Option<String>,
     implements: Option<String>,
     orchestrates: Option<String>,
-    scoped_to: Option<String>,
     supersedes: Option<String>,
+    fixes: Option<String>,
+    decomposes_plan: Option<String>,
+    adds_plan: Option<String>,
 ) -> Result<(String, String)> {
     let mut pairs: Vec<(&str, String)> = Vec::new();
     if let Some(v) = blocked_by {
@@ -6031,21 +6321,27 @@ fn extract_link_flag(
         pairs.push(("subtask-of", v));
     }
     if let Some(v) = implements {
-        pairs.push(("implements", v));
+        pairs.push(("implements-plan", v));
     }
     if let Some(v) = orchestrates {
         pairs.push(("orchestrates", v));
     }
-    if let Some(v) = scoped_to {
-        pairs.push(("scoped-to", v));
-    }
     if let Some(v) = supersedes {
         pairs.push(("supersedes", v));
+    }
+    if let Some(v) = fixes {
+        pairs.push(("fixes", v));
+    }
+    if let Some(v) = decomposes_plan {
+        pairs.push(("decomposes-plan", v));
+    }
+    if let Some(v) = adds_plan {
+        pairs.push(("adds-plan", v));
     }
 
     match pairs.len() {
         0 => {
-            let msg = "No link kind specified. Use one of: --blocked-by, --depends-on, --validates, --remediates, --sourced-from, --subtask-of, --implements, --orchestrates, --scoped-to, --supersedes";
+            let msg = "No link kind specified. Use one of: --blocked-by, --depends-on, --validates, --remediates, --sourced-from, --subtask-of, --implements, --orchestrates, --supersedes, --fixes, --decomposes-plan, --adds-plan";
             aiki_print(&MdBuilder::new("link").error().build_error(msg));
             Err(AikiError::Other(anyhow::anyhow!("{}", msg)))
         }
@@ -6073,8 +6369,10 @@ fn run_link(
     subtask_of: Option<String>,
     implements: Option<String>,
     orchestrates: Option<String>,
-    scoped_to: Option<String>,
     supersedes: Option<String>,
+    fixes: Option<String>,
+    decomposes_plan: Option<String>,
+    adds_plan: Option<String>,
 ) -> Result<()> {
     let (kind, raw_target) = extract_link_flag(
         blocked_by,
@@ -6085,8 +6383,10 @@ fn run_link(
         subtask_of,
         implements,
         orchestrates,
-        scoped_to,
         supersedes,
+        fixes,
+        decomposes_plan,
+        adds_plan,
     )?;
 
     let events = read_events(cwd)?;
@@ -6129,8 +6429,10 @@ fn run_unlink(
     subtask_of: Option<String>,
     implements: Option<String>,
     orchestrates: Option<String>,
-    scoped_to: Option<String>,
     supersedes: Option<String>,
+    fixes: Option<String>,
+    decomposes_plan: Option<String>,
+    adds_plan: Option<String>,
 ) -> Result<()> {
     let (kind, raw_target) = extract_link_flag(
         blocked_by,
@@ -6141,8 +6443,10 @@ fn run_unlink(
         subtask_of,
         implements,
         orchestrates,
-        scoped_to,
         supersedes,
+        fixes,
+        decomposes_plan,
+        adds_plan,
     )?;
 
     let events = read_events(cwd)?;
@@ -6208,6 +6512,71 @@ fn get_working_copy_change_id(cwd: &Path) -> Option<String> {
     } else {
         Some(change_id)
     }
+}
+
+/// Reset all non-closed tasks.
+///
+/// Requires `--confirm reset` to prevent accidental data loss.
+fn run_reset(cwd: &Path, confirm: Option<String>) -> Result<()> {
+    // Require --confirm reset
+    match confirm.as_deref() {
+        Some("reset") => {} // confirmed
+        Some(other) => {
+            let xml = MdBuilder::new("reset")
+                .error()
+                .build_error(&format!(
+                    "Invalid confirmation: '{}'. To confirm, run:\n  aiki task reset --confirm reset",
+                    other
+                ));
+            aiki_print(&xml);
+            return Ok(());
+        }
+        None => {
+            let xml = MdBuilder::new("reset")
+                .error()
+                .build_error(
+                    "This will close all tasks as won't-do. To confirm, run:\n  aiki task reset --confirm reset",
+                );
+            aiki_print(&xml);
+            return Ok(());
+        }
+    }
+
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+
+    // Collect all non-closed task IDs
+    let ids_to_close: Vec<String> = graph
+        .tasks
+        .values()
+        .filter(|t| t.status != TaskStatus::Closed)
+        .map(|t| t.id.clone())
+        .collect();
+
+    if ids_to_close.is_empty() {
+        let xml = MdBuilder::new("reset").build_error("No tasks to reset");
+        aiki_print(&xml);
+        return Ok(());
+    }
+
+    let count = ids_to_close.len();
+
+    // Close all via batch event
+    let session_match = crate::session::find_active_session(cwd);
+    let turn_id =
+        crate::tasks::current_turn_id(session_match.as_ref().map(|m| m.session_id.as_str()));
+
+    let close_event = TaskEvent::Closed {
+        task_ids: ids_to_close,
+        outcome: TaskOutcome::WontDo,
+        summary: Some("Reset".to_string()),
+        turn_id,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &close_event)?;
+
+    aiki_print(&format!("Reset {} task(s)", count));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -6532,15 +6901,7 @@ D src/old_file.ts
     fn test_extract_link_flag_single() {
         let result = extract_link_flag(
             Some("target".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None, None, None, None, None, None, None, None, None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "blocked-by");
@@ -6550,16 +6911,9 @@ D src/old_file.ts
     #[test]
     fn test_extract_link_flag_sourced_from() {
         let result = extract_link_flag(
-            None,
-            None,
-            None,
-            None,
+            None, None, None, None,
             Some("file:design.md".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
+            None, None, None, None, None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "sourced-from");
@@ -6567,8 +6921,32 @@ D src/old_file.ts
     }
 
     #[test]
+    fn test_extract_link_flag_implements_emits_implements_plan() {
+        let result = extract_link_flag(
+            None, None, None, None, None, None,
+            Some("file:ops/now/feature.md".to_string()),
+            None, None, None, None, None,
+        );
+        let (kind, target) = result.unwrap();
+        assert_eq!(kind, "implements-plan");
+        assert_eq!(target, "file:ops/now/feature.md");
+    }
+
+    #[test]
+    fn test_extract_link_flag_fixes() {
+        let result = extract_link_flag(
+            None, None, None, None, None, None, None, None, None,
+            Some("task:abc123".to_string()),
+            None, None,
+        );
+        let (kind, target) = result.unwrap();
+        assert_eq!(kind, "fixes");
+        assert_eq!(target, "task:abc123");
+    }
+
+    #[test]
     fn test_extract_link_flag_none() {
-        let result = extract_link_flag(None, None, None, None, None, None, None, None, None, None);
+        let result = extract_link_flag(None, None, None, None, None, None, None, None, None, None, None, None);
         assert!(result.is_err());
     }
 
@@ -6577,14 +6955,7 @@ D src/old_file.ts
         let result = extract_link_flag(
             Some("a".to_string()),
             Some("b".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None, None, None, None, None, None, None, None, None, None,
         );
         assert!(result.is_err());
     }

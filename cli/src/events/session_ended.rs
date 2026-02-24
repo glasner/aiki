@@ -1,7 +1,7 @@
 use super::prelude::*;
 use crate::global;
 use crate::history;
-use crate::repo_id;
+use crate::repos;
 
 /// session.ended event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub fn handle_session_ended(payload: AikiSessionEndedPayload) -> Result<HookResu
     // Record session end to conversation history (non-blocking on failure)
     // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
     let cwd_str = payload.cwd.to_string_lossy();
-    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    let repo_id = repos::compute_repo_id(&payload.cwd).ok();
     if let Err(e) = history::record_session_end(
         &global::global_aiki_dir(),
         &payload.session,

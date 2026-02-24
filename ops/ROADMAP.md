@@ -1,15 +1,16 @@
 
-
-- tmp workspaces
-- autorun for unblocked tasks
+- general loop termination
 - loop flags
-- rename plan
-- rename spec
 - workflow ux -> share with Paul
-- review loop hooks
 
+- zed duplicate session bug
 
-- spec frontmatter
+- metrics
+
+- registry
+- review loop plugin
+- skill injection
+
 
 # Aiki Product Roadmap
 

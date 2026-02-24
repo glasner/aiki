@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Cursor Third-Party Hooks: Unified Hook Configuration
 
 **Date**: 2026-02-20

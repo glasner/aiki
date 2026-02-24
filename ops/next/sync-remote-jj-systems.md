@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Native JJ Remote Sync for Aiki
 
 ## 1. Vision

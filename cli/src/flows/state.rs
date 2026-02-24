@@ -296,7 +296,7 @@ mod tests {
         use crate::events::{
             AikiChangeCompletedPayload, AikiEvent, ChangeOperation, WriteOperation,
         };
-        use crate::provenance::AgentType;
+        use crate::provenance::record::AgentType;
         use crate::session::{AikiSession, SessionMode};
 
         let session = AikiSession::new(

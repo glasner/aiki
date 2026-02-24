@@ -21,7 +21,8 @@ use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress,
     get_ready_queue_for_scope_set, materialize_graph, materialize_graph_with_ids,
     read_events, read_events_with_ids, reassign_task,
-    reopen_if_closed, start_task_core, write_link_event, Task, TaskComment,
+    reopen_if_closed, start_task_core, write_link_event, write_link_event_with_autorun,
+    Task, TaskComment,
 };
 
 /// Run the fix command
@@ -33,6 +34,8 @@ pub fn run(
     start: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    autorun: bool,
+    once: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().map_err(|_| {
         AikiError::InvalidArgument("Failed to get current directory".to_string())
@@ -44,7 +47,7 @@ pub fn run(
         None => read_task_id_from_stdin()?,
     };
 
-    run_fix(&cwd, &task_id, run_async, start, template_name, agent)
+    run_fix(&cwd, &task_id, run_async, start, template_name, agent, autorun, once)
 }
 
 /// Extract task ID from input, handling XML output format
@@ -86,6 +89,141 @@ fn read_task_id_from_stdin() -> Result<String> {
 
 use super::review::{ReviewScope, ReviewScopeKind};
 
+/// Check if a JJ change ID has unresolved conflicts.
+fn has_jj_conflicts(cwd: &Path, change_id: &str) -> bool {
+    let output = crate::jj::jj_cmd()
+        .current_dir(cwd)
+        .args(["resolve", "--list", "-r", change_id, "--ignore-working-copy"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        }
+        _ => false, // Not a valid change ID or no conflicts
+    }
+}
+
+/// Handle conflict fix: create a merge-conflict task from a JJ change ID.
+fn handle_conflict_fix(
+    cwd: &Path,
+    conflict_id: &str,
+    run_async: bool,
+    start: bool,
+    agent: Option<String>,
+) -> Result<()> {
+    use super::task::{create_from_template, TemplateTaskParams};
+
+    let mut data = HashMap::new();
+    data.insert("conflict_id".to_string(), conflict_id.to_string());
+
+    let params = TemplateTaskParams {
+        template_name: "aiki/fix/merge-conflict".to_string(),
+        data,
+        sources: vec![format!("conflict:{}", conflict_id)],
+        assignee: agent,
+        ..Default::default()
+    };
+
+    let task_id = create_from_template(cwd, params)?;
+
+    // Re-read tasks to include newly created task
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let tasks = &graph.tasks;
+    let scope_set = get_current_scope_set(&graph);
+    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
+    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
+
+    if start {
+        if let Some(session) = find_active_session(cwd) {
+            reassign_task(cwd, &task_id, session.agent_type.as_str())?;
+        }
+        start_task_core(cwd, &[task_id.clone()])?;
+        output_conflict_fix_started(&task_id, conflict_id, &in_progress, &ready)?;
+    } else if run_async {
+        let options = TaskRunOptions::new();
+        task_run_async(cwd, &task_id, options)?;
+        output_conflict_fix_async(&task_id, conflict_id)?;
+        if !std::io::stdout().is_terminal() {
+            println!("{}", task_id);
+        }
+    } else {
+        let options = TaskRunOptions::new();
+        task_run(cwd, &task_id, options)?;
+        output_conflict_fix_completed(&task_id, conflict_id)?;
+        if !std::io::stdout().is_terminal() {
+            println!("{}", task_id);
+        }
+    }
+
+    Ok(())
+}
+
+/// Output conflict fix started message
+fn output_conflict_fix_started(
+    task_id: &str,
+    conflict_id: &str,
+    in_progress: &[&Task],
+    ready: &[&Task],
+) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("Created merge-conflict resolution task for conflict {}.", conflict_id);
+    let output = CommandOutput {
+        heading: "Conflict Fix",
+        task_id,
+        scope: None,
+        status: &status,
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
+    let md = MdBuilder::new("fix").build(&content, in_progress, ready);
+    eprintln!("{}", md);
+
+    if !std::io::stdout().is_terminal() {
+        println!("{}", task_id);
+    }
+
+    Ok(())
+}
+
+/// Output conflict fix async message
+fn output_conflict_fix_async(task_id: &str, conflict_id: &str) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("Merge-conflict resolution for {} started in background.", conflict_id);
+    let output = CommandOutput {
+        heading: "Conflict Fix Started",
+        task_id,
+        scope: None,
+        status: &status,
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
+    let md = MdBuilder::new("fix").build(&content, &[], &[]);
+    eprintln!("{}", md);
+    Ok(())
+}
+
+/// Output conflict fix completed message
+fn output_conflict_fix_completed(task_id: &str, conflict_id: &str) -> Result<()> {
+    use super::output::{CommandOutput, format_command_output};
+    let status = format!("Merge-conflict resolution for {} completed.", conflict_id);
+    let output = CommandOutput {
+        heading: "Conflict Fix Completed",
+        task_id,
+        scope: None,
+        status: &status,
+        issues: None,
+        hint: None,
+    };
+    let content = format_command_output(&output);
+    let md = MdBuilder::new("fix").build(&content, &[], &[]);
+    eprintln!("{}", md);
+    Ok(())
+}
+
 /// Core fix implementation
 fn run_fix(
     cwd: &Path,
@@ -94,7 +232,15 @@ fn run_fix(
     start: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    autorun: bool,
+    once: bool,
 ) -> Result<()> {
+    // 1. Check if ID has JJ conflicts: jj resolve --list -r {id}
+    if has_jj_conflicts(cwd, task_id) {
+        return handle_conflict_fix(cwd, task_id, run_async, start, agent);
+    }
+
+    // 2. Fall back to existing review task logic
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
         Some(
@@ -117,7 +263,7 @@ fn run_fix(
     // (older review tasks may not have task_type set)
     if !is_review_task(review_task) {
         return Err(AikiError::InvalidArgument(format!(
-            "Task {} is not a review task.",
+            "No conflict or review task found for ID: {}",
             task_id
         )));
     }
@@ -163,13 +309,13 @@ fn run_fix(
             let original_task = find_task(&tasks, &scope.id)?;
             let assignee = determine_followup_assignee(agent_type, Some(original_task));
             let template = template_name.as_deref().unwrap_or("aiki/fix");
-            create_fix_task(cwd, review_task, &scope, Some(original_task), &assignee, template)?
+            create_fix_task(cwd, review_task, &scope, Some(original_task), &assignee, template, autorun, once)?
         }
-        ReviewScopeKind::Spec | ReviewScopeKind::Code => {
+        ReviewScopeKind::Plan | ReviewScopeKind::Code => {
             // Fix targets a file — create standalone fix task (no parent)
             let assignee = determine_followup_assignee(agent_type, None);
             let template = template_name.as_deref().unwrap_or("aiki/fix");
-            create_fix_task(cwd, review_task, &scope, None, &assignee, template)?
+            create_fix_task(cwd, review_task, &scope, None, &assignee, template, autorun, once)?
         }
         ReviewScopeKind::Session => {
             return Err(AikiError::InvalidArgument(
@@ -363,6 +509,8 @@ fn create_fix_task(
     parent: Option<&Task>,
     assignee: &Option<String>,
     template_name: &str,
+    autorun: bool,
+    once: bool,
 ) -> Result<String> {
     use super::task::{create_from_template, TemplateTaskParams};
 
@@ -376,6 +524,11 @@ fn create_fix_task(
     // `source_data` (review task metadata, {{source.*}})
     let scope_data = scope.to_data();
 
+    // Add options.once if flag is set
+    let mut scope_data = scope_data;
+    if once {
+        scope_data.insert("options.once".to_string(), "true".to_string());
+    }
     let mut source_data = HashMap::new();
     source_data.insert("name".to_string(), review_task.name.clone());
     source_data.insert("id".to_string(), review_task.id.clone());
@@ -395,9 +548,17 @@ fn create_fix_task(
     let task_id = create_from_template(cwd, params)?;
 
     // Emit remediates link: fix task remediates the review task
+    // Autorun is opt-in only (--autorun flag); default is no autorun
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "remediates", &task_id, &review_task.id)?;
+    let autorun_opt = if autorun { Some(true) } else { None };
+    write_link_event_with_autorun(cwd, &graph, "remediates", &task_id, &review_task.id, autorun_opt)?;
+
+    // Emit fixes link to the target(s) that were reviewed (traverse validates from review task)
+    let reviewed_targets = graph.edges.targets(&review_task.id, "validates");
+    for target in reviewed_targets {
+        write_link_event(cwd, &graph, "fixes", &task_id, target)?;
+    }
 
     Ok(task_id)
 }
@@ -582,13 +743,13 @@ mod tests {
     #[test]
     fn test_fix_description_spec_scope() {
         let scope = ReviewScope {
-            kind: ReviewScopeKind::Spec,
+            kind: ReviewScopeKind::Plan,
             id: "ops/now/feature.md".to_string(),
             task_ids: vec![],
         };
         assert_eq!(
             fix_description(&scope),
-            "Created standalone fix task for Spec (feature.md)"
+            "Created standalone fix task for Plan (feature.md)"
         );
     }
 

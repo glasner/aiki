@@ -704,7 +704,7 @@ impl<'a> HookComposer<'a> {
 mod tests {
     use super::*;
     use crate::events::{AikiChangeCompletedPayload, AikiEvent, ChangeOperation, WriteOperation};
-    use crate::provenance::{AgentType, DetectionMethod};
+    use crate::provenance::record::{AgentType, DetectionMethod};
     use crate::session::{AikiSession, SessionMode};
     use std::fs;
     use tempfile::TempDir;

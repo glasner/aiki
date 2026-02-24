@@ -49,6 +49,19 @@ aiki task close <task-id> --summary "What you did"
 
 ---
 
+## Workspace Isolation
+
+When concurrent agent sessions are detected, aiki creates an isolated JJ workspace for each session to prevent conflicts. The workspace path is injected at the start of each turn via hook context.
+
+**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like "Let me switch to the isolated workspace" or "I'm working from the isolated workspace." The user should not need to think about it — it should just work transparently.
+
+**If you received a `WORKSPACE ISOLATION` message earlier in this session:**
+- You MUST work from the workspace directory specified in that message
+- All file reads, writes, and edits must use paths within the workspace
+- Do NOT switch back to the repo root — stay in the workspace
+
+---
+
 ## Aiki Task System
 
 **IMPORTANT: Use `aiki task` for ALL task management.** Do not use built-in todo tools (TodoWrite, task lists, etc.). Aiki tasks:
@@ -255,7 +268,8 @@ aiki task run <task-id> --async
 aiki task link <id> --blocked-by <blocker-id>       # Block until blocker closes
 aiki task link <id> --sourced-from file:design.md   # Track provenance
 aiki task link <id> --subtask-of <parent-id>        # Set parent
-aiki task link <id> --implements ops/now/spec.md     # Link to spec
+aiki task link <id> --implements ops/now/plan.md     # Link to plan (emits implements-plan)
+aiki task link <id> --fixes task:<target-id>         # Fix targets a task or file
 
 # Remove a relationship
 aiki task unlink <id> --blocked-by <blocker-id>
@@ -459,20 +473,27 @@ Tasks can be linked to express relationships. Use `aiki task link` to create lin
 | Link Kind | Direction | Meaning | Blocks Ready Queue? |
 |---|---|---|---|
 | `blocked-by` | task → blocker | Can't start until blocker closes | Yes |
+| `depends-on` | task → dependency | Strict: only Done unblocks | Yes |
+| `validates` | review → task | Review validates this task | Yes |
+| `remediates` | fix → review | Fix remediates this review | Yes |
 | `sourced-from` | task → origin | Where this task came from | No |
 | `subtask-of` | child → parent | Parent-child hierarchy | No |
-| `implements` | plan → spec | Plan implements this spec | No |
-| `orchestrates` | orchestrator → plan | Orchestrator drives this plan | No |
-| `scoped-to` | task → target | Task operates on this target | No |
+| `implements-plan` | epic → plan | Epic implements this plan (1:1) | No |
+| `decomposes-plan` | decompose → plan | Decompose task reads this plan | No |
+| `adds-plan` | task → plan | Task created/modified this plan | No |
+| `orchestrates` | orchestrator → epic | Orchestrator drives this epic (1:1) | No |
+| `fixes` | fix → target | Fix task targets this file/task | No |
 | `supersedes` | new → old | New task replaces old one | No |
+| `spawned-by` | child → spawner | Automatic process provenance | No |
 
 **When to use links:**
-- `--blocked-by`: Task A can't start until task B is done
+- `--blocked-by` / `--depends-on`: Task A can't start until task B is done
 - `--sourced-from`: Track where a task came from (auto-emitted with `--source`)
 - `--subtask-of`: Express parent-child relationships
-- `--implements`: Link a plan task to its spec file
+- `--implements`: Link an epic task to its plan file (emits `implements-plan`)
+- `--fixes`: Link a fix task to the file or task it fixes
 
-**Auto-replace:** Single-link kinds (`subtask-of`, `implements`, `orchestrates`, `supersedes`) automatically replace existing links when a new one is added.
+**Auto-replace:** Single-link kinds (`subtask-of`, `implements-plan`, `orchestrates`, `supersedes`) automatically replace existing links when a new one is added.
 
 **Cycle detection:** `blocked-by` and `subtask-of` links are checked for cycles at write time.
 </aiki>

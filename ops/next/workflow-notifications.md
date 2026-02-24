@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Workflow Notifications: Desktop Alerts for CLI Commands
 
 **Status**: Draft

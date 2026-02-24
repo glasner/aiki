@@ -199,6 +199,9 @@ pub enum TaskEvent {
         to: String,
         /// Open-ended link type (e.g., "blocked-by", "sourced-from")
         kind: String,
+        /// Whether to auto-start the `from` task when the `to` (blocker) completes.
+        /// None = not specified (treated as false for backward compat with old events).
+        autorun: Option<bool>,
         timestamp: DateTime<Utc>,
     },
     /// Link removed between two nodes

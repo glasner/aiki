@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Build Warnings Cleanup - Dead Code Analysis
 
 This document catalogs all `#[allow(dead_code)]` annotations added to eliminate compiler warnings without changing behavior.

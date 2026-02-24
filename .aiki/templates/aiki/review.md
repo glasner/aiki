@@ -5,8 +5,6 @@ type: review
 
 # Review: {{data.scope.name}}
 
-Please leave updates as you go using `aiki task comment`.
-
 When done with all subtasks close this task with a summary of your review:
 
 ```bash
@@ -23,8 +21,8 @@ Run the following command to explore the scope. The `--start` flag assigns the e
 aiki explore {{data.scope.id}} --start
 ```
 
-{% subtask aiki/review/criteria/spec if data.scope.kind == "spec" %}
-{% subtask aiki/review/criteria/code if data.scope.kind != "spec" %}
+{% subtask aiki/review/criteria/plan if data.scope.kind == "plan" %}
+{% subtask aiki/review/criteria/code if data.scope.kind != "plan" %}
 
 ## Review
 
@@ -38,4 +36,4 @@ Each issue becomes a trackable fix item. Regular comments (`aiki task comment`) 
 
 When all issues have been recorded, close this subtask.
 
-{% subtask aiki/fix/loop if data.options.fix %}
+<!--{% subtask aiki/fix/loop if data.options.fix %}-->

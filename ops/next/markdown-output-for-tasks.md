@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Markdown Output for Task Commands
 
 **Date**: 2026-02-01

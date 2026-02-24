@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Delete Operation Provenance Tracking
 
 ## Problem Statement

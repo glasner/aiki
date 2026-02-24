@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Plan: Add tasks completed to `aiki session show` output
 
 ## Approach

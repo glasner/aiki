@@ -1,8 +1,8 @@
-# Understand the spec
+# Understand the plan
 
-Read the spec file at {{data.scope.id}} to understand the design.
+Read the plan file at {{data.scope.id}} to understand the design.
 
-If this spec was created from a task, check the task for additional context:
+If this plan was created from a task, check the task for additional context:
 
 ```bash
 aiki task list --source file:{{data.scope.id}}

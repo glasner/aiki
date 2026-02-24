@@ -23,7 +23,7 @@ pub enum SubtaskEntry {
     Static(TaskDefinition),
     /// A reference to another template that should be composed as a nested subtask
     Composed {
-        /// Template name (e.g., "aiki/plan")
+        /// Template name (e.g., "aiki/decompose")
         template_name: String,
         /// Source line number for error reporting
         line: usize,
@@ -883,9 +883,16 @@ pub fn has_inline_loops(content: &str) -> bool {
     content.contains("{% for ")
 }
 
-/// Check if template content contains subtask references
+/// Check if template content contains subtask references (outside HTML comments)
 pub fn has_subtask_refs(content: &str) -> bool {
-    content.contains("{% subtask ")
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        // Skip lines that are HTML comments (e.g., <!--{% subtask ... %}-->)
+        if trimmed.starts_with("<!--") {
+            return false;
+        }
+        line.contains("{% subtask ")
+    })
 }
 
 /// Create review task with subtasks from template
@@ -1510,9 +1517,9 @@ Fix all issues.
         );
 
         let mut variables = VariableContext::new();
-        variables.set_data("scope.name", "Spec (lib.rs)");
+        variables.set_data("scope.name", "Plan (lib.rs)");
         variables.set_data("scope.id", "src/lib.rs");
-        variables.set_data("scope.kind", "spec");
+        variables.set_data("scope.kind", "plan");
 
         let comments = vec![TaskComment {
             id: None,
@@ -1524,7 +1531,7 @@ Fix all issues.
         let (parent, subtasks) =
             create_tasks_from_template(&template, &variables, Some(comments)).unwrap();
 
-        assert_eq!(parent.name, "Fix: Spec (lib.rs)");
+        assert_eq!(parent.name, "Fix: Plan (lib.rs)");
         assert_eq!(subtasks.len(), 1);
         assert_eq!(subtasks[0].name, "Fix: Error here");
     }
@@ -1657,7 +1664,7 @@ Build the feature.
 ## Setup environment
 Install dependencies.
 
-{% subtask aiki/plan %}
+{% subtask aiki/decompose %}
 
 ## Execute plan
 Run each plan subtask.
@@ -1676,7 +1683,7 @@ Run each plan subtask.
         // Second entry: composed
         match &entries[1] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/plan");
+                assert_eq!(template_name, "aiki/decompose");
             }
             _ => panic!("Expected Composed, got Static"),
         }
@@ -1696,7 +1703,7 @@ Review the target.
 
 # Subtasks
 
-{% subtask aiki/review/spec %}
+{% subtask aiki/review/plan %}
 "#;
         let variables = VariableContext::new();
         let entries = create_subtask_entries(content, &variables, None).unwrap();
@@ -1704,7 +1711,7 @@ Review the target.
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/review/spec");
+                assert_eq!(template_name, "aiki/review/plan");
             }
             _ => panic!("Expected Composed"),
         }
@@ -1718,10 +1725,10 @@ Review target.
 
 # Subtasks
 
-{% subtask aiki/review/spec if data.file_type == "spec" %}
+{% subtask aiki/review/plan if data.file_type == "plan" %}
 "#;
         let mut variables = VariableContext::new();
-        variables.set_data("file_type", "spec");
+        variables.set_data("file_type", "plan");
 
         let entries = create_subtask_entries(content, &variables, None).unwrap();
 
@@ -1729,7 +1736,7 @@ Review target.
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/review/spec");
+                assert_eq!(template_name, "aiki/review/plan");
             }
             _ => panic!("Expected Composed"),
         }
@@ -1739,7 +1746,7 @@ Review target.
     fn test_create_subtask_entries_subtask_ref_outside_subtasks_section() {
         let content = r#"# Task
 
-{% subtask aiki/plan %}
+{% subtask aiki/decompose %}
 
 # Subtasks
 
@@ -1756,21 +1763,25 @@ Instructions.
 
     #[test]
     fn test_has_subtask_refs() {
-        assert!(has_subtask_refs("{% subtask aiki/plan %}"));
-        assert!(has_subtask_refs("some text\n{% subtask aiki/review/spec if data.type == \"spec\" %}\nmore"));
+        assert!(has_subtask_refs("{% subtask aiki/decompose %}"));
+        assert!(has_subtask_refs("some text\n{% subtask aiki/review/plan if data.type == \"plan\" %}\nmore"));
         assert!(!has_subtask_refs("no subtask refs here"));
         assert!(!has_subtask_refs("{% if data.plan %}...{% endif %}"));
+        // HTML-commented subtask refs should NOT be detected
+        assert!(!has_subtask_refs("<!--{% subtask aiki/fix/loop if data.options.fix %}-->"));
+        // Mixed: real ref + commented ref — should detect the real one
+        assert!(has_subtask_refs("{% subtask aiki/decompose %}\n<!--{% subtask aiki/fix/loop %}-->"));
     }
 
     #[test]
     fn test_validate_subtask_ref_placement_ok() {
-        let content = "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:aiki/plan:5 -->";
+        let content = "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:5 -->";
         assert!(validate_subtask_ref_placement(content).is_ok());
     }
 
     #[test]
     fn test_validate_subtask_ref_placement_before_subtasks() {
-        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/plan:3 -->\n\n# Subtasks\n\n## Work";
+        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:3 -->\n\n# Subtasks\n\n## Work";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
@@ -1778,7 +1789,7 @@ Instructions.
 
     #[test]
     fn test_validate_subtask_ref_placement_no_subtasks_section() {
-        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/plan:3 -->";
+        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:3 -->";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
@@ -1786,7 +1797,7 @@ Instructions.
 
     #[test]
     fn test_parse_expanded_subtasks_with_refs() {
-        let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/plan:10 -->\n\n## Run\nExecute.";
+        let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:10 -->\n\n## Run\nExecute.";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -1797,7 +1808,7 @@ Instructions.
         }
         match &entries[1] {
             SubtaskEntry::Composed { template_name, line } => {
-                assert_eq!(template_name, "aiki/plan");
+                assert_eq!(template_name, "aiki/decompose");
                 assert_eq!(*line, 10);
             }
             _ => panic!("Expected Composed"),

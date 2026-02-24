@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Plugin Registry
 
 **Status**: Draft

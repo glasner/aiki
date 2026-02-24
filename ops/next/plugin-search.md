@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Plugin Search Command
 
 **Status**: Next

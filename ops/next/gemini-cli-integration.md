@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Gemini CLI Hooks Integration with Aiki
 
 ## Summary: Gemini CLI Hooks System

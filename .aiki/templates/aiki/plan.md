@@ -1,67 +1,160 @@
 ---
 version: 1.0.0
 type: plan
-slug: plan
+assignee: claude-code
+interactive: true
 ---
 
-# Plan: {{data.spec}}
+# Plan: {{data.plan_path}}
 
-**Goal**: Read the spec file and create an implementation plan with subtasks.
+Guide the user through creating or refining a plan document.
 
-## Create Implementation Plan
+# Instructions
 
-Read the spec file at `{{data.spec}}` and understand:
-- What is the goal/vision?
-- What are the requirements?
-- What are the constraints?
-- Are there open questions that need resolving?
+You are helping the user write a plan at `{{data.plan_path}}`.
+{{data.user_context}}
+**For new plans:** Work through the subtasks in order (they are defined at the end of this template).
 
-## Plan Task
+**For existing plans:**
+1. Read and summarize current state
+2. Identify which phase the plan is in (incomplete sections? unresolved questions?)
+3. Mark already-completed subtasks as `wont_do` (e.g., if plan is already drafted, close "Clarify user intent" and "Draft initial plan" as `--wont-do`)
+4. Start the appropriate subtask for where work is needed
+5. Work through remaining subtasks as needed
 
-The plan task has already been created: `{{data.plan}}`
+**Throughout:**
+- Write to the plan file incrementally (don't wait until the end)
+- Keep the conversation focused
+- Use subtasks to track progress through the plan workflow
+- Track open questions as subtasks under "Resolve open questions", NOT in the plan file's "Open Questions" section
 
-Set instructions on the plan task:
+Any questions?
 
-```bash
-aiki task set {{data.plan}} --instructions <<'MD'
-Implementation plan for <spec title>.
-See spec: {{data.spec}}
-MD
-```
+## Plan Structure (suggested)
 
-## Add Subtasks
+Use this structure for new plans:
 
-For each implementation step identified, create a subtask and set instructions:
+    # <Title>
 
-```bash
-TASK_ID=$(aiki task add "<step description>" --subtask-of {{data.plan}} --output id)
-aiki task set $TASK_ID --instructions <<'MD'
-<detailed instructions for this step — enough context for an
-executing agent to complete the step without re-reading the spec>
-MD
-```
+    **Date**: <today>
+    **Status**: Draft
+    **Purpose**: <one line>
 
-When a subtask depends on another subtask's output (e.g., phase 2 depends on phase 1), link them:
+    **Related Documents**:
+    - [Related Doc](path/to/doc.md) - Brief description
 
-```bash
-aiki task link $LATER_TASK_ID --depends-on $EARLIER_TASK_ID
-```
+    ---
 
-**Guidelines for subtasks:**
-- Each subtask should be discrete and actionable
-- Include enough context in the instructions for an executing agent
-- Order subtasks logically (dependencies first)
-- Add `depends-on` links when a subtask truly requires another to complete first
-- Keep subtask names concise but descriptive
-- Each subtask should have verifiable acceptance criteria
+    ## Executive Summary
+
+    <2-3 sentences describing what this is and why>
+
+    ---
+
+    ## User Experience
+
+    <If applicable - command syntax and options>
+
+    ---
+
+    ## How It Works
+
+    <Explanation of the mechanism/flow>
+
+    ---
+
+    ## Use Cases
+
+    <Concrete examples of how this is used>
+
+    ---
+
+    ## Implementation Plan
+
+    <Phases and deliverables>
+
+    ---
+
+    ## Error Handling
+
+    <If applicable - error scenarios and handling>
+
+    ---
+
+    ## Open Questions
+
+    1. ...
+    2. ...
+
+    ---
 
 
-## Close Planning Task
+# Subtasks
 
-When all subtasks are added, close this planning task and report the plan:
+## Clarify user intent and requirements
 
-```bash
-aiki task close {{id}} --summary "Plan created with N subtasks. Plan ID: {{data.plan}}"
-```
+1. Review any user-provided context above (topic and guidance text)
+2. Ask clarifying questions where you have them:
+   - What problem does this solve?
+   - Who is the user/audience?
+   - What are the key requirements?
+   - Any constraints or non-goals?
+3. If the user already provided detailed guidance, skip questions that are already answered
+4. Close subtask when you have enough clarity to draft the plan
 
-Output the plan task ID and subtask summary for the user.
+## Draft initial plan structure
+
+1. Create the plan file using the template structure
+2. Fill out Summary, Requirements, and Open Questions sections
+3. Write to the file incrementally as you work
+4. Close subtask when initial draft is complete
+
+## Resolve open questions
+
+1. Work through each question subtask with the user
+2. Update plan based on answers
+3. Close each question subtask when resolved
+4. Add any new questions that emerge as additional subtasks
+5. Close this subtask when all question subtasks are resolved
+
+## Validate completeness
+
+Evaluate the plan for quality and readiness. For each issue found, add it as a subtask under this validation task.
+
+**Evaluation criteria:**
+
+| Category | What to Check |
+|----------|---------------|
+| **Completeness** | All sections filled out, no TODOs or placeholders |
+| **Clarity** | Requirements unambiguous, clear acceptance criteria |
+| **Implementability** | Can be decomposed into tasks, technical details sufficient |
+| **UX** | User experience considered, command syntax intuitive, errors defined |
+
+**Workflow:**
+
+1. Read the complete plan
+2. Evaluate against each category
+3. For each issue found, add a subtask:
+   ```bash
+   aiki task add --subtask-of {{parent.id}} "<Category>: <brief description>"
+   ```
+4. Once all issues are identified, work through each subtask with the user:
+   - Discuss the issue
+   - Update the plan to address it
+   - Close the subtask when resolved
+5. When all issue subtasks are closed, close this validation subtask
+6. If no issues found, close immediately with "Plan validated - no issues found"
+
+## Confirm completion
+
+Ask the user if the plan is complete and ready for implementation.
+
+1. Ask: "Is this plan complete and ready for implementation?"
+2. If the user confirms yes:
+   - Remove the `draft` field from the plan file's YAML frontmatter
+   - Read the file, find the `---` frontmatter block, remove the `draft: true` line, write back
+   - If removing `draft` leaves the frontmatter empty, remove the `---` block entirely
+   - Close this subtask with summary "Plan marked as ready"
+3. If the user wants to continue editing:
+   - Leave `draft: true` in place
+   - Close this subtask as wont_do with summary "User wants to continue editing, draft status preserved"

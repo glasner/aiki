@@ -503,7 +503,7 @@ mod tests {
         // Negative number (parsed as non-numeric)
         assert_eq!(get_child_number("parent.-1"), None);
 
-        // Zero child number (valid but unusual - planning task)
+        // Zero child number (valid but unusual - decompose task)
         assert_eq!(get_child_number("parent.0"), Some(0));
 
         // Leading zeros (still valid numbers)
@@ -527,18 +527,18 @@ mod tests {
         let task_ids = vec!["other.1", "other.2"];
         assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
 
-        // Subtask with number 0 (planning task)
+        // Subtask with number 0 (decompose task)
         let task_ids = vec!["parent", "parent.0", "parent.1"];
         assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 2);
 
-        // Only planning task exists
+        // Only decompose task exists
         let task_ids = vec!["parent", "parent.0"];
         assert_eq!(get_next_subtask_number("parent", task_ids.iter().copied()), 1);
     }
 
     #[test]
     fn test_generate_child_id_edge_cases() {
-        // Child number 0 (planning task)
+        // Child number 0 (decompose task)
         assert_eq!(generate_child_id("parent", 0), "parent.0");
 
         // Large child number

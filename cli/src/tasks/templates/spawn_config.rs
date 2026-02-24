@@ -36,6 +36,10 @@ pub struct SpawnTaskConfig {
     /// Assignee override. Uses template default if not set.
     #[serde(default)]
     pub assignee: Option<String>,
+    /// Whether to auto-start the spawned task immediately after creation.
+    /// Defaults to false (manual start required).
+    #[serde(default)]
+    pub autorun: bool,
     /// Data fields to pass to spawned task.
     /// Values are Rhai expressions evaluated against the spawner's state.
     #[serde(default)]
@@ -145,6 +149,50 @@ task:
         assert_eq!(task.template, "aiki/fix");
         assert!(task.priority.is_none());
         assert!(task.assignee.is_none());
+        assert!(!task.autorun, "autorun should default to false");
         assert!(task.data.is_empty());
+    }
+
+    #[test]
+    fn test_parse_spawn_entry_with_autorun() {
+        let yaml = r#"
+when: not approved
+task:
+  template: aiki/fix
+  autorun: true
+  data:
+    max_iterations: 3
+"#;
+        let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
+        let task = entry.task.unwrap();
+        assert_eq!(task.template, "aiki/fix");
+        assert!(task.autorun, "autorun should be true when explicitly set");
+    }
+
+    #[test]
+    fn test_parse_spawn_entry_autorun_false() {
+        let yaml = r#"
+when: "true"
+task:
+  template: aiki/fix
+  autorun: false
+"#;
+        let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
+        let task = entry.task.unwrap();
+        assert!(!task.autorun, "autorun should be false when explicitly set");
+    }
+
+    #[test]
+    fn test_parse_spawn_entry_autorun_missing_defaults_false() {
+        // Backward compat: missing autorun field should default to false
+        let yaml = r#"
+when: "true"
+task:
+  template: aiki/fix
+  priority: p1
+"#;
+        let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
+        let task = entry.task.unwrap();
+        assert!(!task.autorun, "Missing autorun should default to false");
     }
 }

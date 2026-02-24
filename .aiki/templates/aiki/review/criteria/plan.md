@@ -2,9 +2,9 @@
 slug: criteria
 ---
 
-# Understand Criteria: Spec
+# Understand Criteria: Plan
 
-Evaluate the spec against these categories:
+Evaluate the plan against these categories:
 
 **Completeness**
 - All sections filled, no TODOs or placeholder content

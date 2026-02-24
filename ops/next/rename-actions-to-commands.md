@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Rename Flow Actions to Commands
 
 **Date**: 2026-01-20

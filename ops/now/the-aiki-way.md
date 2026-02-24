@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # The Aiki Way: aiki/default Flow
 
 > Aiki's recommended opinionated flow for AI-assisted development, inspired by 6 months of production use pushing Claude Code to its limits.

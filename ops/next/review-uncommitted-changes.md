@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Review Uncommitted Changes
 
 **Date**: 2026-02-08

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::AikiError;
-use crate::interpolation::substitute_template;
+use crate::parsing::interpolation::substitute_template;
 
 /// Resolves variables in strings using {{var}} syntax.
 /// Also supports JSON field access (e.g., {{metadata.author}} for JSON variables)

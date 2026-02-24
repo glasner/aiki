@@ -21,6 +21,7 @@ pub enum SpawnAction {
         assignee: Option<String>,
         data: HashMap<String, String>,
         spawn_index: usize,
+        autorun: bool,
     },
     /// Create a subtask (spawner becomes parent)
     CreateSubtask {
@@ -29,6 +30,7 @@ pub enum SpawnAction {
         assignee: Option<String>,
         data: HashMap<String, String>,
         spawn_index: usize,
+        autorun: bool,
     },
 }
 
@@ -326,6 +328,12 @@ pub fn evaluate_spawns(
     spawns_config: &[SpawnEntry],
 ) -> Vec<SpawnAction> {
     let mut evaluator = ExpressionEvaluator::new();
+    // Check for data.options.once flag - if set, skip all spawns
+    if let Some(once) = task.data.get("options.once") {
+        if once == "true" {
+            return Vec::new();
+        }
+    }
     let scope = build_spawn_scope(task, graph);
 
     let mut task_actions: Vec<SpawnAction> = Vec::new();
@@ -387,6 +395,7 @@ pub fn evaluate_spawns(
                 assignee: config.assignee.clone(),
                 data: evaluated_data,
                 spawn_index: index,
+                autorun: config.autorun,
             }
         } else {
             SpawnAction::CreateTask {
@@ -395,6 +404,7 @@ pub fn evaluate_spawns(
                 assignee: config.assignee.clone(),
                 data: evaluated_data,
                 spawn_index: index,
+                autorun: config.autorun,
             }
         };
 
@@ -465,6 +475,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -490,6 +501,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -512,6 +524,7 @@ mod tests {
                 template: "aiki/follow-up".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -536,6 +549,7 @@ mod tests {
                     template: "aiki/fix".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -547,6 +561,7 @@ mod tests {
                     template: "aiki/analysis".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
             },
@@ -584,6 +599,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: Some("p0".to_string()),
                 assignee: None,
+                autorun: false,
                 data: spawn_data,
             }),
             subtask: None,
@@ -623,6 +639,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: spawn_data,
             }),
             subtask: None,
@@ -656,6 +673,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: spawn_data,
             }),
             subtask: None,
@@ -683,6 +701,7 @@ mod tests {
                     template: "aiki/fix".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -693,6 +712,7 @@ mod tests {
                     template: "aiki/urgent-fix".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -715,6 +735,7 @@ mod tests {
                     template: "aiki/fix".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -726,6 +747,7 @@ mod tests {
                     template: "aiki/follow-up".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -752,6 +774,7 @@ mod tests {
                     template: "aiki/a".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -762,6 +785,7 @@ mod tests {
                     template: "aiki/b".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -772,6 +796,7 @@ mod tests {
                     template: "aiki/c".to_string(),
                     priority: None,
                     assignee: None,
+                    autorun: false,
                     data: HashMap::new(),
                 }),
                 subtask: None,
@@ -847,6 +872,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -868,6 +894,7 @@ mod tests {
                 template: "aiki/follow-up".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -889,6 +916,7 @@ mod tests {
                 template: "aiki/follow-up".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: HashMap::new(),
             }),
             subtask: None,
@@ -920,6 +948,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: spawn_data,
             }),
             subtask: None,
@@ -963,6 +992,7 @@ mod tests {
                 template: "aiki/fix".to_string(),
                 priority: None,
                 assignee: None,
+                autorun: false,
                 data: spawn_data,
             }),
             subtask: None,
@@ -978,6 +1008,87 @@ mod tests {
                 assert!(config.contains("\"port\":8080"));
             }
             _ => panic!("Expected CreateTask"),
+        }
+    }
+
+    #[test]
+    fn test_spawn_action_carries_autorun_true() {
+        let task = make_closed_task("spawner");
+        let graph = empty_graph();
+
+        let spawns = vec![SpawnEntry {
+            when: "true".to_string(),
+            task: Some(SpawnTaskConfig {
+                template: "aiki/fix".to_string(),
+                priority: None,
+                assignee: None,
+                autorun: true,
+                data: HashMap::new(),
+            }),
+            subtask: None,
+        }];
+
+        let actions = evaluate_spawns(&task, &graph, &spawns);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            SpawnAction::CreateTask { autorun, .. } => {
+                assert!(*autorun, "autorun should be true");
+            }
+            _ => panic!("Expected CreateTask"),
+        }
+    }
+
+    #[test]
+    fn test_spawn_action_carries_autorun_false() {
+        let task = make_closed_task("spawner");
+        let graph = empty_graph();
+
+        let spawns = vec![SpawnEntry {
+            when: "true".to_string(),
+            task: Some(SpawnTaskConfig {
+                template: "aiki/fix".to_string(),
+                priority: None,
+                assignee: None,
+                autorun: false,
+                data: HashMap::new(),
+            }),
+            subtask: None,
+        }];
+
+        let actions = evaluate_spawns(&task, &graph, &spawns);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            SpawnAction::CreateTask { autorun, .. } => {
+                assert!(!*autorun, "autorun should be false");
+            }
+            _ => panic!("Expected CreateTask"),
+        }
+    }
+
+    #[test]
+    fn test_subtask_spawn_carries_autorun() {
+        let task = make_closed_task("spawner");
+        let graph = empty_graph();
+
+        let spawns = vec![SpawnEntry {
+            when: "true".to_string(),
+            task: None,
+            subtask: Some(SpawnTaskConfig {
+                template: "aiki/analysis".to_string(),
+                priority: None,
+                assignee: None,
+                autorun: true,
+                data: HashMap::new(),
+            }),
+        }];
+
+        let actions = evaluate_spawns(&task, &graph, &spawns);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            SpawnAction::CreateSubtask { autorun, .. } => {
+                assert!(*autorun, "subtask autorun should be true");
+            }
+            _ => panic!("Expected CreateSubtask"),
         }
     }
 }

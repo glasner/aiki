@@ -44,6 +44,8 @@ aiki task close <task-id> --summary "What you did"
 
 When concurrent agent sessions are detected, aiki creates an isolated JJ workspace for each session to prevent conflicts. The workspace path is injected at the start of each turn via hook context with the `WORKSPACE ISOLATION:` prefix.
 
+**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like "Let me switch to the isolated workspace" or "I'm working from the isolated workspace." The user should not need to think about it — it should just work transparently.
+
 **If you received a `WORKSPACE ISOLATION` message earlier in this session:**
 - You MUST work from the workspace directory specified in that message
 - All file reads, writes, and edits must use paths within the workspace

@@ -2,7 +2,7 @@ use super::prelude::*;
 use super::Turn;
 use crate::global;
 use crate::history;
-use crate::repo_id;
+use crate::repos;
 use crate::session::turn_state::TurnState;
 
 // Re-export TurnSource from history for backward compatibility
@@ -87,7 +87,7 @@ pub fn handle_turn_started(mut payload: AikiTurnStartedPayload) -> Result<HookRe
     // `--source prompt` which resolves to the latest prompt for this session
     // Uses global JJ repo at ~/.aiki/.jj/ for cross-repo conversation history
     let cwd_str = payload.cwd.to_string_lossy();
-    let repo_id = repo_id::compute_repo_id(&payload.cwd).ok();
+    let repo_id = repos::compute_repo_id(&payload.cwd).ok();
     if let Err(e) = history::record_prompt(
         &global::global_aiki_dir(),
         &payload.session,

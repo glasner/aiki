@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Implementation: Flow Integration
 
 **Date**: 2026-02-03
@@ -9,14 +13,14 @@
 
 ## Overview
 
-Integrate `aiki spec`, `aiki plan`, and `aiki build` commands with the flow/hook system to enable declarative automation workflows.
+Integrate `aiki plan`, `aiki decompose`, and `aiki build` commands with the flow/hook system to enable declarative automation workflows.
 
 ## Deliverables
 
-- `spec:` flow action
 - `plan:` flow action
+- `decompose:` flow action
 - `build:` flow action
-- Sugar triggers: `spec.completed`, `plan.completed`, `build.completed`
+- Sugar triggers: `plan.completed`, `decompose.completed`, `build.completed`
 
 ## Files to Create/Modify
 
@@ -28,71 +32,71 @@ Integrate `aiki spec`, `aiki plan`, and `aiki build` commands with the flow/hook
 
 ## Flow Actions
 
-### `spec:` Action
+### `plan:` Action
 
-Launches an interactive spec authoring session.
+Launches an interactive plan authoring session.
 
 ```yaml
 on:
   - trigger: user_request
     actions:
-      - spec: ops/now/my-feature.md
+      - plan: ops/now/my-feature.md
 ```
 
 **Parameters:**
-- `path` (optional) - Path to spec file. If omitted, prompts user for description
-- `template` (optional) - Template to use (default: `aiki/spec`)
+- `path` (optional) - Path to plan file. If omitted, prompts user for description
+- `template` (optional) - Template to use (default: `aiki/plan`)
 - `agent` (optional) - Agent for session (default: `claude-code`)
 
 **Behavior:**
-- Launches `aiki spec <path>` in interactive mode
+- Launches `aiki plan <path>` in interactive mode
 - Waits for session to complete
-- Emits `spec.completed` event with spec file path
+- Emits `plan.completed` event with plan file path
 
-### `plan:` Action
+### `decompose:` Action
 
-Creates a planning task from a spec file.
-
-```yaml
-on:
-  - trigger: spec.completed
-    actions:
-      - plan:
-          spec: "{{ event.spec_path }}"
-```
-
-**Parameters:**
-- `spec` (required) - Path to spec file
-- `async` (optional) - Run asynchronously (default: false)
-- `start` (optional) - Start implementation after planning (default: false)
-- `template` (optional) - Planning template (default: `aiki/plan`)
-- `agent` (optional) - Agent for planning (default: `claude-code`)
-
-**Behavior:**
-- Launches `aiki plan <spec-path>` with specified options
-- If `async: false`, waits for planning to complete
-- Emits `plan.completed` event with implementation task ID
-
-### `build:` Action
-
-Orchestrates execution of an implementation plan.
+Creates an epic from a plan file.
 
 ```yaml
 on:
   - trigger: plan.completed
     actions:
-      - build:
-          spec: "{{ event.spec_path }}"
+      - decompose:
+          plan: "{{ event.plan_path }}"
 ```
 
 **Parameters:**
-- `spec` (required) - Path to spec file
+- `plan` (required) - Path to plan file
+- `async` (optional) - Run asynchronously (default: false)
+- `start` (optional) - Start implementation after decomposition (default: false)
+- `template` (optional) - Decompose template (default: `aiki/decompose`)
+- `agent` (optional) - Agent for decomposition (default: `claude-code`)
+
+**Behavior:**
+- Launches `aiki decompose <plan-path>` with specified options
+- If `async: false`, waits for decomposition to complete
+- Emits `decompose.completed` event with epic task ID
+
+### `build:` Action
+
+Orchestrates execution of an epic.
+
+```yaml
+on:
+  - trigger: decompose.completed
+    actions:
+      - build:
+          plan: "{{ event.plan_path }}"
+```
+
+**Parameters:**
+- `plan` (required) - Path to plan file
 - `async` (optional) - Run asynchronously (default: false)
 - `template` (optional) - Build template (default: `aiki/build`)
 - `agent` (optional) - Agent for build (default: `claude-code`)
 
 **Behavior:**
-- Launches `aiki build <spec-path>` with specified options
+- Launches `aiki build <plan-path>` with specified options
 - If `async: false`, waits for build to complete
 - Emits `build.completed` event with build task ID
 
@@ -100,29 +104,29 @@ on:
 
 ## Sugar Triggers
 
-### `spec.completed`
+### `plan.completed`
 
-Fired when a spec authoring session completes.
+Fired when a plan authoring session completes.
 
 **Event data:**
 ```json
 {
-  "spec_path": "ops/now/my-feature.md",
-  "spec_task_id": "xtuttnyv...",
+  "plan_path": "ops/now/my-feature.md",
+  "plan_task_id": "xtuttnyv...",
   "sections": ["Vision", "Requirements", "Open Questions"]
 }
 ```
 
-### `plan.completed`
+### `decompose.completed`
 
-Fired when a planning task completes.
+Fired when a decompose task completes.
 
 **Event data:**
 ```json
 {
-  "spec_path": "ops/now/my-feature.md",
-  "planning_task_id": "plan1234...",
-  "impl_task_id": "impl5678...",
+  "plan_path": "ops/now/my-feature.md",
+  "decompose_task_id": "decompose1234...",
+  "epic_task_id": "epic5678...",
   "subtask_count": 5
 }
 ```
@@ -134,7 +138,7 @@ Fired when a build task completes.
 **Event data:**
 ```json
 {
-  "spec_path": "ops/now/my-feature.md",
+  "plan_path": "ops/now/my-feature.md",
   "impl_task_id": "impl5678...",
   "build_task_id": "build9012...",
   "subtasks_completed": 5,
@@ -152,15 +156,15 @@ Fired when a build task completes.
 ```yaml
 # .aiki/flows/auto-implement.yml
 on:
-  - trigger: spec.completed
-    actions:
-      - plan:
-          spec: "{{ event.spec_path }}"
-      
   - trigger: plan.completed
     actions:
+      - decompose:
+          plan: "{{ event.plan_path }}"
+      
+  - trigger: decompose.completed
+    actions:
       - build:
-          spec: "{{ event.spec_path }}"
+          plan: "{{ event.plan_path }}"
       
   - trigger: build.completed
     actions:
@@ -178,13 +182,13 @@ on:
 ```yaml
 # .aiki/flows/async-build.yml
 on:
-  - trigger: plan.completed
+  - trigger: decompose.completed
     actions:
       - build:
-          spec: "{{ event.spec_path }}"
+          plan: "{{ event.plan_path }}"
           async: true
       - notify:
-          message: "Build started for {{ event.spec_path }}"
+          message: "Build started for {{ event.plan_path }}"
   
   - trigger: build.completed
     actions:
@@ -197,13 +201,13 @@ on:
 ```yaml
 # .aiki/flows/conditional-build.yml
 on:
-  - trigger: plan.completed
+  - trigger: decompose.completed
     condition: "{{ event.subtask_count < 10 }}"
     actions:
       - build:
-          spec: "{{ event.spec_path }}"
+          plan: "{{ event.plan_path }}"
       
-  - trigger: plan.completed
+  - trigger: decompose.completed
     condition: "{{ event.subtask_count >= 10 }}"
     actions:
       - notify:
@@ -243,11 +247,11 @@ If a workflow action fails:
 
 ### Test Cases
 
-1. **Spec → Plan → Build chain**
-   - Create spec interactively
-   - Verify `spec.completed` event fires
-   - Verify plan action triggers
+1. **Plan → Decompose → Build chain**
+   - Create plan interactively
    - Verify `plan.completed` event fires
+   - Verify decompose action triggers
+   - Verify `decompose.completed` event fires
    - Verify build action triggers
    - Verify `build.completed` event fires
 
@@ -258,12 +262,12 @@ If a workflow action fails:
    - Verify `build.completed` event fires when done
 
 3. **Error handling**
-   - Trigger plan with invalid spec path
-   - Verify `plan.failed` event fires
+   - Trigger decompose with invalid plan path
+   - Verify `decompose.failed` event fires
    - Verify subsequent actions don't trigger
 
 4. **Conditional workflows**
-   - Create plan with different subtask counts
+   - Create epic with different subtask counts
    - Verify condition evaluation
    - Verify correct action branch executes
 

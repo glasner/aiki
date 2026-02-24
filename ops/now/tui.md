@@ -1,7 +1,11 @@
+---
+status: draft
+---
+
 # TUI: Kanban Board for Headless Agents
 
 **Related Documents**:
-- [Workflow Commands](workflow-commands.md) - `aiki spec`, `aiki plan`, `aiki build` commands
+- [Workflow Commands](workflow-commands.md) - `aiki plan`, `aiki decompose`, `aiki build` commands
 
 ## Command
 
@@ -25,9 +29,9 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 
 **Specs as Source**: Markdown files in the target directory represent planned work:
 - Sorted alphabetically
-- Expand to see tasks spawned from the spec
-- Kick off `aiki build <spec>` directly from TUI
-- Track which specs have active agents
+- Expand to see tasks spawned from the plan
+- Kick off `aiki build <plan>` directly from TUI
+- Track which plans have active agents
 
 **Agents as Cards**: Each running/completed agent is a card on the board:
 - Shows task name, status, agent type (build/review/fix)
@@ -38,7 +42,7 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 
 | Column | Criteria |
 |--------|----------|
-| Specs | `*.md` files with no `type:build` tasks |
+| Plans | `*.md` files with no `type:build` tasks |
 | Pending | Tasks with `status: pending` |
 | In Progress | Tasks with `status: in_progress` |
 | Completed | Tasks with `status: completed` |
@@ -49,19 +53,19 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 - `[fix]` - task has `source: task:*` (followup from review)
 - No prefix for generic tasks (e.g., planning, editing)
 
-**Spec sessions** (`type: spec`) don't show as task cards. Instead, spec files in the Specs column show `●` suffix when they have an active spec session.
+**Plan sessions** (`type: plan`) don't show as task cards. Instead, plan files in the Plans column show `●` suffix when they have an active plan session.
 
-**How spec session indicator works:**
-- TUI queries for open tasks with `type: spec`
-- Matches `source: file:<path>` to spec files in the directory
-- If a match exists, shows `●` suffix on the spec file
-- Rationale: Spec sessions are collaborative/interactive, not autonomous
-- The spec file *is* the artifact - keeping it in Specs column is more intuitive
+**How plan session indicator works:**
+- TUI queries for open tasks with `type: plan`
+- Matches `source: file:<path>` to plan files in the directory
+- If a match exists, shows `●` suffix on the plan file
+- Rationale: Plan sessions are collaborative/interactive, not autonomous
+- The plan file *is* the artifact - keeping it in Plans column is more intuitive
 - Avoids confusion between "agent working autonomously" vs "user speccing interactively"
 
-**Spec Visibility**: A spec disappears from the Specs column when any `type:build` task exists for it. Spec tasks (interactive planning) don't affect spec visibility.
+**Plan Visibility**: A plan disappears from the Plans column when any `type:build` task exists for it. Plan tasks (interactive planning) don't affect plan visibility.
 
-**Grouping by Spec**: Tasks in Pending/In Progress/Completed are grouped under their source spec. Expand a spec group to see individual tasks.
+**Grouping by Plan**: Tasks in Pending/In Progress/Completed are grouped under their source plan. Expand a plan group to see individual tasks.
 
 **Live Updates**: Board refreshes as agents complete turns, close tasks, or emit events.
 
@@ -87,8 +91,8 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
    - Session view shows recent agent output (tail of session)
 
 4. **Agent Control** (see [UX Flows](#ux-flows) for details)
-   - `e` - edit (launch interactive Claude session with spec as context)
-   - `b` - build (launch `aiki build` on selected spec, runs headless)
+   - `e` - edit (launch interactive Claude session with plan as context)
+   - `b` - build (launch `aiki build` on selected plan, runs headless)
    - `s` - stop agent
    - `f` - follow (attach to live output)
 
@@ -141,7 +145,7 @@ Users kick off work with `aiki build`, `aiki review`, `aiki fix`. The TUI is the
 $ aiki ops/now
 
 ┌─ ops/now/ ───────────────────────────────────────────────────────────────────┐
-│     Specs      │     Pending     │     In Progress     │     Completed      │
+│     Plans      │     Pending     │     In Progress     │     Completed      │
 ├────────────────┼─────────────────┼─────────────────────┼────────────────────┤
 │                │                 │                     │                    │
 │ tui.md         │ plugin phase 1  │ ▾ git-diffs.md      │ task-events        │
@@ -175,11 +179,11 @@ Legend:  ● running   ✓ done   ✗ failed   ▸ collapsed   ▾ expanded
 
 ### `e` - Edit (Interactive Session)
 
-When user presses `e` on a spec:
+When user presses `e` on a plan:
 
-1. Check if there's an active `type: spec` task for that file
+1. Check if there's an active `type: plan` task for that file
 2. If yes: attach to the session (similar to `f` for follow)
-3. If no: launch `aiki spec <file>` to start new session
+3. If no: launch `aiki plan <file>` to start new session
 4. TUI suspends (restore terminal to normal mode)
 5. User works interactively with agent
 6. Agent uses `aiki task` per CLAUDE.md to track any work
@@ -187,17 +191,17 @@ When user presses `e` on a spec:
 8. Any new tasks spawned by the session appear in appropriate columns
 
 **Why this approach:**
-- Minimal - just launches `aiki spec` which handles session management
+- Minimal - just launches `aiki plan` which handles session management
 - Agent follows existing CLAUDE.md instructions for task tracking
 - Suspend/resume pattern is familiar (like lazygit opening $EDITOR)
 - Long sessions are fine - user can quit TUI if they prefer
-- Session resumption automatically handled by `aiki spec`
+- Session resumption automatically handled by `aiki plan`
 
 ### `b` - Build (Headless Agent)
 
-When user presses `b` on a spec:
+When user presses `b` on a plan:
 
-1. Launch `aiki build <spec-path>` in background
+1. Launch `aiki build <plan-path>` in background
 2. TUI stays running (doesn't suspend)
 3. New agent card appears in Running column
 4. User can monitor progress, press `f` to follow output
@@ -220,7 +224,7 @@ When user presses `s` on a running agent:
 
 ## Data Sources
 
-- **Specs**: Markdown files in target directory (glob `*.md`)
+- **Plans**: Markdown files in target directory (glob `*.md`)
 - **Task State**: `aiki task list --json` or direct JJ query, filtered by `--source file:<path>`
 - **Agent Sessions**: Read from session storage (`~/.aiki/sessions/`)
 - **Live Updates**: Watch for file changes or use event bus
@@ -229,7 +233,7 @@ When user presses `s` on a running agent:
 
 ### Phase 1: Static Board
 1. Create `aiki <path>` subcommand with path argument
-2. Render specs column from directory listing
+2. Render plans column from directory listing
 3. Render kanban columns from task list (filtered by source)
 4. Basic hjkl navigation
 5. Card selection highlighting
@@ -253,12 +257,12 @@ When user presses `s` on a running agent:
 
 ### Resolved
 
-1. ~~**Column design**: Status-based vs workflow-based?~~ → **Status-based** (Specs | Pending | In Progress | Completed)
-2. ~~**Spec visibility**: When does a spec leave the Specs column?~~ → When any `type:build` task exists for it
+1. ~~**Column design**: Status-based vs workflow-based?~~ → **Status-based** (Plans | Pending | In Progress | Completed)
+2. ~~**Plan visibility**: When does a plan leave the Plans column?~~ → When any `type:build` task exists for it
 3. ~~**Task types**: How to show build vs review vs fix?~~ → Infer from task data, show as card prefix `[build]`, `[review]`, `[fix]`
-4. ~~**Workflow commands**: Do `aiki spec`, `aiki plan`, `aiki build` exist?~~ → Yes, see [workflow-commands.md](workflow-commands.md)
-5. ~~**`e` key behavior**: How does it work with spec sessions?~~ → Check for active `type: spec` task, attach if exists, else launch `aiki spec <file>`
-6. ~~**Spec session indicator**: How to show active spec sessions?~~ → Show `●` suffix on spec files with active `type: spec` tasks
+4. ~~**Workflow commands**: Do `aiki plan`, `aiki decompose`, `aiki build` exist?~~ → Yes, see [workflow-commands.md](workflow-commands.md)
+5. ~~**`e` key behavior**: How does it work with plan sessions?~~ → Check for active `type: plan` task, attach if exists, else launch `aiki plan <file>`
+6. ~~**Plan session indicator**: How to show active plan sessions?~~ → Show `●` suffix on plan files with active `type: plan` tasks
 
 ### Open
 
@@ -268,7 +272,7 @@ When user presses `s` on a running agent:
 10. **Event bus integration**: Can TUI subscribe to events directly?
 11. **Multi-agent coordination**: How to show dependencies between agents?
 12. **Persistence**: Should TUI state (collapsed columns, filters) persist?
-13. **Task type field**: Does `type` field exist on tasks? Need to add it for `build`/`review`/`spec` distinction?
+13. **Task type field**: Does `type` field exist on tasks? Need to add it for `build`/`review`/`plan` distinction?
 
 ## Inspiration
 
@@ -280,7 +284,7 @@ When user presses `s` on a running agent:
 ## Success Criteria
 
 - Can see specs and their execution status at a glance
-- Can kick off `aiki build` on a spec directly from TUI
+- Can kick off `aiki build` on a plan directly from TUI
 - Can drill into any agent's progress without leaving TUI
 - Can stop misbehaving agents quickly
 - Works with any directory structure (not tied to ops/now naming)

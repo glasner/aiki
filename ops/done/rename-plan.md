@@ -14,6 +14,23 @@ The current `aiki plan` command breaks a document into subtasks — which is rea
 
 ---
 
+## ⚠️ CRITICAL: Scope of This Rename
+
+**This rename ONLY changes references to the decomposition command and epic tasks.**
+
+**What this rename DOES:**
+- `aiki plan` command → `aiki decompose` command
+- `plan` task type → `decompose` task type (for the ephemeral decomposition task)
+- `data.plan` (epic task ID) → `data.epic`
+- "plan task" (the epic) → "epic"
+
+**What this rename DOES NOT touch:**
+- `data.spec` (spec file path) — this stays unchanged until rename-spec.md runs
+- "spec file" terminology in prose — rename-spec.md will change this to "plan file"
+- Any references to plan documents (the .md files in ops/now/)
+
+---
+
 ## Terminology Mapping
 
 | Current | New | What It Is |
@@ -63,15 +80,14 @@ aiki build        Build from a plan file (decompose + execute all subtasks)
 
 **`decompose.md` (was `plan.md`):**
 - Front matter: `type: decompose` (was `type: plan`)
-- Heading: `# Decompose: {{data.plan}}` (was `# Plan: {{data.spec}}`)
-- All `{{data.spec}}` → `{{data.plan}}`
+- Heading: `# Decompose: {{data.spec}}` (unchanged - still references spec file)
+- `{{data.plan}}` → `{{data.epic}}` (the epic task ID)
 - "plan task" → "epic" in instructions
 - `aiki task add "Plan: <title>"` → `aiki task add "Epic: <title>"`
 - "Plan created with N subtasks" → "Epic created with N subtasks"
 
 **`build.md`:**
 - `{% subtask aiki/plan if not data.plan %}` → `{% subtask aiki/decompose if not data.epic %}`
-- `{{data.spec}}` → `{{data.plan}}`
 - `data.plan` → `data.epic` (the epic task ID)
 - "plan subtasks" → "epic subtasks"
 
@@ -80,15 +96,15 @@ aiki build        Build from a plan file (decompose + execute all subtasks)
 **`decompose.rs` (was `plan.rs`):**
 - Rename struct `PlanArgs` → `DecomposeArgs`
 - Default template: `"aiki/plan"` → `"aiki/decompose"`
-- `data.spec` → `data.plan` in task creation
+- `data.plan` → `data.epic` in task creation (do NOT change data.spec)
 - "plan" → "epic" when referring to the output task
 - "planning task" → "decompose task" for the ephemeral task
+- Link: `"scoped-to"` → `"decomposes"` (decompose task decomposes the spec file)
 - Help text: "Create an implementation plan" → "Create an epic from a plan file"
 
 **`build.rs`:**
 - References to `plan` (the old command) → `decompose`
-- `data.spec` → `data.plan`
-- `data.plan` (old, meaning plan task ID) → `data.epic`
+- `data.plan` (old, meaning epic task ID) → `data.epic`
 - Calls to `commands::plan::run()` → `commands::decompose::run()`
 - Help text: "Build from a spec file" → "Build from a plan file"
 
@@ -109,15 +125,14 @@ Every file that needs changes, organized by category.
 
 **`.aiki/templates/aiki/plan.md` → rename to `decompose.md`:**
 - Front matter: `type: plan` → `type: decompose`
-- Heading: `# Plan: {{data.spec}}` → `# Decompose: {{data.plan}}`
-- All `{{data.spec}}` → `{{data.plan}}`
+- Heading: `# Plan: {{data.spec}}` → `# Decompose: {{data.spec}}` (unchanged)
+- `{{data.plan}}` → `{{data.epic}}` (the epic task ID)
 - "plan task" → "epic" in instructions
 - "Plan created with N subtasks. Plan ID:" → "Epic created with N subtasks. Epic ID:"
 - "planning task" → "decompose task"
 
 **`.aiki/templates/aiki/build.md`:**
 - `{% subtask aiki/plan if not data.plan %}` → `{% subtask aiki/decompose if not data.epic %}`
-- `{{data.spec}}` → `{{data.plan}}`
 - `data.plan` → `data.epic` (the epic task ID)
 - "plan subtasks" → "epic subtasks"
 
@@ -142,14 +157,14 @@ Every file that needs changes, organized by category.
 - `output_plan_resumed()` → `output_epic_resumed()`
 - `output_plan_show()` → `output_epic_show()`
 - `is_spec_path()` → `is_plan_path()`
-- All `data.get("spec")` → `data.get("plan")`
-- All `"spec"` string literals → `"plan"` in task data
+- All `data.get("plan")` → `data.get("epic")`
+- Link: `write_link_event(..., "scoped-to", ...)` → `"decomposes"` (line ~470)
 - Task type filter: `Some("plan")` → `Some("decompose")`
 - Error messages: "Spec file must be markdown" → "Plan file must be markdown"
 - `MdBuilder::new("plan")` → `MdBuilder::new("decompose")`
 - `MdBuilder::new("plan-show")` → `MdBuilder::new("decompose-show")`
 - `<aiki_plan plan_id=...>` XML output → `<aiki_epic epic_id=...>`
-- `variables.set_data("spec", ...)` → `variables.set_data("plan", ...)`
+- `variables.set_data("plan", ...)` → `variables.set_data("epic", ...)`
 - **Tests:** All test function names and assertions referencing `plan` need updating
 
 **`cli/src/commands/build.rs`:**
@@ -164,7 +179,7 @@ Every file that needs changes, organized by category.
 - `validate_spec_path()` → `validate_plan_path()`
 - `find_plan_for_spec()` → `find_epic_for_plan()`
 - `close_plan()` → `close_epic()`
-- `create_build_task()`: `data.insert("spec", ...)` → `data.insert("plan", ...)`, `data.insert("plan", ...)` → `data.insert("epic", ...)`
+- `create_build_task()`: `data.insert("plan", ...)` → `data.insert("epic", ...)` (do NOT change data.spec)
 - `output_build_*()`: "Plan ID" → "Epic ID" in output
 - `<aiki_build build_id="..." plan_id="...">` → `epic_id`
 - Link: `"orchestrates"` target changes from plan_id to epic_id
