@@ -8,12 +8,25 @@
 
 **Jordan Glasner** — Solo founder, technical
 
-- Built aiki's entire codebase (~20k+ lines of Rust) using Claude Code as primary pair-programming partner
-- 6+ months of production use pushing AI coding agents to their limits
-- Direct experience with the pain: solo-rewrote 300k+ LOC using Claude Code, lived the orchestration problem daily
-- Deep domain expertise in version control (built on Jujutsu/jj internals), developer tooling, and AI agent workflows
+**The short version:** 6 years at HashiCorp building the Terraform ecosystem. Now running the same playbook for AI agents.
 
-*Key narrative: Built by someone who has spent more time working alongside AI agents than almost anyone — and discovered the tooling doesn't exist yet.*
+**Career arc:**
+
+- **HashiCorp (2018–2024)** — Rose from Sr. Product Manager to Principal PM. Owned Terraform Enterprise, launched HCP Packer, managed the PM team. Spent 6 years inside the company that wrote the playbook for "open-source CLI → provider registry → enterprise platform." Saw firsthand how a plugin ecosystem (Terraform providers) creates compounding network effects and an enterprise moat.
+
+- **Groove (2013–2018)** — CTO & Head of Product at a seed-stage SaaS startup. Full-stack engineer → CTO trajectory. Built the product, led the engineering team, pushed the company toward API-first architecture and React.
+
+- **Self-taught builder (2000–2013)** — Started as an eCommerce developer at 18, teaching himself Yahoo's proprietary RTML by reading source code because the docs didn't exist. Freelance full-stack developer, founded MonkeyWords, built and sold online businesses. The original tinkerer.
+
+**Why this founder for this company:**
+
+- **Lived the registry playbook** — Terraform's provider registry is the direct blueprint for Aiki's plugin registry. Same pattern: OSS CLI lands on dev machines → community builds plugins → registry creates discovery and network effects → enterprise pays for governance. Jordan built inside that machine for 6 years.
+
+- **Built aiki end-to-end** — ~20k+ lines of production Rust, built using Claude Code as primary pair-programming partner. Solo-rewrote 300k+ LOC using AI agents, living the orchestration problem daily.
+
+- **Deep technical range** — Version control internals (Jujutsu/jj-lib), Rust systems programming, infrastructure automation, developer tooling, full-stack web development. Self-taught across every layer of the stack.
+
+*Key narrative: The person who helped build Terraform's ecosystem — one of the most successful open-source-to-enterprise conversions in developer tools — saw the same pattern emerging for AI agents, and started building the infrastructure layer before anyone else.*
 
 ---
 
@@ -114,6 +127,26 @@ AI coding agents didn't just make professional developers faster — they create
 | **2024–now** | **AI coding agents** | **Everyone who can describe what they want** | **???** |
 
 Every one of these eras produced a registry/marketplace that became the center of gravity for its ecosystem. The current era doesn't have one yet — not for the workflows, automations, review criteria, and agent configurations that power AI-assisted development.
+
+### We've seen this movie before — we were in the room
+
+The closest analogy to what Aiki is building isn't npm or Docker Hub. **It's Terraform.**
+
+Terraform's trajectory is the exact blueprint:
+
+| | Terraform | Aiki |
+|---|---|---|
+| **Core product** | Open-source CLI that manages infrastructure | Open-source CLI that manages AI agents |
+| **The tinkerer moment** | DevOps engineers writing custom providers for every cloud API, internal service, and SaaS tool they used | Developers writing custom review rules, agent workflows, and domain skills for every project they build with AI |
+| **What they couldn't share** | Provider code trapped in internal repos. Everyone re-implementing the AWS provider slightly differently. | Workflow knowledge trapped in local configs. Everyone re-implementing "run linter before push" from scratch. |
+| **The registry** | Terraform Registry — community providers discoverable with `terraform init`. 4,000+ providers, 14,000+ modules. | Aiki plugin registry — community plugins discoverable with `aiki plugin search`. |
+| **Network effects** | More providers → Terraform works with more infrastructure → more adoption → more providers | More plugins → Aiki handles more workflows → more adoption → more plugins |
+| **The enterprise play** | Terraform Cloud / Enterprise — private registries, policy-as-code (Sentinel), team governance, run history | Aiki Cloud — private registries, compliance dashboards, agent governance, provenance audit trails |
+| **Outcome** | HashiCorp IPO'd at $5.2B (2023). IBM acquired for $6.4B (2024). | *Building.* |
+
+**The pattern is identical:** An open-source CLI becomes the standard interface for a new infrastructure category. Tinkerers build plugins that extend it into every corner of their ecosystem. A registry captures the community's work and creates switching costs. Enterprise features (governance, private registries, audit trails) become the revenue model.
+
+**Our founder spent 6 years inside that machine at HashiCorp.** He watched Terraform go from "a CLI that a few DevOps engineers love" to a platform that every Fortune 500 company depends on. He knows exactly how the community flywheel works — and exactly when to build the registry, when to add governance, and when to charge for it.
 
 ### What tinkerers are building right now (and can't share)
 
@@ -225,6 +258,7 @@ Session isolation      →   TUI / web interface        →   Hosted agent fleet
 
 | Company | What they did | Aiki parallel |
 |---|---|---|
+| **Terraform / HashiCorp** | OSS CLI → provider registry → enterprise platform. IPO'd $5.2B, acquired $6.4B. | OSS CLI → plugin registry → enterprise platform. Same playbook, new category. *Our founder built inside this for 6 years.* |
 | **GitHub** (2008) | Collaboration layer for human developers | Collaboration layer for human + AI development |
 | **CircleCI / GitHub Actions** | Automated the build/test/deploy pipeline | Automates the AI agent pipeline (write → review → fix → deploy) |
 | **Datadog** | Observability for infrastructure | Observability for AI agent behavior in codebases |
