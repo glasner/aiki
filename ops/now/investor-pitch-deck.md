@@ -8,9 +8,11 @@
 
 **Jordan Glasner** — Solo founder, technical
 
-**The short version:** 6 years at HashiCorp building the Terraform ecosystem. Now running the same playbook for AI agents.
+**The short version:** Head of Product at Tailscale. 6 years at HashiCorp building the Terraform ecosystem. Now running the same playbook for AI agents.
 
 **Career arc:**
+
+- **Tailscale (2024–present)** — Director of Product at the zero-config VPN company. Leading product strategy for infrastructure networking — another developer-first, bottom-up adoption tool. Deepened expertise in the exact go-to-market motion Aiki is running: land with individual developers, expand into teams, sell to enterprise.
 
 - **HashiCorp (2018–2024)** — Rose from Sr. Product Manager to Principal PM. Owned Terraform Enterprise, launched HCP Packer, managed the PM team. Spent 6 years inside the company that wrote the playbook for "open-source CLI → provider registry → enterprise platform." Saw firsthand how a plugin ecosystem (Terraform providers) creates compounding network effects and an enterprise moat.
 
