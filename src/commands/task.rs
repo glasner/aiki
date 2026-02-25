@@ -978,6 +978,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
+        ),
         TaskCommands::Start {
             ids,
             template,
@@ -1955,7 +1956,6 @@ fn run_start(
                 &decomposes_plan,
                 &adds_plan,
                 autorun,
-            once,
             )?;
 
             let new_task = Task {
@@ -2182,7 +2182,6 @@ fn run_start(
                 &decomposes_plan,
                 &adds_plan,
                 autorun,
-            once,
             )?;
         }
     }
@@ -2878,13 +2877,11 @@ fn run_close(
                                     crate::tasks::spawner::SpawnAction::CreateTask {
                                         template,
                                         autorun,
-            once,
                                         ..
                                     } => (template.as_str(), false, *autorun),
                                     crate::tasks::spawner::SpawnAction::CreateSubtask {
                                         template,
                                         autorun,
-            once,
                                         ..
                                     } => (template.as_str(), true, *autorun),
                                 };
