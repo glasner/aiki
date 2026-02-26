@@ -7,6 +7,12 @@ use crate::provenance;
 pub use crate::editors::HookCommandOutput;
 
 pub fn run_stdin(agent: String, event: String, payload: Option<String>) -> Result<()> {
+    // When running behind the ACP proxy, the proxy handles all event dispatch.
+    // Skip editor hooks to avoid duplicate sessions and events.
+    if std::env::var("AIKI_ACP_PROXY").is_ok() {
+        return Ok(());
+    }
+
     let agent_type = parse_agent_type(&agent)?;
     handle_event(agent_type, &event, payload.as_deref())
 }

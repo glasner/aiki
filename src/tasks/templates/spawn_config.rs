@@ -15,6 +15,11 @@ pub struct SpawnEntry {
     /// Rhai expression evaluated against task state on close.
     /// The spawn triggers if this evaluates to true.
     pub when: String,
+    /// Maximum loop iterations. If set, the spawn evaluator checks
+    /// `loop.index1 >= max_iterations` before evaluating `when`.
+    /// `None` means no iteration cap. `Some(0)` means no limit (skip check).
+    #[serde(default)]
+    pub max_iterations: Option<usize>,
     /// Standalone task configuration (no parent relationship).
     /// Mutually exclusive with `subtask`.
     #[serde(default)]
@@ -53,7 +58,7 @@ mod tests {
     #[test]
     fn test_parse_spawn_entry_with_task() {
         let yaml = r#"
-when: not approved
+when: not data.approved
 task:
   template: aiki/fix
   priority: p0
@@ -61,7 +66,7 @@ task:
     max_iterations: 3
 "#;
         let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(entry.when, "not approved");
+        assert_eq!(entry.when, "not data.approved");
         assert!(entry.task.is_some());
         assert!(entry.subtask.is_none());
 
@@ -92,12 +97,12 @@ subtask:
     #[test]
     fn test_parse_spawn_entry_data_values() {
         let yaml = r#"
-when: not approved
+when: not data.approved
 task:
   template: aiki/fix
   data:
     max_iterations: 3
-    issue_count: data.issues_found
+    issue_count: data.issue_count
     label: "urgent"
     is_critical: true
 "#;
@@ -110,7 +115,7 @@ task:
         // Variable reference (stored as string)
         assert_eq!(
             task.data["issue_count"],
-            serde_yaml::Value::from("data.issues_found")
+            serde_yaml::Value::from("data.issue_count")
         );
         // String literal
         assert_eq!(task.data["label"], serde_yaml::Value::from("urgent"));
@@ -121,19 +126,19 @@ task:
     #[test]
     fn test_parse_spawns_array() {
         let yaml = r#"
-- when: not approved
+- when: not data.approved
   task:
     template: aiki/fix
-- when: data.issues_found > 3
+- when: data.issue_count > 3
   task:
     template: aiki/follow-up
     data:
-      issue_count: data.issues_found
+      issue_count: data.issue_count
 "#;
         let entries: Vec<SpawnEntry> = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].when, "not approved");
-        assert_eq!(entries[1].when, "data.issues_found > 3");
+        assert_eq!(entries[0].when, "not data.approved");
+        assert_eq!(entries[1].when, "data.issue_count > 3");
     }
 
     #[test]
@@ -156,7 +161,7 @@ task:
     #[test]
     fn test_parse_spawn_entry_with_autorun() {
         let yaml = r#"
-when: not approved
+when: not data.approved
 task:
   template: aiki/fix
   autorun: true
@@ -194,5 +199,28 @@ task:
         let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
         let task = entry.task.unwrap();
         assert!(!task.autorun, "Missing autorun should default to false");
+    }
+
+    #[test]
+    fn test_parse_spawn_entry_with_max_iterations() {
+        let yaml = r#"
+when: "not data.approved"
+max_iterations: 3
+task:
+  template: aiki/fix
+"#;
+        let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.max_iterations, Some(3));
+    }
+
+    #[test]
+    fn test_parse_spawn_entry_without_max_iterations_defaults_none() {
+        let yaml = r#"
+when: "true"
+task:
+  template: aiki/fix
+"#;
+        let entry: SpawnEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.max_iterations, None);
     }
 }

@@ -205,6 +205,7 @@ pub fn run(agent: String, bin: Option<String>, agent_args: Vec<String>) -> Resul
     let mut agent = Command::new(&command)
         .args(&command_args)
         .env("AIKI_ENABLED", "true")
+        .env("AIKI_ACP_PROXY", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

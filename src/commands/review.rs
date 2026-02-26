@@ -781,7 +781,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
             .map(|o| format!("{:?}", o).to_lowercase())
             .unwrap_or_default();
 
-        let issue_count = if let Some(count) = review.data.get("issues_found") {
+        let issue_count = if let Some(count) = review.data.get("issue_count") {
             count.parse::<usize>().unwrap_or(review.comments.len())
         } else {
             // Backward compat: fall back to comment count
@@ -857,7 +857,7 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
     }
 
     // Add issues and comments
-    if task.data.contains_key("issues_found") {
+    if task.data.contains_key("issue_count") {
         // Structured: show issues separately from regular comments
         let issues = get_issue_comments(task);
         if !issues.is_empty() {
