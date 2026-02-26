@@ -1,0 +1,98 @@
+#!/bin/bash
+set -e
+
+# =============================================================================
+# Phase 1: Install Claude Code (same as baseline)
+# =============================================================================
+apt-get update
+apt-get install -y curl git
+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+source "$HOME/.nvm/nvm.sh"
+nvm install 22
+npm -v
+
+npm install -g @anthropic-ai/claude-code@{{ version }}
+
+# =============================================================================
+# Phase 2: Install Aiki binary (optional — skip if not pre-built)
+# =============================================================================
+
+# Check for pre-built binary at a well-known path (set by scripts/prebuild.sh).
+# Building Rust from source inside each container is too slow for benchmarks.
+# If no pre-built binary exists, we skip — the CLAUDE.md is the primary treatment.
+AIKI_BIN="${AIKI_BINARY_PATH:-/tmp/aiki-prebuilt/aiki}"
+if [ -f "$AIKI_BIN" ]; then
+    cp "$AIKI_BIN" /usr/local/bin/aiki
+    chmod +x /usr/local/bin/aiki
+    echo "AIKI_INSTALLED=true (from $AIKI_BIN)"
+else
+    echo "AIKI_INSTALLED=false (no pre-built binary at $AIKI_BIN, skipping)"
+fi
+
+# =============================================================================
+# Phase 3: Set up CLAUDE.md in the working directory
+# =============================================================================
+
+# The CLAUDE.md provides structured task management instructions.
+# This is the primary mechanism through which aiki improves agent behavior.
+# It's written to both /root and the working directory to ensure Claude picks it up.
+cat > /root/CLAUDE.md << 'CLAUDEMD'
+<aiki-bench>
+
+## Task Approach
+
+You are solving a terminal-based task. Follow this structured approach:
+
+### 1. Understand the Task
+- Read the full task description carefully before acting
+- Identify what success looks like (what needs to be true when you're done)
+- Note any constraints or requirements
+
+### 2. Plan Before Acting
+- Break the task into concrete steps
+- Identify dependencies between steps
+- Consider what could go wrong at each step
+
+### 3. Execute Methodically
+- Work through steps one at a time
+- Verify each step succeeded before moving to the next
+- If a step fails, diagnose the root cause before retrying
+- Do NOT retry the same failing command blindly — understand why it failed
+
+### 4. Verify Completion
+- After completing all steps, verify the end state matches what was asked
+- Run any relevant checks (tests, file existence, service status, etc.)
+- If something isn't right, fix it before declaring done
+
+## Terminal Best Practices
+
+- Check your environment first: `pwd`, `ls`, `which <tool>`, `cat /etc/os-release`
+- Read error messages carefully — they usually tell you exactly what's wrong
+- Use `set -e` in scripts to fail fast on errors
+- Prefer package managers over manual installs (apt, pip, npm, etc.)
+- When installing packages, always `apt-get update` first
+- Check if a tool exists before trying to install it
+- Use absolute paths when ambiguity is possible
+- Redirect stderr to see error details: `command 2>&1`
+
+## Anti-Patterns to Avoid
+
+- Don't guess at commands — check `--help` or `man` pages
+- Don't retry the same failing command in a loop
+- Don't install conflicting package versions
+- Don't ignore error output
+- Don't start complex operations without understanding the current state
+- Don't assume tools are installed — verify first
+
+</aiki-bench>
+CLAUDEMD
+
+# If aiki binary is available, initialize it in the working directory
+if command -v aiki &> /dev/null; then
+    cd /root
+    git init . 2>/dev/null || true
+    aiki init --quiet 2>/dev/null || echo "AIKI_INIT_WARN: aiki init failed, continuing"
+fi
+
+echo "Setup complete."

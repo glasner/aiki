@@ -1,0 +1,12 @@
+[project]
+name = "aiki-tbench"
+version = "0.1.0"
+description = "Terminal-Bench agent for Claude Code + Aiki"
+requires-python = ">=3.12"
+dependencies = [
+    "terminal-bench>=0.2.18",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
