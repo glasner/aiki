@@ -1,0 +1,516 @@
+# Lanes, Sessions & Implement Template
+
+**Date**: 2026-02-25
+**Status**: Draft
+**Purpose**: Introduce lanes and sessions as derived DAG concepts, add `task lane` query, and provide `aiki/implement` as the default orchestrator template.
+
+**Dependencies**:
+- [needs-context.md](needs-context.md) — `needs-context` link type and `--next-session` (replaces `--next-subtask`)
+
+**Related Documents**:
+- [build.rs](../../cli/src/commands/build.rs) - Current build command
+- [epic.rs](../../cli/src/commands/epic.rs) - Epic creation/management
+- [build.md](../../.aiki/templates/aiki/build.md) - Current build template
+- [runner.rs](../../cli/src/tasks/runner.rs) - Task execution runner
+- [loop-flags.md](loop-flags.md) - Review-fix workflow (simplifies fix template)
+
+---
+
+## Executive Summary
+
+With `needs-context` links and `--next-session` in place (see [needs-context.md](needs-context.md)), we can build lane-based parallel orchestration on top.
+
+This plan adds:
+
+1. **Lanes** — sequences of sessions derived from the subtask DAG. Lanes are independent and can run concurrently.
+2. **`task lane`** — pure query that derives lanes from the DAG and shows ready lanes or full decomposition.
+3. **`aiki/implement` template** — default orchestrator that runs lanes in parallel, using `--next-session --lane` to drive each lane.
+
+**Three concepts (tasks and sessions from needs-context.md, lanes from this plan):**
+
+- **Task** — a unit of work (unchanged)
+- **Session** — one or more tasks in a single agent session (from `needs-context` chains). See [needs-context.md](needs-context.md).
+- **Lane** — a sequence of sessions derived from the subtask DAG. Lanes are independent and can run concurrently.
+
+**Architecture:**
+
+1. **`task run --next-session`** — execution primitive (from needs-context.md). Runs the next ready session.
+2. **`task lane`** — query primitive (this plan). Derives lanes from DAG, reports readiness.
+3. **`aiki/implement` template** — default orchestrator (this plan). Gets ready lanes, drives each with `--next-session --lane`.
+4. **`aiki build`** — convenience wrapper. `epic add` + create task from `aiki/implement` + run.
+
+**Design philosophy:** All orchestration logic — looping, concurrency, lane management — lives in the template. The `task lane` query helps orchestrators understand work structure. `--next-session --lane` scopes execution to a lane.
+
+---
+
+## Concepts
+
+### Lane
+
+A **lane** is a sequence of sessions derived from the subtask DAG. Sessions within a lane execute in order. Lanes are independent of each other and can run concurrently.
+
+Lanes are derived from link structure:
+- `needs-context` chains form multi-task sessions within the lane
+- `depends-on` chains within a linear path stay in one lane
+- Fan-out points split into separate lanes
+- Fan-in creates a new lane that waits on predecessor lanes
+- Independent tasks (no links) each get their own single-session lane
+
+### Lane IDs
+
+A lane is identified by its **head task ID** — the first task in the lane. This is a regular task ID, so prefix matching works the same way as everywhere else:
+
+```bash
+aiki task run <parent> --next-session --lane xtuttn --async
+```
+
+If the prefix is ambiguous (matches heads of multiple lanes), the error is lane-specific: `"Multiple lanes match prefix 'x', be more specific."`
+
+### Example: Fix task
+
+```
+Fix Task subtasks:
+  explore (xtuttn...) ──needs-context──→ plan ──needs-context──→ implement
+  review  (mqpzyp...)  (independent)
+
+Lanes:
+  xtuttn...:
+    1. session: explore → plan → implement  [needs-context chain]
+  mqpzyp...:
+    1. session: review
+```
+
+Both lanes can run concurrently. Lane IDs are `xtuttn...` (explore's ID) and `mqpzyp...` (review's ID).
+
+### Example: Build task with fan-out
+
+```
+Build Task subtasks:
+  explore (xtuttn...) ──needs-context──→ plan
+  plan ──depends-on──→ implement-frontend (nmpsp...)
+  plan ──depends-on──→ implement-backend  (kyxrt...)
+  implement-tests (zxrko...) ──depends-on──→ implement-frontend
+  implement-tests ──depends-on──→ implement-backend
+
+Lanes:
+  xtuttn...:
+    1. session: explore → plan              [needs-context chain]
+  nmpsp...:                                 depends on xtuttn...
+    1. session: implement-frontend
+  kyxrt...:                                 depends on xtuttn...
+    1. session: implement-backend
+  zxrko...:                                 depends on nmpsp..., kyxrt...
+    1. session: implement-tests
+```
+
+### Example: Lane with mixed sessions
+
+```
+Task subtasks:
+  explore (xtuttn...) ──needs-context──→ plan
+  plan ──depends-on──→ implement
+  implement ──depends-on──→ test
+  test ──needs-context──→ verify
+
+Lanes:
+  xtuttn...:
+    1. session: explore → plan              [needs-context, multi-task]
+    2. session: implement                   [standalone, single-task]
+    3. session: test → verify               [needs-context, multi-task]
+```
+
+Three sessions in one lane, executed in order. `--next-session --lane xtuttn` handles this naturally — it picks the next ready session each time.
+
+---
+
+## Primitives
+
+### `task lane` — Query primitive
+
+```bash
+# Show ready lanes with their sessions (default)
+aiki task lane <parent>
+
+# Show full lane decomposition with status
+aiki task lane <parent> --all
+```
+
+**`task lane <parent>` output (ready lanes):**
+
+```
+Ready lanes:
+
+xtuttn...:
+  1. session: explore plan implement
+  2. session: review-quality
+nmpsp...:
+  1. session: write-tests
+```
+
+After all ready lanes are running:
+
+```
+Ready lanes:
+
+(none)
+```
+
+After both lanes complete, unblocking a dependent lane:
+
+```
+Ready lanes:
+
+zxrko...:
+  1. session: integration verify
+```
+
+**`task lane <parent> --all` output:**
+
+```
+Lanes for <parent-id>:
+
+xtuttn...:                                                  ✓ complete
+  1. session: [explore plan implement]   needs-context      ✓ complete
+  2. session: [review-quality]                              ✓ complete
+
+nmpsp...:                                                   ✓ complete
+  1. session: [write-tests]                                 ✓ complete
+
+zxrko...:                                depends on xtuttn  ● ready
+  1. session: [integration verify]       needs-context      ● ready
+```
+
+**Readiness rules:**
+- A lane is ready when all predecessor lanes have completed
+- Within a lane, sessions execute sequentially — `--next-session --lane` handles this
+- Readiness is derived from current task statuses — no persistence needed
+
+### `--lane` filter on `--next-session`
+
+```bash
+# Scoped to a specific lane (uses --next-session from needs-context.md)
+# Lane ID = head task ID. Prefix matching supported.
+aiki task run <parent> --next-session --lane <head-task-id>
+aiki task run <parent> --next-session --lane <head-task-id> --async
+
+# Example with prefix:
+aiki task run <parent> --next-session --lane xtuttn --async
+```
+
+`--lane` restricts `--next-session` to only consider subtasks within the named lane. The lane is identified by its head task's ID (prefix matching supported). This is how the orchestrator drives individual lanes.
+
+### `task wait --any`
+
+```bash
+# Wait for any of several tasks to complete
+aiki task wait <id1> <id2> --any
+```
+
+The orchestrator waits on task IDs from the sessions it launched. `--any` returns when any completes, letting the orchestrator check for newly ready lanes.
+
+---
+
+## How Lane Agents Work
+
+The orchestrator drives each lane by calling `--next-session --lane` repeatedly:
+
+```
+# Orchestrator starts a lane (explore's ID = xtuttn...):
+aiki task run <parent> --next-session --lane xtuttn --async
+
+# Runs first session (e.g., needs-context chain: explore → plan → implement)
+# Agent is scoped to session's tasks, works through them normally.
+# Session ends when all tasks in the chain are closed.
+
+# --next-session returns. Orchestrator calls again:
+aiki task run <parent> --next-session --lane xtuttn --async
+
+# Runs second session (e.g., standalone task: review-quality)
+# Session ends.
+
+# --next-session returns. Orchestrator calls again:
+aiki task run <parent> --next-session --lane xtuttn
+# → nothing left in this lane. Lane done.
+```
+
+The agent focuses on one session. The orchestrator drives lane-level sequencing.
+
+---
+
+## Orchestrator Template
+
+### `aiki/implement` — Default orchestrator
+
+```markdown
+---
+version: 2.0.0
+type: orchestrator
+---
+
+# Implement: {{data.target}}
+
+You are orchestrating the implementation of task {{data.target}}.
+
+## Step 1: Understand the work
+
+    aiki task show {{data.target}}
+    aiki task lane {{data.target}} --all
+
+## Step 2: Execute
+
+Loop until all lanes are complete:
+
+1. Get ready lanes:
+
+       aiki task lane {{data.target}}
+
+2. For each ready lane, start its first session (up to 3
+   lanes at a time):
+
+       aiki task run {{data.target}} --next-session --lane <lane-id> --async
+
+3. Wait for any running session to finish:
+
+       aiki task wait <id1> <id2> ... --any
+
+4. When a session finishes:
+   - Run the next session in that lane:
+     `aiki task run {{data.target}} --next-session --lane <lane-id> --async`
+     (returns immediately if lane is done)
+   - Check for newly ready lanes via `task lane`
+   - Start new lanes if under the concurrency limit
+
+5. Repeat until `task lane` returns no ready lanes and no
+   sessions are running.
+
+## Failure handling
+
+If a session fails, its lane cannot proceed. Dependent lanes
+are also blocked. Independent lanes continue.
+
+    aiki task lane {{data.target}} --all
+
+If unrecoverable:
+
+    aiki task stop {{id}} --reason "Failed: <reason>"
+
+## Completion
+
+When all lanes are complete:
+
+    aiki task close {{id}} --summary "All lanes completed"
+```
+
+### Custom orchestrator examples
+
+**Simple sequential (no lanes, needs-context-aware):**
+```markdown
+Loop until done:
+    aiki task run {{data.target}} --next-session
+```
+
+**All-in-session (agent does everything, max context):**
+```markdown
+Work through all subtasks yourself in this session.
+Close each subtask as you complete it.
+```
+
+**Lane-aware with concurrency limit of 2:**
+```markdown
+Same as default implement, but run at most 2 lanes at a time.
+```
+
+Orchestration strategy is template text, not CLI flags. Fully customizable.
+
+---
+
+## `aiki build` — Updated flow
+
+```bash
+aiki build ops/now/feature.md           # epic add → implement → task run
+aiki build <epic-id>                     # implement → task run
+aiki build ops/now/feature.md --async
+aiki build ops/now/feature.md --restart
+aiki build show ops/now/feature.md
+aiki build ops/now/feature.md --template myorg/custom-implement
+```
+
+Under the hood:
+```
+aiki build <plan-path>
+    │
+    ├─ Validate plan, check draft status
+    ├─ Cleanup stale builds
+    ├─ find_or_create_epic(plan) → epic_id
+    ├─ check_epic_blockers(epic_id)
+    ├─ Create orchestrator task from aiki/implement template
+    │   └─ data.target = epic_id
+    └─ task_run(orchestrator_id)
+        └─ orchestrator agent runs the implement template
+```
+
+No `--loop` or `--lanes` flags on build. The orchestration strategy is determined by the template.
+
+---
+
+## Use Cases
+
+### 1. Build an epic (default — lane-aware orchestrator)
+```bash
+aiki build ops/now/feature.md
+# Orchestrator derives lanes, runs up to 3 concurrently
+# Each lane's sessions execute in order via --next-session --lane
+```
+
+### 2. Simple sequential execution (no lanes)
+```bash
+# Template loops:
+aiki task run <parent> --next-session   # repeat until done
+# needs-context chains automatically grouped into sessions
+```
+
+### 3. Fan-out with parallel lanes
+```bash
+aiki task lane <parent> --all
+# xtuttn...:                                                ● ready
+#   1. session: [explore plan]             needs-context
+# nmpsp...:                                depends on xtuttn ○ waiting
+#   1. session: [implement-frontend]
+# kyxrt...:                                depends on xtuttn ○ waiting
+#   1. session: [implement-backend]
+# zxrko...:                                depends on nmpsp, kyxrt ○ waiting
+#   1. session: [implement-tests]
+
+# Orchestrator:
+# t0: start xtuttn lane (--next-session --lane xtuttn)
+# t1: xtuttn done → start nmpsp and kyxrt lanes
+# t2: both done → start zxrko lane
+# t3: done
+```
+
+### 4. Lane with mixed sessions
+```bash
+aiki task lane <parent> --all
+# xtuttn...:
+#   1. session: [explore plan]             needs-context
+#   2. session: [implement]
+#   3. session: [test verify]              needs-context
+
+# Orchestrator drives the lane:
+# --next-session --lane xtuttn → runs explore+plan session
+# --next-session --lane xtuttn → runs implement session
+# --next-session --lane xtuttn → runs test+verify session
+# --next-session --lane xtuttn → nothing left, lane done
+```
+
+---
+
+## Implementation Plan
+
+### Phase 1: `task lane` query
+
+*Depends on: [needs-context.md](needs-context.md) phases 1-3 (link type, frontmatter, `--next-session`)*
+
+1. New module: `cli/src/tasks/lanes.rs`
+2. Lane derivation algorithm:
+   a. Identify `needs-context` chains → multi-task sessions
+   b. Walk `depends-on` edges to build linear chains, keeping sessions intact
+   c. At fan-out points, split into separate lanes
+   d. At fan-in points, create a lane that waits on predecessor lanes
+   e. Independent tasks → single-session lanes
+3. Each lane is a list of sessions in execution order
+4. Cross-lane dependency computation
+5. Lane readiness: a lane is ready when all predecessor lanes have completed
+6. `aiki task lane <parent>` — display ready lanes with their sessions (default)
+7. `aiki task lane <parent> --all` — display full decomposition with status
+
+### Phase 2: `--lane` filter on `--next-session`
+
+1. Add `--lane <lane-id>` option to `--next-session` on `task run`
+2. Lane ID = head task ID of the lane. Prefix matching via existing ID resolver.
+3. Restricts subtask selection to tasks within the named lane
+4. Uses lane derivation from Phase 1 to determine lane membership
+5. Ambiguous prefix error: "Multiple lanes match prefix '<prefix>', be more specific"
+6. No match error: "No lane with head task matching '<id>' for task <parent>"
+
+### Phase 3: `task wait --any`
+
+1. Add `--any` flag to `task wait`
+2. Returns when any of the specified tasks completes
+3. Reports which task(s) completed
+
+### Phase 4: Create `aiki/implement` template
+
+1. Create `.aiki/templates/aiki/implement.md` with the orchestrator loop
+2. Template is `type: orchestrator` for task graph semantics
+3. Orchestrator loop: `task lane` → `--next-session --lane` → `task wait --any` → repeat
+
+### Phase 5: Refactor `build.rs`
+
+1. Replace `create_build_task()` with `create_implement_task()` using `aiki/implement` template
+2. `build.rs` retains: plan validation, draft check, stale cleanup, epic find-or-create, blocker checks
+3. Default template changes from `aiki/build` to `aiki/implement`
+4. Keep `--template` flag for custom overrides
+5. Remove `--loop` and `--lanes` flags from build (orchestration is template-driven)
+
+### Phase 6: Tests
+
+1. Unit tests: lane derivation — DAG decomposition, fan-out/fan-in, mixed sessions
+2. Unit tests: lane readiness computation
+3. Unit tests: `--lane` filter
+4. Integration tests: `task lane` output format (default and `--all`)
+5. Integration tests: orchestrator loop (implement template end-to-end)
+
+---
+
+## Error Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Parent has no subtasks | `task lane` returns empty. |
+| All subtasks blocked | `task lane` returns no ready lanes. |
+| `--lane` with unknown ID | Error: "No lane with head task matching '<id>' for task <parent>" |
+| `--lane` with ambiguous prefix | Error: "Multiple lanes match prefix '<prefix>', be more specific" |
+| Session fails within lane | Lane cannot proceed to next session. Dependent lanes blocked. |
+| All lanes complete | `task lane` returns empty. Orchestrator closes. |
+
+---
+
+## Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| `task run` role | Execution primitive only | No orchestration logic baked in. |
+| Orchestration location | Template (agent instructions) | Fully customizable. Different templates = different strategies. |
+| Lane definition | Derived from DAG, not stored | Deterministic from link structure. No persistence needed. |
+| Lane contents | List of sessions (multi-task or single-task) | Natural: a lane is a sequence of agent sessions. |
+| `task lane` default | Shows ready lanes only | Matches `aiki task` default (show actionable). `--all` for full view. |
+| Lane ID | Head task ID | Stable (head doesn't change unless DAG restructured). No new ID system. Prefix matching reuses existing task ID resolver. |
+| `--lane` filter | Scopes `--next-session` to lane by head task ID | Lets orchestrator manage per-lane execution. |
+| No `--loop` flag | Removed | Orchestrator template controls the loop. |
+| No `--lanes N` flag | Removed | Orchestrator template controls concurrency. |
+| Failure strategy | Orchestrator decides | Template implements failure policy. |
+| Template name | `aiki/implement` | Describes intent not mechanism. |
+| `build` refactor | Delegates to template → `task run` | Preserves customizability via `--template`. |
+
+---
+
+## Resolved Questions
+
+1. **Where does orchestration live?** — In the template, not the runner. `task run` is a primitive. The template composes primitives into an execution strategy.
+
+2. **Concepts** — Three: tasks, sessions, lanes. Sessions come from [needs-context.md](needs-context.md). Lanes are this plan's contribution.
+
+3. **Persistence** — Lane derivation is deterministic from link structure. No persistence needed. `task lane` computes fresh each time.
+
+4. **How does the orchestrator drive a lane?** — Calls `--next-session --lane <lane-id>` repeatedly (lane ID = head task ID, prefix matching supported). Each call runs one session and returns. When no more sessions remain, the lane is done.
+
+5. **`task lane` default behavior** — Shows ready lanes only, matching `aiki task` convention. `--all` shows full decomposition with status.
+
+## Open Questions
+
+1. **Progress reporting** — Deferred. Orchestrator has all state needed; format TBD.
+
+2. **Concurrency limits** — The default implement template caps at 3 concurrent lanes. Should this be configurable via `data.max_concurrent`? Or just a template concern?
+
+3. **`task start --next`** — Convenience flag to start the next ready task in current scope without listing first. Deferred for future work.

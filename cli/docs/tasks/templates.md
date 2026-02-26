@@ -44,7 +44,6 @@ The `when` expression has access to these variables:
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `approved` | bool | Whether `data.approved == "true"` on the closing task |
 | `status` | string | Always `"closed"` (spawns run post-close) |
 | `outcome` | string | `"done"` or `"wont_do"` |
 | `priority` | string | Task priority (e.g., `"p2"`) |
@@ -52,7 +51,7 @@ The `when` expression has access to these variables:
 | `comments` | array | Array of comment text strings |
 | `subtasks.<slug>.*` | map | Subtask state for subtasks that have slugs |
 
-Subtask maps contain: `status`, `approved`, `outcome`, `data`, `priority`.
+Subtask maps contain: `status`, `outcome`, `data`, `priority`.
 
 ### Examples
 
@@ -60,7 +59,7 @@ Subtask maps contain: `status`, `approved`, `outcome`, `data`, `priority`.
 
 ```yaml
 spawns:
-  - when: "not approved"
+  - when: "not data.approved"
     task:
       template: aiki/fix
       data:
@@ -81,21 +80,21 @@ spawns:
 
 ```yaml
 spawns:
-  - when: "not approved"
+  - when: "not data.approved"
     task:
       template: aiki/fix
-  - when: "data.issues_found > 3"
+  - when: "data.issue_count > 3"
     task:
       template: aiki/follow-up
       data:
-        issue_count: data.issues_found
+        issue_count: data.issue_count
 ```
 
 **Self-spawning loop pattern:**
 
 ```yaml
 spawns:
-  - when: "not subtasks.review.approved"
+  - when: "not subtasks.review.data.approved"
     task:
       template: self
       data:
@@ -114,8 +113,8 @@ To pass a **string literal** (not a Rhai expression), use Rhai string syntax wit
 
 ```yaml
 data:
-  # Rhai expression -- evaluates data.issues_found from the spawner
-  issue_count: data.issues_found
+  # Rhai expression -- evaluates data.issue_count from the spawner
+  issue_count: data.issue_count
 
   # Rhai expression -- arithmetic
   next_index: "data.loop_index + 1"
@@ -279,7 +278,7 @@ subtasks: source.comments # Data source path for subtask iteration
 
 # Spawn rules
 spawns:                   # Conditional task creation on close
-  - when: "not approved"
+  - when: "not data.approved"
     task:
       template: aiki/fix
 ---
@@ -293,12 +292,12 @@ Both `when` conditions and string data values are evaluated as [Rhai](https://rh
 
 ```ruby
 # Boolean logic
-not approved
-approved and outcome == "done"
-not subtasks.review.approved
+not data.approved
+data.approved and outcome == "done"
+not subtasks.review.data.approved
 
 # Comparisons
-data.issues_found > 3
+data.issue_count > 3
 data.loop_index >= 10
 
 # String comparison
@@ -310,7 +309,7 @@ data.loop_index + 1
 subtasks.review.data.score
 ```
 
-Note: `!` is rewritten to `not` during preprocessing for readability, so `!approved` and `not approved` are equivalent.
+Note: `!` is rewritten to `not` during preprocessing for readability, so `!data.approved` and `not data.approved` are equivalent.
 
 ---
 

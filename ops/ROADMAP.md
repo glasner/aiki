@@ -1,9 +1,6 @@
-
 - general loop termination
 - loop flags
 - workflow ux -> share with Paul
-
-- zed duplicate session bug
 
 - metrics
 

@@ -112,6 +112,7 @@ pub fn parse_template(content: &str, name: &str, file_path: &str) -> Result<Task
         );
         let spawn_entry = SpawnEntry {
             when: format!("not ({})", loop_config.until),
+            max_iterations: Some(loop_config.max_iterations),
             task: Some(SpawnTaskConfig {
                 template: "self".to_string(),
                 priority: None,
@@ -666,7 +667,7 @@ Do the second step.
 version: "1.0.0"
 type: review
 spawns:
-  - when: not approved
+  - when: not data.approved
     task:
       template: aiki/fix
       priority: p0
@@ -687,7 +688,7 @@ Review the changes.
         assert_eq!(template.spawns.len(), 2);
 
         // First spawn: standalone task
-        assert_eq!(template.spawns[0].when, "not approved");
+        assert_eq!(template.spawns[0].when, "not data.approved");
         assert!(template.spawns[0].task.is_some());
         assert!(template.spawns[0].subtask.is_none());
         let task_cfg = template.spawns[0].task.as_ref().unwrap();
@@ -723,7 +724,7 @@ Do something.
         let content = r#"---
 version: "1.0.0"
 spawns:
-  - when: not approved
+  - when: not data.approved
     task:
       template: aiki/fix
     subtask:
@@ -746,7 +747,7 @@ Review the changes.
         let content = r#"---
 version: "1.0.0"
 spawns:
-  - when: not approved
+  - when: not data.approved
 ---
 
 # Review task
@@ -807,7 +808,7 @@ version: "1.0.0"
         let content = r#"---
 version: "1.0.0"
 loop:
-  until: approved
+  until: data.approved
 ---
 
 # Looping task
@@ -817,10 +818,38 @@ Do something repeatedly.
         let template = parse_template(content, "test", "test.md").unwrap();
         assert_eq!(template.spawns.len(), 1);
         let entry = &template.spawns[0];
-        assert_eq!(entry.when, "not (approved)");
+        assert_eq!(entry.when, "not (data.approved)");
+        // Default max_iterations (100) should be passed through
+        assert_eq!(entry.max_iterations, Some(100));
         let task_cfg = entry.task.as_ref().unwrap();
         assert_eq!(task_cfg.template, "self");
         assert!(task_cfg.autorun);
+    }
+
+    #[test]
+    fn test_parse_template_with_loop_explicit_max_iterations() {
+        let content = r#"---
+loop:
+  until: subtasks.review.approved
+  max_iterations: 5
+---
+
+# Fix loop
+
+Fix and review.
+"#;
+        let template = parse_template(content, "test", "test.md").unwrap();
+        assert_eq!(template.spawns.len(), 1);
+        let entry = &template.spawns[0];
+        // when condition should only contain the user's until expression
+        assert_eq!(entry.when, "not (subtasks.review.approved)");
+        // Explicit max_iterations should be passed through
+        assert_eq!(entry.max_iterations, Some(5));
+        // Loop metadata should still be present
+        let task_cfg = entry.task.as_ref().unwrap();
+        assert!(task_cfg.data.contains_key("loop.index"));
+        assert!(task_cfg.data.contains_key("loop.index1"));
+        assert!(task_cfg.data.contains_key("loop.first"));
     }
 
     #[test]
@@ -828,9 +857,9 @@ Do something repeatedly.
         let content = r#"---
 version: "1.0.0"
 loop:
-  until: approved
+  until: data.approved
 spawns:
-  - when: "not approved"
+  - when: "not data.approved"
     task:
       template: aiki/fix
 ---
@@ -842,12 +871,12 @@ Do something.
         let template = parse_template(content, "test", "test.md").unwrap();
         // Explicit spawn + desugared loop spawn
         assert_eq!(template.spawns.len(), 2);
-        assert_eq!(template.spawns[0].when, "not approved");
+        assert_eq!(template.spawns[0].when, "not data.approved");
         assert_eq!(
             template.spawns[0].task.as_ref().unwrap().template,
             "aiki/fix"
         );
-        assert_eq!(template.spawns[1].when, "not (approved)");
+        assert_eq!(template.spawns[1].when, "not (data.approved)");
         assert_eq!(
             template.spawns[1].task.as_ref().unwrap().template,
             "self"

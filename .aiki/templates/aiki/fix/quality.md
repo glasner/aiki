@@ -1,7 +1,7 @@
 ---
 version: 1.0.0
 spawns:
-  - when: "not subtasks.review.approved and data.loop_index < data.max_inner"
+  - when: "not subtasks.review.data.approved and data.loop_index < data.max_inner"
     subtask:
       template: aiki/fix/quality
       data:
@@ -34,7 +34,7 @@ When done, close this subtask.
 slug: fix
 ---
 
-{% if parent.subtasks.review.approved %}
+{% if parent.subtasks.review.data.approved %}
 No issues found — fix is clean. Close this subtask as won't-do:
 ```bash
 aiki task close {{id}} --wont-do --summary "Fix approved, no issues"

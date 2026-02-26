@@ -191,35 +191,18 @@ fn generate_slug(description: &str) -> String {
         .join("-")
 }
 
-/// Build a formatted user context block from initial idea and free-form text
+/// Whether the interactive prompt should fire.
 ///
-/// Returns a markdown section if there's any user-provided context, or empty string if not.
-fn build_user_context(initial_idea: &str, user_text: &str) -> String {
-    let has_idea = !initial_idea.is_empty();
-    let has_text = !user_text.is_empty();
-
-    if !has_idea && !has_text {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-
-    if has_idea && has_text {
-        // Both: idea is the title/topic, text is the guidance
-        parts.push(format!("**Topic:** {}", initial_idea));
-        parts.push(format!("\n**User guidance:**\n> {}", user_text.replace('\n', "\n> ")));
-    } else if has_idea {
-        // Only idea (from filename or description)
-        parts.push(format!("**Topic:** {}", initial_idea));
-    } else {
-        // Only text (edit mode with guidance)
-        parts.push(format!("**User guidance:**\n> {}", user_text.replace('\n', "\n> ")));
-    }
-
-    format!(
-        "\n## User Context\n\n{}\n",
-        parts.join("\n")
-    )
+/// Interactive prompt fires when:
+/// - Not autogen mode (description IS the idea)
+/// - No trailing CLI text was provided (args_text was empty)
+///
+/// When args_text is non-empty, initial_idea already contains the user's
+/// guidance merged in, so we skip the prompt. When args_text is empty,
+/// initial_idea is only the filename-derived topic (e.g., "Dark Mode"),
+/// and the user may want to add more specific guidance interactively.
+fn initial_idea_needs_input(mode: &PlanMode, has_cli_text: bool) -> bool {
+    !matches!(mode, PlanMode::Autogen { .. }) && !has_cli_text
 }
 
 /// Prompt for multi-line text input using crossterm raw mode.
@@ -363,32 +346,33 @@ fn run_plan(
         }
     };
 
-    // Prompt for guidance text interactively if:
-    // 1. No text was provided as trailing args
-    // 2. We're running from a terminal (interactive)
-    // 3. Not in autogen mode (where the description already serves as guidance)
-    let user_text = if args_text.is_empty()
-        && !matches!(mode, PlanMode::Autogen { .. })
-        && io::stdin().is_terminal()
-    {
-        let header = if args_idea.is_empty() {
-            format!("Plan: {}", plan_path.display())
+    // Build initial_idea by merging filename-derived idea + CLI text
+    let has_cli_text = !args_text.is_empty();
+    let mut initial_idea = if has_cli_text {
+        if args_idea.is_empty() {
+            args_text
         } else {
-            format!("Plan: {} ({})", plan_path.display(), args_idea)
-        };
-        prompt_multiline_input(&header)?.unwrap_or_default()
+            format!("{}: {}", args_idea, args_text)
+        }
     } else {
-        args_text
+        args_idea
     };
 
-    // Build initial_idea from filename idea + user text
-    let initial_idea = if user_text.is_empty() {
-        args_idea
-    } else if args_idea.is_empty() {
-        user_text.clone()
-    } else {
-        format!("{}: {}", args_idea, user_text)
-    };
+    // Interactive prompt fires when no CLI text was provided (except autogen mode)
+    if initial_idea_needs_input(&mode, has_cli_text) && io::stdin().is_terminal() {
+        let header = if initial_idea.is_empty() {
+            format!("Plan: {}", plan_path.display())
+        } else {
+            format!("Plan: {} ({})", plan_path.display(), initial_idea)
+        };
+        if let Some(text) = prompt_multiline_input(&header)? {
+            if initial_idea.is_empty() {
+                initial_idea = text;
+            } else {
+                initial_idea = format!("{}: {}", initial_idea, text);
+            }
+        }
+    }
 
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
@@ -430,7 +414,6 @@ fn run_plan(
             &plan_path,
             &initial_idea,
             is_new,
-            &user_text,
             template_name.as_deref().unwrap_or("aiki/plan"),
             agent_type.as_ref().map(|a| a.as_str().to_string()),
             timestamp,
@@ -492,7 +475,7 @@ fn run_plan(
         )
     } else {
         format!(
-            "Run `aiki task start {}` to begin working on this plan task.\n\nUser's request: {}",
+            "Run `aiki task start {}` to begin working on this plan task.\n\nUser's guidance: {}",
             plan_task_id, initial_idea
         )
     };
@@ -552,7 +535,6 @@ fn create_plan_task(
     plan_path: &Path,
     initial_idea: &str,
     is_new: bool,
-    user_text: &str,
     template_name: &str,
     assignee: Option<String>,
     timestamp: chrono::DateTime<chrono::Utc>,
@@ -570,11 +552,6 @@ fn create_plan_task(
     variables.set_data("plan_path", &plan_path.display().to_string());
     variables.set_data("is_new", if is_new { "true" } else { "false" });
     variables.set_data("initial_idea", initial_idea);
-    variables.set_data("user_text", user_text);
-
-    // Compose a formatted user_context block from initial_idea and user_text
-    let user_context = build_user_context(initial_idea, user_text);
-    variables.set_data("user_context", &user_context);
 
     // Set parent.id placeholder - it will be replaced after we generate the actual parent ID
     variables.set_parent("id", PARENT_ID_PLACEHOLDER);
@@ -872,30 +849,63 @@ mod tests {
     }
 
     #[test]
-    fn test_build_user_context_empty() {
-        assert_eq!(build_user_context("", ""), "");
+    fn test_initial_idea_needs_input_autogen_no_text() {
+        let mode = PlanMode::Autogen {
+            description: "Add auth".to_string(),
+            slug: "add-auth".to_string(),
+        };
+        // Autogen never prompts — the description IS the idea
+        assert!(!initial_idea_needs_input(&mode, false));
     }
 
     #[test]
-    fn test_build_user_context_idea_only() {
-        let result = build_user_context("Dark Mode", "");
-        assert!(result.contains("**Topic:** Dark Mode"));
-        assert!(!result.contains("User guidance"));
+    fn test_initial_idea_needs_input_autogen_with_text() {
+        let mode = PlanMode::Autogen {
+            description: "Add auth".to_string(),
+            slug: "add-auth".to_string(),
+        };
+        assert!(!initial_idea_needs_input(&mode, true));
     }
 
     #[test]
-    fn test_build_user_context_text_only() {
-        let result = build_user_context("", "Add rate limiting to the API");
-        assert!(result.contains("**User guidance:**"));
-        assert!(result.contains("> Add rate limiting to the API"));
-        assert!(!result.contains("**Topic:**"));
+    fn test_initial_idea_needs_input_create_no_text() {
+        let mode = PlanMode::CreateAtPath {
+            path: PathBuf::from("dark-mode.md"),
+            initial_idea: "Dark Mode".to_string(),
+            text: String::new(),
+        };
+        // No CLI text — should prompt for guidance
+        assert!(initial_idea_needs_input(&mode, false));
     }
 
     #[test]
-    fn test_build_user_context_both() {
-        let result = build_user_context("JWT Auth", "with refresh tokens and rate limiting");
-        assert!(result.contains("**Topic:** JWT Auth"));
-        assert!(result.contains("**User guidance:**"));
-        assert!(result.contains("> with refresh tokens and rate limiting"));
+    fn test_initial_idea_needs_input_create_with_text() {
+        let mode = PlanMode::CreateAtPath {
+            path: PathBuf::from("dark-mode.md"),
+            initial_idea: "Dark Mode".to_string(),
+            text: "add JWT auth".to_string(),
+        };
+        // CLI text provided — skip prompt
+        assert!(!initial_idea_needs_input(&mode, true));
+    }
+
+    #[test]
+    fn test_initial_idea_needs_input_edit_no_text() {
+        let mode = PlanMode::Edit {
+            path: PathBuf::from("existing.md"),
+            text: String::new(),
+        };
+        // Edit mode with no CLI text — should prompt
+        assert!(initial_idea_needs_input(&mode, false));
+    }
+
+    #[test]
+    fn test_initial_idea_needs_input_edit_with_text() {
+        let mode = PlanMode::Edit {
+            path: PathBuf::from("existing.md"),
+            text: "add rate limiting".to_string(),
+        };
+        // Edit mode with CLI text — skip prompt
+        assert!(!initial_idea_needs_input(&mode, true));
     }
 }

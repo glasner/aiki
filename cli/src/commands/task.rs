@@ -2263,8 +2263,8 @@ pub(crate) fn cascade_close_tasks(
     };
     write_event(cwd, &close_event)?;
 
-    // 2. Set data.issues_found for review tasks (before dispatching close events,
-    //    so consumers of task.closed see the correct issue count)
+    // 2. Set data.issue_count and data.approved for review tasks (before dispatching
+    //    close events, so consumers of task.closed see the correct values)
     for id in task_ids {
         if let Some(task) = tasks.get(id) {
             if super::fix::is_review_task(task) {
@@ -2276,7 +2276,8 @@ pub(crate) fn cascade_close_tasks(
                     assignee: None,
                     data: Some({
                         let mut m = HashMap::new();
-                        m.insert("issues_found".to_string(), issue_count.to_string());
+                        m.insert("issue_count".to_string(), issue_count.to_string());
+                        m.insert("approved".to_string(), (issue_count == 0).to_string());
                         m
                     }),
                     instructions: None,
@@ -2770,11 +2771,11 @@ fn run_close(
     let mut graph = graph;
     graph.tasks = tasks;
 
-    // Set data.issues_found for explicitly closed review tasks.
+    // Set data.issue_count and data.approved for explicitly closed review tasks.
     // This must happen BEFORE spawn evaluation so conditions like
-    // `data.issues_found > 0` can be checked, and BEFORE batch_events
+    // `data.issue_count > 0` can be checked, and BEFORE batch_events
     // is built so the Updated event is included in the atomic write.
-    let mut issues_found_events: Vec<TaskEvent> = Vec::new();
+    let mut review_data_events: Vec<TaskEvent> = Vec::new();
     for id in &explicit_ids {
         if let Some(task) = graph.tasks.get(id) {
             if super::fix::is_review_task(task) {
@@ -2783,16 +2784,20 @@ fn run_close(
                 if let Some(task_mut) = graph.tasks.get_mut(id) {
                     task_mut
                         .data
-                        .insert("issues_found".to_string(), issue_count.to_string());
+                        .insert("issue_count".to_string(), issue_count.to_string());
+                    task_mut
+                        .data
+                        .insert("approved".to_string(), (issue_count == 0).to_string());
                 }
-                issues_found_events.push(TaskEvent::Updated {
+                review_data_events.push(TaskEvent::Updated {
                     task_id: id.clone(),
                     name: None,
                     priority: None,
                     assignee: None,
                     data: Some({
                         let mut m = HashMap::new();
-                        m.insert("issues_found".to_string(), issue_count.to_string());
+                        m.insert("issue_count".to_string(), issue_count.to_string());
+                        m.insert("approved".to_string(), (issue_count == 0).to_string());
                         m
                     }),
                     instructions: None,
@@ -2808,7 +2813,7 @@ fn run_close(
     let mut spawn_notices: Vec<String> = Vec::new();
     // Collect additional events to batch-write with the close event
     let mut batch_events: Vec<TaskEvent> = vec![close_event];
-    batch_events.extend(issues_found_events);
+    batch_events.extend(review_data_events);
     // Track spawners that need reopening (subtask spawns created successfully)
     let mut spawners_to_reopen: HashSet<String> = HashSet::new();
     // Track tasks auto-started via autorun (both spawn autorun and blocking link autorun)

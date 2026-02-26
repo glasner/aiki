@@ -29,5 +29,5 @@ aiki task stop {{data.epic}} {{id}} --reason "Failed subtask <subtask_id>: <reas
 When **all epic subtasks** are complete, close the epic and this task:
 
 ```bash
-aiki task close {{data.epic}} {{id}} --summary "Build completed: plan:{{data.epic}}."
+aiki task close {{data.epic}} {{id}} --summary "Build completed: epic:{{data.epic}}."
 ```

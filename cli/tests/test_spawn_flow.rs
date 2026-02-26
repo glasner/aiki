@@ -202,7 +202,7 @@ fn test_spawn_condition_not_approved() {
         r#"---
 version: 1.0.0
 spawns:
-  - when: not approved
+  - when: not data.approved
     task:
       template: test/fix
 ---
@@ -245,7 +245,7 @@ fn test_spawn_approved_no_spawn() {
         r#"---
 version: 1.0.0
 spawns:
-  - when: not approved
+  - when: not data.approved
     task:
       template: test/fix
 ---

@@ -269,16 +269,16 @@ fn run_fix(
     }
 
     // Check for structured issues first, fall back to comment count for older reviews
-    let has_issues = if let Some(issues_found) = review_task.data.get("issues_found") {
-        // Structured review: use data.issues_found
+    let has_issues = if let Some(issue_count) = review_task.data.get("issue_count") {
+        // Structured review: use data.issue_count
         // On parse failure (malformed value), fall back to counting issue comments
         // rather than assuming 0 — avoids incorrectly approving when issues exist
-        match issues_found.parse::<usize>() {
+        match issue_count.parse::<usize>() {
             Ok(n) => n > 0,
             Err(_) => !super::review::get_issue_comments(review_task).is_empty(),
         }
     } else {
-        // Backward compatibility: older reviews without data.issues_found
+        // Backward compatibility: older reviews without data.issue_count
         // Treat all comments as issues (existing behavior)
         !review_task.comments.is_empty()
     };
@@ -289,7 +289,7 @@ fn run_fix(
     }
 
     // Get issue comments to create fix subtasks
-    let comments: Vec<TaskComment> = if review_task.data.contains_key("issues_found") {
+    let comments: Vec<TaskComment> = if review_task.data.contains_key("issue_count") {
         // Structured: use get_issue_comments()
         super::review::get_issue_comments(review_task)
             .into_iter()

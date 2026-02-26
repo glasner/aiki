@@ -12,7 +12,9 @@ Guide the user through creating or refining a plan document.
 # Instructions
 
 You are helping the user write a plan at `{{data.plan_path}}`.
-{{data.user_context}}
+
+**User's guidance:** {{data.initial_idea}}
+
 **For new plans:** Work through the subtasks in order (they are defined at the end of this template).
 
 **For existing plans:**

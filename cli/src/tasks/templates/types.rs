@@ -101,9 +101,16 @@ pub struct TaskDefinition {
 pub struct LoopConfig {
     /// Rhai expression — loop terminates when this evaluates to true
     pub until: String,
+    /// Maximum iterations (default: 100). Set to 0 to disable.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
     /// Additional data to pass to each iteration
     #[serde(default)]
     pub data: HashMap<String, serde_yaml::Value>,
+}
+
+fn default_max_iterations() -> usize {
+    100
 }
 
 /// YAML frontmatter structure for template files
@@ -229,6 +236,7 @@ loop:
             "subtasks.review.approved or data.loop.index1 >= 10"
         );
         assert_eq!(lc.data.len(), 1);
+        assert_eq!(lc.max_iterations, 100); // default
     }
 
     #[test]
@@ -241,6 +249,32 @@ loop:
         let lc = fm.loop_config.unwrap();
         assert_eq!(lc.until, "approved");
         assert!(lc.data.is_empty());
+        assert_eq!(lc.max_iterations, 100); // default when not specified
+    }
+
+    #[test]
+    fn test_loop_config_with_max_iterations() {
+        let yaml = r#"
+loop:
+  until: data.approved
+  max_iterations: 5
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        let lc = fm.loop_config.unwrap();
+        assert_eq!(lc.until, "data.approved");
+        assert_eq!(lc.max_iterations, 5);
+    }
+
+    #[test]
+    fn test_loop_config_max_iterations_zero_disables() {
+        let yaml = r#"
+loop:
+  until: data.approved
+  max_iterations: 0
+"#;
+        let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        let lc = fm.loop_config.unwrap();
+        assert_eq!(lc.max_iterations, 0);
     }
 
     #[test]

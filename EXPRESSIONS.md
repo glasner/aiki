@@ -9,7 +9,7 @@ Expressions evaluate to a boolean result. Any expression that evaluates to a tru
 ```
 event.task.type == "review"
 count > 5
-approved
+data.approved
 ```
 
 ## Operators
@@ -34,8 +34,8 @@ approved
 Both symbol and word forms are supported. Word operators must be whole words (`band` is not rewritten).
 
 ```
-x > 5 && approved
-x > 5 and approved        # equivalent
+x > 5 && data.approved
+x > 5 and data.approved   # equivalent
 !done
 not done                   # equivalent
 a > 1 || b > 1
@@ -46,7 +46,7 @@ a > 1 or b > 1            # equivalent
 
 ### Simple variables
 ```
-approved                   # boolean check
+data.approved              # boolean check
 count > 5                  # numeric comparison
 status == "done"           # string comparison
 ```
