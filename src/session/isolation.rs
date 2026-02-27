@@ -45,7 +45,9 @@ pub fn find_jj_root(path: &Path) -> Option<PathBuf> {
 
 /// Create an isolated JJ workspace for a repo/session pair.
 ///
-/// Idempotent: returns existing workspace if directory already exists.
+/// If the workspace already exists (surviving from a previous turn), rebases it
+/// to the current `@-` to pick up changes absorbed by other sessions. On rebase
+/// failure, destroys and recreates the workspace.
 ///
 /// - workspace_name: "aiki-<session-id>"
 /// - workspace_path: /tmp/aiki/<repo-id>/<session-id>/
@@ -66,15 +68,63 @@ pub fn create_isolated_workspace(
         path: workspace_path.clone(),
     };
 
-    // Idempotent: if workspace directory already exists, return it
+    // Workspace survived from previous turn — rebase to current fork point
+    // so it picks up other sessions' absorbed changes.
+    //
+    // IMPORTANT: Do NOT use --ignore-working-copy here. JJ must update the
+    // filesystem to reflect changes absorbed by concurrent sessions. Without
+    // this, the next snapshot would see stale files and create a diff that
+    // reverts other sessions' absorbed changes.
     if workspace_path.exists() {
-        debug_log(|| {
-            format!(
-                "Workspace already exists at {}, reusing",
-                workspace_path.display()
-            )
-        });
-        return Ok(workspace);
+        match resolve_at_minus(repo_root) {
+            Ok(target) => {
+                match resolve_at_minus_in_path(&workspace_path) {
+                    Ok(workspace_parent) => match lineage_contains_change(repo_root, &workspace_parent, &target) {
+                        Ok(true) => {
+                            let output = jj_cmd()
+                                .current_dir(&workspace_path)
+                                .args(["rebase", "-r", "@", "-d", &target])
+                                .output();
+
+                            match output {
+                                Ok(o) if o.status.success() => {
+                                    debug_log(|| {
+                                        format!(
+                                            "[workspace] Rebased existing workspace to {}",
+                                            &target[..target.len().min(12)]
+                                        )
+                                    });
+                                    return Ok(workspace);
+                                }
+                                _ => {
+                                    // Rebase failed — fall through to destroy + recreate
+                                    debug_log(|| "[workspace] Rebase failed, recreating workspace".to_string());
+                                    cleanup_workspace(repo_root, &workspace)?;
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            debug_log(|| "[workspace] Workspace lineage diverged from current @-, recreating workspace".to_string());
+                            cleanup_workspace(repo_root, &workspace)?;
+                        }
+                        Err(e) => {
+                            debug_log(|| format!("[workspace] Failed ancestry check: {e}"));
+                            cleanup_workspace(repo_root, &workspace)?;
+                        }
+                    },
+                    Err(_) => {
+                        // Can't resolve workspace @- — fall through to destroy + recreate
+                        debug_log(|| "[workspace] Could not resolve workspace @-, recreating workspace".to_string());
+                        cleanup_workspace(repo_root, &workspace)?;
+                    }
+                }
+            }
+            Err(_) => {
+                // Can't resolve @- — fall through to destroy + recreate
+                debug_log(|| "[workspace] Could not resolve @-, recreating workspace".to_string());
+                cleanup_workspace(repo_root, &workspace)?;
+            }
+        }
     }
 
     // Create parent directories
@@ -228,13 +278,6 @@ fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
 pub enum AbsorbResult {
     /// Workspace absorbed successfully
     Absorbed,
-    /// Conflicts detected — workspace kept alive for agent resolution
-    Conflicts {
-        /// JJ change ID of the conflicted workspace change
-        conflict_id: String,
-        /// Files with unresolved conflicts
-        conflicted_files: Vec<String>,
-    },
     /// Nothing to absorb (workspace not found, empty, or root change)
     Skipped,
 }
@@ -283,9 +326,11 @@ pub fn absorb_workspace(
     // Snapshot workspace working copy to capture files written since last snapshot.
     // All subsequent JJ commands use --ignore-working-copy, so without this,
     // files written after the last implicit snapshot would be lost.
+    // Uses `jj status` (which triggers a snapshot as a side effect) instead of
+    // `jj debug snapshot` to avoid unstable API.
     let _ = jj_cmd()
         .current_dir(&workspace.path)
-        .args(["debug", "snapshot"])
+        .args(["status"])
         .output();
 
     // Use the workspace's working copy (@) directly as the rebase target.
@@ -315,131 +360,6 @@ pub fn absorb_workspace(
     } else {
         repo_root.to_path_buf()
     };
-
-    // Step 0: Pre-rebase workspace onto target @- to detect conflicts early.
-    // This runs OUTSIDE the absorb lock — only the fast-path steps 1+2 hold the lock.
-    let target_at_minus = jj_cmd()
-        .current_dir(&target_dir)
-        .args([
-            "log", "-r", "@-", "--no-graph", "-T", "change_id",
-            "--limit", "1", "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| {
-            AikiError::WorkspaceAbsorbFailed(format!("Failed to get target @-: {}", e))
-        })?;
-    let target_at_minus_id = String::from_utf8_lossy(&target_at_minus.stdout)
-        .trim()
-        .to_string();
-
-    if !target_at_minus_id.is_empty() {
-        // Rebase workspace chain onto target @- (pulls in other agents' absorbed changes)
-        let rebase_output = jj_cmd()
-            .current_dir(&workspace.path)
-            .args([
-                "rebase", "-b", &ws_head, "-d", &target_at_minus_id,
-                "--ignore-working-copy",
-            ])
-            .output()
-            .map_err(|e| {
-                AikiError::WorkspaceAbsorbFailed(format!("Pre-rebase failed: {}", e))
-            })?;
-
-        if !rebase_output.status.success() {
-            let stderr = String::from_utf8_lossy(&rebase_output.stderr);
-            debug_log(|| format!("Pre-rebase warning: {}", stderr.trim()));
-            // Non-fatal — continue with absorption attempt
-        }
-
-        // Snapshot to materialize any conflict markers in working copy
-        let _ = jj_cmd()
-            .current_dir(&workspace.path)
-            .args(["debug", "snapshot"])
-            .output();
-
-        // Check for conflicts in workspace
-        let conflict_check = jj_cmd()
-            .current_dir(&workspace.path)
-            .args(["resolve", "--list"])
-            .output()
-            .map_err(|e| {
-                AikiError::WorkspaceAbsorbFailed(format!("Conflict check failed: {}", e))
-            })?;
-        let conflicts = String::from_utf8_lossy(&conflict_check.stdout);
-
-        if !conflicts.trim().is_empty() {
-            // Try auto-resolve for simple conflicts (append-only, non-overlapping)
-            let _ = jj_cmd()
-                .current_dir(&workspace.path)
-                .args(["resolve", "--all"])
-                .output();
-
-            // Snapshot to materialize any resolution
-            let _ = jj_cmd()
-                .current_dir(&workspace.path)
-                .args(["debug", "snapshot"])
-                .output();
-
-            // Re-check if conflicts remain after auto-resolve
-            let recheck = jj_cmd()
-                .current_dir(&workspace.path)
-                .args(["resolve", "--list"])
-                .output()
-                .map_err(|e| {
-                    AikiError::WorkspaceAbsorbFailed(format!(
-                        "Conflict re-check failed: {}",
-                        e
-                    ))
-                })?;
-            let remaining = String::from_utf8_lossy(&recheck.stdout);
-
-            if remaining.trim().is_empty() {
-                // Auto-resolve fixed everything — fall through to normal absorption
-                debug_log(|| "Auto-resolved all conflicts, continuing absorption");
-            } else {
-                // Parse conflicted files from remaining conflicts
-                let conflicted_files: Vec<String> = remaining
-                    .lines()
-                    .filter_map(|l| l.split_whitespace().next())
-                    .map(String::from)
-                    .collect();
-
-                // Conflicts detected — check retry count
-                let retries_path = workspace.path.join(".conflict_retries");
-                let conflict_retry_count = fs::read_to_string(&retries_path)
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .unwrap_or(0);
-
-                if conflict_retry_count >= 3 {
-                    // Force absorb — too many retries, let human resolve
-                    debug_log(|| {
-                        format!("Force-absorbing after {} retries", conflict_retry_count)
-                    });
-                    // Fall through to normal absorption
-                } else {
-                    // Increment retry count and return Conflicts
-                    fs::write(&retries_path, (conflict_retry_count + 1).to_string())
-                        .map_err(|e| {
-                            AikiError::WorkspaceAbsorbFailed(format!(
-                                "Failed to write retry count: {}",
-                                e
-                            ))
-                        })?;
-                    debug_log(|| {
-                        format!(
-                            "Conflicts detected (retry {}), deferring absorption",
-                            conflict_retry_count + 1
-                        )
-                    });
-                    return Ok(AbsorbResult::Conflicts {
-                        conflict_id: ws_head.clone(),
-                        conflicted_files,
-                    });
-                }
-            }
-        }
-    }
 
     // Acquire file lock to serialize absorptions across concurrent agents.
     // Without this, concurrent absorptions interleave their two-step rebases,
@@ -484,13 +404,12 @@ pub fn absorb_workspace(
     // a descendant of @- (thanks to step 1). This completes the chain:
     //   @- → ws_changes → ws_head → @
     //
-    // IMPORTANT: Do NOT use --ignore-working-copy here. JJ must update the
-    // target's filesystem to reflect the new state. Without this, the next JJ
-    // snapshot would see the workspace's files as "deleted" — silently reverting
-    // the absorbed changes.
+    // Uses --ignore-working-copy (matching step 1) because JJ's working-copy
+    // tracking is stale after step 1's rebase. We use `workspace update-stale`
+    // after this to sync the filesystem.
     let output = jj_cmd()
         .current_dir(&target_dir)
-        .args(["rebase", "-s", "@", "-d", &ws_head])
+        .args(["rebase", "-s", "@", "-d", &ws_head, "--ignore-working-copy"])
         .output()
         .map_err(|e| {
             AikiError::WorkspaceAbsorbFailed(format!(
@@ -505,6 +424,14 @@ pub fn absorb_workspace(
             stderr.trim()
         )));
     }
+
+    // Sync the working copy after both rebases used --ignore-working-copy.
+    // Without this, the filesystem would be stale and the next snapshot would
+    // see the workspace's files as "deleted" — silently reverting the absorbed changes.
+    let _ = jj_cmd()
+        .current_dir(&target_dir)
+        .args(["workspace", "update-stale"])
+        .output();
 
     // Log any divergent-operation warning from stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -639,13 +566,6 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
         match absorb_workspace(&repo_root, &workspace, None) {
             Ok(AbsorbResult::Absorbed) => {
                 recovered += 1;
-            }
-            Ok(AbsorbResult::Conflicts { .. }) => {
-                // Orphaned workspace — force cleanup even with conflicts
-                eprintln!(
-                    "[aiki] Warning: orphaned workspace '{}' has conflicts, cleaning up anyway",
-                    workspace_name
-                );
             }
             Ok(AbsorbResult::Skipped) => {
                 // Nothing to absorb
@@ -841,6 +761,82 @@ pub fn find_repo_root_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Resolve the current `@-` (parent of main workspace's working copy) change ID.
+///
+/// Used when reusing an existing workspace — rebase it to the current `@-`
+/// to pick up changes absorbed by other sessions since the last turn.
+fn resolve_at_minus(repo_root: &Path) -> Result<String> {
+    resolve_at_minus_in_path(repo_root)
+}
+
+/// Resolve the current `@-` (parent of a workspace's working copy) change ID.
+fn resolve_at_minus_in_path(path: &Path) -> Result<String> {
+    let output = jj_cmd()
+        .current_dir(path)
+        .args(["log", "-r", "@-", "--no-graph", "-T", "change_id", "--ignore-working-copy", "--limit", "1"])
+        .output()
+        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to run jj log for @- in {}: {}", path.display(), e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "jj log -r @- failed in {}: {}",
+            path.display(),
+            stderr.trim()
+        )));
+    }
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if change_id.is_empty() {
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "jj log -r @- returned empty output in {}",
+            path.display()
+        )));
+    }
+    Ok(change_id)
+}
+
+/// Check whether a workspace parent is still an ancestor of the current `@-` chain.
+///
+/// Uses an explicit ancestry query rather than trusting rebase alone. If the
+/// revset is empty, the workspace likely forked from a diverged branch.
+fn lineage_contains_change(repo_root: &Path, workspace_parent: &str, current_parent: &str) -> Result<bool> {
+    let revset = format!("{}::{}", workspace_parent, current_parent);
+    let output = jj_cmd()
+        .current_dir(repo_root)
+        .args([
+            "log",
+            "-r",
+            &revset,
+            "--no-graph",
+            "--limit",
+            "1",
+            "-T",
+            "change_id",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::Other(anyhow::anyhow!(
+                "Failed to run jj log for lineage check {} -> {}: {}",
+                workspace_parent,
+                current_parent,
+                e
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "jj log -r {} failed in {}: {}",
+            revset,
+            repo_root.display(),
+            stderr.trim()
+        )));
+    }
+
+    let ancestry = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(!ancestry.is_empty())
 }
 
 #[cfg(test)]

@@ -243,6 +243,12 @@ pub enum TaskCommands {
         #[arg(long)]
         all: bool,
 
+        /// Filter by status: ready, open, in_progress, stopped, closed
+        /// "ready" shows only tasks in the ready queue (open + unblocked).
+        /// Multiple values can be comma-separated: --status ready,in_progress
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
+
         /// Filter to open tasks only
         #[arg(long)]
         open: bool,
@@ -687,8 +693,7 @@ pub enum TaskCommands {
     ///   aiki task wait abc123 def456                  # Wait for multiple tasks
     ///   aiki task wait abc123 --timeout 300           # Wait up to 5 minutes
     Wait {
-        /// Task IDs to wait for
-        #[arg(required = true)]
+        /// Task IDs to wait for (reads from stdin if not provided)
         ids: Vec<String>,
 
         /// Return when any task completes (instead of waiting for all)
@@ -937,6 +942,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
     // Default to list if no subcommand provided
     let cmd = command.unwrap_or(TaskCommands::List {
         all: false,
+        status: vec![],
         open: false,
         in_progress: false,
         stopped: false,
@@ -950,6 +956,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
     match cmd {
         TaskCommands::List {
             all,
+            status,
             open,
             in_progress,
             stopped,
@@ -962,6 +969,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             &cwd,
             None,
             all,
+            status,
             open,
             in_progress,
             stopped,
@@ -1232,6 +1240,7 @@ fn run_list(
     cwd: &Path,
     scope_override: Option<&str>,
     all: bool,
+    filter_status: Vec<String>,
     filter_open: bool,
     filter_in_progress: bool,
     filter_stopped: bool,
@@ -1258,8 +1267,33 @@ fn run_list(
         get_current_scope_set(&graph)
     };
 
+    // Parse --status values and merge with boolean flags
+    // --status accepts: ready, open, in_progress, stopped, closed
+    let mut filter_open = filter_open;
+    let mut filter_in_progress = filter_in_progress;
+    let mut filter_stopped = filter_stopped;
+    let mut filter_closed = filter_closed;
+    let mut filter_ready = false;
+
+    for s in &filter_status {
+        match s.to_lowercase().as_str() {
+            "ready" => filter_ready = true,
+            "open" => filter_open = true,
+            "in_progress" | "in-progress" => filter_in_progress = true,
+            "stopped" => filter_stopped = true,
+            "closed" => filter_closed = true,
+            other => {
+                return Err(AikiError::InvalidArgument(format!(
+                    "Unknown status filter '{}'. Valid values: ready, open, in_progress, stopped, closed",
+                    other
+                )));
+            }
+        }
+    }
+
     // Collect active status filters
-    let has_status_filters = filter_open || filter_in_progress || filter_stopped || filter_closed;
+    let has_status_filters =
+        filter_open || filter_in_progress || filter_stopped || filter_closed || filter_ready;
     let has_explicit_assignee_filters = filter_assignee.is_some() || filter_unassigned;
 
     // Validate and normalize assignee filter if provided
@@ -1417,12 +1451,20 @@ fn run_list(
         let mut all_tasks: Vec<_> = tasks.values().collect();
         all_tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
 
+        // Build set of ready task IDs for --status ready filtering
+        let ready_ids: std::collections::HashSet<&str> = if filter_ready {
+            ready_queue.iter().map(|t| t.id.as_str()).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         // Apply status filters if active
         let filtered_by_status: Vec<_> = if has_status_filters {
             all_tasks
                 .into_iter()
                 .filter(|t| {
-                    (filter_open && t.status == TaskStatus::Open)
+                    (filter_ready && ready_ids.contains(t.id.as_str()))
+                        || (filter_open && t.status == TaskStatus::Open)
                         || (filter_in_progress && t.status == TaskStatus::InProgress)
                         || (filter_stopped && t.status == TaskStatus::Stopped)
                         || (filter_closed && t.status == TaskStatus::Closed)
@@ -1499,6 +1541,14 @@ fn run_list(
             assignee_visible && matches_session(t)
         })
         .collect();
+
+    // If stdout is piped, output bare task IDs (one per line) and return
+    if !crate::output_utils::is_tty_stdout() {
+        for t in &list_tasks {
+            println!("{}", t.id);
+        }
+        return Ok(());
+    }
 
     let output = if has_active_filters {
         // Filtered view: show filtered list + context (via MdBuilder)
@@ -3833,6 +3883,12 @@ fn run_show(
         }
     };
 
+    // If stdout is piped, output bare task ID and return
+    if !crate::output_utils::is_tty_stdout() {
+        println!("{}", task_id);
+        return Ok(());
+    }
+
     let task = tasks.get(&task_id).expect("Task should exist");
 
     // Get subtasks if this is a parent task
@@ -5534,14 +5590,71 @@ fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
     Ok(())
 }
 
+/// Extract task ID from input, handling XML output format
+///
+/// Supports:
+/// - Plain task ID: "xqrmnpst"
+/// - XML output with task_id attribute: `<started task_id="xqrmnpst" async="true">`
+fn extract_task_id(input: &str) -> String {
+    let trimmed = input.trim();
+
+    // Try to extract from XML task_id attribute
+    if let Some(start) = trimmed.find("task_id=\"") {
+        let after_quote = &trimmed[start + 9..]; // Skip `task_id="`
+        if let Some(end) = after_quote.find('"') {
+            return after_quote[..end].to_string();
+        }
+    }
+
+    // Return as-is (plain task ID)
+    trimmed.to_string()
+}
+
+/// Read task ID from stdin for piping support
+///
+/// Reads all available input and extracts the task ID using `extract_task_id`.
+fn read_wait_task_id_from_stdin() -> Result<String> {
+    use std::io::{self, BufRead};
+
+    let stdin = io::stdin();
+    let mut input = String::new();
+
+    for line in stdin.lock().lines() {
+        let line = line.map_err(|e| {
+            AikiError::InvalidArgument(format!("Failed to read from stdin: {}", e))
+        })?;
+        input.push_str(&line);
+        input.push('\n');
+    }
+
+    if input.trim().is_empty() {
+        return Err(AikiError::InvalidArgument(
+            "No task ID provided. Pass as argument or pipe from another command.".to_string(),
+        ));
+    }
+
+    Ok(extract_task_id(&input))
+}
+
 /// Wait for task(s) to reach a terminal state (closed or stopped)
 ///
 /// When `any` is true, returns as soon as any task reaches terminal state
 /// (instead of waiting for all). Only terminal tasks are included in output.
+/// Exponential backoff configuration for wait polling
+const WAIT_INITIAL_DELAY_MS: u64 = 100;
+const WAIT_MAX_DELAY_MS: u64 = 2000;
+const WAIT_BACKOFF_MULTIPLIER: u64 = 2;
+
 fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
     use std::time::Duration;
 
-    let poll_interval = Duration::from_millis(500);
+    let ids = if ids.is_empty() {
+        vec![read_wait_task_id_from_stdin()?]
+    } else {
+        ids
+    };
+
+    let mut delay_ms = WAIT_INITIAL_DELAY_MS;
 
     // Resolve all task IDs up front (prefix → full)
     let events = read_events(cwd)?;
@@ -5570,42 +5683,81 @@ fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
         };
 
         if done {
-            // Build markdown output with results
-            // When --any, only show terminal tasks; otherwise show all
-            let mut content = String::from("## Wait Complete\n| ID | Name | Status | Outcome | Summary |\n|----|------|--------|---------|--------|\n");
+            // Pipe-friendly: output completed task IDs to stdout
             for id in &ids {
                 if any && !is_terminal(id) {
-                    continue; // skip non-terminal tasks in --any mode
+                    continue;
+                }
+                crate::output_utils::emit_stdout(id);
+            }
+
+            // Rich output: markdown table to stderr when TTY
+            crate::output_utils::emit_stderr(|| {
+                let mut content = String::from("## Wait Complete
+| ID | Name | Status | Outcome | Summary |
+|----|------|--------|---------|--------|
+");
+                for id in &ids {
+                    if any && !is_terminal(id) {
+                        continue;
+                    }
+                    if let Ok(task) = find_task(&tasks, id) {
+                        let status = task.status.to_string();
+                        let outcome = task
+                            .closed_outcome
+                            .as_ref()
+                            .map(|o| o.to_string())
+                            .unwrap_or_default();
+                        let summary = task.effective_summary().unwrap_or_default().to_string();
+                        content.push_str(&format!(
+                            "| {} | {} | {} | {} | {} |
+",
+                            id, task.name, status, outcome, summary,
+                        ));
+                    }
+                }
+                let in_progress = get_in_progress(&tasks);
+                let graph = materialize_graph(&events);
+                let scope_set = get_current_scope_set(&graph);
+                let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
+                let xml_scopes = scope_set.to_xml_scopes();
+                let mut builder = MdBuilder::new("wait");
+                if !xml_scopes.is_empty() {
+                    builder = builder.with_scopes(&xml_scopes);
+                }
+                builder.build(&content, &in_progress, &ready_queue)
+            });
+
+            // Check for failures — return non-zero exit for stopped or wont_do tasks
+            for id in &ids {
+                if any && !is_terminal(id) {
+                    continue;
                 }
                 if let Ok(task) = find_task(&tasks, id) {
-                    let status = task.status.to_string();
-                    let outcome = task
-                        .closed_outcome
-                        .as_ref()
-                        .map(|o| o.to_string())
-                        .unwrap_or_default();
-                    let summary = task.effective_summary().unwrap_or_default().to_string();
-                    content.push_str(&format!(
-                        "| {} | {} | {} | {} | {} |\n",
-                        id, task.name, status, outcome, summary,
-                    ));
+                    match task.status {
+                        TaskStatus::Stopped => {
+                            return Err(AikiError::InvalidArgument(format!(
+                                "Task '{}' was stopped",
+                                id
+                            )));
+                        }
+                        TaskStatus::Closed => {
+                            if let Some(TaskOutcome::WontDo) = task.closed_outcome {
+                                return Err(AikiError::InvalidArgument(format!(
+                                    "Task '{}' was closed as won't-do",
+                                    id
+                                )));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
-            let in_progress = get_in_progress(&tasks);
-            let graph = materialize_graph(&events);
-            let scope_set = get_current_scope_set(&graph);
-            let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
-            let xml_scopes = scope_set.to_xml_scopes();
-            let mut builder = MdBuilder::new("wait");
-            if !xml_scopes.is_empty() {
-                builder = builder.with_scopes(&xml_scopes);
-            }
-            let xml = builder.build(&content, &in_progress, &ready_queue);
-            aiki_print(&xml);
             return Ok(());
         }
 
-        std::thread::sleep(poll_interval);
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        delay_ms = (delay_ms * WAIT_BACKOFF_MULTIPLIER).min(WAIT_MAX_DELAY_MS);
     }
 }
 
@@ -7359,5 +7511,38 @@ D src/old_file.ts
         let result =
             resolve_sourced_from_option_alias(Some("file:a.md".into()), Some("file:b.md".into()));
         assert!(result.is_err());
+    }
+
+    // --- extract_task_id tests ---
+
+    #[test]
+    fn test_extract_task_id_plain() {
+        assert_eq!(extract_task_id("xqrmnpst"), "xqrmnpst");
+        assert_eq!(extract_task_id("  xqrmnpst  "), "xqrmnpst");
+    }
+
+    #[test]
+    fn test_extract_task_id_xml_started() {
+        let xml = r#"<aiki_task cmd="run" status="ok">
+  <started task_id="xqrmnpst" async="true">
+    Task started asynchronously.
+  </started>
+</aiki_task>"#;
+        assert_eq!(extract_task_id(xml), "xqrmnpst");
+    }
+
+    #[test]
+    fn test_extract_task_id_xml_completed() {
+        let xml = r#"<aiki_task cmd="run" status="ok">
+  <completed task_id="abcdefgh"/>
+</aiki_task>"#;
+        assert_eq!(extract_task_id(xml), "abcdefgh");
+    }
+
+    #[test]
+    fn test_extract_task_id_no_xml() {
+        // If no task_id attribute found, return as-is
+        let input = "some random text";
+        assert_eq!(extract_task_id(input), "some random text");
     }
 }

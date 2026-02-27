@@ -108,28 +108,6 @@ pub enum AikiError {
     #[error("Failed to absorb workspace changes: {0}")]
     WorkspaceAbsorbFailed(String),
 
-    // Signing/GPG errors
-    #[error("GPG-SM key generation not yet supported. Use --key to specify an existing key")]
-    GpgSmNotSupported,
-
-    #[error("SSH key file not found: {0}")]
-    SshKeyNotFound(PathBuf),
-
-    #[error("No user.email configured in git config")]
-    NoUserEmailConfigured,
-
-    #[error("Git user.name or user.email not configured")]
-    GitUserNotConfigured,
-
-    #[error("Could not extract key ID from GPG output")]
-    GpgKeyIdExtractionFailed,
-
-    #[error("Failed to generate GPG key: {0}")]
-    GpgKeyGenerationFailed(String),
-
-    #[error("Failed to locate SSH signing key: {0}")]
-    SshKeyLocationFailed(String),
-
     // Configuration errors
     #[error("Failed to read config file: {0}")]
     ConfigReadFailed(String),

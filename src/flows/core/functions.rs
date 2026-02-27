@@ -1078,18 +1078,6 @@ pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
 // Workspace Isolation Functions
 // =============================================================================
 
-/// Create an isolated workspace if concurrent sessions are detected.
-///
-/// Called from `turn.started` and `repo.changed` hooks.
-/// Checks how many sessions are active in the current repo:
-/// - count == 1: skip (zero overhead for solo sessions)
-/// - count > 1: create isolated workspace
-///
-/// Creation is idempotent — no-op if workspace already exists.
-///
-/// # Returns
-/// ActionResult with stdout being the absolute workspace path (if created/exists)
-/// or empty string (if skipped or failed)
 pub fn workspace_ensure_isolated(
     session: &crate::session::AikiSession,
     cwd: &Path,
@@ -1100,26 +1088,13 @@ pub fn workspace_ensure_isolated(
         Some(root) => root,
         None => {
             debug_log(|| "[workspace] Not in a JJ repo, skipping workspace creation");
-            return Ok(ActionResult {
-                success: true,
-                exit_code: Some(0),
-                stdout: String::new(),
-                stderr: String::new(),
-            });
+            return Ok(ActionResult::success());
         }
     };
 
-    let session_uuid = session.uuid();
-
-    match isolation::create_isolated_workspace(&repo_root, session_uuid) {
+    match isolation::create_isolated_workspace(&repo_root, session.uuid()) {
         Ok(ws) => {
-            debug_log(|| {
-                format!(
-                    "[workspace] Workspace '{}' ready at {}",
-                    ws.name,
-                    ws.path.display()
-                )
-            });
+            debug_log(|| format!("[workspace] Workspace '{}' ready at {}", ws.name, ws.path.display()));
             Ok(ActionResult {
                 success: true,
                 exit_code: Some(0),
@@ -1128,7 +1103,6 @@ pub fn workspace_ensure_isolated(
             })
         }
         Err(e) => {
-            // Workspace creation failure is non-fatal — fall back to main workspace
             eprintln!("[aiki] Warning: workspace creation failed, continuing in main workspace: {}", e);
             Ok(ActionResult {
                 success: true,
@@ -1168,8 +1142,7 @@ pub fn workspace_absorb_all(
     let parent_session_uuid: Option<String> = std::env::var("AIKI_PARENT_SESSION_UUID").ok();
     let mut absorbed = 0u32;
     let mut has_conflicts = false;
-    let mut last_conflict_id: Option<String> = None;
-    let mut last_conflicted_files: Vec<String> = Vec::new();
+    let mut last_conflicted_files = String::new();
 
     // Scan all repo-id directories for workspaces belonging to this session
     let entries = match std::fs::read_dir(&workspaces_dir) {
@@ -1228,19 +1201,81 @@ pub fn workspace_absorb_all(
         ) {
             Ok(isolation::AbsorbResult::Absorbed) => {
                 absorbed += 1;
-                let _ = isolation::cleanup_workspace(&repo_root, &workspace);
-            }
-            Ok(isolation::AbsorbResult::Conflicts { conflict_id, conflicted_files }) => {
-                // Don't cleanup — workspace stays alive for conflict resolution
-                has_conflicts = true;
-                debug_log(|| {
-                    format!(
-                        "[workspace] Conflicts remain after auto-resolve: conflict_id={}, files={:?}",
-                        conflict_id, conflicted_files
-                    )
-                });
-                last_conflict_id = Some(conflict_id);
-                last_conflicted_files = conflicted_files;
+
+                // Post-absorption: check if target's @ is conflicted.
+                // Compute target_dir same as absorb_workspace: parent workspace if
+                // it exists, otherwise repo root.
+                let target_dir = if let Some(ref parent_uuid) = parent_session_uuid {
+                    let repo_id = crate::repos::ensure_repo_id(&repo_root)
+                        .unwrap_or_default();
+                    let parent_ws_path = isolation::workspaces_dir()
+                        .join(&repo_id)
+                        .join(parent_uuid);
+                    if parent_ws_path.exists() {
+                        parent_ws_path
+                    } else {
+                        repo_root.clone()
+                    }
+                } else {
+                    repo_root.clone()
+                };
+
+                // Uses `conflicts() & @` — if @ is clean, all ancestor conflicts
+                // have been resolved, so no false positives from historical conflicts.
+                let conflict_check = crate::jj::jj_cmd()
+                    .current_dir(&target_dir)
+                    .args([
+                        "log", "-r", "conflicts() & @", "--no-graph",
+                        "-T", r#"change_id ++ "\n""#,
+                        "--ignore-working-copy",
+                    ])
+                    .output();
+                match conflict_check {
+                    Ok(output) if output.status.success() => {
+                        let conflicted = String::from_utf8_lossy(&output.stdout);
+                        if !conflicted.trim().is_empty() {
+                            has_conflicts = true;
+                            // Get conflicted file list for the autoreply.
+                            // Capture both stdout and stderr — output stream varies
+                            // across JJ versions.
+                            let files_output = crate::jj::jj_cmd()
+                                .current_dir(&target_dir)
+                                .args(["resolve", "--list", "-r", "@"])
+                                .output();
+                            last_conflicted_files = match files_output {
+                                Ok(fo) => {
+                                    let stdout = String::from_utf8_lossy(&fo.stdout);
+                                    let stderr = String::from_utf8_lossy(&fo.stderr);
+                                    let files = if !stdout.trim().is_empty() { stdout } else { stderr };
+                                    let trimmed = files.trim().to_string();
+                                    if trimmed.is_empty() {
+                                        "(conflict detected but file list unavailable — run `jj resolve --list` to inspect)".to_string()
+                                    } else {
+                                        trimmed
+                                    }
+                                }
+                                Err(_) => "(conflict detected but `jj resolve --list` failed — run it manually to inspect)".to_string(),
+                            };
+                        }
+                    }
+                    Ok(output) => {
+                        // jj log exited with non-zero — conflict state unknown, treat as conflicted
+                        // to force the agent to investigate.
+                        eprintln!(
+                            "[aiki] Warning: conflict check `jj log -r 'conflicts() & @'` failed (exit {}): {}",
+                            output.status.code().unwrap_or(-1),
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                        has_conflicts = true;
+                        last_conflicted_files = "(conflict check failed — run `jj log -r 'conflicts() & @'` to verify)".to_string();
+                    }
+                    Err(e) => {
+                        // jj command failed to spawn — conflict state unknown, treat as conflicted.
+                        eprintln!("[aiki] Warning: conflict check failed to run: {}", e);
+                        has_conflicts = true;
+                        last_conflicted_files = "(conflict check failed to run — run `jj log -r 'conflicts() & @'` to verify)".to_string();
+                    }
+                }
             }
             Ok(isolation::AbsorbResult::Skipped) => {
                 let _ = isolation::cleanup_workspace(&repo_root, &workspace);
@@ -1266,15 +1301,7 @@ pub fn workspace_absorb_all(
     debug_log(|| format!("[workspace] Absorbed {} workspace(s)", absorbed));
 
     let stdout = if has_conflicts {
-        // Return JSON so the hook can access fields via {{absorb_result.conflict_id}}
-        let conflict_id = last_conflict_id.unwrap_or_default();
-        let files = last_conflicted_files.join(", ");
-        serde_json::json!({
-            "status": "conflicts",
-            "conflict_id": conflict_id,
-            "conflicted_files": files,
-        })
-        .to_string()
+        last_conflicted_files
     } else if absorbed > 0 {
         "ok".to_string()
     } else {
@@ -1285,125 +1312,6 @@ pub fn workspace_absorb_all(
         success: true,
         exit_code: Some(0),
         stdout,
-        stderr: String::new(),
-    })
-}
-
-/// Detect conflicts in the agent's workspace and return formatted details.
-///
-/// Finds the workspace for the current session, runs `jj resolve --list`
-/// to get conflicted files, reads each file's content showing conflict markers,
-/// and returns a formatted string for the autoreply.
-pub fn detect_workspace_conflicts(
-    session: &crate::session::AikiSession,
-) -> Result<ActionResult> {
-    use crate::session::isolation;
-
-    let session_uuid = session.uuid();
-    let workspaces_dir = isolation::workspaces_dir();
-
-    if !workspaces_dir.exists() {
-        return Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
-    }
-
-    // Find workspace path for this session (scan repo-id dirs)
-    let mut workspace_path: Option<std::path::PathBuf> = None;
-    if let Ok(entries) = std::fs::read_dir(&workspaces_dir) {
-        for entry in entries.flatten() {
-            let repo_id_dir = entry.path();
-            if !repo_id_dir.is_dir() {
-                continue;
-            }
-            let session_ws_dir = repo_id_dir.join(session_uuid);
-            if session_ws_dir.exists() {
-                workspace_path = Some(session_ws_dir);
-                break;
-            }
-        }
-    }
-
-    let workspace_path: std::path::PathBuf = match workspace_path {
-        Some(p) => p,
-        None => {
-            return Ok(ActionResult {
-                success: true,
-                exit_code: Some(0),
-                stdout: String::new(),
-                stderr: String::new(),
-            });
-        }
-    };
-
-    // Run jj resolve --list to get conflicted files
-    let conflict_output = crate::jj::jj_cmd()
-        .current_dir(&workspace_path)
-        .args(["resolve", "--list"])
-        .output()
-        .map_err(|e| {
-            crate::error::AikiError::Other(anyhow::anyhow!(
-                "Failed to list conflicts: {}",
-                e
-            ))
-        })?;
-
-    let conflict_list = String::from_utf8_lossy(&conflict_output.stdout);
-    if conflict_list.trim().is_empty() {
-        return Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
-    }
-
-    let mut output = String::from("Conflicted files:\n");
-    let max_lines_per_file = 100;
-
-    for line in conflict_list.lines() {
-        // jj resolve --list output format: "filename    <description>"
-        let file_path = line.split_whitespace().next().unwrap_or("").trim();
-        if file_path.is_empty() {
-            continue;
-        }
-
-        output.push_str(&format!("\n--- {} ---\n", file_path));
-
-        // Read file content from workspace
-        let full_path = workspace_path.join(file_path);
-        match std::fs::read_to_string(&full_path) {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                if lines.len() > max_lines_per_file {
-                    for line in &lines[..max_lines_per_file] {
-                        output.push_str(line);
-                        output.push('\n');
-                    }
-                    output.push_str(&format!(
-                        "\n... truncated ({} more lines) ...\n",
-                        lines.len() - max_lines_per_file
-                    ));
-                } else {
-                    output.push_str(&content);
-                    if !content.ends_with('\n') {
-                        output.push('\n');
-                    }
-                }
-            }
-            Err(e) => {
-                output.push_str(&format!("(could not read file: {})\n", e));
-            }
-        }
-    }
-
-    Ok(ActionResult {
-        success: true,
-        exit_code: Some(0),
-        stdout: output,
         stderr: String::new(),
     })
 }

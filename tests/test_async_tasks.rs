@@ -67,23 +67,23 @@ fn aiki_task(path: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Asser
     cmd.assert()
 }
 
-/// Helper to run aiki wait command
+/// Helper to run aiki task wait command
 fn aiki_wait(path: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Assert {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
     cmd.current_dir(path);
-    cmd.arg("wait");
+    cmd.args(["task", "wait"]);
     for arg in args {
         cmd.arg(arg);
     }
     cmd.assert()
 }
 
-/// Helper to extract task short ID from markdown output.
-/// Looks for patterns like `[p2] abcdefg` or `Added abcdefg`.
+/// Helper to extract task short ID from markdown or piped output.
+/// Looks for patterns like `[p2] abcdefg`, `Added abcdefg`, or bare IDs.
 fn extract_task_id(output: &str) -> Option<String> {
-    // Try markdown list format: [pN] <short-id>
     for line in output.lines() {
         let trimmed = line.trim();
+        // Try markdown list format: [pN] <short-id>
         if let Some(rest) = trimmed.strip_prefix("[p") {
             // Skip priority digit and "] "
             if let Some(after_bracket) = rest.get(1..).and_then(|s| s.strip_prefix("] ")) {
@@ -99,6 +99,10 @@ fn extract_task_id(output: &str) -> Option<String> {
             if id.len() >= 7 {
                 return Some(id);
             }
+        }
+        // Try bare task ID (32 lowercase chars, output by piped commands)
+        if trimmed.len() >= 7 && trimmed.chars().all(|c| c.is_ascii_lowercase()) {
+            return Some(trimmed.to_string());
         }
     }
     None
@@ -353,13 +357,13 @@ fn test_wait_command_requires_task_id_or_stdin() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    // Run wait with explicit empty stdin
+    // Run task wait with explicit empty stdin
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .arg("wait")
+        .args(["task", "wait"])
         .stdin(std::process::Stdio::null())
         .output()
-        .expect("Failed to run aiki wait");
+        .expect("Failed to run aiki task wait");
 
     // Should fail because no task ID provided
     assert!(
@@ -606,19 +610,26 @@ fn test_async_wait_conceptual_flow() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let task_id = extract_task_id(&stdout).expect("Should find task ID");
 
-    // 2. Verify task run --async is a valid command (even if it fails)
+    // 2. Verify task run --async is a valid command (recognized by parser)
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
         .args(["task", "run", &task_id, "--async"])
         .output()
         .unwrap();
 
-    // Should fail due to no assignee, not due to invalid args
+    // The command should either succeed (agent available) or fail about assignee/agent,
+    // but NOT about unrecognized arguments
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("assignee") || stderr.contains("agent") || stderr.to_lowercase().contains("no assignee"),
-        "Error should be about missing assignee, not invalid args. Got: {}",
-        stderr
+        output.status.success()
+            || stderr.contains("assignee")
+            || stderr.contains("agent")
+            || stdout.contains("assignee")
+            || stdout.contains("agent")
+            || stdout.contains("Run Started"),
+        "Should either succeed or fail about assignee/agent. Got stdout='{}', stderr='{}'",
+        stdout, stderr
     );
 
     // 3. Verify wait command works (though task not running)
