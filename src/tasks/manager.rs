@@ -422,45 +422,6 @@ pub fn get_ready_queue_for_scope_set<'a>(
     ready
 }
 
-/// Get ready queue filtered for a specific agent
-///
-/// Returns open, unblocked tasks that are visible to the given agent:
-/// - Unassigned tasks (visible to all)
-/// - Tasks assigned to this specific agent
-///
-/// Excludes:
-/// - Tasks assigned to "human"
-/// - Tasks assigned to other agents
-/// - Blocked tasks
-#[must_use]
-pub fn get_ready_queue_for_agent<'a>(
-    graph: &'a super::graph::TaskGraph,
-    agent: &AgentType,
-) -> Vec<&'a Task> {
-    let mut ready: Vec<&Task> = graph
-        .tasks
-        .values()
-        .filter(|t| t.status == TaskStatus::Open)
-        .filter(|t| !graph.is_blocked(&t.id))
-        .filter(|t| {
-            let assignee = t
-                .assignee
-                .as_ref()
-                .and_then(|s| Assignee::from_str(s))
-                .unwrap_or(Assignee::Unassigned);
-            assignee.is_visible_to(agent)
-        })
-        .collect();
-
-    ready.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-    });
-
-    ready
-}
-
 /// Get ready queue filtered for human visibility
 ///
 /// Returns open, unblocked tasks that are visible to humans:
@@ -1967,106 +1928,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ready_queue_for_agent_unassigned() {
-        // Unassigned tasks are visible to all agents
-        let events = vec![make_created_event_with_assignee(
-            "task1",
-            "Unassigned",
-            TaskPriority::P2,
-            1,
-            None,
-        )];
-        let graph = make_graph(&events);
-
-        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
-
-        assert_eq!(claude_queue.len(), 1);
-        assert_eq!(codex_queue.len(), 1);
-    }
-
-    #[test]
-    fn test_get_ready_queue_for_agent_assigned_to_self() {
-        // Tasks assigned to an agent are visible only to that agent
-        let events = vec![make_created_event_with_assignee(
-            "task1",
-            "For Claude",
-            TaskPriority::P2,
-            1,
-            Some("claude-code"),
-        )];
-        let graph = make_graph(&events);
-
-        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
-
-        assert_eq!(claude_queue.len(), 1);
-        assert_eq!(codex_queue.len(), 0); // Not visible to Codex
-    }
-
-    #[test]
-    fn test_get_ready_queue_for_agent_human_task() {
-        // Tasks assigned to human are not visible to agents
-        let events = vec![make_created_event_with_assignee(
-            "task1",
-            "For Human",
-            TaskPriority::P2,
-            1,
-            Some("human"),
-        )];
-        let graph = make_graph(&events);
-
-        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
-
-        assert_eq!(claude_queue.len(), 0);
-        assert_eq!(codex_queue.len(), 0);
-    }
-
-    #[test]
-    fn test_get_ready_queue_for_agent_mixed() {
-        // Mixed assignees - agent should see only relevant tasks
-        let events = vec![
-            make_created_event_with_assignee("unassigned", "Unassigned", TaskPriority::P3, 4, None),
-            make_created_event_with_assignee(
-                "for_claude",
-                "For Claude",
-                TaskPriority::P2,
-                3,
-                Some("claude-code"),
-            ),
-            make_created_event_with_assignee(
-                "for_codex",
-                "For Codex",
-                TaskPriority::P1,
-                2,
-                Some("codex"),
-            ),
-            make_created_event_with_assignee(
-                "for_human",
-                "For Human",
-                TaskPriority::P0,
-                1,
-                Some("human"),
-            ),
-        ];
-        let graph = make_graph(&events);
-
-        let claude_queue = get_ready_queue_for_agent(&graph, &AgentType::ClaudeCode);
-        let codex_queue = get_ready_queue_for_agent(&graph, &AgentType::Codex);
-
-        // Claude sees: unassigned, for_claude (sorted by priority)
-        assert_eq!(claude_queue.len(), 2);
-        assert_eq!(claude_queue[0].id, "for_claude"); // P2
-        assert_eq!(claude_queue[1].id, "unassigned"); // P3
-
-        // Codex sees: unassigned, for_codex (sorted by priority)
-        assert_eq!(codex_queue.len(), 2);
-        assert_eq!(codex_queue[0].id, "for_codex"); // P1
-        assert_eq!(codex_queue[1].id, "unassigned"); // P3
-    }
-
-    #[test]
     fn test_get_ready_queue_for_human() {
         let events = vec![
             make_created_event_with_assignee("unassigned", "Unassigned", TaskPriority::P3, 4, None),
@@ -2824,7 +2685,7 @@ mod tests {
 
         let graph = make_graph(&events);
         let activity = get_task_activity_by_turn(&graph, "turn-zzz");
-        assert!(activity.is_empty());
+        assert!(activity.closed.is_empty() && activity.started.is_empty() && activity.stopped.is_empty());
     }
 
     #[test]
@@ -2944,6 +2805,6 @@ mod tests {
         assert_eq!(activity.started.len(), 1);
         assert_eq!(activity.closed.len(), 1);
         assert_eq!(activity.stopped.len(), 1);
-        assert!(!activity.is_empty());
+        assert!(!activity.closed.is_empty() || !activity.started.is_empty() || !activity.stopped.is_empty());
     }
 }

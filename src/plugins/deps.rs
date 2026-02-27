@@ -56,18 +56,6 @@ fn resolve_deps_recursive(
     }
 }
 
-/// Resolve dependencies for multiple root plugins at once, deduplicating across all roots.
-pub fn resolve_all_deps(roots: &[PluginRef], plugins_base: &Path) -> Vec<PluginRef> {
-    let mut visited: HashSet<PluginRef> = roots.iter().cloned().collect();
-    let mut deps = Vec::new();
-
-    for root in roots {
-        resolve_deps_recursive(root, plugins_base, &mut visited, &mut deps);
-    }
-
-    deps
-}
-
 /// Install a plugin and all its transitive dependencies.
 ///
 /// No rollback on failure — partially installed plugins remain on disk.
@@ -216,21 +204,6 @@ mod tests {
         // Should find B as a dep, skip A (cycle), no infinite loop
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].to_string(), "aiki/b");
-    }
-
-    #[test]
-    fn test_resolve_all_deps() {
-        let tmp = TempDir::new().unwrap();
-        create_fake_plugin(tmp.path(), "aiki", "x", &["aiki/shared/tmpl"]);
-        create_fake_plugin(tmp.path(), "aiki", "y", &["aiki/shared/tmpl"]);
-        create_fake_plugin(tmp.path(), "aiki", "shared", &[]);
-
-        let roots: Vec<PluginRef> = vec!["aiki/x".parse().unwrap(), "aiki/y".parse().unwrap()];
-        let deps = resolve_all_deps(&roots, tmp.path());
-
-        // shared should appear exactly once
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].to_string(), "aiki/shared");
     }
 
     #[test]

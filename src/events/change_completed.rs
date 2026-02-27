@@ -395,12 +395,11 @@ fn resolve_workspace_cwd(payload: &mut AikiChangeCompletedPayload) {
 /// Detect if the changed files belong to a different JJ repo than the session's
 /// current repo root. If so, fire a `repo.changed` event before change.completed.
 ///
-/// Uses the `by-repo/<repo-id>/<session-uuid>` sidecar files (persisted on disk)
-/// to track which repo each session is in. This works across process invocations,
-/// unlike the previous in-process static which was always empty.
+/// Uses the session file's `repo=<id>` entries to track which repo each session is
+/// in across process invocations.
 fn detect_repo_transition(payload: &AikiChangeCompletedPayload) {
-    use crate::session::isolation::{find_jj_root, find_session_repo,
-        register_session_in_repo, unregister_session_from_repo};
+    use crate::session::isolation::find_jj_root;
+    use crate::session::AikiSessionFile;
 
     // Get first file path from the operation to determine the repo
     let file_path = match &payload.operation {
@@ -432,26 +431,18 @@ fn detect_repo_transition(payload: &AikiChangeCompletedPayload) {
         _ => return,
     };
 
-    let session_uuid = payload.session.uuid().to_string();
 
-    // Check if sidecar already exists for this session in the new repo — no transition
-    let sidecar = crate::global::global_aiki_dir()
-        .join("sessions")
-        .join("by-repo")
-        .join(&new_repo_id)
-        .join(&session_uuid);
+    let session_file = AikiSessionFile::new(&payload.session);
+    let previous_repo_id = session_file.read_repo_id();
 
-    if sidecar.exists() {
-        return; // Already in this repo, no transition
+    // If the session is already tracked as being in the target repo, no transition.
+    if previous_repo_id.as_deref() == Some(&new_repo_id) {
+        return;
     }
 
-    // Find previous repo for this session (scan by-repo dirs)
-    let previous_repo_id = find_session_repo(&session_uuid);
-
-    // Move sidecar: register in new repo, unregister from old
-    register_session_in_repo(&new_repo_id, &session_uuid);
-    if let Some(ref old_repo_id) = previous_repo_id {
-        unregister_session_from_repo(old_repo_id, &session_uuid);
+    if let Err(e) = session_file.update_repo_id(&new_repo_id) {
+        debug_log(|| format!("Failed to update session repo: {}", e));
+        return;
     }
 
     // If no previous repo (first change in session): no transition to fire

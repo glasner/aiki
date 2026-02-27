@@ -367,6 +367,10 @@ pub enum TaskCommands {
         #[arg(long, action = clap::ArgAction::Append)]
         remediates: Vec<String>,
 
+        /// Task that must run in same session before this one (needs-context link)
+        #[arg(long)]
+        needs_context: Option<String>,
+
         /// Auto-start this task when its blocker(s) close
         #[arg(long)]
         autorun: bool,
@@ -503,6 +507,10 @@ pub enum TaskCommands {
         /// Task(s) this remediates (fix relationship, blocks ready state). Can be specified multiple times.
         #[arg(long, action = clap::ArgAction::Append)]
         remediates: Vec<String>,
+
+        /// Task that must run in same session before this one (needs-context link)
+        #[arg(long)]
+        needs_context: Option<String>,
 
         /// Auto-start this task when its blocker(s) close
         #[arg(long)]
@@ -656,9 +664,17 @@ pub enum TaskCommands {
         #[arg(long = "async")]
         run_async: bool,
 
-        /// Automatically pick and run the next ready subtask of the given parent task
-        #[arg(long)]
+        /// [DEPRECATED] Use --next-session instead
+        #[arg(long, hide = true)]
         next_subtask: bool,
+
+        /// Pick next ready session (needs-context chain or standalone task)
+        #[arg(long)]
+        next_session: bool,
+
+        /// Scope --next-session to a specific lane (head task ID, prefix matching)
+        #[arg(long, requires = "next_session")]
+        lane: Option<String>,
     },
 
     /// Wait for task(s) to complete
@@ -674,6 +690,27 @@ pub enum TaskCommands {
         /// Task IDs to wait for
         #[arg(required = true)]
         ids: Vec<String>,
+
+        /// Return when any task completes (instead of waiting for all)
+        #[arg(long)]
+        any: bool,
+    },
+
+    /// Show lane decomposition for a parent task
+    ///
+    /// Derives lanes from the subtask DAG and shows ready lanes or full
+    /// decomposition with status.
+    ///
+    /// Examples:
+    ///   aiki task lane abc123                  # Show ready lanes
+    ///   aiki task lane abc123 --all            # Show full decomposition with status
+    Lane {
+        /// Parent task ID
+        id: String,
+
+        /// Show all lanes (not just ready ones)
+        #[arg(long)]
+        all: bool,
     },
 
     /// Undo file changes made by a task
@@ -776,6 +813,10 @@ pub enum TaskCommands {
         /// Plan file this task adds
         #[arg(long)]
         adds_plan: Option<String>,
+
+        /// Task that must run in same session before this one (needs-context link)
+        #[arg(long)]
+        needs_context: Option<String>,
     },
 
     /// Remove a link between tasks
@@ -841,6 +882,10 @@ pub enum TaskCommands {
         /// Remove adds-plan link to this target
         #[arg(long)]
         adds_plan: Option<String>,
+
+        /// Remove needs-context link to this target
+        #[arg(long)]
+        needs_context: Option<String>,
     },
 
     /// Show diff of changes made while working on a task
@@ -947,6 +992,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             depends_on,
             validates,
             remediates,
+            needs_context,
             autorun,
             once,
             p0,
@@ -972,6 +1018,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             depends_on,
             validates,
             remediates,
+            needs_context,
             autorun,
             once,
             p0,
@@ -1005,6 +1052,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             depends_on,
             validates,
             remediates,
+            needs_context,
             autorun,
             once,
         } => run_start(
@@ -1032,6 +1080,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             depends_on,
             validates,
             remediates,
+            needs_context,
             autorun,
             once,
         ),
@@ -1088,8 +1137,11 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             agent,
             run_async,
             next_subtask,
-        } => run_run(&cwd, id, agent, run_async, next_subtask),
-        TaskCommands::Wait { ids } => run_wait(&cwd, ids),
+            next_session,
+            lane,
+        } => run_run(&cwd, id, agent, run_async, next_subtask, next_session, lane),
+        TaskCommands::Wait { ids, any } => run_wait(&cwd, ids, any),
+        TaskCommands::Lane { id, all } => run_lane(&cwd, id, all),
         TaskCommands::Undo {
             ids,
             completed,
@@ -1113,6 +1165,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             fixes,
             decomposes_plan,
             adds_plan,
+            needs_context,
         } => run_link(
             &cwd,
             id,
@@ -1128,6 +1181,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             fixes,
             decomposes_plan,
             adds_plan,
+            needs_context,
         ),
         TaskCommands::Unlink {
             id,
@@ -1145,6 +1199,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             fixes,
             decomposes_plan,
             adds_plan,
+            needs_context,
         } => run_unlink(
             &cwd,
             id,
@@ -1160,6 +1215,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             fixes,
             decomposes_plan,
             adds_plan,
+            needs_context,
         ),
         TaskCommands::Diff {
             id,
@@ -1482,6 +1538,7 @@ fn run_add(
     depends_on: Vec<String>,
     validates: Vec<String>,
     remediates: Vec<String>,
+    needs_context: Option<String>,
     autorun: bool,
     once: bool,
     p0: bool,
@@ -1497,9 +1554,10 @@ fn run_add(
         && depends_on.is_empty()
         && validates.is_empty()
         && remediates.is_empty()
+        && needs_context.is_none()
     {
         return Err(AikiError::InvalidArgument(
-            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, or --remediates)".to_string()
+            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, --remediates, or --needs-context)".to_string()
         ));
     }
 
@@ -1668,8 +1726,8 @@ fn run_add(
 
     // Emit subtask-of link if this is a child task
     if let Some(ref parent_id) = parent {
-        let parent_id = &find_task_in_graph(&graph, parent_id)?.id.clone();
-        write_link_event(cwd, &graph, "subtask-of", &task_id, parent_id)?;
+        let resolved = find_task_in_graph(&graph, parent_id)?.id.clone();
+        write_link_event(cwd, &graph, "subtask-of", &task_id, &resolved)?;
     }
 
     // Emit sourced-from links for each source
@@ -1692,6 +1750,7 @@ fn run_add(
         &fixes,
         &decomposes_plan,
         &adds_plan,
+        &needs_context,
         autorun,
     )?;
 
@@ -1706,7 +1765,6 @@ fn run_add(
         assignee: effective_assignee,
         sources,
         template: None,
-        working_copy,
         instructions: None,
         data: std::collections::HashMap::new(),
         created_at: timestamp,
@@ -1753,6 +1811,7 @@ fn run_start(
     depends_on: Vec<String>,
     validates: Vec<String>,
     remediates: Vec<String>,
+    needs_context: Option<String>,
     autorun: bool,
     once: bool,
 ) -> Result<()> {
@@ -1764,9 +1823,10 @@ fn run_start(
         && depends_on.is_empty()
         && validates.is_empty()
         && remediates.is_empty()
+        && needs_context.is_none()
     {
         return Err(AikiError::InvalidArgument(
-            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, or --remediates)".to_string()
+            "--autorun requires a blocking link flag (--blocked-by, --depends-on, --validates, --remediates, or --needs-context)".to_string()
         ));
     }
 
@@ -1843,6 +1903,7 @@ fn run_start(
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,  // needs_context
             false,
             false, // once
         );
@@ -1936,8 +1997,8 @@ fn run_start(
 
             // Emit subtask-of link if --subtask-of was provided
             if let Some(ref parent_id) = subtask_of {
-                let parent_id = &find_task_in_graph(&graph, parent_id)?.id.clone();
-                write_link_event(cwd, &graph, "subtask-of", &task_id, parent_id)?;
+                let resolved = find_task_in_graph(&graph, parent_id)?.id.clone();
+                write_link_event(cwd, &graph, "subtask-of", &task_id, &resolved)?;
             }
 
             // Emit additional link flags
@@ -1955,6 +2016,7 @@ fn run_start(
                 &fixes,
                 &decomposes_plan,
                 &adds_plan,
+                &needs_context,
                 autorun,
             )?;
 
@@ -1968,7 +2030,6 @@ fn run_start(
                 assignee: None,
                 sources: sources.clone(),
                 template: None,
-                working_copy,
                 instructions: None,
                 data: std::collections::HashMap::new(),
                 created_at: timestamp,
@@ -2102,7 +2163,6 @@ fn run_start(
                     assignee: None,
                     sources: Vec::new(),
                     template: None,
-                    working_copy,
                     instructions: None,
                     data: std::collections::HashMap::new(),
                     created_at: timestamp,
@@ -2181,6 +2241,7 @@ fn run_start(
                 &fixes,
                 &decomposes_plan,
                 &adds_plan,
+                &needs_context,
                 autorun,
             )?;
         }
@@ -2447,7 +2508,6 @@ fn run_stop(
                 assignee: Some("human".to_string()),
                 sources: Vec::new(),
                 template: None,
-                working_copy: working_copy.clone(),
                 instructions: None,
                 data: std::collections::HashMap::new(),
                 created_at: timestamp,
@@ -2836,8 +2896,36 @@ fn run_close(
                         continue;
                     }
 
-                    let actions =
+                    let spawn_result =
                         crate::tasks::spawner::evaluate_spawns(task, &graph, &spawns_config);
+
+                    // If max iterations was reached, set loop.max_reached on the task
+                    if spawn_result.loop_max_reached {
+                        batch_events.push(TaskEvent::Updated {
+                            task_id: task_id.clone(),
+                            name: None,
+                            priority: None,
+                            assignee: None,
+                            data: Some({
+                                let mut d = HashMap::new();
+                                d.insert(
+                                    "loop.max_reached".to_string(),
+                                    "true".to_string(),
+                                );
+                                d
+                            }),
+                            instructions: None,
+                            timestamp: chrono::Utc::now(),
+                        });
+                        // Update local graph state too
+                        if let Some(task_mut) = graph.tasks.get_mut(task_id) {
+                            task_mut
+                                .data
+                                .insert("loop.max_reached".to_string(), "true".to_string());
+                        }
+                    }
+
+                    let actions = &spawn_result.actions;
 
                     // Pre-compute child IDs for ALL subtask spawns before executing any.
                     // This ensures deterministic index allocation: indices are assigned
@@ -2850,7 +2938,7 @@ fn run_close(
                     // execute_spawn_action — if a spawn already succeeded, its existing
                     // task is returned and the pre-generated ID is unused.
                     let mut child_id_map: HashMap<usize, String> = HashMap::new();
-                    for action in &actions {
+                    for action in actions {
                         if let crate::tasks::spawner::SpawnAction::CreateSubtask {
                             spawn_index,
                             template,
@@ -2863,7 +2951,7 @@ fn run_close(
                     }
 
                     let mut failed_indices: Vec<usize> = Vec::new();
-                    for action in &actions {
+                    for action in actions {
                         let spawn_index = match action {
                             crate::tasks::spawner::SpawnAction::CreateTask {
                                 spawn_index, ..
@@ -3540,10 +3628,8 @@ fn query_changes_for_task(cwd: &Path, task_id: &str) -> Result<Vec<ChangeInfo>> 
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() >= 1 {
             let change_id = parts[0].to_string();
-            let timestamp = parts.get(1).map(|s| s.to_string());
             changes.push(ChangeInfo {
                 change_id,
-                timestamp,
             });
         }
     }
@@ -3582,7 +3668,6 @@ fn get_change_diff(cwd: &Path, change_id: &str) -> Result<String> {
 /// Information about a change linked to a task
 struct ChangeInfo {
     change_id: String,
-    timestamp: Option<String>,
 }
 
 /// Parsed source reference types
@@ -5124,10 +5209,20 @@ fn run_run(
     agent: Option<String>,
     run_async: bool,
     next_subtask: bool,
+    next_session: bool,
+    lane: Option<String>,
 ) -> Result<()> {
     use crate::tasks::runner::{
-        resolve_next_subtask, run_task_async_with_output, SubtaskResolution,
+        resolve_next_session, resolve_next_session_in_lane,
+        run_task_async_with_output, SessionResolution,
     };
+
+    // --next-subtask is deprecated
+    if next_subtask {
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "--next-subtask has been replaced by --next-session"
+        )));
+    }
 
     // Parse and validate agent override early, before claiming any subtask.
     // This prevents stranding a subtask InProgress when the agent string is invalid.
@@ -5140,8 +5235,13 @@ fn run_run(
         None
     };
 
-    let actual_id = if next_subtask {
-        // Resolve the next ready subtask of the parent
+    // Track whether we claimed a subtask (for rollback on failure)
+    let mut claimed_id: Option<String> = None;
+    // Track chain IDs for chain session execution
+    let mut chain_ids: Option<Vec<String>> = None;
+
+    let actual_id = if next_session {
+        // Resolve the next ready session of the parent
         let events = read_events(cwd)?;
         let graph = materialize_graph(&events);
 
@@ -5154,8 +5254,15 @@ fn run_run(
             return Err(AikiError::TaskAlreadyClosed(parent_id));
         }
 
-        match resolve_next_subtask(&graph, &parent_id) {
-            SubtaskResolution::Ready(task) => {
+        // Resolve next session — with optional lane filter
+        let resolution = if let Some(ref lane_prefix) = lane {
+            resolve_next_session_in_lane(&graph, &parent_id, lane_prefix)?
+        } else {
+            resolve_next_session(&graph, &parent_id)
+        };
+
+        match resolution {
+            SessionResolution::Standalone(task) => {
                 eprintln!("Running subtask {} ({})...", short_id(&task.id), task.name);
 
                 // Claim the subtask: emit Started to prevent double-pick
@@ -5165,13 +5272,41 @@ fn run_run(
                     session_id: None,
                     turn_id: None,
                     timestamp: chrono::Utc::now(),
-
                 };
                 write_event(cwd, &started_event)?;
+                claimed_id = Some(task.id.clone());
 
                 task.id.clone()
             }
-            SubtaskResolution::AllComplete => {
+            SessionResolution::Chain(chain) => {
+                let head_id = chain[0].clone();
+                let head_name = graph
+                    .tasks
+                    .get(&head_id)
+                    .map(|t| t.name.as_str())
+                    .unwrap_or("?");
+                eprintln!(
+                    "Running needs-context chain ({} tasks, head: {} ({}))...",
+                    chain.len(),
+                    short_id(&head_id),
+                    head_name,
+                );
+
+                // Claim the head task: emit Started to prevent double-pick
+                let started_event = TaskEvent::Started {
+                    task_ids: vec![head_id.clone()],
+                    agent_type: agent.clone().unwrap_or_default(),
+                    session_id: None,
+                    turn_id: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                write_event(cwd, &started_event)?;
+                claimed_id = Some(head_id.clone());
+                chain_ids = Some(chain);
+
+                head_id
+            }
+            SessionResolution::AllComplete => {
                 let md = MdBuilder::new("run").build(
                     &format!("All subtasks complete for {}\n", short_id(&parent_id)),
                     &[],
@@ -5180,14 +5315,13 @@ fn run_run(
                 println!("{}", md);
                 return Ok(());
             }
-            SubtaskResolution::Blocked(unclosed) => {
+            SessionResolution::Blocked(unclosed) => {
                 let mut msg = format!(
                     "No ready subtasks for {} ({} subtasks blocked)\n",
                     short_id(&parent_id),
                     unclosed.len()
                 );
                 for t in &unclosed {
-                    // Gather blocker info
                     let blocker_ids = get_blocker_short_ids(&graph, &t.id);
                     let status_str = match t.status {
                         TaskStatus::InProgress => "in progress".to_string(),
@@ -5210,7 +5344,7 @@ fn run_run(
                     short_id(&parent_id),
                 )));
             }
-            SubtaskResolution::NoSubtasks => {
+            SessionResolution::NoSubtasks => {
                 let msg = format!("Task {} has no subtasks", short_id(&parent_id));
                 let md = MdBuilder::new("run").error().build_error(&msg);
                 println!("{}", md);
@@ -5226,6 +5360,10 @@ fn run_run(
     if let Some(agent_type) = agent_override {
         options = options.with_agent(agent_type);
     }
+    // Pass chain IDs for needs-context session scoping
+    if let Some(chain) = chain_ids {
+        options = options.with_chain(chain);
+    }
 
     // Run the task with output - async or blocking
     let result = if run_async {
@@ -5235,14 +5373,16 @@ fn run_run(
     };
 
     // Rollback claim on spawn failure so the subtask isn't stuck InProgress
-    if result.is_err() && next_subtask {
-        let rollback_event = TaskEvent::Stopped {
-            task_ids: vec![actual_id.clone()],
-            reason: Some("Spawn failed, rolling back claim".to_string()),
-            turn_id: None,
-            timestamp: chrono::Utc::now(),
-        };
-        let _ = write_event(cwd, &rollback_event);
+    if result.is_err() {
+        if let Some(ref cid) = claimed_id {
+            let rollback_event = TaskEvent::Stopped {
+                task_ids: vec![cid.clone()],
+                reason: Some("Spawn failed, rolling back claim".to_string()),
+                turn_id: None,
+                timestamp: chrono::Utc::now(),
+            };
+            let _ = write_event(cwd, &rollback_event);
+        }
     }
 
     result
@@ -5250,7 +5390,7 @@ fn run_run(
 
 /// Get short IDs of all open blockers for a task (for diagnostics)
 fn get_blocker_short_ids(graph: &TaskGraph, task_id: &str) -> Vec<String> {
-    const BLOCKING_LINK_TYPES: &[&str] = &["blocked-by", "validates", "remediates", "follows-up", "depends-on"];
+    const BLOCKING_LINK_TYPES: &[&str] = &["blocked-by", "validates", "remediates", "follows-up", "depends-on", "needs-context"];
     let mut blockers = Vec::new();
     for link_type in BLOCKING_LINK_TYPES {
         for blocker_id in graph.edges.targets(task_id, link_type) {
@@ -5264,8 +5404,141 @@ fn get_blocker_short_ids(graph: &TaskGraph, task_id: &str) -> Vec<String> {
     blockers
 }
 
+/// Show lane decomposition for a parent task
+fn run_lane(cwd: &Path, id: String, all: bool) -> Result<()> {
+    use crate::tasks::lanes::{derive_lanes, is_lane_ready_with_decomposition, lane_status, LaneStatus};
+
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let parent_id = resolve_task_id_in_graph(&graph, &id)?;
+
+    let decomp = derive_lanes(&graph, &parent_id);
+
+    if decomp.lanes.is_empty() {
+        let content = if all {
+            format!("Lanes for {}:\n\n(no subtasks)\n", short_id(&parent_id))
+        } else {
+            "Ready lanes:\n\n(none)\n".to_string()
+        };
+        let in_progress = get_in_progress(&graph.tasks);
+        let scope_set = get_current_scope_set(&graph);
+        let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
+        let xml = MdBuilder::new("lane").build(&content, &in_progress, &ready_queue);
+        aiki_print(&xml);
+        return Ok(());
+    }
+
+    let mut content = String::new();
+
+    if all {
+        content.push_str(&format!("Lanes for {}:\n\n", short_id(&parent_id)));
+
+        for lane in &decomp.lanes {
+            let status = lane_status(lane, &graph);
+            let status_icon = match status {
+                LaneStatus::Complete => "✓ complete",
+                LaneStatus::Failed => "✗ failed",
+                LaneStatus::Ready => "● ready",
+                LaneStatus::Blocked => "◌ blocked",
+            };
+
+            // Check if any task in the lane is in-progress
+            let has_in_progress = lane.sessions.iter().any(|s| {
+                s.task_ids.iter().any(|tid| {
+                    graph.tasks.get(tid).map_or(false, |t| t.status == TaskStatus::InProgress)
+                })
+            });
+            let status_icon = if has_in_progress { "▶ in-progress" } else { status_icon };
+
+            // Lane header with dependencies
+            let deps_str = if lane.depends_on_lanes.is_empty() {
+                String::new()
+            } else {
+                let dep_names: Vec<String> = lane.depends_on_lanes.iter().map(|d| short_id(d).to_string()).collect();
+                format!("  depends on {}", dep_names.join(", "))
+            };
+
+            content.push_str(&format!("{}:{}  {}\n", short_id(&lane.head_task_id), deps_str, status_icon));
+
+            // Sessions
+            for (i, session) in lane.sessions.iter().enumerate() {
+                let task_names: Vec<String> = session.task_ids.iter().map(|tid| {
+                    graph.tasks.get(tid).map(|t| t.name.clone()).unwrap_or_else(|| short_id(tid).to_string())
+                }).collect();
+
+                let session_type = if session.task_ids.len() > 1 { "  needs-context" } else { "" };
+
+                // Session status
+                let session_done = session.task_ids.iter().all(|tid| {
+                    graph.tasks.get(tid).map_or(false, |t| {
+                        t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
+                    })
+                });
+                let session_in_progress = session.task_ids.iter().any(|tid| {
+                    graph.tasks.get(tid).map_or(false, |t| t.status == TaskStatus::InProgress)
+                });
+                let session_status = if session_done {
+                    "✓ complete"
+                } else if session_in_progress {
+                    "▶ in-progress"
+                } else {
+                    ""
+                };
+
+                content.push_str(&format!(
+                    "  {}. session: [{}]{}  {}\n",
+                    i + 1,
+                    task_names.join(" "),
+                    session_type,
+                    session_status,
+                ));
+            }
+            content.push('\n');
+        }
+    } else {
+        content.push_str("Ready lanes:\n\n");
+
+        let ready_lanes: Vec<&crate::tasks::lanes::Lane> = decomp.lanes.iter()
+            .filter(|lane| is_lane_ready_with_decomposition(lane, &graph, &decomp.lanes))
+            .collect();
+
+        if ready_lanes.is_empty() {
+            content.push_str("(none)\n");
+        } else {
+            for lane in &ready_lanes {
+                content.push_str(&format!("{}:\n", short_id(&lane.head_task_id)));
+                for (i, session) in lane.sessions.iter().enumerate() {
+                    // Only show uncompleted sessions
+                    let session_done = session.task_ids.iter().all(|tid| {
+                        graph.tasks.get(tid).map_or(false, |t| {
+                            t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done)
+                        })
+                    });
+                    if session_done {
+                        continue;
+                    }
+                    let task_names: Vec<String> = session.task_ids.iter().map(|tid| {
+                        graph.tasks.get(tid).map(|t| t.name.clone()).unwrap_or_else(|| short_id(tid).to_string())
+                    }).collect();
+                    content.push_str(&format!("  {}. session: {}\n", i + 1, task_names.join(" ")));
+                }
+            }
+        }
+    }
+
+    let in_progress = get_in_progress(&graph.tasks);
+    let scope_set = get_current_scope_set(&graph);
+    let ready_queue = get_ready_queue_for_scope_set(&graph, &scope_set);
+    let xml = MdBuilder::new("lane").build(&content, &in_progress, &ready_queue);
+    aiki_print(&xml);
+    Ok(())
+}
+
 /// Wait for task(s) to reach a terminal state (closed or stopped)
-fn run_wait(cwd: &Path, ids: Vec<String>) -> Result<()> {
+///
+/// When `any` is true, returns as soon as any task reaches terminal state
+/// (instead of waiting for all). Only terminal tasks are included in output.
+fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
     use std::time::Duration;
 
     let poll_interval = Duration::from_millis(500);
@@ -5279,21 +5552,31 @@ fn run_wait(cwd: &Path, ids: Vec<String>) -> Result<()> {
     }
     let ids = resolved_ids;
 
-    // Poll until all tasks are in terminal state
+    // Poll until condition is met
     loop {
         let events = read_events(cwd)?;
         let tasks = materialize_graph(&events).tasks;
 
-        let all_done = ids.iter().all(|id| {
+        let is_terminal = |id: &str| -> bool {
             find_task(&tasks, id)
                 .map(|t| matches!(t.status, TaskStatus::Closed | TaskStatus::Stopped))
                 .unwrap_or(false)
-        });
+        };
 
-        if all_done {
-            // Build markdown output with results for each task
+        let done = if any {
+            ids.iter().any(|id| is_terminal(id))
+        } else {
+            ids.iter().all(|id| is_terminal(id))
+        };
+
+        if done {
+            // Build markdown output with results
+            // When --any, only show terminal tasks; otherwise show all
             let mut content = String::from("## Wait Complete\n| ID | Name | Status | Outcome | Summary |\n|----|------|--------|---------|--------|\n");
             for id in &ids {
+                if any && !is_terminal(id) {
+                    continue; // skip non-terminal tasks in --any mode
+                }
                 if let Ok(task) = find_task(&tasks, id) {
                     let status = task.status.to_string();
                     let outcome = task
@@ -5603,7 +5886,6 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             assignee: assignee.clone(),
             sources: params.sources.clone(),
             template: Some(template.template_id()),
-            working_copy,
             instructions: parent_instructions,
             data: data.clone(),
             created_at: timestamp,
@@ -6106,7 +6388,6 @@ fn create_subtasks_from_entries(
                         assignee: child_assignee.clone(),
                         sources: composed_sources.clone(),
                         template: Some(child_template.template_id()),
-                        working_copy: None,
                         instructions: child_instructions,
                         data: child_data.clone(),
                         created_at: timestamp,
@@ -6161,6 +6442,39 @@ fn create_subtasks_from_entries(
                         graph,
                     )?;
                 }
+            }
+        }
+    }
+
+    // ── Phase C: Materialize needs-context links ──
+    // After all subtasks are created, resolve needs-context frontmatter references
+    // (e.g., "subtasks.explore") to task IDs and emit link events.
+    for (i, entry) in entries.iter().enumerate() {
+        if let SubtaskEntry::Static(subtask_def) = entry {
+            if let Some(ref needs_context_ref) = subtask_def.needs_context {
+                let from_id = &planned[i].task_id;
+
+                // Parse "subtasks.<slug>" format
+                let slug = needs_context_ref
+                    .strip_prefix("subtasks.")
+                    .ok_or_else(|| AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "needs-context value '{}' must use 'subtasks.<slug>' format",
+                            needs_context_ref
+                        ),
+                    })?;
+
+                // Resolve slug to task ID via the slug_map built in Phase A
+                let to_id = slug_map.get(slug).ok_or_else(|| {
+                    AikiError::TemplateProcessingFailed {
+                        details: format!(
+                            "Unknown subtask slug '{}' in needs-context",
+                            slug
+                        ),
+                    }
+                })?;
+
+                write_link_event(cwd, graph, "needs-context", from_id, to_id)?;
             }
         }
     }
@@ -6249,6 +6563,7 @@ fn emit_link_flags(
     fixes: &[String],
     decomposes_plan: &Option<String>,
     adds_plan: &Option<String>,
+    needs_context: &Option<String>,
     autorun: bool,
 ) -> Result<()> {
     // Blocking links: use autorun variant when --autorun is set
@@ -6264,6 +6579,10 @@ fn emit_link_flags(
     }
     for target in remediates {
         write_link_event_with_autorun(cwd, graph, "remediates", task_id, target, autorun_opt)?;
+    }
+    // needs-context: blocking link (implies depends-on), autorun variant when set
+    if let Some(target) = needs_context {
+        write_link_event_with_autorun(cwd, graph, "needs-context", task_id, target, autorun_opt)?;
     }
     // Non-blocking links: autorun not applicable
     if let Some(target) = supersedes {
@@ -6302,6 +6621,7 @@ fn extract_link_flag(
     fixes: Option<String>,
     decomposes_plan: Option<String>,
     adds_plan: Option<String>,
+    needs_context: Option<String>,
 ) -> Result<(String, String)> {
     let mut pairs: Vec<(&str, String)> = Vec::new();
     if let Some(v) = blocked_by {
@@ -6340,10 +6660,13 @@ fn extract_link_flag(
     if let Some(v) = adds_plan {
         pairs.push(("adds-plan", v));
     }
+    if let Some(v) = needs_context {
+        pairs.push(("needs-context", v));
+    }
 
     match pairs.len() {
         0 => {
-            let msg = "No link kind specified. Use one of: --blocked-by, --depends-on, --validates, --remediates, --sourced-from, --subtask-of, --implements, --orchestrates, --supersedes, --fixes, --decomposes-plan, --adds-plan";
+            let msg = "No link kind specified. Use one of: --blocked-by, --depends-on, --validates, --remediates, --sourced-from, --subtask-of, --implements, --orchestrates, --supersedes, --fixes, --decomposes-plan, --adds-plan, --needs-context";
             aiki_print(&MdBuilder::new("link").error().build_error(msg));
             Err(AikiError::Other(anyhow::anyhow!("{}", msg)))
         }
@@ -6375,6 +6698,7 @@ fn run_link(
     fixes: Option<String>,
     decomposes_plan: Option<String>,
     adds_plan: Option<String>,
+    needs_context: Option<String>,
 ) -> Result<()> {
     let (kind, raw_target) = extract_link_flag(
         blocked_by,
@@ -6389,6 +6713,7 @@ fn run_link(
         fixes,
         decomposes_plan,
         adds_plan,
+        needs_context,
     )?;
 
     let events = read_events(cwd)?;
@@ -6435,6 +6760,7 @@ fn run_unlink(
     fixes: Option<String>,
     decomposes_plan: Option<String>,
     adds_plan: Option<String>,
+    needs_context: Option<String>,
 ) -> Result<()> {
     let (kind, raw_target) = extract_link_flag(
         blocked_by,
@@ -6449,6 +6775,7 @@ fn run_unlink(
         fixes,
         decomposes_plan,
         adds_plan,
+        needs_context,
     )?;
 
     let events = read_events(cwd)?;
@@ -6710,7 +7037,6 @@ D src/old_file.ts
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -6818,7 +7144,6 @@ D src/old_file.ts
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -6858,7 +7183,6 @@ D src/old_file.ts
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -6903,7 +7227,7 @@ D src/old_file.ts
     fn test_extract_link_flag_single() {
         let result = extract_link_flag(
             Some("target".to_string()),
-            None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "blocked-by");
@@ -6915,7 +7239,7 @@ D src/old_file.ts
         let result = extract_link_flag(
             None, None, None, None,
             Some("file:design.md".to_string()),
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "sourced-from");
@@ -6927,7 +7251,7 @@ D src/old_file.ts
         let result = extract_link_flag(
             None, None, None, None, None, None,
             Some("file:ops/now/feature.md".to_string()),
-            None, None, None, None, None,
+            None, None, None, None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "implements-plan");
@@ -6939,7 +7263,7 @@ D src/old_file.ts
         let result = extract_link_flag(
             None, None, None, None, None, None, None, None, None,
             Some("task:abc123".to_string()),
-            None, None,
+            None, None, None,
         );
         let (kind, target) = result.unwrap();
         assert_eq!(kind, "fixes");
@@ -6948,7 +7272,7 @@ D src/old_file.ts
 
     #[test]
     fn test_extract_link_flag_none() {
-        let result = extract_link_flag(None, None, None, None, None, None, None, None, None, None, None, None);
+        let result = extract_link_flag(None, None, None, None, None, None, None, None, None, None, None, None, None);
         assert!(result.is_err());
     }
 
@@ -6957,7 +7281,7 @@ D src/old_file.ts
         let result = extract_link_flag(
             Some("a".to_string()),
             Some("b".to_string()),
-            None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None,
         );
         assert!(result.is_err());
     }

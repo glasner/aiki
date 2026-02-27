@@ -279,6 +279,7 @@ fn parse_markdown_body(
         assignee: None,
         sources: Vec::new(),
         data: Default::default(),
+        needs_context: None,
     };
 
     // Parse subtasks from H2 sections after the # Subtasks marker
@@ -376,6 +377,7 @@ fn parse_single_subtask(name: &str, lines: &[&str], file_path: &str) -> Result<T
         assignee: frontmatter.assignee,
         sources: frontmatter.sources,
         data: frontmatter.data,
+        needs_context: frontmatter.needs_context,
     })
 }
 

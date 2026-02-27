@@ -1212,8 +1212,6 @@ mod tests {
 
     #[test]
     fn test_with_tasks_builder() {
-        use crate::events::AikiChangeCompletedPayload;
-
         // Create a mock payload with necessary fields
         // Note: This is a simplified test - full integration would require a real payload
         let record = ProvenanceRecord {

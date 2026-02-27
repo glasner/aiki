@@ -18,12 +18,10 @@ use super::AgentType;
 
 /// Handle for a background agent process
 ///
-/// Returned when spawning an agent in background mode. Contains the PID
-/// and task ID for later management (e.g., stopping the process).
+/// Returned when spawning an agent in background mode. Contains the
+/// task ID for later management (e.g., stopping the process).
 #[derive(Debug, Clone)]
 pub struct BackgroundHandle {
-    /// Process ID of the spawned agent
-    pub pid: u32,
     /// Task ID being worked on
     pub task_id: String,
 }
@@ -38,24 +36,17 @@ pub struct MonitoredChild {
     child: Child,
     /// Stderr handle for capturing error output
     stderr: Option<ChildStderr>,
-    /// Process ID of the spawned agent
-    pub pid: u32,
-    /// Task ID being worked on
-    pub task_id: String,
 }
 
 impl MonitoredChild {
     /// Create a new monitored child from a Child process
     #[must_use]
-    pub fn new(mut child: Child, task_id: impl Into<String>) -> Self {
-        let pid = child.id();
+    pub fn new(mut child: Child) -> Self {
         // Take stderr handle from child so we can read it later
         let stderr = child.stderr.take();
         Self {
             child,
             stderr,
-            pid,
-            task_id: task_id.into(),
         }
     }
 
@@ -170,12 +161,15 @@ impl AgentSessionResult {
 pub struct AgentSpawnOptions {
     /// Working directory for the agent
     pub cwd: std::path::PathBuf,
-    /// Task ID to work on
+    /// Task ID to work on (first task in chain, or standalone)
     pub task_id: String,
     /// Override the task's assignee (optional)
     pub agent_override: Option<AgentType>,
     /// Parent session UUID for workspace isolation chaining
     pub parent_session_uuid: Option<String>,
+    /// Ordered chain of task IDs for needs-context sessions (head to tail).
+    /// When set, the agent works through all tasks in sequence within one session.
+    pub chain_task_ids: Option<Vec<String>>,
 }
 
 impl AgentSpawnOptions {
@@ -187,6 +181,7 @@ impl AgentSpawnOptions {
             task_id: task_id.into(),
             agent_override: None,
             parent_session_uuid: None,
+            chain_task_ids: None,
         }
     }
 
@@ -205,11 +200,48 @@ impl AgentSpawnOptions {
         self
     }
 
+    /// Set chain task IDs for needs-context session execution
+    #[must_use]
+    pub fn with_chain(mut self, chain: Vec<String>) -> Self {
+        self.chain_task_ids = Some(chain);
+        self
+    }
+
     /// Build the task prompt with instructions for autonomous work
     #[must_use]
     pub fn task_prompt(&self) -> String {
-        format!(
-            r#"You are assigned task `{id}`. Work autonomously until ALL work is complete.
+        if let Some(ref chain) = self.chain_task_ids {
+            // Chain session: agent works through multiple tasks in sequence
+            let first = &chain[0];
+            let chain_list = chain.iter()
+                .enumerate()
+                .map(|(i, id)| format!("{}. `{}`", i + 1, id))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                r#"You are assigned a session chain of {count} tasks. Work autonomously through ALL tasks in sequence.
+
+SCOPE: Work through these tasks in order. Do NOT start, pick up, or work on any other tasks from the backlog.
+
+Tasks (in order):
+{chain_list}
+
+WORKFLOW:
+1. Run `aiki task start {first}` to begin the first task
+2. Run `aiki task show {first}` to read the task details and instructions
+3. Complete the task, then close it: `aiki task close <id> --summary "what I did"`
+4. After closing each task, run `aiki task` to see the next ready task
+5. Start the next task and repeat until ALL {count} tasks are closed
+
+CRITICAL: Do NOT stop after completing one task — continue through ALL tasks in the chain. Each task builds on the context from previous ones. Only stop if you are genuinely blocked on something."#,
+                count = chain.len(),
+                chain_list = chain_list,
+                first = first,
+            )
+        } else {
+            // Single task prompt (existing behavior)
+            format!(
+                r#"You are assigned task `{id}`. Work autonomously until ALL work is complete.
 
 SCOPE: ONLY work on task `{id}` and its subtasks. Do NOT start, pick up, or work on any other tasks from the backlog. Ignore the ready queue entirely — it is not your concern. When your task (and all its subtasks) are closed, you are done.
 
@@ -221,8 +253,9 @@ WORKFLOW:
 5. When ALL subtasks are closed, the parent task auto-starts for you to do a final review
 
 CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtasks in sequence. When the parent auto-starts, do a final review and close it. Only stop if you are genuinely blocked on something."#,
-            id = self.task_id
-        )
+                id = self.task_id
+            )
+        }
     }
 }
 

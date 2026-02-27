@@ -5,7 +5,7 @@ use aiki::events::result::HookResult;
 /// 1. HookResult::has_context() correctly identifies non-empty context
 /// 2. AikiState::build_context() returns None when no Context actions executed
 /// 3. turn.completed does NOT auto-trigger session.ended (sessions persist across turns)
-use aiki::events::{AikiTurnCompletedPayload, TurnSource};
+use aiki::events::AikiTurnCompletedPayload;
 use aiki::flows::context::ContextAssembler;
 use aiki::flows::types::{Action, ContextAction, ContextContent, HookStatement};
 use aiki::flows::{AikiState, HookEngine};

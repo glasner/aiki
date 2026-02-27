@@ -38,7 +38,7 @@ session.started:
 # session.resumed: Handle actions when resuming a previous session
 # Re-injects workspace isolation and task context
 session.resumed:
-    - let: ws_path = self.workspace_create_if_concurrent
+    - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
           - context: |
@@ -60,7 +60,7 @@ session.resumed:
 # session.compacted: Re-inject critical state after context compaction
 # Workspace path, active tasks, and task count are lost during compaction
 session.compacted:
-    - let: ws_path = self.workspace_create_if_concurrent
+    - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
           - context: |
@@ -92,7 +92,7 @@ session.compacted:
 # session.cleared: Re-inject critical state after /clear
 # /clear resets conversation but keeps session
 session.cleared:
-    - let: ws_path = self.workspace_create_if_concurrent
+    - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
           - context: |
@@ -121,7 +121,7 @@ turn.started:
     # Create isolated workspace if another session is already running in this repo
     # Returns workspace path if created/exists, empty string if skipped
     # Idempotent: no-op if workspace already exists from a prior uncompleted turn
-    - let: ws_path = self.workspace_create_if_concurrent
+    - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
           - context: |
@@ -284,7 +284,7 @@ commit.message_started:
 # repo.changed: Handle transitions between JJ repos within a session
 # Creates isolated workspace in the new repo if concurrent sessions are detected
 repo.changed:
-    - let: ws_path = self.workspace_create_if_concurrent
+    - let: ws_path = self.workspace_ensure_isolated
     - if: ws_path
       then:
           - context: |

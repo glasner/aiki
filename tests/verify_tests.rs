@@ -3,6 +3,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 /// Helper function to initialize a real Git repository
+#[allow(dead_code)]
 fn init_git_repo(path: &std::path::Path) {
     Command::new("git")
         .args(["init"])

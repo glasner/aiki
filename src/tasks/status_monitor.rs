@@ -59,8 +59,6 @@ pub struct StatusMonitor {
     has_rendered: bool,
     /// Atomic flag to signal when to stop (for Ctrl+C handling)
     stop_flag: Arc<AtomicBool>,
-    /// Optional PID of the agent process to monitor for unexpected exit
-    agent_pid: Option<u32>,
 }
 
 impl StatusMonitor {
@@ -79,15 +77,7 @@ impl StatusMonitor {
             start_time: Instant::now(),
             has_rendered: false,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            agent_pid: None,
         }
-    }
-
-    /// Set the agent process ID to monitor for unexpected exits
-    #[must_use]
-    pub fn with_agent_pid(mut self, pid: u32) -> Self {
-        self.agent_pid = Some(pid);
-        self
     }
 
     /// Get a clone of the stop flag for signal handling
@@ -122,53 +112,6 @@ impl StatusMonitor {
         let is_terminal = matches!(root_task.status, TaskStatus::Closed | TaskStatus::Stopped);
 
         Ok(is_terminal)
-    }
-
-    /// Monitor until task completion, detach, or agent exit
-    ///
-    /// Returns the reason why monitoring stopped.
-    ///
-    /// **Note:** This version uses `is_process_alive(pid)` which has a known issue
-    /// with zombie processes. Prefer `monitor_until_complete_with_child()` when possible.
-    pub fn monitor_until_complete(&mut self, cwd: &Path) -> Result<MonitorExitReason> {
-        // Initial render
-        let _ = self.poll_and_display(cwd);
-
-        loop {
-            // Check stop flag (Ctrl+C)
-            if self.stop_flag.load(Ordering::Relaxed) {
-                self.render_detach_message()?;
-                return Ok(MonitorExitReason::UserDetached);
-            }
-
-            // Sleep for poll interval
-            std::thread::sleep(self.poll_interval);
-
-            // Check if agent process exited unexpectedly
-            if let Some(pid) = self.agent_pid {
-                if !is_process_alive(pid) {
-                    // Agent exited - do one final poll to check task status
-                    // Note: This version can't capture stderr since we only have the PID
-                    match self.poll_and_display(cwd) {
-                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                        _ => return Ok(MonitorExitReason::AgentExited {
-                            stderr: String::new(),
-                        }),
-                    }
-                }
-            }
-
-            // Poll and update display
-            match self.poll_and_display(cwd) {
-                Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                Ok(false) => continue,
-                Err(e) => {
-                    // Log error but continue monitoring
-                    eprintln!("\nError polling task: {}", e);
-                    continue;
-                }
-            }
-        }
     }
 
     /// Monitor until task completion, detach, or agent exit (using MonitoredChild)
@@ -295,8 +238,8 @@ impl StatusMonitor {
             }
         }
 
-        // If root task has data.epic, render the epic task tree below
-        if let Some(epic_id) = root_task.data.get("epic") {
+        // If root task has data.epic or data.target, render the epic task tree below
+        if let Some(epic_id) = root_task.data.get("epic").or_else(|| root_task.data.get("target")) {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
                 lines.push(String::new());
                 let epic_line = self.format_task_line(epic_task, "", None);
@@ -416,25 +359,6 @@ impl StatusMonitor {
     }
 }
 
-/// Check if a process is still alive
-///
-/// Uses kill with signal 0 on Unix, which checks if the process exists
-/// without actually sending a signal.
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    // SAFETY: kill with signal 0 is safe - it just checks if process exists
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    result == 0
-}
-
-/// Check if a process is still alive (non-Unix stub)
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    // On non-Unix platforms, assume process is alive
-    // (we can't reliably check without platform-specific code)
-    true
-}
-
 /// Format a comment for display (first line only)
 fn format_comment(text: &str) -> String {
     text.lines().next().unwrap_or("").to_string()
@@ -470,13 +394,6 @@ mod tests {
         assert_eq!(monitor.task_id, "test-task-id");
         assert_eq!(monitor.last_event_count, 0);
         assert!(!monitor.has_rendered);
-        assert!(monitor.agent_pid.is_none());
-    }
-
-    #[test]
-    fn test_status_monitor_with_agent_pid() {
-        let monitor = StatusMonitor::new("test-task-id").with_agent_pid(12345);
-        assert_eq!(monitor.agent_pid, Some(12345));
     }
 
     #[test]
@@ -499,22 +416,4 @@ mod tests {
         }
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn test_is_process_alive_current_process() {
-        // Current process should be alive
-        let pid = std::process::id();
-        assert!(is_process_alive(pid));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_is_process_alive_invalid_pid() {
-        // Very high PID that almost certainly doesn't exist
-        // (typically PIDs are limited to ~32k or 4M)
-        let result = is_process_alive(u32::MAX - 1);
-        // Could be false (doesn't exist) or we might get EPERM
-        // Just ensure it doesn't panic
-        let _ = result;
-    }
 }

@@ -214,21 +214,6 @@ impl AikiSessionFile {
         Ok(())
     }
 
-    /// Read all repository IDs from the session file
-    ///
-    /// Returns a list of repo IDs (from `repo=` lines). Empty if file doesn't exist
-    /// or has no repo fields.
-    pub fn read_repos(&self) -> Vec<String> {
-        match fs::read_to_string(&self.path) {
-            Ok(content) => content
-                .lines()
-                .filter_map(|line| line.strip_prefix("repo="))
-                .map(|s| s.to_string())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
     /// Add a repository ID to the session file if not already present
     ///
     /// This tracks which repositories the session has touched.
@@ -261,6 +246,85 @@ impl AikiSessionFile {
         let mut file = fs::File::create(&tmp_path)
             .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
         file.write_all(new_content.as_bytes())
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e)))?;
+
+        fs::rename(&tmp_path, &self.path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to rename temp file: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Read the current repo ID tracked for this session file.
+    ///
+    /// Returns the last `repo=<id>` entry if present.
+    pub fn read_repo_id(&self) -> Option<String> {
+        fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|content| {
+                content
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("repo="))
+                    .last()
+                    .map(String::from)
+            })
+    }
+
+    /// Update the current repo ID stored in the session file.
+    ///
+    /// Replaces any existing `repo=<id>` lines with the provided value.
+    pub fn update_repo_id(&self, repo_id: &str) -> Result<()> {
+        use std::io::Write;
+
+        let content = match fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(AikiError::Other(anyhow::anyhow!(
+                    "Failed to read session file: {}",
+                    e
+                )))
+            }
+        };
+
+        let marker = "repo=";
+        let replacement = format!("repo={}", repo_id);
+
+        let (before, after) = match content.split_once("[/aiki]") {
+            Some((before, after)) => (before, after),
+            None => return Ok(()),
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut replaced = false;
+
+        for line in before.lines() {
+            if line.starts_with(marker) {
+                if !replaced {
+                    lines.push(replacement.clone());
+                    replaced = true;
+                }
+                continue;
+            }
+            lines.push(line.to_string());
+        }
+
+        if !replaced {
+            lines.push(replacement);
+        }
+
+        let mut rewritten = lines.join("\n");
+        if !rewritten.ends_with('\n') {
+            rewritten.push('\n');
+        }
+        rewritten.push_str("[/aiki]");
+        rewritten.push_str(after);
+
+        let tmp_path = self.path.with_extension("tmp");
+        let mut file = fs::File::create(&tmp_path)
+            .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
+        file.write_all(rewritten.as_bytes())
             .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
         file.sync_all()
             .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to sync temp file: {}", e)))?;
@@ -660,7 +724,6 @@ pub struct SessionInfo {
     pub mode: SessionMode,
     pub started_at: String,
     pub parent_pid: Option<u32>,
-    pub repos: Vec<String>,
 }
 
 /// List all sessions from the global sessions directory
@@ -693,7 +756,6 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
         let mut mode: Option<SessionMode> = None;
         let mut started_at = String::new();
         let mut parent_pid: Option<u32> = None;
-        let mut repos = Vec::new();
 
         for line in content.lines() {
             let line = line.trim();
@@ -711,8 +773,6 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
                 started_at = val.to_string();
             } else if let Some(val) = line.strip_prefix("parent_pid=") {
                 parent_pid = val.parse().ok();
-            } else if let Some(val) = line.strip_prefix("repo=") {
-                repos.push(val.to_string());
             }
         }
 
@@ -731,7 +791,6 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
             mode: mode.unwrap_or(SessionMode::Interactive), // Default to interactive for old sessions
             started_at,
             parent_pid,
-            repos,
         });
     }
 
@@ -1058,8 +1117,6 @@ pub fn find_session_by_ancestor_pid(jj_cwd: impl AsRef<Path>) -> Option<SessionM
 /// Info about a task-driven session (spawned by `aiki plan` or `aiki task run --async`)
 #[derive(Debug, Clone)]
 pub struct TaskSessionInfo {
-    /// Session ID
-    pub session_id: String,
     /// Task ID driving this session
     pub task_id: String,
     /// Process ID of the agent (for termination)
@@ -1144,7 +1201,6 @@ pub fn find_task_session(task_id: &str) -> Option<TaskSessionInfo> {
             if st == task_id {
                 debug_log(|| format!("find_task_session: FOUND match! pid={}", pid));
                 return Some(TaskSessionInfo {
-                    session_id: sid,
                     task_id: st,
                     pid,
                     mode: mode.unwrap_or(SessionMode::Interactive),
@@ -1492,7 +1548,6 @@ fn query_latest_event(
 
 /// Parsed session file metadata used for cleanup and session detection
 struct SessionFileInfo {
-    path: PathBuf,
     agent_type: Option<AgentType>,
     session_id: Option<String>,
     external_session_id: Option<String>,
@@ -1529,7 +1584,6 @@ fn parse_session_file(path: &Path) -> Option<SessionFileInfo> {
     }
 
     Some(SessionFileInfo {
-        path: path.to_path_buf(),
         agent_type,
         session_id,
         external_session_id,
@@ -2541,43 +2595,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_read_repos_no_file() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
-        let session = AikiSession::new(
-            AgentType::ClaudeCode,
-            "test-session",
-            None::<&str>,
-            DetectionMethod::Hook,
-            SessionMode::Interactive,
-        );
-        let session_file = session.file();
-
-        // File doesn't exist - should return empty vec
-        let repos = session_file.read_repos();
-        assert!(repos.is_empty());
-    }
-
-    #[test]
-    fn test_read_repos_no_repo_fields() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
-        let session = AikiSession::new(
-            AgentType::ClaudeCode,
-            "test-session",
-            None::<&str>,
-            DetectionMethod::Hook,
-            SessionMode::Interactive,
-        );
-        let session_file = session.file();
-        session_file.create().unwrap();
-
-        // File exists but has no repo fields
-        let repos = session_file.read_repos();
-        assert!(repos.is_empty());
-    }
-
-    #[test]
     fn test_add_repo_to_session_file() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
@@ -2593,10 +2610,6 @@ mod tests {
 
         // Add a repo
         session_file.add_repo("abc123def456").unwrap();
-
-        // Verify it was added
-        let repos = session_file.read_repos();
-        assert_eq!(repos, vec!["abc123def456"]);
 
         // Verify file content
         let content = fs::read_to_string(&session_file.path).unwrap();
@@ -2623,12 +2636,11 @@ mod tests {
         session_file.add_repo("def456").unwrap();
         session_file.add_repo("ghi789").unwrap();
 
-        // Verify all were added
-        let repos = session_file.read_repos();
-        assert_eq!(repos.len(), 3);
-        assert!(repos.contains(&"abc123".to_string()));
-        assert!(repos.contains(&"def456".to_string()));
-        assert!(repos.contains(&"ghi789".to_string()));
+        // Verify all were added by reading file content
+        let content = fs::read_to_string(&session_file.path).unwrap();
+        assert!(content.contains("repo=abc123"));
+        assert!(content.contains("repo=def456"));
+        assert!(content.contains("repo=ghi789"));
     }
 
     #[test]
@@ -2650,8 +2662,9 @@ mod tests {
         session_file.add_repo("abc123").unwrap();
 
         // Should only appear once
-        let repos = session_file.read_repos();
-        assert_eq!(repos, vec!["abc123"]);
+        let content = fs::read_to_string(&session_file.path).unwrap();
+        let repo_count = content.lines().filter(|l| l.trim() == "repo=abc123").count();
+        assert_eq!(repo_count, 1);
     }
 
     #[test]

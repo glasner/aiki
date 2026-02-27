@@ -87,20 +87,15 @@ pub mod spawn_config;
 pub mod types;
 pub mod variables;
 
-pub use conditionals::{
-    process_conditionals, tokenize as tokenize_conditionals, ConditionalError, EvalContext,
-    LoopItem, TemplateNode, Token,
-};
-pub use parser::{extract_yaml_frontmatter, parse_template, FrontmatterError};
 pub use resolver::{
-    convert_data, create_review_task_from_template, create_subtask_entries,
-    create_subtask_entries_from_template, create_subtasks_from_inline_loops,
-    create_tasks_from_template, expand_loops, find_templates_dir, get_working_copy_change_id,
-    has_inline_loops, has_subtask_refs, list_templates, load_template, load_template_file,
-    parse_priority, substitute_parent_id, SubtaskEntry, TemplateInfo, PARENT_ID_PLACEHOLDER,
+    convert_data, create_review_task_from_template,
+    create_subtask_entries_from_template,
+    create_tasks_from_template, find_templates_dir, get_working_copy_change_id,
+    has_inline_loops, has_subtask_refs, list_templates, load_template,
+    parse_priority, substitute_parent_id, SubtaskEntry, PARENT_ID_PLACEHOLDER,
 };
-pub use types::{TaskDefaults, TaskDefinition, TaskTemplate, TemplateFrontmatter};
+pub use types::TaskTemplate;
 pub use variables::{
-    coerce_to_string, coerce_value, find_variables, substitute, substitute_with_template_name,
+    coerce_to_string, find_variables, substitute_with_template_name,
     VariableContext,
 };

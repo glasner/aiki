@@ -1,7 +1,6 @@
 pub mod otel;
 
 use crate::cache::debug_log;
-use crate::editors::HookCommandOutput;
 use crate::error::Result;
 use crate::event_bus;
 use crate::events::{AikiEvent, AikiTurnCompletedPayload, AikiTurnStartedPayload};
@@ -19,9 +18,6 @@ use std::path::PathBuf;
 /// Fields: type, thread-id, turn-id, cwd, input-messages, last-assistant-message
 #[derive(Debug, Deserialize)]
 pub struct NotifyPayload {
-    /// Event type (always "agent-turn-complete" for now)
-    #[serde(rename = "type")]
-    pub event_type: String,
     /// Thread/conversation ID (same as OTel `conversation.id`)
     #[serde(rename = "thread-id")]
     pub thread_id: String,
@@ -210,15 +206,6 @@ fn handle_turn_complete(payload_json: Option<&str>) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Format a Codex hook result for output
-///
-/// Codex notify is fire-and-forget, so we don't output anything.
-/// This is a no-op that returns a success exit code.
-#[must_use]
-pub fn format_output() -> HookCommandOutput {
-    HookCommandOutput::new(None, 0)
 }
 
 #[cfg(test)]

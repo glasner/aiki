@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// Socket-activated: reads a single HTTP request, processes it, responds 200 OK, exits.
 /// All errors are non-fatal (always responds 200 OK to never block Codex).
-pub fn run(agent: String) -> Result<()> {
+pub fn run(_agent: String) -> Result<()> {
     // Read HTTP request from stdin
     let request = match read_http_request() {
         Ok(r) => r,

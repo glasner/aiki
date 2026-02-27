@@ -33,8 +33,6 @@ pub enum ConditionalError {
     InvalidLoopSyntax { details: String, line: usize },
     /// Invalid loop variable name
     InvalidLoopVariable { name: String, line: usize },
-    /// Unknown collection in loop
-    UnknownCollection { name: String, line: usize },
 }
 
 impl std::fmt::Display for ConditionalError {
@@ -89,13 +87,6 @@ impl std::fmt::Display for ConditionalError {
                 write!(
                     f,
                     "Invalid loop variable '{}' at line {}. Must match [a-z_][a-z0-9_]*",
-                    name, line
-                )
-            }
-            ConditionalError::UnknownCollection { name, line } => {
-                write!(
-                    f,
-                    "Unknown collection '{}' at line {}. Available: source.comments",
                     name, line
                 )
             }
@@ -225,10 +216,6 @@ fn node_to_template(node: &TemplateNode) -> String {
 pub struct EvalContext {
     /// All variables available for evaluation
     pub variables: HashMap<String, String>,
-    /// Strictness level for undefined variables
-    pub strict: bool,
-    /// Warnings collected during evaluation
-    pub warnings: Vec<String>,
 }
 
 impl EvalContext {
@@ -242,29 +229,6 @@ impl EvalContext {
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.variables.insert(key.into(), value.into());
     }
-
-    /// Get a variable value
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.variables.get(key)
-    }
-
-    /// Check if a variable is truthy
-    ///
-    /// A value is truthy if it exists and is not:
-    /// - empty string
-    /// - "false" (case-insensitive)
-    /// - "0"
-    /// - "null"
-    pub fn is_truthy(&self, key: &str) -> bool {
-        match self.variables.get(key) {
-            None => false,
-            Some(v) => {
-                let v_lower = v.to_lowercase();
-                !v.is_empty() && v_lower != "false" && v != "0" && v_lower != "null"
-            }
-        }
-    }
-
 }
 
 /// Tokenize a template string into tokens
@@ -1407,31 +1371,6 @@ inner
         let result = process_conditionals(template, &ctx).unwrap();
         assert!(result.contains("outer"));
         assert!(result.contains("inner"));
-    }
-
-    #[test]
-    fn test_truthy_values() {
-        let mut ctx = EvalContext::new();
-
-        // Empty string is falsy
-        ctx.set("empty", "");
-        assert!(!ctx.is_truthy("empty"));
-
-        // "false" is falsy
-        ctx.set("false_str", "false");
-        assert!(!ctx.is_truthy("false_str"));
-
-        // "0" is falsy
-        ctx.set("zero", "0");
-        assert!(!ctx.is_truthy("zero"));
-
-        // "null" is falsy
-        ctx.set("null_str", "null");
-        assert!(!ctx.is_truthy("null_str"));
-
-        // Other values are truthy
-        ctx.set("truthy", "yes");
-        assert!(ctx.is_truthy("truthy"));
     }
 
     #[test]

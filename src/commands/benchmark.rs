@@ -772,7 +772,7 @@ fn run_command(cwd: &PathBuf, program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn seed_session_file(repo_path: &PathBuf, session_id: &str, version: &str) -> Result<()> {
+fn seed_session_file(_repo_path: &PathBuf, session_id: &str, version: &str) -> Result<()> {
     use crate::provenance::record::{AgentType, DetectionMethod};
     use crate::session::{AikiSession, SessionMode};
 

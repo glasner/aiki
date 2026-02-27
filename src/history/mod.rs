@@ -12,8 +12,8 @@ pub use recorder::{record_autoreply, record_prompt, record_response, record_sess
 #[allow(unused_imports)]
 pub use storage::{
     ensure_conversations_branch, get_current_turn_info, get_current_turn_number,
-    get_last_prompt_turn, get_latest_prompt_change_id, get_prompt_by_change_id,
-    has_pending_autoreply, has_session_started_event, list_conversations, read_events,
+    get_latest_prompt_change_id, get_prompt_by_change_id,
+    has_pending_autoreply, list_conversations, read_events,
     write_event,
 };
 #[allow(unused_imports)]
