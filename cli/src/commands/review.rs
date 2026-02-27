@@ -21,7 +21,7 @@ use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
-    materialize_graph, read_events, reassign_task, start_task_core, write_link_event,
+    materialize_graph, read_events, reassign_task, start_task_core,
     write_link_event_with_autorun, Task, TaskComment, TaskStatus,
 };
 
@@ -272,8 +272,6 @@ pub struct CreateReviewResult {
     pub review_task_id: String,
     /// The review scope (typed, replaces loose scope_name/scope_id)
     pub scope: ReviewScope,
-    /// The assigned reviewer
-    pub assignee: Option<String>,
 }
 
 /// Check if a string looks like it could be a task ID, prefix, or subtask ID.
@@ -481,7 +479,6 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     Ok(CreateReviewResult {
         review_task_id: review_id,
         scope,
-        assignee,
     })
 }
 

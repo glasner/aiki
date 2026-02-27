@@ -17,7 +17,6 @@ pub fn short_id(id: &str) -> &str {
 
 /// Markdown builder for task command responses (used by read commands and errors)
 pub struct MdBuilder {
-    cmd: String,
     is_error: bool,
     scopes: Vec<String>,
 }
@@ -25,9 +24,8 @@ pub struct MdBuilder {
 impl MdBuilder {
     /// Create a new builder for a command
     #[must_use]
-    pub fn new(cmd: &str) -> Self {
+    pub fn new(_cmd: &str) -> Self {
         Self {
-            cmd: cmd.to_string(),
             is_error: false,
             scopes: Vec::new(),
         }
@@ -301,7 +299,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             created_at: Utc::now(),

@@ -277,55 +277,6 @@ pub fn get_current_turn_number(cwd: &Path, session_id: &str) -> Result<u32> {
     Ok(turn)
 }
 
-/// Check if a session.started event exists for a session
-///
-/// Returns true if a session_start event exists in the conversation history.
-pub fn has_session_started_event(cwd: &Path, session_id: &str) -> Result<bool> {
-    if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
-        return Ok(false);
-    }
-
-    // Query for session_start event
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "log",
-            "-r",
-            &format!(
-                "children(ancestors({})) & description(substring:'{}') & description(substring:'event=session_start') & description(substring:'session={}')",
-                CONVERSATIONS_BRANCH, METADATA_START, session_id
-            ),
-            "--no-graph",
-            "-T",
-            "change_id",
-            "--limit",
-            "1",
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to query session events: {}", e)))?;
-
-    if !output.status.success() {
-        return Ok(false);
-    }
-
-    let result = String::from_utf8_lossy(&output.stdout);
-    Ok(!result.trim().is_empty())
-}
-
-/// Get the turn number of the most recent prompt event for a session
-///
-/// Used to check if turn.started has been emitted for a given turn.
-/// Returns None if no prompt events found.
-pub fn get_last_prompt_turn(cwd: &Path, session_id: &str) -> Result<Option<u32>> {
-    let (turn, _source) = get_current_turn_info(cwd, session_id)?;
-    if turn == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(turn))
-    }
-}
-
 /// Read all conversation events from the aiki/conversations branch
 #[allow(dead_code)] // Part of history API
 pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {

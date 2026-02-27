@@ -102,14 +102,6 @@ pub fn get_changes_for_task(cwd: &std::path::Path, task_id: &str) -> Vec<String>
     }
 }
 
-/// Get files modified in a specific JJ change.
-///
-/// Uses `jj show -r <change> --summary` to extract file paths.
-/// Returns files with status M (modified), A (added), D (deleted), or R (renamed).
-pub fn get_files_in_change(cwd: &std::path::Path, change_id: &str) -> Vec<String> {
-    get_files_in_revset(cwd, change_id)
-}
-
 /// Get files modified across all changes matching a revset.
 ///
 /// Uses `jj log -r <revset> --name-only --no-graph` to get file paths

@@ -596,7 +596,6 @@ mod tests {
             assignee: Some("codex".to_string()),
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -630,7 +629,6 @@ mod tests {
             assignee: Some("claude-code".to_string()), // claude-code did the work
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -669,7 +667,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),

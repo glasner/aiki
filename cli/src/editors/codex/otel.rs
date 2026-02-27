@@ -210,8 +210,6 @@ pub enum CodexOtelEvent {
     /// `codex.tool_result` - Tool execution completed (may contain file modifications)
     ToolResult {
         conversation_id: String,
-        tool_name: Option<String>,
-        arguments: Option<String>,
     },
     /// Unrecognized event (acknowledged but not processed)
     Unknown {
@@ -369,13 +367,8 @@ fn parse_span_event(event: &SpanEvent) -> Option<CodexOtelEvent> {
             })
         }
         "codex.tool_result" => {
-            let tool_name = get_string_attribute(&event.attributes, "tool_name")
-                .or_else(|| get_string_attribute(&event.attributes, "name"));
-            let arguments = get_string_attribute(&event.attributes, "arguments");
             Some(CodexOtelEvent::ToolResult {
                 conversation_id,
-                tool_name,
-                arguments,
             })
         }
         // Deferred events: acknowledged but not mapped
@@ -414,13 +407,8 @@ fn parse_log_record(record: &LogRecord) -> Option<CodexOtelEvent> {
             })
         }
         "codex.tool_result" => {
-            let tool_name = get_string_attribute(&record.attributes, "tool_name")
-                .or_else(|| get_string_attribute(&record.attributes, "name"));
-            let arguments = get_string_attribute(&record.attributes, "arguments");
             Some(CodexOtelEvent::ToolResult {
                 conversation_id,
-                tool_name,
-                arguments,
             })
         }
         // Deferred events: acknowledged but not mapped
@@ -560,80 +548,6 @@ fn extract_cwd_from_attributes(attributes: &[KeyValue]) -> Option<PathBuf> {
     }
 
     None
-}
-
-/// Extract modified file paths from a tool_result arguments field.
-///
-/// Only extracts paths from tools that modify files (write, edit, patch).
-/// Skips gracefully if arguments is absent or unparseable.
-/// Resolves relative paths against the provided `cwd`.
-pub fn extract_modified_files(tool_name: Option<&str>, arguments: Option<&str>, cwd: Option<&std::path::Path>) -> Vec<String> {
-    let args = match arguments {
-        Some(a) if !a.is_empty() => a,
-        _ => return Vec::new(),
-    };
-
-    // Only extract from file-modifying tools
-    let is_file_tool = match tool_name {
-        Some(name) => {
-            let lower = name.to_lowercase();
-            lower.contains("write")
-                || lower.contains("edit")
-                || lower.contains("patch")
-                || lower.contains("create")
-                || lower.contains("apply")
-        }
-        None => true, // If tool name unknown, try to extract anyway
-    };
-
-    if !is_file_tool {
-        return Vec::new();
-    }
-
-    // Try to parse arguments as JSON to extract file paths
-    let mut paths = Vec::new();
-
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(args) {
-        // Common patterns for file paths in tool arguments:
-        // {"file_path": "..."}, {"path": "..."}, {"filename": "..."}
-        for key in &["file_path", "path", "filename", "file", "target"] {
-            if let Some(serde_json::Value::String(p)) = json.get(key) {
-                let resolved = resolve_path(p, cwd);
-                paths.push(resolved);
-            }
-        }
-
-        // Also check for array of files
-        if let Some(serde_json::Value::Array(files)) = json.get("files") {
-            for file in files {
-                if let serde_json::Value::String(p) = file {
-                    let resolved = resolve_path(p, cwd);
-                    paths.push(resolved);
-                }
-            }
-        }
-    } else {
-        // If not valid JSON, try treating the whole string as a file path
-        // (some tools pass just a path string)
-        let trimmed = args.trim().trim_matches('"');
-        if !trimmed.is_empty() && !trimmed.contains(' ') && trimmed.len() < 500 {
-            let resolved = resolve_path(trimmed, cwd);
-            paths.push(resolved);
-        }
-    }
-
-    paths
-}
-
-/// Resolve a path against cwd if it's relative
-fn resolve_path(path: &str, cwd: Option<&std::path::Path>) -> String {
-    let p = std::path::Path::new(path);
-    if p.is_relative() {
-        if let Some(cwd) = cwd {
-            return cwd.join(p).to_string_lossy().to_string();
-        }
-    }
-    path.to_string()
 }
 
 #[cfg(test)]
@@ -881,12 +795,8 @@ mod tests {
         match &events[0].0 {
             CodexOtelEvent::ToolResult {
                 conversation_id,
-                tool_name,
-                arguments,
             } => {
                 assert_eq!(conversation_id, "conv_789");
-                assert_eq!(tool_name.as_deref(), Some("write_file"));
-                assert!(arguments.is_some());
             }
             _ => panic!("Expected ToolResult event"),
         }
@@ -993,64 +903,6 @@ mod tests {
             }
             _ => panic!("Expected Unknown event for deferred event type"),
         }
-    }
-
-    #[test]
-    fn test_extract_modified_files_json() {
-        let files = extract_modified_files(
-            Some("write_file"),
-            Some(r#"{"file_path": "src/main.rs"}"#),
-            None,
-        );
-        assert_eq!(files, vec!["src/main.rs"]);
-    }
-
-    #[test]
-    fn test_extract_modified_files_relative_path() {
-        let cwd = std::path::Path::new("/home/user/project");
-        let files = extract_modified_files(
-            Some("edit"),
-            Some(r#"{"file_path": "src/lib.rs"}"#),
-            Some(cwd),
-        );
-        assert_eq!(files, vec!["/home/user/project/src/lib.rs"]);
-    }
-
-    #[test]
-    fn test_extract_modified_files_absolute_path() {
-        let cwd = std::path::Path::new("/home/user/project");
-        let files = extract_modified_files(
-            Some("write"),
-            Some(r#"{"file_path": "/tmp/output.txt"}"#),
-            Some(cwd),
-        );
-        assert_eq!(files, vec!["/tmp/output.txt"]);
-    }
-
-    #[test]
-    fn test_extract_modified_files_non_file_tool() {
-        let files = extract_modified_files(
-            Some("web_search"),
-            Some(r#"{"query": "rust async"}"#),
-            None,
-        );
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn test_extract_modified_files_no_arguments() {
-        let files = extract_modified_files(Some("write"), None, None);
-        assert!(files.is_empty());
-
-        let files = extract_modified_files(Some("write"), Some(""), None);
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn test_extract_modified_files_invalid_json() {
-        // Plain path string (not JSON)
-        let files = extract_modified_files(Some("write"), Some("src/foo.rs"), None);
-        assert_eq!(files, vec!["src/foo.rs"]);
     }
 
     #[test]

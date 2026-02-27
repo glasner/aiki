@@ -104,10 +104,8 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let child = cmd.spawn();
 
         match child {
-            Ok(child) => {
-                let pid = child.id();
+            Ok(_child) => {
                 Ok(BackgroundHandle {
-                    pid,
                     task_id: options.task_id.clone(),
                 })
             }
@@ -145,7 +143,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let child = cmd.spawn();
 
         match child {
-            Ok(child) => Ok(MonitoredChild::new(child, &options.task_id)),
+            Ok(child) => Ok(MonitoredChild::new(child)),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn claude for monitoring: {}",
                 e

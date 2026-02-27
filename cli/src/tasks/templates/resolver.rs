@@ -35,8 +35,6 @@ pub enum SubtaskEntry {
 pub struct TemplateInfo {
     /// Template name (e.g., "aiki/review")
     pub name: String,
-    /// Full path to the template file
-    pub path: PathBuf,
     /// Description from frontmatter (if available)
     pub description: Option<String>,
 }
@@ -228,7 +226,6 @@ fn collect_templates(
 
             templates.push(TemplateInfo {
                 name,
-                path: path.clone(),
                 description,
             });
         }
@@ -291,6 +288,7 @@ pub fn create_tasks_from_template(
         assignee: template.parent.assignee.clone(),
         sources: template.parent.sources.clone(),
         data: template.parent.data.clone(),
+        needs_context: None,
     };
 
     // Handle subtasks:
@@ -333,6 +331,7 @@ pub fn create_subtask_entries_from_template(
         assignee: template.parent.assignee.clone(),
         sources: template.parent.sources.clone(),
         data: template.parent.data.clone(),
+        needs_context: None,
     };
 
     // Route through the appropriate subtask extraction path
@@ -531,7 +530,7 @@ fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> R
     use super::conditionals::{process_conditionals, EvalContext};
 
     let mut result = String::new();
-    let len = items.len();
+    let _len = items.len();
 
     for (index, item) in items.iter().enumerate() {
         // Create evaluation context with loop variables for conditional processing
@@ -869,6 +868,7 @@ fn parse_expanded_subtasks(
                 assignee: fm.assignee,
                 sources: fm.sources,
                 data: fm.data,
+                needs_context: fm.needs_context,
             }));
         } else {
             i += 1;
@@ -1892,5 +1892,98 @@ Review the changes."#;
         let vars = find_variables("Use {{parent.subtasks.criteria}} and {{parent.subtasks.explore}}");
         assert!(vars.contains(&"parent.subtasks.criteria".to_string()));
         assert!(vars.contains(&"parent.subtasks.explore".to_string()));
+    }
+
+    // --- aiki/implement template tests ---
+
+    #[test]
+    fn test_implement_template_exists_and_parses_as_orchestrator() {
+        let temp_dir = TempDir::new().unwrap();
+        let aiki_dir = temp_dir.path().join("aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
+        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+
+        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "aiki/implement");
+        assert_eq!(template.version, Some("2.0.0".to_string()));
+        assert_eq!(template.defaults.task_type, Some("orchestrator".to_string()));
+    }
+
+    #[test]
+    fn test_implement_template_contains_lane_commands() {
+        let temp_dir = TempDir::new().unwrap();
+        let aiki_dir = temp_dir.path().join("aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
+        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+
+        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+
+        let instructions = &template.parent.instructions;
+        assert!(
+            instructions.contains("task lane {{data.target}}"),
+            "Template should contain 'task lane {{{{data.target}}}}' command"
+        );
+        assert!(
+            instructions.contains("--next-session --lane"),
+            "Template should contain '--next-session --lane' command"
+        );
+        assert!(
+            instructions.contains("task wait"),
+            "Template should contain 'task wait' command"
+        );
+        assert!(
+            instructions.contains("--any"),
+            "Template should contain '--any' flag for task wait"
+        );
+        assert!(
+            instructions.contains("task show {{data.target}}"),
+            "Template should contain 'task show {{{{data.target}}}}' command"
+        );
+    }
+
+    #[test]
+    fn test_implement_template_resolves_via_standard_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let aiki_dir = temp_dir.path().join("aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
+        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+
+        let templates = list_templates(temp_dir.path()).unwrap();
+        let names: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"aiki/implement"),
+            "aiki/implement should be discoverable via list_templates"
+        );
+
+        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "aiki/implement");
+    }
+
+    #[test]
+    fn test_implement_template_uses_data_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let aiki_dir = temp_dir.path().join("aiki");
+        fs::create_dir_all(&aiki_dir).unwrap();
+
+        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
+        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+
+        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+
+        assert!(
+            template.parent.name.contains("{{data.target}}"),
+            "Parent name should contain {{{{data.target}}}}, got: {}",
+            template.parent.name
+        );
+        assert!(
+            !template.parent.instructions.contains("{{data.epic}}"),
+            "Template should not use {{{{data.epic}}}} — it uses {{{{data.target}}}}"
+        );
     }
 }

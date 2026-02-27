@@ -123,6 +123,15 @@ pub const LINK_KINDS: &[LinkKind] = &[
         blocks_ready: false,
         task_only: true,
     },
+    // Session-context link: task must run in same agent session as predecessor
+    // Implies depends-on (blocks_ready: true). Linear chains only (max 1 each direction).
+    LinkKind {
+        name: "needs-context",
+        max_forward: Some(1),
+        max_reverse: Some(1),
+        blocks_ready: true,
+        task_only: true,
+    },
 ];
 
 /// Per-link metadata stored alongside edges.
@@ -290,7 +299,7 @@ impl TaskGraph {
         // "follows-up" kept for backward compat with existing links (renamed to "remediates")
         const TERMINAL_UNBLOCK: &[&str] = &["validates", "remediates", "follows-up"];
         // Link types that only unblock on Closed(Done)
-        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on"];
+        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on", "needs-context"];
 
         let terminal_blocked = TERMINAL_UNBLOCK.iter().any(|link_type| {
             self.edges
@@ -396,7 +405,7 @@ impl TaskGraph {
     ///
     /// Returns task IDs that should be auto-started.
     pub fn find_autorun_candidates(&self, closed_task_id: &str) -> Vec<String> {
-        const BLOCKING_KINDS: &[&str] = &["validates", "remediates", "follows-up", "depends-on", "blocked-by"];
+        const BLOCKING_KINDS: &[&str] = &["validates", "remediates", "follows-up", "depends-on", "blocked-by", "needs-context"];
 
         let mut candidates = std::collections::HashSet::new();
 
@@ -459,6 +468,54 @@ impl TaskGraph {
             .iter()
             .filter_map(|id| self.tasks.get(id))
             .collect()
+    }
+
+    /// Get the full ordered `needs-context` chain containing the given task.
+    ///
+    /// Walks backward to find the chain head (no predecessor), then forward
+    /// to collect all tasks in order. Returns a single-element vec if the
+    /// task has no needs-context links.
+    pub fn get_needs_context_chain(&self, task_id: &str) -> Vec<String> {
+        // Link direction: `B needs-context A` = link from B to A (B targets A).
+        // B depends on A, so A runs first. The "head" has no targets (doesn't
+        // need context from anyone). Walk via `targets` to find the head.
+
+        // Walk backward (via targets) to find the head
+        let mut head = task_id.to_string();
+        loop {
+            let predecessors = self.edges.targets(&head, "needs-context");
+            if predecessors.is_empty() {
+                break;
+            }
+            head = predecessors[0].clone();
+        }
+
+        // Walk forward (via referrers) from head to collect the chain
+        let mut chain = vec![head.clone()];
+        let mut current = head;
+        loop {
+            let successors = self.edges.referrers(&current, "needs-context");
+            if successors.is_empty() {
+                break;
+            }
+            current = successors[0].clone();
+            chain.push(current.clone());
+        }
+        chain
+    }
+
+    /// Returns `true` if this task is the head of a `needs-context` chain.
+    ///
+    /// A chain head has at least one successor but no predecessor in the
+    /// needs-context graph. Standalone tasks (no needs-context links at all)
+    /// return `false`.
+    ///
+    /// Link direction: `B needs-context A` = link from B to A. A is the head
+    /// (runs first). The head has no targets and at least one referrer.
+    pub fn is_needs_context_head(&self, task_id: &str) -> bool {
+        let has_predecessor = !self.edges.targets(task_id, "needs-context").is_empty();
+        let has_successor = !self.edges.referrers(task_id, "needs-context").is_empty();
+        !has_predecessor && has_successor
     }
 }
 
@@ -548,7 +605,7 @@ fn process_event(
             assignee,
             sources,
             template,
-            working_copy,
+            working_copy: _,
             instructions,
             data,
             timestamp,
@@ -570,12 +627,12 @@ fn process_event(
             // Index old-style data attributes as edges.
             // Synthesize implements-plan only for epic tasks:
             // - Must have data.plan (the plan file path)
-            // - Must NOT have data.epic (decompose/build tasks have this)
+            // - Must NOT have data.epic or data.target (decompose/build/implement tasks have these)
             // - data.plan must be a file path, not a task ID (old system used
             //   data.plan for epic task IDs)
             if let Some(plan) = data.get("plan") {
                 let plan_raw = plan.strip_prefix("file:").unwrap_or(plan);
-                if !data.contains_key("epic") && plan_raw.contains('/') {
+                if !data.contains_key("epic") && !data.contains_key("target") && plan_raw.contains('/') {
                     let target = if plan.starts_with("file:") {
                         plan.clone()
                     } else {
@@ -585,8 +642,12 @@ fn process_event(
                 }
             }
 
+            // Orchestrates edges from helper tasks (decompose uses data.epic, implement uses data.target)
             if let Some(epic_id) = data.get("epic") {
                 edges.add(task_id, epic_id, "orchestrates");
+            }
+            if let Some(target_id) = data.get("target") {
+                edges.add(task_id, target_id, "orchestrates");
             }
 
             if let Some(scope_id) = data.get("scope.id") {
@@ -625,7 +686,6 @@ fn process_event(
                     assignee: assignee.clone(),
                     sources: sources.clone(),
                     template: template.clone(),
-                    working_copy: working_copy.clone(),
                     instructions: instructions.clone(),
                     data: data.clone(),
                     created_at: *timestamp,
@@ -1369,8 +1429,8 @@ mod tests {
 
     #[test]
     fn test_link_kinds_registry() {
-        // Verify all 13 kinds are registered
-        assert_eq!(LINK_KINDS.len(), 13);
+        // Verify all 14 kinds are registered
+        assert_eq!(LINK_KINDS.len(), 14);
 
         let blocked = find_link_kind("blocked-by").unwrap();
         assert!(blocked.blocks_ready);
@@ -1580,6 +1640,63 @@ mod tests {
         assert_eq!(
             graph.edges.target("build1", "orchestrates"),
             Some("epic_task_id")
+        );
+    }
+
+    #[test]
+    fn test_data_target_as_orchestrates() {
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), "feature.md".to_string());
+        data.insert("target".to_string(), "epic_task_id".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "implement1".to_string(),
+            name: "Implement task".to_string(),
+            slug: None,
+            task_type: Some("orchestrator".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.target("implement1", "orchestrates"),
+            Some("epic_task_id")
+        );
+    }
+
+    #[test]
+    fn test_data_target_does_not_synthesize_implements_plan() {
+        let mut data = HashMap::new();
+        data.insert("plan".to_string(), "ops/now/feature.md".to_string());
+        data.insert("target".to_string(), "some_epic_id".to_string());
+
+        let events = vec![TaskEvent::Created {
+            task_id: "implement1".to_string(),
+            name: "Implement: ops/now/feature.md".to_string(),
+            slug: None,
+            task_type: Some("orchestrator".to_string()),
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data,
+            timestamp: Utc::now(),
+        }];
+
+        let graph = materialize_graph(&events);
+        assert_eq!(
+            graph.edges.target("implement1", "implements-plan"),
+            None,
+            "data.plan with data.target should not synthesize implements-plan"
         );
     }
 
@@ -2591,5 +2708,176 @@ mod tests {
         let graph = materialize_graph(&events);
         let candidates = graph.find_autorun_candidates("A");
         assert!(candidates.is_empty(), "Removed link should not trigger autorun");
+    }
+
+    // --- needs-context link tests ---
+
+    #[test]
+    fn test_needs_context_link_kind_exists() {
+        let kind = LINK_KINDS.iter().find(|k| k.name == "needs-context");
+        assert!(kind.is_some(), "needs-context should exist in LINK_KINDS");
+        let kind = kind.unwrap();
+        assert_eq!(kind.max_forward, Some(1), "Linear chains: max 1 forward");
+        assert_eq!(kind.max_reverse, Some(1), "Linear chains: max 1 reverse");
+        assert!(kind.blocks_ready, "needs-context should block ready queue");
+        assert!(kind.task_only, "needs-context should be task-only");
+    }
+
+    #[test]
+    fn test_needs_context_blocks_ready() {
+        // B needs-context A → B is blocked while A is open
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_link("B", "A", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(graph.is_blocked("B"), "B should be blocked when A is open");
+        assert!(!graph.is_blocked("A"), "A should not be blocked");
+    }
+
+    #[test]
+    fn test_needs_context_unblocks_on_done() {
+        // B needs-context A → B unblocks when A is Closed(Done)
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_link("B", "A", "needs-context"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(!graph.is_blocked("B"), "B should unblock when A is Closed(Done)");
+    }
+
+    #[test]
+    fn test_needs_context_stays_blocked_on_wont_do() {
+        // needs-context is in DONE_ONLY_UNBLOCK — WontDo should NOT unblock
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_link("B", "A", "needs-context"),
+            make_closed_wont_do("A"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.is_blocked("B"),
+            "B should stay blocked when A is Closed(WontDo)"
+        );
+    }
+
+    #[test]
+    fn test_needs_context_stays_blocked_on_stopped() {
+        // needs-context is in DONE_ONLY_UNBLOCK — Stopped should NOT unblock
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_link("B", "A", "needs-context"),
+            make_stopped("A"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(
+            graph.is_blocked("B"),
+            "B should stay blocked when A is Stopped"
+        );
+    }
+
+    #[test]
+    fn test_get_needs_context_chain_linear() {
+        // A → B → C chain
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_created("C", "Implement"),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+
+        // From any task in the chain, should get [A, B, C]
+        assert_eq!(graph.get_needs_context_chain("A"), vec!["A", "B", "C"]);
+        assert_eq!(graph.get_needs_context_chain("B"), vec!["A", "B", "C"]);
+        assert_eq!(graph.get_needs_context_chain("C"), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn test_get_needs_context_chain_single_task() {
+        // Task with no needs-context links returns just itself
+        let events = vec![make_created("A", "Standalone")];
+        let graph = materialize_graph(&events);
+        assert_eq!(graph.get_needs_context_chain("A"), vec!["A"]);
+    }
+
+    #[test]
+    fn test_get_needs_context_chain_pair() {
+        // A → B (two-task chain)
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_link("B", "A", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        assert_eq!(graph.get_needs_context_chain("A"), vec!["A", "B"]);
+        assert_eq!(graph.get_needs_context_chain("B"), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_is_needs_context_head_true() {
+        // A → B → C: A is the head
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_created("C", "Implement"),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(graph.is_needs_context_head("A"), "A should be head of chain");
+    }
+
+    #[test]
+    fn test_is_needs_context_head_false_middle() {
+        // A → B → C: B is in the middle, not a head
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_created("C", "Implement"),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_needs_context_head("B"),
+            "B (middle) should not be head"
+        );
+        assert!(
+            !graph.is_needs_context_head("C"),
+            "C (tail) should not be head"
+        );
+    }
+
+    #[test]
+    fn test_is_needs_context_head_false_standalone() {
+        // Task with no needs-context links is not a head
+        let events = vec![make_created("A", "Standalone")];
+        let graph = materialize_graph(&events);
+        assert!(
+            !graph.is_needs_context_head("A"),
+            "Standalone task should not be head"
+        );
+    }
+
+    #[test]
+    fn test_needs_context_in_find_autorun_candidates() {
+        // B needs-context A with autorun. A closed → B should be a candidate.
+        let events = vec![
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_autorun_link("B", "A", "needs-context"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        let candidates = graph.find_autorun_candidates("A");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0], "B");
     }
 }

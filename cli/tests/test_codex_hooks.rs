@@ -141,21 +141,8 @@ fn test_otel_full_session_flow() {
         assert_eq!(prompt.as_deref(), Some("Fix the bug in login.rs"));
     }
 
-    // Verify tool_result has extractable file path
-    if let CodexOtelEvent::ToolResult {
-        tool_name,
-        arguments,
-        ..
-    } = &events[2].0
-    {
-        assert_eq!(tool_name.as_deref(), Some("write_file"));
-        let files = otel::extract_modified_files(
-            tool_name.as_deref(),
-            arguments.as_deref(),
-            None,
-        );
-        assert_eq!(files, vec!["src/login.rs"]);
-    }
+    // Verify tool_result is parsed
+    assert!(matches!(&events[2].0, CodexOtelEvent::ToolResult { .. }));
 }
 
 #[test]
@@ -197,7 +184,6 @@ fn test_notify_payload_parsing() {
     }"#;
 
     let payload: NotifyPayload = serde_json::from_str(json).unwrap();
-    assert_eq!(payload.event_type, "agent-turn-complete");
     assert_eq!(payload.thread_id, "conv_notify_1");
     assert_eq!(payload.cwd, "/home/user/project");
     assert_eq!(
@@ -221,85 +207,6 @@ fn test_notify_payload_minimal() {
     assert_eq!(payload.thread_id, "conv_minimal");
     assert_eq!(payload.cwd, "/tmp");
     assert!(payload.last_assistant_message.is_none());
-}
-
-#[test]
-fn test_extract_modified_files_various_tools() {
-    // write_file tool
-    let files = otel::extract_modified_files(
-        Some("write_file"),
-        Some(r#"{"file_path": "src/main.rs"}"#),
-        None,
-    );
-    assert_eq!(files, vec!["src/main.rs"]);
-
-    // edit tool
-    let files = otel::extract_modified_files(
-        Some("edit"),
-        Some(r#"{"path": "lib/utils.py"}"#),
-        None,
-    );
-    assert_eq!(files, vec!["lib/utils.py"]);
-
-    // Non-file tool (web search) - should return empty
-    let files = otel::extract_modified_files(
-        Some("web_search"),
-        Some(r#"{"query": "rust async"}"#),
-        None,
-    );
-    assert!(files.is_empty());
-
-    // Unknown tool with file path - should try to extract
-    let files = otel::extract_modified_files(
-        None,
-        Some(r#"{"file_path": "unknown_tool_file.txt"}"#),
-        None,
-    );
-    assert_eq!(files, vec!["unknown_tool_file.txt"]);
-}
-
-#[test]
-fn test_extract_modified_files_path_resolution() {
-    let cwd = std::path::Path::new("/home/user/project");
-
-    // Relative path resolved against cwd
-    let files = otel::extract_modified_files(
-        Some("write"),
-        Some(r#"{"file_path": "src/foo.rs"}"#),
-        Some(cwd),
-    );
-    assert_eq!(files, vec!["/home/user/project/src/foo.rs"]);
-
-    // Absolute path unchanged
-    let files = otel::extract_modified_files(
-        Some("write"),
-        Some(r#"{"file_path": "/etc/config.toml"}"#),
-        Some(cwd),
-    );
-    assert_eq!(files, vec!["/etc/config.toml"]);
-}
-
-#[test]
-fn test_extract_modified_files_edge_cases() {
-    // Empty arguments
-    let files = otel::extract_modified_files(Some("write"), Some(""), None);
-    assert!(files.is_empty());
-
-    // No arguments
-    let files = otel::extract_modified_files(Some("write"), None, None);
-    assert!(files.is_empty());
-
-    // Invalid JSON - try as plain path
-    let files = otel::extract_modified_files(Some("write"), Some("simple_file.txt"), None);
-    assert_eq!(files, vec!["simple_file.txt"]);
-
-    // JSON without file path keys
-    let files = otel::extract_modified_files(
-        Some("write"),
-        Some(r#"{"content": "hello world"}"#),
-        None,
-    );
-    assert!(files.is_empty());
 }
 
 #[test]

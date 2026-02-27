@@ -1993,9 +1993,9 @@ impl HookEngine {
             // ========================================================================
             // Workspace isolation functions
             // ========================================================================
-            ("core", "workspace_create_if_concurrent") => {
+            ("core", "workspace_ensure_isolated") => {
                 let session = extract_session(&state.event)?;
-                crate::flows::core::workspace_create_if_concurrent(session, state.cwd())
+                crate::flows::core::workspace_ensure_isolated(session, state.cwd())
             }
             ("core", "workspace_absorb_all") => {
                 let session = extract_session(&state.event)?;
@@ -2202,9 +2202,9 @@ impl HookEngine {
             // ========================================================================
             // Workspace isolation functions
             // ========================================================================
-            ("core", "workspace_create_if_concurrent") => {
+            ("core", "workspace_ensure_isolated") => {
                 let session = extract_session(&state.event)?;
-                crate::flows::core::workspace_create_if_concurrent(session, state.cwd())
+                crate::flows::core::workspace_ensure_isolated(session, state.cwd())
             }
             ("core", "workspace_absorb_all") => {
                 let session = extract_session(&state.event)?;
@@ -3605,7 +3605,7 @@ mod tests {
 
     #[test]
     fn test_self_function_error_propagation() {
-        use crate::events::{AikiEvent, AikiTurnStartedPayload, TurnSource};
+        use crate::events::{AikiEvent, AikiTurnStartedPayload};
 
         // Create TurnStarted event
         let session = AikiSession::new(

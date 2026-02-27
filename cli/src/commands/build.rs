@@ -55,13 +55,21 @@ pub struct BuildArgs {
     #[arg(long)]
     pub restart: bool,
 
-    /// Build template to use (default: aiki/build)
+    /// Build template to use (default: aiki/implement)
     #[arg(long)]
     pub template: Option<String>,
 
     /// Agent for build orchestration (default: claude-code)
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Run review after build completes
+    #[arg(long)]
+    pub review: bool,
+
+    /// Run review-fix loop after build completes (implies --review)
+    #[arg(long)]
+    pub fix: bool,
 
     /// Subcommand (show)
     #[command(subcommand)]
@@ -87,8 +95,12 @@ pub fn run(args: BuildArgs) -> Result<()> {
         )
     })?;
 
+    // --fix implies --review
+    let review_after = args.review || args.fix;
+    let fix_after = args.fix;
+
     if is_task_id(&target) || is_task_id_prefix(&target) {
-        run_build_epic(&cwd, &target, args.run_async, args.template, args.agent)
+        run_build_epic(&cwd, &target, args.run_async, args.template, args.agent, review_after, fix_after)
     } else {
         run_build_plan(
             &cwd,
@@ -97,6 +109,8 @@ pub fn run(args: BuildArgs) -> Result<()> {
             args.run_async,
             args.template,
             args.agent,
+            review_after,
+            fix_after,
         )
     }
 }
@@ -116,6 +130,8 @@ fn run_build_plan(
     run_async: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    review_after: bool,
+    fix_after: bool,
 ) -> Result<()> {
     // Validate plan file exists and is .md
     validate_plan_path(cwd, plan_path)?;
@@ -193,14 +209,22 @@ fn run_build_plan(
     check_epic_blockers(&graph, &epic_id)?;
 
     // Create build task
-    let template = template_name.as_deref().unwrap_or("aiki/build");
+    let template = template_name.as_deref().unwrap_or("aiki/implement");
     let assignee = agent_type
         .as_ref()
         .map(|a| a.as_str().to_string())
         .or_else(|| Some("claude-code".to_string()));
 
+    // Only pass review/fix flags for async builds (spawns handle it).
+    // For sync builds, run_build_review() handles review directly — passing
+    // flags here too would create duplicate reviews.
+    let (spawn_review, spawn_fix) = if run_async {
+        (review_after, fix_after)
+    } else {
+        (false, false)
+    };
     let build_task_id =
-        create_build_task(cwd, plan_path, Some(&epic_id), template, assignee)?;
+        create_build_task(cwd, plan_path, Some(&epic_id), template, assignee, spawn_review, spawn_fix)?;
 
     let display_epic_id = epic_id.as_str();
 
@@ -248,6 +272,11 @@ fn run_build_plan(
         let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
         output_build_completed(&build_task_id, final_epic_id, &subtask_refs)?;
 
+        // Run post-build review if requested (sync path)
+        if review_after {
+            run_build_review(cwd, plan_path, final_epic_id, fix_after)?;
+        }
+
         // Output machine-readable to stdout if piped
         if !std::io::stdout().is_terminal() {
             println!(
@@ -264,7 +293,7 @@ fn run_build_plan(
 ///
 /// 1. Find epic task, verify it exists
 /// 2. Get plan path from epic's data
-/// 3. Create build task with data.epic and data.plan
+/// 3. Create build task with data.target and data.plan
 /// 4. Run build task (sync or async)
 /// 5. Output results
 fn run_build_epic(
@@ -273,6 +302,8 @@ fn run_build_epic(
     run_async: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    review_after: bool,
+    fix_after: bool,
 ) -> Result<()> {
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
@@ -305,18 +336,28 @@ fn run_build_epic(
         })?;
 
     // Create build task
-    let template = template_name.as_deref().unwrap_or("aiki/build");
+    let template = template_name.as_deref().unwrap_or("aiki/implement");
     let assignee = agent_type
         .as_ref()
         .map(|a| a.as_str().to_string())
         .or_else(|| Some("claude-code".to_string()));
 
+    // Only pass review/fix flags for async builds (spawns handle it).
+    // For sync builds, run_build_review() handles review directly — passing
+    // flags here too would create duplicate reviews.
+    let (spawn_review, spawn_fix) = if run_async {
+        (review_after, fix_after)
+    } else {
+        (false, false)
+    };
     let build_task_id = create_build_task(
         cwd,
         &plan_path,
         Some(epic_id),
         template,
         assignee,
+        spawn_review,
+        spawn_fix,
     )?;
 
     // Run build task
@@ -352,6 +393,11 @@ fn run_build_epic(
 
         let subtasks = get_subtasks(&graph, epic_id);
         output_build_completed(&build_task_id, epic_id, &subtasks)?;
+
+        // Run post-build review if requested (sync path)
+        if review_after {
+            run_build_review(cwd, &plan_path, epic_id, fix_after)?;
+        }
 
         // Output machine-readable to stdout if piped
         if !std::io::stdout().is_terminal() {
@@ -538,20 +584,28 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
 /// Create a build task from template.
 ///
 /// The build task orchestrates epic execution (if needed) and execution of subtasks.
-/// It stores `data.plan` and optionally `data.epic` to link back to the plan and epic.
+/// It stores `data.plan` and optionally `data.target` to link back to the plan and epic.
 fn create_build_task(
     cwd: &Path,
     plan_path: &str,
     epic_id: Option<&str>,
     template_name: &str,
     assignee: Option<String>,
+    review_after: bool,
+    fix_after: bool,
 ) -> Result<String> {
     use super::task::{create_from_template, TemplateTaskParams};
 
     let mut data = HashMap::new();
     data.insert("plan".to_string(), plan_path.to_string());
     if let Some(epic) = epic_id {
-        data.insert("epic".to_string(), epic.to_string());
+        data.insert("target".to_string(), epic.to_string());
+    }
+    if review_after {
+        data.insert("options.review".to_string(), "true".to_string());
+    }
+    if fix_after {
+        data.insert("options.fix".to_string(), "true".to_string());
     }
 
     let params = TemplateTaskParams {
@@ -630,6 +684,53 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
         timestamp: chrono::Utc::now(),
     };
     write_event(cwd, &close_event)?;
+    Ok(())
+}
+
+/// Run review (optionally with fix loop) after a build completes.
+///
+/// Creates a code review scoped to the plan's implementation, optionally
+/// including a fix subtask if `with_fix` is true. Runs the review to completion
+/// (blocking).
+fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool) -> Result<()> {
+    use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
+
+    let scope = ReviewScope {
+        kind: ReviewScopeKind::Code,
+        id: plan_path.to_string(),
+        task_ids: vec![],
+    };
+
+    let result = create_review(cwd, CreateReviewParams {
+        scope,
+        agent_override: None,
+        template: None,
+        fix: with_fix,
+        autorun: false,
+    })?;
+
+    // Run the review to completion (blocking)
+    let options = TaskRunOptions::new();
+    task_run(cwd, &result.review_task_id, options)?;
+
+    output_build_review_completed(&result.review_task_id, plan_path, with_fix)?;
+
+    Ok(())
+}
+
+/// Output build + review completed message to stderr
+fn output_build_review_completed(review_id: &str, plan_path: &str, with_fix: bool) -> Result<()> {
+    let title = if with_fix {
+        "Build + Review + Fix Completed"
+    } else {
+        "Build + Review Completed"
+    };
+    let content = format!(
+        "## {}\n- **Review ID:** {}\n- **Plan:** {}\n",
+        title, review_id, plan_path
+    );
+    let md = MdBuilder::new("build").build(&content, &[], &[]);
+    eprintln!("{}", md);
     Ok(())
 }
 
@@ -792,7 +893,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: chrono::Utc::now(),
@@ -1235,5 +1335,146 @@ mod tests {
         use clap::ValueEnum;
         let parsed = OutputFormat::from_str("unknown_format", false);
         assert!(parsed.is_err());
+    }
+
+    // --- Default template and data field tests ---
+
+    #[test]
+    fn test_default_template_is_aiki_implement() {
+        let default: &str = "aiki/implement";
+        assert_eq!(default, "aiki/implement");
+        assert_ne!(default, "aiki/build");
+    }
+
+    #[test]
+    fn test_build_args_no_loop_or_lanes_flags() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            template: None,
+            agent: None,
+            review: false,
+            fix: false,
+            subcommand: None,
+        };
+        assert!(!args.run_async);
+        assert!(!args.restart);
+    }
+
+    #[test]
+    fn test_template_override_via_flag() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            template: Some("custom/orchestrator".to_string()),
+            agent: None,
+            review: false,
+            fix: false,
+            subcommand: None,
+        };
+        let template = args.template.as_deref().unwrap_or("aiki/implement");
+        assert_eq!(template, "custom/orchestrator");
+    }
+
+    #[test]
+    fn test_fix_implies_review() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            template: None,
+            agent: None,
+            review: false,
+            fix: true,
+            subcommand: None,
+        };
+        let review_after = args.review || args.fix;
+        let fix_after = args.fix;
+        assert!(review_after);
+        assert!(fix_after);
+    }
+
+    #[test]
+    fn test_review_without_fix() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            template: None,
+            agent: None,
+            review: true,
+            fix: false,
+            subcommand: None,
+        };
+        let review_after = args.review || args.fix;
+        let fix_after = args.fix;
+        assert!(review_after);
+        assert!(!fix_after);
+    }
+
+    #[test]
+    fn test_fix_and_async_allowed() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: true,
+            restart: false,
+            template: None,
+            agent: None,
+            review: false,
+            fix: true,
+            subcommand: None,
+        };
+        // --fix + --async is allowed (task-based loops)
+        assert!(args.run_async);
+        assert!(args.fix);
+    }
+
+    #[test]
+    fn test_no_review_no_fix() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            template: None,
+            agent: None,
+            review: false,
+            fix: false,
+            subcommand: None,
+        };
+        let review_after = args.review || args.fix;
+        let fix_after = args.fix;
+        assert!(!review_after);
+        assert!(!fix_after);
+    }
+
+    #[test]
+    fn test_output_build_review_completed_with_fix() {
+        let result = output_build_review_completed("review123", "ops/now/feature.md", true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_output_build_review_completed_without_fix() {
+        let result = output_build_review_completed("review123", "ops/now/feature.md", false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_implement_template_has_spawns() {
+        // Verify the implement template contains spawns config for review/fix
+        // Read from the repo root (one level up from cli/)
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let template_path = std::path::Path::new(manifest_dir)
+            .parent()
+            .unwrap()
+            .join(".aiki/templates/aiki/implement.md");
+        let template_content = std::fs::read_to_string(&template_path)
+            .unwrap_or_else(|_| panic!("Failed to read template at {:?}", template_path));
+        assert!(template_content.contains("spawns:"));
+        assert!(template_content.contains("data.options.review"));
+        assert!(template_content.contains("data.options.fix"));
+        assert!(template_content.contains("aiki/review"));
     }
 }

@@ -264,8 +264,6 @@ pub struct Task {
     pub sources: Vec<String>,
     /// Template used to create this task (e.g., "aiki/review@1.0.0")
     pub template: Option<String>,
-    /// Working copy change_id at creation time (for historical template lookup)
-    pub working_copy: Option<String>,
     /// Instructions from template (with variables substituted)
     pub instructions: Option<String>,
     /// Custom data/metadata for the task
@@ -339,13 +337,6 @@ pub struct TaskActivity {
     pub stopped: Vec<TaskReference>,
 }
 
-impl TaskActivity {
-    /// Check if there was any activity
-    pub fn is_empty(&self) -> bool {
-        self.closed.is_empty() && self.started.is_empty() && self.stopped.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,7 +389,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: std::collections::HashMap::new(),
             created_at: chrono::Utc::now(),

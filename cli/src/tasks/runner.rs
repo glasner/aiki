@@ -9,10 +9,10 @@ use std::sync::atomic::Ordering;
 
 use crate::agents::{
     detect_agent_from_process_tree, get_runtime, AgentSessionResult, AgentSpawnOptions, AgentType,
-    Assignee, BackgroundHandle, MonitoredChild,
+    Assignee, BackgroundHandle,
 };
 use crate::error::{AikiError, Result};
-use crate::session::{find_active_session, find_task_session};
+use crate::session::find_active_session;
 use crate::tasks::{
     find_task,
     materialize_graph,
@@ -31,6 +31,8 @@ pub struct TaskRunOptions {
     pub agent_override: Option<AgentType>,
     /// Suppress real-time status updates
     pub quiet: bool,
+    /// Ordered chain of task IDs for needs-context session execution
+    pub chain_task_ids: Option<Vec<String>>,
 }
 
 impl Default for TaskRunOptions {
@@ -38,6 +40,7 @@ impl Default for TaskRunOptions {
         Self {
             agent_override: None,
             quiet: false,
+            chain_task_ids: None,
         }
     }
 }
@@ -56,10 +59,10 @@ impl TaskRunOptions {
         self
     }
 
-    /// Suppress status updates during sync execution
+    /// Set chain task IDs for needs-context session execution
     #[must_use]
-    pub fn quiet(mut self) -> Self {
-        self.quiet = true;
+    pub fn with_chain(mut self, chain: Vec<String>) -> Self {
+        self.chain_task_ids = Some(chain);
         self
     }
 }
@@ -119,6 +122,8 @@ fn resolve_agent_type(
 /// 5. Shows real-time status updates while waiting (if TTY)
 /// 6. Handles the result and updates task state
 pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+    let chain_task_ids = options.chain_task_ids.clone();
+
     // Load task from events
     let events = read_events(cwd)?;
     let tasks = materialize_graph(&events).tasks;
@@ -149,8 +154,13 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
-    let spawn_options = AgentSpawnOptions::new(cwd, task_id)
+    let mut spawn_options = AgentSpawnOptions::new(cwd, task_id)
         .with_parent_session_uuid(parent_uuid);
+
+    // Pass chain IDs for needs-context session scoping
+    if let Some(chain) = chain_task_ids {
+        spawn_options = spawn_options.with_chain(chain);
+    }
 
     // Check if we should show live status updates
     let show_status = std::io::stderr().is_terminal() && !options.quiet;
@@ -383,59 +393,6 @@ pub fn run_task_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) 
     }
 }
 
-/// Terminate a background task process if running
-///
-/// This function:
-/// 1. Looks up the task-driven session for the task via session files
-/// 2. If found, sends SIGTERM to terminate the agent process
-///
-/// Returns Ok(true) if a process was terminated, Ok(false) if no session found.
-/// Does not fail if the process has already exited (ESRCH error is ignored).
-#[cfg(unix)]
-pub fn terminate_background_task(_cwd: &Path, task_id: &str) -> Result<bool> {
-    let session_info = match find_task_session(task_id) {
-        Some(info) => info,
-        None => return Ok(false), // No task session - task wasn't running async
-    };
-
-    // Send SIGTERM to the process
-    // SAFETY: libc::kill is safe to call with any pid value
-    let result = unsafe { libc::kill(session_info.pid as libc::pid_t, libc::SIGTERM) };
-
-    // Note: Session file cleanup happens naturally when the agent exits
-    // and creates its end-of-session events
-
-    if result == 0 {
-        // Process was terminated successfully
-        Ok(true)
-    } else {
-        // Check the error
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            // ESRCH = No such process - already exited, that's fine
-            Ok(false)
-        } else if err.raw_os_error() == Some(libc::EPERM) {
-            // EPERM = Permission denied - process exists but we can't kill it
-            Ok(false)
-        } else {
-            // Unexpected error - the process may have exited
-            Ok(false)
-        }
-    }
-}
-
-/// Terminate a background task process if running (non-Unix stub)
-#[cfg(not(unix))]
-pub fn terminate_background_task(_cwd: &Path, task_id: &str) -> Result<bool> {
-    // On non-Unix platforms, just check if a task session exists
-    // Process termination is not implemented
-    if find_task_session(task_id).is_some() {
-        Ok(false) // Process not actually terminated
-    } else {
-        Ok(false)
-    }
-}
-
 /// Spawn a task in the background and return immediately
 ///
 /// This function:
@@ -584,6 +541,119 @@ pub fn resolve_next_subtask<'a>(
     }
 }
 
+/// Result of resolving the next session (needs-context aware)
+pub enum SessionResolution<'a> {
+    /// A single standalone task (no needs-context chain)
+    Standalone(&'a Task),
+    /// A needs-context chain (ordered task IDs from head to tail)
+    Chain(Vec<String>),
+    /// All subtasks are closed — nothing left to do
+    AllComplete,
+    /// Subtasks exist but none are ready (all blocked or in-progress)
+    Blocked(Vec<&'a Task>),
+    /// Parent task has no subtasks
+    NoSubtasks,
+}
+
+/// Resolve the next session to run for a parent task.
+///
+/// Like `resolve_next_subtask`, but needs-context aware: if the next ready
+/// subtask is the head of a `needs-context` chain, returns `Chain` with the
+/// full ordered list of chain task IDs. For standalone tasks, returns
+/// `Standalone`.
+pub fn resolve_next_session<'a>(
+    graph: &'a TaskGraph,
+    parent_id: &str,
+) -> SessionResolution<'a> {
+    match resolve_next_subtask(graph, parent_id) {
+        SubtaskResolution::Ready(task) => {
+            if graph.is_needs_context_head(&task.id) {
+                let chain = graph.get_needs_context_chain(&task.id);
+                SessionResolution::Chain(chain)
+            } else {
+                SessionResolution::Standalone(task)
+            }
+        }
+        SubtaskResolution::AllComplete => SessionResolution::AllComplete,
+        SubtaskResolution::Blocked(unclosed) => SessionResolution::Blocked(unclosed),
+        SubtaskResolution::NoSubtasks => SessionResolution::NoSubtasks,
+    }
+}
+
+/// Resolve the next session to run within a specific lane.
+///
+/// Like `resolve_next_session`, but restricted to subtasks within the
+/// lane identified by `lane_prefix` (head task ID prefix matching).
+pub fn resolve_next_session_in_lane<'a>(
+    graph: &'a TaskGraph,
+    parent_id: &str,
+    lane_prefix: &str,
+) -> crate::error::Result<SessionResolution<'a>> {
+    use crate::tasks::lanes::{derive_lanes, get_lane_task_ids, resolve_lane_prefix};
+    use crate::tasks::manager::get_subtasks;
+    use crate::tasks::md::short_id;
+
+    let decomp = derive_lanes(graph, parent_id);
+
+    // Resolve the lane prefix to a full lane head ID
+    let lane_head = resolve_lane_prefix(&decomp, lane_prefix, short_id(parent_id))
+        .map_err(|msg| crate::error::AikiError::InvalidArgument(msg))?;
+
+    // Get task IDs in the lane
+    let lane_task_ids = get_lane_task_ids(&decomp, &lane_head)
+        .ok_or_else(|| crate::error::AikiError::InvalidArgument(
+            format!("Lane '{}' not found", lane_head)
+        ))?;
+
+    const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
+
+    // Get subtasks filtered to this lane
+    let subtasks: Vec<&Task> = get_subtasks(graph, parent_id)
+        .into_iter()
+        .filter(|t| t.name != DIGEST_SUBTASK_NAME)
+        .filter(|t| lane_task_ids.contains(&t.id))
+        .collect();
+
+    if subtasks.is_empty() {
+        return Ok(SessionResolution::NoSubtasks);
+    }
+
+    // Filter to ready subtasks within the lane (open + unblocked)
+    let mut ready: Vec<&Task> = subtasks
+        .iter()
+        .copied()
+        .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
+        .collect();
+
+    ready.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    if let Some(first) = ready.first() {
+        if graph.is_needs_context_head(&first.id) {
+            let chain = graph.get_needs_context_chain(&first.id);
+            return Ok(SessionResolution::Chain(chain));
+        } else {
+            return Ok(SessionResolution::Standalone(first));
+        }
+    }
+
+    // No ready subtasks in this lane
+    let unclosed: Vec<&Task> = subtasks
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Closed)
+        .collect();
+
+    if unclosed.is_empty() {
+        Ok(SessionResolution::AllComplete)
+    } else {
+        Ok(SessionResolution::Blocked(unclosed))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,9 +672,151 @@ mod tests {
     }
 
     #[test]
-    fn test_task_run_options_quiet() {
-        let options = TaskRunOptions::new().quiet();
-        assert!(options.quiet);
-        assert!(options.agent_override.is_none());
+    fn test_task_run_options_with_chain() {
+        let chain = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+        let options = TaskRunOptions::new().with_chain(chain.clone());
+        assert_eq!(options.chain_task_ids, Some(chain));
+    }
+
+    // --- resolve_next_session tests ---
+    // These require building a TaskGraph with subtask-of links
+
+    use crate::tasks::graph::materialize_graph;
+    use crate::tasks::types::{TaskEvent, TaskPriority};
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn make_created(id: &str, name: &str) -> TaskEvent {
+        TaskEvent::Created {
+            task_id: id.to_string(),
+            name: name.to_string(),
+            slug: None,
+            task_type: None,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            working_copy: None,
+            instructions: None,
+            data: HashMap::new(),
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_link(from: &str, to: &str, kind: &str) -> TaskEvent {
+        TaskEvent::LinkAdded {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind: kind.to_string(),
+            autorun: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    fn make_closed(id: &str) -> TaskEvent {
+        TaskEvent::Closed {
+            task_ids: vec![id.to_string()],
+            outcome: crate::tasks::types::TaskOutcome::Done,
+            summary: None,
+            turn_id: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_standalone() {
+        // Parent P with subtask A (no needs-context) → Standalone
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_link("A", "P", "subtask-of"),
+        ];
+        let graph = materialize_graph(&events);
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Standalone(task) => {
+                assert_eq!(task.id, "A");
+            }
+            other => panic!("Expected Standalone, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_chain_head() {
+        // Parent P with subtasks A→B→C (needs-context chain)
+        // A is ready and is the chain head → Chain([A, B, C])
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_created("C", "Implement"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_link("C", "P", "subtask-of"),
+            make_link("B", "A", "needs-context"),
+            make_link("C", "B", "needs-context"),
+        ];
+        let graph = materialize_graph(&events);
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Chain(chain) => {
+                assert_eq!(chain, vec!["A", "B", "C"]);
+            }
+            other => panic!("Expected Chain, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_resolve_next_session_all_complete() {
+        // Parent P with all subtasks closed → AllComplete
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Task A"),
+            make_link("A", "P", "subtask-of"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        assert!(matches!(
+            resolve_next_session(&graph, "P"),
+            SessionResolution::AllComplete
+        ));
+    }
+
+    #[test]
+    fn test_resolve_next_session_no_subtasks() {
+        // Parent P with no subtasks → NoSubtasks
+        let events = vec![make_created("P", "Parent")];
+        let graph = materialize_graph(&events);
+        assert!(matches!(
+            resolve_next_session(&graph, "P"),
+            SessionResolution::NoSubtasks
+        ));
+    }
+
+    #[test]
+    fn test_resolve_next_session_non_head_chain_member() {
+        // Parent P with subtasks: A→B (needs-context chain) + C (standalone)
+        // A is done, B is ready but is NOT a chain head → Standalone(B)
+        let events = vec![
+            make_created("P", "Parent"),
+            make_created("A", "Explore"),
+            make_created("B", "Plan"),
+            make_created("C", "Review"),
+            make_link("A", "P", "subtask-of"),
+            make_link("B", "P", "subtask-of"),
+            make_link("C", "P", "subtask-of"),
+            make_link("B", "A", "needs-context"),
+            make_closed("A"),
+        ];
+        let graph = materialize_graph(&events);
+        // B is now ready (A is done). B has a predecessor in needs-context, so it's NOT a head.
+        // C is also ready (standalone). Both are open+unblocked.
+        // resolve_next_subtask picks by priority then creation time.
+        // B was created before C, so B is picked first.
+        // B is not a chain head (it has a predecessor A), so → Standalone(B)
+        match resolve_next_session(&graph, "P") {
+            SessionResolution::Standalone(task) => {
+                assert_eq!(task.id, "B");
+            }
+            other => panic!("Expected Standalone(B), got {:?}", std::mem::discriminant(&other)),
+        }
     }
 }

@@ -94,6 +94,8 @@ pub struct TaskDefinition {
     pub sources: Vec<String>,
     /// Additional data specific to this subtask
     pub data: HashMap<String, serde_json::Value>,
+    /// needs-context reference: `subtasks.<slug>` — sibling that must run before this in same session
+    pub needs_context: Option<String>,
 }
 
 /// Loop configuration for repeating templates
@@ -155,6 +157,9 @@ pub struct SubtaskFrontmatter {
     /// Additional data
     #[serde(default)]
     pub data: HashMap<String, serde_json::Value>,
+    /// needs-context reference: `subtasks.<slug>` — creates a needs-context link to the referenced sibling
+    #[serde(default, rename = "needs-context")]
+    pub needs_context: Option<String>,
 }
 
 #[cfg(test)]
@@ -299,5 +304,38 @@ spawns:
         let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
         assert!(fm.loop_config.is_some());
         assert_eq!(fm.spawns.len(), 1);
+    }
+
+    #[test]
+    fn test_subtask_frontmatter_needs_context() {
+        let yaml = r#"
+slug: plan
+needs-context: subtasks.explore
+"#;
+        let fm: SubtaskFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fm.slug, Some("plan".to_string()));
+        assert_eq!(
+            fm.needs_context,
+            Some("subtasks.explore".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subtask_frontmatter_no_needs_context() {
+        let yaml = r#"
+slug: review
+priority: p1
+"#;
+        let fm: SubtaskFrontmatter = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(fm.slug, Some("review".to_string()));
+        assert!(fm.needs_context.is_none());
+    }
+
+    #[test]
+    fn test_subtask_frontmatter_empty() {
+        let yaml = "";
+        let fm: SubtaskFrontmatter = serde_yaml::from_str(yaml).unwrap_or_default();
+        assert!(fm.needs_context.is_none());
+        assert!(fm.slug.is_none());
     }
 }

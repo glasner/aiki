@@ -422,8 +422,6 @@ fn test_plugin_list_outside_repo_cycle_shows_all_top_level() {
 /// shown indented under it, not as top-level entries.
 #[test]
 fn test_plugin_list_outside_repo_hides_deps_of_roots() {
-    use assert_cmd::prelude::*;
-    use predicates::prelude::*;
     use std::process::Command;
 
     let aiki_home = TempDir::new().unwrap();

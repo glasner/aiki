@@ -255,11 +255,6 @@ impl AikiState {
         }
     }
 
-    /// Check if there are pending session terminations
-    #[must_use]
-    pub fn has_pending_session_ends(&self) -> bool {
-        !self.pending_session_ends.is_empty()
-    }
 }
 
 #[cfg(test)]

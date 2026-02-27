@@ -3,7 +3,6 @@
 //! Provides a `CommandOutput` struct and `format_command_output()` that both
 //! review.rs and fix.rs use to produce consistent output.
 
-use std::collections::HashMap;
 
 use crate::commands::review::ReviewScope;
 use crate::tasks::TaskComment;
@@ -65,6 +64,7 @@ pub fn format_command_output(output: &CommandOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use crate::commands::review::{ReviewScope, ReviewScopeKind};
 
     #[test]

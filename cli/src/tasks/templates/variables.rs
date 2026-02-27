@@ -150,12 +150,6 @@ impl VariableContext {
         self.parent.insert(key.into(), value.into());
     }
 
-    /// Set an item variable (accessible as {item.key})
-    /// Used when iterating over a data source to create subtasks
-    pub fn set_item(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.item.insert(key.into(), value.into());
-    }
-
     /// Resolve a variable reference to its value
     fn resolve(&self, var_ref: &str) -> Option<String> {
         // Check for data.* variables first
@@ -555,10 +549,10 @@ mod tests {
     #[test]
     fn test_item_data() {
         let mut ctx = VariableContext::new();
-        ctx.set_item("text", "Fix the null check");
-        ctx.set_item("file", "src/auth.rs");
-        ctx.set_item("line", "42");
-        ctx.set_item("severity", "error");
+        ctx.item.insert("text".to_string(), "Fix the null check".to_string());
+        ctx.item.insert("file".to_string(), "src/auth.rs".to_string());
+        ctx.item.insert("line".to_string(), "42".to_string());
+        ctx.item.insert("severity".to_string(), "error".to_string());
 
         assert_eq!(ctx.resolve("item.text"), Some("Fix the null check".to_string()));
         assert_eq!(ctx.resolve("item.file"), Some("src/auth.rs".to_string()));
@@ -570,9 +564,9 @@ mod tests {
     #[test]
     fn test_substitute_item_data() {
         let mut ctx = VariableContext::new();
-        ctx.set_item("text", "Missing null check");
-        ctx.set_item("file", "src/main.rs");
-        ctx.set_item("line", "123");
+        ctx.item.insert("text".to_string(), "Missing null check".to_string());
+        ctx.item.insert("file".to_string(), "src/main.rs".to_string());
+        ctx.item.insert("line".to_string(), "123".to_string());
 
         let result = substitute("Fix: {{item.file}}:{{item.line}} - {{item.text}}", &ctx).unwrap();
         assert_eq!(result, "Fix: src/main.rs:123 - Missing null check");

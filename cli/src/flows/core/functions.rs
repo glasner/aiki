@@ -1090,7 +1090,7 @@ pub fn task_in_progress(cwd: &Path) -> Result<ActionResult> {
 /// # Returns
 /// ActionResult with stdout being the absolute workspace path (if created/exists)
 /// or empty string (if skipped or failed)
-pub fn workspace_create_if_concurrent(
+pub fn workspace_ensure_isolated(
     session: &crate::session::AikiSession,
     cwd: &Path,
 ) -> Result<ActionResult> {
@@ -1109,45 +1109,7 @@ pub fn workspace_create_if_concurrent(
         }
     };
 
-    let repo_id = match crate::repos::ensure_repo_id(&repo_root) {
-        Ok(id) => id,
-        Err(_) => {
-            debug_log(|| "[workspace] No repo-id found, skipping workspace creation");
-            return Ok(ActionResult {
-                success: true,
-                exit_code: Some(0),
-                stdout: String::new(),
-                stderr: String::new(),
-            });
-        }
-    };
-
     let session_uuid = session.uuid();
-
-    // Register session in repo (for O(1) session counting and repo-transition detection)
-    isolation::register_session_in_repo(&repo_id, session_uuid);
-
-    let session_count = isolation::count_sessions_in_repo(&repo_id);
-
-    // Check if a workspace already exists for this session
-    let workspace_path = crate::session::isolation::workspaces_dir()
-        .join(&repo_id)
-        .join(session_uuid);
-
-    if session_count <= 1 && !workspace_path.exists() {
-        debug_log(|| {
-            format!(
-                "[workspace] Only {} session(s) in repo {}, skipping isolation",
-                session_count, repo_id
-            )
-        });
-        return Ok(ActionResult {
-            success: true,
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
-    }
 
     match isolation::create_isolated_workspace(&repo_root, session_uuid) {
         Ok(ws) => {
@@ -1257,8 +1219,6 @@ pub fn workspace_absorb_all(
         let workspace = isolation::IsolatedWorkspace {
             name: workspace_name,
             path: session_ws_dir,
-            repo_root: repo_root.clone(),
-            session_uuid: session_uuid.to_string(),
         };
 
         match isolation::absorb_workspace(
@@ -1269,10 +1229,6 @@ pub fn workspace_absorb_all(
             Ok(isolation::AbsorbResult::Absorbed) => {
                 absorbed += 1;
                 let _ = isolation::cleanup_workspace(&repo_root, &workspace);
-                // Unregister session from this repo's sidecar
-                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
-                    isolation::unregister_session_from_repo(repo_id, session_uuid);
-                }
             }
             Ok(isolation::AbsorbResult::Conflicts { conflict_id, conflicted_files }) => {
                 // Don't cleanup — workspace stays alive for conflict resolution
@@ -1288,10 +1244,6 @@ pub fn workspace_absorb_all(
             }
             Ok(isolation::AbsorbResult::Skipped) => {
                 let _ = isolation::cleanup_workspace(&repo_root, &workspace);
-                // Unregister session from this repo's sidecar
-                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
-                    isolation::unregister_session_from_repo(repo_id, session_uuid);
-                }
             }
             Err(e) => {
                 eprintln!(
@@ -1299,19 +1251,8 @@ pub fn workspace_absorb_all(
                     workspace.name, e
                 );
                 let _ = isolation::cleanup_workspace(&repo_root, &workspace);
-                // Unregister session from this repo's sidecar
-                if let Some(repo_id) = repo_id_dir.file_name().and_then(|n| n.to_str()) {
-                    isolation::unregister_session_from_repo(repo_id, session_uuid);
-                }
             }
         }
-    }
-
-    // Unconditionally unregister this session from any repo it's registered in.
-    // This handles solo sessions that registered in by-repo/ but never created
-    // a workspace (the loop above only covers sessions with workspace dirs).
-    if let Some(repo_id) = isolation::find_session_repo(session_uuid) {
-        isolation::unregister_session_from_repo(&repo_id, session_uuid);
     }
 
     // Opportunistically clean up orphaned JJ workspaces for the current repo.

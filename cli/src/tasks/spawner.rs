@@ -34,6 +34,16 @@ pub enum SpawnAction {
     },
 }
 
+/// Result of spawn evaluation, including actions and metadata.
+#[derive(Debug, Clone)]
+pub struct SpawnResult {
+    /// Actions to take (create tasks/subtasks)
+    pub actions: Vec<SpawnAction>,
+    /// Whether any spawn entry was skipped due to max iterations being reached.
+    /// When true, the caller should set `loop.max_reached = true` on the task.
+    pub loop_max_reached: bool,
+}
+
 /// Build a Rhai Scope from the post-transition task state.
 ///
 /// The scope provides access to:
@@ -311,18 +321,22 @@ pub fn evaluate_spawns(
     task: &Task,
     graph: &TaskGraph,
     spawns_config: &[SpawnEntry],
-) -> Vec<SpawnAction> {
+) -> SpawnResult {
     let mut evaluator = ExpressionEvaluator::new();
     // Check for data.options.once flag - if set, skip all spawns
     if let Some(once) = task.data.get("options.once") {
         if once == "true" {
-            return Vec::new();
+            return SpawnResult {
+                actions: Vec::new(),
+                loop_max_reached: false,
+            };
         }
     }
     let scope = build_spawn_scope(task, graph);
 
     let mut task_actions: Vec<SpawnAction> = Vec::new();
     let mut subtask_actions: Vec<SpawnAction> = Vec::new();
+    let mut loop_max_reached = false;
 
     for (index, entry) in spawns_config.iter().enumerate() {
         // Check max iterations FIRST (if specified)
@@ -340,6 +354,7 @@ pub fn evaluate_spawns(
                         "[aiki] Warning: Loop terminated: max iterations ({}) reached for spawn entry {}",
                         max_iters, index
                     );
+                    loop_max_reached = true;
                     continue;
                 }
             }
@@ -421,10 +436,15 @@ pub fn evaluate_spawns(
     }
 
     // Subtask precedence: if any subtasks, skip all standalone tasks
-    if !subtask_actions.is_empty() {
+    let actions = if !subtask_actions.is_empty() {
         subtask_actions
     } else {
         task_actions
+    };
+
+    SpawnResult {
+        actions,
+        loop_max_reached,
     }
 }
 
@@ -447,7 +467,6 @@ mod tests {
             assignee: None,
             sources: Vec::new(),
             template: None,
-            working_copy: None,
             instructions: None,
             data: HashMap::new(),
             created_at: Utc::now(),
@@ -487,7 +506,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { template, .. } => assert_eq!(template, "aiki/fix"),
@@ -514,7 +533,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert!(actions.is_empty());
     }
 
@@ -538,7 +557,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
     }
 
@@ -577,7 +596,7 @@ mod tests {
             },
         ];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         // Only subtask should be returned (subtask precedence)
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -616,7 +635,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask {
@@ -657,7 +676,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         // Spawn entry should be skipped because "urgent" fails Rhai evaluation
         assert!(actions.is_empty());
     }
@@ -692,7 +711,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { data, .. } => {
@@ -734,7 +753,7 @@ mod tests {
             },
         ];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 2);
     }
 
@@ -771,7 +790,7 @@ mod tests {
             },
         ];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         // Only the valid one should succeed
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -823,7 +842,7 @@ mod tests {
             },
         ];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 2);
         match &actions[0] {
             SpawnAction::CreateTask { spawn_index, .. } => assert_eq!(*spawn_index, 1),
@@ -899,7 +918,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&parent_task, &graph, &spawns);
+        let actions = evaluate_spawns(&parent_task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
     }
 
@@ -922,7 +941,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
     }
 
@@ -945,7 +964,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert!(actions.is_empty());
     }
 
@@ -978,7 +997,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { data, .. } => {
@@ -1023,7 +1042,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { data, .. } => {
@@ -1054,7 +1073,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { autorun, .. } => {
@@ -1082,7 +1101,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateTask { autorun, .. } => {
@@ -1110,7 +1129,7 @@ mod tests {
             }),
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             SpawnAction::CreateSubtask { autorun, .. } => {
@@ -1142,8 +1161,9 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
-        assert!(actions.is_empty(), "Should skip spawn when max iterations reached");
+        let result = evaluate_spawns(&task, &graph, &spawns);
+        assert!(result.actions.is_empty(), "Should skip spawn when max iterations reached");
+        assert!(result.loop_max_reached, "loop_max_reached should be true when max iterations hit");
     }
 
     #[test]
@@ -1166,8 +1186,9 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
-        assert_eq!(actions.len(), 1, "Should continue when below max iterations");
+        let result = evaluate_spawns(&task, &graph, &spawns);
+        assert_eq!(result.actions.len(), 1, "Should continue when below max iterations");
+        assert!(!result.loop_max_reached, "loop_max_reached should be false when below max");
     }
 
     #[test]
@@ -1190,19 +1211,19 @@ mod tests {
         // index1 == max_iterations (5 >= 5) → terminate
         let mut task = make_closed_task("spawner");
         task.data.insert("loop.index1".to_string(), "5".to_string());
-        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]);
+        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]).actions;
         assert!(actions.is_empty(), "index1 == max_iterations should terminate");
 
         // index1 == max_iterations - 1 (4 < 5) → continue
         let mut task = make_closed_task("spawner");
         task.data.insert("loop.index1".to_string(), "4".to_string());
-        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]);
+        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]).actions;
         assert_eq!(actions.len(), 1, "index1 == max_iterations - 1 should continue");
 
         // index1 > max_iterations (6 >= 5) → terminate
         let mut task = make_closed_task("spawner");
         task.data.insert("loop.index1".to_string(), "6".to_string());
-        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]);
+        let actions = evaluate_spawns(&task, &graph, &[make_spawn()]).actions;
         assert!(actions.is_empty(), "index1 > max_iterations should terminate");
     }
 
@@ -1226,7 +1247,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1, "Missing loop.index1 should default to 1 and not skip");
     }
 
@@ -1250,7 +1271,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1, "max_iterations: None should not limit iterations");
     }
 
@@ -1274,7 +1295,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1, "max_iterations: 0 should mean no limit");
     }
 
@@ -1299,7 +1320,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert!(actions.is_empty(), "max_iterations should take precedence over when condition");
     }
 
@@ -1326,7 +1347,7 @@ mod tests {
             subtask: None,
         }];
 
-        let actions = evaluate_spawns(&task, &graph, &spawns);
+        let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         // iteration_count is 10, condition checks < 10, so false → no spawn
         assert!(actions.is_empty(), "Old-style inline check should still terminate");
 
@@ -1334,7 +1355,7 @@ mod tests {
         let mut task2 = make_closed_task("spawner2");
         task2.data.insert("iteration_count".to_string(), "9".to_string());
         task2.data.insert("approved".to_string(), "false".to_string());
-        let actions2 = evaluate_spawns(&task2, &graph, &spawns);
+        let actions2 = evaluate_spawns(&task2, &graph, &spawns).actions;
         assert_eq!(actions2.len(), 1, "Old-style inline check should allow spawn when under limit");
     }
 
@@ -1361,8 +1382,9 @@ mod tests {
             }),
             subtask: None,
         }];
-        let actions = evaluate_spawns(&task1, &graph, &spawns);
-        assert!(actions.is_empty(), "max_iterations should stop loop before inline check");
+        let result = evaluate_spawns(&task1, &graph, &spawns);
+        assert!(result.actions.is_empty(), "max_iterations should stop loop before inline check");
+        assert!(result.loop_max_reached, "loop_max_reached should be true when max iterations hit");
 
         // Case 2: inline check reached first (max_iters=20, inline check <5)
         let mut task2 = make_closed_task("spawner2");
@@ -1381,7 +1403,8 @@ mod tests {
             }),
             subtask: None,
         }];
-        let actions2 = evaluate_spawns(&task2, &graph, &spawns2);
-        assert!(actions2.is_empty(), "Inline check should stop loop before max_iterations");
+        let result2 = evaluate_spawns(&task2, &graph, &spawns2);
+        assert!(result2.actions.is_empty(), "Inline check should stop loop before max_iterations");
+        assert!(!result2.loop_max_reached, "loop_max_reached should be false when inline check stops loop");
     }
 }

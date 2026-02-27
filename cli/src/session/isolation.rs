@@ -9,7 +9,6 @@
 
 use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
-use crate::global;
 use crate::jj::{jj_cmd, JJWorkspace};
 use crate::repos;
 use std::fs;
@@ -33,10 +32,6 @@ pub struct IsolatedWorkspace {
     pub name: String,
     /// Workspace path: /tmp/aiki/<repo-id>/<session-id>/
     pub path: PathBuf,
-    /// Project root this workspace belongs to
-    pub repo_root: PathBuf,
-    /// Session UUID that owns this workspace
-    pub session_uuid: String,
 }
 
 /// Walk up from path looking for `.jj/` directory. Returns repo root or None.
@@ -69,8 +64,6 @@ pub fn create_isolated_workspace(
     let workspace = IsolatedWorkspace {
         name: workspace_name.clone(),
         path: workspace_path.clone(),
-        repo_root: repo_root.to_path_buf(),
-        session_uuid: session_uuid.to_string(),
     };
 
     // Idempotent: if workspace directory already exists, return it
@@ -640,8 +633,6 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
         let workspace = IsolatedWorkspace {
             name: workspace_name.clone(),
             path: session_ws_dir,
-            repo_root: repo_root.clone(),
-            session_uuid: session_uuid.to_string(),
         };
 
         // Try to absorb into main
@@ -704,8 +695,9 @@ pub fn recover_orphaned_workspaces(session_uuid: &str) -> Result<u32> {
 /// Clean up orphaned JJ workspaces that no longer have active sessions.
 ///
 /// Scans `jj workspace list` for `aiki-*` entries, checks if each session
-/// is still registered in by-repo/, and forgets workspaces for dead sessions.
-/// This prevents the JJ workspace list from growing unbounded.
+/// is still backed by a live session file in `~/.aiki/sessions/{uuid}`,
+/// and forgets workspaces for dead sessions. This prevents the JJ workspace
+/// list from growing unbounded.
 pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
     let output = jj_cmd()
         .current_dir(repo_root)
@@ -732,8 +724,8 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
         // Extract UUID from workspace name "aiki-<uuid>"
         let uuid = &ws_name["aiki-".len()..];
 
-        // Check if this session is still active (has a by-repo sidecar)
-        if find_session_repo(uuid).is_some() {
+        // Check if this session is still active (has a session file)
+        if crate::global::global_sessions_dir().join(uuid).exists() {
             continue; // Session is still active, skip
         }
 
@@ -779,75 +771,6 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
     }
 
     Ok(cleaned)
-}
-
-/// Count how many active sessions are using a specific repo.
-///
-/// Counts entries in `~/.aiki/sessions/by-repo/<repo-id>/` — O(1) directory listing
-/// instead of scanning and parsing every session file.
-pub fn count_sessions_in_repo(repo_id: &str) -> usize {
-    let repo_dir = by_repo_dir().join(repo_id);
-    match fs::read_dir(&repo_dir) {
-        Ok(entries) => entries.count(),
-        Err(_) => 0,
-    }
-}
-
-/// Path to the by-repo sidecar directory.
-fn by_repo_dir() -> PathBuf {
-    global::global_aiki_dir()
-        .join("sessions")
-        .join("by-repo")
-}
-
-/// Register a session as active in a specific repo.
-///
-/// Creates an empty marker file at `~/.aiki/sessions/by-repo/<repo-id>/<session-id>`.
-/// Idempotent — no-op if already registered.
-pub fn register_session_in_repo(repo_id: &str, session_uuid: &str) {
-    let sidecar = by_repo_dir().join(repo_id).join(session_uuid);
-    if sidecar.exists() {
-        return;
-    }
-    if let Some(parent) = sidecar.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(&sidecar, "");
-}
-
-/// Unregister a session from a specific repo.
-///
-/// Removes `~/.aiki/sessions/by-repo/<repo-id>/<session-id>`.
-/// Cleans up the repo-id directory if empty.
-/// Idempotent — no-op if not registered.
-pub fn unregister_session_from_repo(repo_id: &str, session_uuid: &str) {
-    let repo_dir = by_repo_dir().join(repo_id);
-    let sidecar = repo_dir.join(session_uuid);
-    let _ = fs::remove_file(&sidecar);
-    // Clean up empty repo directory
-    if let Ok(entries) = fs::read_dir(&repo_dir) {
-        if entries.count() == 0 {
-            let _ = fs::remove_dir(&repo_dir);
-        }
-    }
-}
-
-/// Find which repo a session is currently registered in.
-///
-/// Scans `~/.aiki/sessions/by-repo/*/` for a file named `<session-id>`.
-/// Returns the repo-id if found. Typically 1-2 directories to scan.
-pub fn find_session_repo(session_uuid: &str) -> Option<String> {
-    let base = by_repo_dir();
-    let entries = fs::read_dir(&base).ok()?;
-    for entry in entries.flatten() {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        if entry.path().join(session_uuid).exists() {
-            return entry.file_name().to_str().map(String::from);
-        }
-    }
-    None
 }
 
 /// Find the change ID for a named workspace by parsing `jj workspace list`.
@@ -928,23 +851,6 @@ mod tests {
     // Mutex to serialize tests that modify AIKI_HOME env var
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-    /// Helper to run a test with a temporary AIKI_HOME value.
-    /// Serializes access to prevent parallel test interference.
-    fn with_aiki_home<F, R>(temp_dir: &std::path::Path, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let original = std::env::var("AIKI_HOME").ok();
-        std::env::set_var("AIKI_HOME", temp_dir);
-        let result = f();
-        match original {
-            Some(v) => std::env::set_var("AIKI_HOME", v),
-            None => std::env::remove_var("AIKI_HOME"),
-        }
-        result
-    }
-
     #[test]
     fn test_find_jj_root_with_jj_dir() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -967,81 +873,6 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let result = find_jj_root(temp_dir.path());
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_count_sessions_in_repo_empty() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        with_aiki_home(temp_dir.path(), || {
-            let count = count_sessions_in_repo("test-repo-id");
-            assert_eq!(count, 0);
-        });
-    }
-
-    #[test]
-    fn test_count_sessions_in_repo_with_sessions() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        with_aiki_home(temp_dir.path(), || {
-            register_session_in_repo("test-repo-id", "session-1");
-            register_session_in_repo("test-repo-id", "session-2");
-            register_session_in_repo("other-repo", "session-3");
-
-            assert_eq!(count_sessions_in_repo("test-repo-id"), 2);
-            assert_eq!(count_sessions_in_repo("other-repo"), 1);
-        });
-    }
-
-    #[test]
-    fn test_register_session_in_repo() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        with_aiki_home(temp_dir.path(), || {
-            register_session_in_repo("repo-1", "session-abc");
-
-            let sidecar = temp_dir.path().join("sessions/by-repo/repo-1/session-abc");
-            assert!(sidecar.exists());
-
-            // Idempotent — second call is a no-op
-            register_session_in_repo("repo-1", "session-abc");
-            assert!(sidecar.exists());
-        });
-    }
-
-    #[test]
-    fn test_unregister_session_from_repo() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        with_aiki_home(temp_dir.path(), || {
-            register_session_in_repo("repo-1", "session-abc");
-            let sidecar = temp_dir.path().join("sessions/by-repo/repo-1/session-abc");
-            assert!(sidecar.exists());
-
-            unregister_session_from_repo("repo-1", "session-abc");
-            assert!(!sidecar.exists());
-            // Empty repo dir should be cleaned up
-            assert!(!temp_dir.path().join("sessions/by-repo/repo-1").exists());
-
-            // Idempotent — second call is a no-op
-            unregister_session_from_repo("repo-1", "session-abc");
-        });
-    }
-
-    #[test]
-    fn test_find_session_repo() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        with_aiki_home(temp_dir.path(), || {
-            // No sidecars → None
-            assert_eq!(find_session_repo("session-abc"), None);
-
-            // Register and find
-            register_session_in_repo("repo-1", "session-abc");
-            assert_eq!(find_session_repo("session-abc"), Some("repo-1".to_string()));
-
-            // Different session → None
-            assert_eq!(find_session_repo("session-xyz"), None);
-
-            // Unregister → None
-            unregister_session_from_repo("repo-1", "session-abc");
-            assert_eq!(find_session_repo("session-abc"), None);
-        });
     }
 
     #[test]
