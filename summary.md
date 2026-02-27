@@ -7,7 +7,6 @@ Aiki is an AI code provenance tracking tool built on Jujutsu (jj). It automatica
 - **Provenance tracking** - Records AI agent metadata in jj change descriptions
 - **Line-level blame** - `aiki blame` shows which AI agent wrote each line
 - **Git co-authorship** - Automatically adds `Co-authored-by:` lines to Git commits
-- **Cryptographic signing** - GPG/SSH signatures for tamper-proof provenance
 - **Task management** - Event-sourced task system for AI agent workflows
 - **Code review** - Pipeable review system (`aiki review | aiki fix`)
 - **Session history** - Conversation tracking across AI sessions
@@ -30,7 +29,6 @@ Aiki is an AI code provenance tracking tool built on Jujutsu (jj). It automatica
 | `aiki doctor` | Check configuration health |
 | `aiki blame <file>` | View AI attribution per line |
 | `aiki authors` | List AI authors for changes |
-| `aiki verify` | Verify cryptographic signatures |
 | `aiki task` | Manage tasks (add, start, close) |
 | `aiki review` | Create and run code reviews |
 | `aiki fix` | Create followup tasks from reviews |

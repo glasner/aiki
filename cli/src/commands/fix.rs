@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::io::{self, BufRead, IsTerminal};
+use std::io::{self, BufRead};
+
+use crate::output_utils;
 use std::path::Path;
 
 use crate::agents::AgentType;
@@ -145,16 +147,12 @@ fn handle_conflict_fix(
         let options = TaskRunOptions::new();
         task_run_async(cwd, &task_id, options)?;
         output_conflict_fix_async(&task_id, conflict_id)?;
-        if !std::io::stdout().is_terminal() {
-            println!("{}", task_id);
-        }
+        output_utils::emit_stdout(&task_id);
     } else {
         let options = TaskRunOptions::new();
         task_run(cwd, &task_id, options)?;
         output_conflict_fix_completed(&task_id, conflict_id)?;
-        if !std::io::stdout().is_terminal() {
-            println!("{}", task_id);
-        }
+        output_utils::emit_stdout(&task_id);
     }
 
     Ok(())
@@ -168,59 +166,57 @@ fn output_conflict_fix_started(
     ready: &[&Task],
 ) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("Created merge-conflict resolution task for conflict {}.", conflict_id);
-    let output = CommandOutput {
-        heading: "Conflict Fix",
-        task_id,
-        scope: None,
-        status: &status,
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, in_progress, ready);
-    eprintln!("{}", md);
-
-    if !std::io::stdout().is_terminal() {
-        println!("{}", task_id);
-    }
-
+    output_utils::emit(task_id, || {
+        let status = format!("Created merge-conflict resolution task for conflict {}.", conflict_id);
+        let output = CommandOutput {
+            heading: "Conflict Fix",
+            task_id,
+            scope: None,
+            status: &status,
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, in_progress, ready)
+    });
     Ok(())
 }
 
 /// Output conflict fix async message
 fn output_conflict_fix_async(task_id: &str, conflict_id: &str) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("Merge-conflict resolution for {} started in background.", conflict_id);
-    let output = CommandOutput {
-        heading: "Conflict Fix Started",
-        task_id,
-        scope: None,
-        status: &status,
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let status = format!("Merge-conflict resolution for {} started in background.", conflict_id);
+        let output = CommandOutput {
+            heading: "Conflict Fix Started",
+            task_id,
+            scope: None,
+            status: &status,
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output conflict fix completed message
 fn output_conflict_fix_completed(task_id: &str, conflict_id: &str) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("Merge-conflict resolution for {} completed.", conflict_id);
-    let output = CommandOutput {
-        heading: "Conflict Fix Completed",
-        task_id,
-        scope: None,
-        status: &status,
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let status = format!("Merge-conflict resolution for {} completed.", conflict_id);
+        let output = CommandOutput {
+            heading: "Conflict Fix Completed",
+            task_id,
+            scope: None,
+            status: &status,
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, &[], &[])
+    });
     Ok(())
 }
 
@@ -288,8 +284,8 @@ fn run_fix(
         return Ok(());
     }
 
-    // Get issue comments to create fix subtasks
-    let comments: Vec<TaskComment> = if review_task.data.contains_key("issue_count") {
+    // Get issue comments to create fix subtasks, sorted by severity (high first)
+    let mut comments: Vec<TaskComment> = if review_task.data.contains_key("issue_count") {
         // Structured: use get_issue_comments()
         super::review::get_issue_comments(review_task)
             .into_iter()
@@ -299,6 +295,10 @@ fn run_fix(
         // Backward compat: all comments are issues
         review_task.comments.clone()
     };
+    comments.sort_by_key(|c| {
+        let sev = c.data.get("severity").map(|s| s.as_str()).unwrap_or("medium");
+        match sev { "high" => 0u8, "medium" => 1, "low" => 2, _ => 1 }
+    });
 
     // Determine what was reviewed from typed scope data
     let scope = ReviewScope::from_data(&review_task.data)?;
@@ -346,19 +346,13 @@ fn run_fix(
         let options = TaskRunOptions::new();
         task_run_async(cwd, &followup_id, options)?;
         output_followup_async(&followup_id, &scope, &comments)?;
-        // Output task ID to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!("{}", followup_id);
-        }
+        output_utils::emit_stdout(&followup_id);
     } else {
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &followup_id, options)?;
         output_followup_completed(&followup_id, &scope, &comments)?;
-        // Output task ID to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!("{}", followup_id);
-        }
+        output_utils::emit_stdout(&followup_id);
     }
 
     Ok(())
@@ -367,17 +361,18 @@ fn run_fix(
 /// Output approved message when no issues found
 fn output_approved(task_id: &str) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let output = CommandOutput {
-        heading: "Approved",
-        task_id,
-        scope: None,
-        status: "Review approved - no issues found.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let output = CommandOutput {
+            heading: "Approved",
+            task_id,
+            scope: None,
+            status: "Review approved - no issues found.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, &[], &[])
+    });
     Ok(())
 }
 
@@ -398,60 +393,57 @@ fn output_followup_started(
     ready: &[&Task],
 ) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("{} ({} issue(s)).", fix_description(scope), comments.len());
-    let output = CommandOutput {
-        heading: "Fix Followup",
-        task_id: followup_id,
-        scope: Some(scope),
-        status: &status,
-        issues: Some(comments),
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, in_progress, ready);
-    eprintln!("{}", md);
-
-    // Output task ID to stdout if piped
-    if !std::io::stdout().is_terminal() {
-        println!("{}", followup_id);
-    }
-
+    output_utils::emit(followup_id, || {
+        let status = format!("{} ({} issue(s)).", fix_description(scope), comments.len());
+        let output = CommandOutput {
+            heading: "Fix Followup",
+            task_id: followup_id,
+            scope: Some(scope),
+            status: &status,
+            issues: Some(comments),
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, in_progress, ready)
+    });
     Ok(())
 }
 
 /// Output followup async message (for --async mode)
 fn output_followup_async(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("{} in background.", fix_description(scope));
-    let output = CommandOutput {
-        heading: "Fix Started",
-        task_id: followup_id,
-        scope: Some(scope),
-        status: &status,
-        issues: Some(comments),
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let status = format!("{} in background.", fix_description(scope));
+        let output = CommandOutput {
+            heading: "Fix Started",
+            task_id: followup_id,
+            scope: Some(scope),
+            status: &status,
+            issues: Some(comments),
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output followup completed message (for blocking mode)
 fn output_followup_completed(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let status = format!("{} completed.", fix_description(scope));
-    let output = CommandOutput {
-        heading: "Fix Completed",
-        task_id: followup_id,
-        scope: Some(scope),
-        status: &status,
-        issues: Some(comments),
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("fix").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let status = format!("{} completed.", fix_description(scope));
+        let output = CommandOutput {
+            heading: "Fix Completed",
+            task_id: followup_id,
+            scope: Some(scope),
+            status: &status,
+            issues: Some(comments),
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("fix").build(&content, &[], &[])
+    });
     Ok(())
 }
 

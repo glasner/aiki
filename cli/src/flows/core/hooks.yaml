@@ -145,26 +145,42 @@ turn.started:
 # across turns and are only ended explicitly (via session end hooks or TTL cleanup).
 turn.completed:
     # Absorb isolated workspace changes back into parent/main workspace.
-    # Returns "conflicts" if pre-rebase detected conflicts, "ok" if absorbed, "0" if no workspaces.
-    # Retry counting and force-absorb after 3 attempts are handled inside workspace_absorb_all.
+    # Returns "ok" if absorbed, "0" if no workspaces, or conflicted file list.
+    # Absorption always succeeds (JJ records conflicts as tree algebra).
+    # Post-absorption conflict check is done inside workspace_absorb_all
+    # against the TARGET's @ (not the workspace's @).
     - let: absorb_result = self.workspace_absorb_all
 
     - if: absorb_result != "ok" and absorb_result != "0" and absorb_result
       then:
-          # Workspace was NOT absorbed — conflicts remain after auto-resolve.
-          # absorb_result is JSON: {"status":"conflicts","conflict_id":"...","conflicted_files":"..."}
+          # Target's @ is conflicted after absorption.
+          # autoreply triggers a follow-up turn — the agent MUST address
+          # the conflict before it can continue normal work.
+          #
+          # On the follow-up turn, turn.started runs workspace_ensure_isolated,
+          # which rebases the workspace to the current @-. Since @- now contains
+          # the conflicted changes, the workspace inherits the conflicts. The
+          # agent sees conflict markers in their workspace files and can resolve.
           - autoreply: |
                 CONFLICT RESOLUTION REQUIRED
 
-                Workspace absorption detected conflicts during rebase that could not be auto-resolved.
+                Absorption introduced conflicts in the working copy.
+                Conflicted files:
+                {{absorb_result}}
 
-                Conflict ID: {{absorb_result.conflict_id}}
-                Conflicted files: {{absorb_result.conflicted_files}}
+                To resolve: edit the conflicted files to remove JJ conflict
+                markers, then continue working. JJ parses your edits back
+                automatically on snapshot.
 
-                To resolve:
-                  aiki fix {{absorb_result.conflict_id}}
+                JJ conflict marker format (NOT Git's format):
+                  <<<<<<< Conflict N of M
+                  %%%%%%% Changes from base to side #1 (this is a DIFF, not content)
+                  +++++++ Contents of side #2 (this is literal content)
+                  >>>>>>> Conflict N of M ends
 
-                This will create a merge-conflict task with instructions.
+                The %%%%%%% section shows a diff (additions/removals from base),
+                NOT a middle version like Git's =======. Apply the diff's intent
+                to side #2's content to produce the merged result.
 
 # ==============================================================================
 # Change Operation Events (unified mutations: write, delete, move)

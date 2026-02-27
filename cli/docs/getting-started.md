@@ -35,7 +35,6 @@ aiki init
 This will:
 - Initialize Jujutsu (non-colocated, independent from your `.git`)
 - Create the `.aiki/` directory with default configuration
-- Configure commit signing (auto-detects GPG/SSH keys)
 - Install Git hooks for automatic co-author attribution
 - Configure editor hooks globally (Claude Code, Cursor)
 
@@ -93,12 +92,6 @@ Filter by editor:
 
 ```bash
 aiki blame src/main.rs --agent claude-code
-```
-
-Verify signatures:
-
-```bash
-aiki blame src/main.rs --verify
 ```
 
 ### See AI Authors
@@ -199,23 +192,9 @@ aiki build ops/now/my-feature.md --review
 aiki build ops/now/my-feature.md --fix
 ```
 
-## Cryptographic Signing
-
-Aiki automatically configures signing during `aiki init`. It detects existing keys in priority order:
-
-1. Git signing configuration (if already set up)
-2. GPG keys
-3. SSH keys
-
-Verify a change's signature:
-
-```bash
-aiki verify        # Verify working copy
-aiki verify @-     # Verify previous change
-```
-
 ## Next Steps
 
+- [SDLC: Plan, Build, Review, Fix](sdlc.md) — the full AI development lifecycle
 - [Customizing Defaults](customizing-defaults.md) — modify Aiki's behavior with flows, events, context injection, and template overrides
 - [Creating Plugins](creating-plugins.md) — build reusable, shareable hooks and templates
 - [Contributing](contributing.md) — develop Aiki itself

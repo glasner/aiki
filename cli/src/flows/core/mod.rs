@@ -16,5 +16,5 @@ pub use functions::{
     // Task system functions
     task_in_progress, task_list_size, task_list_size_for_agent,
     // Workspace isolation functions
-    detect_workspace_conflicts, workspace_absorb_all, workspace_ensure_isolated,
+    workspace_absorb_all, workspace_ensure_isolated,
 };

@@ -115,15 +115,14 @@ Uses the same `subtasks.<slug>` namespace used elsewhere in templates (e.g., `su
 # Pick next ready session, run it, return
 aiki task run <parent> --next-session
 
-# Scoped to a specific lane (used by orchestrators)
-aiki task run <parent> --next-session --lane <lane-id>
-
 # Async
 aiki task run <parent> --next-session --async
 ```
 
+See [implement-command.md](implement-command.md) for `--lane` filter and lane-based orchestration.
+
 **How it works:**
-1. Finds the next ready subtask of `<parent>` (optionally within `--lane`)
+1. Finds the next ready subtask of `<parent>`
 2. If that task is the head of a `needs-context` chain → runs the whole chain in one agent session. Agent's `aiki task` is scoped to the chain's tasks.
 3. If that task is standalone → runs just that task in one session.
 4. Returns when the session ends.
@@ -236,12 +235,9 @@ needs-context: subtasks.plan
 
 Template instantiation creates the tasks, then materializes `needs-context` links from the frontmatter references.
 
-### 4. Used by orchestrators with `--lane`
-```bash
-# The implement-command plan's orchestrator uses --lane to scope:
-aiki task run <parent> --next-session --lane xtuttn
-# → picks next ready task within lane xtuttn.., respects needs-context
-```
+### 4. Used by orchestrators (see [implement-command.md](implement-command.md))
+
+The `--lane` filter on `--next-session` (defined in [implement-command.md](implement-command.md)) lets orchestrators scope execution to individual lanes, while `needs-context` chains within each lane are handled automatically.
 
 ---
 
@@ -277,8 +273,9 @@ aiki task run <parent> --next-session --lane xtuttn
    b. Check if task is head of a `needs-context` chain (`is_needs_context_head`)
    c. If chain: get full chain via `get_needs_context_chain`, scope session to chain tasks
    d. If standalone: run single task (same as old behavior)
-3. Add `--lane <lane-id>` filter (for orchestrator use — lane ID is the head task ID, prefix matching supported)
-4. Session scoping: when running a chain, `aiki task` within the session shows only chain tasks, revealed as deps are satisfied
+3. Session scoping: when running a chain, `aiki task` within the session shows only chain tasks, revealed as deps are satisfied
+
+*Note: `--lane` filter on `--next-session` is defined in [implement-command.md](implement-command.md) Phase 2.*
 
 ### Phase 4: Remove `--next-subtask`
 
@@ -295,7 +292,7 @@ aiki task run <parent> --next-session --lane xtuttn
 1. Unit tests: `needs-context` link creation, validation (siblings, no cycles, linear chains)
 2. Unit tests: chain resolution (`get_needs_context_chain`, `is_needs_context_head`)
 3. Unit tests: template frontmatter parsing and link materialization
-4. Unit tests: `--next-session` — standalone tasks, chain grouping, `--lane` filtering
+4. Unit tests: `--next-session` — standalone tasks, chain grouping
 5. Integration tests: session scoping (agent sees only chain tasks)
 6. Integration tests: `--next-subtask` removed, error on use
 7. Integration tests: end-to-end fix workflow with needs-context chain
@@ -312,8 +309,6 @@ aiki task run <parent> --next-session --lane xtuttn
 | `needs-context` frontmatter references unknown slug | Error: "Unknown subtask slug '<slug>' in needs-context" |
 | `--next-subtask` used | Error: "--next-subtask has been replaced by --next-session" |
 | `--next-session` with no ready subtasks | Returns: "No ready subtasks for <parent>" |
-| `--lane` with unknown ID | Error: "No lane with head task matching '<id>' for task <parent>" |
-| `--lane` with ambiguous prefix | Error: "Multiple lanes match prefix '<prefix>', be more specific" |
 | Task fails within multi-task session | Session ends. Remaining chain tasks stay open. |
 | Session crash mid-chain | Current task marked as stopped. Remaining chain tasks stay open. |
 
@@ -331,4 +326,3 @@ aiki task run <parent> --next-session --lane xtuttn
 | Clean break | Remove `--next-subtask` | New semantics warrant new name. Error message guides migration. |
 | Session scoping | `aiki task` scoped to chain | Agent uses normal workflow. No new commands. Consistent with other scoping (parent tasks, etc.). |
 | Template frontmatter | `needs-context: subtasks.<slug>` | Reuses existing `subtasks.*` namespace. Consistent with other frontmatter references. |
-| `--lane` filter | On `--next-session` | Forward-compatible with lanes plan. No-op if lanes aren't used. |

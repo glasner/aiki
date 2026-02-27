@@ -166,7 +166,7 @@ Access environment variables with `$ENVVAR` syntax in shell commands.
 Functions prefixed with `self.*` are native Rust functions:
 
 ```yaml
-- let: ws_path = self.workspace_create_if_concurrent
+- let: ws_path = self.workspace_ensure_isolated
 - let: classification = self.classify_edits_change
 - call: self.workspace_absorb_all
 ```

@@ -22,9 +22,13 @@ Thumbs.db
 .aiki/tmp/
 .aiki/sessions/
 
+# Python
+__pycache__/
+
 # Test artifacts
 *.db
 *.db-shm
 *.db-wal
+tbench/runs/
 # Nimbalyst local data (not checked into version control)
 nimbalyst-local/

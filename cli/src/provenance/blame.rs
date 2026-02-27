@@ -15,8 +15,6 @@ type Result<T> = anyhow::Result<T>;
 
 use crate::jj::JJWorkspace;
 use crate::provenance::record::{AgentType, AttributionConfidence, ProvenanceRecord};
-use crate::verify;
-
 /// Line-by-line attribution information for a file
 #[derive(Debug, Clone)]
 pub struct LineAttribution {
@@ -233,29 +231,11 @@ impl BlameCommand {
         &self,
         attributions: &[LineAttribution],
         agent_filter: Option<AgentType>,
-        verify: bool,
     ) -> String {
         use std::fmt::Write;
 
         // Pre-allocate output buffer (estimate ~100 bytes per line)
         let mut output = String::with_capacity(attributions.len() * 100);
-
-        // If verify is enabled, collect unique change IDs and verify them
-        let mut signature_cache: HashMap<String, verify::SignatureStatus> = HashMap::new();
-        if verify {
-            // Collect unique change IDs
-            let mut change_ids: Vec<String> =
-                attributions.iter().map(|a| a.change_id.clone()).collect();
-            change_ids.sort();
-            change_ids.dedup();
-
-            // Verify each unique change
-            for change_id in change_ids {
-                if let Ok(result) = verify::verify_change(&self.repo_path, &change_id) {
-                    signature_cache.insert(change_id, result.signature_status);
-                }
-            }
-        }
 
         for attr in attributions {
             // Apply agent filter if specified
@@ -265,22 +245,7 @@ impl BlameCommand {
                 }
             }
 
-            // Get signature indicator if verify is enabled
-            let sig_indicator = if verify {
-                signature_cache
-                    .get(&attr.change_id)
-                    .map(|status| match status {
-                        verify::SignatureStatus::Good => "✓ ",
-                        verify::SignatureStatus::Bad => "✗ ",
-                        verify::SignatureStatus::Unknown => "? ",
-                        verify::SignatureStatus::Unsigned => "⚠ ",
-                    })
-                    .unwrap_or("⚠ ")
-            } else {
-                ""
-            };
-
-            // Format: [sig] commit_id (agent session confidence [client]) line_num| line_text
+            // Format: commit_id (agent session confidence [client]) line_num| line_text
             // Use Display trait for human-friendly agent names
             let agent_str = format!("{}", attr.agent_type);
             let session_str = attr
@@ -305,8 +270,7 @@ impl BlameCommand {
             // Use write! to avoid intermediate allocations
             write!(
                 output,
-                "{}{} ({:12} {:12} {:6}{}) {:4}| {}\n",
-                sig_indicator,
+                "{} ({:12} {:12} {:6}{}) {:4}| {}\n",
                 short_commit,
                 agent_str,
                 session_str,

@@ -9,6 +9,17 @@ pub struct ActionResult {
     pub stderr: String,
 }
 
+impl ActionResult {
+    pub fn success() -> Self {
+        Self {
+            success: true,
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+}
+
 /// Aiki execution state for hook processing
 ///
 /// This holds the mutable state that accumulates during hook execution:

@@ -6,11 +6,9 @@ use crate::global;
 use crate::jj;
 use crate::repos::RepoDetector;
 use crate::repos;
-use crate::signing;
 use anyhow::Context;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 use std::path::Path;
 
 /// Default content for .aiki/hooks.yml created by `aiki init`.
@@ -218,104 +216,6 @@ pub fn run(quiet: bool) -> Result<()> {
         println!("✓ Configured Git hooks (→ {})", global_hooks.display());
     }
 
-    // Configure commit signing
-    match signing::detect_signing_config()? {
-        Some(signing_config) => {
-            config::update_jj_signing_config(
-                &repo_root,
-                &signing_config.backend.to_string(),
-                Some(&signing_config.key),
-                "own",
-            )?;
-
-            // For SSH backend, create allowed-signers file
-            if matches!(signing_config.backend, signing::SigningBackend::Ssh) {
-                let email = signing::get_user_email(&repo_root)?;
-                signing::create_ssh_allowed_signers(&repo_root, &email, &signing_config.key)?;
-            }
-
-            if !quiet {
-                println!(
-                    "✓ Configured JJ commit signing ({:?})",
-                    signing_config.backend
-                );
-                println!("  Using key: {}", signing_config.key);
-            }
-        }
-        None => {
-            if !quiet {
-                println!("⚠ No signing keys detected");
-                println!();
-                println!("Commit signing provides cryptographic proof of AI authorship.");
-                println!();
-
-                // Check if we're in an interactive terminal
-                let is_interactive = atty::is(atty::Stream::Stdin);
-
-                if !is_interactive {
-                    println!("Run 'aiki doctor --fix' to set up signing interactively.");
-                    println!();
-                    println!("Continuing without signing...");
-                    println!();
-                } else {
-                    println!("What would you like to do?");
-                    println!("  1. Generate new signing key (recommended)");
-                    println!("  2. I have a key, let me specify it manually");
-                    println!("  3. Skip signing for now");
-                    println!();
-
-                    let choice = prompt_choice("Choice", 1, 3)?;
-
-                    match choice {
-                        1 => {
-                            // Launch wizard in generate mode
-                            let wizard = signing::SignSetupWizard::new(repo_root.clone());
-                            wizard.run(None)?;
-                        }
-                        2 => {
-                            // Manual key configuration
-                            println!();
-                            println!("Manual Key Configuration");
-                            println!("========================");
-                            println!();
-
-                            println!("Which backend?");
-                            println!("  1. GPG");
-                            println!("  2. SSH");
-                            println!();
-
-                            let backend_choice = prompt_choice("Choice", 1, 2)?;
-                            let backend = if backend_choice == 1 {
-                                signing::SigningBackend::Gpg
-                            } else {
-                                signing::SigningBackend::Ssh
-                            };
-
-                            let key = prompt_string(
-                                if backend == signing::SigningBackend::Gpg {
-                                    "GPG Key ID (e.g., 4ED556E9729E000F)"
-                                } else {
-                                    "SSH public key path (e.g., ~/.ssh/id_ed25519.pub)"
-                                },
-                                None,
-                            )?;
-
-                            let wizard = signing::SignSetupWizard::new(repo_root.clone());
-                            wizard.run(Some(signing::SetupMode::Manual { backend, key }))?;
-                        }
-                        3 => {
-                            println!();
-                            println!("Skipping signing setup.");
-                            println!("You can set up signing later by running: aiki sign setup");
-                            println!();
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-            }
-        }
-    }
-
     // Configure IDE settings (Zed)
     if !quiet {
         println!("\nConfiguring IDE settings...");
@@ -455,47 +355,6 @@ pub fn run(quiet: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn prompt_choice(prompt: &str, min: usize, max: usize) -> Result<usize> {
-    loop {
-        print!("{} [{}]: ", prompt, min);
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input.is_empty() {
-            return Ok(min);
-        }
-
-        match input.parse::<usize>() {
-            Ok(n) if n >= min && n <= max => return Ok(n),
-            _ => println!("Please enter a number between {} and {}", min, max),
-        }
-    }
-}
-
-fn prompt_string(prompt: &str, default: Option<&str>) -> Result<String> {
-    if let Some(def) = default {
-        print!("{} [{}]: ", prompt, def);
-    } else {
-        print!("{}: ", prompt);
-    }
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_string();
-
-    if input.is_empty() {
-        if let Some(def) = default {
-            return Ok(def.to_string());
-        }
-    }
-
-    Ok(input)
 }
 
 /// Ensure .aiki/hooks.yml exists with default workflow automation.

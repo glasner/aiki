@@ -25,7 +25,8 @@ Compared to the vanilla Claude Code agent, this adds:
 - Python 3.12+
 - Docker
 - `uv` package manager
-- `ANTHROPIC_API_KEY` environment variable set
+- OAuth authentication: run `claude` on the host so
+  `~/.claude/.credentials.json` exists.
 
 ## Install
 
@@ -33,27 +34,41 @@ Compared to the vanilla Claude Code agent, this adds:
 uv tool install terminal-bench
 ```
 
+## Authentication
+
+### OAuth Authentication
+
+Use your existing Claude Code login (Pro/Max subscription or Console account):
+
+```bash
+# First, authenticate Claude Code on your host machine
+claude
+
+# Then run Terminal-Bench with OAuth
+cd tbench/
+tb run \
+    --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
+    --agent-kwarg use_host_auth=true \
+    --dataset terminal-bench-core==0.1.1 \
+    --model anthropic/claude-opus-4-20250514 \
+    --n-concurrent 4
+```
+
+The agent will copy your `~/.claude/.credentials.json` file into each container.
+If the file doesn't exist, the run fails with a clear authentication error.
+
 ## Quick Start
 
 ### Single task test
 
 ```bash
-cd tbench/
-tb run \
-    --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
-    --dataset terminal-bench-core==2.0 \
-    --task-id hello-world
+./scripts/run.sh --task-id hello-world
 ```
 
 ### Full benchmark run
 
 ```bash
-cd tbench/
-tb run \
-    --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
-    --dataset terminal-bench-core==2.0 \
-    --model anthropic/claude-opus-4-20250514 \
-    --n-concurrent 4
+./scripts/run.sh --model anthropic/claude-opus-4-20250514
 ```
 
 ### Compare against baseline
@@ -64,15 +79,16 @@ The baseline is the built-in Claude Code agent:
 # Baseline (vanilla Claude Code)
 tb run \
     --agent claude-code \
-    --dataset terminal-bench-core==2.0 \
+    --dataset terminal-bench-core==0.1.1 \
     --model anthropic/claude-opus-4-20250514 \
     --n-concurrent 4
 
-# Treatment (Claude Code + Aiki)
+# Treatment (Claude Code + Aiki with OAuth)
 cd tbench/
 tb run \
     --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
-    --dataset terminal-bench-core==2.0 \
+    --agent-kwarg use_host_auth=true \
+    --dataset terminal-bench-core==0.1.1 \
     --model anthropic/claude-opus-4-20250514 \
     --n-concurrent 4
 ```
@@ -86,13 +102,23 @@ Pass options via `--agent-kwarg`:
 tb run \
     --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
     --agent-kwarg version=1.0.0 \
-    --dataset terminal-bench-core==2.0
+    --dataset terminal-bench-core==0.1.1
 
 # Specify model
 tb run \
     --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
     --model anthropic/claude-sonnet-4-20250514 \
-    --dataset terminal-bench-core==2.0
+    --dataset terminal-bench-core==0.1.1
+
+# Combine multiple options
+tb run \
+    --agent-import-path aiki_agent:ClaudeCodeAikiAgent \
+    --agent-kwarg version=1.0.0 \
+    --model anthropic/claude-sonnet-4-20250514 \
+    --dataset terminal-bench-core==0.1.1
+
+# Or pass through ./scripts/run.sh
+./scripts/run.sh --model anthropic/claude-sonnet-4-20250514 --n-concurrent 4 --task-id hello-world
 ```
 
 ## Files
@@ -108,14 +134,15 @@ tb run \
 ## How It Works
 
 1. Terminal-Bench creates a Docker container for each task
-2. `aiki-setup.sh.j2` runs inside the container:
+2. If `use_host_auth=true`, the agent copies `~/.claude/.credentials.json` from your host to the container
+3. `aiki-setup.sh.j2` runs inside the container:
    - Installs Node.js + Claude Code (same as baseline)
    - Copies the pre-built aiki binary if available (see `scripts/prebuild.sh`)
    - Writes a CLAUDE.md with structured task methodology
    - Runs `aiki init` if the binary is present
-3. Claude Code starts with the task instruction
-4. The CLAUDE.md guides its approach (plan → execute → verify)
-5. Terminal-Bench's verification script scores the result
+4. Claude Code starts with the task instruction (authenticated via OAuth)
+5. The CLAUDE.md guides its approach (plan → execute → verify)
+6. Terminal-Bench's verification script scores the result
 
 ## Interpreting Results
 

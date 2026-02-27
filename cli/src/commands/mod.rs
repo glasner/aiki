@@ -37,6 +37,4 @@ pub mod review;
 pub mod plan;
 
 pub mod task;
-pub mod verify;
-pub mod wait;
 pub mod zed_detection;

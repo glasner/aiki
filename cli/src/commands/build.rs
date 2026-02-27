@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::io::IsTerminal;
+use crate::output_utils;
 use std::path::Path;
 
 use clap::Subcommand;
@@ -238,13 +238,8 @@ fn run_build_plan(
         let _handle = task_run_async(cwd, &build_task_id, options)?;
         output_build_async(&build_task_id, display_epic_id)?;
 
-        // Output machine-readable to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!(
-                "<aiki_build build_id=\"{}\" epic_id=\"{}\"/>",
-                build_task_id, display_epic_id
-            );
-        }
+        output_utils::emit_stdout(&build_task_id);
+        output_utils::emit_stdout(display_epic_id);
     } else {
         output_build_started(&build_task_id, display_epic_id)?;
 
@@ -277,13 +272,8 @@ fn run_build_plan(
             run_build_review(cwd, plan_path, final_epic_id, fix_after)?;
         }
 
-        // Output machine-readable to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!(
-                "<aiki_build build_id=\"{}\" epic_id=\"{}\"/>",
-                build_task_id, final_epic_id
-            );
-        }
+        output_utils::emit_stdout(&build_task_id);
+        output_utils::emit_stdout(final_epic_id);
     }
 
     Ok(())
@@ -370,13 +360,8 @@ fn run_build_epic(
         let _handle = task_run_async(cwd, &build_task_id, options)?;
         output_build_async(&build_task_id, epic_id)?;
 
-        // Output machine-readable to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!(
-                "<aiki_build build_id=\"{}\" epic_id=\"{}\"/>",
-                build_task_id, epic_id
-            );
-        }
+        output_utils::emit_stdout(&build_task_id);
+        output_utils::emit_stdout(epic_id);
     } else {
         output_build_started(&build_task_id, epic_id)?;
 
@@ -399,13 +384,8 @@ fn run_build_epic(
             run_build_review(cwd, &plan_path, epic_id, fix_after)?;
         }
 
-        // Output machine-readable to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!(
-                "<aiki_build build_id=\"{}\" epic_id=\"{}\"/>",
-                build_task_id, epic_id
-            );
-        }
+        output_utils::emit_stdout(&build_task_id);
+        output_utils::emit_stdout(epic_id);
     }
 
     Ok(())
@@ -720,156 +700,157 @@ fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool)
 
 /// Output build + review completed message to stderr
 fn output_build_review_completed(review_id: &str, plan_path: &str, with_fix: bool) -> Result<()> {
-    let title = if with_fix {
-        "Build + Review + Fix Completed"
-    } else {
-        "Build + Review Completed"
-    };
-    let content = format!(
-        "## {}\n- **Review ID:** {}\n- **Plan:** {}\n",
-        title, review_id, plan_path
-    );
-    let md = MdBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let title = if with_fix {
+            "Build + Review + Fix Completed"
+        } else {
+            "Build + Review Completed"
+        };
+        let content = format!(
+            "## {}\n- **Review ID:** {}\n- **Plan:** {}\n",
+            title, review_id, plan_path
+        );
+        MdBuilder::new("build").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output build started message to stderr
 fn output_build_started(build_id: &str, epic_id: &str) -> Result<()> {
-    let content = format!(
-        "## Build Started\n- **Build ID:** {}\n- **Epic ID:** {}\n",
-        build_id, epic_id
-    );
-    let md = MdBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let content = format!(
+            "## Build Started\n- **Build ID:** {}\n- **Epic ID:** {}\n",
+            build_id, epic_id
+        );
+        MdBuilder::new("build").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output build completed message to stderr
 fn output_build_completed(build_id: &str, epic_id: &str, subtasks: &[&Task]) -> Result<()> {
-    let mut content = format!(
-        "## Build Completed\n- **Build ID:** {}\n- **Epic ID:** {}\n- **Subtasks:** {}\n\n",
-        build_id, epic_id, subtasks.len()
-    );
+    output_utils::emit_stderr(|| {
+        let mut content = format!(
+            "## Build Completed\n- **Build ID:** {}\n- **Epic ID:** {}\n- **Subtasks:** {}\n\n",
+            build_id, epic_id, subtasks.len()
+        );
 
-    for (i, subtask) in subtasks.iter().enumerate() {
-        let status = if subtask.status == TaskStatus::Closed {
-            "done"
-        } else {
-            "pending"
-        };
-        content.push_str(&format!("{}. {} ({})\n", i + 1, &subtask.name, status));
-    }
+        for (i, subtask) in subtasks.iter().enumerate() {
+            let status = if subtask.status == TaskStatus::Closed {
+                "done"
+            } else {
+                "pending"
+            };
+            content.push_str(&format!("{}. {} ({})\n", i + 1, &subtask.name, status));
+        }
 
-    let md = MdBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", md);
+        MdBuilder::new("build").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output build async started message to stderr
 fn output_build_async(build_id: &str, epic_id: &str) -> Result<()> {
-    let content = format!(
-        "## Build Started\n- **Build ID:** {}\n- **Epic ID:** {}\n- Build started in background.\n",
-        build_id, epic_id
-    );
-    let md = MdBuilder::new("build").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let content = format!(
+            "## Build Started\n- **Build ID:** {}\n- **Epic ID:** {}\n- Build started in background.\n",
+            build_id, epic_id
+        );
+        MdBuilder::new("build").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output build show (detailed status display)
 fn output_build_show(epic: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> Result<()> {
-    let completed = subtasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::Closed)
-        .count();
-    let total = subtasks.len();
+    output_utils::emit_stderr(|| {
+        let completed = subtasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Closed)
+            .count();
+        let total = subtasks.len();
 
-    let status_str = match epic.status {
-        TaskStatus::Open => "open",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Stopped => "stopped",
-        TaskStatus::Closed => "closed",
-    };
+        let status_str = match epic.status {
+            TaskStatus::Open => "open",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Stopped => "stopped",
+            TaskStatus::Closed => "closed",
+        };
 
-    let outcome_str = epic
-        .closed_outcome
-        .as_ref()
-        .map(|o| format!("- **Outcome:** {}\n", o))
-        .unwrap_or_default();
+        let outcome_str = epic
+            .closed_outcome
+            .as_ref()
+            .map(|o| format!("- **Outcome:** {}\n", o))
+            .unwrap_or_default();
 
-    let plan_str = epic
-        .data
-        .get("plan")
-        .map(|s| format!("- **Plan:** {}\n", s))
-        .unwrap_or_default();
+        let plan_str = epic
+            .data
+            .get("plan")
+            .map(|s| format!("- **Plan:** {}\n", s))
+            .unwrap_or_default();
 
-    let mut content = format!(
-        "## Epic: {}\n- **ID:** {}\n- **Status:** {}\n{}{}",
-        &epic.name, &epic.id, status_str, outcome_str, plan_str
-    );
+        let mut content = format!(
+            "## Epic: {}\n- **ID:** {}\n- **Status:** {}\n{}{}",
+            &epic.name, &epic.id, status_str, outcome_str, plan_str
+        );
 
-    // Add progress summary
-    content.push_str(&format!("- **Progress:** {}/{}\n", completed, total));
+        content.push_str(&format!("- **Progress:** {}/{}\n", completed, total));
 
-    // Add subtask list
-    if !subtasks.is_empty() {
-        content.push_str("\n### Subtasks\n| # | ID | Status | Outcome | Name |\n|---|-----|--------|---------|------|\n");
-        for (i, subtask) in subtasks.iter().enumerate() {
-            let sub_status = match subtask.status {
-                TaskStatus::Open => "open",
-                TaskStatus::InProgress => "in_progress",
-                TaskStatus::Stopped => "stopped",
-                TaskStatus::Closed => "closed",
-            };
+        if !subtasks.is_empty() {
+            content.push_str("\n### Subtasks\n| # | ID | Status | Outcome | Name |\n|---|-----|--------|---------|------|\n");
+            for (i, subtask) in subtasks.iter().enumerate() {
+                let sub_status = match subtask.status {
+                    TaskStatus::Open => "open",
+                    TaskStatus::InProgress => "in_progress",
+                    TaskStatus::Stopped => "stopped",
+                    TaskStatus::Closed => "closed",
+                };
 
-            let sub_outcome = subtask
-                .closed_outcome
-                .as_ref()
-                .map(|o| o.to_string())
-                .unwrap_or_default();
+                let sub_outcome = subtask
+                    .closed_outcome
+                    .as_ref()
+                    .map(|o| o.to_string())
+                    .unwrap_or_default();
 
-            content.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
-            ));
+                content.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
+                ));
+            }
         }
-    }
 
-    // Add build history
-    if !build_tasks.is_empty() {
-        content.push_str("\n### Builds\n| ID | Status | Outcome | Name |\n|-----|--------|---------|------|\n");
-        for build in build_tasks {
-            let build_status = match build.status {
-                TaskStatus::Open => "open",
-                TaskStatus::InProgress => "in_progress",
-                TaskStatus::Stopped => "stopped",
-                TaskStatus::Closed => "closed",
-            };
+        if !build_tasks.is_empty() {
+            content.push_str("\n### Builds\n| ID | Status | Outcome | Name |\n|-----|--------|---------|------|\n");
+            for build in build_tasks {
+                let build_status = match build.status {
+                    TaskStatus::Open => "open",
+                    TaskStatus::InProgress => "in_progress",
+                    TaskStatus::Stopped => "stopped",
+                    TaskStatus::Closed => "closed",
+                };
 
-            let build_outcome = build
-                .closed_outcome
-                .as_ref()
-                .map(|o| o.to_string())
-                .unwrap_or_default();
+                let build_outcome = build
+                    .closed_outcome
+                    .as_ref()
+                    .map(|o| o.to_string())
+                    .unwrap_or_default();
 
-            content.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
-                &build.id, build_status, build_outcome, &build.name
-            ));
+                content.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    &build.id, build_status, build_outcome, &build.name
+                ));
+            }
         }
-    }
 
-    // Add sources
-    if !epic.sources.is_empty() {
-        content.push_str("\n### Sources\n");
-        for source in &epic.sources {
-            content.push_str(&format!("- {}\n", source));
+        if !epic.sources.is_empty() {
+            content.push_str("\n### Sources\n");
+            for source in &epic.sources {
+                content.push_str(&format!("- {}\n", source));
+            }
         }
-    }
 
-    let md = MdBuilder::new("build-show").build(&content, &[], &[]);
-    eprintln!("{}", md);
+        MdBuilder::new("build-show").build(&content, &[], &[])
+    });
 
     Ok(())
 }

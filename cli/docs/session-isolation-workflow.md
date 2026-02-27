@@ -7,8 +7,9 @@ When multiple agent sessions run concurrently in the same repo, aiki creates
 files. Changes are automatically **absorbed** (rebased) back into the main
 workspace at the end of each turn and when the session ends.
 
-Key design principle: **zero overhead for solo sessions**. The entire isolation
-system is bypassed when only one session is active.
+Key design principle: **unconditional isolation**. Every session gets its own
+workspace, regardless of how many sessions are active. This eliminates race
+conditions that would arise if isolation were conditional on session count.
 
 ---
 
@@ -17,11 +18,11 @@ system is bypassed when only one session is active.
 ```
  ~/.aiki/sessions/                      /tmp/aiki/
  ├── {uuid-A}          (session file)   ├── {repo-id}/
- ├── {uuid-B}          (session file)   │   ├── {uuid-A}/        (isolated workspace A)
- └── by-repo/                           │   │   ├── .jj/repo → ~/.../repo/.jj/repo
-     └── {repo-id}/                     │   │   └── (working tree copy)
-         ├── {uuid-A}  (marker file)    │   ├── {uuid-B}/        (isolated workspace B)
-         └── {uuid-B}  (marker file)    │   │   └── ...
+ └── {uuid-B}          (session file)   │   ├── {uuid-A}/        (isolated workspace A)
+                                        │   │   ├── .jj/repo → ~/.../repo/.jj/repo
+                                        │   │   └── (working tree copy)
+                                        │   ├── {uuid-B}/        (isolated workspace B)
+                                        │   │   └── ...
                                         │   └── .absorb.lock     (serializes absorptions)
                                         │
                                         └── {other-repo-id}/
@@ -74,12 +75,12 @@ parent_pid=12345
 
 ---
 
-### Phase 2: Concurrent Detection & Workspace Creation
+### Phase 2: Workspace Creation
 
 Triggered on every **turn start** and several other events:
 
 ```
-Events that trigger isolation check:
+Events that trigger isolation:
   • turn.started          (hooks.yaml:120)
   • session.resumed       (hooks.yaml:40)
   • session.compacted     (hooks.yaml:62)
@@ -89,7 +90,7 @@ Events that trigger isolation check:
 
 ```
  ┌──────────────────────────────────────────────────────────────┐
- │              workspace_create_if_concurrent()                 │
+ │              workspace_ensure_isolated()                      │
  │              (functions.rs:1093)                              │
  └──────────────────────────────┬───────────────────────────────┘
                                 │
@@ -101,54 +102,26 @@ Events that trigger isolation check:
                                 │
                                 ▼
                 ┌───────────────────────────────┐
-                │ register_session_in_repo()    │
-                │ (isolation.rs:807)            │
+                │ create_isolated_workspace()   │
+                │ (isolation.rs:58)             │
                 │                               │
-                │ Creates marker file:          │
-                │ ~/.aiki/sessions/by-repo/     │
-                │   {repo-id}/{session-uuid}    │
+                │ 1. Check if exists (reuse)    │
+                │ 2. Resolve @- change_id       │
+                │    explicitly via jj log      │
+                │ 3. jj workspace add           │
+                │    /tmp/aiki/{repo}/{uuid}    │
+                │    --name aiki-{uuid}         │
+                │    -r {parent_change_id}      │
                 └───────────────┬───────────────┘
                                 │
                                 ▼
                 ┌───────────────────────────────┐
-                │ count_sessions_in_repo()      │
-                │ (isolation.rs:788)            │
+                │ Inject context to agent:      │
+                │ (hooks.yaml:44-49)            │
                 │                               │
-                │ Counts files in by-repo dir   │
-                │ O(1) directory listing         │
-                └───────────────┬───────────────┘
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-             count == 1               count > 1
-          ┌──────────────┐       ┌──────────────────┐
-          │ Skip          │       │ Create isolated  │
-          │ (zero overhead│       │ workspace        │
-          │  for solo)    │       │                  │
-          └──────────────┘       └────────┬─────────┘
-                                          │
-                                          ▼
-                          ┌──────────────────────────────┐
-                          │ create_isolated_workspace()  │
-                          │ (isolation.rs:58)             │
-                          │                              │
-                          │ 1. Check if exists (reuse)   │
-                          │ 2. Resolve @- change_id      │
-                          │    explicitly via jj log     │
-                          │ 3. jj workspace add          │
-                          │    /tmp/aiki/{repo}/{uuid}   │
-                          │    --name aiki-{uuid}        │
-                          │    -r {parent_change_id}     │
-                          └──────────────┬───────────────┘
-                                         │
-                                         ▼
-                          ┌──────────────────────────────┐
-                          │ Inject context to agent:     │
-                          │ (hooks.yaml:44-49)           │
-                          │                              │
-                          │ "WORKSPACE ISOLATION: ...    │
-                          │  You MUST cd {ws_path} ..."  │
-                          └──────────────────────────────┘
+                │ "WORKSPACE ISOLATION: ...     │
+                │  You MUST cd {ws_path} ..."   │
+                └───────────────────────────────┘
 ```
 
 **Idempotent:** If workspace already exists at `/tmp/aiki/{repo-id}/{uuid}/`,
@@ -342,9 +315,9 @@ ensures chaining: each absorption builds on the last.
      │ Cleanup:     │ │ Keep WS  │ │ Cleanup:     │
      │ • jj forget  │ │ alive    │ │ (same as     │
      │ • rm -rf ws  │ │ • Emit   │ │  Absorbed)   │
-     │ • Unregister │ │   auto-  │ │              │
-     │   from       │ │   reply  │ │ (empty ws,   │
-     │   by-repo    │ │   with   │ │  root change │
+     │              │ │   auto-  │ │              │
+     │              │ │   reply  │ │ (empty ws,   │
+     │              │ │   with   │ │  root change │
      └──────────────┘ │   conflict│ │  or not      │
                       │   details│ │  found)      │
                       └──────────┘ └──────────────┘
@@ -381,10 +354,8 @@ To resolve: aiki fix {conflict_id}
              │
              ▼
  ┌───────────────────────────────────────┐
- │ Unconditionally unregister session:  │
- │ unregister_session_from_repo()       │
- │ (handles solo sessions that never    │
- │  created a workspace)                │
+ │ Remove session file:                 │
+ │ ~/.aiki/sessions/{uuid}             │
  └───────────┬───────────────────────────┘
              │
              ▼
@@ -450,59 +421,59 @@ If an agent crashes before cleanup:
                      │    SESSION ACTIVE      │
                      │                        │
                      │  Session file created  │
-                     │  Registered in by-repo │
                      └───────────┬────────────┘
                                  │ turn.started
                                  ▼
                      ┌───────────────────────┐
-                     │  COUNT SESSIONS       │
-                     └─────┬─────────┬───────┘
-                    == 1   │         │  > 1
-                           ▼         ▼
-               ┌────────────┐  ┌───────────────────┐
-               │  SOLO MODE │  │  ISOLATED MODE     │
-               │  (no ws)   │  │  (ws at /tmp/aiki) │
-               └──────┬─────┘  └─────────┬─────────┘
-                      │                   │
-                      │    agent works    │
-                      │                   │
-                      ▼                   ▼
-               ┌──────────────────────────────────┐
-               │        turn.completed             │
-               └──────────┬───────────────────────┘
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-          Absorbed     Conflicts    Skipped/Solo
-             │            │            │
-             │            ▼            │
-             │    ┌──────────────┐     │
-             │    │ auto-reply   │     │
-             │    │ "CONFLICT    │     │
-             │    │  RESOLUTION  │     │
-             │    │  REQUIRED"   │     │
-             │    └──────┬───────┘     │
-             │           │ agent resolves
-             │           │ (retry loop)
-             │           ▼             │
-             │    ┌──────────────┐     │
-             │    │ Next turn →  │     │
-             │    │ re-absorb    │     │
-             │    └──────────────┘     │
-             │                         │
-             └────────────┬────────────┘
-                          │ session.ended
-                          ▼
-               ┌─────────────────────┐
-               │  Final absorb_all   │
-               │  Unregister session │
-               │  Orphan cleanup     │
-               └──────────┬──────────┘
-                          │
-                          ▼
-                     ┌─────────┐
-                     │   END   │
-                     └─────────┘
+                     │  ENSURE ISOLATED      │
+                     │  (unconditional)      │
+                     └───────────┬───────────┘
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │  ISOLATED MODE         │
+                     │  (ws at /tmp/aiki)     │
+                     └───────────┬───────────┘
+                                 │
+                                 │    agent works
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │    turn.completed      │
+                     └───────────┬───────────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    ▼            ▼            ▼
+                 Absorbed     Conflicts    Skipped
+                    │            │            │
+                    │            ▼            │
+                    │    ┌──────────────┐     │
+                    │    │ auto-reply   │     │
+                    │    │ "CONFLICT    │     │
+                    │    │  RESOLUTION  │     │
+                    │    │  REQUIRED"   │     │
+                    │    └──────┬───────┘     │
+                    │           │ agent resolves
+                    │           │ (retry loop)
+                    │           ▼             │
+                    │    ┌──────────────┐     │
+                    │    │ Next turn →  │     │
+                    │    │ re-absorb    │     │
+                    │    └──────────────┘     │
+                    │                         │
+                    └────────────┬────────────┘
+                                 │ session.ended
+                                 ▼
+                     ┌─────────────────────┐
+                     │  Final absorb_all   │
+                     │  Remove session file│
+                     │  Orphan cleanup     │
+                     └──────────┬──────────┘
+                                 │
+                                 ▼
+                            ┌─────────┐
+                            │   END   │
+                            └─────────┘
 ```
 
 ---
@@ -511,10 +482,10 @@ If an agent crashes before cleanup:
 
 | File | Role |
 |------|------|
-| `cli/src/session/isolation.rs` | All workspace CRUD: create, absorb, cleanup, recovery, session counting |
+| `cli/src/session/isolation.rs` | All workspace CRUD: create, absorb, cleanup, recovery |
 | `cli/src/session/mod.rs` | AikiSession struct, session file creation, PID detection |
 | `cli/src/flows/core/hooks.yaml` | Event handlers that wire everything together |
-| `cli/src/flows/core/functions.rs` | Native functions: `workspace_create_if_concurrent`, `workspace_absorb_all`, `detect_workspace_conflicts` |
+| `cli/src/flows/core/functions.rs` | Native functions: `workspace_ensure_isolated`, `workspace_absorb_all`, `detect_workspace_conflicts` |
 | `cli/src/events/session_started.rs` | Session lifecycle: prune dead PIDs, create session file, run core hook |
 
 ---
@@ -523,11 +494,33 @@ If an agent crashes before cleanup:
 
 | Decision | Rationale |
 |----------|-----------|
+| Unconditional isolation | Every session gets a workspace — no session counting, no special-casing. Eliminates race conditions where a second session could start before the first creates its workspace |
 | Two-phase rebase | Single rebase drags shared ancestors, cascading rewrites to sibling workspaces |
 | File-based lock | Serializes concurrent absorptions so each builds on the last |
 | Conflict detection outside lock | Avoids holding lock while waiting for user/agent resolution |
 | `/tmp/aiki/` for workspaces | Ephemeral by nature; reboot cleans up naturally; crash recovery handles the rest |
-| by-repo sidecar (`~/.aiki/sessions/by-repo/`) | O(1) session counting per repo vs scanning all session files |
 | `jj workspace add -r @-` | Forks from parent of working copy so agent starts with a clean working copy |
 | Step 2 without `--ignore-working-copy` | JJ must update filesystem or next snapshot silently reverts absorbed changes |
 | Retry count with force-absorb at 3 | Prevents infinite conflict loops; lets human intervene after reasonable attempts |
+
+---
+
+## JJ Conflict Model References
+
+The absorption and conflict handling in this system relies on JJ's first-class conflict model.
+Understanding these fundamentals is essential for working on the isolation code:
+
+- **[Conflicts](https://docs.jj-vcs.dev/latest/conflicts/)** — How JJ stores conflicts as first-class objects (not text markers), materialization in working copies, resolution workflow, and propagation to descendants
+- **[Technical: Conflicts](https://docs.jj-vcs.dev/latest/technical/conflicts/)** — Tree algebra internals (`A+(C-B)+(E-D)`), on-demand resolution, simplification during rebase
+- **[Working Copy](https://docs.jj-vcs.dev/latest/working-copy/)** — Conflict marker round-trip: materialization (commit→files) and de-materialization (files→commit on snapshot)
+- **[Steve's JJ Tutorial: Conflicts](https://steveklabnik.github.io/jujutsu-tutorial/branching-merging-and-conflicts/conflicts.html)** — Practical walkthrough of conflict resolution, propagation through descendants, `jj resolve`
+
+Key design implications for aiki:
+
+| JJ capability | Implication for isolation |
+|--------------|--------------------------|
+| Rebases always succeed (conflicts recorded, not rejected) | Absorption never fails — no need for retry loops or force-absorb |
+| `conflicts()` revset | Native conflict detection: `jj log -r 'conflicts() & ::@'` replaces marker files |
+| `jj resolve --list -r <rev>` | Query conflicted files in any revision, not just working copy |
+| Resolution propagates to descendants | Fixing a conflict in one commit auto-resolves dependent commits |
+| Conflict markers are round-trippable | Agents can edit markers in files; JJ parses resolution back on snapshot |

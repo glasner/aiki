@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki Status — v2 Tree DAG</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 44px;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #888; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  .subtitle { color: #444; font-size: 11px; text-align: center; margin-top: 4px; max-width: 780px; line-height: 1.6; }
+
+  .scene-label {
+    font-size: 10px; font-weight: 700; color: #555; text-align: center;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: -24px;
+  }
+
+  .terminal {
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    width: 100%; max-width: 860px; overflow: hidden;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418; padding: 8px 14px; display: flex;
+    align-items: center; gap: 7px; border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; }
+
+  .screen { padding: 12px 16px; font-size: 13px; line-height: 1.45; color: #999; }
+
+  pre { white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.45; }
+
+  .grn { color: #5fcc68; } .red { color: #e05555; } .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; } .mag { color: #c470b0; } .org { color: #cc8844; }
+  .blu { color: #5588cc; } .wht { color: #cccccc; } .dim { color: #3a3a44; }
+  .dim2 { color: #252530; } .fg { color: #777; } .bold { font-weight: 700; }
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .log-area {
+    border-top: 1px solid #1e1e26; margin-top: 8px; padding-top: 6px;
+    font-size: 11px; line-height: 1.6;
+  }
+  .log-entry { opacity: 0.45; }
+  .log-entry:last-child { opacity: 0.9; }
+
+  .note {
+    max-width: 860px; width: 100%; padding: 16px 20px;
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    color: #555; font-size: 11px; line-height: 1.8;
+  }
+  .note strong { color: #888; }
+  .note code { color: #5bb8c9; background: #151520; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .divider { border: none; border-top: 1px dashed #252530; max-width: 860px; width: 100%; }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>aiki status — v2 tree dag</h1>
+  <div class="subtitle">Full-screen tree DAG with stage track header. v1-style box-drawing connectors
+  for fan-out/fan-in. Lanes are implicit in the tree's branching structure — parallel branches are
+  parallel lanes. No sidebar. 1–3 agents run concurrently on parallel branches.</div>
+</div>
+
+<!-- ================================================================== -->
+<!--  INTRO NOTE                                                        -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>v2 — tree DAG + stage track</strong><br><br>
+  Combines v1's tree DAG rendering (box-drawing connectors: <code>━┬━ ├━ ╰━ │</code>) with v2's
+  full-screen layout and stage track header. The tree naturally shows lane structure through
+  branching — parallel branches are parallel lanes. No need for lane IDs, lane rows, or lane
+  names.<br><br>
+  <strong>How it works:</strong><br>
+  - The subtask DAG renders as a left-to-right tree using <code>━┬━</code> for fan-out,
+    <code>├━</code>/<code>╰━</code> for branches, <code>│</code> for vertical continuation<br>
+  - Nodes are dots: <code>●</code> done (green), <code>◉</code> active (yellow bold),
+    <code>○</code> pending (dim), <code>✗</code> failed (red)<br>
+  - Only the active node (<code>◉</code>) gets a truncated task name inline<br>
+  - Agent abbreviation sits at the right edge of active branches<br>
+  - The stage track (<code>▸ build  ○ review  ○ fix</code>) is always visible in the header<br>
+  - Each stage (build, review, fix) has its own tree<br>
+  - Completed stages keep their tree visible (green dots, dim connectors)<br><br>
+  <strong>Key insight:</strong> The tree shape <em>is</em> the lane visualization. A fan-out from
+  <code>━┬━</code> creates parallel branches — those branches are lanes. Fan-in with
+  <code>━╯</code> reconverges. No extra abstraction needed.
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 1: BUILD — LINEAR CHAIN, EARLY PROGRESS                    -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 1 — Build stage, early linear progress</strong><br><br>
+  Build just started. The tree shows a linear chain: explore (done) → plan (active) → fan-out
+  visible as pending dots downstream. Only one agent so far — the tree hasn't branched yet.
+  The <code>━┬━</code> node ahead shows where the tree will fan out once the plan completes.
+</div>
+
+<div class="scene-label">Scene 1 — Build, linear chain, explore → plan</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Implement Stripe webhook event handling</span>                        <span class="dim">0:18</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">1/6</span>      <span class="dim">○ review</span>      <span class="dim">○ fix</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Create webhook plan…</span> <span class="dim">━┬━</span> <span class="dim">○</span> <span class="dim">━━</span> <span class="dim">○</span>                    <span class="cyn">cc</span>
+                                  <span class="dim">├━</span> <span class="dim">○</span>
+                                  <span class="dim">╰━</span> <span class="dim">○</span> <span class="dim">━━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span>
+                                                          <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:00</span>  <span class="yel blink">▸</span> <span class="fg">xtut</span> <span class="cyn">cc</span>  <span class="dim">Explore webhook requirements…</span></pre>
+<pre class="log-entry"> <span class="dim">00:08</span>  <span class="grn">✓</span> <span class="dim">xtut</span>  <span class="dim">8s</span></pre>
+<pre class="log-entry"> <span class="dim">00:08</span>  <span class="yel blink">▸</span> <span class="fg">nmps</span> <span class="cyn">cc</span>  <span class="dim">Create webhook plan…</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 2: BUILD — FAN-OUT, TWO PARALLEL BRANCHES                  -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 2 — Fan-out: two branches running in parallel</strong><br><br>
+  Plan completed. The tree fans out at the <code>━┬━</code> node. Two branches now have active
+  nodes (<code>◉</code>), each with its own agent. The third branch is blocked — it depends on both
+  active branches completing. Box-drawing connectors (<code>│ ├━ ╰━</code>) show the tree structure.
+  This is the core visual: <strong>parallel branches = parallel lanes</strong>.
+</div>
+
+<div class="scene-label">Scene 2 — Build, fan-out, two parallel branches</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Implement Stripe webhook event handling</span>                        <span class="dim">0:34</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">3/6</span>      <span class="dim">○ review</span>      <span class="dim">○ fix</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Implement webhook route…</span> <span class="dim">━━</span> <span class="dim">○</span>            <span class="mag">cur</span>
+              <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="fg">Verify Stripe signatures…</span>                <span class="cyn">cc</span>
+              <span class="dim">╰━</span> <span class="dim">○</span> <span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span>
+                                                        <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:14</span>  <span class="grn">✓</span> <span class="dim">nmps</span>  <span class="dim">6s</span></pre>
+<pre class="log-entry"> <span class="dim">00:14</span>  <span class="yel blink">▸</span> <span class="fg">kyxr</span> <span class="mag">cur</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">qwvp</span> <span class="cyn">cc</span>  <span class="dim">(parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3: BUILD — WIDER TREE, THREE AGENTS                        -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3 — Deeper tree, three agents at max concurrency</strong><br><br>
+  A larger plan with more subtasks. Three branches running simultaneously — max concurrency.
+  The top branch has progressed further (two green dots before the active node). The middle
+  and bottom branches started more recently. The pending nodes (<code>○</code>) after the
+  <code>━┬━</code> show where the next fan-out will happen.
+</div>
+
+<div class="scene-label">Scene 3 — Build, three agents, deeper tree</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">1:42</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">4/10</span>     <span class="dim">○ review</span>      <span class="dim">○ fix</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Implement event broadcast…</span> <span class="dim">━━</span> <span class="dim">○</span>  <span class="mag">cur</span>
+              <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Run schema migrations…</span>             <span class="cyn">cc</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="fg">Build preference settings…</span> <span class="dim">━━</span> <span class="dim">○</span>    <span class="cyn">cc</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">00:22</span>  <span class="grn">✓</span> <span class="dim">xtut</span>  <span class="dim">22s</span></pre>
+<pre class="log-entry"> <span class="dim">00:22</span>  <span class="yel blink">▸</span> <span class="fg">kyxr</span> <span class="mag">cur</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">qwvp</span> <span class="cyn">cc</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">zxrk</span> <span class="cyn">cc</span>  <span class="dim">(3 parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4: BUILD — FAN-IN, BRANCHES CONVERGE                       -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 4 — Fan-in: branches converge, convergence node starts</strong><br><br>
+  The two top branches are done (green). They converge at a <code>━╯</code> node — the
+  "write integration tests" task that depends on both. The bottom branch is still running.
+  The tree now shows the classic fan-out/fan-in diamond pattern: one node splits into
+  parallel branches, those branches reconnect at a dependency node.
+</div>
+
+<div class="scene-label">Scene 4 — Build, fan-in convergence</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">2:30</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">7/10</span>     <span class="dim">○ review</span>      <span class="dim">○ fix</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Write integration…</span>   <span class="mag">cur</span>
+              <span class="dim">│</span>                  <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━━━━━━╯</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Wire up toggle…</span> <span class="dim">━━━━━━━━━┬━</span> <span class="dim">○</span>
+                                                     <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">01:48</span>  <span class="grn">✓</span> <span class="dim">kyxr</span>  <span class="dim">1m26</span>  <span class="dim">│</span>  <span class="grn">✓</span> <span class="dim">qwvp</span>  <span class="dim">52s</span></pre>
+<pre class="log-entry"> <span class="dim">01:48</span>  <span class="grn">●</span> <span class="fg">trvp</span> <span class="dim">unblocked</span></pre>
+<pre class="log-entry"> <span class="dim">01:48</span>  <span class="yel blink">▸</span> <span class="fg">trvp</span> <span class="mag">cur</span>  <span class="dim">Write integration tests…</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 5: BUILD — BRANCH FAILURE                                   -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 5 — Branch failure: red ✗ in tree, stuck downstream</strong><br><br>
+  A node failed on the bottom branch. The <code>✗</code> replaces the active dot, shown in red
+  with the failed task's name. Downstream nodes that depended on this branch are stuck (dim
+  with <code>stuck</code> label). Other branches continue unaffected.
+</div>
+
+<div class="scene-label">Scene 5 — Build, branch failure</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">2:48</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">7/10</span>     <span class="dim">○ review</span>      <span class="dim">○ fix</span>           <span class="red bold">1 failed</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Write integration…</span>   <span class="mag">cur</span>
+              <span class="dim">│</span>                  <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━━━━━━╯</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="red bold">✗</span> <span class="red">Add retry logic…</span> <span class="dim">━━━━━━━━━┬━</span> <span class="dim">○</span> <span class="red">stuck</span>
+                                                     <span class="dim">╰━</span> <span class="dim">○</span> <span class="red">stuck</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] details  [r] retry  [n] drill  [q] quit</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">02:30</span>  <span class="red">✗</span> <span class="red">zxrk</span> <span class="red">stopped</span> <span class="dim">— Redis connection refused</span></pre>
+<pre class="log-entry"> <span class="dim">02:30</span>  <span class="red">!</span> <span class="fg">nwqp</span> <span class="red">stuck</span>  <span class="dim">│</span>  <span class="red">!</span> <span class="fg">rmxv</span> <span class="red">stuck</span>  <span class="dim">← dependency zxrk failed</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 6: BUILD COMPLETE — REVIEW STARTS                          -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 6 — Build complete, review stage begins</strong><br><br>
+  All build subtasks done. The build tree collapses to green. The stage track advances:
+  <code>✓ build</code> green, <code>▸ review</code> active. Below the completed build tree,
+  the review tree starts — typically simpler, with 1–2 review tasks. The build tree stays
+  visible (green, dim connectors) as context above the active review tree.
+</div>
+
+<div class="scene-label">Scene 6 — Build complete, review stage begins</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">4:50</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">10/10</span>    <span class="cyn bold">▸ review</span>  <span class="dim">0/4</span>   <span class="dim">○ fix</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">build</span>  <span class="dim">4m12s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span>
+              <span class="grn dim">│</span>                  <span class="grn dim">│</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━╯</span>
+              <span class="grn dim">│</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="cyn bold">review</span>
+   <span class="yel bold">◉</span> <span class="fg">Review WebSocket changes…</span> <span class="dim">━━</span> <span class="dim">○</span>                        <span class="cyn">cc</span>
+   <span class="yel bold">◉</span> <span class="fg">Run integration test suite…</span>                              <span class="mag">cur</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">04:12</span>  <span class="grn">✓</span> <span class="grn bold">build complete</span>  <span class="dim">10/10  4m12s</span></pre>
+<pre class="log-entry"> <span class="dim">04:38</span>  <span class="cyn bold">▸ review</span> <span class="dim">started — 2 review tasks</span></pre>
+<pre class="log-entry"> <span class="dim">04:38</span>  <span class="yel blink">▸</span> <span class="fg">rxvw</span> <span class="cyn">cc</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">spqt</span> <span class="mag">cur</span>  <span class="dim">(parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 7: REVIEW DONE WITH ISSUES — FIX STAGE                     -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 7 — Review found issues, fix stage begins</strong><br><br>
+  Review found 2 issues. The review tree shows green (done) with an <code><span style="color:#cc8844">2 issues</span></code>
+  annotation. Fix stage creates tasks for each issue — these render as a simple tree
+  (parallel fix tasks, possibly with a convergence test node). The build tree is
+  still visible at the top, now compact context.
+</div>
+
+<div class="scene-label">Scene 7 — Review done with issues, fix stage begins</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">6:20</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">10/10</span>    <span class="grn">✓ review</span>  <span class="org">2 issues</span>   <span class="yel bold">▸ fix</span>  <span class="dim">0/3</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">build</span>  <span class="dim">4m12s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━╯</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="grn dim">review</span>  <span class="dim">1m20s</span>  <span class="org">2 issues</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="yel bold">fix</span>
+   <span class="yel bold">◉</span> <span class="fg">Add reconnect logic…</span> <span class="dim">━┬━</span> <span class="dim">○</span>                          <span class="cyn">cc</span>
+                           <span class="dim">╰━</span> <span class="dim">○</span>
+   <span class="yel bold">◉</span> <span class="fg">Add rate limit to broadcast…</span>                        <span class="mag">cur</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">05:44</span>  <span class="grn">✓</span> <span class="grn bold">review complete</span>  <span class="dim">4/4</span>  <span class="org">2 issues found</span></pre>
+<pre class="log-entry"> <span class="dim">06:02</span>  <span class="yel bold">▸ fix</span> <span class="dim">started — 3 fix tasks</span></pre>
+<pre class="log-entry"> <span class="dim">06:02</span>  <span class="yel blink">▸</span> <span class="fg">fxnr</span> <span class="cyn">cc</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">fxms</span> <span class="mag">cur</span>  <span class="dim">(parallel)</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 8: ALL DONE — CLEAN REVIEW, NO FIX NEEDED                  -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 8 — All done, clean review, fix skipped</strong><br><br>
+  Alternative happy path: review found no issues. All stages green. Fix was never needed.
+  The summary shows all trees in their final green state. Each stage header shows its
+  total time. This is what success looks like.
+</div>
+
+<div class="scene-label">Scene 8 — All done, clean review</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Implement Stripe webhook event handling</span>                        <span class="dim">3:45</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>      <span class="grn">✓ review</span>  <span class="grn dim">clean</span>    <span class="grn">✓ fix</span>  <span class="grn dim">—</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">build</span>  <span class="dim">2m28s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                    <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="grn bold">review</span>  <span class="dim">1m02s</span>  <span class="grn">clean</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">03:30</span>  <span class="grn">✓</span> <span class="grn bold">review complete</span>  <span class="grn dim">clean — 0 issues</span></pre>
+<pre class="log-entry"> <span class="dim">03:45</span>  <span class="grn bold">done</span>  <span class="dim">build 2m28s  review 1m02s  fix skipped  total 3m45s</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 9: ALL DONE — AFTER FIX                                     -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 9 — All done after fix iteration</strong><br><br>
+  Build, review, and fix all completed. All three trees visible in green. The fix tree
+  shows the issues that were addressed. This is the "full journey" view — you can see
+  every node that was executed across all three stages.
+</div>
+
+<div class="scene-label">Scene 9 — All done after fix</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">7:38</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">10/10</span>    <span class="grn">✓ review</span>  <span class="grn dim">2 fixed</span>   <span class="grn">✓ fix</span>  <span class="grn dim">3/3</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">build</span>  <span class="dim">4m12s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━╯</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="grn bold">review</span>  <span class="dim">1m20s</span>  <span class="org">2 issues</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="grn bold">fix</span>  <span class="dim">1m18s</span>
+   <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span>
+      <span class="grn dim">╰━</span> <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+
+    <div class="log-area">
+<pre class="log-entry"> <span class="dim">07:20</span>  <span class="grn">✓</span> <span class="grn bold">fix complete</span>  <span class="dim">3/3  1m18s</span></pre>
+<pre class="log-entry"> <span class="dim">07:38</span>  <span class="grn bold">done</span>  <span class="dim">build 4m12s  review 1m20s  fix 1m18s  total 7m38s</span></pre>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 10: DRILL-DOWN — SESSION DETAIL                             -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 10 — Drill-down into a branch</strong><br><br>
+  Pressing <code>[n]</code> on an active branch zooms into the session detail. Full task names,
+  completion summaries, and live agent output. The stage track stays visible.
+  <code>[b]</code> goes back to the tree overview.
+</div>
+
+<div class="scene-label">Scene 10 — Drill-down, session detail</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki status — realtime.md — branch kyxr</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="wht bold">Add real-time notifications to dashboard</span>                       <span class="dim">1:42</span>
+ <span class="yel bold">▸ build</span>  <span class="dim">4/10</span>     <span class="dim">○ review</span>      <span class="dim">○ fix</span>           <span class="dim">branch kyxr</span>
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn">✓</span> <span class="grn dim">Set up WebSocket server with ws crate</span>                       <span class="dim">22s</span>
+   <span class="grn dim">Added ws dependency, created server module with connection handler</span>
+
+ <span class="yel">▸</span> <span class="yel bold">Implement event broadcast to connected clients</span>
+   <span class="dim">cursor is editing</span> <span class="fg">src/ws/broadcast.rs</span>
+   <span class="dim2">│</span> <span class="dim">pub async fn broadcast(state: &AppState, event: Event) {</span>
+   <span class="dim2">│</span> <span class="dim">    let clients = state.connections.read().await;</span>
+   <span class="dim2">│</span> <span class="dim">    for client in clients.values() {</span>
+
+ <span class="dim">○</span> <span class="dim">Add channel-based message routing</span>
+
+ <span class="dim">─────────────────────────────────────────────────────────────────────────</span>
+</pre>
+<pre>
+ <span class="dim">[b] back to tree  [j/k] navigate tasks  [Enter] full output  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  DESIGN NOTES                                                      -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>v2 design decisions</strong><br><br>
+
+  <strong>Tree DAG rendering (from v1)</strong><br>
+  The subtask DAG renders as a left-to-right tree using box-drawing characters. This is the
+  same rendering approach as v1's detail pane, but now full-screen with no sidebar.
+  Connectors: <code>━┬━</code> fan-out, <code>├━</code>/<code>╰━</code> branches,
+  <code>│</code> vertical, <code>━╯</code> fan-in. Nodes: <code>●</code> done (green),
+  <code>◉</code> active (yellow bold), <code>○</code> pending (dim), <code>✗</code> failed (red).<br><br>
+
+  <strong>Lanes are implicit in tree shape</strong><br>
+  A fan-out (<code>━┬━</code>) creates parallel branches — those branches <em>are</em> lanes.
+  No need for lane IDs, lane rows, or lane labels. The tree shape communicates everything:
+  how many things run in parallel, what depends on what, where bottlenecks are. When two
+  branches converge (<code>━╯</code>), that's a fan-in dependency.<br><br>
+
+  <strong>Stage track header (from v2)</strong><br>
+  Always visible: <code>▸ build 3/6  ○ review  ○ fix</code>. Three stages left-to-right
+  with status indicators:<br>
+  - <code><span style="color:#d4a840">▸ build</span>  4/6</code> — active stage, yellow, task progress<br>
+  - <code><span style="color:#5fcc68">✓ build</span>  10/10</code> — completed, green<br>
+  - <code><span style="color:#3a3a44">○ review</span></code> — pending, dim<br>
+  - <code><span style="color:#5fcc68">✓ review</span>  <span style="color:#cc8844">2 issues</span></code> — done with issues (orange)<br>
+  - <code><span style="color:#5fcc68">✓ review</span>  <span style="color:#5fcc68">clean</span></code> — done, no issues<br><br>
+
+  <strong>Vertical layout: three stage trees</strong><br>
+  The screen shows up to three trees vertically, one per stage. The active stage's tree has
+  yellow/green active nodes. Completed stages keep their green trees visible as context
+  (with dim connectors). Each stage header shows its name and total time.<br><br>
+
+  <strong>Only active nodes get names</strong><br>
+  Task names are 5–8 words (30–45 chars) — too long for every node. Only <code>◉</code>
+  (active) and <code>✗</code> (failed) nodes show truncated names inline (first 2–3 words +
+  <code>…</code>). Completed nodes are just <code>●</code>. Pending nodes are <code>○</code>.
+  Agent abbreviation sits at the right edge of active branches.<br><br>
+
+  <strong>Drill-down</strong><br>
+  <code>[n]</code> on any branch zooms into session detail: full task names, completion
+  summaries, live agent output. <code>[b]</code> returns to tree overview. The stage track
+  stays visible in drill-down mode.<br><br>
+
+  <strong>Not yet explored:</strong><br>
+  - Iteration visualization (iter 2+ re-review cycle)<br>
+  - How the tree collapses when build has many nodes (10+ nodes, tree gets wide)<br>
+  - Multi-agent coordination: how to show which agent owns which branch<br>
+  - Tier 2+ scaling for this tree approach (many trees → row compression?)<br>
+  - Review issue detail in drill-down<br>
+  - Fix tasks that trigger their own review (recursive pipeline)<br>
+  - Navigation: cursor movement within the tree (which node is "focused"?)
+</div>
+
+</body>
+</html>

@@ -6,7 +6,6 @@
 //! - Supports run modes: blocking (default), --async, --start
 
 use std::env;
-use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::agents::AgentType;
@@ -16,6 +15,7 @@ use crate::session::find_active_session;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
+use crate::output_utils;
 use crate::tasks::{
     get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set, materialize_graph,
     read_events, reassign_task, start_task_core, Task, TaskStatus,
@@ -179,17 +179,13 @@ pub fn run(args: ExploreArgs) -> Result<()> {
         let options = TaskRunOptions::new();
         task_run_async(&cwd, &explore_id, options)?;
         output_explore_async(&explore_id, &scope)?;
-        if !std::io::stdout().is_terminal() {
-            println!("{}", explore_id);
-        }
+        output_utils::emit_stdout(&explore_id);
     } else {
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(&cwd, &explore_id, options)?;
         output_explore_completed(&explore_id, &scope)?;
-        if !std::io::stdout().is_terminal() {
-            println!("{}", explore_id);
-        }
+        output_utils::emit_stdout(&explore_id);
     }
 
     Ok(())
@@ -203,56 +199,54 @@ fn output_explore_started(
     ready: &[&Task],
 ) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    let output = CommandOutput {
-        heading: "Explore Started",
-        task_id: explore_id,
-        scope: Some(scope),
-        status: "Explore task started. You are now exploring.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("explore").build(&content, in_progress, ready);
-    eprintln!("{}", md);
-
-    if !std::io::stdout().is_terminal() {
-        println!("{}", explore_id);
-    }
-
+    output_utils::emit(explore_id, || {
+        let output = CommandOutput {
+            heading: "Explore Started",
+            task_id: explore_id,
+            scope: Some(scope),
+            status: "Explore task started. You are now exploring.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("explore").build(&content, in_progress, ready)
+    });
     Ok(())
 }
 
 /// Output explore async message (for --async mode)
 fn output_explore_async(explore_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    let output = CommandOutput {
-        heading: "Explore Started",
-        task_id: explore_id,
-        scope: Some(scope),
-        status: "Explore started in background.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("explore").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let output = CommandOutput {
+            heading: "Explore Started",
+            task_id: explore_id,
+            scope: Some(scope),
+            status: "Explore started in background.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("explore").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output explore completed message (for blocking mode)
 fn output_explore_completed(explore_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    let output = CommandOutput {
-        heading: "Explore Completed",
-        task_id: explore_id,
-        scope: Some(scope),
-        status: "Explore completed.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("explore").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let output = CommandOutput {
+            heading: "Explore Completed",
+            task_id: explore_id,
+            scope: Some(scope),
+            status: "Explore completed.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("explore").build(&content, &[], &[])
+    });
     Ok(())
 }
 

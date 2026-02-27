@@ -10,8 +10,9 @@
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::env;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+
+use crate::output_utils;
 
 use crate::agents::{determine_reviewer, AgentType};
 use crate::error::{AikiError, Result};
@@ -138,6 +139,152 @@ impl ReviewScope {
     }
 }
 
+/// A file location referenced by a review issue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Location {
+    pub path: String,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+
+impl Location {
+    /// Parse a location string in the format `path`, `path:line`, or `path:line-end_line`.
+    pub fn parse(s: &str) -> Result<Location> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(AikiError::InvalidArgument("Location path must not be empty".into()));
+        }
+
+        if let Some(colon_pos) = s.rfind(':') {
+            let path = &s[..colon_pos];
+            let line_spec = &s[colon_pos + 1..];
+
+            if !line_spec.is_empty() && line_spec.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                if path.is_empty() {
+                    return Err(AikiError::InvalidArgument("Location path must not be empty".into()));
+                }
+                if let Some(dash_pos) = line_spec.find('-') {
+                    let start_str = &line_spec[..dash_pos];
+                    let end_str = &line_spec[dash_pos + 1..];
+                    let start: u32 = start_str.parse().map_err(|_| {
+                        AikiError::InvalidArgument(format!("Invalid start line: {}", start_str))
+                    })?;
+                    let end: u32 = end_str.parse().map_err(|_| {
+                        AikiError::InvalidArgument(format!("Invalid end line: {}", end_str))
+                    })?;
+                    if start == 0 || end == 0 {
+                        return Err(AikiError::InvalidArgument("Line numbers must be positive".into()));
+                    }
+                    if end < start {
+                        return Err(AikiError::InvalidArgument(format!(
+                            "End line ({}) must be >= start line ({})", end, start
+                        )));
+                    }
+                    return Ok(Location {
+                        path: path.to_string(),
+                        start_line: Some(start),
+                        end_line: Some(end),
+                    });
+                } else {
+                    let line: u32 = line_spec.parse().map_err(|_| {
+                        AikiError::InvalidArgument(format!("Invalid line number: {}", line_spec))
+                    })?;
+                    if line == 0 {
+                        return Err(AikiError::InvalidArgument("Line numbers must be positive".into()));
+                    }
+                    return Ok(Location {
+                        path: path.to_string(),
+                        start_line: Some(line),
+                        end_line: None,
+                    });
+                }
+            }
+        }
+
+        Ok(Location {
+            path: s.to_string(),
+            start_line: None,
+            end_line: None,
+        })
+    }
+}
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path)?;
+        if let Some(start) = self.start_line {
+            write!(f, ":{}", start)?;
+            if let Some(end) = self.end_line {
+                if end != start {
+                    write!(f, "-{}", end)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Parse locations from a task comment's data fields.
+///
+/// Handles both single-file format (`path`/`start_line`/`end_line` keys) and
+/// multi-file format (comma-separated `locations` key).
+pub fn parse_locations(data: &HashMap<String, String>) -> Vec<Location> {
+    if let Some(locations_str) = data.get("locations") {
+        return locations_str
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .filter_map(|s| Location::parse(s.trim()).ok())
+            .collect();
+    }
+
+    if let Some(path) = data.get("path") {
+        if path.is_empty() {
+            return vec![];
+        }
+        let start_line = data.get("start_line").and_then(|s| s.parse::<u32>().ok());
+        let end_line = data.get("end_line").and_then(|s| s.parse::<u32>().ok());
+        return vec![Location {
+            path: path.clone(),
+            start_line,
+            end_line,
+        }];
+    }
+
+    vec![]
+}
+
+/// Format a `Vec<Location>` for display as a parenthesized suffix.
+pub fn format_locations(locations: &[Location]) -> String {
+    if locations.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = locations.iter().map(|l| l.to_string()).collect();
+    format!("({})", parts.join(", "))
+}
+
+/// Sort order for severity values (lower = higher priority).
+fn severity_order(severity: &str) -> u8 {
+    match severity {
+        "high" => 0,
+        "medium" => 1,
+        "low" => 2,
+        _ => 1,
+    }
+}
+
+/// Get severity from a comment's data, defaulting to "medium".
+fn comment_severity(comment: &TaskComment) -> &str {
+    comment.data.get("severity").map(|s| s.as_str()).unwrap_or("medium")
+}
+
+/// Parse and validate a severity value for clap's value_parser.
+fn parse_severity(s: &str) -> std::result::Result<String, String> {
+    match s {
+        "high" | "medium" | "low" => Ok(s.to_string()),
+        _ => Err(format!("invalid severity '{}': must be high, medium, or low", s)),
+    }
+}
+
 /// Review subcommands (for list, show, and issue management)
 #[derive(Subcommand)]
 pub enum ReviewSubcommands {
@@ -170,6 +317,18 @@ pub enum ReviewIssueSubcommands {
         review_id: String,
         /// Description of the issue
         text: String,
+        /// Issue severity: high, medium, or low (default: medium)
+        #[arg(long, value_parser = parse_severity)]
+        severity: Option<String>,
+        /// File location (path, path:line, or path:line-end). Repeatable.
+        #[arg(long = "file")]
+        files: Vec<String>,
+        /// Shorthand for --severity high
+        #[arg(long, conflicts_with = "severity")]
+        high: bool,
+        /// Shorthand for --severity low
+        #[arg(long, conflicts_with = "severity")]
+        low: bool,
     },
     /// List issues on a review
     List {
@@ -228,8 +387,8 @@ pub fn run(args: ReviewArgs) -> Result<()> {
             ReviewSubcommands::List { all } => list_reviews(&cwd, all),
             ReviewSubcommands::Show { task_id } => show_review(&cwd, &task_id),
             ReviewSubcommands::Issue { command } => match command {
-                ReviewIssueSubcommands::Add { review_id, text } => {
-                    run_issue_add(&cwd, &review_id, &text)
+                ReviewIssueSubcommands::Add { review_id, text, severity, files, high, low } => {
+                    run_issue_add(&cwd, &review_id, &text, severity, &files, high, low)
                 }
                 ReviewIssueSubcommands::List { review_id } => run_issue_list(&cwd, &review_id),
             },
@@ -563,19 +722,13 @@ fn run_review(
         let options = TaskRunOptions::new();
         task_run_async(cwd, &review_id, options)?;
         output_review_async(&review_id, scope)?;
-        // Output task ID to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!("{}", review_id);
-        }
+        output_utils::emit_stdout(&review_id);
     } else {
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &review_id, options)?;
         output_review_completed(&review_id, scope)?;
-        // Output task ID to stdout if piped
-        if !std::io::stdout().is_terminal() {
-            println!("{}", review_id);
-        }
+        output_utils::emit_stdout(&review_id);
     }
 
     Ok(())
@@ -584,80 +737,77 @@ fn run_review(
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let output = CommandOutput {
-        heading: "Approved",
-        task_id: "",
-        scope: None,
-        status: "Nothing to review - no closed tasks in session.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("review").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let output = CommandOutput {
+            heading: "Approved",
+            task_id: "",
+            scope: None,
+            status: "Nothing to review - no closed tasks in session.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("review").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output review started message (for --start mode)
 fn output_review_started(review_id: &str, scope: &ReviewScope, in_progress: &[&Task], ready: &[&Task]) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let output = CommandOutput {
-        heading: "Review Started",
-        task_id: review_id,
-        scope: Some(scope),
-        status: "Review task started. You are now reviewing.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("review").build(&content, in_progress, ready);
-    eprintln!("{}", md);
-
-    // Output task ID to stdout if piped
-    if !std::io::stdout().is_terminal() {
-        println!("{}", review_id);
-    }
-
+    output_utils::emit(review_id, || {
+        let output = CommandOutput {
+            heading: "Review Started",
+            task_id: review_id,
+            scope: Some(scope),
+            status: "Review task started. You are now reviewing.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("review").build(&content, in_progress, ready)
+    });
     Ok(())
 }
 
 /// Output review async message (for --async mode)
 fn output_review_async(review_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    let output = CommandOutput {
-        heading: "Review Started",
-        task_id: review_id,
-        scope: Some(scope),
-        status: "Review started in background.",
-        issues: None,
-        hint: None,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("review").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let output = CommandOutput {
+            heading: "Review Started",
+            task_id: review_id,
+            scope: Some(scope),
+            status: "Review started in background.",
+            issues: None,
+            hint: None,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("review").build(&content, &[], &[])
+    });
     Ok(())
 }
 
 /// Output review completed message (for blocking mode)
 fn output_review_completed(review_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    // Only show fix hint for scopes that support fixing
-    let hint = if scope.kind == ReviewScopeKind::Session {
-        None
-    } else {
-        Some(format!("Run `aiki fix {}` to remediate.", review_id))
-    };
-    let output = CommandOutput {
-        heading: "Review Completed",
-        task_id: review_id,
-        scope: Some(scope),
-        status: "Review completed.",
-        issues: None,
-        hint,
-    };
-    let content = format_command_output(&output);
-    let md = MdBuilder::new("review").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let hint = if scope.kind == ReviewScopeKind::Session {
+            None
+        } else {
+            Some(format!("Run `aiki fix {}` to remediate.", review_id))
+        };
+        let output = CommandOutput {
+            heading: "Review Completed",
+            task_id: review_id,
+            scope: Some(scope),
+            status: "Review completed.",
+            issues: None,
+            hint,
+        };
+        let content = format_command_output(&output);
+        MdBuilder::new("review").build(&content, &[], &[])
+    });
     Ok(())
 }
 
@@ -673,7 +823,15 @@ pub fn get_issue_comments(task: &Task) -> Vec<&TaskComment> {
 }
 
 /// Add an issue to a review task
-fn run_issue_add(cwd: &Path, review_id: &str, text: &str) -> Result<()> {
+fn run_issue_add(
+    cwd: &Path,
+    review_id: &str,
+    text: &str,
+    severity: Option<String>,
+    files: &[String],
+    high: bool,
+    low: bool,
+) -> Result<()> {
     let events = read_events(cwd)?;
     let tasks = materialize_graph(&events).tasks;
     let task = find_task(&tasks, review_id)?;
@@ -698,9 +856,41 @@ fn run_issue_add(cwd: &Path, review_id: &str, text: &str) -> Result<()> {
     let mut data = HashMap::new();
     data.insert("issue".to_string(), "true".to_string());
 
+    // Resolve severity: --high/--low shorthands, explicit --severity, or default
+    let resolved_severity = if high {
+        "high"
+    } else if low {
+        "low"
+    } else {
+        severity.as_deref().unwrap_or("medium")
+    };
+    data.insert("severity".to_string(), resolved_severity.to_string());
+
+    // Parse and store file locations
+    if !files.is_empty() {
+        let locations: Vec<Location> = files
+            .iter()
+            .map(|f| Location::parse(f))
+            .collect::<Result<Vec<_>>>()?;
+
+        if locations.len() == 1 {
+            let loc = &locations[0];
+            data.insert("path".to_string(), loc.path.clone());
+            if let Some(start) = loc.start_line {
+                data.insert("start_line".to_string(), start.to_string());
+            }
+            if let Some(end) = loc.end_line {
+                data.insert("end_line".to_string(), end.to_string());
+            }
+        } else {
+            let parts: Vec<String> = locations.iter().map(|l| l.to_string()).collect();
+            data.insert("locations".to_string(), parts.join(","));
+        }
+    }
+
     super::task::comment_on_task(cwd, &task.id, text, data)?;
 
-    eprintln!("Added issue to review {}", review_id);
+    output_utils::emit_stderr(|| format!("Added issue to review {}", review_id));
     Ok(())
 }
 
@@ -718,17 +908,30 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
         )));
     }
 
-    let issues = get_issue_comments(task);
+    let mut issues = get_issue_comments(task);
 
     if issues.is_empty() {
-        eprintln!("No issues found on review {}", review_id);
+        output_utils::emit_stderr(|| format!("No issues found on review {}", review_id));
         return Ok(());
     }
 
-    for comment in &issues {
-        let id = comment.id.as_deref().unwrap_or("unknown");
-        eprintln!("{}\t{}", id, &comment.text);
-    }
+    // Sort by severity: high → medium → low
+    issues.sort_by_key(|c| severity_order(comment_severity(c)));
+
+    output_utils::emit_stderr(|| {
+        let mut out = String::new();
+        for comment in &issues {
+            let severity = comment_severity(comment);
+            let locations = parse_locations(&comment.data);
+            let loc_suffix = format_locations(&locations);
+            if loc_suffix.is_empty() {
+                out.push_str(&format!("  {}: {}\n", severity, &comment.text));
+            } else {
+                out.push_str(&format!("  {}: {} {}\n", severity, &comment.text, loc_suffix));
+            }
+        }
+        out.trim_end().to_string()
+    });
 
     Ok(())
 }
@@ -752,51 +955,50 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
     reviews.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     if reviews.is_empty() {
-        let content = if all {
-            "No review tasks found.\n"
-        } else {
-            "No open review tasks. Use --all to see closed reviews.\n"
-        };
-        let md = MdBuilder::new("review-list").build(content, &[], &[]);
-        eprintln!("{}", md);
+        output_utils::emit_stderr(|| {
+            let content = if all {
+                "No review tasks found.\n"
+            } else {
+                "No open review tasks. Use --all to see closed reviews.\n"
+            };
+            MdBuilder::new("review-list").build(content, &[], &[])
+        });
         return Ok(());
     }
 
-    // Format review list
-    let mut content = String::from("## Reviews\n| ID | Status | Outcome | Issues | Name |\n|----|--------|---------|--------|------|\n");
-    for review in &reviews {
-        let status_str = match review.status {
-            TaskStatus::Open => "open",
-            TaskStatus::InProgress => "in_progress",
-            TaskStatus::Stopped => "stopped",
-            TaskStatus::Closed => "closed",
-        };
+    output_utils::emit_stderr(|| {
+        let mut content = String::from("## Reviews\n| ID | Status | Outcome | Issues | Name |\n|----|--------|---------|--------|------|\n");
+        for review in &reviews {
+            let status_str = match review.status {
+                TaskStatus::Open => "open",
+                TaskStatus::InProgress => "in_progress",
+                TaskStatus::Stopped => "stopped",
+                TaskStatus::Closed => "closed",
+            };
 
-        let outcome_str = review
-            .closed_outcome
-            .as_ref()
-            .map(|o| format!("{:?}", o).to_lowercase())
-            .unwrap_or_default();
+            let outcome_str = review
+                .closed_outcome
+                .as_ref()
+                .map(|o| format!("{:?}", o).to_lowercase())
+                .unwrap_or_default();
 
-        let issue_count = if let Some(count) = review.data.get("issue_count") {
-            count.parse::<usize>().unwrap_or(review.comments.len())
-        } else {
-            // Backward compat: fall back to comment count
-            review.comments.len()
-        };
+            let issue_count = if let Some(count) = review.data.get("issue_count") {
+                count.parse::<usize>().unwrap_or(review.comments.len())
+            } else {
+                review.comments.len()
+            };
 
-        content.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
-            &review.id,
-            status_str,
-            outcome_str,
-            issue_count,
-            &review.name
-        ));
-    }
-
-    let md = MdBuilder::new("review-list").build(&content, &[], &[]);
-    eprintln!("{}", md);
+            content.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                &review.id,
+                status_str,
+                outcome_str,
+                issue_count,
+                &review.name
+            ));
+        }
+        MdBuilder::new("review-list").build(&content, &[], &[])
+    });
 
     Ok(())
 }
@@ -816,101 +1018,104 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         )));
     }
 
-    let status_str = match task.status {
-        TaskStatus::Open => "open",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Stopped => "stopped",
-        TaskStatus::Closed => "closed",
-    };
+    output_utils::emit_stderr(|| {
+        let status_str = match task.status {
+            TaskStatus::Open => "open",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Stopped => "stopped",
+            TaskStatus::Closed => "closed",
+        };
 
-    let outcome_str = task
-        .closed_outcome
-        .as_ref()
-        .map(|o| format!("{:?}", o).to_lowercase())
-        .unwrap_or_default();
+        let outcome_str = task
+            .closed_outcome
+            .as_ref()
+            .map(|o| format!("{:?}", o).to_lowercase())
+            .unwrap_or_default();
 
-    let assignee_str = task
-        .assignee
-        .as_ref()
-        .map(|a| format!("- **Assignee:** {}\n", a))
-        .unwrap_or_default();
+        let assignee_str = task
+            .assignee
+            .as_ref()
+            .map(|a| format!("- **Assignee:** {}\n", a))
+            .unwrap_or_default();
 
-    // Build content
-    let mut content = format!(
-        "## Review: {}\n- **ID:** {}\n- **Status:** {}\n",
-        &task.name, &task.id, status_str
-    );
-    if !outcome_str.is_empty() {
-        content.push_str(&format!("- **Outcome:** {}\n", outcome_str));
-    }
-    content.push_str(&assignee_str);
-
-    // Add sources if any
-    if !task.sources.is_empty() {
-        content.push_str("\n### Sources\n");
-        for source in &task.sources {
-            content.push_str(&format!("- {}\n", source));
+        let mut content = format!(
+            "## Review: {}\n- **ID:** {}\n- **Status:** {}\n",
+            &task.name, &task.id, status_str
+        );
+        if !outcome_str.is_empty() {
+            content.push_str(&format!("- **Outcome:** {}\n", outcome_str));
         }
-    }
+        content.push_str(&assignee_str);
 
-    // Add issues and comments
-    if task.data.contains_key("issue_count") {
-        // Structured: show issues separately from regular comments
-        let issues = get_issue_comments(task);
-        if !issues.is_empty() {
+        if !task.sources.is_empty() {
+            content.push_str("\n### Sources\n");
+            for source in &task.sources {
+                content.push_str(&format!("- {}\n", source));
+            }
+        }
+
+        if task.data.contains_key("issue_count") {
+            let mut issues = get_issue_comments(task);
+            issues.sort_by_key(|c| severity_order(comment_severity(c)));
+            if !issues.is_empty() {
+                content.push_str("\n### Issues\n");
+                for (idx, comment) in issues.iter().enumerate() {
+                    let severity = comment_severity(comment);
+                    let locations = parse_locations(&comment.data);
+                    let loc_suffix = format_locations(&locations);
+                    if loc_suffix.is_empty() {
+                        content.push_str(&format!("{}. [{}] {}\n", idx + 1, severity, &comment.text));
+                    } else {
+                        content.push_str(&format!("{}. [{}] {} {}\n", idx + 1, severity, &comment.text, loc_suffix));
+                    }
+                }
+            }
+            let regular: Vec<&TaskComment> = task
+                .comments
+                .iter()
+                .filter(|c| c.data.get("issue").map(|v| v != "true").unwrap_or(true))
+                .collect();
+            if !regular.is_empty() {
+                content.push_str("\n### Comments\n");
+                for comment in &regular {
+                    content.push_str(&format!("- {}\n", &comment.text));
+                }
+            }
+        } else if !task.comments.is_empty() {
             content.push_str("\n### Issues\n");
-            for (idx, comment) in issues.iter().enumerate() {
+            for (idx, comment) in task.comments.iter().enumerate() {
                 content.push_str(&format!("{}. {}\n", idx + 1, &comment.text));
             }
         }
-        let regular: Vec<&TaskComment> = task
-            .comments
-            .iter()
-            .filter(|c| c.data.get("issue").map(|v| v != "true").unwrap_or(true))
+
+        let followups: Vec<&Task> = tasks
+            .values()
+            .filter(|t| {
+                t.sources.iter().any(|s| {
+                    s.starts_with(&format!("comment:{}", task.id))
+                        || s.starts_with(&format!("task:{}", task.id))
+                })
+            })
             .collect();
-        if !regular.is_empty() {
-            content.push_str("\n### Comments\n");
-            for comment in &regular {
-                content.push_str(&format!("- {}\n", &comment.text));
+
+        if !followups.is_empty() {
+            content.push_str("\n### Followups\n");
+            for followup in &followups {
+                let fu_status = match followup.status {
+                    TaskStatus::Open => "open",
+                    TaskStatus::InProgress => "in_progress",
+                    TaskStatus::Stopped => "stopped",
+                    TaskStatus::Closed => "closed",
+                };
+                content.push_str(&format!(
+                    "- **{}** [{}] {}\n",
+                    &followup.id, fu_status, &followup.name
+                ));
             }
         }
-    } else if !task.comments.is_empty() {
-        // Backward compat: show all comments as issues
-        content.push_str("\n### Issues\n");
-        for (idx, comment) in task.comments.iter().enumerate() {
-            content.push_str(&format!("{}. {}\n", idx + 1, &comment.text));
-        }
-    }
 
-    // Find followup tasks (tasks sourced from this review's comments)
-    let followups: Vec<&Task> = tasks
-        .values()
-        .filter(|t| {
-            t.sources.iter().any(|s| {
-                s.starts_with(&format!("comment:{}", task.id))
-                    || s.starts_with(&format!("task:{}", task.id))
-            })
-        })
-        .collect();
-
-    if !followups.is_empty() {
-        content.push_str("\n### Followups\n");
-        for followup in &followups {
-            let fu_status = match followup.status {
-                TaskStatus::Open => "open",
-                TaskStatus::InProgress => "in_progress",
-                TaskStatus::Stopped => "stopped",
-                TaskStatus::Closed => "closed",
-            };
-            content.push_str(&format!(
-                "- **{}** [{}] {}\n",
-                &followup.id, fu_status, &followup.name
-            ));
-        }
-    }
-
-    let md = MdBuilder::new("review-show").build(&content, &[], &[]);
-    eprintln!("{}", md);
+        MdBuilder::new("review-show").build(&content, &[], &[])
+    });
 
     Ok(())
 }
@@ -1248,5 +1453,129 @@ mod tests {
         assert!(!looks_like_task_id("has spaces")); // spaces
         assert!(!looks_like_task_id(".1")); // no root
         assert!(!looks_like_task_id("abc.")); // trailing dot, empty suffix
+    }
+
+    // Location tests
+
+    #[test]
+    fn test_location_parse_path_only() {
+        let loc = Location::parse("src/auth.rs").unwrap();
+        assert_eq!(loc.path, "src/auth.rs");
+        assert_eq!(loc.start_line, None);
+        assert_eq!(loc.end_line, None);
+    }
+
+    #[test]
+    fn test_location_parse_path_and_line() {
+        let loc = Location::parse("src/auth.rs:42").unwrap();
+        assert_eq!(loc.path, "src/auth.rs");
+        assert_eq!(loc.start_line, Some(42));
+        assert_eq!(loc.end_line, None);
+    }
+
+    #[test]
+    fn test_location_parse_path_and_range() {
+        let loc = Location::parse("src/auth.rs:42-50").unwrap();
+        assert_eq!(loc.path, "src/auth.rs");
+        assert_eq!(loc.start_line, Some(42));
+        assert_eq!(loc.end_line, Some(50));
+    }
+
+    #[test]
+    fn test_location_parse_empty() {
+        assert!(Location::parse("").is_err());
+        assert!(Location::parse("  ").is_err());
+    }
+
+    #[test]
+    fn test_location_parse_zero_line() {
+        assert!(Location::parse("src/auth.rs:0").is_err());
+    }
+
+    #[test]
+    fn test_location_parse_end_before_start() {
+        assert!(Location::parse("src/auth.rs:50-42").is_err());
+    }
+
+    #[test]
+    fn test_location_display_path_only() {
+        let loc = Location { path: "src/auth.rs".into(), start_line: None, end_line: None };
+        assert_eq!(loc.to_string(), "src/auth.rs");
+    }
+
+    #[test]
+    fn test_location_display_with_line() {
+        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: None };
+        assert_eq!(loc.to_string(), "src/auth.rs:42");
+    }
+
+    #[test]
+    fn test_location_display_with_range() {
+        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) };
+        assert_eq!(loc.to_string(), "src/auth.rs:42-50");
+    }
+
+    #[test]
+    fn test_location_display_same_start_end() {
+        let loc = Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(42) };
+        assert_eq!(loc.to_string(), "src/auth.rs:42");
+    }
+
+    #[test]
+    fn test_parse_locations_empty() {
+        let data = HashMap::new();
+        assert!(parse_locations(&data).is_empty());
+    }
+
+    #[test]
+    fn test_parse_locations_single_path_only() {
+        let mut data = HashMap::new();
+        data.insert("path".into(), "src/auth.rs".into());
+        let locs = parse_locations(&data);
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].path, "src/auth.rs");
+        assert_eq!(locs[0].start_line, None);
+    }
+
+    #[test]
+    fn test_parse_locations_single_with_lines() {
+        let mut data = HashMap::new();
+        data.insert("path".into(), "src/auth.rs".into());
+        data.insert("start_line".into(), "42".into());
+        data.insert("end_line".into(), "50".into());
+        let locs = parse_locations(&data);
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].start_line, Some(42));
+        assert_eq!(locs[0].end_line, Some(50));
+    }
+
+    #[test]
+    fn test_parse_locations_multi() {
+        let mut data = HashMap::new();
+        data.insert("locations".into(), "src/auth.rs:42-50,src/main.rs:108".into());
+        let locs = parse_locations(&data);
+        assert_eq!(locs.len(), 2);
+        assert_eq!(locs[0].path, "src/auth.rs");
+        assert_eq!(locs[1].path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_format_locations_empty() {
+        assert_eq!(format_locations(&[]), "");
+    }
+
+    #[test]
+    fn test_format_locations_single() {
+        let locs = vec![Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) }];
+        assert_eq!(format_locations(&locs), "(src/auth.rs:42-50)");
+    }
+
+    #[test]
+    fn test_format_locations_multiple() {
+        let locs = vec![
+            Location { path: "src/auth.rs".into(), start_line: Some(42), end_line: Some(50) },
+            Location { path: "src/main.rs".into(), start_line: Some(108), end_line: None },
+        ];
+        assert_eq!(format_locations(&locs), "(src/auth.rs:42-50, src/main.rs:108)");
     }
 }

@@ -14,18 +14,17 @@ mod parsing;
 mod global;
 mod history;
 mod jj;
+mod output_utils;
 mod plugins;
 mod provenance;
 mod repos;
 
 mod session;
-mod signing;
 mod plans;
 mod tasks;
 mod tools;
 mod utils;
 mod validation;
-mod verify;
 
 use clap::{Parser, Subcommand};
 use error::Result;
@@ -71,9 +70,6 @@ enum Commands {
         /// Filter by agent type (e.g., claude-code, cursor)
         #[arg(long)]
         agent: Option<String>,
-        /// Verify cryptographic signatures on changes
-        #[arg(long)]
-        verify: bool,
     },
     /// Show authors who contributed to changes
     Authors {
@@ -84,12 +80,6 @@ enum Commands {
         /// Output format: plain (default), git, json
         #[arg(long, default_value = "plain")]
         format: String,
-    },
-    /// Verify cryptographic signature on a change
-    Verify {
-        /// Change ID or revision (defaults to @)
-        #[arg(default_value = "@")]
-        revision: String,
     },
     /// Run end-to-end performance benchmark
     Benchmark {
@@ -112,11 +102,6 @@ enum Commands {
     Event {
         #[command(subcommand)]
         command: EventCommands,
-    },
-    /// Wait for a task to reach terminal state
-    Wait {
-        /// Task ID to wait for (reads from stdin if not provided)
-        task_id: Option<String>,
     },
     /// Create and run followup tasks from review comments
     Fix {
@@ -255,17 +240,14 @@ fn run() -> Result<()> {
         Commands::Blame {
             file,
             agent,
-            verify,
-        } => commands::blame::run(file, agent, verify),
+        } => commands::blame::run(file, agent),
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
-        Commands::Verify { revision } => commands::verify::run(revision),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Session { command } => commands::session::run(command),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
         },
-        Commands::Wait { task_id } => commands::wait::run(task_id),
         Commands::Fix {
             task_id,
             run_async,

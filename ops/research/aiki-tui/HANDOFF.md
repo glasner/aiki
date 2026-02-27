@@ -176,8 +176,8 @@ Override flags:
 - `--agent <name>` — filter to one agent
 
 ### Drill-down navigation
-- `[n]` focus — zoom from fleet → agent → task → subtask DAG
-- `[b]` back — zoom out
+- `[Enter]` focus — zoom from fleet → agent → task → subtask DAG
+- `[Esc]` back — zoom out
 - Any tier can drill to Tier 1 detail for individual tasks
 
 ---
@@ -225,12 +225,13 @@ Custom widget. Build a `Vec<Line>` where each `Line` contains `Span` sequences:
 ### Multi-task log
 `List` widget with task ID prefix. Parallel completions shown on one line with `│` separator and `(parallel)` suffix.
 
-### Key bindings
+### Key bindings (updated for v3)
 ```
-[q] quit          [n] focus/drill-down    [j/k] navigate tasks
-[?] help          [b] back/zoom-out       [s] sort
-[f] filter        [l] toggle log          [d] density override
+[q] quit          [Enter] drill/select    [j/k] navigate tasks
+[Esc] back        [Space] toggle log      [s] sort
 ```
+Note: v3 uses `[Enter]` as the universal drill-in key (replaces `[n]`).
+`[Space]` toggles log scroll (replaces `[l]` to avoid vim conflict).
 
 ### Refresh rate
 Target 100ms refresh for active tasks. Use `crossterm` events with polling.
@@ -254,15 +255,19 @@ Aiki doesn't choose the font — the terminal does. But we should know what our 
 
 ```
 mockups/
+  v3.html                 — ⭐ CURRENT implementation target (23 scenes, 7 screens)
+  v2.html                 — Previous: full-screen tree DAG + stage track
+  v1.html                 — Previous: sidebar + lanes
   arcade-status.html      — Pac-Man exploration (discarded)
   tecmo-status.html       — Tecmo Bowl exploration (discarded)
   tetris-status.html      — Tetris exploration (discarded)
-  status-clean.html       — ⭐ FINAL clean design (8 scenes)
-  status-parallel.html    — ⭐ Parallel work streams (8 scenes)
-  status-scale.html       — ⭐ Progressive density tiers (9 scenes)
+  status-clean.html       — Clean design foundation (8 scenes)
+  status-parallel.html    — Parallel work streams (8 scenes)
+  status-scale.html       — Progressive density tiers (9 scenes)
   status-fonts.html       — Font comparison + Unicode analysis
-  plans-integration.html  — ⭐ Plans integration into pipeline (3 options)
+  plans-integration.html  — Plans integration into pipeline (3 options)
 HANDOFF.md                — This file
 ```
 
-The three starred files are the implementation targets. The others are context for how we got there.
+**v3.html is the current implementation target.** The implementation plan is at `ops/now/ux.md`.
+The earlier mockups (v1, v2, status-*.html) are context for how we got there.

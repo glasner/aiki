@@ -1,0 +1,94 @@
+{
+  "version": 2,
+  "timestamp": "2026-02-27T13:27:40.351608-05:00",
+  "config": {
+    "edits": 50,
+    "warmup": 3,
+    "runs": 3
+  },
+  "vendors": {
+    "claude-code": {
+      "turn.started": {
+        "p50": 2.348042,
+        "p95": 2.902459,
+        "max": 2.902459,
+        "samples": 3
+      },
+      "change.permission_asked": {
+        "p50": 2.2550830000000004,
+        "p95": 2.574917,
+        "max": 2.8379999999999996,
+        "samples": 150
+      },
+      "turn.completed+autoreply": {
+        "p50": 2.099208,
+        "p95": 2.399417,
+        "max": 2.399417,
+        "samples": 3
+      },
+      "session.started": {
+        "p50": 2.478792,
+        "p95": 2.630042,
+        "max": 2.630042,
+        "samples": 3
+      },
+      "turn.completed": {
+        "p50": 2.093459,
+        "p95": 2.484959,
+        "max": 2.484959,
+        "samples": 3
+      },
+      "change.completed": {
+        "p50": 2.237708,
+        "p95": 2.490334,
+        "max": 2.881625,
+        "samples": 150
+      }
+    },
+    "cursor": {
+      "change.completed": {
+        "p50": 2.187417,
+        "p95": 2.5013750000000003,
+        "max": 2.656583,
+        "samples": 150
+      },
+      "change.permission_asked": {
+        "p50": 2.2039999999999997,
+        "p95": 2.5730839999999997,
+        "max": 2.806917,
+        "samples": 150
+      },
+      "turn.completed+autoreply": {
+        "p50": 2.4748330000000003,
+        "p95": 2.68925,
+        "max": 2.68925,
+        "samples": 3
+      },
+      "turn.completed": {
+        "p50": 2.223917,
+        "p95": 2.5100000000000002,
+        "max": 2.5100000000000002,
+        "samples": 3
+      },
+      "turn.started": {
+        "p50": 2.3376669999999997,
+        "p95": 2.510375,
+        "max": 2.510375,
+        "samples": 3
+      }
+    }
+  },
+  "shared": {
+    "commit.message_started": {
+      "p50": 3.5699170000000002,
+      "p95": 3.647542,
+      "max": 3.647542,
+      "samples": 3
+    }
+  },
+  "queries": {
+    "blame_ms": 4.391417,
+    "authors_ms": 67.510083
+  },
+  "total_ms": 1707.620417
+}

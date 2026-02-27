@@ -17,7 +17,7 @@ aiki task start {{data.epic}}
 Execute each subtask of the plan sequentially until they are all completed:
 
 ```bash
-aiki task run {{data.epic}} --next-subtask
+aiki task run {{data.epic}} --next-session
 ```
 
 If a subtask fails **do not continue**, stop all work and report the failure:

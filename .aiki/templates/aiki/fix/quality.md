@@ -1,16 +1,18 @@
 ---
-version: 1.0.0
+version: 1.1.0
+data:
+  loop.index1: 1
 spawns:
-  - when: "not subtasks.review.data.approved and data.loop_index < data.max_inner"
+  - when: "not subtasks.review.data.approved"
+    max_iterations: 10
     subtask:
       template: aiki/fix/quality
       data:
         fix_task: subtasks.fix.id
-        max_inner: data.max_inner
-        loop_index: "data.loop_index + 1"
+        loop.index1: "data.loop.index1 + 1"
 ---
 
-# Fix Quality Check {{data.loop_index}}/{{data.max_inner}}
+# Fix Quality Check {{data.loop.index1}}
 
 Reviewing fix task {{data.fix_task}} for quality.
 

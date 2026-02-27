@@ -30,6 +30,19 @@ else
     echo "AIKI_INSTALLED=false (no pre-built binary at $AIKI_BIN, skipping)"
 fi
 
+# If host OAuth credentials were copied, install them into Claude config location.
+if [ -f /root/.aiki-host-credentials.json ]; then
+    mkdir -p /root/.claude
+    mv /root/.aiki-host-credentials.json /root/.claude/.credentials.json
+    echo "CLAUDE_OAUTH_CREDENTIALS_INSTALLED=true"
+elif [ -f /root/.claude/.credentials.json ]; then
+    echo "CLAUDE_OAUTH_CREDENTIALS_INSTALLED=true"
+else
+    echo "CLAUDE_OAUTH_CREDENTIALS_INSTALLED=false"
+    echo "Expected /root/.aiki-host-credentials.json or /root/.claude/.credentials.json not found." >&2
+    echo "Please ensure this benchmark is run with --agent-kwarg use_host_auth=true." >&2
+fi
+
 # =============================================================================
 # Phase 3: Set up CLAUDE.md in the working directory
 # =============================================================================
@@ -87,6 +100,9 @@ You are solving a terminal-based task. Follow this structured approach:
 
 </aiki-bench>
 CLAUDEMD
+
+# Also place instructions in the current working directory as a fallback.
+cp /root/CLAUDE.md CLAUDE.md 2>/dev/null || true
 
 # If aiki binary is available, initialize it in the working directory
 if command -v aiki &> /dev/null; then

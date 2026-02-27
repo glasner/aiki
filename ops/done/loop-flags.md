@@ -5,17 +5,19 @@ status: draft
 # Review-Fix Workflow: `fix`, `review --fix`, `build --fix`
 
 **Date**: 2026-02-14
-**Status**: Done
+**Status**: Phase 1 done, Phase 2 needs rework (depends on implement-command.md)
 **Priority**: P2
 **Depends on**:
 - `ops/done/review-and-fix.md`
 - `ops/done/spawn-tasks.md` (conditional spawning + loop implementation)
 - `ops/done/autorun-unblocked-tasks.md` (autorun behavior for blocking links)
 - `ops/now/review-status-helpers.md` (review data fields: `data.approved`, `data.issue_count`)
+- `ops/now/implement-command.md` (build refactor — `aiki/implement` template replaces `aiki/build`)
 
 **Related Documents**:
 - [Review and Fix Commands](../done/review-and-fix.md) - Core review/fix system (implemented)
 - [Spawn Tasks](../done/spawn-tasks.md) - Spawning and loop primitives (foundation for this workflow)
+- [Implement Template & Build Refactor](implement-command.md) - `aiki/implement` orchestrator template, `aiki build` refactor
 - [Review Loop Plugin](review-loop-plugin.md) - Hook-based automation (builds on these primitives)
 - [Semantic Blocking Links](../done/semantic-blockers.md) - Foundation for semantic links
 - [Autorun Unblocked Tasks](../done/autorun-unblocked-tasks.md) - Automatic task start on blocker completion
@@ -28,6 +30,12 @@ The implementation uses `spawns:` frontmatter config instead of the originally-d
 - **No `loop:` frontmatter**: Outer/inner loops use `spawns:` with self-referencing templates and `data.loop_index` tracking instead of `data.loop.*` metadata
 - **No explicit `validates`/`follows-up` links**: The `scoped-to` (auto-materialized from `scope.id` data) and `spawned-by` (created by spawn engine) links provide equivalent queryability without the blocking-semantics mismatch
 - **Fix as subtask of review**: The spawned fix is a subtask of the review (via `subtask:` in spawns config), not a sibling under the original task. This is simpler and keeps the review→fix relationship explicit in the task hierarchy
+
+**Implementation Notes (2026-02-26)**:
+Phase 2 (`build --review`/`build --fix`) needs rework after [implement-command.md](implement-command.md) lands. The build refactor replaces `aiki/build` with `aiki/implement` as the orchestrator template. Key changes:
+- **Template spawns move to `aiki/implement`**: The `spawns:` config for post-build review (originally designed for `aiki/build`) now goes on `aiki/implement`
+- **Dual-path review trigger**: Sync builds use `run_build_review()` in Rust; async builds rely on template `spawns:` firing when the orchestrator closes
+- **Data shape change**: Build task now has `data.target` (epic ID) instead of `data.epic`, per implement-command.md
 
 ---
 
@@ -139,8 +147,9 @@ The fix itself becomes part of the codebase, so it deserves independent review b
 | Inner loop reviewer | Opposite of fixer (in template) | Independent review of fix quality (e.g., if claude-code fixes, codex reviews fix) |
 | Outer loop reviewer | Original reviewer (persisted in template data) | Consistency across iterations (if codex found original issues, codex verifies fixes) |
 | Termination conditions | Defined in `loop.until` | Customizable per template (`data.approved`, score threshold, manual override) |
-| Build review scope | Implementation review of the spec | Validates the whole result against the spec, not just individual diffs |
-| Build `--fix` + `--async` | Allowed (task-based) | Task system handles async execution, no command blocking |
+| Build review scope | Implementation review of the plan | Validates the whole result against the plan, not just individual diffs |
+| Build `--fix` + `--async` | Allowed (task-based) | Async: template `spawns:` fire on orchestrator close. Sync: `build.rs` runs review directly. |
+| Build orchestrator | `aiki/implement` (from implement-command.md) | Review/fix flags passed as `data.options`, `spawns:` config added to implement template |
 
 ---
 
@@ -150,7 +159,7 @@ The fix itself becomes part of the codebase, so it deserves independent review b
 The fix workflow uses multiple templates that work together to create an automated review-fix loop.
 
 **Core templates:**
-1. **`aiki/build`** — Build template (unchanged - `--fix` and `--review` flags added to command)
+1. **`aiki/implement`** — Orchestrator template (spawns review on completion when `data.options.review` or `data.options.fix` set)
 2. **`aiki/review`** — Review template that conditionally spawns fix tasks
 3. **`aiki/fix`** — Unified fix template that spawns next step based on status
 
@@ -165,50 +174,76 @@ data:
 
 ---
 
-### Template 1: `.aiki/templates/aiki/build.md`
+### Template 1: `.aiki/templates/aiki/implement.md`
 
-Build template with conditional review/fix spawning for async support.
+Orchestrator template with conditional review/fix spawning for async support.
 
-**Strategy:** Spawn review (with optional fix) on build completion to enable async workflows.
+**Note:** After [implement-command.md](implement-command.md) lands, `aiki build` uses `aiki/implement` (not `aiki/build`) as the default orchestrator. The `--review`/`--fix` flags are passed as `data.options` and trigger post-completion review via `spawns:` config.
+
+**Strategy:** Add `spawns:` config to the implement template to spawn review on orchestrator completion. This handles the async path. For sync builds, `build.rs` also runs `run_build_review()` directly after the orchestrator completes (belt and suspenders — sync path doesn't rely on spawns).
 
 ```yaml
 ---
-template: aiki/build
+version: 2.0.0
+type: orchestrator
 spawns:
   - when: data.options.review or data.options.fix
     task:
       template: aiki/review
       data:
-        scope: id
+        scope: data.target
         options:
           fix: data.options.fix
 ---
 
-# Build: {{data.spec}}
+# Implement: {{data.target}}
 
-[Build instructions]
+[Orchestrator loop — see implement-command.md for details]
 ```
 
 **How `build --fix` and `build --review` work:**
 
-1. **`aiki build <spec>`** - Build only, no spawns
-2. **`aiki build <spec> --review`** - Sets `data.options.review = true`, spawns review on completion
-3. **`aiki build <spec> --fix`** - Sets `data.options.fix = true`, spawns review with `fix: true`
+1. **`aiki build <plan>`** - Build only, no spawns
+2. **`aiki build <plan> --review`** - Sets `data.options.review = true`, spawns review on completion
+3. **`aiki build <plan> --fix`** - Sets `data.options.fix = true`, spawns review with `fix: true`
 
-**Async support:**
+**Sync path:** `build.rs` runs `run_build_review()` after orchestrator task completes (immediate, blocking).
+
+**Async path:**
 - `build --fix --async` returns immediately
-- When build completes, spawns review task
+- When orchestrator completes and closes, `spawns:` config fires
+- Spawns review task scoped to `data.target` (the epic)
 - Review spawns fix if issues found (via Template 2)
 - Entire workflow runs asynchronously via task spawning
 
 ---
 ### Template 2: `.aiki/templates/aiki/review.md`
 
-Review template with conditional fix spawning (implemented).
+Review template with conditional fix spawning.
+
+**Current implementation:** Uses `{% subtask %}` directive (commented out) instead of `spawns:` frontmatter:
 
 ```yaml
 ---
-template: aiki/review
+version: 2.0.0
+type: review
+---
+
+# Review: {{data.scope.name}}
+
+[Review instructions]
+
+# Subtasks
+
+## Explore Scope
+## Review
+
+<!--{% subtask aiki/fix/loop if data.options.fix %}-->
+```
+
+**Planned approach (Phase 1, task 2):** Add `spawns:` frontmatter config:
+
+```yaml
 spawns:
   - when: data.issue_count and data.options.fix
     task:
@@ -216,11 +251,6 @@ spawns:
       data:
         review_task: id
         original_task: data.scope
----
-
-# Review Task
-
-[Review instructions and criteria]
 ```
 
 **Spawn behavior:**
@@ -273,6 +303,7 @@ slug: explore
 ## Plan out remediation
 ---
 slug: plan
+depends-on: explore
 ---
 🛑 Do NOT edit code as part of this subtask
 
@@ -291,6 +322,7 @@ MD
 ## Remediate issues from review
 ---
 slug: remediate
+depends-on: plan
 ---
 
 Work through each nested subtask using `--next-subtask`:
@@ -310,6 +342,7 @@ aiki task close {{subtasks.plan}} {{id}} --summary "Implemented planned fixes"
 ## Run review of work
 ---
 slug: review_this_fix
+depends-on: remediate
 ---
 ```bash
 aiki review {{subtasks.plan}} --fix
@@ -457,7 +490,12 @@ The task graph naturally tracks iteration history:
 
 ## `aiki build --fix`
 
-After `aiki build` completes, automatically runs `aiki review --fix` on the plan task. This is handled entirely in the build command's Rust code — the build template is not modified.
+After `aiki build` completes, automatically runs `aiki review --fix` on the plan task.
+
+**Architecture (post implement-command.md):** `aiki build` now creates an orchestrator task from `aiki/implement` template (not `aiki/build`). The orchestrator drives lanes to completion, then review/fix kicks in via two paths:
+
+1. **Sync path:** `build.rs` runs `run_build_review()` in Rust after the orchestrator task completes
+2. **Async path:** `aiki/implement` template has `spawns:` config that fires when the orchestrator closes, spawning a review task automatically
 
 **Syntax:**
 
@@ -494,9 +532,24 @@ let review_after = args.review || args.fix;
 
 Note: `--fix` and `--async` are now compatible since loops are task-based.
 
-#### 3. Thread the flags through to `run_build_spec` and `run_build_plan`
+#### 3. Pass flags to orchestrator template data
 
-Both functions get new parameters: `review_after: bool, fix_after: bool`
+When creating the orchestrator task from `aiki/implement`, include the review/fix options:
+
+```rust // pseudocode
+let mut data = HashMap::new();
+data.insert("target".to_string(), epic_id.to_string());
+if review_after {
+    data.insert("options.review".to_string(), "true".to_string());
+}
+if fix_after {
+    data.insert("options.fix".to_string(), "true".to_string());
+}
+```
+
+This serves two purposes:
+- **Async path:** The `spawns:` config on `aiki/implement` evaluates `data.options.review` / `data.options.fix` and spawns review automatically on close
+- **Sync path:** The data is also available for `build.rs` to check, but sync path uses direct Rust code instead
 
 #### 4. After sync build completes, run review (optionally with --fix)
 
@@ -550,7 +603,7 @@ After the build output, show the review result:
 ```
 ## Build + Review Completed
 - **Build ID:** <build-id>
-- **Plan ID:** <plan-id>
+- **Epic ID:** <epic-id>
 - **Review ID:** <review-id>
 ```
 
@@ -559,7 +612,7 @@ Or with `--fix`:
 ```
 ## Build + Review + Fix Completed
 - **Build ID:** <build-id>
-- **Plan ID:** <plan-id>
+- **Epic ID:** <epic-id>
 - **Review ID:** <review-id>
 ```
 
@@ -724,11 +777,12 @@ aiki review <task-id> --fix --agent claude-code
 | Task close handler (`cli/src/commands/task.rs`) | `execute_spawn_action()` — creates tasks/subtasks on close, adds `spawned-by` links, depth guard | **Done** |
 | **Commands** | | |
 +| `cli/src/commands/review.rs` | When `--fix` flag: create fix task with `follows-up` link and autorun | **Update existing** |
- | `cli/src/commands/build.rs` | Add `--review` and `--fix` flags, `run_build_review()` | **New work** |
+ | `cli/src/commands/build.rs` | Add `--review` and `--fix` flags, pass `data.options` to implement template, `run_build_review()` | **Needs rework** (after implement-command.md) |
 | `cli/src/commands/review.rs` | `--fix` flag: sets `data.options.fix` on review task, which triggers `spawns:` config | **Done** |
-| `cli/src/commands/build.rs` | `--review` and `--fix` flags, `run_build_review()` creates code review post-build | **Done** |
+| `cli/src/commands/build.rs` | `--review` and `--fix` flags, `run_build_review()` — was done against old `aiki/build` flow, needs update for `aiki/implement` | **Needs rework** |
 | `cli/src/commands/fix.rs` | Creates fix tasks from review comments, supports task/spec/code scopes | **Done** |
 | **Templates** | | |
+| `.aiki/templates/aiki/implement.md` | Add `spawns:` config for post-build review/fix (async path) | **New work** (after implement-command.md) |
 +| `.aiki/templates/aiki/fix.md` | Add `loop:` and `spawns:` frontmatter for two-stage workflow | **Update existing** |
 | `.aiki/templates/aiki/review.md` | Added `spawns:` config to conditionally spawn fix when `not approved and data.options.fix` | **Done** |
 | `.aiki/templates/aiki/fix.md` | Outer loop template with `spawns:` config (self-referencing iteration) | **Done** |
@@ -744,37 +798,19 @@ aiki review <task-id> --fix --agent claude-code
 
 ## Implementation Plan
 
--**NOTE:** Phases 1-2 are implemented in `spawn-tasks.md`. This spec only describes Phase 3 (applying those primitives to the review-fix workflow).
--
--### Phase 1: Fix loop templates
--
--Create templates that use spawn + loop primitives from `spawn-tasks.md`:
--
--1. **`.aiki/templates/aiki/fix.md`** — Main template with outer loop
--   - Uses `loop:` frontmatter (implemented in spawn-tasks.md)
--   - Spawns itself until `subtasks[2].approved` or max iterations
--
--2. **`.aiki/templates/aiki/fix/quality.md`** — Inner loop template
--   - Uses `loop:` frontmatter for quality iteration
--   - Spawns itself until fix is approved
--
--3. **`.aiki/templates/aiki/fix/once.md`** — Single-pass fix (rename from existing `aiki/fix.md`)
--   - No loop, single iteration
--
--4. **Update `.aiki/templates/aiki/review.md`:**
-+**NOTE:** Phases 1-2 are implemented in ../done/spawn-tasks.md. This spec only describes Phase 3 (applying those primitives to the review-fix workflow).
-+
-+### Phase 1: Fix loop template
-+
-+Update the template to use spawn + loop primitives from ../done/spawn-tasks.md:
-+
-+1. **`.aiki/templates/aiki/fix.md`** — Update with loop and spawns
-+   - Uses `loop:` frontmatter (inner loop: polish fix until review approves)
-+   - Uses `spawns:` frontmatter (outer trigger: review original after fix approved)
-+   - Loop: iterates until `subtasks.review_this_fix.data.approved`
-+   - Spawn: triggers `aiki/review` of original task with `fix: true` flag
-+
-+2. **Update `.aiki/templates/aiki/review.md`:**
+**NOTE:** Spawn primitives are implemented in ../done/spawn-tasks.md. This spec applies those primitives to the review-fix workflow. Phase 2 depends on [implement-command.md](implement-command.md) being complete first.
+
+### Phase 1: Fix loop template — DONE
+
+Update the template to use spawn + loop primitives from ../done/spawn-tasks.md:
+
+1. **`.aiki/templates/aiki/fix.md`** — Update with loop and spawns
+   - Uses `loop:` frontmatter (inner loop: polish fix until review approves)
+   - Uses `spawns:` frontmatter (outer trigger: review original after fix approved)
+   - Loop: iterates until `subtasks.review_this_fix.data.approved`
+   - Spawn: triggers `aiki/review` of original task with `fix: true` flag
+
+2. **Update `.aiki/templates/aiki/review.md`:** (depends-on: 1)
     - Add `spawns:` frontmatter section:
       ```yaml
       spawns:
@@ -789,7 +825,7 @@ aiki review <task-id> --fix --agent claude-code
 -   - Remove any old fix subtask creation logic
  
 -5. **Tests:**
-+3. **Tests:**
++3. **Tests:** (depends-on: 1, 2)
     - End-to-end: `aiki review --fix` → review approves → no fix spawned
     - End-to-end: review has issues → fix spawns and starts, loops until clean
 -   - Unit: spawn condition evaluation (approved=false triggers spawn)
@@ -798,16 +834,26 @@ aiki review <task-id> --fix --agent claude-code
 +   - Unit: spawn condition evaluation (`data.approved == false` triggers spawn)
 +   - Integration: two-stage workflow completes correctly
  
- ### Phase 2: `build --review` and `build --fix`
- 
- Add workflow flags to `aiki build`:
- 
- 1. Add `--review` and `--fix` flags to `BuildArgs`
--2. Implement `run_build_review()` using Phase 1+2 primitives
-+2. Implement `run_build_review()` using Phase 1 primitives
- 3. Tests
--
-**NOTE:** Phases 1-2 (spawn primitives) are implemented in `spawn-tasks.md`. This spec describes Phase 3 (applying those primitives to the review-fix workflow). **All phases are now complete.**
+ ### Phase 2: `build --review` and `build --fix` — NEEDS REWORK
+
+*Depends on [implement-command.md](implement-command.md) being complete. Must be implemented after the build refactor lands.*
+
+**Previous implementation (now stale):** `--review` and `--fix` flags were added to the old `aiki/build`-based build flow. The build refactor in implement-command.md changes `aiki build` to use `aiki/implement` as the orchestrator template, which invalidates the old Phase 2 implementation.
+
+**Updated approach:**
+
+1. Add `--review` and `--fix` flags to `BuildArgs` (same as before)
+2. Pass `data.options.review` / `data.options.fix` to the `aiki/implement` template (depends-on: 1)
+3. Add `spawns:` config to `aiki/implement` template for async review (fires on orchestrator close) (depends-on: 2)
+4. **Sync path:** `build.rs` runs `run_build_review()` directly after orchestrator completes (depends-on: 1, 2)
+5. **Async path:** Template `spawns:` handle it — orchestrator closes → review spawns automatically (depends-on: 3)
+6. Tests: update existing tests in `cli/src/commands/build.rs` for new flow (depends-on: 1, 2, 3, 4, 5)
+
+**What changes from old Phase 2:**
+- `create_build_task()` → `create_implement_task()` (from implement-command.md) — now sets `data.target` (epic ID) instead of `data.epic`
+- Template data includes `data.options.review` / `data.options.fix` for spawn evaluation
+- `aiki/implement` template gets `spawns:` section (was on `aiki/build`)
+- `run_build_review()` function body is unchanged — still creates review scoped to plan
 
 ### Phase 1: Fix loop templates — DONE
 
@@ -819,19 +865,23 @@ Templates using spawn primitives from `spawn-tasks.md`:
 4. **`.aiki/templates/aiki/review.md`** — Updated with `spawns:` config for conditional fix
 5. **Tests:** Spawn flow integration tests in `cli/tests/test_spawn_flow.rs`
 
-### Phase 2: `build --review` and `build --fix` — DONE
+### Phase 2 (old): `build --review` and `build --fix` — STALE (needs rework after implement-command.md)
 
-1. `--review` and `--fix` flags on `BuildArgs` (fix implies review)
-2. `run_build_review()` creates code review post-build, runs to completion
-3. Tests in `cli/src/commands/build.rs` module tests
+~~1. `--review` and `--fix` flags on `BuildArgs` (fix implies review)~~
+~~2. `run_build_review()` creates code review post-build, runs to completion~~
+~~3. Tests in `cli/src/commands/build.rs` module tests~~
+
+See updated Phase 2 above for the new approach.
 
 ---
 
 ## What This Does NOT Change
 
-- **Build template** (`.aiki/templates/aiki/build.md`) — untouched
+- **Implement template** (`.aiki/templates/aiki/implement.md`) — orchestrator logic unchanged; only `spawns:` config added for review/fix
 - **Review template** (`.aiki/templates/aiki/review.md`) — gets `spawns:` config added, but core content unchanged
 - **Fix command** — `aiki fix <review>` may become redundant (review templates spawn fixes automatically)
+
+**Note:** The old `aiki/build` template is replaced by `aiki/implement` per [implement-command.md](implement-command.md). This plan does NOT modify the build refactor — it only adds `spawns:` config to the implement template and `--review`/`--fix` flags to `build.rs`.
 
 ---
 
@@ -906,7 +956,7 @@ Templates using spawn primitives from `spawn-tasks.md`:
 
 5. ~~**Conditional subtask creation**~~ — Yes, `{% subtask ... if condition %}` exists in the template conditional system. The inner loop quality template uses this for conditional fix creation.
 
-6. ~~**Build review scope**~~ — Uses `ReviewScopeKind::Code` (implementation review). The review is scoped to the spec file path, validating the implementation against the spec.
+6. ~~**Build review scope**~~ — Uses `ReviewScopeKind::Code` (implementation review). The review is scoped to the plan file path, validating the implementation against the plan. (Post implement-command.md: the orchestrator's `data.target` is the epic ID; the plan path comes from the epic's `data.plan`.)
 
 7. ~~**Won't-do handling**~~ — Spawn conditions can check `outcome == "done"`. WontDo closes don't trigger "not approved" spawns because the spawn engine provides `outcome` in the Rhai scope. Tested in `test_spawn_wont_do_no_spawn`.
 

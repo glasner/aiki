@@ -54,7 +54,6 @@ cli/src/
 │   └── templates/       # Template parsing and resolution
 ├── plugins/             # Plugin system (install, deps, scanning)
 ├── session/             # Session lifecycle (isolation, workspaces)
-├── signing/             # Cryptographic signing (GPG, SSH)
 ├── jj/                  # Jujutsu integration (jj-lib bindings)
 ├── provenance.rs        # [aiki] metadata parsing
 ├── blame.rs             # Line-level attribution logic

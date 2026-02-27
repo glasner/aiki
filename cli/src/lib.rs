@@ -20,13 +20,12 @@ pub mod provenance;
 pub mod repos;
 
 pub mod session;
-pub mod signing;
 pub mod plans;
 pub mod tasks;
 pub mod tools;
 pub mod utils;
+pub mod output_utils;
 pub mod validation;
-pub mod verify;
 
 #[cfg(test)]
 mod test_must_use;

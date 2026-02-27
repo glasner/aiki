@@ -4,11 +4,9 @@ use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::repos::RepoDetector;
-use crate::signing;
 use anyhow::Context;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 
 pub fn run(fix: bool) -> Result<()> {
     let mut issues_found = 0;
@@ -285,57 +283,6 @@ pub fn run(fix: bool) -> Result<()> {
         println!();
     }
 
-    // Check commit signing (only if in a repo)
-    if project_root.join(".jj").exists() {
-        println!("Commit Signing:");
-
-        match signing::read_signing_config(&project_root) {
-            Ok(Some(config)) => {
-                println!("  ✓ JJ signing enabled ({:?})", config.backend);
-
-                match signing::verify_key_accessible(&config) {
-                    Ok(true) => {
-                        println!("  ✓ Signing key accessible: {}", config.key);
-                    }
-                    Ok(false) => {
-                        println!("  ✗ Signing key not found: {}", config.key);
-                        println!("    → Run: aiki sign setup");
-                        issues_found += 1;
-                    }
-                    Err(e) => {
-                        println!("  ✗ Error verifying key: {}", e);
-                        issues_found += 1;
-                    }
-                }
-            }
-            Ok(None) => {
-                println!("  ⚠ JJ signing not configured");
-
-                if fix {
-                    println!();
-                    println!("Would you like to set up signing now?");
-                    let setup = prompt_yes_no("Set up signing", true)?;
-
-                    if setup {
-                        let wizard = signing::SignSetupWizard::new(project_root.clone());
-                        wizard.run(None)?;
-                    } else {
-                        println!("Skipping signing setup.");
-                    }
-                } else {
-                    println!("    → Run: aiki doctor --fix (to set up signing)");
-                }
-                // Not counted as error, just a warning
-            }
-            Err(e) => {
-                println!("  ✗ Error reading JJ config: {}", e);
-                issues_found += 1;
-            }
-        }
-
-        println!();
-    }
-
     // Check AGENTS.md for task system instructions
     println!("Agent Instructions:");
 
@@ -601,23 +548,6 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Prompt for yes/no
-fn prompt_yes_no(prompt: &str, default: bool) -> Result<bool> {
-    let default_str = if default { "Y/n" } else { "y/N" };
-    print!("{} [{}]: ", prompt, default_str);
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
-
-    if input.is_empty() {
-        return Ok(default);
-    }
-
-    Ok(input == "y" || input == "yes")
 }
 
 /// Check if a command string invokes aiki hooks stdin with specific agent/event

@@ -11,8 +11,6 @@ Aiki automatically tracks which AI agents contributed to your codebase, providin
 - **Task Management**: Event-sourced task system designed for AI agent workflows
 - **Session History**: Conversation tracking with prompt/response timeline
 - **Flow Engine**: Declarative YAML-based automation for all editor events
-- **Cryptographic Signing**: GPG/SSH signatures for tamper-proof provenance
-
 ## Quick Start
 
 ### Prerequisites
@@ -44,7 +42,6 @@ aiki init
 This will:
 - Initialize Jujutsu if not already present
 - Create `.aiki/` directory structure
-- Configure commit signing (automatically detects GPG/SSH keys)
 - Install Git hooks for automatic co-author attribution
 - Configure Claude Code hooks (global user hooks in `~/.claude/settings.json`)
 - Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
@@ -93,27 +90,6 @@ aiki blame src/main.rs --agent claude-code
 aiki blame src/main.rs --agent cursor
 ```
 
-Verify cryptographic signatures on changes:
-
-```bash
-# Show signature status for each line
-aiki blame src/main.rs --verify
-```
-
-Output with signature verification:
-
-```
-✓ abc12345 (Claude Code   session-123  High  )    1| fn main() {
-✓ abc12345 (Claude Code   session-123  High  )    2|     println!("Hello");
-⚠ def67890 (Cursor        session-456  High  )    3|     // unsigned
-```
-
-**Signature indicators:**
-- **✓** - Valid cryptographic signature
-- **✗** - Invalid or tampered signature
-- **⚠** - No signature (unsigned change)
-- **?** - Unknown signature status
-
 ### View AI Authors
 
 ```bash
@@ -145,26 +121,6 @@ git commit -m "Add main function"
 ```
 
 These co-author lines appear in `git log`, GitHub commit history, and Git blame annotations.
-
-### Verify Cryptographic Signatures
-
-```bash
-# Verify the working copy change (default)
-aiki verify
-
-# Verify a specific change by ID
-aiki verify abc123
-
-# Verify a revision expression
-aiki verify @-
-```
-
-**Signature Status:**
-- **VERIFIED**: Valid signature + AI provenance metadata
-- **SIGNED**: Valid signature but no AI metadata (not an AI change)
-- **FAILED**: Invalid or tampered signature
-- **UNVERIFIED**: Change has AI metadata but no signature
-- **NOT AN AI CHANGE**: No signature and no AI metadata
 
 ### Task Management
 
@@ -298,23 +254,6 @@ aiki benchmark aiki/core
 
 Benchmarks the complete Aiki workflow: repository init, SessionStart, PreFileChange, and PostFileChange events. Compares results to previous runs with per-event timing breakdowns. Results persist in `.aiki/benchmarks/`.
 
-## Commit Signing
-
-Aiki automatically configures cryptographic signing for all AI-attributed changes.
-
-During `aiki init`, Aiki detects your existing signing keys in priority order:
-1. Git signing configuration (if already set up)
-2. GPG keys (industry standard)
-3. SSH keys (simpler alternative)
-
-If no keys are found, you'll be prompted to generate one or skip.
-
-**Supported backends:**
-- **GPG**: Maximum compatibility, auto-generates RSA 4096-bit keys with 2-year expiration
-- **SSH**: Simpler setup, auto-generates ed25519 keys at `~/.ssh/id_ed25519_aiki`
-
-Set up signing later with `aiki doctor --fix`.
-
 ## How It Works
 
 ### Unified Event System
@@ -428,7 +367,6 @@ aiki/
 │   │   │   ├── doctor.rs        # Health checks and diagnostics
 │   │   │   ├── blame.rs         # Line-level attribution
 │   │   │   ├── authors.rs       # AI author extraction
-│   │   │   ├── verify.rs        # Signature verification
 │   │   │   ├── session.rs       # Session history commands
 │   │   │   ├── task.rs          # Task management commands
 │   │   │   ├── review.rs        # Code review commands
@@ -453,13 +391,11 @@ aiki/
 │   │   ├── tasks/               # Task system
 │   │   ├── history/             # Session/conversation recording
 │   │   ├── session/             # Session lifecycle management
-│   │   ├── signing/             # Cryptographic signing
 │   │   ├── agents/              # Agent type detection
 │   │   ├── jj/                  # Jujutsu integration
 │   │   ├── provenance.rs        # Metadata parsing
 │   │   ├── blame.rs             # Blame logic
 │   │   ├── authors.rs           # Authors logic
-│   │   ├── verify.rs            # Verification logic
 │   │   ├── event_bus.rs         # Event routing/dispatch
 │   │   ├── error.rs             # Error types
 │   │   └── main.rs              # CLI entry point

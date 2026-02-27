@@ -1,0 +1,8 @@
+Aiki Benchmark Results
+======================
+Date: 2026-02-27 13:27:40.351726 -05:00
+Edits: 50
+Warmup: 3
+Runs: 3
+
+Total: 1.71s

@@ -16,6 +16,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
+use crate::output_utils;
 use crate::session::find_active_session;
 use crate::tasks::templates::{
     create_tasks_from_template, find_templates_dir, load_template, substitute_parent_id,
@@ -397,7 +398,7 @@ fn run_plan(
 
     let plan_task_id = if let Some(task) = existing_task {
         // Resume existing task
-        eprintln!("Resuming existing plan task: {}", task.id);
+        output_utils::emit_stderr(|| format!("Resuming existing plan task: {}", task.id));
 
         // If agent differs, update assignee
         if let Some(agent) = agent_type {
@@ -480,10 +481,9 @@ fn run_plan(
         )
     };
 
-    eprintln!(
-        "Spawning Claude agent session for task {}...",
-        plan_task_id
-    );
+    output_utils::emit_stderr(|| {
+        format!("Spawning Claude agent session for task {}...", plan_task_id)
+    });
 
     // Spawn claude interactively - inherits stdin/stdout/stderr for user interaction
     // Note: We don't use --print or --dangerously-skip-permissions here because
@@ -505,7 +505,7 @@ fn run_plan(
                 let code = exit_status.code().unwrap_or(-1);
                 if code == 130 {
                     // SIGINT (Ctrl+C) - user cancelled, not an error
-                    eprintln!("Plan session cancelled by user.");
+                    output_utils::emit_stderr(|| "Plan session cancelled by user.".to_string());
                 } else if code == 143 {
                     // SIGTERM - graceful termination (e.g., via `claude --exit` when task closes)
                     // This is expected behavior, not an error
@@ -522,9 +522,7 @@ fn run_plan(
     }
 
     // Output task ID to stdout if piped
-    if !std::io::stdout().is_terminal() {
-        println!("{}", plan_task_id);
-    }
+    output_utils::emit_stdout(&plan_task_id);
 
     Ok(())
 }
@@ -652,28 +650,30 @@ fn output_plan_started(
     ready: &[&Task],
 ) -> Result<()> {
     let action = if is_new { "Creating" } else { "Editing" };
-    let content = format!(
-        "## Plan Started\n- **Task:** {}\n- **File:** {}\n- {} plan at {}.\n",
-        plan_id,
-        plan_path.display(),
-        action,
-        plan_path.display()
-    );
-    let md = MdBuilder::new("plan").build(&content, in_progress, ready);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let content = format!(
+            "## Plan Started\n- **Task:** {}\n- **File:** {}\n- {} plan at {}.\n",
+            plan_id,
+            plan_path.display(),
+            action,
+            plan_path.display()
+        );
+        MdBuilder::new("plan").build(&content, in_progress, ready)
+    });
     Ok(())
 }
 
 /// Output plan completed message
 fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
-    let content = format!(
-        "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n",
-        plan_id,
-        plan_path.display(),
-        plan_path.display()
-    );
-    let md = MdBuilder::new("plan").build(&content, &[], &[]);
-    eprintln!("{}", md);
+    output_utils::emit_stderr(|| {
+        let content = format!(
+            "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n",
+            plan_id,
+            plan_path.display(),
+            plan_path.display()
+        );
+        MdBuilder::new("plan").build(&content, &[], &[])
+    });
     Ok(())
 }
 

@@ -152,7 +152,12 @@ aiki review <task-id> --start
 **How it works:**
 1. `aiki review <task-id> --start` creates a review task and you perform the review
 2. You'll see instructions to run `aiki task diff` and examine the changes
-3. Add comments for any issues found using `aiki task comment`
+3. Track each issue found using `aiki review issue add`:
+   ```bash
+   aiki review issue add <review-id> "Description" --severity high --file src/auth.rs:42
+   ```
+   - **Severity:** `--high` (must fix), default medium (should fix), `--low` (could fix)
+   - **Location:** `--file path[:<line>[-<end>]]` (repeatable for multi-file issues)
 4. Close the review task when done
 
 **The `--start` flag means you perform the review yourself** (vs. spawning a background agent).

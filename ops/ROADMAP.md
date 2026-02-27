@@ -1,12 +1,15 @@
-- general loop termination
-- loop flags
-- workflow ux -> share with Paul
 
-- metrics
+- consolidate wait
+- ux -> share with Paul
 
 - registry
 - review loop plugin
+
+Next
+- plugin directory
+- plugin search
 - skill injection
+- metrics
 
 
 # Aiki Product Roadmap

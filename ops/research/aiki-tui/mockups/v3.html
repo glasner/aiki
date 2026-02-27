@@ -1,0 +1,1419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aiki TUI — v3 Polished Screens</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0c0c0f;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    gap: 44px;
+  }
+
+  h1 { font-size: 14px; font-weight: 700; color: #888; text-align: center; letter-spacing: 4px; text-transform: uppercase; }
+  .subtitle { color: #444; font-size: 11px; text-align: center; margin-top: 4px; max-width: 860px; line-height: 1.6; }
+
+  .scene-label {
+    font-size: 10px; font-weight: 700; color: #555; text-align: center;
+    letter-spacing: 2px; text-transform: uppercase; margin-bottom: -24px;
+  }
+
+  .terminal {
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    width: 100%; max-width: 860px; overflow: hidden;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6);
+  }
+
+  .tbar {
+    background: #141418; padding: 8px 14px; display: flex;
+    align-items: center; gap: 7px; border-bottom: 1px solid #1e1e26;
+  }
+
+  .tdot { width: 10px; height: 10px; border-radius: 50%; }
+  .ttitle { flex:1; text-align:center; color:#3a3a44; font-size:11px; }
+
+  .screen { padding: 14px 18px; font-size: 13px; line-height: 1.5; color: #999; }
+
+  pre { white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.5; }
+
+  .grn { color: #5fcc68; } .red { color: #e05555; } .yel { color: #d4a840; }
+  .cyn { color: #5bb8c9; } .mag { color: #c470b0; } .org { color: #cc8844; }
+  .blu { color: #5588cc; } .wht { color: #cccccc; } .dim { color: #3a3a44; }
+  .dim2 { color: #252530; } .fg { color: #777; } .bold { font-weight: 700; }
+  .hi { color: #e8e8e8; } /* high-contrast white for headers */
+
+  .blink { animation: blink 1.2s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+  .note {
+    max-width: 860px; width: 100%; padding: 16px 20px;
+    background: #101014; border: 1px solid #1e1e26; border-radius: 8px;
+    color: #555; font-size: 11px; line-height: 1.8;
+  }
+  .note strong { color: #888; }
+  .note code { color: #5bb8c9; background: #151520; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .divider { border: none; border-top: 1px dashed #252530; max-width: 860px; width: 100%; }
+</style>
+</head>
+<body>
+
+<div>
+  <h1>aiki tui — v3 polished screens</h1>
+  <div class="subtitle">Seven screens forming one cohesive experience: task list, task show, build (live + show),
+  review (live + show), fix. Live screens for watching active work. Show screens for examining
+  completed phases. Full-width layout (no sidebar). Consistent chrome: breadcrumb bar, key hints,
+  stage track. Building on v2's tree DAG rendering with refined information hierarchy.</div>
+</div>
+
+<!-- ================================================================== -->
+<!--  DESIGN PRINCIPLES                                                 -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>v3 design principles</strong><br><br>
+
+  <strong>1. Consistent chrome across all screens</strong><br>
+  Every screen has three zones: (A) a top bar with breadcrumb path + context, (B) the content area,
+  (C) a bottom bar with contextual key hints. The top bar uses a breadcrumb format:
+  <code>aiki</code> <code>></code> <code>screen</code> <code>></code> <code>context</code>.
+  This gives spatial orientation — you always know where you are.<br><br>
+
+  <strong>2. Two weights of information</strong><br>
+  Primary information is white/bright (<code>.wht</code> or <code>.hi</code>). Supporting context is
+  <code>.fg</code> (#777) or <code>.dim</code> (#3a3a44). Status colors (green/yellow/red/cyan) are
+  reserved for state indicators. No element uses more than one status color.<br><br>
+
+  <strong>3. Breathing room</strong><br>
+  v2 was dense. v3 adds strategic whitespace: blank lines between sections, padding around
+  key content blocks. Density is a knob, not a constant — the build/review/fix screens are denser
+  because they're "watching" mode, while task list/show are "reading" mode.<br><br>
+
+  <strong>4. No borders on content</strong><br>
+  v1 used box-drawing for panel borders. v2 used separator lines. v3 drops both — content blocks
+  are separated by whitespace and dim horizontal rules. The only box-drawing chars are for the
+  DAG tree itself. This reduces visual clutter and lets the tree structure be the star.<br><br>
+
+  <strong>5. Screen transitions</strong><br>
+  <code>task list</code> → <code>[Enter]</code> → <code>task show</code> → <code>[b]</code> → <code>build</code>.
+  <code>build</code> completes → auto-advances to <code>review</code> → completes → <code>fix</code>.
+  <code>[Esc]</code> always goes back one level. <code>[q]</code> quits from anywhere.
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 1: TASK LIST                                               -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 1 — Task List</strong><br><br>
+  The landing screen. Shows all tasks grouped by status. Each task gets one line with inline
+  status indicators. Tasks with the build/review/fix pipeline show phase progress. Ad-hoc tasks
+  show subtask progress. The list is sorted: in-progress first, then ready, then done.<br><br>
+  <strong>Key design choice:</strong> One line per task, no two-line cards. Task names truncate at ~35
+  chars. Agent abbreviation and time are right-aligned. Phase progress uses compact
+  <code>B R F</code> letter indicators with color, not full words or bars. This keeps it scannable
+  at a glance while fitting 10+ tasks on screen.<br><br>
+  <strong>Grouping:</strong> Tasks are grouped by status with dim section headers. Within each group,
+  tasks are sorted by priority (p0 first) then recency. The group headers double as a summary:
+  "In Progress (3)" tells you the active workload at a glance.<br><br>
+  <strong>File-review provenance:</strong> Completed pipeline tasks show a compact file-review summary
+  (e.g., <code>4 files ✓</code> for all reviewed, or <code>6 files, 3 reviewed</code> for partial coverage).
+  This surfaces the most valuable provenance signal — review coverage — without drilling in.
+</div>
+
+<div class="scene-label">Scene 1a — Task list, mixed tasks</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki task</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="wht bold">tasks</span>                                                      <span class="dim">6 tasks</span>
+
+ <span class="yel bold">In Progress</span> <span class="dim">(3)</span>
+
+   <span class="yel">▸</span> <span class="wht">Migrate payment processing to Stripe</span>    <span class="grn">B</span><span class="dim">:</span><span class="grn">✓</span> <span class="cyn">R</span><span class="dim">:</span><span class="org">✗2</span> <span class="yel">F</span><span class="dim">:</span><span class="yel">1/3</span>  <span class="mag">cur</span> <span class="dim">4m</span>
+   <span class="yel">▸</span> <span class="wht">Add real-time notifications to dash…</span>    <span class="grn">B</span><span class="dim">:</span><span class="yel">7/10</span>              <span class="cyn">cc</span>  <span class="dim">1m</span>
+   <span class="yel">▸</span> <span class="wht">Fix login redirect after session ti…</span>    <span class="dim">3/5 subtasks</span>        <span class="cyn">cc</span> <span class="dim">22s</span>
+
+ <span class="cyn bold">Ready</span> <span class="dim">(2)</span>
+
+   <span class="cyn">○</span> <span class="fg">Implement Stripe webhook event hand…</span>    <span class="dim">webhooks.md</span>       <span class="dim">ready 10m</span>
+   <span class="cyn">○</span> <span class="fg">Add Redis caching for session tokens</span>    <span class="dim">caching.md</span>        <span class="dim">ready  3m</span>
+
+ <span class="grn bold">Done</span> <span class="dim">(1)</span>
+
+   <span class="grn">✓</span> <span class="grn dim">Add JWT token refresh to auth flow</span>      <span class="grn dim">B</span><span class="dim">:</span><span class="grn dim">✓</span> <span class="grn dim">R</span><span class="dim">:</span><span class="grn dim">✓</span> <span class="grn dim">F</span><span class="dim">:</span><span class="grn dim">—</span>  <span class="dim">4 files ✓</span> <span class="dim">cc 12m</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] show  [b] build  [s] sort  [/] filter          [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 1b: TASK LIST — EMPTY STATE                                 -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 1b — Empty task list</strong><br><br>
+  No tasks exist. The empty state is an invitation, not a dead end. Shows the quick-start
+  command and a hint about plan files. Minimal but warm.
+</div>
+
+<div class="scene-label">Scene 1b — Task list, empty state</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki task</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="wht bold">tasks</span>                                                      <span class="dim">0 tasks</span>
+
+
+
+                      <span class="dim">No tasks yet.</span>
+
+                      <span class="fg">aiki task start "description"</span>
+                      <span class="dim">or place a plan in</span> <span class="fg">ops/now/</span>
+
+
+
+</pre>
+<pre>
+ <span class="dim">[q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 2: TASK SHOW — WITHOUT SUBTASKS                            -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 2 — Task Show (no subtasks)</strong><br><br>
+  Drill-down from task list. Shows full task details: name, status, metadata, description,
+  and comments timeline. This is the "read" mode — spacious, comfortable, not time-pressured.<br><br>
+  <strong>Layout:</strong> Task name as a prominent header. Metadata in a compact key-value block below.
+  Description as body text. Comments as a chronological timeline with timestamps and authors.
+  The stage track (<code>B R F</code>) appears if this task uses the pipeline, omitted for ad-hoc tasks.
+</div>
+
+<div class="scene-label">Scene 2a — Task show, no subtasks, in-progress</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki task show xqrmnprs</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="wht bold">xqrmnprs</span>
+
+ <span class="hi bold">Fix login redirect after session timeout</span>
+ <span class="yel">▸ in progress</span>    <span class="dim">22s</span>    <span class="cyn">cc</span>    <span class="dim">p2</span>
+
+ <span class="dim">source</span>  <span class="fg">prompt:nzwtoqqr</span>
+ <span class="dim">id</span>      <span class="fg">xqrmnprstukkomwtnolrrqspllrywxznv</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="fg">Fix the login redirect that sends users to /dashboard before</span>
+ <span class="fg">the auth token exchange completes. The race condition happens</span>
+ <span class="fg">when the OAuth callback fires before the session cookie is set.</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Comments</span>
+
+ <span class="dim">00:00</span>  <span class="cyn">cc</span>  <span class="dim">Started task</span>
+ <span class="dim">00:08</span>  <span class="cyn">cc</span>  <span class="fg">Found root cause: redirect happens in useEffect before</span>
+              <span class="fg">token is written to cookie. Need to await the exchange.</span>
+ <span class="dim">00:18</span>  <span class="cyn">cc</span>  <span class="fg">Patching auth callback handler, adding await guard.</span>
+
+</pre>
+<pre>
+ <span class="dim">[b] build  [e] edit  [c] comment  [x] close                   [Esc] back  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 2b: TASK SHOW — WITH SUBTASKS                             -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 2b — Task Show (with subtasks)</strong><br><br>
+  A task that uses the build/review/fix pipeline. The stage track is visible. Below it, subtasks
+  render as a tree DAG (same rendering as v2). Subtask IDs are shown for navigation. The comment
+  timeline sits below the tree.<br><br>
+  <strong>The tree is the hero.</strong> It dominates the screen. Each node shows its short ID. Active
+  nodes get truncated names. The tree communicates: what's done, what's in flight, what's blocked,
+  how many parallel streams are running.
+</div>
+
+<div class="scene-label">Scene 2b — Task show, with subtasks and pipeline</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki task show xtuttnyv</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="wht bold">xtuttnyv</span>
+
+ <span class="hi bold">Add real-time notifications to dashboard</span>
+ <span class="yel">▸ in progress</span>    <span class="dim">1m42s</span>    <span class="cyn">cc</span> <span class="dim">+</span> <span class="mag">cur</span>    <span class="dim">p2</span>    <span class="dim">source</span> <span class="fg">realtime.md</span>
+
+ <span class="grn">B</span><span class="dim">:</span><span class="yel">4/10</span>    <span class="dim">R: —</span>    <span class="dim">F: —</span>                                        <span class="dim">iter 1</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="yel bold">build</span>  <span class="dim">4/10</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Implement event broadcast…</span> <span class="dim">━━</span> <span class="dim">○</span>     <span class="mag">cur</span>
+              <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Run schema migrations…</span>                <span class="cyn">cc</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="yel bold">◉</span> <span class="fg">Build preference settings…</span> <span class="dim">━━</span> <span class="dim">○</span>       <span class="cyn">cc</span>
+
+ <span class="dim">review</span>  <span class="dim">—</span>
+ <span class="dim">fix</span>     <span class="dim">—</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Comments</span>
+
+ <span class="dim">00:00</span>  <span class="cyn">cc</span>   <span class="dim">Started task</span>
+ <span class="dim">00:22</span>  <span class="cyn">cc</span>   <span class="fg">Explore + plan done, starting 3 parallel builds</span>
+ <span class="dim">01:10</span>  <span class="mag">cur</span>  <span class="fg">Schema migrations passing, broadcast next</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] subtasks  [Enter] drill into subtask  [Space] log                [Esc] back  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 2c: TASK SHOW — WITH SUBTASKS, ALL PHASES VISIBLE           -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 2c — Task show, mid-fix with all three trees visible</strong><br><br>
+  Same task, later in its lifecycle. Build and review are done. Fix is in progress. All three
+  phase trees are visible, stacked vertically. Completed trees dim down but remain as context —
+  you can see the full journey. The stage track at the top gives the overview;
+  the trees give the detail.
+</div>
+
+<div class="scene-label">Scene 2c — Task show, all three phases visible</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki task show xtuttnyv</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="wht bold">xtuttnyv</span>
+
+ <span class="hi bold">Add real-time notifications to dashboard</span>
+ <span class="yel">▸ in progress</span>    <span class="dim">6m20s</span>    <span class="cyn">cc</span> <span class="dim">+</span> <span class="mag">cur</span>    <span class="dim">p2</span>
+
+ <span class="grn">B</span><span class="dim">:</span><span class="grn">✓</span>    <span class="grn">R</span><span class="dim">:</span><span class="grn">✓</span> <span class="org">2 issues</span>    <span class="yel">F</span><span class="dim">:</span><span class="yel">1/3</span>                            <span class="dim">iter 1</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">build</span>  <span class="dim">4m12s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━╯</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="grn dim">review</span>  <span class="dim">1m20s</span>  <span class="org">2 issues</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="yel bold">fix</span>  <span class="dim">0m48s</span>
+   <span class="grn">●</span> <span class="dim">━┬━</span> <span class="dim">○</span>                                                      <span class="dim">blocked</span>
+      <span class="dim">╰━</span> <span class="dim">○</span>                                                      <span class="dim">blocked</span>
+   <span class="yel bold">◉</span> <span class="fg">Add rate limit to broadcast…</span>                                 <span class="mag">cur</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] subtasks  [Enter] drill  [Space] log                         [Esc] back  [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 3: BUILD — LIVE PROGRESS                                   -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 3 — Build</strong><br><br>
+  The build screen is "watching" mode — denser, more kinetic, designed for monitoring active
+  work. The tree DAG is the centerpiece. Below it, a live event log streams task completions,
+  parallel starts, and agent activity.<br><br>
+  <strong>Key difference from task show:</strong> The build screen focuses entirely on the active phase.
+  No comments section. No description. Just the tree, a compact header, and the event log.
+  It's what you see when you run <code>aiki build webhooks.md</code> or drill from task show.<br><br>
+  <strong>The event log</strong> uses the same format as v2 but with slightly better density: parallel
+  events on one line with <code>│</code> separator, timestamps left-aligned, agent abbreviations
+  color-coded. The log auto-scrolls but you can press <code>[Space]</code> to pause and scroll manually.
+</div>
+
+<div class="scene-label">Scene 3a — Build, early fan-out</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="grn bold">build</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                           <span class="dim">0:34</span>
+ <span class="grn bold">▸ build</span>  <span class="dim">3/6</span>            <span class="dim">○ review</span>            <span class="dim">○ fix</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Implement webhook route…</span> <span class="dim">━━</span> <span class="dim">○</span>               <span class="mag">cur</span>
+              <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="yel bold">◉</span> <span class="fg">Verify Stripe signatures…</span>                   <span class="cyn">cc</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="dim">○</span> <span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span>
+                                                        <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">00:00</span>  <span class="yel blink">▸</span> <span class="fg">xtut</span>  <span class="cyn">cc</span>  <span class="dim">Explore webhook requirements</span>
+ <span class="dim">00:08</span>  <span class="grn">✓</span> <span class="dim">xtut</span>       <span class="dim">8s</span>
+ <span class="dim">00:08</span>  <span class="yel blink">▸</span> <span class="fg">nmps</span>  <span class="cyn">cc</span>  <span class="dim">Create webhook plan</span>
+ <span class="dim">00:14</span>  <span class="grn">✓</span> <span class="dim">nmps</span>       <span class="dim">6s</span>
+ <span class="dim">00:14</span>  <span class="yel blink">▸</span> <span class="fg">kyxr</span>  <span class="mag">cur</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">qwvp</span>  <span class="cyn">cc</span>  <span class="dim">(parallel)</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill into branch  [Space] log  [Esc] back             [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3b: BUILD — FAN-IN CONVERGENCE                              -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3b — Build, fan-in convergence</strong><br><br>
+  Two branches completed and converged. The fan-in node is now active. The tree shows the
+  full diamond pattern: fan-out at <code>━┬━</code>, parallel branches, fan-in at <code>━╯</code>.
+  The bottom branch is still running independently. This is the most visually rich state —
+  you can see the DAG structure clearly.
+</div>
+
+<div class="scene-label">Scene 3b — Build, fan-in convergence</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">xtuttnyv</span> <span class="dim">></span> <span class="grn bold">build</span>
+
+ <span class="hi bold">Add real-time notifications to dashboard</span>                          <span class="dim">2:30</span>
+ <span class="grn bold">▸ build</span>  <span class="dim">7/10</span>           <span class="dim">○ review</span>            <span class="dim">○ fix</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Write integration…</span>      <span class="mag">cur</span>
+              <span class="dim">│</span>                  <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━━━━━━╯</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="yel bold">◉</span> <span class="fg">Wire up toggle…</span> <span class="dim">━━━━━━━━━━━┬━</span> <span class="dim">○</span>
+                                                        <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">01:48</span>  <span class="grn">✓</span> <span class="dim">kyxr</span>  <span class="dim">1m26s</span>  <span class="dim">│</span>  <span class="grn">✓</span> <span class="dim">qwvp</span>  <span class="dim">52s</span>
+ <span class="dim">01:48</span>  <span class="grn">●</span> <span class="fg">trvp</span>  <span class="dim">unblocked</span>
+ <span class="dim">01:49</span>  <span class="yel blink">▸</span> <span class="fg">trvp</span>  <span class="mag">cur</span>  <span class="dim">Write integration tests</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill into branch  [Space] log  [Esc] back             [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3c: BUILD — FAILURE IN A BRANCH                             -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3c — Build failure</strong><br><br>
+  A branch failed. The <code>✗</code> node is red. Downstream nodes that depended on the failed
+  branch are marked <code>stuck</code> (red) vs pending nodes which are dim. The header shows
+  <code>1 failed</code> in red. Other branches continue unaffected.<br><br>
+  <strong><code>stuck</code> vs <code>blocked</code>:</strong> Blocked nodes are waiting for work to complete
+  (normal). Stuck nodes are waiting for a failed node — they need intervention. The visual
+  distinction is important: dim = patience, red = action needed.
+</div>
+
+<div class="scene-label">Scene 3c — Build, branch failure with stuck dependents</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">xtuttnyv</span> <span class="dim">></span> <span class="grn bold">build</span>
+
+ <span class="hi bold">Add real-time notifications to dashboard</span>                          <span class="dim">2:48</span>
+ <span class="grn bold">▸ build</span>  <span class="dim">7/10</span>           <span class="dim">○ review</span>            <span class="dim">○ fix</span>      <span class="red bold">1 failed</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Write integration…</span>      <span class="mag">cur</span>
+              <span class="dim">│</span>                  <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━━━━━━╯</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="red bold">✗</span> <span class="red">Add retry logic…</span> <span class="dim">━━━━━━━━━━━┬━</span> <span class="dim">○</span> <span class="red">stuck</span>
+                                                        <span class="dim">╰━</span> <span class="dim">○</span> <span class="red">stuck</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">02:30</span>  <span class="red">✗</span> <span class="red">zxrk</span>  <span class="red">stopped</span>  <span class="dim">Redis connection refused</span>
+ <span class="dim">02:30</span>  <span class="red">!</span> <span class="fg">nwqp</span>  <span class="red">stuck</span>  <span class="dim">│</span>  <span class="red">!</span> <span class="fg">rmxv</span>  <span class="red">stuck</span>  <span class="dim">← zxrk failed</span>
+
+</pre>
+<pre>
+ <span class="dim">[r] retry failed  [j/k] navigate  [Enter] drill  [Space] log  [Esc] back     [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3d: BUILD COMPLETE                                          -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3d — Build complete, transitioning to review</strong><br><br>
+  All build subtasks done. The tree is fully green. A summary line shows total time and subtask
+  count. The screen pauses briefly (0.5s) to show the completed state, then auto-advances to
+  the review screen. The user can also press <code>[Enter]</code> to advance immediately or
+  <code>[Esc]</code> to go back to task show.
+</div>
+
+<div class="scene-label">Scene 3d — Build complete</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="grn bold">build</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">2:28</span>
+ <span class="grn bold">✓ build</span>  <span class="grn dim">6/6</span>            <span class="dim">○ review</span>            <span class="dim">○ fix</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                        <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">Build complete.</span>  <span class="dim">6 subtasks  2m28s  2 agents</span>
+
+ <span class="dim">Advancing to review…</span> <span class="dim pulse">▸</span>
+
+</pre>
+<pre>
+ <span class="dim">[Enter] review now  [Esc] back to task                                 [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3e: BUILD SHOW — RETROSPECTIVE                              -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3e — Build Show (retrospective)</strong><br><br>
+  <code>aiki build show</code> — examining a completed build after the fact. This is "reading" mode,
+  not "watching" mode. All nodes are resolved (green or red). Every subtask gets its full name,
+  timing, and agent. The tree renders the same DAG as during live build, but with full annotations.<br><br>
+  <strong>Key difference from live build:</strong> During live build, only active nodes get names (to
+  save space for the tree structure). In build show, every node gets a name and timing because
+  the tree is static — no animation, no event log, no urgency. You're reviewing the record.<br><br>
+  <strong>Subtask list below the tree:</strong> The tree gives the shape (parallelism, dependencies).
+  Below it, a flat list gives the details: full subtask name, agent, duration, status. This
+  dual view — tree for structure, list for detail — avoids cramming too much text into the DAG.
+</div>
+
+<div class="scene-label">Scene 3e — Build show, completed build retrospective</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build show — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="grn bold">build</span> <span class="dim">(completed)</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>
+ <span class="grn bold">✓ build</span>  <span class="grn dim">6/6</span>  <span class="dim">2m28s</span>  <span class="dim">2 agents</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span>
+              <span class="dim">├━</span> <span class="grn">●</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                        <span class="dim">╰━</span> <span class="grn">●</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">#</span>  <span class="dim">SUBTASK                                          AGENT  TIME   STATUS</span>
+
+ <span class="dim">1</span>  <span class="fg">Explore webhook requirements</span>                       <span class="cyn">cc</span>   <span class="dim">8s</span>    <span class="grn">✓</span>
+ <span class="dim">2</span>  <span class="fg">Create implementation plan</span>                         <span class="cyn">cc</span>   <span class="dim">6s</span>    <span class="grn">✓</span>
+ <span class="dim">3</span>  <span class="fg">Implement webhook route handler</span>                    <span class="mag">cur</span>  <span class="dim">48s</span>   <span class="grn">✓</span>
+ <span class="dim">4</span>  <span class="fg">Verify Stripe webhook signatures</span>                   <span class="cyn">cc</span>   <span class="dim">22s</span>   <span class="grn">✓</span>
+ <span class="dim">5</span>  <span class="fg">Add idempotency key tracking</span>                       <span class="mag">cur</span>  <span class="dim">34s</span>   <span class="grn">✓</span>
+ <span class="dim">6</span>  <span class="fg">Write integration tests for all events</span>             <span class="cyn">cc</span>   <span class="dim">18s</span>   <span class="grn">✓</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Parallelism:</span> <span class="fg">peak 2 concurrent</span>  <span class="dim">│</span>  <span class="dim">Agents:</span> <span class="cyn">cc</span> <span class="dim">4 tasks</span>  <span class="mag">cur</span> <span class="dim">4 tasks</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] subtask detail  [d] diff  [Esc] back          [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 3f: BUILD SHOW — WITH FAILURE                                -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 3f — Build show with a failed subtask</strong><br><br>
+  Same retrospective view, but for a build that had a failure. The failed subtask is red with
+  its error reason inline. Downstream stuck subtasks show why they were blocked. The summary
+  footer highlights the failure prominently. This is the view you use to understand what went
+  wrong and decide on next steps.
+</div>
+
+<div class="scene-label">Scene 3f — Build show, with failure</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build show — realtime.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">xtuttnyv</span> <span class="dim">></span> <span class="grn bold">build</span> <span class="dim">(completed)</span>
+
+ <span class="hi bold">Add real-time notifications to dashboard</span>
+ <span class="org bold">✗ build</span>  <span class="grn dim">8/10</span>  <span class="dim">2m48s</span>  <span class="dim">2 agents</span>  <span class="red bold">1 failed  2 stuck</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="grn">●</span>
+              <span class="dim">│</span>                  <span class="dim">│</span>
+              <span class="dim">├━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━━━━━━╯</span>
+              <span class="dim">│</span>
+              <span class="dim">╰━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="red bold">✗</span> <span class="dim">━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="dim">○</span> <span class="red">stuck</span>
+                                                        <span class="dim">╰━</span> <span class="dim">○</span> <span class="red">stuck</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">#</span>  <span class="dim">SUBTASK                                          AGENT  TIME   STATUS</span>
+
+ <span class="dim">1</span>  <span class="fg">Explore notification requirements</span>                  <span class="cyn">cc</span>   <span class="dim">22s</span>   <span class="grn">✓</span>
+ <span class="dim">2</span>  <span class="fg">Create implementation plan</span>                         <span class="cyn">cc</span>   <span class="dim">8s</span>    <span class="grn">✓</span>
+ <span class="dim">3</span>  <span class="fg">Set up WebSocket server with ws crate</span>              <span class="mag">cur</span>  <span class="dim">38s</span>   <span class="grn">✓</span>
+ <span class="dim">4</span>  <span class="fg">Implement event broadcast to clients</span>               <span class="mag">cur</span>  <span class="dim">1m02</span>  <span class="grn">✓</span>
+ <span class="dim">5</span>  <span class="fg">Run schema migrations for events table</span>             <span class="cyn">cc</span>   <span class="dim">22s</span>   <span class="grn">✓</span>
+ <span class="dim">6</span>  <span class="fg">Build user preference settings UI</span>                  <span class="cyn">cc</span>   <span class="dim">44s</span>   <span class="grn">✓</span>
+ <span class="dim">7</span>  <span class="fg">Write integration tests</span>                            <span class="mag">cur</span>  <span class="dim">28s</span>   <span class="grn">✓</span>
+ <span class="dim">8</span>  <span class="fg">Add retry logic for failed deliveries</span>              <span class="cyn">cc</span>   <span class="dim">36s</span>   <span class="red bold">✗ stopped</span>
+    <span class="red">    Redis connection refused — check REDIS_URL config</span>
+ <span class="dim">9</span>  <span class="dim">Wire up notification toggle in settings</span>            <span class="dim">—</span>    <span class="dim">—</span>     <span class="red">stuck</span>
+<span class="dim">10</span>  <span class="dim">Add notification sound preferences</span>                 <span class="dim">—</span>    <span class="dim">—</span>     <span class="red">stuck</span>
+
+</pre>
+<pre>
+ <span class="dim">[r] retry failed  [Enter] subtask detail  [d] diff  [Esc] back        [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 4: REVIEW                                                  -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 4 — Review</strong><br><br>
+  The review screen shows the completed build tree (dimmed) above the active review work.
+  Review tasks are typically simpler than build — 1-3 parallel review passes (code review,
+  test verification, security scan). Each review task can produce issues.<br><br>
+  <strong>Issue surfacing:</strong> When a review task finds issues, they appear inline below the
+  review tree as a compact list: severity indicator + one-line description. These issues
+  become the input for the fix phase. The issue count appears in the stage track.<br><br>
+  <strong>Visual continuity:</strong> The build tree stays visible (green, dimmed) above the review
+  section. This creates a sense of progression — you can see where you've been.
+</div>
+
+<div class="scene-label">Scene 4a — Review in progress, issues found</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki review — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="cyn bold">review</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">3:52</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="cyn bold">▸ review</span>  <span class="dim">1/3</span>          <span class="dim">○ fix</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">build</span>  <span class="dim">2m28s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                        <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="cyn bold">review</span>  <span class="dim">1m24s</span>
+   <span class="grn">●</span> <span class="fg dim">Code review</span>                                                  <span class="grn">✓</span>
+   <span class="yel bold">◉</span> <span class="fg">Run integration test suite…</span>                                   <span class="mag">cur</span>
+   <span class="yel bold">◉</span> <span class="fg">Security audit on webhook verify…</span>                             <span class="cyn">cc</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="org bold">Issues</span> <span class="dim">(2 so far)</span>
+
+   <span class="org">med</span>   <span class="fg">Missing rate limit on webhook endpoint — could allow</span>
+         <span class="fg">replay attacks at high volume</span>
+   <span class="red">high</span>  <span class="fg">Webhook signature check skipped when header is empty</span>
+         <span class="fg">instead of rejecting the request</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill  [i] issue detail  [Space] log  [Esc] back     [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4b: REVIEW COMPLETE — CLEAN                                 -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 4b — Review complete, no issues (clean)</strong><br><br>
+  Alternative outcome: review passes cleanly. The stage track shows <code>✓ review  clean</code>
+  in green. Fix is skipped entirely. The completion screen shows a concise summary.
+</div>
+
+<div class="scene-label">Scene 4b — Review complete, clean pass</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki review — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="cyn bold">review</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">3:45</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="grn dim">clean</span>        <span class="grn">✓ fix</span>  <span class="grn dim">—</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">build</span>  <span class="dim">2m28s</span>
+   <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span> <span class="grn dim">━┬━</span> <span class="grn">●</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+              <span class="grn dim">├━</span> <span class="grn">●</span>
+              <span class="grn dim">╰━</span> <span class="grn">●</span> <span class="grn dim">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┬━</span> <span class="grn">●</span>
+                                                        <span class="grn dim">╰━</span> <span class="grn">●</span>
+
+ <span class="grn dim">review</span>  <span class="dim">1m17s</span>  <span class="grn">clean</span>
+   <span class="grn">●</span>
+   <span class="grn">●</span>
+   <span class="grn">●</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">Done.</span>  <span class="dim">build 2m28s  review 1m17s  fix skipped  total 3m45s</span>
+
+</pre>
+<pre>
+ <span class="dim">[Enter] close task  [Esc] back to task                                 [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4c: REVIEW COMPLETE — WITH ISSUES                           -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 4c — Review complete with issues, transitioning to fix</strong><br><br>
+  Review found issues. The issue summary is prominent. The screen auto-advances to fix after
+  a brief pause. The issue list is what drives the fix phase — each issue becomes a fix task.
+</div>
+
+<div class="scene-label">Scene 4c — Review complete, 2 issues, advancing to fix</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki review — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="cyn bold">review</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">4:10</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="org">2 issues</span>     <span class="dim">○ fix</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">review</span>  <span class="dim">1m42s</span>
+   <span class="grn">●</span>  <span class="grn dim">Code review</span>
+   <span class="grn">●</span>  <span class="grn dim">Integration test suite</span>
+   <span class="grn">●</span>  <span class="grn dim">Security audit</span>
+
+ <span class="org bold">Issues</span> <span class="dim">(2)</span>
+
+   <span class="org">1.</span> <span class="fg">Missing rate limit on webhook endpoint</span>
+      <span class="dim">source: security audit  severity: medium</span>
+
+   <span class="red">2.</span> <span class="fg">Webhook signature check skipped when header is empty</span>
+      <span class="dim">source: code review  severity: high</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="org">Review found 2 issues.</span>  <span class="dim">Creating fix tasks…</span> <span class="dim pulse">▸</span>
+
+</pre>
+<pre>
+ <span class="dim">[Enter] fix now  [Esc] back to task                                    [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4d: REVIEW SHOW — RETROSPECTIVE                             -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 4d — Review Show (retrospective)</strong><br><br>
+  <code>aiki review show</code> — examining a completed review after the fact. This is the audit
+  view: what was reviewed, who reviewed it, what issues were found, and what files were flagged.
+  Unlike the live review screen, this has no event log or progress indicators — everything is
+  resolved.<br><br>
+  <strong>Three sections:</strong><br>
+  1. <strong>Review passes</strong> — what checks ran, who ran them, how long each took<br>
+  2. <strong>Issues</strong> — full detail on each issue: severity, source, description, affected files<br>
+  3. <strong>Files touched</strong> — which files the build modified, cross-referenced with which review
+  pass examined them. This is the provenance chain: build produced these files, review checked
+  them, issues were found in specific files.<br><br>
+  <strong>This screen drives the fix phase.</strong> When you run <code>aiki fix</code>, it reads from the
+  review results. The issue list here is exactly what becomes fix tasks. File references help
+  the fix agent know where to look.
+</div>
+
+<div class="scene-label">Scene 4d — Review show, completed review with issues</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki review show — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="cyn bold">review</span> <span class="dim">(completed)</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>
+ <span class="grn">✓ review</span>  <span class="dim">1m42s</span>  <span class="dim">2 agents</span>  <span class="org bold">2 issues</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Review Passes</span>
+
+ <span class="grn">✓</span>  <span class="fg">Code review</span>                                    <span class="cyn">cc</span>   <span class="dim">52s</span>   <span class="org">1 issue</span>
+ <span class="grn">✓</span>  <span class="fg">Integration test suite</span>                          <span class="mag">cur</span>  <span class="dim">1m18</span>  <span class="grn">pass</span>
+ <span class="grn">✓</span>  <span class="fg">Security audit on webhook verification</span>          <span class="cyn">cc</span>   <span class="dim">38s</span>   <span class="org">1 issue</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="org bold">Issues</span> <span class="dim">(2)</span>
+
+ <span class="red bold">1.</span> <span class="wht">Webhook signature check skipped when header is empty</span>
+    <span class="dim">severity</span> <span class="red">high</span>  <span class="dim">source</span> <span class="fg">code review</span>
+    <span class="fg">When the</span> <span class="wht">Stripe-Signature</span> <span class="fg">header is missing or empty, the handler</span>
+    <span class="fg">falls through to process the event without verification. Should</span>
+    <span class="fg">reject with 401.</span>
+    <span class="dim">file</span> <span class="cyn">src/webhooks/handler.rs</span><span class="dim">:47</span>
+
+ <span class="org bold">2.</span> <span class="wht">Missing rate limit on webhook endpoint</span>
+    <span class="dim">severity</span> <span class="org">medium</span>  <span class="dim">source</span> <span class="fg">security audit</span>
+    <span class="fg">The</span> <span class="wht">/api/webhooks/stripe</span> <span class="fg">endpoint has no rate limiting. An attacker</span>
+    <span class="fg">could replay captured webhook payloads at high volume to cause</span>
+    <span class="fg">duplicate processing.</span>
+    <span class="dim">file</span> <span class="cyn">src/webhooks/routes.rs</span><span class="dim">:12</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Files Modified by Build</span>  <span class="dim">(6 files, reviewed by 3 passes)</span>
+
+ <span class="cyn">src/webhooks/handler.rs</span>      <span class="dim">+142 −0</span>   <span class="fg">code review</span> <span class="red">✗</span>  <span class="fg">security</span> <span class="grn">✓</span>
+ <span class="cyn">src/webhooks/routes.rs</span>       <span class="dim">+38  −0</span>   <span class="fg">code review</span> <span class="grn">✓</span>  <span class="fg">security</span> <span class="org">✗</span>
+ <span class="cyn">src/webhooks/verify.rs</span>       <span class="dim">+67  −0</span>   <span class="fg">code review</span> <span class="grn">✓</span>  <span class="fg">security</span> <span class="grn">✓</span>
+ <span class="cyn">src/webhooks/mod.rs</span>          <span class="dim">+12  −0</span>   <span class="fg">code review</span> <span class="grn">✓</span>
+ <span class="cyn">src/webhooks/idempotency.rs</span>  <span class="dim">+54  −0</span>   <span class="fg">code review</span> <span class="grn">✓</span>
+ <span class="cyn">tests/webhook_tests.rs</span>       <span class="dim">+89  −0</span>   <span class="fg">test suite</span> <span class="grn">✓</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] issue detail  [d] diff  [f] fix  [Esc] back   [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 4e: REVIEW SHOW — CLEAN PASS                                -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 4e — Review show, clean pass</strong><br><br>
+  When the review found no issues. The file matrix shows all green checks. No issues section.
+  This is the happy path — short and satisfying.
+</div>
+
+<div class="scene-label">Scene 4e — Review show, clean pass</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki review show — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="cyn bold">review</span> <span class="dim">(completed)</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>
+ <span class="grn">✓ review</span>  <span class="dim">1m17s</span>  <span class="dim">2 agents</span>  <span class="grn bold">clean</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Review Passes</span>
+
+ <span class="grn">✓</span>  <span class="fg">Code review</span>                                    <span class="cyn">cc</span>   <span class="dim">48s</span>   <span class="grn">pass</span>
+ <span class="grn">✓</span>  <span class="fg">Integration test suite</span>                          <span class="mag">cur</span>  <span class="dim">1m12</span>  <span class="grn">pass</span>
+ <span class="grn">✓</span>  <span class="fg">Security audit on webhook verification</span>          <span class="cyn">cc</span>   <span class="dim">34s</span>   <span class="grn">pass</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Files Modified by Build</span>  <span class="dim">(6 files, all clean)</span>
+
+ <span class="cyn">src/webhooks/handler.rs</span>      <span class="dim">+142 −0</span>   <span class="grn">✓ ✓</span>
+ <span class="cyn">src/webhooks/routes.rs</span>       <span class="dim">+38  −0</span>   <span class="grn">✓ ✓</span>
+ <span class="cyn">src/webhooks/verify.rs</span>       <span class="dim">+67  −0</span>   <span class="grn">✓ ✓</span>
+ <span class="cyn">src/webhooks/mod.rs</span>          <span class="dim">+12  −0</span>   <span class="grn">✓</span>
+ <span class="cyn">src/webhooks/idempotency.rs</span>  <span class="dim">+54  −0</span>   <span class="grn">✓</span>
+ <span class="cyn">tests/webhook_tests.rs</span>       <span class="dim">+89  −0</span>   <span class="grn">✓</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">No issues found.</span>  <span class="dim">All 3 review passes clean.</span>
+
+</pre>
+<pre>
+ <span class="dim">[d] diff  [Esc] back to task                                           [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN 5: FIX                                                     -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 5 — Fix</strong><br><br>
+  The fix screen shows fix tasks derived from review issues. Each fix task is linked to its
+  source issue. Fix tasks can run in parallel (independent issues) or sequentially (if one fix
+  depends on another). The tree DAG renders fix tasks just like build subtasks.<br><br>
+  <strong>Issue → fix linking:</strong> Each fix task shows which issue it addresses via a dim reference
+  (<code>← issue 1</code>). When a fix completes, its corresponding issue is annotated with
+  <code>fixed</code>. This creates a clear audit trail: issue found → fix applied.<br><br>
+  <strong>The re-review gate:</strong> After all fixes are applied, aiki can optionally run a targeted
+  re-review (just the changed files, not the full review). If the re-review passes, we're done.
+  If not, another fix iteration starts. The iteration counter tracks this.
+</div>
+
+<div class="scene-label">Scene 5a — Fix in progress, two parallel fixes</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki fix — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="yel bold">fix</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">4:48</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="org">2 issues</span>     <span class="yel bold">▸ fix</span>  <span class="dim">0/3</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="yel bold">fix</span>  <span class="dim">0m38s</span>  <span class="dim">iter 1</span>
+
+   <span class="yel bold">◉</span> <span class="fg">Add rate limit to webhook endpoint…</span>                           <span class="cyn">cc</span>
+     <span class="dim">← issue 1: Missing rate limit</span>
+
+   <span class="yel bold">◉</span> <span class="fg">Reject requests with empty signature…</span> <span class="dim">━━</span> <span class="dim">○</span>                <span class="mag">cur</span>
+     <span class="dim">← issue 2: Signature check skipped</span>
+
+   <span class="dim">○</span> <span class="dim">Re-run targeted review on changed files</span>
+     <span class="dim">← verify fixes</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Issues</span>
+
+   <span class="org">1.</span> <span class="dim">Missing rate limit on webhook endpoint</span>        <span class="yel">fixing…</span>
+   <span class="red">2.</span> <span class="dim">Signature check skipped when header empty</span>    <span class="yel">fixing…</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">04:10</span>  <span class="yel blink">▸</span> <span class="fg">fxnr</span>  <span class="cyn">cc</span>  <span class="dim">│</span>  <span class="yel blink">▸</span> <span class="fg">fxms</span>  <span class="mag">cur</span>  <span class="dim">(parallel)</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill  [i] issues  [Space] log  [Esc] back             [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 5b: FIX — ONE DONE, ONE IN PROGRESS                        -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 5b — Fix progress, one fix done</strong><br><br>
+  The rate limit fix completed. Its issue is now marked <code>fixed</code> in green. The signature
+  fix is still running, with its downstream verify task still pending. The progress bar in the
+  issue list gives a quick glance at what's resolved vs in-flight.
+</div>
+
+<div class="scene-label">Scene 5b — Fix, one done, one in progress</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki fix — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="yel bold">fix</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">5:22</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="org">2 issues</span>     <span class="yel bold">▸ fix</span>  <span class="dim">1/3</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="yel bold">fix</span>  <span class="dim">1m12s</span>  <span class="dim">iter 1</span>
+
+   <span class="grn">●</span> <span class="grn dim">Add rate limit to webhook endpoint</span>                             <span class="grn">✓</span>
+
+   <span class="yel bold">◉</span> <span class="fg">Reject requests with empty signature…</span> <span class="dim">━━</span> <span class="dim">○</span>                <span class="mag">cur</span>
+     <span class="dim">← issue 2</span>
+
+   <span class="dim">○</span> <span class="dim">Re-run targeted review on changed files</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Issues</span>
+
+   <span class="grn">1.</span> <span class="grn dim">Missing rate limit on webhook endpoint</span>        <span class="grn">fixed</span>
+   <span class="red">2.</span> <span class="dim">Signature check skipped when header empty</span>    <span class="yel">fixing…</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill  [i] issues  [Space] log  [Esc] back             [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 5c: FIX COMPLETE — ALL DONE                                 -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 5c — Fix complete, all done</strong><br><br>
+  All fixes applied, re-review passed. The full pipeline is complete. All three stages show green
+  checkmarks. The final summary shows timing for each phase, total time, and the number of agents
+  involved. All issues are marked <code>fixed</code>.<br><br>
+  This is the "victory" screen. Clean, green, complete. The task can now be closed.<br><br>
+  <strong>Iteration count:</strong> If the pipeline went through multiple review→fix cycles, the
+  summary shows total iterations (<code>1 iteration</code> or <code>2 iterations</code>) as key
+  provenance data. For multi-iteration pipelines, a per-iteration breakdown appears showing
+  how many issues each iteration addressed.
+</div>
+
+<div class="scene-label">Scene 5c — Fix complete, all done</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki fix — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="yel bold">fix</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">6:30</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="grn dim">2 fixed</span>      <span class="grn">✓ fix</span>  <span class="grn dim">3/3</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn dim">fix</span>  <span class="dim">2m20s</span>  <span class="dim">iter 1</span>
+
+   <span class="grn">●</span> <span class="grn dim">Add rate limit to webhook endpoint</span>
+   <span class="grn">●</span> <span class="grn dim">Reject requests with empty signature header</span> <span class="grn dim">━━</span> <span class="grn">●</span>
+   <span class="grn">●</span> <span class="grn dim">Targeted re-review</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Issues</span>
+
+   <span class="grn">1.</span> <span class="grn dim">Missing rate limit on webhook endpoint</span>        <span class="grn">fixed</span>
+   <span class="grn">2.</span> <span class="grn dim">Signature check skipped when header empty</span>    <span class="grn">fixed</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="grn bold">Done.</span>  <span class="dim">build 2m28s  review 1m42s  fix 2m20s  total 6m30s  1 iteration  2 agents</span>
+
+</pre>
+<pre>
+ <span class="dim">[Enter] close task  [Esc] back to task                                 [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 5d: FIX — ITERATION 2                                       -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 5d — Fix iteration 2</strong><br><br>
+  The first fix iteration's re-review found one of the fixes was incomplete. A second iteration
+  starts with just the remaining issue. The iteration counter advances to <code>iter 2</code>.
+  Previous iteration's completed fixes stay green. Only the failing issue gets a new fix task.<br><br>
+  This shows the iterative convergence: each iteration should have fewer issues than the last.
+  If iteration count exceeds 3, the UI shows a warning suggesting human intervention.
+</div>
+
+<div class="scene-label">Scene 5d — Fix, iteration 2</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki fix — webhooks.md</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="yel bold">fix</span>
+
+ <span class="hi bold">Implement Stripe webhook event handling</span>                          <span class="dim">7:45</span>
+ <span class="grn">✓ build</span>  <span class="grn dim">6/6</span>     <span class="grn">✓ review</span>  <span class="org">2 issues</span>     <span class="yel bold">▸ fix</span>  <span class="dim">1/2</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="yel bold">fix</span>  <span class="dim">0m22s</span>  <span class="yel bold">iter 2</span>  <span class="dim">← re-review found 1 remaining issue</span>
+
+   <span class="yel bold">◉</span> <span class="fg">Tighten rate limit to 100 req/min…</span>                            <span class="cyn">cc</span>
+     <span class="dim">← issue 1: Rate limit set too high (1000/min)</span>
+
+   <span class="dim">○</span> <span class="dim">Re-run targeted review on changed files</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Issues</span>
+
+   <span class="org">1.</span> <span class="dim">Missing rate limit on webhook endpoint</span>        <span class="yel">fixing…</span> <span class="dim">(iter 2)</span>
+   <span class="grn">2.</span> <span class="grn dim">Signature check skipped when header empty</span>    <span class="grn">fixed</span>
+
+</pre>
+<pre>
+ <span class="dim">[j/k] navigate  [Enter] drill  [i] issues  [Space] log  [Esc] back             [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCREEN TRANSITIONS + DRILL-DOWN                                   -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Screen 6 — Drill-down into a subtask</strong><br><br>
+  Pressing <code>[Enter]</code> on any focused subtask in the build/review/fix tree
+  zooms into that subtask's detail. The breadcrumb extends with the subtask ID.<br><br>
+  <strong>What's shown:</strong> Full task name (untruncated), status, agent, duration. Below that,
+  the task's comment history — agents leave progress comments via <code>aiki task comment</code>
+  as they work, so this is where you see what the agent has been doing. For completed subtasks,
+  the close summary is shown at the bottom.<br><br>
+  <strong>Note:</strong> There is no live agent output stream. Agents work in separate sessions and
+  communicate via task comments. The drill-down shows these comments chronologically. The
+  quality of this view depends entirely on how often agents comment — which is why CLAUDE.md
+  instructs agents to leave progress comments during long tasks.
+</div>
+
+<div class="scene-label">Scene 6a — Drill-down into subtask (comment history)</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — webhooks.md — subtask kyxr</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="grn bold">build</span> <span class="dim">></span> <span class="wht bold">kyxr</span>
+
+ <span class="hi bold">Verify Stripe webhook signature handling</span>
+ <span class="yel">▸ in progress</span>    <span class="dim">18s</span>    <span class="cyn">cc</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Comments</span>
+
+ <span class="dim">00:00</span>  <span class="cyn">cc</span>  <span class="dim">Started task</span>
+ <span class="dim">00:04</span>  <span class="cyn">cc</span>  <span class="fg">Reading Stripe webhook signature docs. They use HMAC-SHA256</span>
+              <span class="fg">with the webhook signing secret, passed in Stripe-Signature header.</span>
+ <span class="dim">00:08</span>  <span class="cyn">cc</span>  <span class="fg">Creating src/webhooks/verify.rs — implementing constant-time</span>
+              <span class="fg">comparison to prevent timing attacks on signature check.</span>
+ <span class="dim">00:14</span>  <span class="cyn">cc</span>  <span class="fg">Added verify_signature() with HMAC-SHA256 + constant_time_eq.</span>
+              <span class="fg">Now adding unit tests for valid/invalid/missing signatures.</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Files changed</span>  <span class="dim">(from task diff)</span>
+
+ <span class="cyn">src/webhooks/verify.rs</span>        <span class="dim">+67 −0</span>    <span class="grn">new</span>
+ <span class="cyn">tests/webhook_verify_test.rs</span>  <span class="dim">+45 −0</span>    <span class="grn">new</span>
+
+</pre>
+<pre>
+ <span class="dim">[Esc] back to build  [j/k] scroll  [d] diff                           [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  SCENE 6b: DRILL-DOWN — SUBTASK WITH ITS OWN SUBTASKS              -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>Scene 6b — Drill-down into a subtask that has its own subtasks</strong><br><br>
+  The task model is recursive — a subtask can have children. When you drill into such a
+  subtask, the drill-down renders its own subtask tree. The breadcrumb grows deeper:
+  <code>aiki > tasks > &lt;id&gt; > build > kyxr</code>. Press <code>[Enter]</code> on a child
+  to go another level deep. <code>[Esc]</code> goes back one level.<br><br>
+  <strong>This is the same layout as task show</strong> — the drill-down screen is really a generic
+  task detail view that recurses. If the subtask has children, show its tree. If it has
+  pipeline stages (build/review/fix), show stage tracks. The widgets are all reused.
+</div>
+
+<div class="scene-label">Scene 6b — Subtask with its own subtask tree</div>
+<div class="terminal">
+  <div class="tbar">
+    <div class="tdot" style="background:#ff5f56"></div>
+    <div class="tdot" style="background:#ffbd2e"></div>
+    <div class="tdot" style="background:#27c93f"></div>
+    <div class="ttitle">aiki build — webhooks.md — subtask kyxr</div>
+  </div>
+  <div class="screen">
+<pre>
+ <span class="dim">aiki</span> <span class="dim">></span> <span class="dim">tasks</span> <span class="dim">></span> <span class="dim">luppzupt</span> <span class="dim">></span> <span class="grn bold">build</span> <span class="dim">></span> <span class="wht bold">kyxr</span>
+
+ <span class="hi bold">Implement webhook route handler</span>
+ <span class="yel">▸ in progress</span>    <span class="dim">48s</span>    <span class="mag">cur</span>                                <span class="dim">3/5</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Subtasks</span>
+
+   <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━━</span> <span class="grn">●</span> <span class="dim">━┬━</span> <span class="yel bold">◉</span> <span class="fg">Add event type routing…</span>                <span class="mag">cur</span>
+                        <span class="dim">╰━</span> <span class="dim">○</span>
+
+ <span class="dim">───────────────────────────────────────────────────────────────────────────</span>
+
+ <span class="dim">Comments</span>
+
+ <span class="dim">00:00</span>  <span class="mag">cur</span>  <span class="dim">Started task</span>
+ <span class="dim">00:12</span>  <span class="mag">cur</span>  <span class="fg">Set up route at POST /api/webhooks/stripe with body parsing</span>
+ <span class="dim">00:28</span>  <span class="mag">cur</span>  <span class="fg">Added request validation middleware. Now routing by event type.</span>
+
+</pre>
+<pre>
+ <span class="dim">[Enter] drill into subtask  [Esc] back to build  [j/k] scroll         [q] quit</span>
+</pre>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ================================================================== -->
+<!--  DESIGN NOTES                                                      -->
+<!-- ================================================================== -->
+
+<div class="note">
+  <strong>v3 design notes &amp; rationale</strong><br><br>
+
+  <strong>What changed from v2:</strong><br>
+  - <strong>Breadcrumb navigation</strong> replaces the title bar context. <code>aiki > tasks > id > build</code>
+    gives constant spatial orientation. You always know where you are in the hierarchy.<br>
+  - <strong>Consistent chrome</strong>: every screen has the same three zones (breadcrumb, content, key hints).
+    v2 had inconsistent layouts between scenes.<br>
+  - <strong>Breathing room</strong>: strategic blank lines and separator rules. v2 was dense everywhere.
+    v3 varies density by context — reading modes are spacious, watching modes are dense.<br>
+  - <strong>No panel borders</strong>: content is separated by whitespace and dim <code>───</code> rules,
+    not <code>╭╮╰╯│</code> boxes. The DAG tree structure is the only use of box-drawing.<br>
+  - <strong>Stage track compact form</strong>: <code>B:✓  R:2 issues  F:1/3</code> instead of
+    full words on the task list. Full form on detail screens where space allows.<br>
+  - <strong>Issue tracking in review/fix</strong>: v2 showed issues as a count. v3 shows them as a
+    persistent list that flows through review → fix, with status tracking per issue.<br><br>
+
+  <strong>Live vs retrospective (the "show" distinction):</strong><br>
+  Each phase has two modes:<br>
+  - <strong>Live</strong> (<code>aiki build</code>, <code>aiki review</code>, <code>aiki fix</code>) — watching mode.
+    Dense, kinetic. Event log streaming. Active nodes with names. Progress indicators.<br>
+  - <strong>Retrospective</strong> (<code>aiki build show</code>, <code>aiki review show</code>) — reading mode.
+    Static, spacious. Full subtask list with names/timing/agents. File matrix for review.
+    No event log — everything is resolved.<br>
+  The live screen is what you see during execution. The show screen is what you examine after.
+  Same data, different information needs. Live answers "what's happening now?" Show answers
+  "what happened and what do I do next?"<br><br>
+
+  <strong>Screen hierarchy:</strong><br>
+  <code>task list</code> → <code>task show</code> → <code>build</code>/<code>review</code>/<code>fix</code> (live) → <code>subtask drill-down</code><br>
+  <code>task show</code> → <code>build show</code>/<code>review show</code> (for completed phases)<br>
+  Navigation: <code>[Enter]</code> goes deeper. <code>[Esc]</code> goes back. <code>[q]</code> quits.
+  Auto-advance between phases in live mode. In task show, clicking a completed phase
+  opens its "show" retrospective view.<br><br>
+
+  <strong>What's NOT in v3 (future work):</strong><br>
+  - Tier 2+ scaling (row view, group view, fleet) — covered in v1 scene 8, needs v3 treatment<br>
+  - Multi-task dashboard (multiple tasks at different pipeline stages simultaneously)<br>
+  - Plan editor integration<br>
+  - Keyboard shortcuts for task actions (close, comment, reassign)<br>
+  - Color theme customization / --ascii mode<br>
+  - Log scrollback / search
+</div>
+
+</body>
+</html>
