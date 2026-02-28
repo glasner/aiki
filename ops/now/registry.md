@@ -9,9 +9,8 @@ status: draft
 **Depends On**: [Remote Plugins](remote-plugins.md), [Plugin Directory](plugin-directory.md)
 
 **Related Documents**:
-- [Remote Plugins](remote-plugins.md) - Plugin install from GitHub
-- [Plugin Directory](plugin-directory.md) - Local plugin structure
-- [Template Marketplace](../future/templates/template-marketplace.md) - Earlier marketplace sketch (superseded by this)
+- [Remote Plugins](remote-plugins.md) — Plugin install from GitHub
+- [Plugin Directory](plugin-directory.md) — Local plugin structure
 
 ---
 
@@ -92,6 +91,45 @@ aiki plugin install acme/security
 
 ## Architecture
 
+### Hosting
+
+**Platform**: Cloudflare Workers (TypeScript)
+**Domain**: `registry.aiki.sh`
+**API Base**: `registry.aiki.sh/api/v1/`
+
+TypeScript is native to Workers' V8 runtime — no WASM compilation, no container, no runtime to manage. We get global edge deployment (sub-10ms worldwide), zero cold starts, and the full Cloudflare ecosystem (KV, R2, D1) without impedance mismatch.
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Cloudflare Workers |
+| Language | TypeScript |
+| Data store | Cloudflare KV (plugin index) |
+| Admin auth | Bearer token (environment secret) |
+| Domain | `registry.aiki.sh` (Cloudflare DNS) |
+| Deploy | `wrangler deploy` via GitHub Actions |
+| Local dev | `wrangler dev` |
+
+**What we give up (and why it's fine):**
+- No long-running processes — registry is request/response
+- 128MB memory limit — plugin index is kilobytes
+- No filesystem — KV replaces in-memory JSON
+- 10ms CPU limit (free) / 30ms (paid) — linear scan over hundreds of entries is sub-millisecond
+
+<details>
+<summary>Why not the other options?</summary>
+
+| Passed on | Reason |
+|-----------|--------|
+| **Fly.io** | Good, but cold starts on scale-to-zero; container overhead for a stateless service |
+| **Cloud Run** | Great free tier, but cold starts (~500-1000ms) and GCP complexity |
+| **Lambda** | Requires handler model reshaping + API Gateway adds latency/cost |
+| **Hetzner** | Always-on cost, ops burden for a service this simple |
+| **Railway** | $5/mo minimum, no scale-to-zero |
+| **Shuttle** | Code-level vendor lock-in, young platform |
+| **Rust on Workers (WASM)** | WASM compilation friction killed the DX. TypeScript is native |
+
+</details>
+
 ### Registry Service
 
 A hosted service with:
@@ -100,7 +138,18 @@ A hosted service with:
 2. **Admin API** — Ingest endpoint used by the scraper (token-authenticated)
 3. **GitHub integration** — Scraper reads plugin metadata from repos
 
-**No database.** The service loads a `plugins.json` file into memory at startup. The scraper writes this file; the service reads it. At the expected scale (hundreds to low thousands of plugins), this is sub-millisecond for all operations and eliminates an entire dependency class.
+**No database.** The plugin index lives in Cloudflare KV — a global, read-optimized key-value store. The scraper writes to KV; the Worker reads from it. At the expected scale (hundreds to low thousands of plugins), search is sub-millisecond and there's no database to manage.
+
+### KV Schema
+
+Single KV namespace: `PLUGIN_REGISTRY`
+
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `plugins:index` | JSON array of all plugin metadata | The full index, read on every search |
+| `plugins:{ns}/{name}` | JSON object for one plugin | Fast single-plugin lookup |
+
+The index key is written atomically by the scraper/admin API. KV's eventual consistency (60s propagation) is fine — plugin metadata changes are rare and not latency-sensitive.
 
 ### Data Model
 
@@ -143,11 +192,11 @@ If no `plugin.yaml` exists, the scraper falls back to README extraction and empt
 
 ### Search Implementation
 
-No search engine, no inverted index, no database. The plugin list fits entirely in memory — search is a linear scan with weighted scoring.
+No search engine, no inverted index, no database. The plugin list fits in a single KV key — search is a linear scan with weighted scoring.
 
 #### How It Works
 
-1. Service loads `plugins.json` into a `Vec<Plugin>` at startup
+1. Worker reads the `plugins:index` key from KV (cached per request)
 2. On search request, iterate all plugins, score each against the query terms
 3. Filter by category if `--category` is specified (pre-filter, before scoring)
 4. Sort by score descending, return top results
@@ -182,7 +231,7 @@ Query: `security review`
 
 #### Future: Typo Tolerance
 
-If typo tolerance becomes needed, add the `indicium` crate — it wraps existing structs and adds autocomplete/fuzzy matching with zero external dependencies. No architectural changes required.
+If typo tolerance becomes needed, add a lightweight fuzzy matching library (e.g., `fuse.js`). No architectural changes required.
 
 ### CLI Integration
 
@@ -192,7 +241,7 @@ The CLI talks to the registry API for search/show. Install goes directly to GitH
 aiki plugin search "security"
        │
        ▼
-  Registry API: GET /plugins?q=security
+  registry.aiki.sh: GET /api/v1/plugins?q=security
        │
        ▼
   Returns: [{ref: "acme/security", description: "...", ...}]
@@ -202,7 +251,7 @@ aiki plugin show acme/security
        ├─▶ Local filesystem: check ~/.aiki/plugins/acme/security
        │   (determines installation status)
        │
-       └─▶ Registry API: GET /plugins/acme/security
+       └─▶ registry.aiki.sh: GET /api/v1/plugins/acme/security
            (fetches metadata)
 
 aiki plugin install acme/security
@@ -212,7 +261,26 @@ aiki plugin install acme/security
   (no registry involved — same as remote-plugins.md)
 ```
 
-**Registry URL**: The CLI hardcodes the default registry URL. No configuration needed.
+**Registry URL**: `https://registry.aiki.sh/api/v1/`. The CLI hardcodes this as the default. No configuration needed.
+
+### Project Structure
+
+```
+registry/
+├── src/
+│   ├── index.ts          # Worker entrypoint, router
+│   ├── routes/
+│   │   ├── search.ts     # GET /plugins search + list
+│   │   ├── detail.ts     # GET /plugins/:ns/:name
+│   │   └── admin.ts      # POST/DELETE admin endpoints
+│   ├── scoring.ts        # Search scoring logic
+│   └── types.ts          # Plugin type definitions
+├── wrangler.toml         # Worker config, KV bindings
+├── tsconfig.json
+├── package.json
+└── test/
+    └── *.test.ts         # Vitest tests (wrangler integrates with vitest)
+```
 
 ---
 
@@ -259,7 +327,7 @@ The scraper re-validates previously discovered plugins on each run. If a repo no
 ### Search (Public)
 
 ```
-GET /plugins?q={query}&category={category}&sort={sort}&limit={limit}&offset={offset}
+GET /api/v1/plugins?q={query}&category={category}&sort={sort}&limit={limit}&offset={offset}
 
 Sort options: relevance (default), recent
 Response: [{ reference, description, categories, templates, hooks, author, github_repo }]
@@ -268,7 +336,7 @@ Response: [{ reference, description, categories, templates, hooks, author, githu
 ### Plugin Detail (Public)
 
 ```
-GET /plugins/{namespace}/{name}
+GET /api/v1/plugins/{namespace}/{name}
 
 Response: { reference, description, categories, templates, hooks, author, github_repo, discovered_at, refreshed_at }
 ```
@@ -276,7 +344,7 @@ Response: { reference, description, categories, templates, hooks, author, github
 ### Ingest (Admin)
 
 ```
-POST /admin/plugins
+POST /api/v1/admin/plugins
 Authorization: Bearer {admin-token}
 Body: { "repo": "github.com/owner/repo", "metadata": { ... } }
 
@@ -286,7 +354,7 @@ Used by the scraper to add/update plugin entries.
 ### Refresh (Admin)
 
 ```
-POST /admin/plugins/{namespace}/{name}/refresh
+POST /api/v1/admin/plugins/{namespace}/{name}/refresh
 Authorization: Bearer {admin-token}
 
 Re-validates and refreshes metadata for a specific plugin.
@@ -295,7 +363,7 @@ Re-validates and refreshes metadata for a specific plugin.
 ### Remove (Admin)
 
 ```
-DELETE /admin/plugins/{namespace}/{name}
+DELETE /api/v1/admin/plugins/{namespace}/{name}
 Authorization: Bearer {admin-token}
 
 Removes a plugin from the registry.
@@ -323,11 +391,11 @@ Categories are extracted from `plugin.yaml`. Repos without `plugin.yaml` have no
 
 ## Decisions
 
-1. **Registry hosting**: Deferred — spec the API contract now, choose infrastructure later.
+1. **Registry hosting**: Cloudflare Workers + TypeScript at `registry.aiki.sh/api/v1/`. TypeScript is native to the V8 runtime — no WASM, no containers.
 2. **Namespace ownership**: GitHub-verified in future phases. For v1 (scraper-only), namespaces match GitHub owners automatically since the scraper derives them from repo URLs.
 3. **Plugin validation**: Yes. The scraper validates that repos contain `hooks.yaml` and/or `templates/`. Invalid repos are skipped.
 4. **No user-facing publish in v1**: All content comes from the scraper. Self-publishing is a future phase.
-5. **No database**: The dataset is small enough (hundreds to low thousands of plugins) that a JSON file loaded into memory is sufficient. Search is a linear scan with weighted scoring — no search engine, no SQLite, no inverted index. Add `indicium` crate later if typo tolerance is needed.
+5. **No database**: Plugin index lives in a single Cloudflare KV key. Search is a linear scan with weighted scoring — no search engine, no SQLite, no inverted index.
 
 ## Open Questions
 
