@@ -1,11 +1,51 @@
 ---
-status: brainstorm
+status: decided
 ---
 
-# Registry Hosting Options
+# Registry Hosting
 
-**Status**: Brainstorm
+**Status**: Decided
 **Related**: [Plugin Registry](registry.md)
+
+---
+
+## Decision
+
+**Platform**: Cloudflare Workers (TypeScript)
+**Domain**: `registry.aiki.sh`
+**API Base**: `registry.aiki.sh/api/v1/`
+
+### Why Cloudflare Workers + TypeScript
+
+The original brainstorm evaluated Workers through the lens of compiling Rust to WASM — which had real friction (crate compatibility, WASM bundle limits, debugging pain). Switching to **TypeScript** eliminates all of that. TypeScript is native to Workers' V8 runtime. No compilation bridge, no WASM shims, no crate-compatibility roulette.
+
+**What we get:**
+- **Global edge by default** — sub-10ms responses worldwide, no region selection
+- **Zero cold starts** — Workers are always warm (unlike Cloud Run, Fly.io, Lambda)
+- **KV for the plugin index** — purpose-built for read-heavy, write-rare data. Perfect fit for `plugins.json`
+- **R2 for bulk storage** — if we ever need to store scraper artifacts, snapshots, etc.
+- **D1 (SQLite at the edge)** — available if we outgrow the JSON-in-KV model
+- **Free tier covers v1** — 100k requests/day, KV reads/writes essentially free at our scale
+- **Wrangler CLI** — `wrangler deploy` and done. TypeScript-native tooling
+- **No container, no Dockerfile, no runtime to manage** — just TypeScript functions
+
+**What we give up (and why it's fine):**
+- No long-running processes — fine, registry is request/response
+- 128MB memory limit — fine, plugin index is kilobytes
+- No filesystem — fine, KV replaces `plugins.json` in memory
+- 10ms CPU limit (free) / 30ms (paid) — fine, linear scan over hundreds of entries is sub-millisecond
+
+### Why Not the Other Options
+
+| Passed on | Reason |
+|-----------|--------|
+| **Fly.io** | Good, but cold starts on scale-to-zero; container overhead for a stateless service |
+| **Cloud Run** | Great free tier, but cold starts (~500-1000ms) and GCP complexity |
+| **Lambda** | Requires handler model reshaping + API Gateway adds latency/cost |
+| **Hetzner** | Always-on cost, ops burden for a service this simple |
+| **Railway** | $5/mo minimum, no scale-to-zero |
+| **Shuttle** | Code-level vendor lock-in, young platform |
+| **Rust on Workers (WASM)** | WASM compilation friction killed the DX. TypeScript is native |
 
 ---
 
@@ -13,18 +53,89 @@ status: brainstorm
 
 From the [registry spec](registry.md), the service is:
 
-- **A Rust binary** serving a `plugins.json` file from memory
+- **A TypeScript Worker** serving plugin data from Cloudflare KV
 - **Read-heavy, write-rare** — CLI clients search/read; scraper updates occasionally
-- **Stateless** — loads JSON at startup, no database
+- **Stateless** — reads from KV on each request, no persistent state in the Worker
 - **Low traffic** — CLI-only clients, no web UI in v1
-- **Tiny compute** — in-memory linear scan over hundreds to low-thousands of entries
+- **Tiny compute** — linear scan over hundreds to low-thousands of entries is sub-millisecond
 - **Two APIs** — public read-only REST + token-authenticated admin (scraper ingest)
 
-This is about as simple as a hosted service gets: a single binary, no database, no persistent connections, minimal CPU/memory. The main requirements are HTTPS, reasonable uptime, and a stable URL the CLI can hardcode.
+This is about as simple as a hosted service gets: TypeScript functions reading from KV, no database, no persistent connections, minimal CPU/memory. HTTPS and custom domains are handled by Cloudflare automatically.
 
 ---
 
-## Options
+## Implementation Plan
+
+### Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Cloudflare Workers |
+| Language | TypeScript |
+| Data store | Cloudflare KV (plugin index) |
+| Admin auth | Bearer token (environment secret) |
+| Domain | `registry.aiki.sh` (Cloudflare DNS) |
+| Deploy | `wrangler deploy` via GitHub Actions |
+| Local dev | `wrangler dev` |
+
+### API Routes
+
+All routes prefixed with `/api/v1/`:
+
+```
+GET  /api/v1/plugins?q={query}&category={cat}&limit={n}&offset={n}
+GET  /api/v1/plugins/{namespace}/{name}
+POST /api/v1/admin/plugins          (Bearer token)
+POST /api/v1/admin/plugins/{ns}/{name}/refresh  (Bearer token)
+DELETE /api/v1/admin/plugins/{ns}/{name}        (Bearer token)
+```
+
+### KV Schema
+
+Single KV namespace: `PLUGIN_REGISTRY`
+
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `plugins:index` | JSON array of all plugin metadata | The full index, read on every search |
+| `plugins:{ns}/{name}` | JSON object for one plugin | Fast single-plugin lookup |
+
+The index key is written atomically by the scraper/admin API. KV's eventual consistency (60s propagation) is fine — plugin metadata changes are rare and not latency-sensitive.
+
+### Project Structure
+
+```
+registry/
+├── src/
+│   ├── index.ts          # Worker entrypoint, router
+│   ├── routes/
+│   │   ├── search.ts     # GET /plugins search + list
+│   │   ├── detail.ts     # GET /plugins/:ns/:name
+│   │   └── admin.ts      # POST/DELETE admin endpoints
+│   ├── scoring.ts        # Search scoring logic
+│   └── types.ts          # Plugin type definitions
+├── wrangler.toml         # Worker config, KV bindings
+├── tsconfig.json
+├── package.json
+└── test/
+    └── *.test.ts         # Vitest tests (wrangler integrates with vitest)
+```
+
+### Next Steps
+
+1. **Set up `registry.aiki.sh`** — Add DNS record in Cloudflare, configure custom domain for Worker
+2. **Scaffold the Worker project** — `npm create cloudflare@latest registry`
+3. **Implement search + detail routes** — Port the scoring logic from the registry spec
+4. **Set up KV namespace** — Create `PLUGIN_REGISTRY` in Cloudflare dashboard or via wrangler
+5. **Implement admin routes** — Token-authenticated ingest for the scraper
+6. **CI/CD** — GitHub Actions: test on PR, deploy on push to main
+7. **Seed data** — Run the scraper or manually add a few test plugins
+
+---
+
+## Options Considered
+
+<details>
+<summary>Full brainstorm of 9 hosting options (archived)</summary>
 
 ### 1. Fly.io
 
@@ -268,40 +379,8 @@ This is about as simple as a hosted service gets: a single binary, no database, 
 
 ---
 
-## Recommendations
+## Previous Recommendations (Superseded)
 
-### For v1 (get it running, minimal traffic)
+The original brainstorm recommended Fly.io or Cloud Run as the primary options for a Rust container deployment. These were solid choices for that architecture, but the decision to use TypeScript-native Workers changes the equation entirely — the WASM friction that was Cloudflare's main downside disappears, and its edge deployment / zero cold starts become unambiguous wins.
 
-**Primary: Fly.io** or **Google Cloud Run**
-
-Both offer scale-to-zero (pay nothing when idle), minimal ops, and container-based deployment that's portable. Fly.io has slightly better DX; Cloud Run has a more generous free tier.
-
-The service is a stateless Rust binary that loads JSON into memory. Either platform deploys this in minutes with a Dockerfile.
-
-### If we want to minimize cost indefinitely
-
-**Google Cloud Run** — the free tier (2M requests/mo) will likely cover our needs for a long time, possibly forever at v1 traffic levels.
-
-### If we want the best latency globally
-
-**Cloudflare Workers** — edge deployment means sub-10ms responses worldwide. But only if the Rust code compiles cleanly to WASM.
-
-### If we want a general-purpose server
-
-**Hetzner** — at ~€4/mo we get a box that can run the registry, the scraper on a cron, and anything else. Requires ops comfort.
-
-### Not recommended for this service
-
-- **ECS/Fargate** — too much infrastructure complexity for a JSON-serving binary
-- **Lambda** — requires reshaping the code for no clear benefit over Cloud Run
-- **Shuttle** — code-level lock-in for a young platform is risky
-
----
-
-## Next Steps
-
-1. **Pick primary + fallback** — Recommend choosing one to deploy on, with a Dockerfile that makes migration trivial
-2. **Domain** — Decide on the registry URL (e.g., `registry.aiki.dev`, `plugins.aiki.dev`)
-3. **`plugins.json` storage** — Where does the scraper write to and the service read from? Options: baked into container image, object storage (S3/R2/GCS), persistent volume
-4. **CI/CD** — GitHub Actions to build and deploy on push to main
-5. **Monitoring** — At minimum: uptime check, error alerting
+</details>

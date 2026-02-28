@@ -100,7 +100,7 @@ A hosted service with:
 2. **Admin API** — Ingest endpoint used by the scraper (token-authenticated)
 3. **GitHub integration** — Scraper reads plugin metadata from repos
 
-**No database.** The service loads a `plugins.json` file into memory at startup. The scraper writes this file; the service reads it. At the expected scale (hundreds to low thousands of plugins), this is sub-millisecond for all operations and eliminates an entire dependency class.
+**No database.** The plugin index lives in Cloudflare KV — a global, read-optimized key-value store. The scraper writes to KV; the Worker reads from it. At the expected scale (hundreds to low thousands of plugins), search is sub-millisecond and there's no database to manage.
 
 ### Data Model
 
@@ -192,7 +192,7 @@ The CLI talks to the registry API for search/show. Install goes directly to GitH
 aiki plugin search "security"
        │
        ▼
-  Registry API: GET /plugins?q=security
+  registry.aiki.sh: GET /api/v1/plugins?q=security
        │
        ▼
   Returns: [{ref: "acme/security", description: "...", ...}]
@@ -202,7 +202,7 @@ aiki plugin show acme/security
        ├─▶ Local filesystem: check ~/.aiki/plugins/acme/security
        │   (determines installation status)
        │
-       └─▶ Registry API: GET /plugins/acme/security
+       └─▶ registry.aiki.sh: GET /api/v1/plugins/acme/security
            (fetches metadata)
 
 aiki plugin install acme/security
@@ -212,7 +212,7 @@ aiki plugin install acme/security
   (no registry involved — same as remote-plugins.md)
 ```
 
-**Registry URL**: The CLI hardcodes the default registry URL. No configuration needed.
+**Registry URL**: `https://registry.aiki.sh/api/v1/`. The CLI hardcodes this as the default. No configuration needed.
 
 ---
 
@@ -259,7 +259,7 @@ The scraper re-validates previously discovered plugins on each run. If a repo no
 ### Search (Public)
 
 ```
-GET /plugins?q={query}&category={category}&sort={sort}&limit={limit}&offset={offset}
+GET /api/v1/plugins?q={query}&category={category}&sort={sort}&limit={limit}&offset={offset}
 
 Sort options: relevance (default), recent
 Response: [{ reference, description, categories, templates, hooks, author, github_repo }]
@@ -268,7 +268,7 @@ Response: [{ reference, description, categories, templates, hooks, author, githu
 ### Plugin Detail (Public)
 
 ```
-GET /plugins/{namespace}/{name}
+GET /api/v1/plugins/{namespace}/{name}
 
 Response: { reference, description, categories, templates, hooks, author, github_repo, discovered_at, refreshed_at }
 ```
@@ -276,7 +276,7 @@ Response: { reference, description, categories, templates, hooks, author, github
 ### Ingest (Admin)
 
 ```
-POST /admin/plugins
+POST /api/v1/admin/plugins
 Authorization: Bearer {admin-token}
 Body: { "repo": "github.com/owner/repo", "metadata": { ... } }
 
@@ -286,7 +286,7 @@ Used by the scraper to add/update plugin entries.
 ### Refresh (Admin)
 
 ```
-POST /admin/plugins/{namespace}/{name}/refresh
+POST /api/v1/admin/plugins/{namespace}/{name}/refresh
 Authorization: Bearer {admin-token}
 
 Re-validates and refreshes metadata for a specific plugin.
@@ -295,7 +295,7 @@ Re-validates and refreshes metadata for a specific plugin.
 ### Remove (Admin)
 
 ```
-DELETE /admin/plugins/{namespace}/{name}
+DELETE /api/v1/admin/plugins/{namespace}/{name}
 Authorization: Bearer {admin-token}
 
 Removes a plugin from the registry.
@@ -323,7 +323,7 @@ Categories are extracted from `plugin.yaml`. Repos without `plugin.yaml` have no
 
 ## Decisions
 
-1. **Registry hosting**: Deferred — spec the API contract now, choose infrastructure later.
+1. **Registry hosting**: Cloudflare Workers + TypeScript at `registry.aiki.sh/api/v1/`. See [registry-hosting.md](registry-hosting.md).
 2. **Namespace ownership**: GitHub-verified in future phases. For v1 (scraper-only), namespaces match GitHub owners automatically since the scraper derives them from repo URLs.
 3. **Plugin validation**: Yes. The scraper validates that repos contain `hooks.yaml` and/or `templates/`. Invalid repos are skipped.
 4. **No user-facing publish in v1**: All content comes from the scraper. Self-publishing is a future phase.
