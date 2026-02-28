@@ -443,9 +443,102 @@ Secrets:
 
 ---
 
+## Research Takeaways
+
+Full research at `ops/research/vaults.md`. Eight OSS tools were analyzed: Kubernetes ESO, Terraform, 1Password CLI, Doppler, Infisical, Mozilla SOPS, Ansible Lookup Plugins, and Docker Compose Secrets.
+
+### What the research validates
+
+Our existing design already aligns with the strongest patterns across the ecosystem:
+
+| Design Decision | Validated By |
+|----------------|-------------|
+| URI-style secret references (`vault://`, `aws://`, `env://`) | 1Password (`op://vault/item/field`), ESO |
+| Provider trait with `resolve()` | Ansible `LookupBase.run()`, ESO SecretStore, Terraform data sources |
+| `AIKI_SECRET_*` env var injection for shell actions | Doppler `run`, 1Password `op run`, Infisical `run` |
+| `{{secrets.name}}` template interpolation | Ansible `{{ lookup(...) }}`, 1Password `op inject`, GitHub Actions `${{ secrets.* }}` |
+| Separate auth config from bindings | ESO (SecretStore vs ExternalSecret), Terraform (provider block vs data source) |
+| Per-environment overrides | Doppler (project > env > config), SOPS (path-based KMS rules) |
+| Session-scoped in-memory cache | Infisical SDK, Doppler |
+| Audit logging without values | HashiCorp Vault, Infisical |
+
+### What we should add to the design
+
+**1. File-mount injection mode** (from Docker Compose)
+
+Some tools expect secrets as files, not env vars (e.g., GCP service account JSON, TLS certs). Add an `inject: file` option:
+
+```yaml
+secrets:
+  service_account:
+    ref: vault://secret/data/myapp/gcp-sa
+    inject: file  # writes to tmpfile, sets AIKI_SECRET_FILE_SERVICE_ACCOUNT=/tmp/aiki-secret-xxxxx
+```
+
+Tmpfile is created with `0600` permissions, deleted on session end.
+
+**2. `aiki vault run -- command`** (from Doppler / 1Password / Infisical)
+
+A subprocess wrapper for ad-hoc use outside of hooks:
+
+```bash
+# Resolves all bindings, injects as AIKI_SECRET_* env vars, runs the command
+aiki vault run -- aws s3 ls
+aiki vault run -- ./deploy.sh
+```
+
+Every major tool in this space provides a `run` command. It's the simplest onramp — works without configuring hooks.
+
+**3. Shared auth module** (from Ansible `community.hashi_vault`)
+
+The Ansible team learned the hard way that each provider re-implementing auth leads to inconsistency. Factor auth into a shared module:
+
+- Token-based auth (universal)
+- IAM role / instance profile (AWS, GCP)
+- AppRole (Vault)
+- OIDC (Vault, cloud providers)
+
+Providers call `auth.resolve_token(config)` rather than implementing their own auth flows.
+
+**4. Deep provider health checks** (from Doppler / ESO)
+
+`aiki vault status` should go beyond "CLI exists" to verify actual connectivity:
+
+```
+aiki vault status
+  env     ✓ available (always)
+  vault   ✓ connected (https://vault.example.com, unsealed)
+  aws     ✓ authenticated (arn:aws:iam::123456:user/dev, us-east-1)
+  gcp     ✗ auth expired (run: gcloud auth login)
+  op      ✓ signed in (user@example.com)
+```
+
+### What we should NOT do (anti-patterns from research)
+
+1. **Don't write resolved secrets to disk** — Terraform's state file problem. Secrets stay in memory only.
+2. **Don't cram all params into one string** — Ansible deprecated this ("term string" anti-pattern). Our URI-with-fragment approach is better.
+3. **Don't build monolithic providers** — Ansible moved from one big `hashi_vault` plugin to tightly-scoped individual plugins. Keep providers small and focused.
+4. **Don't require encryption for the binding file** — SOPS shows encryption adds complexity. Since `secrets.yaml` contains only refs (never values), encryption is unnecessary.
+
+### Updated implementation phases
+
+Based on research, two additions to the phasing:
+
+- **Phase 2** should include `aiki vault run -- command` (it's the simplest user-facing feature and every comparable tool has it)
+- **Phase 3** should include `inject: file` support (needed for GCP service accounts, TLS certs, and other file-based secrets)
+
+---
+
 ## Comparable Systems
 
-- **Terraform** — providers declare `required_providers` + auth config. Users configure backends in `provider {}` blocks. Aiki's `secrets.yaml` is analogous.
-- **Docker Compose** — `secrets:` top-level key references external secret stores. Similar binding pattern.
-- **Kubernetes** — `Secret` resources mounted as env vars or volumes. Aiki's `AIKI_SECRET_*` pattern mirrors this.
-- **GitHub Actions** — `${{ secrets.MY_SECRET }}` syntax in workflow YAML. Aiki's `{{secrets.my_secret}}` is deliberately similar.
+| System | How It Works | Aiki Analog |
+|--------|-------------|-------------|
+| **K8s ESO** | SecretStore + ExternalSecret CRDs → syncs to K8s Secrets | `~/.aiki/secrets.yaml` (provider config) + `.aiki/secrets.yaml` (bindings) |
+| **Terraform** | `provider {}` auth config + `data` sources fetch secrets at plan time | Provider trait auth + `SecretRef` resolution |
+| **1Password CLI** | `op://` URI refs, `op run` subprocess wrapper, `op inject` templating | `vault://` refs, `aiki vault run`, `{{secrets.*}}` |
+| **Doppler** | `doppler run -- cmd`, project/env hierarchy, env var injection | `aiki vault run`, `env:` overrides, `AIKI_SECRET_*` |
+| **Infisical** | `infisical run`, Agent sidecar, SDK caching with TTL refresh | `aiki vault run`, future agent refresh, session cache |
+| **SOPS** | Encrypts values in-place, keys in cleartext, git-friendly diffs | `secrets.yaml` refs in cleartext (simpler — no encryption needed) |
+| **Ansible** | `LookupBase.run()` provider pattern, shared auth, template syntax | `SecretProvider.resolve()`, shared auth module, `{{secrets.*}}` |
+| **Docker Compose** | File-mount at `/run/secrets/`, `*_FILE` convention, per-container ACLs | `inject: file` mode, per-agent scoping (Phase 5) |
+| **GitHub Actions** | `${{ secrets.MY_SECRET }}` in workflow YAML, org/repo scoping | `{{secrets.name}}` in hook YAML, project/user scoping |
