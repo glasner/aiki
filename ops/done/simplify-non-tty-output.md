@@ -26,8 +26,8 @@ if !std::io::stdout().is_terminal() {
 - `review.rs` — outputs plain task ID
 - `fix.rs` — outputs plain task ID  
 - `explore.rs` — outputs plain task ID
-- `epic.rs` — outputs XML: `<aiki_epic epic_id="..."/>`
-- `build.rs` — outputs XML: `<aiki_build build_id="..." epic_id="..."/>`
+- `epic.rs` — outputs plain task ID via `output_utils::emit()`
+- `build.rs` — outputs plain task ID via `output_utils::emit()`
 
 **Shared output formatting:**
 - `output.rs` provides `CommandOutput` struct and `format_command_output()` for review/fix
@@ -35,10 +35,8 @@ if !std::io::stdout().is_terminal() {
 
 ### What's Inconsistent
 
-1. **Output format inconsistency**
-   - Most commands: plain task IDs (`abc123`)
-   - Build/epic: XML attributes (`<aiki_build build_id="..." epic_id="..."/>`)
-   - No clear rationale for when to use which format
+1. **Output format inconsistency** ✅ Resolved
+   - All commands now output plain task IDs via `output_utils::emit()`
 
 2. **No centralized TTY detection utility**
    - Every command repeats `if !std::io::stdout().is_terminal() { ... }`
@@ -65,7 +63,7 @@ if !std::io::stdout().is_terminal() {
 
 1. **Maintenance burden** — Any change to output behavior requires editing 8+ files
 2. **Inconsistent UX** — Users must learn different formats for different commands
-3. **Harder to compose** — XML parsing required for `build` output but not others
+3. ~~**Harder to compose**~~ ✅ Resolved — all commands now output plain IDs
 4. **No clear conventions** — New commands don't have guidance on what format to use
 5. **Missed opportunities** — `task` commands could be pipe-friendly but aren't
 
@@ -79,120 +77,26 @@ if !std::io::stdout().is_terminal() {
 
 ## Proposed Solution
 
-### 1. Create `cli/src/output_utils.rs`
+### 1. Centralize in `cli/src/output_utils.rs` (already exists)
 
-Centralized utilities for output handling:
+> **Note:** `cli/src/output_utils.rs` already exists with `emit()`, `emit_stderr()`, and `emit_stdout()` helpers. The implementation chose a simpler API than the originally proposed `HasId` trait + generic functions. No new file creation needed.
+
+Current API in `cli/src/output_utils.rs`:
 
 ```rust
-//! Output utilities for TTY vs non-TTY contexts
-
 use std::io::IsTerminal;
 
-/// Returns true if stdout is connected to a terminal (not piped).
-pub fn is_tty_stdout() -> bool {
-    std::io::stdout().is_terminal()
-}
+/// Emit formatted output to stderr (lazy) and an ID to stdout (when piped).
+pub fn emit(id: &str, formatter: impl FnOnce() -> String) { ... }
 
-/// Returns true if stderr is connected to a terminal.
-pub fn is_tty_stderr() -> bool {
-    std::io::stderr().is_terminal()
-}
+/// Emit formatted output to stderr only (lazy).
+pub fn emit_stderr(formatter: impl FnOnce() -> String) { ... }
 
-/// Trait for types that have an ID field.
-///
-/// Implement this for domain types to enable automatic ID extraction
-/// in output helpers.
-pub trait HasId {
-    fn id(&self) -> String;
-}
-
-/// Output a single item with its ID.
-///
-/// Uses lazy evaluation to skip expensive formatting when stderr is not a TTY.
-/// Automatically extracts the ID via the `HasId` trait.
-///
-/// # Example
-/// ```
-/// // With closure
-/// output_item(&task, |t| format!("## Task Created\n- **ID:** {}\n", t.id));
-/// 
-/// // With function pointer
-/// output_item(&task, format_task_details);
-/// ```
-pub fn output_item<T: HasId, F>(item: &T, formatter: F)
-where
-    F: FnOnce(&T) -> String,
-{
-    let id = item.id();
-    
-    // Only format if stderr is a TTY (someone is watching)
-    if is_tty_stderr() {
-        eprintln!("{}", formatter(item));
-    }
-    
-    // Output ID to stdout when piped
-    if !is_tty_stdout() {
-        println!("{}", id);
-    }
-}
-
-/// Output a collection of items with their IDs.
-///
-/// Uses lazy evaluation to skip expensive formatting when stderr is not a TTY.
-/// Automatically extracts IDs via the `HasId` trait.
-///
-/// # Example
-/// ```
-/// // With function pointer
-/// output_collection(&tasks, format_task_table);
-/// 
-/// // With closure
-/// output_collection(&tasks, |tasks| format!("Found {} tasks", tasks.len()));
-/// ```
-pub fn output_collection<T: HasId, F>(items: &[T], formatter: F)
-where
-    F: FnOnce(&[T]) -> String,
-{
-    let ids: Vec<String> = items.iter().map(|item| item.id()).collect();
-    
-    // Only format if stderr is a TTY (someone is watching)
-    if is_tty_stderr() {
-        eprintln!("{}", formatter(items));
-    }
-    
-    // Output IDs to stdout when piped (one per line)
-    if !is_tty_stdout() {
-        for id in ids {
-            println!("{}", id);
-        }
-    }
-}
-
-/// Fallback for outputting raw IDs without domain objects.
-///
-/// Use this when you only have IDs and no rich formatting.
-///
-/// # Example
-/// ```
-/// output_ids(&task_ids, || format!("Created {} tasks", task_ids.len()));
-/// ```
-pub fn output_ids<F>(ids: &[String], formatter: F)
-where
-    F: FnOnce() -> String,
-{
-    // Only format if stderr is a TTY
-    if is_tty_stderr() {
-        eprintln!("{}", formatter());
-    }
-    
-    // Output IDs to stdout when piped
-    if !is_tty_stdout() {
-        for id in ids {
-            println!("{}", id);
-        }
-    }
-}
+/// Emit an ID to stdout when piped (non-TTY stdout).
+pub fn emit_stdout(id: &str) { ... }
 ```
+
+Already used by: `plan.rs`, `review.rs`, `fix.rs`, `explore.rs`, `build.rs`, `epic.rs`, `task.rs`.
 
 **Performance optimization:**
 
@@ -229,32 +133,11 @@ Document this in code comments and CLAUDE.md:
 - 0 = success
 - Non-zero = failure (document what triggers this per command)
 
-### 3. Standardize Build/Epic Output
+### 3. Standardize Build/Epic Output (already done)
 
-**Current:** XML output for piped contexts
-```xml
-<aiki_build build_id="abc123" epic_id="def456"/>
-```
+> **Note:** Build and epic commands already emit plain IDs for piped execution via `output_utils::emit()`. The XML output format described in the original plan was stale — no migration needed. Both `build.rs` and `epic.rs` already use `output_utils` and support `--output id` for explicit ID-only output.
 
-**Proposed:** Plain IDs, one per line (matches other commands)
-```
-abc123
-def456
-```
-
-**Rationale:**
-- Consistent with other commands
-- Easier to consume with standard Unix tools (`head -1`, `tail -1`, etc.)
-- No XML parsing needed
-- If consumers need structured output, we can add `--json` flag later
-
-**Migration:**
-- Update `build.rs` to output plain IDs
-- Update `epic.rs` to output plain IDs
-- Grep for XML parsing in consumers (unlikely to exist outside aiki itself)
-- Document breaking change if any external tools depend on XML
-
-### 4. Refactor Commands to Use Utilities
+### 4. Refactor Commands to Use Utilities (largely done)
 
 **Before:**
 ```rust
@@ -266,29 +149,23 @@ if !std::io::stdout().is_terminal() {
 
 **After:**
 ```rust
-use crate::output_utils::output_item;
+use crate::output_utils;
 
-output_item(&task, |t| format!("## Task Created\n- **ID:** {}\n", t.id));
+output_utils::emit(&task_id, || {
+    format!("## Task Created\n- **ID:** {}\n", task_id)
+});
 ```
 
-**Note:** Commands need to implement `HasId` for their task types:
-```rust
-use crate::output_utils::HasId;
+**Files already updated:**
+- `cli/src/commands/plan.rs` — uses `output_utils::emit()`
+- `cli/src/commands/review.rs` — uses `output_utils::emit()`
+- `cli/src/commands/fix.rs` — uses `output_utils::emit()`
+- `cli/src/commands/explore.rs` — uses `output_utils::emit()`
+- `cli/src/commands/epic.rs` — uses `output_utils::emit()`
+- `cli/src/commands/build.rs` — uses `output_utils::emit()`
 
-impl HasId for Task {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-}
-```
-
-**Files to update:**
-- `cli/src/commands/plan.rs` (1 occurrence)
-- `cli/src/commands/review.rs` (3 occurrences)
-- `cli/src/commands/fix.rs` (6 occurrences)
-- `cli/src/commands/explore.rs` (3 occurrences)
-- `cli/src/commands/epic.rs` (2 occurrences → also change format)
-- `cli/src/commands/build.rs` (4 occurrences → also change format)
+**Still needs work:**
+- `cli/src/commands/task.rs` — task listing/show commands should use `output_utils` for consistent piped output
 
 ### 5. Add Non-TTY Mode to Task Commands
 
@@ -305,13 +182,17 @@ impl HasId for Task {
 **Implementation:**
 ```rust
 // In cli/src/commands/task.rs
-use crate::output_utils::output_collection;
+use crate::output_utils;
 
 fn run_list(...) -> Result<()> {
     let tasks = /* ... get tasks ... */;
-    
-    // Clean and simple - automatic ID extraction via HasId trait
-    output_collection(&tasks, format_task_table);
+    let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+
+    // Emit formatted list to stderr, bare IDs to stdout when piped
+    output_utils::emit_stderr(|| format_task_table(&tasks));
+    for id in ids {
+        output_utils::emit_stdout(id);
+    }
     Ok(())
 }
 ```
@@ -334,40 +215,37 @@ aiki task start $TASK
 When implementing `aiki task wait` consolidation (per `ops/now/consolidate-wait.md`), ensure it uses the new utilities:
 
 ```rust
-use crate::output_utils::output_collection;
+use crate::output_utils;
 
 // After waiting completes
-output_collection(&tasks, format_wait_results);
+output_utils::emit_stderr(|| format_wait_results(&tasks));
+for task in &tasks {
+    output_utils::emit_stdout(&task.id);
+}
 ```
 
 ## Implementation Plan
 
-**Phase 1: Foundation** (can land independently)
-1. Create `cli/src/output_utils.rs` with utilities
-2. Add to `cli/src/lib.rs`: `pub mod output_utils;`
-3. Write unit tests for utilities
-4. Document conventions in comments
+**Phase 1: Foundation** ✅ Done
+1. ~~Create~~ `cli/src/output_utils.rs` already exists with `emit()`, `emit_stderr()`, `emit_stdout()`
+2. Already in `cli/src/lib.rs` and `cli/src/main.rs`
+3. Conventions documented in module-level doc comments
 
-**Phase 2: Refactor Existing Commands** (low risk)
-5. Update `plan.rs` to use `output_item()`
-6. Update `review.rs` to use `output_item()`
-7. Update `fix.rs` to use `output_item()`
-8. Update `explore.rs` to use `output_item()`
+**Phase 2: Refactor Existing Commands** ✅ Done
+4. `plan.rs`, `review.rs`, `fix.rs`, `explore.rs` — all use `output_utils::emit()`
 
-**Phase 3: Standardize Build/Epic** (breaking change)
-9. Update `epic.rs` — change XML to plain IDs + use utilities
-10. Update `build.rs` — change XML to plain IDs + use utilities
-11. Search for XML consumers (likely none outside aiki)
-12. Document breaking change in commit message
+**Phase 3: Standardize Build/Epic** ✅ Already correct
+5. `epic.rs` and `build.rs` already emit plain IDs via `output_utils::emit()` — no XML migration needed
 
-**Phase 4: Task Command Optimization** (new feature)
-13. Add TTY detection to `run_list()` in `task.rs`
-14. Add TTY detection to `run_default()` (default `aiki task` output)
-15. Test pipe scenarios: `aiki task | head -1`, etc.
+**Phase 4: Task Command Optimization** (remaining work)
+6. Add `output_utils` usage to `task.rs` `run_list()` for pipe-friendly output
+7. Add `output_utils` usage to `run_default()` (default `aiki task` output)
+8. Add `output_utils` usage to `task wait` for consistent piped output
+9. Test pipe scenarios: `aiki task | head -1`, etc.
 
 **Phase 5: Consolidate Wait** (covered in separate doc)
-16. Implement per `ops/now/consolidate-wait.md`
-17. Use new utilities from Phase 1
+10. Implement per `ops/now/consolidate-wait.md`
+11. Use `output_utils` from Phase 1
 
 ## Testing
 

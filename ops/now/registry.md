@@ -78,18 +78,24 @@ aiki plugin show aiki/way
 #  Update: aiki plugin update aiki/way
 ```
 
-### Installing (Unchanged)
 
-Install flow is the same as `remote-plugins.md` — the registry is not involved:
+### Installing
+
+Like Terraform's registry pattern, the install command queries the registry for metadata (including the clone URL), then clones directly from that URL:
 
 ```bash
 aiki plugin install acme/security
-# → git clone --depth 1 github.com/acme/security ~/.aiki/plugins/acme/security
+# 1. → Registry API: GET /plugins/acme/security
+#    Response: { "github_repo": "github.com/acme/security", ... }
+# 2. → git clone --depth 1 https://github.com/acme/security ~/.aiki/plugins/acme/security
 ```
 
----
+**Why query the registry during install?**
 
-## Architecture
+1. **Indirection** - Plugin location can change without breaking references
+2. **Validation** - Registry confirms the plugin exists and is valid before cloning
+3. **Flexibility** - Future support for non-GitHub sources (GitLab, Bitbucket, self-hosted)
+4. **Metadata** - Registry provides additional info (categories, description) for install confirmation
 
 ### Hosting
 
@@ -235,7 +241,7 @@ If typo tolerance becomes needed, add a lightweight fuzzy matching library (e.g.
 
 ### CLI Integration
 
-The CLI talks to the registry API for search/show. Install goes directly to GitHub.
+The CLI talks to the registry API for all plugin operations (search, show, install):
 
 ```
 aiki plugin search "security"
@@ -256,9 +262,11 @@ aiki plugin show acme/security
 
 aiki plugin install acme/security
        │
-       ▼
-  GitHub: git clone --depth 1 github.com/acme/security
-  (no registry involved — same as remote-plugins.md)
+       ├─▶ Registry API: GET /plugins/acme/security
+       │   Returns: { "github_repo": "github.com/acme/security", ... }
+       │
+       └─▶ GitHub: git clone --depth 1 https://github.com/acme/security
+           (registry provides the URL, but doesn't proxy the clone)
 ```
 
 **Registry URL**: `https://registry.aiki.sh/api/v1/`. The CLI hardcodes this as the default. No configuration needed.
@@ -283,7 +291,6 @@ registry/
 ```
 
 ---
-
 ## GitHub Scraper
 
 The scraper is an aiki task template that discovers plugins on GitHub and submits them to the registry.
@@ -414,3 +421,4 @@ Categories are extracted from `plugin.yaml`. Repos without `plugin.yaml` have no
 - **Webhook sync** — Auto-refresh when repos are pushed to (requires GitHub App)
 - **Dependency declaration** — Plugins depending on other plugins
 - **Ratings/reviews** — User feedback on plugins
+

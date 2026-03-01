@@ -1,5 +1,3 @@
-
-- consolidate wait
 - ux -> share with Paul
 
 - registry

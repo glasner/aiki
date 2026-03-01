@@ -232,9 +232,22 @@ Triggered on:
                ▼               ▼                       │
 ```
 
-#### Steps 1-2: Two-Phase Rebase (INSIDE lock)
+#### Target Snapshot + Steps 1-2: Two-Phase Rebase (INSIDE lock)
 
 ```
+ ┌──────────────────────────────────────────────────────────────┐
+ │  SNAPSHOT TARGET WORKING COPY (before lock)                  │
+ │  (isolation.rs:371-379)                                      │
+ │                                                               │
+ │  jj status  (in target_dir)                                  │
+ │                                                               │
+ │  Captures any changes made in the target workspace (e.g.,    │
+ │  user deleting files in main while agent works in isolation)  │
+ │  into @'s committed tree. Without this, the rebase computes  │
+ │  an empty diff for @ and silently reverts the user's changes.│
+ └──────────────────────────┬───────────────────────────────────┘
+                            │
+                            ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  ACQUIRE ABSORB LOCK                                         │
  │  (isolation.rs:190)                                          │
@@ -248,7 +261,6 @@ Triggered on:
                             ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  STEP 1: Rebase workspace chain onto target @-               │
- │  (isolation.rs:457-486)                                      │
  │                                                               │
  │  jj rebase -b {ws_head} -d @- --ignore-working-copy         │
  │                                                               │
@@ -267,18 +279,26 @@ Triggered on:
                             ▼
  ┌──────────────────────────────────────────────────────────────┐
  │  STEP 2: Rebase @ onto workspace head                        │
- │  (isolation.rs:488-514)                                      │
  │                                                               │
- │  jj rebase -s @ -d {ws_head}                                │
+ │  jj rebase -s @ -d {ws_head} --ignore-working-copy          │
  │                                                               │
- │  ** NO --ignore-working-copy **                              │
- │  JJ MUST update the filesystem! Without this, the next       │
- │  snapshot would see workspace files as "deleted" — silently  │
- │  reverting absorbed changes.                                  │
+ │  Uses --ignore-working-copy because JJ's working-copy        │
+ │  tracking is stale after step 1's rebase. Filesystem sync    │
+ │  is handled by `workspace update-stale` below.               │
  │                                                               │
  │  After:   @- ─── ws_changes ─── ws_head ─── @               │
  │                                                               │
  │  The workspace's changes are now ancestors of @.             │
+ └──────────────────────────┬───────────────────────────────────┘
+                            │
+                            ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │  SYNC FILESYSTEM                                             │
+ │                                                               │
+ │  jj workspace update-stale                                   │
+ │                                                               │
+ │  Updates the filesystem to match the rebased @. Without      │
+ │  this, the next snapshot would see stale files.              │
  └──────────────────────────┬───────────────────────────────────┘
                             │
                             ▼
@@ -500,7 +520,8 @@ If an agent crashes before cleanup:
 | Conflict detection outside lock | Avoids holding lock while waiting for user/agent resolution |
 | `/tmp/aiki/` for workspaces | Ephemeral by nature; reboot cleans up naturally; crash recovery handles the rest |
 | `jj workspace add -r @-` | Forks from parent of working copy so agent starts with a clean working copy |
-| Step 2 without `--ignore-working-copy` | JJ must update filesystem or next snapshot silently reverts absorbed changes |
+| Target snapshot before rebase | `jj status` in target dir captures user's filesystem changes (e.g., file deletions) into @'s committed tree before rebasing. Without this, the rebase computes an empty diff and silently reverts user changes |
+| Both steps use `--ignore-working-copy` | After step 1 rebases the workspace chain, JJ's working-copy tracking is stale. Step 2 also uses `--ignore-working-copy`, then `workspace update-stale` syncs the filesystem |
 | Retry count with force-absorb at 3 | Prevents infinite conflict loops; lets human intervene after reasonable attempts |
 
 ---
