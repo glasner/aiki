@@ -361,6 +361,17 @@ pub fn absorb_workspace(
         repo_root.to_path_buf()
     };
 
+    // Snapshot target working copy BEFORE acquiring the lock or rebasing.
+    // Without this, changes made in the target workspace (e.g., user deleting
+    // files in the main workspace while an agent works in an isolated one) are
+    // not captured into @'s committed tree. The rebase would then compute an
+    // empty diff for @ (old tree == parent tree) and the absorbed result would
+    // silently revert the user's changes.
+    let _ = jj_cmd()
+        .current_dir(&target_dir)
+        .args(["status"])
+        .output();
+
     // Acquire file lock to serialize absorptions across concurrent agents.
     // Without this, concurrent absorptions interleave their two-step rebases,
     // causing each to disconnect from the previous absorption's changes.
