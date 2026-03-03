@@ -28,8 +28,61 @@ Run the following command to explore the scope. The `--start` flag assigns the e
 aiki explore {{data.scope.id}} --start
 ```
 
-{% subtask aiki/review/criteria/plan slug:criteria needs-context:subtasks.explore if data.scope.kind == "plan" %}
-{% subtask aiki/review/criteria/code slug:criteria needs-context:subtasks.explore if data.scope.kind != "plan" %}
+## Review Criteria
+---
+slug: criteria
+needs-context: subtasks.explore
+---
+
+{% if data.scope.kind == "plan" %}
+**Reminder: You are reviewing this plan, not implementing it.** Evaluate the plan *document* against the criteria below. Do not make any code changes.
+
+Evaluate the plan against these categories:
+
+**Completeness**
+- All sections filled, no TODOs or placeholder content
+- Open questions documented and flagged
+- Dependencies and prerequisites identified
+
+**Clarity**
+- Unambiguous requirements with clear acceptance criteria
+- No vague language ("should probably", "might need to")
+- Technical terms defined or consistently used
+
+**Implementability**
+- Can be decomposed into discrete, actionable tasks
+- Sufficient technical detail for implementation
+- No circular dependencies or impossible constraints
+
+**UX**
+- User experience considered where applicable
+- Intuitive command syntax and behavior
+- Error messages and edge cases addressed
+{% endif %}
+
+{% if data.scope.kind != "plan" %}
+Evaluate the implementation against these categories:
+
+**Plan Coverage**
+- All requirements from the plan exist in the codebase
+- No missing features or unimplemented sections
+- No scope creep beyond what the plan describes
+
+**Code Quality**
+- Logic errors, incorrect assumptions, edge cases
+- Error handling and resource management
+- Code clarity and maintainability
+
+**Security**
+- Injection vulnerabilities (command, SQL, XSS)
+- Authentication and authorization issues
+- Data exposure or crypto misuse
+
+**Plan Alignment**
+- UX matches plan design (commands, flags, output format)
+- Architecture follows plan's prescribed approach
+- Acceptance criteria from plan are met
+{% endif %}
 
 ## Record Issues
 ---

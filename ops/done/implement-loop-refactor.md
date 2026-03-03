@@ -1,4 +1,4 @@
-# Rename aiki/implement → aiki/loop, Restructure Fix
+# Rename aiki/implement → aiki/loop, Restructure Fix, Extract aiki resolve
 
 ## Problem
 
@@ -138,12 +138,34 @@ Or `aiki fix <review-id>` runs all three automatically.
 
 **Template rename:** Move `.aiki/templates/aiki/plan.md` → `.aiki/templates/aiki/plan/epic.md`.
 
-### Fix command restructured
+### Fix command simplified
 
-`fix.rs` mirrors `build.rs` but with a plan/fix phase before decompose:
+With merge-conflict resolution extracted to `aiki resolve` (see below), `aiki fix` becomes a clean pipeline command with one job: fix review issues.
+
+```bash
+aiki fix <review-id> [--async] [--once]
+```
+
+The `has_jj_conflicts` auto-detection is removed — `aiki fix` always means "fix review issues." If you have a merge conflict, use `aiki resolve`.
+
+**Default behavior: fix → review → fix loop.** After the fix pipeline completes, Rust automatically reviews the fix. If the review finds new issues, it runs the fix pipeline again against the new review. This repeats until the review approves or a max iteration limit is reached. The quality loop that was previously orchestrated by `fix/quality.md` + `spawns:` is now driven entirely by Rust.
+
+**`--once` disables the review loop.** Just runs the fix pipeline once and returns. Useful when calling fix from contexts that manage their own review cycle.
 
 ```
-fix.rs (Rust):
+run_fix(review_id, once=false):
+  loop (max_iterations=10):
+    1. plan/fix → decompose → loop  (the fix pipeline)
+    2. if once: break
+    3. review the fix
+    4. if review approved: break
+    5. review_id = new_review  (loop back with new review)
+```
+
+The fix pipeline (one iteration):
+
+```
+fix pipeline (Rust):
 1. Validate review task, check for issues (existing logic)
 2. Short-circuit if no actionable issues (no parent/decompose/loop churn)
 3. Create fix-parent task (container, like an epic)
@@ -164,7 +186,25 @@ build.rs (Rust):
 
 Both call the shared `run_loop()` function — same code path as `aiki loop` CLI.
 
-This replaces the current flow where a single `aiki/fix` task does planning, decomposition, and execution in one session.
+This replaces the current flow where a single `aiki/fix` task does planning, decomposition, and execution in one session. The quality loop that was previously orchestrated by `fix/quality.md` + `fix/loop.md` + `spawns:` is now a simple Rust loop.
+
+### New command: `aiki resolve`
+
+Top-level command for resolving JJ merge conflicts. Extracted from the old `aiki fix` conflict path.
+
+```bash
+aiki resolve <change-id> [--async] [--start] [--agent <agent>]
+```
+
+Internally:
+1. Create task from `aiki/resolve` template (data.conflict_id = change ID)
+2. `task_run` (blocking), `task_run_async` (`--async`), or start inline (`--start`)
+
+`--start` is needed by the workspace absorption hook — when absorption introduces conflicts, the hook calls `aiki resolve <change-id> --start` so the current agent resolves inline without spawning a new session.
+
+**Why a separate command:** Merge-conflict resolution is fundamentally different from fixing review issues. Review fixes go through the pipeline (plan → decompose → loop) with parallelizable subtasks. Conflict resolution is a single holistic task — one agent needs full context of both sides to merge correctly. Cramming both under `fix` with subcommands would muddy what "fix" means.
+
+**Template is at `aiki/resolve`.** The template path matches the command name.
 
 ### `--async` semantics
 
@@ -175,25 +215,25 @@ This replaces the current flow where a single `aiki/fix` task does planning, dec
 **Mechanism: spawn-self.** The async path re-invokes the same command with an internal `--_resume <parent-id>` flag as a detached process. The resumed invocation skips parent creation (already exists) and runs the pipeline stages synchronously in the background process. Same code path for blocking and async — only difference is whether it runs inline or detached.
 
 ```
-Blocking path (fix.rs):
-  1. Create fix-parent
-  2. task_run(plan-fix) — synchronous
-  3. task_run(decompose) — synchronous
-  4. run_loop(fix-parent) — synchronous
+Blocking path (aiki fix):
+  loop:
+    1. Create fix-parent
+    2. task_run(plan-fix) — synchronous
+    3. task_run(decompose) — synchronous
+    4. run_loop(fix-parent) — synchronous
+    5. if --once: break
+    6. review the fix — synchronous
+    7. if approved: break
+    8. review_id = new review (loop back)
   Returns when done
 
-Async path (fix.rs):
-  1. Create fix-parent
-  2. Spawn detached: aiki fix --_resume <fix-parent-id> <review-id>
-  3. Return fix-parent ID immediately
-  Caller does: aiki task wait <fix-parent-id>
+Async path (aiki fix --async):
+  1. Spawn detached: aiki fix --_resume <review-id>
+  2. Return immediately
+  Caller does: aiki task wait
 
-Resumed path (fix.rs --_resume):
-  1. Skip parent creation (already exists)
-  2. task_run(plan-fix) — synchronous
-  3. task_run(decompose) — synchronous
-  4. run_loop(fix-parent) — synchronous
-  5. Close fix-parent
+Resumed path (aiki fix --_resume):
+  Same as blocking path (runs synchronously in background process)
 ```
 
 **Benefits:**
@@ -204,7 +244,7 @@ This pattern applies to `aiki build --async` too (multi-stage pipeline). `aiki l
 
 ### Remove `--start` from fix and review
 
-The `--start` flag ("caller takes over inline") is removed from `fix` and `review`. It remains only on `explore`, where the review template uses it to explore inline before reviewing.
+The `--start` flag ("caller takes over inline") is removed from `fix` and `review`. It remains on `resolve` (needed by workspace absorption hook) and `explore` (used by review template).
 
 **Why:** With the new pipeline, `aiki fix` always runs plan/fix → decompose → loop. There's no "inline" mode — the pipeline is the only path. The `--start` usage in `fix/quality.md` goes away because quality.md itself is deleted.
 
@@ -214,7 +254,8 @@ For `review`, no template references `aiki review --start` after quality.md is d
 
 | Command | Modes |
 |---|---|
-| `aiki fix` | blocking (default), `--async` |
+| `aiki fix` | blocking (default, review loop), `--once` (single pass), `--async` |
+| `aiki resolve` | blocking (default), `--async`, `--start` |
 | `aiki review` | blocking (default), `--async` |
 | `aiki explore` | blocking (default), `--async`, `--start` |
 
@@ -294,56 +335,71 @@ Update tests referencing `aiki/implement` → `aiki/loop`.
 
 ### 10. Restructure `cli/src/commands/fix.rs`
 
-Refactor `run_fix()` to mirror `build.rs` pattern:
+`fix.rs` becomes a clean pipeline command (review issues only) with a Rust-driven quality loop. Merge-conflict handling moves to `resolve.rs`.
 
 **Keep unchanged:**
-- Input parsing, stdin piping, conflict detection (`has_jj_conflicts`)
-- `handle_conflict_fix()` (merge conflict path)
+- Input parsing, stdin piping
 - Review task validation (`is_review_task`)
 - Issue detection (structured issues vs backward-compat comments)
 - Scope detection, assignee determination
 
+**Keep (repurposed):**
+- `--once` flag — disables the post-fix review loop (single pass)
+
 **Remove:**
-- `--start` flag and all `start: bool` parameters
-- `--once` flag and all `once: bool` parameters (was only used with old `aiki/fix` template)
+- `--start` flag and all `start: bool` parameters (pipeline is the only path)
 - `output_followup_started()` (only used by `--start` path)
+- `has_jj_conflicts` auto-detection and `handle_conflict_fix()` (moved to `resolve.rs`)
+- All `output_conflict_fix_*` helpers (moved to `resolve.rs`)
 
-**Change the default (blocking) and `--async` paths:**
-
-Old flow:
-1. Create single fix task from `aiki/fix` template
-2. `task_run(fix_task)` — agent does everything in one session
-
-New flow:
-1. Short-circuit if no actionable issues (existing check, but now returns before creating any tasks)
-2. Create fix-parent task (container, like an epic)
-3. Create plan-fix task from `aiki/plan/fix` (data.review = review ID, data.target = fix-parent ID)
-4. `task_run(plan-fix)` — agent reads issues, writes fix plan to `/tmp/aiki/plans/<plan-fix-task-id>.md`
-5. Read plan path, create decompose task from `aiki/decompose` (data.plan = plan path, data.epic = fix-parent ID)
-6. `task_run(decompose)` — agent creates subtasks under fix-parent
-7. Delete plan file (content now lives as subtasks)
-8. `run_loop(fix-parent)` — orchestrate subtasks via lanes
+**New flow (Rust-driven quality loop):**
+```
+loop (max_iterations=10):
+  1. Short-circuit if no actionable issues (returns before creating any tasks)
+  2. Create fix-parent task (container, like an epic)
+  3. Create plan-fix task from aiki/plan/fix (data.review = review ID, data.target = fix-parent ID)
+  4. task_run(plan-fix) — agent writes fix plan to /tmp/aiki/plans/<plan-fix-task-id>.md
+  5. Read plan path, create decompose task from aiki/decompose (data.plan = plan path, data.epic = fix-parent ID)
+  6. task_run(decompose) — agent creates subtasks under fix-parent
+  7. Delete plan file (content now lives as subtasks)
+  8. run_loop(fix-parent) — orchestrate subtasks via lanes
+  9. if --once: break
+  10. Create review task scoped to fix-parent's changes
+  11. task_run(review) — agent reviews the fix
+  12. if review approved: break
+  13. review_id = new review task ID (loop back)
+```
 
 **Edge relationships:**
 - fix-parent `remediates` review task (existing)
 - fix-parent `fixes` reviewed targets (existing)
 - loop task `orchestrates` fix-parent (created by `run_loop`)
 
-### 11. Delete `aiki/fix.md`
+### 10b. Create `cli/src/commands/resolve.rs` (`aiki resolve` command)
 
-Fix orchestration is now entirely in Rust. The `aiki/fix.md` template is no longer referenced by any code path.
+New top-level command extracted from `fix.rs`:
 
-### 12. Delete `aiki/fix/quality.md`
+```bash
+aiki resolve <change-id> [--async] [--start] [--agent <agent>]
+```
 
-The self-spawning review-fix quality loop is replaced by Rust-level post-fix review (like build already does). No template references `aiki review --start` or `aiki fix --start` after this deletion.
+Move from `fix.rs`:
+- `has_jj_conflicts()` → validation (error if change has no conflicts)
+- `handle_conflict_fix()` → core logic
+- All `output_conflict_fix_*` helpers → renamed to `output_resolve_*`
 
-### 13. Delete `aiki/fix/once.md`
+The logic is the same — create task from `aiki/resolve`, run it. Only the entry point changes.
 
-Was an alternative fix template for single-pass fixes. With the new pipeline, all fixes go through plan/fix → decompose → loop. The `--once` flag is removed from fix.rs.
+Update the workspace absorption hook context to reference `aiki resolve` instead of `aiki fix`.
 
-### 14. Update `aiki/fix/loop.md`
+### 11. Delete `aiki/fix.md`, `aiki/fix/quality.md`, `aiki/fix/once.md`, `aiki/fix/loop.md`
 
-Currently calls `aiki fix {{parent.id}}`. This still works — `aiki fix` will use the new plan/fix → decompose → loop flow internally.
+All remaining fix templates are deleted:
+
+- **`aiki/fix.md`** — fix orchestration is now entirely in Rust (the pipeline). No longer referenced.
+- **`aiki/fix/quality.md`** — the review-fix quality loop is now a Rust loop in `fix.rs`. No longer referenced.
+- **`aiki/fix/once.md`** — was an alternative template for single-pass fixes. The `--once` flag now controls the Rust loop directly. No longer referenced.
+- **`aiki/fix/loop.md`** — was the spawns-based re-entry point (`aiki fix {{parent.id}}`). The Rust loop replaces this. No longer referenced.
 
 ### 15. Remove `--start` from `cli/src/commands/review.rs`
 
@@ -369,32 +425,35 @@ Update the SDLC overview doc to reflect that `build` and `fix` are now pipeline 
 ## Task Graph
 
 ```
-1. Create aiki/loop.md (extract from implement.md)
-2. Delete aiki/implement.md
-   └── depends-on: 1
-3. Delete aiki/build.md (dead template)
-4. Move aiki/plan.md → aiki/plan/epic.md
-5. Create aiki/plan/fix.md
-6. Create loop.rs (aiki loop command + run_loop function)
-   └── depends-on: 1
-7. Update build.rs (use run_loop)
-   └── depends-on: 6
-8. Update plan.rs (aiki/plan → aiki/plan/epic)
-   └── depends-on: 4
-9. Update resolver.rs tests
-   └── depends-on: 2
-10. Restructure fix.rs (remove --start/--once, plan/fix → decompose → run_loop)
+1.  Create aiki/loop.md (extract from implement.md)
+2.  Delete aiki/implement.md
+    └── depends-on: 1
+3.  Delete aiki/build.md (dead template)
+4.  Move aiki/plan.md → aiki/plan/epic.md
+5.  Create aiki/plan/fix.md
+6.  Create loop.rs (aiki loop command + run_loop function)
+    └── depends-on: 1
+7.  Update build.rs (use run_loop)
+    └── depends-on: 6
+8.  Update plan.rs (aiki/plan → aiki/plan/epic)
+    └── depends-on: 4
+9.  Update resolver.rs tests
+    └── depends-on: 2
+10. Restructure fix.rs (pipeline + Rust-driven quality loop, keep --once, remove --start/conflict)
     └── depends-on: 5, 6
-11. Delete aiki/fix.md, aiki/fix/quality.md, aiki/fix/once.md
+11. Create resolve.rs (extract conflict path from fix.rs)
     └── depends-on: 10
-12. Remove --start from review.rs
-13. Update agents_template.rs (remove --start references)
-    └── depends-on: 12
-14. Update cli/docs/sdlc.md (pipeline language for build/fix, composable stages)
-    └── depends-on: 7, 10
-15. Cleanup references (sdlc/build.md, sdlc/fix.md)
-16. Verify build (cargo build + cargo test)
-    └── depends-on: 7, 8, 9, 10, 11, 12, 13, 14, 15
+12. Delete fix templates (fix.md, fix/quality.md, fix/once.md, fix/loop.md)
+    └── depends-on: 10
+13. Remove --start from review.rs
+14. Update agents_template.rs (remove --start references, add aiki resolve docs)
+    └── depends-on: 11, 13
+15. Update cli/docs/sdlc.md (pipeline language for build/fix, composable stages, aiki resolve)
+    └── depends-on: 7, 10, 11
+16. Cleanup references (sdlc/build.md, sdlc/fix.md, absorption hook context)
+    └── depends-on: 11
+17. Verify build (cargo build + cargo test)
+    └── depends-on: 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 ```
 
 ## Future
@@ -408,5 +467,5 @@ Update the SDLC overview doc to reflect that `build` and `fix` are now pipeline 
 - Changing `implements-plan` edge name (still correct)
 - Refactoring the decompose template or `aiki/decompose.md`
 - Changes to `aiki/review.md` template (review command itself is updated to remove `--start`)
-- Changes to `aiki/fix/merge-conflict.md` (merge conflict path is unchanged)
+- Changes to `aiki/resolve.md` template content (template was moved from `aiki/fix/merge-conflict` to `aiki/resolve`)
 - Removing `--start` from `aiki explore` (still used by review template)

@@ -13,9 +13,16 @@ pub fn buffer_to_ansi(buf: &Buffer) -> String {
     let mut out = String::new();
 
     for row in area.y..area.y + area.height {
+        // Find the last non-space column so we can skip trailing spaces entirely.
+        let last_content_col = (area.x..area.x + area.width)
+            .rev()
+            .find(|&col| buf[(col, row)].symbol() != " ")
+            .unwrap_or(area.x);
+        let end_col = last_content_col + 1; // exclusive
+
         let mut last_style: Option<(Color, Modifier)> = None;
 
-        for col in area.x..area.x + area.width {
+        for col in area.x..end_col {
             let cell = &buf[(col, row)];
             let style = (cell.fg, cell.modifier);
 
@@ -35,10 +42,6 @@ pub fn buffer_to_ansi(buf: &Buffer) -> String {
 
         // Reset at end of line
         out.push_str("\x1b[0m");
-
-        // Trim trailing spaces
-        let trimmed = out.trim_end_matches(' ');
-        out.truncate(trimmed.len());
 
         if row < area.y + area.height - 1 {
             out.push('\n');
@@ -105,12 +108,18 @@ mod tests {
 
         let result = buffer_to_ansi(&buf);
 
-        // The line should not end with spaces (after the final reset)
-        let after_last_reset = result.rsplit("\x1b[0m").next().unwrap_or("");
-        assert!(
-            !after_last_reset.ends_with(' '),
-            "trailing spaces should be trimmed, got: {:?}",
-            result
-        );
+        // Strip all ANSI escapes to get visible content
+        let visible: String = result
+            .replace("\x1b[0m", "")
+            .replace("\x1b[1m", "");
+        // Remove any remaining CSI sequences (color codes)
+        let visible = regex::Regex::new(r"\x1b\[[0-9;]*m")
+            .unwrap()
+            .replace_all(&visible, "")
+            .to_string();
+
+        // Should contain AB but no trailing spaces
+        assert_eq!(visible.trim(), "AB", "visible content should be just 'AB', got: {:?}", visible);
+        assert!(!visible.ends_with(' '), "should not end with trailing spaces, got: {:?}", visible);
     }
 }

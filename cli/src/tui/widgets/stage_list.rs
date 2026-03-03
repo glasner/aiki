@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING};
+use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING, SYM_STARTING};
 use crate::tui::types::{FixChild, StageChild, StageState, StageView, SubStageView, SubtaskStatus};
 
 /// Vertical stage list widget.
@@ -35,7 +35,7 @@ impl<'a> StageList<'a> {
 /// Whether a stage should show its sub-stages/children expanded.
 fn is_expanded(stage: &StageView) -> bool {
     match stage.state {
-        StageState::Active | StageState::Failed => {
+        StageState::Starting | StageState::Active | StageState::Failed => {
             !stage.sub_stages.is_empty() || !stage.children.is_empty()
         }
         _ => false,
@@ -54,6 +54,7 @@ fn stage_height(stage: &StageView) -> u16 {
 fn state_symbol_color(state: StageState, theme: &Theme) -> (&'static str, Style) {
     match state {
         StageState::Pending => (SYM_PENDING, Style::default().fg(theme.dim)),
+        StageState::Starting => (SYM_STARTING, Style::default().fg(theme.yellow)),
         StageState::Active => (SYM_RUNNING, Style::default().fg(theme.yellow)),
         StageState::Done => (SYM_CHECK, Style::default().fg(theme.green)),
         StageState::Failed => (SYM_FAILED, Style::default().fg(theme.red)),
@@ -64,6 +65,7 @@ fn state_symbol_color(state: StageState, theme: &Theme) -> (&'static str, Style)
 fn subtask_symbol_color(status: SubtaskStatus, theme: &Theme) -> (&'static str, Style) {
     match status {
         SubtaskStatus::Pending => (SYM_PENDING, Style::default().fg(theme.dim)),
+        SubtaskStatus::Starting => (SYM_STARTING, Style::default().fg(theme.yellow)),
         SubtaskStatus::Active => (SYM_RUNNING, Style::default().fg(theme.yellow)),
         SubtaskStatus::Done => (SYM_CHECK, Style::default().fg(theme.green)),
         SubtaskStatus::Failed => (SYM_FAILED, Style::default().fg(theme.red)),
@@ -73,8 +75,8 @@ fn subtask_symbol_color(status: SubtaskStatus, theme: &Theme) -> (&'static str, 
 /// Style for agent badge text.
 fn agent_style(agent: &str, theme: &Theme) -> Style {
     match agent {
-        "cc" => Style::default().fg(theme.cyan),
-        "cur" => Style::default().fg(theme.magenta),
+        "claude" => Style::default().fg(theme.cyan),
+        "cursor" => Style::default().fg(theme.magenta),
         _ => Style::default().fg(theme.fg),
     }
 }
@@ -514,14 +516,14 @@ mod tests {
                 StageChild::Subtask(SubtaskLine {
                     name: "Fix: Missing null check (auth.rs)".into(),
                     status: SubtaskStatus::Done,
-                    agent: Some("cur".into()),
+                    agent: Some("cursor".into()),
                     elapsed: Some("12s".into()),
                     error: None,
                 }),
                 StageChild::Subtask(SubtaskLine {
                     name: "Fix: Error message format".into(),
                     status: SubtaskStatus::Active,
-                    agent: Some("cc".into()),
+                    agent: Some("claude".into()),
                     elapsed: None,
                     error: None,
                 }),
@@ -534,10 +536,10 @@ mod tests {
         assert!(lines[0].contains("▸ fix"), "line0: {}", lines[0]);
         assert!(lines[0].contains("1/2"), "line0: {}", lines[0]);
         assert!(lines[1].contains("✓ Fix: Missing null check (auth.rs)"), "line1: {}", lines[1]);
-        assert!(lines[1].contains("cur"), "line1 agent: {}", lines[1]);
+        assert!(lines[1].contains("cursor"), "line1 agent: {}", lines[1]);
         assert!(lines[1].contains("12s"), "line1 elapsed: {}", lines[1]);
         assert!(lines[2].contains("▸ Fix: Error message format"), "line2: {}", lines[2]);
-        assert!(lines[2].contains("cc"), "line2 agent: {}", lines[2]);
+        assert!(lines[2].contains("claude"), "line2 agent: {}", lines[2]);
     }
 
     #[test]
@@ -552,14 +554,14 @@ mod tests {
                 StageChild::Subtask(SubtaskLine {
                     name: "Fix: Missing null check".into(),
                     status: SubtaskStatus::Done,
-                    agent: Some("cur".into()),
+                    agent: Some("cursor".into()),
                     elapsed: Some("12s".into()),
                     error: None,
                 }),
                 StageChild::Subtask(SubtaskLine {
                     name: "Fix: Error message format".into(),
                     status: SubtaskStatus::Done,
-                    agent: Some("cc".into()),
+                    agent: Some("claude".into()),
                     elapsed: Some("8s".into()),
                     error: None,
                 }),
@@ -567,7 +569,7 @@ mod tests {
                     number: None,
                     state: StageState::Active,
                     result: None,
-                    agent: Some("cc".into()),
+                    agent: Some("claude".into()),
                     elapsed: None,
                 }),
             ],
@@ -580,7 +582,7 @@ mod tests {
         assert!(lines[1].contains("✓ Fix: Missing null check"), "line1: {}", lines[1]);
         assert!(lines[2].contains("✓ Fix: Error message format"), "line2: {}", lines[2]);
         assert!(lines[3].contains("▸ review fix"), "line3: {}", lines[3]);
-        assert!(lines[3].contains("cc"), "line3 agent: {}", lines[3]);
+        assert!(lines[3].contains("claude"), "line3 agent: {}", lines[3]);
     }
 
     #[test]
@@ -676,14 +678,14 @@ mod tests {
                 StageChild::Subtask(SubtaskLine {
                     name: "Task A".into(),
                     status: SubtaskStatus::Done,
-                    agent: Some("cc".into()),
+                    agent: Some("claude".into()),
                     elapsed: None,
                     error: None,
                 }),
                 StageChild::Subtask(SubtaskLine {
                     name: "Task B".into(),
                     status: SubtaskStatus::Active,
-                    agent: Some("cur".into()),
+                    agent: Some("cursor".into()),
                     elapsed: None,
                     error: None,
                 }),
@@ -694,22 +696,29 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StageList::new(&stages, &theme).render(area, &mut buf);
 
-        // Find "cc" on line 1, should be cyan
-        let cc_x = (0..60u16).find(|&x| {
+        // Find "claude" on line 1, should be cyan
+        let claude_x = (0..60u16).find(|&x| {
             buf.cell((x, 1)).map(|c| c.symbol()) == Some("c")
-                && buf.cell((x + 1, 1)).map(|c| c.symbol()) == Some("c")
+                && buf.cell((x + 1, 1)).map(|c| c.symbol()) == Some("l")
+                && buf.cell((x + 2, 1)).map(|c| c.symbol()) == Some("a")
+                && buf.cell((x + 3, 1)).map(|c| c.symbol()) == Some("u")
+                && buf.cell((x + 4, 1)).map(|c| c.symbol()) == Some("d")
+                && buf.cell((x + 5, 1)).map(|c| c.symbol()) == Some("e")
         });
-        if let Some(x) = cc_x {
+        if let Some(x) = claude_x {
             assert_eq!(buf.cell((x, 1)).unwrap().style().fg, Some(theme.cyan));
         }
 
-        // Find "cur" on line 2, should be magenta
-        let cur_x = (0..60u16).find(|&x| {
+        // Find "cursor" on line 2, should be magenta
+        let cursor_x = (0..60u16).find(|&x| {
             buf.cell((x, 2)).map(|c| c.symbol()) == Some("c")
                 && buf.cell((x + 1, 2)).map(|c| c.symbol()) == Some("u")
                 && buf.cell((x + 2, 2)).map(|c| c.symbol()) == Some("r")
+                && buf.cell((x + 3, 2)).map(|c| c.symbol()) == Some("s")
+                && buf.cell((x + 4, 2)).map(|c| c.symbol()) == Some("o")
+                && buf.cell((x + 5, 2)).map(|c| c.symbol()) == Some("r")
         });
-        if let Some(x) = cur_x {
+        if let Some(x) = cursor_x {
             assert_eq!(buf.cell((x, 2)).unwrap().style().fg, Some(theme.magenta));
         }
     }
@@ -795,5 +804,86 @@ mod tests {
         let widget = StageList::new(&stages, &theme);
         // build: 1 (header) + 2 (sub-stages) = 3, review: 1 = total 4
         assert_eq!(widget.height(), 4);
+    }
+
+    #[test]
+    fn starting_subtask_shows_hourglass() {
+        let stages = vec![StageView {
+            name: "fix".into(),
+            state: StageState::Active,
+            progress: None,
+            elapsed: None,
+            sub_stages: vec![],
+            children: vec![
+                StageChild::Subtask(SubtaskLine {
+                    name: "Fix null check".into(),
+                    status: SubtaskStatus::Starting,
+                    agent: None,
+                    elapsed: None,
+                    error: None,
+                }),
+            ],
+        }];
+        let (_, lines) = render_stages(&stages, 80);
+        assert!(lines[1].contains("⧗ Fix null check"), "line1: {}", lines[1]);
+    }
+
+    #[test]
+    fn starting_stage_shows_hourglass() {
+        let stages = vec![StageView {
+            name: "review".into(),
+            state: StageState::Starting,
+            progress: None,
+            elapsed: None,
+            sub_stages: vec![],
+            children: vec![],
+        }];
+        let (_, lines) = render_stages(&stages, 40);
+        assert!(lines[0].contains("⧗ review"), "got: {}", lines[0]);
+    }
+
+    #[test]
+    fn starting_stage_expanded() {
+        let stages = vec![StageView {
+            name: "build".into(),
+            state: StageState::Starting,
+            progress: None,
+            elapsed: None,
+            sub_stages: vec![
+                SubStageView {
+                    name: "decompose".into(),
+                    state: StageState::Starting,
+                    progress: None,
+                    elapsed: None,
+                },
+            ],
+            children: vec![],
+        }];
+        let theme = test_theme();
+        let widget = StageList::new(&stages, &theme);
+        assert_eq!(widget.height(), 2, "starting stage should be expanded");
+        let (_, lines) = render_stages(&stages, 60);
+        assert!(lines[0].contains("⧗ build"), "line0: {}", lines[0]);
+        assert!(lines[1].contains("⧗ decompose"), "line1: {}", lines[1]);
+    }
+
+    #[test]
+    fn colors_starting_yellow() {
+        let stages = vec![StageView {
+            name: "review".into(),
+            state: StageState::Starting,
+            progress: None,
+            elapsed: None,
+            sub_stages: vec![],
+            children: vec![],
+        }];
+        let theme = test_theme();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        StageList::new(&stages, &theme).render(area, &mut buf);
+
+        let cell = buf.cell((1, 0)).unwrap();
+        assert_eq!(cell.symbol(), SYM_STARTING);
+        assert_eq!(cell.style().fg, Some(theme.yellow));
     }
 }

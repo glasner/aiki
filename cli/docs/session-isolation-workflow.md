@@ -524,6 +524,7 @@ If an agent crashes before cleanup:
 | Target snapshot before rebase | `jj status` in target dir captures user's filesystem changes (e.g., file deletions) into @'s committed tree before rebasing. Without this, the rebase computes an empty diff and silently reverts user changes |
 | Both steps use `--ignore-working-copy` | After step 1 rebases the workspace chain, JJ's working-copy tracking is stale. Step 2 also uses `--ignore-working-copy`, then `workspace update-stale` syncs the filesystem |
 | Retry count with force-absorb at 3 | Prevents infinite conflict loops; lets human intervene after reasonable attempts |
+| `jj new --ignore-working-copy` in default workspace | `session.started` and `repo.changed` hooks run `jj new` in the default workspace, which can race with concurrent absorptions. Without `--ignore-working-copy`, `jj new` triggers a working-copy snapshot that diverges from an in-flight absorption's rebase, causing jj to reconcile divergent operations and silently revert user filesystem changes (e.g. files moved in Finder). User changes are captured later by the absorption's own `jj status` target snapshot |
 
 ---
 

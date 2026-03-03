@@ -10,6 +10,7 @@ use std::path::Path;
 
 use crate::agents::AgentType;
 use crate::commands::review::{detect_target, ReviewScope, ReviewScopeKind};
+use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::md::MdBuilder;
@@ -46,6 +47,10 @@ pub struct ExploreArgs {
     /// Agent for explore assignment
     #[arg(long)]
     pub agent: Option<String>,
+
+    /// Output format (e.g., `id` for bare task ID on stdout)
+    #[arg(long, short = 'o', value_name = "FORMAT")]
+    pub output: Option<OutputFormat>,
 }
 
 /// Check if a string looks like a UUID (8-4-4-4-12 hex pattern)
@@ -166,6 +171,8 @@ pub fn run(args: ExploreArgs) -> Result<()> {
     let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
     let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
 
+    let output_id = matches!(args.output, Some(OutputFormat::Id));
+
     // Handle execution mode
     if args.start {
         // Reassign task to current agent (caller takes over)
@@ -174,18 +181,26 @@ pub fn run(args: ExploreArgs) -> Result<()> {
         }
         // Start task
         start_task_core(&cwd, &[explore_id.clone()])?;
-        output_explore_started(&explore_id, &scope, &in_progress, &ready)?;
+        if !output_id {
+            output_explore_started(&explore_id, &scope, &in_progress, &ready)?;
+        }
     } else if args.run_async {
         let options = TaskRunOptions::new();
         task_run_async(&cwd, &explore_id, options)?;
-        output_explore_async(&explore_id, &scope)?;
-        output_utils::emit_stdout(&explore_id);
+        if !output_id {
+            output_explore_async(&explore_id, &scope)?;
+        }
     } else {
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(&cwd, &explore_id, options)?;
-        output_explore_completed(&explore_id, &scope)?;
-        output_utils::emit_stdout(&explore_id);
+        if !output_id {
+            output_explore_completed(&explore_id, &scope)?;
+        }
+    }
+
+    if output_id {
+        println!("{}", explore_id);
     }
 
     Ok(())
@@ -199,7 +214,7 @@ fn output_explore_started(
     ready: &[&Task],
 ) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    output_utils::emit(explore_id, || {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Explore Started",
             task_id: explore_id,
@@ -217,7 +232,7 @@ fn output_explore_started(
 /// Output explore async message (for --async mode)
 fn output_explore_async(explore_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Explore Started",
             task_id: explore_id,
@@ -235,7 +250,7 @@ fn output_explore_async(explore_id: &str, scope: &ReviewScope) -> Result<()> {
 /// Output explore completed message (for blocking mode)
 fn output_explore_completed(explore_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Explore Completed",
             task_id: explore_id,

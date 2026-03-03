@@ -73,6 +73,7 @@ fn render_header(buf: &mut Buffer, review_id: &str, review_name: &str, count: us
     x = x.saturating_add(header_id.len() as u16);
     x = x.saturating_add(1); // space
     buf.set_string(x, 0, review_name, theme.hi_style());
+    x = x.saturating_add(review_name.len() as u16);
     x = x.saturating_add(2); // explicit two-space gap
     buf.set_string(x, 0, &count_text, count_style);
 }
@@ -83,7 +84,7 @@ fn render_issue_row(
     start_y: u16,
     theme: &Theme,
 ) -> u16 {
-    let mut y = start_y;
+    let y = start_y;
     let issue_style = severity_style(&issue.severity, theme);
     let dim = theme.dim_style();
     let badge = format!("[{}]", issue.severity);
@@ -280,11 +281,12 @@ mod tests {
         let line2 = buf_line(&buf, 2, WIDTH);
         assert!(line2.contains("⎿ [high] Missing null check"));
         assert!(line2.contains("src/auth.rs:42"));
-        let loc_x = WIDTH as usize - "src/auth.rs:42".len();
-        assert_eq!(line2.rfind("src/auth.rs:42"), Some(loc_x));
+        // Location must be right-aligned (flush to col 80)
+        assert!(line2.trim_end().ends_with("src/auth.rs:42"));
         let high_style = buf.cell((4, 2)).unwrap().style();
         assert_eq!(high_style.fg, Some(theme.red));
-        let loc_style = buf.cell((loc_x as u16, 2)).unwrap().style();
+        let loc_cell_x = WIDTH - "src/auth.rs:42".len() as u16;
+        let loc_style = buf.cell((loc_cell_x, 2)).unwrap().style();
         assert_eq!(loc_style.fg, Some(theme.dim));
     }
 

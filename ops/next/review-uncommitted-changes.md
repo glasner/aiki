@@ -153,7 +153,7 @@ Review the changes for:
 - Security: injection, auth issues, data exposure
 - Completeness: missing tests, incomplete implementations
 
-Leave a comment on {{parent.id}} for each issue found.
+Track each issue found using `aiki review issue add {{parent.id}} "Description" --file path/to/file:line`.
 ```
 
 ### Diff Retrieval

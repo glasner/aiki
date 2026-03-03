@@ -155,7 +155,7 @@ impl ProvenanceRecord {
     ///
     /// # Example
     /// ```
-    /// use aiki::provenance::*;
+    /// use aiki::provenance::record::*;
     /// use chrono::Utc;
     ///
     /// let record = ProvenanceRecord {
@@ -176,6 +176,7 @@ impl ProvenanceRecord {
     ///     turn_source: String::new(),
     ///     coauthor: None,
     ///     tasks: Vec::new(),
+    ///     prompt_change_id: None,
     /// };
     ///
     /// let description = record.to_description();

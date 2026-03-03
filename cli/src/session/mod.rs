@@ -390,7 +390,7 @@ impl AikiSession {
     ///
     /// # Examples
     /// ```
-    /// use aiki::session::AikiSession;
+    /// use aiki::session::{AikiSession, SessionMode};
     /// use aiki::provenance::{AgentType, DetectionMethod};
     ///
     /// // Hook-based (no agent version)
@@ -398,7 +398,8 @@ impl AikiSession {
     ///     AgentType::ClaudeCode,
     ///     "claude-session-abc123",
     ///     None::<&str>,
-    ///     DetectionMethod::Hook
+    ///     DetectionMethod::Hook,
+    ///     SessionMode::Interactive,
     /// );
     ///
     /// // ACP-based (with agent version)
@@ -406,7 +407,8 @@ impl AikiSession {
     ///     AgentType::ClaudeCode,
     ///     "claude-session-abc123",
     ///     Some("0.10.6"),
-    ///     DetectionMethod::ACP
+    ///     DetectionMethod::ACP,
+    ///     SessionMode::Interactive,
     /// );
     ///
     /// // Same inputs produce same UUID (deterministic)
@@ -414,7 +416,8 @@ impl AikiSession {
     ///     AgentType::ClaudeCode,
     ///     "claude-session-abc123",
     ///     None::<&str>,
-    ///     DetectionMethod::Hook
+    ///     DetectionMethod::Hook,
+    ///     SessionMode::Interactive,
     /// );
     /// assert_eq!(session.uuid(), session2.uuid());
     /// ```
@@ -534,14 +537,15 @@ impl AikiSession {
     ///
     /// # Example
     /// ```
-    /// use aiki::session::AikiSession;
+    /// use aiki::session::{AikiSession, SessionMode};
     /// use aiki::provenance::{AgentType, DetectionMethod};
     ///
     /// let session = AikiSession::new(
     ///     AgentType::ClaudeCode,
     ///     "session-123",
     ///     None::<&str>,
-    ///     DetectionMethod::ACP
+    ///     DetectionMethod::ACP,
+    ///     SessionMode::Interactive,
     /// )
     /// .with_client_info(Some("zed"), Some("0.213.3"));
     /// ```
@@ -563,14 +567,15 @@ impl AikiSession {
     ///
     /// # Example
     /// ```
-    /// use aiki::session::AikiSession;
+    /// use aiki::session::{AikiSession, SessionMode};
     /// use aiki::provenance::{AgentType, DetectionMethod};
     ///
     /// let session = AikiSession::new(
     ///     AgentType::ClaudeCode,
     ///     "session-123",
     ///     None::<&str>,
-    ///     DetectionMethod::Hook
+    ///     DetectionMethod::Hook,
+    ///     SessionMode::Interactive,
     /// )
     /// .with_parent_pid(Some(1234));
     /// ```

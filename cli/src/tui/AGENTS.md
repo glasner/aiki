@@ -87,8 +87,8 @@ When designing new views, use annotated ASCII art. Left side is literal terminal
 [80 cols]
  [luppzupt] Implement webhooks              ← dim brackets, hi+bold name
                                              ← blank row
- ⎿ ✓ Explore webhook requirements    cc  8s ← dim ⎿, green ✓, text name, cyan cc, dim 8s
- ⎿ ▸ Implement route handler        cur     ← yellow ▸, magenta cur
+ ⎿ ✓ Explore webhook requirements  claude  8s  ← dim ⎿, green ✓, text name, cyan claude, dim 8s
+ ⎿ ▸ Implement route handler      cursor       ← yellow ▸, magenta cursor
  ⎿ ○ Write integration tests                ← dim ○, dim name
 
  ▸ build  3/6  0:34                          ← yellow ▸, yellow text

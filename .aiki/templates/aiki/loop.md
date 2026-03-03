@@ -1,20 +1,11 @@
 ---
 version: 2.0.0
 type: orchestrator
-spawns:
-  - when: "data.options.review or data.options.fix"
-    task:
-      template: aiki/review
-      data:
-        scope.kind: '"code"'
-        scope.id: data.plan
-        scope.name: '"Code (" + data.plan + ")"'
-        options.fix: data.options.fix
 ---
 
-# Implement: {{data.target}}
+# Loop: {{data.target}}
 
-You are orchestrating the implementation of task {{data.target}}.
+You are orchestrating the execution of subtasks under {{data.target}}.
 
 ## Step 1: Understand the work
 

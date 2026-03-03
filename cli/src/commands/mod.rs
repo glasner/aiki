@@ -16,6 +16,7 @@ pub enum OutputFormat {
 }
 
 pub mod acp;
+pub mod async_spawn;
 pub mod agents_template;
 pub mod authors;
 pub mod benchmark;
@@ -32,9 +33,11 @@ pub mod decompose;
 pub mod epic;
 pub mod plugin;
 pub mod init;
+pub mod loop_cmd;
 pub mod otel_receive;
 pub mod review;
 pub mod plan;
+pub mod resolve;
 
 pub mod status;
 pub mod task;

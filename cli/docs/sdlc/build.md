@@ -61,7 +61,7 @@ In this example, Frontend and Backend fan out from Plan (both `--depends-on` Pla
 | `--restart` | Ignore existing epic, create a new one |
 | `--review` | Run a review after all subtasks complete |
 | `--fix` | Run review + fix loop after build (implies `--review`) |
-| `--template <name>` | Use a custom build template (default: `aiki/implement`) |
+| `--template <name>` | Use a custom build template (default: `aiki/loop`) |
 | `--agent <type>` | Choose orchestrator agent (default: `claude-code`) |
 
 ## Subcommands

@@ -1,6 +1,6 @@
-- cleanup issues list (done?)
-- fix review subtasks (just verify template)
-- implement loop refaxtor
+- agent loading
+- review original after fix
+- review screen cleanup
 - ux -> share with Paul
 
 - registry

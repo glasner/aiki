@@ -4,11 +4,13 @@
 //! `WorkflowView` that TUI widgets consume.
 
 use crate::tasks::graph::TaskGraph;
+use crate::tasks::lanes::derive_lanes;
 use crate::tasks::types::{Task, TaskOutcome, TaskStatus};
 use crate::tui::types::{
     EpicView, FixChild, StageChild, StageState, StageView, SubStageView, SubtaskLine,
     SubtaskStatus, WorkflowView,
 };
+use crate::tui::widgets::lane_dag::{compute_dag_layout, should_show_dag, DagLayout};
 
 /// Build a complete `WorkflowView` from an epic task, its subtasks, and the task graph.
 pub fn build_workflow_view(
@@ -20,14 +22,56 @@ pub fn build_workflow_view(
     let stages = build_stages(epic, subtasks, plan_path, graph);
     let active_stage = active_stage_name(&stages);
 
+    let lane_dag = build_lane_dag(epic, plan_path, graph, &stages);
     let epic_view = build_epic_view(epic, subtasks, &active_stage, &stages);
 
     WorkflowView {
         plan_path: plan_path.to_string(),
         epic: epic_view,
         stages,
-        lane_dag: None,
+        lane_dag,
     }
+}
+
+/// Build the lane DAG layout when the implement sub-stage is active.
+fn build_lane_dag(
+    epic: &Task,
+    plan_path: &str,
+    graph: &TaskGraph,
+    stages: &[StageView],
+) -> Option<DagLayout> {
+    // Check if the "implement" sub-stage is Active
+    let implement_active = stages.iter().any(|stage| {
+        stage.name == "build"
+            && stage
+                .sub_stages
+                .iter()
+                .any(|ss| ss.name == "implement" && matches!(ss.state, StageState::Starting | StageState::Active))
+    });
+    if !implement_active {
+        return None;
+    }
+
+    // Find the orchestrator task for this epic/plan
+    for orch_id in graph.edges.referrers(&epic.id, "orchestrates") {
+        if let Some(orch_task) = graph.tasks.get(orch_id) {
+            let orch_plan = orch_task
+                .data
+                .get("plan")
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            if orch_plan == plan_path && orch_task.status == TaskStatus::InProgress {
+                let decomposition = derive_lanes(graph, orch_id);
+                let layout = compute_dag_layout(&decomposition, graph);
+                if should_show_dag(&layout) {
+                    return Some(layout);
+                } else {
+                    return None;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Convert a `Task` status to a `SubtaskStatus`.
@@ -38,7 +82,13 @@ fn task_to_subtask_status(task: &Task) -> SubtaskStatus {
             Some(TaskOutcome::WontDo) => SubtaskStatus::Failed,
             None => SubtaskStatus::Done,
         },
-        TaskStatus::InProgress => SubtaskStatus::Active,
+        TaskStatus::InProgress => {
+            if task.claimed_by_session.is_none() {
+                SubtaskStatus::Starting
+            } else {
+                SubtaskStatus::Active
+            }
+        }
         TaskStatus::Open => SubtaskStatus::Pending,
         TaskStatus::Stopped => SubtaskStatus::Failed,
     }
@@ -52,7 +102,13 @@ fn task_to_stage_state(task: &Task) -> StageState {
             Some(TaskOutcome::WontDo) => StageState::Failed,
             None => StageState::Done,
         },
-        TaskStatus::InProgress => StageState::Active,
+        TaskStatus::InProgress => {
+            if task.claimed_by_session.is_none() {
+                StageState::Starting
+            } else {
+                StageState::Active
+            }
+        }
         TaskStatus::Open => StageState::Pending,
         TaskStatus::Stopped => StageState::Failed,
     }
@@ -67,8 +123,10 @@ fn agent_label(task: &Task) -> Option<String> {
         .or(task.assignee.as_deref());
 
     match agent {
-        Some(a) if a.contains("claude-code") || a == "cc" => Some("cc".to_string()),
-        Some(a) if a.contains("cursor") || a == "cur" => Some("cur".to_string()),
+        Some(a) if a.contains("claude-code") || a == "cc" || a == "claude" => Some("claude".to_string()),
+        Some(a) if a.contains("cursor") || a == "cur" => Some("cursor".to_string()),
+        Some(a) if a.contains("codex") => Some("codex".to_string()),
+        Some(a) if a.contains("gemini") => Some("gemini".to_string()),
         _ => None,
     }
 }
@@ -194,7 +252,7 @@ fn compute_total_elapsed(subtasks: &[&Task]) -> Option<String> {
 /// Determine which stage is currently active.
 fn active_stage_name(stages: &[StageView]) -> String {
     for stage in stages.iter().rev() {
-        if stage.state == StageState::Active || stage.state == StageState::Failed {
+        if matches!(stage.state, StageState::Starting | StageState::Active | StageState::Failed) {
             return stage.name.clone();
         }
     }
@@ -526,13 +584,16 @@ fn derive_review_progress(review_task: &Task) -> Option<String> {
 }
 
 /// Priority ordering for stage states (higher = takes precedence).
-/// Failed > Done because a failure in any part should surface.
+/// In-flight states (Starting, Active) dominate over Done so that
+/// a stage isn't reported as complete while work is still running.
+/// Failed > all because a failure in any part should surface.
 fn stage_state_priority(state: StageState) -> u8 {
     match state {
         StageState::Pending => 0,
-        StageState::Active => 2,
         StageState::Done => 1,
-        StageState::Failed => 3,
+        StageState::Starting => 2,
+        StageState::Active => 3,
+        StageState::Failed => 4,
     }
 }
 
@@ -592,11 +653,12 @@ mod tests {
             TaskStatus::Closed,
         );
         t1.closed_outcome = Some(TaskOutcome::Done);
-        let t2 = make_task(
+        let mut t2 = make_task(
             "iiiijjjjkkkkllllmmmmnnnnoooopppp",
             "Add tests",
             TaskStatus::InProgress,
         );
+        t2.claimed_by_session = Some("session-1".to_string());
 
         let subtasks: Vec<&Task> = vec![&t1, &t2];
         let graph = empty_graph();
@@ -702,8 +764,13 @@ mod tests {
         done.closed_outcome = Some(TaskOutcome::Done);
         assert_eq!(task_to_subtask_status(&done), SubtaskStatus::Done);
 
-        // InProgress → Active
-        let active = make_task("b".repeat(32).as_str(), "Active", TaskStatus::InProgress);
+        // InProgress without session → Starting
+        let starting = make_task("b".repeat(32).as_str(), "Starting", TaskStatus::InProgress);
+        assert_eq!(task_to_subtask_status(&starting), SubtaskStatus::Starting);
+
+        // InProgress with session → Active
+        let mut active = make_task("f".repeat(32).as_str(), "Active", TaskStatus::InProgress);
+        active.claimed_by_session = Some("session-123".to_string());
         assert_eq!(task_to_subtask_status(&active), SubtaskStatus::Active);
 
         // Open → Pending
@@ -725,20 +792,20 @@ mod tests {
         let mut task = make_task("a".repeat(32).as_str(), "T", TaskStatus::Open);
         task.data
             .insert("agent_type".to_string(), "claude-code".to_string());
-        assert_eq!(agent_label(&task), Some("cc".to_string()));
+        assert_eq!(agent_label(&task), Some("claude".to_string()));
 
         let mut task2 = make_task("b".repeat(32).as_str(), "T", TaskStatus::Open);
         task2
             .data
             .insert("agent_type".to_string(), "cursor".to_string());
-        assert_eq!(agent_label(&task2), Some("cur".to_string()));
+        assert_eq!(agent_label(&task2), Some("cursor".to_string()));
     }
 
     #[test]
     fn agent_label_from_assignee() {
         let mut task = make_task("a".repeat(32).as_str(), "T", TaskStatus::Open);
         task.assignee = Some("cc".to_string());
-        assert_eq!(agent_label(&task), Some("cc".to_string()));
+        assert_eq!(agent_label(&task), Some("claude".to_string()));
     }
 
     #[test]
@@ -769,7 +836,8 @@ mod tests {
 
         // Build graph with a review task validating the epic
         let mut graph = empty_graph();
-        let review_task = make_task(review_id, "Review epic", TaskStatus::InProgress);
+        let mut review_task = make_task(review_id, "Review epic", TaskStatus::InProgress);
+        review_task.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(review_id.to_string(), review_task);
         graph.edges.add(review_id, epic_id, "validates");
 
@@ -809,7 +877,8 @@ mod tests {
         let subtasks: Vec<&Task> = vec![];
 
         let mut graph = empty_graph();
-        let review_task = make_task(review_id, "Review", TaskStatus::InProgress);
+        let mut review_task = make_task(review_id, "Review", TaskStatus::InProgress);
+        review_task.claimed_by_session = Some("session-1".to_string());
         let review_child = make_task(child_id, "Explore Scope", TaskStatus::Closed);
         let mut review_child_done = review_child.clone();
         review_child_done.closed_outcome = Some(TaskOutcome::Done);
@@ -878,6 +947,7 @@ mod tests {
 
         // New review: in-progress with 3 issues
         let mut new_review = make_task(new_review_id, "Review v2", TaskStatus::InProgress);
+        new_review.claimed_by_session = Some("session-1".to_string());
         new_review
             .data
             .insert("issue_count".to_string(), "3".to_string());
@@ -911,12 +981,14 @@ mod tests {
         let subtasks: Vec<&Task> = vec![];
 
         let mut graph = empty_graph();
-        let fix_task = make_task(fix_id, "Fix issues", TaskStatus::InProgress);
+        let mut fix_task = make_task(fix_id, "Fix issues", TaskStatus::InProgress);
+        fix_task.claimed_by_session = Some("session-1".to_string());
 
         let mut rem1 = make_task(rem1_id, "Fix null check", TaskStatus::Closed);
         rem1.closed_outcome = Some(TaskOutcome::Done);
 
-        let rem2 = make_task(rem2_id, "Fix error handling", TaskStatus::InProgress);
+        let mut rem2 = make_task(rem2_id, "Fix error handling", TaskStatus::InProgress);
+        rem2.claimed_by_session = Some("session-2".to_string());
 
         let mut review_fix = make_task(rf_id, "Review fix", TaskStatus::Open);
         review_fix.task_type = Some("review".to_string());
@@ -975,6 +1047,7 @@ mod tests {
         orch.task_type = Some("orchestrator".to_string());
         orch.data.insert("plan".to_string(), "ops/now/test.md".to_string());
         orch.started_at = Some(Utc::now() - chrono::Duration::seconds(30));
+        orch.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(orch_id.to_string(), orch);
         graph.edges.add(orch_id, epic_id, "orchestrates");
 
@@ -998,10 +1071,11 @@ mod tests {
 
         let mut graph = empty_graph();
 
-        // Decompose is in-progress
+        // Decompose is in-progress (agent claimed)
         let mut decompose = make_task(decompose_id, "Decompose", TaskStatus::InProgress);
         decompose.task_type = Some("decompose".to_string());
         decompose.started_at = Some(Utc::now() - chrono::Duration::seconds(5));
+        decompose.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(decompose_id.to_string(), decompose);
         graph.edges.add(epic_id, decompose_id, "depends-on");
 
@@ -1028,11 +1102,12 @@ mod tests {
 
         let mut graph = empty_graph();
 
-        // Orchestrator is running
+        // Orchestrator is running (agent claimed)
         let mut orch = make_task(orch_id, "Implement", TaskStatus::InProgress);
         orch.task_type = Some("orchestrator".to_string());
         orch.data.insert("plan".to_string(), "ops/now/test.md".to_string());
         orch.started_at = Some(Utc::now() - chrono::Duration::seconds(10));
+        orch.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(orch_id.to_string(), orch);
         graph.edges.add(orch_id, epic_id, "orchestrates");
 
@@ -1041,5 +1116,72 @@ mod tests {
         // Build should be Active because orchestrator is running
         assert_eq!(view.stages[0].state, StageState::Active);
         assert_eq!(view.stages[0].progress, Some("0/2".to_string()));
+    }
+
+    #[test]
+    fn lane_dag_populated_during_implement() {
+        let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
+        let orch_id = "oooooooooooooooooooooooooooooooo";
+        let sub1_id = "ssssssssssssssssssssssssssssssss";
+        let sub2_id = "tttttttttttttttttttttttttttttttt";
+
+        let epic = make_task(epic_id, "Epic", TaskStatus::InProgress);
+        let subtasks: Vec<&Task> = vec![];
+
+        let mut graph = empty_graph();
+
+        // Orchestrator task (InProgress) linked to epic
+        let mut orch = make_task(orch_id, "Implement", TaskStatus::InProgress);
+        orch.task_type = Some("orchestrator".to_string());
+        orch.data
+            .insert("plan".to_string(), "ops/now/test.md".to_string());
+        orch.started_at = Some(Utc::now() - chrono::Duration::seconds(30));
+        orch.claimed_by_session = Some("session-1".to_string());
+        graph.tasks.insert(orch_id.to_string(), orch);
+        graph.edges.add(orch_id, epic_id, "orchestrates");
+
+        // Two independent subtasks of orchestrator (no depends-on between them)
+        // → derive_lanes produces 2 separate lanes → should_show_dag returns true
+        let mut sub1 = make_task(sub1_id, "Setup DB", TaskStatus::InProgress);
+        sub1.claimed_by_session = Some("session-2".to_string());
+        let sub2 = make_task(sub2_id, "Add API", TaskStatus::Open);
+        graph.tasks.insert(sub1_id.to_string(), sub1);
+        graph.tasks.insert(sub2_id.to_string(), sub2);
+        graph.edges.add(sub1_id, orch_id, "subtask-of");
+        graph.edges.add(sub2_id, orch_id, "subtask-of");
+
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+
+        // The implement sub-stage should be active and lane_dag should be populated
+        assert!(
+            view.lane_dag.is_some(),
+            "lane_dag should be Some when implement sub-stage is active with subtasks"
+        );
+    }
+
+    #[test]
+    fn lane_dag_none_when_not_implementing() {
+        let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
+        let decompose_id = "dddddddddddddddddddddddddddddddd";
+
+        let epic = make_task(epic_id, "Epic", TaskStatus::InProgress);
+        let subtasks: Vec<&Task> = vec![];
+
+        let mut graph = empty_graph();
+
+        // Only a decompose task (no orchestrator) — implement sub-stage not active
+        let mut decompose = make_task(decompose_id, "Decompose plan", TaskStatus::InProgress);
+        decompose.task_type = Some("decompose".to_string());
+        decompose.started_at = Some(Utc::now() - chrono::Duration::seconds(5));
+        graph.tasks.insert(decompose_id.to_string(), decompose);
+        graph.edges.add(epic_id, decompose_id, "depends-on");
+
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+
+        // No orchestrator → no implement sub-stage → lane_dag should be None
+        assert!(
+            view.lane_dag.is_none(),
+            "lane_dag should be None when implement sub-stage is not active"
+        );
     }
 }

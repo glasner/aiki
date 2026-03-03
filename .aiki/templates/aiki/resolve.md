@@ -24,7 +24,6 @@ aiki task close {{id}} --summary "Resolved conflicts in <file1, file2>: <brief e
 
 # Subtasks
 
-{% subtask %}
 ## Understand What Conflicted
 
 First, inspect the conflicted change to understand what you were trying to do:

@@ -179,8 +179,8 @@ aiki review --async | aiki wait | aiki fix
 
 **Review workflow:**
 1. `aiki review` creates a review task with subtasks (digest changes, review code)
-2. An agent (default: codex) executes the review, adding comments for issues found
-3. `aiki fix` reads comments from the completed review and creates followup tasks
+2. An agent (default: codex) executes the review, recording issues via `aiki review issue add`
+3. `aiki fix` reads issues from the completed review and creates followup tasks
 4. Followup tasks are run to address the findings
 
 **Command flags:**

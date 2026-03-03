@@ -11,18 +11,18 @@ use std::path::Path;
 use clap::Subcommand;
 
 use super::OutputFormat;
+use super::decompose::{run_decompose, DecomposeOptions};
 use crate::agents::AgentType;
 use crate::output_utils;
 use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
 use crate::tasks::id::is_task_id;
-use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::get_working_copy_change_id;
 use crate::plans::{parse_plan_metadata, PlanGraph};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, generate_task_id, get_subtasks, is_task_id_prefix, materialize_graph, read_events,
-    write_event, write_link_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
+    write_event, Task, TaskEvent, TaskOutcome, TaskPriority, TaskStatus,
 };
 
 /// Epic subcommands
@@ -44,6 +44,10 @@ pub enum EpicCommands {
         /// Agent for decomposition (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
+
+        /// Output format (e.g., `id` for bare task ID on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<OutputFormat>,
     },
     /// Show epic status and subtasks
     Show {
@@ -70,7 +74,8 @@ pub fn run(command: EpicCommands) -> Result<()> {
             restart,
             template,
             agent,
-        } => run_add(&cwd, &plan_path, restart, template, agent),
+            output,
+        } => run_add(&cwd, &plan_path, restart, template, agent, output),
         EpicCommands::Show { arg, output } => run_show(&cwd, &arg, output),
         EpicCommands::List => run_list(&cwd),
     }
@@ -90,6 +95,7 @@ fn run_add(
     restart: bool,
     template_name: Option<String>,
     agent: Option<String>,
+    output_format: Option<OutputFormat>,
 ) -> Result<()> {
     // Validate plan file exists and is .md
     validate_plan_path(cwd, plan_path)?;
@@ -132,7 +138,7 @@ fn run_add(
             }
         }
         let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
-        return output_epic_result(cwd, &epic_id, true);
+        return output_epic_result(cwd, &epic_id, true, output_format);
     }
 
     // Find-or-create: check for existing epic
@@ -146,18 +152,21 @@ fn run_add(
                 // Invalid epic (no subtasks) — decompose agent failed
                 close_epic_as_invalid(cwd, &epic.id)?;
                 let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
-                return output_epic_result(cwd, &epic_id, true);
+                return output_epic_result(cwd, &epic_id, true, output_format);
             }
 
             // Valid incomplete epic — return it (deterministic, no prompt)
-            output_epic_resumed(&epic.id, &subtasks)?;
-            output_utils::emit_stdout(&epic.id);
+            if matches!(output_format, Some(OutputFormat::Id)) {
+                println!("{}", epic.id);
+            } else {
+                output_epic_resumed(&epic.id, &subtasks)?;
+            }
             Ok(())
         }
         _ => {
             // No epic, or epic is closed — create new
             let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
-            output_epic_result(cwd, &epic_id, true)
+            output_epic_result(cwd, &epic_id, true, output_format)
         }
     }
 }
@@ -165,7 +174,8 @@ fn run_add(
 /// Create a new epic by running the decompose agent.
 ///
 /// 1. Creates the epic task (container for subtasks)
-/// 2. Creates and runs the decompose agent task with `data.epic` pointing to it
+/// 2. Calls `run_decompose()` which handles implements-plan link, decompose task,
+///    decomposes-plan link, depends-on link, and running the decompose agent
 /// 3. Returns the epic task ID
 fn create_epic(
     cwd: &Path,
@@ -176,26 +186,11 @@ fn create_epic(
     // Create the epic task first so the decompose agent can add subtasks to it
     let epic_id = create_epic_task(cwd, plan_path)?;
 
-    let template = template_name.unwrap_or("aiki/decompose");
-    let assignee = agent_type
-        .as_ref()
-        .map(|a| a.as_str().to_string())
-        .or_else(|| Some("claude-code".to_string()));
-
-    let decompose_task_id = create_decompose_task(cwd, plan_path, &epic_id, template, assignee)?;
-
-    // Epic task depends on decompose task — blocked until decomposition finishes
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "depends-on", &epic_id, &decompose_task_id)?;
-
-    // Run the decompose task to completion
-    let options = if let Some(agent) = agent_type {
-        TaskRunOptions::new().with_agent(agent)
-    } else {
-        TaskRunOptions::new()
+    let options = DecomposeOptions {
+        template: template_name.map(|s| s.to_string()),
+        agent: agent_type,
     };
-    task_run(cwd, &decompose_task_id, options)?;
+    run_decompose(cwd, plan_path, &epic_id, options)?;
 
     Ok(epic_id)
 }
@@ -203,8 +198,9 @@ fn create_epic(
 /// Create the epic task — the container that holds subtasks.
 ///
 /// Extracts the plan title from the H1 heading (or filename as fallback).
-/// Sets `data.plan`, `implements` link, and source.
-fn create_epic_task(cwd: &Path, plan_path: &str) -> Result<String> {
+/// Sets `data.plan` and source. The `implements-plan` link is written by
+/// `run_decompose()` which is called after this function.
+pub(super) fn create_epic_task(cwd: &Path, plan_path: &str) -> Result<String> {
     let full_path = if plan_path.starts_with('/') {
         std::path::PathBuf::from(plan_path)
     } else {
@@ -245,16 +241,6 @@ fn create_epic_task(cwd: &Path, plan_path: &str) -> Result<String> {
     };
     write_event(cwd, &event)?;
 
-    // Emit implements link
-    let spec_target = if plan_path.starts_with("file:") {
-        plan_path.to_string()
-    } else {
-        format!("file:{}", plan_path)
-    };
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "implements-plan", &epic_id, &spec_target)?;
-
     Ok(epic_id)
 }
 
@@ -266,7 +252,11 @@ fn create_epic_task(cwd: &Path, plan_path: &str) -> Result<String> {
 /// - No epic or closed epic → create new via decompose agent
 ///
 /// Returns the epic task ID.
-pub fn find_or_create_epic(cwd: &Path, plan_path: &str) -> Result<String> {
+pub fn find_or_create_epic(
+    cwd: &Path,
+    plan_path: &str,
+    decompose_template: Option<&str>,
+) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let plan_graph = PlanGraph::build(&graph);
@@ -278,12 +268,12 @@ pub fn find_or_create_epic(cwd: &Path, plan_path: &str) -> Result<String> {
             let subtasks = get_subtasks(&graph, &epic.id);
             if subtasks.is_empty() {
                 close_epic_as_invalid(cwd, &epic.id)?;
-                create_epic(cwd, plan_path, None, None)
+                create_epic(cwd, plan_path, decompose_template, None)
             } else {
                 Ok(epic.id.clone())
             }
         }
-        _ => create_epic(cwd, plan_path, None, None),
+        _ => create_epic(cwd, plan_path, decompose_template, None),
     }
 }
 
@@ -354,7 +344,7 @@ fn run_list(cwd: &Path) -> Result<()> {
     epics.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     if epics.is_empty() {
-        output_utils::emit_stderr(|| "No epics found.".to_string());
+        output_utils::emit(|| "No epics found.".to_string());
         return Ok(());
     }
 
@@ -390,7 +380,7 @@ fn run_list(cwd: &Path) -> Result<()> {
         ));
     }
 
-    output_utils::emit_stderr(|| MdBuilder::new("epic-list").build(&content, &[], &[]));
+    output_utils::emit(|| MdBuilder::new("epic-list").build(&content, &[], &[]));
 
     Ok(())
 }
@@ -478,62 +468,26 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Create the decompose task from template.
-fn create_decompose_task(
-    cwd: &Path,
-    plan_path: &str,
-    epic_id: &str,
-    template_name: &str,
-    assignee: Option<String>,
-) -> Result<String> {
-    use super::task::{create_from_template, TemplateTaskParams};
-
-    let mut data = std::collections::HashMap::new();
-    data.insert("plan".to_string(), plan_path.to_string());
-    data.insert("epic".to_string(), epic_id.to_string());
-
-    let params = TemplateTaskParams {
-        template_name: template_name.to_string(),
-        data,
-        sources: vec![format!("file:{}", plan_path)],
-        assignee: assignee.or_else(|| Some("claude-code".to_string())),
-        ..Default::default()
-    };
-
-    let task_id = create_from_template(cwd, params)?;
-
-    let spec_target = if plan_path.starts_with("file:") {
-        plan_path.to_string()
-    } else {
-        format!("file:{}", plan_path)
-    };
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    write_link_event(cwd, &graph, "decomposes-plan", &task_id, &spec_target)?;
-
-    Ok(task_id)
-}
-
 /// Output epic result (created or found) to stderr and stdout.
-fn output_epic_result(cwd: &Path, epic_id: &str, created: bool) -> Result<()> {
+fn output_epic_result(cwd: &Path, epic_id: &str, created: bool, output_format: Option<OutputFormat>) -> Result<()> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let subtasks = get_subtasks(&graph, epic_id);
 
-    if created {
+    if matches!(output_format, Some(OutputFormat::Id)) {
+        println!("{}", epic_id);
+    } else if created {
         output_epic_created(epic_id, &subtasks)?;
     } else {
         output_epic_resumed(epic_id, &subtasks)?;
     }
-
-    output_utils::emit_stdout(epic_id);
 
     Ok(())
 }
 
 /// Output epic created message to stderr
 fn output_epic_created(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let mut content = format!("## Epic Created\n- **ID:** {}\n\n", epic_id);
         for (i, subtask) in subtasks.iter().enumerate() {
             content.push_str(&format!("{}. {}\n", i + 1, &subtask.name));
@@ -549,7 +503,7 @@ fn output_epic_created(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
 
 /// Output epic resumed message to stderr
 fn output_epic_resumed(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let completed = subtasks
             .iter()
             .filter(|t| t.status == TaskStatus::Closed)
@@ -579,7 +533,7 @@ fn output_epic_resumed(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
 
 /// Output epic show (detailed status display)
 fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let completed = subtasks
             .iter()
             .filter(|t| t.status == TaskStatus::Closed)

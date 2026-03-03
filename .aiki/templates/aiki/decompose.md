@@ -6,7 +6,7 @@ slug: decompose
 
 # Decompose: {{data.plan}}
 
-**Goal**: Read the plan file and create an epic with implementation subtasks.
+**Goal**: Read the plan file and create a parent task with implementation subtasks.
 
 ## Create Implementation Plan
 
@@ -16,14 +16,14 @@ Read the plan file at `{{data.plan}}` and understand:
 - What are the constraints?
 - Are there open questions that need resolving?
 
-## Epic
+## Parent Task
 
-The epic has already been created: `{{data.epic}}`
+The parent task has already been created: `{{data.target}}`
 
-Set instructions on the epic:
+Set instructions on the parent task:
 
 ```bash
-aiki task set {{data.epic}} --instructions <<'MD'
+aiki task set {{data.target}} --instructions <<'MD'
 Implementation plan for <plan title>.
 See plan: {{data.plan}}
 MD
@@ -34,7 +34,7 @@ MD
 For each implementation step identified, create a subtask and set instructions:
 
 ```bash
-TASK_ID=$(aiki task add "<step description>" --subtask-of {{data.epic}} --output id)
+TASK_ID=$(aiki task add "<step description>" --subtask-of {{data.target}} --output id)
 aiki task set $TASK_ID --instructions <<'MD'
 <detailed instructions for this step — enough context for an
 executing agent to complete the step without re-reading the plan>
@@ -59,8 +59,8 @@ aiki task link $TESTS_ID --depends-on $BACKEND_ID
 
 ```bash
 # explore then plan in one session — plan needs explore's codebase understanding
-EXPLORE_ID=$(aiki task add "Explore codebase" --subtask-of {{data.epic}} --output id)
-PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.epic}} --needs-context $EXPLORE_ID --output id)
+EXPLORE_ID=$(aiki task add "Explore codebase" --subtask-of {{data.target}} --output id)
+PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.target}} --needs-context $EXPLORE_ID --output id)
 ```
 
 **When to use which:**
@@ -85,10 +85,10 @@ PLAN_ID=$(aiki task add "Create implementation plan" --subtask-of {{data.epic}} 
 
 ## Close Decompose Task
 
-When all subtasks are added, close this decompose task and report the epic:
+When all subtasks are added, close this decompose task and report the parent task:
 
 ```bash
-aiki task close {{id}} --summary "Epic created with N subtasks. Epic ID: {{data.epic}}"
+aiki task close {{id}} --summary "Created N subtasks. Parent task ID: {{data.target}}"
 ```
 
-Output the epic ID and subtask summary for the user.
+Output the parent task ID and subtask summary for the user.

@@ -129,7 +129,7 @@ pub fn compute_dag_layout(decomposition: &LaneDecomposition, graph: &TaskGraph) 
     let mut rendered_lanes: Vec<RenderedLane> = Vec::with_capacity(decomposition.lanes.len());
     let mut max_col: u16 = 0;
 
-    for (_i, lane) in decomposition.lanes.iter().enumerate() {
+    for lane in &decomposition.lanes {
         // Find parent lane and fork column.
         let (parent_lane_idx, start_col) = if lane.depends_on_lanes.is_empty() {
             (None, 0u16)
@@ -290,11 +290,13 @@ impl<'a> LaneDag<'a> {
     }
 
     /// Width of the rendered DAG.
+    #[allow(dead_code)]
     pub fn width(&self) -> u16 {
         self.layout.width
     }
 
     /// Height of the rendered DAG.
+    #[allow(dead_code)]
     pub fn height(&self) -> u16 {
         self.layout.height
     }

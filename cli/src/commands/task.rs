@@ -282,6 +282,10 @@ pub enum TaskCommands {
         /// Filter to tasks created from a specific template (e.g., "aiki/review", "myorg/build@1.0")
         #[arg(long)]
         template: Option<String>,
+
+        /// Output format (e.g., `id` for bare task IDs on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<super::OutputFormat>,
     },
 
     /// List or show templates
@@ -583,6 +587,10 @@ pub enum TaskCommands {
         /// Include instructions in output (hidden by default)
         #[arg(long)]
         with_instructions: bool,
+
+        /// Output format (e.g., `id` for bare task ID on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<super::OutputFormat>,
     },
 
     /// Set fields on a task
@@ -644,6 +652,7 @@ pub enum TaskCommands {
     /// Add a comment to a task
     Comment {
         /// Task ID to comment on (defaults to current in-progress task)
+        #[arg(long)]
         id: Option<String>,
 
         /// Comment text (required)
@@ -701,6 +710,10 @@ pub enum TaskCommands {
         /// Return when any task completes (instead of waiting for all)
         #[arg(long)]
         any: bool,
+
+        /// Output format (e.g., `id` for bare task IDs on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<super::OutputFormat>,
     },
 
     /// Show lane decomposition for a parent task
@@ -953,6 +966,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         unassigned: false,
         source: None,
         template: None,
+        output: None,
     });
 
     match cmd {
@@ -967,6 +981,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             unassigned,
             source,
             template,
+            output,
         } => run_list(
             &cwd,
             None,
@@ -980,6 +995,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             unassigned,
             source,
             template,
+            output,
         ),
         TaskCommands::Template { command } => run_template(&cwd, command),
         TaskCommands::Add {
@@ -1111,7 +1127,8 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             diff,
             with_source,
             with_instructions,
-        } => run_show(&cwd, id, diff, with_source, with_instructions),
+            output,
+        } => run_show(&cwd, id, diff, with_source, with_instructions, output),
         TaskCommands::Set {
             id,
             p0,
@@ -1150,7 +1167,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             next_session,
             lane,
         } => run_run(&cwd, id, agent, run_async, next_subtask, next_session, lane),
-        TaskCommands::Wait { ids, any } => run_wait(&cwd, ids, any),
+        TaskCommands::Wait { ids, any, output } => run_wait(&cwd, ids, any, output),
         TaskCommands::Lane { id, all } => run_lane(&cwd, id, all),
         TaskCommands::Undo {
             ids,
@@ -1251,6 +1268,7 @@ fn run_list(
     filter_unassigned: bool,
     filter_source: Option<String>,
     filter_template: Option<String>,
+    output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     use crate::agents::{AgentType, Assignee};
     use crate::session::find_active_session;
@@ -1544,8 +1562,8 @@ fn run_list(
         })
         .collect();
 
-    // If stdout is piped, output bare task IDs (one per line) and return
-    if !crate::output_utils::is_tty_stdout() {
+    // If --output id, print bare task IDs (one per line) and return
+    if matches!(output_format, Some(super::OutputFormat::Id)) {
         for t in &list_tasks {
             println!("{}", t.id);
         }
@@ -1978,7 +1996,7 @@ fn run_start(
         TaskPriority::default() // P2
     };
     let events = read_events(cwd)?;
-    let mut graph = materialize_graph(&events);
+    let graph = materialize_graph(&events);
     let mut tasks = graph.tasks.clone();
 
     // Detect current session early - needed for start event
@@ -2459,20 +2477,12 @@ fn run_stop(
         };
         write_event(cwd, &blocker_event)?;
 
-        // Emit links for each stopped task
-        for task_id in &task_ids {
-            // Emit blocked-by link: stopped task → blocker
-            write_link_event(cwd, &graph, "blocked-by", task_id, &blocker_id)?;
-
-            // Emit sourced-from link: blocker → stopped task
-            write_link_event(cwd, &graph, "sourced-from", &blocker_id, task_id)?;
-        }
-
-        // Add blocker task to in-memory map so it appears in ready queue
+        // Add blocker task to in-memory graph BEFORE writing link events
+        // (link validation checks graph.tasks for blocked-by targets)
         graph.tasks.insert(
             blocker_id.clone(),
             Task {
-                id: blocker_id,
+                id: blocker_id.clone(),
                 name: blocked_reason.clone(),
                 slug: None,
                 task_type: None,
@@ -2496,6 +2506,15 @@ fn run_stop(
                 comments: Vec::new(),
             },
         );
+
+        // Emit links for each stopped task
+        for task_id in &task_ids {
+            // Emit blocked-by link: stopped task → blocker
+            write_link_event(cwd, &graph, "blocked-by", task_id, &blocker_id)?;
+
+            // Emit sourced-from link: blocker → stopped task
+            write_link_event(cwd, &graph, "sourced-from", &blocker_id, task_id)?;
+        }
     }
 
     // Update all stopped tasks' status and handle orchestrator cascades
@@ -3781,6 +3800,7 @@ fn run_show(
     show_diff: bool,
     with_source: bool,
     with_instructions: bool,
+    output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
 
@@ -3806,8 +3826,8 @@ fn run_show(
         }
     };
 
-    // If stdout is piped, output bare task ID and return
-    if !crate::output_utils::is_tty_stdout() {
+    // If --output id, print bare task ID and return
+    if matches!(output_format, Some(super::OutputFormat::Id)) {
         println!("{}", task_id);
         return Ok(());
     }
@@ -4783,7 +4803,7 @@ fn get_task_changed_files(
 /// Parse jj diff --summary output to extract file paths
 ///
 /// Example output:
-/// ```
+/// ```text
 /// M src/auth.ts
 /// A src/new_file.ts
 /// D src/old_file.ts
@@ -5568,7 +5588,7 @@ const WAIT_INITIAL_DELAY_MS: u64 = 100;
 const WAIT_MAX_DELAY_MS: u64 = 2000;
 const WAIT_BACKOFF_MULTIPLIER: u64 = 2;
 
-fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
+fn run_wait(cwd: &Path, ids: Vec<String>, any: bool, output_format: Option<super::OutputFormat>) -> Result<()> {
     use std::time::Duration;
 
     let ids = if ids.is_empty() {
@@ -5606,16 +5626,19 @@ fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
         };
 
         if done {
-            // Pipe-friendly: output completed task IDs to stdout
-            for id in &ids {
-                if any && !is_terminal(id) {
-                    continue;
+            let output_id = matches!(output_format, Some(super::OutputFormat::Id));
+
+            if output_id {
+                for id in &ids {
+                    if any && !is_terminal(id) {
+                        continue;
+                    }
+                    println!("{}", id);
                 }
-                crate::output_utils::emit_stdout(id);
             }
 
-            // Rich output: markdown table to stderr when TTY
-            crate::output_utils::emit_stderr(|| {
+            // Rich output: markdown table to stdout (suppressed when --output id)
+            if !output_id { crate::output_utils::emit(|| {
                 let mut content = String::from("## Wait Complete
 | ID | Name | Status | Outcome | Summary |
 |----|------|--------|---------|--------|
@@ -5649,7 +5672,7 @@ fn run_wait(cwd: &Path, ids: Vec<String>, any: bool) -> Result<()> {
                     builder = builder.with_scopes(&xml_scopes);
                 }
                 builder.build(&content, &in_progress, &ready_queue)
-            });
+            }); }
 
             // Check for failures — return non-zero exit for stopped or wont_do tasks
             for id in &ids {
@@ -6015,13 +6038,24 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
         }
     }
 
+    // Resolve data source from source task's comments (for {% for item in source.comments %} loops)
+    let data_source = params
+        .sources
+        .iter()
+        .find_map(|s| s.strip_prefix("task:"))
+        .and_then(|source_task_ref| {
+            crate::tasks::manager::find_task_in_graph(&graph, source_task_ref)
+                .ok()
+                .map(|t| t.comments.clone())
+        });
+
     // Create subtasks - route based on template type
     if template.raw_content.as_ref().is_some_and(|c| {
         crate::tasks::templates::has_subtask_refs(c) || crate::tasks::templates::has_inline_loops(c)
     }) {
         // Composable templates: use entry-based flow for {% subtask %} refs or {% for %} loops
         let (_, entries) =
-            crate::tasks::templates::create_subtask_entries_from_template(&template, &ctx, None)?;
+            crate::tasks::templates::create_subtask_entries_from_template(&template, &ctx, data_source)?;
         let composition_stack = vec![template_name.to_string()];
         create_subtasks_from_entries(
             cwd,
