@@ -4,6 +4,7 @@ use crate::tui::widgets::lane_dag::DagLayout;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageState {
     Pending,
+    Starting,
     Active,
     Done,
     Failed,
@@ -13,6 +14,7 @@ pub enum StageState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtaskStatus {
     Pending,
+    Starting,
     Active,
     Done,
     Failed,

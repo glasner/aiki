@@ -544,6 +544,10 @@ fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> R
 
         // Add item fields to context for conditional evaluation
         ctx.set(format!("{}.text", variable_name), item.text.clone());
+        // Add data fields (e.g., item.file, item.severity) for conditional evaluation
+        for (key, value) in &item.data {
+            ctx.set(format!("{}.{}", variable_name, key), value.clone());
+        }
 
         // Process conditionals with the populated context
         // This evaluates {% if %} blocks using the loop variables
@@ -570,6 +574,12 @@ fn expand_loop_body(variable_name: &str, body: &str, items: &[TaskComment]) -> R
         // {{var.text}} with the comment text
         let text_pattern = format!("{{{{{}.text}}}}", variable_name);
         replacements.push((text_pattern, item.text.clone()));
+
+        // {{var.<key>}} for each data field on the comment (e.g., {{item.file}})
+        for (key, value) in &item.data {
+            let pattern = format!("{{{{{}.{}}}}}", variable_name, key);
+            replacements.push((pattern, value.clone()));
+        }
 
         // Apply all replacements, but only outside nested loop markers
         iteration_body = replace_outside_nested_loops(&iteration_body, &replacements);
@@ -1922,33 +1932,33 @@ Review the changes."#;
         assert!(vars.contains(&"parent.subtasks.explore".to_string()));
     }
 
-    // --- aiki/implement template tests ---
+    // --- aiki/loop template tests ---
 
     #[test]
-    fn test_implement_template_exists_and_parses_as_orchestrator() {
+    fn test_loop_template_exists_and_parses_as_orchestrator() {
         let temp_dir = TempDir::new().unwrap();
         let aiki_dir = temp_dir.path().join("aiki");
         fs::create_dir_all(&aiki_dir).unwrap();
 
-        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
-        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
+        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
-        assert_eq!(template.name, "aiki/implement");
+        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "aiki/loop");
         assert_eq!(template.version, Some("2.0.0".to_string()));
         assert_eq!(template.defaults.task_type, Some("orchestrator".to_string()));
     }
 
     #[test]
-    fn test_implement_template_contains_lane_commands() {
+    fn test_loop_template_contains_lane_commands() {
         let temp_dir = TempDir::new().unwrap();
         let aiki_dir = temp_dir.path().join("aiki");
         fs::create_dir_all(&aiki_dir).unwrap();
 
-        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
-        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
+        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
 
         let instructions = &template.parent.instructions;
         assert!(
@@ -1974,35 +1984,35 @@ Review the changes."#;
     }
 
     #[test]
-    fn test_implement_template_resolves_via_standard_path() {
+    fn test_loop_template_resolves_via_standard_path() {
         let temp_dir = TempDir::new().unwrap();
         let aiki_dir = temp_dir.path().join("aiki");
         fs::create_dir_all(&aiki_dir).unwrap();
 
-        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
-        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
+        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
 
         let templates = list_templates(temp_dir.path()).unwrap();
         let names: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
         assert!(
-            names.contains(&"aiki/implement"),
-            "aiki/implement should be discoverable via list_templates"
+            names.contains(&"aiki/loop"),
+            "aiki/loop should be discoverable via list_templates"
         );
 
-        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
-        assert_eq!(template.name, "aiki/implement");
+        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "aiki/loop");
     }
 
     #[test]
-    fn test_implement_template_uses_data_target() {
+    fn test_loop_template_uses_data_target() {
         let temp_dir = TempDir::new().unwrap();
         let aiki_dir = temp_dir.path().join("aiki");
         fs::create_dir_all(&aiki_dir).unwrap();
 
-        let implement_content = include_str!("../../../../.aiki/templates/aiki/implement.md");
-        fs::write(aiki_dir.join("implement.md"), implement_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
+        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/implement", temp_dir.path()).unwrap();
+        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
 
         assert!(
             template.parent.name.contains("{{data.target}}"),

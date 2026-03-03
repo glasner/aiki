@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING};
+use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING, SYM_STARTING};
 use crate::tui::types::{EpicView, SubtaskStatus};
 
 /// Renders an epic task and its subtask tree.
@@ -28,6 +28,7 @@ impl<'a> EpicTree<'a> {
 fn status_symbol(status: SubtaskStatus) -> &'static str {
     match status {
         SubtaskStatus::Done => SYM_CHECK,
+        SubtaskStatus::Starting => SYM_STARTING,
         SubtaskStatus::Active => SYM_RUNNING,
         SubtaskStatus::Pending => SYM_PENDING,
         SubtaskStatus::Failed => SYM_FAILED,
@@ -38,6 +39,7 @@ fn status_symbol(status: SubtaskStatus) -> &'static str {
 fn status_style(status: SubtaskStatus, theme: &Theme) -> Style {
     match status {
         SubtaskStatus::Done => Style::default().fg(theme.green),
+        SubtaskStatus::Starting => Style::default().fg(theme.yellow),
         SubtaskStatus::Active => Style::default().fg(theme.yellow),
         SubtaskStatus::Pending => theme.dim_style(),
         SubtaskStatus::Failed => Style::default().fg(theme.red),
@@ -47,12 +49,14 @@ fn status_style(status: SubtaskStatus, theme: &Theme) -> Style {
 /// Returns the agent display label and style.
 fn agent_display<'a>(agent: Option<&str>, theme: &'a Theme) -> Option<(&'static str, Style)> {
     match agent {
-        Some(a) if a.contains("claude-code") || a == "cc" => {
-            Some(("cc", Style::default().fg(theme.cyan)))
+        Some(a) if a.contains("claude") || a == "cc" => {
+            Some(("claude", Style::default().fg(theme.cyan)))
         }
         Some(a) if a.contains("cursor") || a == "cur" => {
-            Some(("cur", Style::default().fg(theme.magenta)))
+            Some(("cursor", Style::default().fg(theme.magenta)))
         }
+        Some(a) if a.contains("codex") => Some(("codex", Style::default())),
+        Some(a) if a.contains("gemini") => Some(("gemini", Style::default())),
         _ => None,
     }
 }
@@ -489,7 +493,7 @@ mod tests {
             subtasks: vec![SubtaskLine {
                 name: "Explore webhook requirements".to_string(),
                 status: SubtaskStatus::Done,
-                agent: Some("cc".to_string()),
+                agent: Some("claude".to_string()),
                 elapsed: Some("8s".to_string()),
                 error: None,
             }],
@@ -504,7 +508,7 @@ mod tests {
         let line1 = buf_line(&buf, 1, 60);
         assert!(line1.contains(SYM_CHECK));
         assert!(line1.contains("Explore webhook requirements"));
-        assert!(line1.contains("cc"), "Should show agent badge");
+        assert!(line1.contains("claude"), "Should show agent badge");
         assert!(line1.contains("8s"), "Should show elapsed time");
     }
 

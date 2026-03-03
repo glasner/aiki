@@ -59,6 +59,13 @@ impl TaskRunOptions {
         self
     }
 
+    /// Suppress informational output (spawning, completion messages)
+    #[must_use]
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+
     /// Set chain task IDs for needs-context session execution
     #[must_use]
     pub fn with_chain(mut self, chain: Vec<String>) -> Self {
@@ -145,12 +152,28 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
         AikiError::AgentNotSupported(agent_type.as_str().to_string())
     })?;
 
+    // Emit Started event before spawning to transition task to InProgress immediately.
+    // The agent will later claim the task with its session_id via `aiki task start`.
+    // This eliminates the visual gap where the task shows as pending while the agent boots.
+    if task.status == TaskStatus::Open {
+        let pre_start = TaskEvent::Started {
+            task_ids: vec![task_id.to_string()],
+            agent_type: agent_type.as_str().to_string(),
+            session_id: None,
+            turn_id: None,
+            timestamp: chrono::Utc::now(),
+        };
+        write_event(cwd, &pre_start)?;
+    }
+
     // Print status to stderr to avoid corrupting piped output
-    eprintln!(
-        "Spawning {} agent session for task {}...",
-        agent_type.display_name(),
-        task_id
-    );
+    if !options.quiet {
+        eprintln!(
+            "Spawning {} agent session for task {}...",
+            agent_type.display_name(),
+            task_id
+        );
+    }
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
@@ -179,10 +202,11 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     match &result {
         AgentSessionResult::Completed { summary } => {
             // Agent completed successfully - it should have closed the task itself
-            // Just print success message (to stderr to avoid corrupting piped output)
-            eprintln!("Task run complete");
-            if !summary.is_empty() {
-                eprintln!("Summary: {}", summary);
+            if !options.quiet {
+                eprintln!("Task run complete");
+                if !summary.is_empty() {
+                    eprintln!("Summary: {}", summary);
+                }
             }
         }
         AgentSessionResult::Stopped { reason } => {
@@ -428,6 +452,18 @@ pub fn task_run_async(
     let runtime = get_runtime(agent_type)
         .ok_or_else(|| AikiError::AgentNotSupported(agent_type.as_str().to_string()))?;
 
+    // Emit Started event before spawning to transition task to InProgress immediately.
+    if task.status == TaskStatus::Open {
+        let pre_start = TaskEvent::Started {
+            task_ids: vec![task_id.to_string()],
+            agent_type: agent_type.as_str().to_string(),
+            session_id: None,
+            turn_id: None,
+            timestamp: chrono::Utc::now(),
+        };
+        write_event(cwd, &pre_start)?;
+    }
+
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
     let spawn_options = AgentSpawnOptions::new(cwd, task_id)
@@ -436,7 +472,22 @@ pub fn task_run_async(
     // Spawn agent session in background
     // The agent inherits AIKI_TASK env var which gets recorded in its session file
     // This allows terminate_background_task to find and kill it later
-    let handle = runtime.spawn_background(&spawn_options)?;
+    let handle = match runtime.spawn_background(&spawn_options) {
+        Ok(h) => h,
+        Err(e) => {
+            // Compensate: emit Stopped so the task doesn't get stuck in InProgress
+            if task.status == TaskStatus::Open {
+                let rollback = TaskEvent::Stopped {
+                    task_ids: vec![task_id.to_string()],
+                    reason: Some(format!("Spawn failed: {}", e)),
+                    turn_id: None,
+                    timestamp: chrono::Utc::now(),
+                };
+                let _ = write_event(cwd, &rollback); // best-effort
+            }
+            return Err(e);
+        }
+    };
 
     Ok(handle)
 }

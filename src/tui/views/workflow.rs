@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
 use crate::tui::theme::Theme;
-use crate::tui::types::WorkflowView;
+use crate::tui::types::{StageState, StageView, WorkflowView};
 use crate::tui::widgets::epic_tree::EpicTree;
 use crate::tui::widgets::lane_dag::{LaneDag, should_show_dag};
 use crate::tui::widgets::path_line::PathLine;
@@ -49,7 +49,7 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
 
     // Lane DAG: right-aligned overlay on the stage section rows.
     if let Some(ref dag_layout) = view.lane_dag {
-        if should_show_dag(dag_layout) {
+        if should_show_dag(dag_layout) && is_implement_active(&view.stages) {
             let dag_width = dag_layout.width;
             let dag_height = dag_layout.height;
             // Skip if stage text + gap + DAG would overflow the width.
@@ -68,6 +68,17 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
     }
 
     buf
+}
+
+/// Check whether the "implement" sub-stage of the "build" stage is currently active.
+fn is_implement_active(stages: &[StageView]) -> bool {
+    stages.iter().any(|stage| {
+        stage.name == "build"
+            && stage
+                .sub_stages
+                .iter()
+                .any(|ss| ss.name == "implement" && ss.state == StageState::Active)
+    })
 }
 
 /// Calculate the height of the epic tree section.
@@ -431,14 +442,14 @@ mod tests {
                         StageChild::Subtask(SubtaskLine {
                             name: "Fix null check".into(),
                             status: SubtaskStatus::Done,
-                            agent: Some("cc".into()),
+                            agent: Some("claude".into()),
                             elapsed: Some("12s".into()),
                             error: None,
                         }),
                         StageChild::Subtask(SubtaskLine {
                             name: "Fix error format".into(),
                             status: SubtaskStatus::Active,
-                            agent: Some("cur".into()),
+                            agent: Some("cursor".into()),
                             elapsed: None,
                             error: None,
                         }),
@@ -455,8 +466,8 @@ mod tests {
         assert!(text.contains("1/2"));
         assert!(text.contains("Fix null check"));
         assert!(text.contains("Fix error format"));
-        assert!(text.contains("cc"));
-        assert!(text.contains("cur"));
+        assert!(text.contains("claude"));
+        assert!(text.contains("cursor"));
     }
 
     // ── All-done state ───────────────────────────────────────────
@@ -544,6 +555,7 @@ mod tests {
 
     // ── Lane DAG integration ─────────────────────────────────────
 
+    // Verifies that the DAG is rendered when the "implement" sub-stage is Active.
     #[test]
     fn dag_visible_during_implement() {
         use crate::tui::widgets::lane_dag::{DagLayout, RenderedLane, RenderedSession, SessionState};
@@ -688,6 +700,82 @@ mod tests {
         assert!(!text.contains('●'), "simple DAG should be hidden");
         assert!(!text.contains('◉'), "simple DAG should be hidden");
         assert!(!text.contains('━'), "simple DAG should be hidden");
+    }
+
+    #[test]
+    fn dag_hidden_when_implement_not_active() {
+        use crate::tui::widgets::lane_dag::{DagLayout, RenderedLane, RenderedSession, SessionState};
+
+        let theme = test_theme();
+        // lane_dag is Some with 2+ lanes (passes should_show_dag), but implement is not active.
+        let view = WorkflowView {
+            plan_path: "ops/now/webhooks.md".to_string(),
+            epic: make_epic("Feature", vec![]),
+            stages: vec![
+                StageView {
+                    name: "build".into(),
+                    state: StageState::Done,
+                    progress: Some("6/6".into()),
+                    elapsed: Some("2m28s".into()),
+                    sub_stages: vec![
+                        SubStageView {
+                            name: "decompose".into(),
+                            state: StageState::Done,
+                            progress: None,
+                            elapsed: Some("0:12".into()),
+                        },
+                        SubStageView {
+                            name: "implement".into(),
+                            state: StageState::Done,
+                            progress: Some("6/6".into()),
+                            elapsed: Some("1:30".into()),
+                        },
+                    ],
+                    children: vec![],
+                },
+                StageView {
+                    name: "review".into(),
+                    state: StageState::Active,
+                    progress: None,
+                    elapsed: Some("0:14".into()),
+                    sub_stages: vec![],
+                    children: vec![],
+                },
+            ],
+            lane_dag: Some(DagLayout {
+                lanes: vec![
+                    RenderedLane {
+                        sessions: vec![
+                            RenderedSession { state: SessionState::Done, col: 0 },
+                            RenderedSession { state: SessionState::Done, col: 2 },
+                            RenderedSession { state: SessionState::Done, col: 4 },
+                        ],
+                        fork_col: None,
+                        merge_col: None,
+                        parent_lane_idx: None,
+                    },
+                    RenderedLane {
+                        sessions: vec![
+                            RenderedSession { state: SessionState::Done, col: 4 },
+                        ],
+                        fork_col: Some(2),
+                        merge_col: None,
+                        parent_lane_idx: Some(0),
+                    },
+                ],
+                width: 5,
+                height: 2,
+            }),
+        };
+
+        let buf = render_workflow(&view, &theme);
+        let text = buf_text(&buf);
+
+        // DAG should NOT appear because implement sub-stage is Done, not Active
+        assert!(!text.contains('●'), "no done dot when implement not active");
+        assert!(!text.contains('◉'), "no active dot when implement not active");
+        assert!(!text.contains('○'), "no pending dot when implement not active");
+        assert!(!text.contains('━'), "no connector when implement not active");
     }
 
     #[test]

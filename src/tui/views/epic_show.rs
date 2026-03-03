@@ -22,6 +22,7 @@ use crate::tui::widgets::stage_track::{PhaseInfo, PhaseState, StageTrack};
 /// - Rows 2..N: EpicTree (epic headline + subtask tree)
 /// - Row N+1: blank separator
 /// - Last row: StageTrack (build/review/fix pipeline)
+#[allow(dead_code)]
 pub fn render_epic_show(
     epic: &Task,
     subtasks: &[&Task],
@@ -61,6 +62,7 @@ pub fn render_epic_show(
 }
 
 /// Convert a Task and its subtasks to an EpicView.
+#[allow(dead_code)]
 fn task_to_epic_view(epic: &Task, subtasks: &[&Task]) -> EpicView {
     let short_id = if epic.id.len() >= 8 {
         epic.id[..8].to_string()
@@ -84,7 +86,7 @@ fn task_to_epic_view(epic: &Task, subtasks: &[&Task]) -> EpicView {
             let agent = t
                 .data
                 .get("agent_type")
-                .map(|s| s.clone())
+                .cloned()
                 .or_else(|| t.assignee.clone());
 
             let elapsed = format_elapsed_from_task(t);
@@ -117,6 +119,7 @@ fn task_to_epic_view(epic: &Task, subtasks: &[&Task]) -> EpicView {
 }
 
 /// Format elapsed time from a task's started_at to now or last event.
+#[allow(dead_code)]
 fn format_elapsed_from_task(task: &Task) -> Option<String> {
     let started = task.started_at?;
     let end = match task.status {
@@ -151,6 +154,7 @@ fn format_elapsed_from_task(task: &Task) -> Option<String> {
 ///   Done if all closed successfully, Failed if any stopped/wont-do.
 /// - **Review phase**: Pending (future: detect review tasks).
 /// - **Fix phase**: Pending (future: detect fix tasks).
+#[allow(dead_code)]
 fn compute_phases(_epic: &Task, subtasks: &[&Task]) -> Vec<PhaseInfo> {
     let total = subtasks.len();
     let completed = subtasks

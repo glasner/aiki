@@ -1,40 +1,52 @@
-//! Fix command for creating followup tasks from review comments
+//! Fix command — pipeline with Rust-driven quality loop
 //!
 //! This module provides the `aiki fix` command which:
-//! - Reads a task ID (from argument or stdin for piping)
-//! - Checks the task for comments
-//! - If no comments: succeeds with "approved" message (review passed)
-//! - If comments found: creates followup task (agent creates subtasks from comments)
-//! - Runs the followup task (default: completion, --async: async, --start: hand off)
+//! - Reads a review task ID (from argument or stdin)
+//! - Checks for actionable issues
+//! - If none: outputs "approved" (review passed)
+//! - If issues found: runs a plan → decompose → loop → review cycle
+//! - After fix-parent review passes, re-reviews the original scope to catch regressions
+//! - The `--once` flag disables the post-fix review loop (single pass)
 
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, BufRead};
-
-use crate::output_utils;
 use std::path::Path;
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
-use crate::session::find_active_session;
-use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
+use crate::output_utils;
+use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
+use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
-    find_task, get_current_scope_set, get_in_progress,
-    get_ready_queue_for_scope_set, materialize_graph, materialize_graph_with_ids,
-    read_events, read_events_with_ids, reassign_task,
-    reopen_if_closed, start_task_core, write_link_event, write_link_event_with_autorun,
-    Task, TaskComment,
+    find_task, generate_task_id, materialize_graph, materialize_graph_with_ids,
+    read_events, read_events_with_ids, write_event, write_link_event,
+    write_link_event_with_autorun, Task, TaskEvent, TaskPriority,
 };
+
+use super::decompose::{run_decompose, DecomposeOptions};
+use super::loop_cmd::{run_loop, LoopOptions};
+use super::review::{
+    create_review, CreateReviewParams, ReviewScope, ReviewScopeKind,
+};
+use super::task::{create_from_template, TemplateTaskParams};
+
+/// Maximum iterations of the quality loop to prevent infinite cycles.
+const MAX_QUALITY_ITERATIONS: usize = 10;
 
 /// Run the fix command
 ///
-/// Creates followup tasks from review comments and runs them.
+/// Creates followup tasks from review comments and runs them through
+/// a plan → decompose → loop pipeline with an optional quality loop.
 pub fn run(
     task_id: Option<String>,
     run_async: bool,
-    start: bool,
-    template_name: Option<String>,
+    continue_async: Option<String>,
+    plan_template: Option<String>,
+    decompose_template: Option<String>,
+    loop_template: Option<String>,
+    review_template: Option<String>,
     agent: Option<String>,
     autorun: bool,
     once: bool,
@@ -49,7 +61,7 @@ pub fn run(
         None => read_task_id_from_stdin()?,
     };
 
-    run_fix(&cwd, &task_id, run_async, start, template_name, agent, autorun, once)
+    run_fix(&cwd, &task_id, run_async, continue_async, plan_template, decompose_template, loop_template, review_template, agent, autorun, once)
 }
 
 /// Extract task ID from input, handling XML output format
@@ -89,154 +101,30 @@ fn read_task_id_from_stdin() -> Result<String> {
     Ok(extract_task_id(&input))
 }
 
-use super::review::{ReviewScope, ReviewScopeKind};
-
-/// Check if a JJ change ID has unresolved conflicts.
-fn has_jj_conflicts(cwd: &Path, change_id: &str) -> bool {
-    let output = crate::jj::jj_cmd()
-        .current_dir(cwd)
-        .args(["resolve", "--list", "-r", change_id, "--ignore-working-copy"])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            !String::from_utf8_lossy(&out.stdout).trim().is_empty()
-        }
-        _ => false, // Not a valid change ID or no conflicts
-    }
-}
-
-/// Handle conflict fix: create a merge-conflict task from a JJ change ID.
-fn handle_conflict_fix(
-    cwd: &Path,
-    conflict_id: &str,
-    run_async: bool,
-    start: bool,
-    agent: Option<String>,
-) -> Result<()> {
-    use super::task::{create_from_template, TemplateTaskParams};
-
-    let mut data = HashMap::new();
-    data.insert("conflict_id".to_string(), conflict_id.to_string());
-
-    let params = TemplateTaskParams {
-        template_name: "aiki/fix/merge-conflict".to_string(),
-        data,
-        sources: vec![format!("conflict:{}", conflict_id)],
-        assignee: agent,
-        ..Default::default()
-    };
-
-    let task_id = create_from_template(cwd, params)?;
-
-    // Re-read tasks to include newly created task
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let tasks = &graph.tasks;
-    let scope_set = get_current_scope_set(&graph);
-    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
-    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
-
-    if start {
-        if let Some(session) = find_active_session(cwd) {
-            reassign_task(cwd, &task_id, session.agent_type.as_str())?;
-        }
-        start_task_core(cwd, &[task_id.clone()])?;
-        output_conflict_fix_started(&task_id, conflict_id, &in_progress, &ready)?;
-    } else if run_async {
-        let options = TaskRunOptions::new();
-        task_run_async(cwd, &task_id, options)?;
-        output_conflict_fix_async(&task_id, conflict_id)?;
-        output_utils::emit_stdout(&task_id);
-    } else {
-        let options = TaskRunOptions::new();
-        task_run(cwd, &task_id, options)?;
-        output_conflict_fix_completed(&task_id, conflict_id)?;
-        output_utils::emit_stdout(&task_id);
-    }
-
-    Ok(())
-}
-
-/// Output conflict fix started message
-fn output_conflict_fix_started(
-    task_id: &str,
-    conflict_id: &str,
-    in_progress: &[&Task],
-    ready: &[&Task],
-) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit(task_id, || {
-        let status = format!("Created merge-conflict resolution task for conflict {}.", conflict_id);
-        let output = CommandOutput {
-            heading: "Conflict Fix",
-            task_id,
-            scope: None,
-            status: &status,
-            issues: None,
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, in_progress, ready)
-    });
-    Ok(())
-}
-
-/// Output conflict fix async message
-fn output_conflict_fix_async(task_id: &str, conflict_id: &str) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
-        let status = format!("Merge-conflict resolution for {} started in background.", conflict_id);
-        let output = CommandOutput {
-            heading: "Conflict Fix Started",
-            task_id,
-            scope: None,
-            status: &status,
-            issues: None,
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, &[], &[])
-    });
-    Ok(())
-}
-
-/// Output conflict fix completed message
-fn output_conflict_fix_completed(task_id: &str, conflict_id: &str) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
-        let status = format!("Merge-conflict resolution for {} completed.", conflict_id);
-        let output = CommandOutput {
-            heading: "Conflict Fix Completed",
-            task_id,
-            scope: None,
-            status: &status,
-            issues: None,
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, &[], &[])
-    });
-    Ok(())
-}
-
-/// Core fix implementation
+/// Core fix implementation — pipeline with Rust-driven quality loop.
+///
+/// Runs up to [`MAX_QUALITY_ITERATIONS`] cycles of fix → review. If the loop
+/// exhausts all iterations without the review approving, a warning is emitted
+/// to stderr and the function returns `Ok(())` (partial fixes may have been
+/// applied, so we don't fail the whole command).
 fn run_fix(
     cwd: &Path,
     task_id: &str,
     run_async: bool,
-    start: bool,
-    template_name: Option<String>,
+    continue_async: Option<String>,
+    plan_template: Option<String>,
+    decompose_template: Option<String>,
+    loop_template: Option<String>,
+    review_template: Option<String>,
     agent: Option<String>,
     autorun: bool,
     once: bool,
 ) -> Result<()> {
-    // 1. Check if ID has JJ conflicts: jj resolve --list -r {id}
-    if has_jj_conflicts(cwd, task_id) {
-        return handle_conflict_fix(cwd, task_id, run_async, start, agent);
+    // Continue-async path: pick up from a previously created fix-parent
+    if let Some(ref fix_parent_id) = continue_async {
+        return run_fix_continue(cwd, fix_parent_id, plan_template, decompose_template, loop_template, review_template, agent, once);
     }
 
-    // 2. Fall back to existing review task logic
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
         Some(
@@ -255,113 +143,448 @@ fn run_fix(
     let review_task = find_task(&tasks, task_id)?;
 
     // Validate that the input task is actually a review task
-    // Check task_type first, then fall back to template name for backward compatibility
-    // (older review tasks may not have task_type set)
     if !is_review_task(review_task) {
         return Err(AikiError::InvalidArgument(format!(
-            "No conflict or review task found for ID: {}",
+            "No review task found for ID: {}",
             task_id
         )));
     }
 
-    // Check for structured issues first, fall back to comment count for older reviews
-    let has_issues = if let Some(issue_count) = review_task.data.get("issue_count") {
+    // Determine what was reviewed from typed scope data
+    let scope = ReviewScope::from_data(&review_task.data)?;
+
+    // Resolve the final template name for fix-plan tasks.
+    // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "aiki/plan/fix".
+    // See test_resolve_fix_template_name_* tests for coverage of this resolution logic.
+    let plan_template_resolved = resolve_fix_template_name(plan_template.clone(), &review_task.data);
+
+    // Determine assignee for fix tasks
+    let assignee = match scope.kind {
+        ReviewScopeKind::Task => {
+            let original_task = find_task(&tasks, &scope.id).ok();
+            determine_followup_assignee(agent_type, original_task)
+        }
+        _ => determine_followup_assignee(agent_type, None),
+    };
+
+    // Async spawn path: create fix-parent synchronously, then spawn background process
+    if run_async {
+        // Short-circuit if no actionable issues
+        if !has_actionable_issues(review_task) {
+            output_approved(&review_task.id)?;
+            return Ok(());
+        }
+
+        // Create fix-parent task (container, like an epic)
+        let fix_parent_id = create_fix_parent(cwd, &review_task.id, &scope, &assignee, autorun)?;
+
+        // Build args for background process
+        let mut spawn_args = vec!["fix", task_id, "--_continue-async", &fix_parent_id];
+        if let Some(ref plan) = plan_template {
+            spawn_args.extend(["--plan", plan]);
+        }
+        if let Some(ref decompose) = decompose_template {
+            spawn_args.extend(["--decompose", decompose]);
+        }
+        if let Some(ref loop_tmpl) = loop_template {
+            spawn_args.extend(["--loop", loop_tmpl]);
+        }
+        if let Some(ref review_tmpl) = review_template {
+            spawn_args.extend(["--review", review_tmpl]);
+        }
+        if let Some(ref agent_str) = agent {
+            spawn_args.extend(["--agent", agent_str]);
+        }
+        if once {
+            spawn_args.push("--once");
+        }
+
+        use super::async_spawn::spawn_aiki_background;
+        spawn_aiki_background(cwd, &spawn_args)?;
+
+        // Emit fix-parent ID and return immediately
+        println!("{}", fix_parent_id);
+        return Ok(());
+    }
+
+    // ── Synchronous quality loop ──────────────────────────────────
+    let mut review_id = review_task.id.clone();
+
+    run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once)
+}
+
+/// Continue an async fix from a previously created fix-parent.
+///
+/// Reads the review_id and scope from the fix-parent's data, then enters
+/// the quality loop from the plan-fix step onward.
+fn run_fix_continue(
+    cwd: &Path,
+    fix_parent_id: &str,
+    plan_template: Option<String>,
+    decompose_template: Option<String>,
+    loop_template: Option<String>,
+    review_template: Option<String>,
+    agent: Option<String>,
+    once: bool,
+) -> Result<()> {
+    // Parse agent if provided
+    let agent_type = if let Some(ref agent_str) = agent {
+        Some(
+            AgentType::from_str(agent_str)
+                .ok_or_else(|| AikiError::UnknownAgentType(agent_str.clone()))?,
+        )
+    } else {
+        None
+    };
+
+    // Load tasks
+    let events_with_ids = read_events_with_ids(cwd)?;
+    let tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+
+    // Read the fix-parent task
+    let fix_parent = find_task(&tasks, fix_parent_id)?;
+
+    // Get review_id from fix-parent's data
+    let review_id = fix_parent.data.get("review").ok_or_else(|| {
+        AikiError::InvalidArgument(format!(
+            "Fix-parent task {} missing data.review field",
+            fix_parent_id
+        ))
+    })?.clone();
+
+    // Get scope from fix-parent's data
+    let scope = ReviewScope::from_data(&fix_parent.data)?;
+
+    // Determine assignee
+    let assignee = match scope.kind {
+        ReviewScopeKind::Task => {
+            let original_task = find_task(&tasks, &scope.id).ok();
+            determine_followup_assignee(agent_type, original_task)
+        }
+        _ => determine_followup_assignee(agent_type, None),
+    };
+
+    // Resolve plan template from review task data
+    let review_task = find_task(&tasks, &review_id)?;
+    let plan_template_resolved = resolve_fix_template_name(plan_template, &review_task.data);
+
+    // Run the pipeline from plan-fix step onward for this fix-parent,
+    // then continue the quality loop for subsequent iterations.
+
+    // Step 3: Create plan-fix task
+    let plan_fix_id = create_plan_fix_task(cwd, &review_id, fix_parent_id, &assignee, Some(&plan_template_resolved))?;
+
+    // Step 4: task_run(plan-fix)
+    let run_options = TaskRunOptions::new();
+    task_run(cwd, &plan_fix_id, run_options)?;
+
+    // Step 5-6: Decompose plan into subtasks under fix-parent
+    let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
+    let decompose_options = DecomposeOptions {
+        template: decompose_template.clone(),
+        agent: assignee.as_deref().and_then(AgentType::from_str),
+    };
+    run_decompose(cwd, &plan_path, fix_parent_id, decompose_options)?;
+
+    // Step 7: Delete plan file
+    let _ = std::fs::remove_file(&plan_path);
+
+    // Step 8: run_loop(fix-parent)
+    let mut loop_options = LoopOptions::new();
+    if let Some(ref tmpl) = loop_template {
+        loop_options = loop_options.with_template(tmpl.clone());
+    }
+    run_loop(cwd, fix_parent_id, loop_options)?;
+
+    // Step 9: if --once, we're done
+    if once {
+        return Ok(());
+    }
+
+    // Steps 10-13: Continue quality loop with new reviews
+    let mut current_review_id;
+
+    // Create review of the fix-parent's changes
+    let review_scope = ReviewScope {
+        kind: ReviewScopeKind::Task,
+        id: fix_parent_id.to_string(),
+        task_ids: vec![],
+    };
+
+    let review_result = create_review(
+        cwd,
+        CreateReviewParams {
+            scope: review_scope,
+            agent_override: None,
+            template: review_template.clone().map(|s| s.to_string()),
+            fix: false,
+            fix_template: None,
+            autorun: false,
+        },
+    )?;
+
+    let run_options = TaskRunOptions::new();
+    task_run(cwd, &review_result.review_task_id, run_options)?;
+
+    // Two-phase review decision
+    let events_with_ids = read_events_with_ids(cwd)?;
+    let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+    let new_review = find_task(&current_tasks, &review_result.review_task_id)?;
+
+    let outcome = determine_review_outcome(
+        has_actionable_issues(new_review),
+        &review_result.review_task_id,
+        None,
+        None,
+    );
+    match outcome {
+        ReviewOutcome::LoopBack(id) => {
+            current_review_id = id;
+        }
+        ReviewOutcome::ReReviewOriginalScope => {
+            // Fix-parent review passed — re-review original scope to catch regressions
+            let original_review_result = create_review(
+                cwd,
+                CreateReviewParams {
+                    scope: scope.clone(),
+                    agent_override: None,
+                    template: review_template.clone().map(|s| s.to_string()),
+                    fix: false,
+                    fix_template: None,
+                    autorun: false,
+                },
+            )?;
+            let run_options = TaskRunOptions::new();
+            task_run(cwd, &original_review_result.review_task_id, run_options)?;
+
+            let events_with_ids = read_events_with_ids(cwd)?;
+            let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+            let orig_review = find_task(&current_tasks, &original_review_result.review_task_id)?;
+
+            let orig_outcome = determine_review_outcome(
+                false, // fix-parent already passed
+                &review_result.review_task_id,
+                Some(has_actionable_issues(orig_review)),
+                Some(&original_review_result.review_task_id),
+            );
+            match orig_outcome {
+                ReviewOutcome::Approved(id) => {
+                    output_approved(&id)?;
+                    return Ok(());
+                }
+                ReviewOutcome::LoopBack(id) => {
+                    current_review_id = id;
+                }
+                ReviewOutcome::ReReviewOriginalScope => unreachable!(),
+            }
+        }
+        ReviewOutcome::Approved(_) => unreachable!(),
+    }
+
+    // Continue the quality loop (iterations 2..MAX)
+    run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once)
+}
+
+/// Outcome of the two-phase review decision.
+#[derive(Debug, PartialEq)]
+enum ReviewOutcome {
+    /// Fix-parent review has issues — loop back with this review ID
+    LoopBack(String),
+    /// Fix-parent review passed, original re-review also passed — approved
+    Approved(String),
+    /// Fix-parent review passed — need to re-review original scope
+    ReReviewOriginalScope,
+}
+
+/// Determine the next action after a fix-parent review completes.
+///
+/// This is the pure decision logic extracted from run_quality_loop and
+/// run_fix_continue for testability.
+fn determine_review_outcome(
+    fix_parent_review_has_issues: bool,
+    fix_parent_review_id: &str,
+    original_review_has_issues: Option<bool>,
+    original_review_id: Option<&str>,
+) -> ReviewOutcome {
+    if fix_parent_review_has_issues {
+        return ReviewOutcome::LoopBack(fix_parent_review_id.to_string());
+    }
+    // Fix-parent passed — check original scope
+    match (original_review_has_issues, original_review_id) {
+        (Some(false), Some(id)) => ReviewOutcome::Approved(id.to_string()),
+        (Some(true), Some(id)) => ReviewOutcome::LoopBack(id.to_string()),
+        _ => ReviewOutcome::ReReviewOriginalScope,
+    }
+}
+
+/// Run the quality loop: plan → decompose → loop → review, repeating until
+/// approved or MAX_QUALITY_ITERATIONS is reached. After the fix-parent review
+/// passes, re-reviews the original scope to catch regressions before approving.
+fn run_quality_loop(
+    cwd: &Path,
+    review_id: &mut String,
+    scope: &ReviewScope,
+    assignee: &Option<String>,
+    plan_template: &str,
+    decompose_template: Option<&str>,
+    loop_template: Option<&str>,
+    review_template: Option<&str>,
+    autorun: bool,
+    once: bool,
+) -> Result<()> {
+    for _iteration in 0..MAX_QUALITY_ITERATIONS {
+        // 1. Short-circuit if no actionable issues
+        let events_with_ids = read_events_with_ids(cwd)?;
+        let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+        let current_review = find_task(&current_tasks, review_id)?;
+
+        if !has_actionable_issues(current_review) {
+            output_approved(review_id)?;
+            return Ok(());
+        }
+
+        // 2. Create fix-parent task (container, like an epic)
+        let fix_parent_id = create_fix_parent(cwd, review_id, scope, assignee, autorun)?;
+
+        // 3. Create plan-fix task from aiki/plan/fix
+        let plan_fix_id = create_plan_fix_task(cwd, review_id, &fix_parent_id, assignee, Some(plan_template))?;
+
+        // 4. task_run(plan-fix) — agent writes fix plan
+        let run_options = TaskRunOptions::new();
+        task_run(cwd, &plan_fix_id, run_options)?;
+
+        // 5-6. Decompose plan into subtasks under fix-parent
+        let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
+        let decompose_options = DecomposeOptions {
+            template: decompose_template.map(|s| s.to_string()),
+            agent: assignee.as_deref().and_then(AgentType::from_str),
+        };
+        run_decompose(cwd, &plan_path, &fix_parent_id, decompose_options)?;
+
+        // 7. Delete plan file (content now lives as subtasks)
+        let _ = std::fs::remove_file(&plan_path);
+
+        // 8. run_loop(fix-parent) — orchestrate subtasks via lanes
+        let mut loop_options = LoopOptions::new();
+        if let Some(tmpl) = loop_template {
+            loop_options = loop_options.with_template(tmpl.to_string());
+        }
+        run_loop(cwd, &fix_parent_id, loop_options)?;
+
+        // 9. if --once: break
+        if once {
+            break;
+        }
+
+        // 10. Create review task scoped to fix-parent's changes
+        let review_scope = ReviewScope {
+            kind: ReviewScopeKind::Task,
+            id: fix_parent_id.clone(),
+            task_ids: vec![],
+        };
+
+        let review_result = create_review(
+            cwd,
+            CreateReviewParams {
+                scope: review_scope,
+                agent_override: None,
+                template: review_template.map(|s| s.to_string()),
+                fix: false,
+                fix_template: None,
+                autorun: false,
+            },
+        )?;
+
+        // 11. task_run(review) — agent reviews the fix
+        let run_options = TaskRunOptions::new();
+        task_run(cwd, &review_result.review_task_id, run_options)?;
+
+        // 12-14. Two-phase review decision
+        let events_with_ids = read_events_with_ids(cwd)?;
+        let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+        let new_review = find_task(&current_tasks, &review_result.review_task_id)?;
+
+        let outcome = determine_review_outcome(
+            has_actionable_issues(new_review),
+            &review_result.review_task_id,
+            None,
+            None,
+        );
+        match outcome {
+            ReviewOutcome::LoopBack(id) => {
+                *review_id = id;
+                continue;
+            }
+            ReviewOutcome::ReReviewOriginalScope => {
+                // Fix-parent review passed — re-review original scope to catch regressions
+                let original_review_result = create_review(
+                    cwd,
+                    CreateReviewParams {
+                        scope: scope.clone(),
+                        agent_override: None,
+                        template: review_template.map(|s| s.to_string()),
+                        fix: false,
+                        fix_template: None,
+                        autorun: false,
+                    },
+                )?;
+                let run_options = TaskRunOptions::new();
+                task_run(cwd, &original_review_result.review_task_id, run_options)?;
+
+                let events_with_ids = read_events_with_ids(cwd)?;
+                let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
+                let original_review = find_task(&current_tasks, &original_review_result.review_task_id)?;
+
+                let orig_outcome = determine_review_outcome(
+                    false, // fix-parent already passed
+                    &review_result.review_task_id,
+                    Some(has_actionable_issues(original_review)),
+                    Some(&original_review_result.review_task_id),
+                );
+                match orig_outcome {
+                    ReviewOutcome::Approved(id) => {
+                        output_approved(&id)?;
+                        return Ok(());
+                    }
+                    ReviewOutcome::LoopBack(id) => {
+                        *review_id = id;
+                    }
+                    ReviewOutcome::ReReviewOriginalScope => unreachable!(),
+                }
+            }
+            ReviewOutcome::Approved(_) => unreachable!(),
+        }
+    }
+
+    // If we reached here, the quality loop exhausted MAX_QUALITY_ITERATIONS
+    // without the review approving. Emit a warning.
+    eprintln!(
+        "Warning: quality loop reached maximum iterations ({}) without full approval. Review {} may still have unresolved issues.",
+        MAX_QUALITY_ITERATIONS,
+        review_id
+    );
+
+    Ok(())
+}
+
+/// Check if a review task has actionable issues.
+fn has_actionable_issues(review_task: &Task) -> bool {
+    if let Some(issue_count) = review_task.data.get("issue_count") {
         // Structured review: use data.issue_count
-        // On parse failure (malformed value), fall back to counting issue comments
-        // rather than assuming 0 — avoids incorrectly approving when issues exist
         match issue_count.parse::<usize>() {
             Ok(n) => n > 0,
             Err(_) => !super::review::get_issue_comments(review_task).is_empty(),
         }
     } else {
         // Backward compatibility: older reviews without data.issue_count
-        // Treat all comments as issues (existing behavior)
         !review_task.comments.is_empty()
-    };
-
-    if !has_issues {
-        output_approved(task_id)?;
-        return Ok(());
     }
-
-    // Get issue comments to create fix subtasks, sorted by severity (high first)
-    let mut comments: Vec<TaskComment> = if review_task.data.contains_key("issue_count") {
-        // Structured: use get_issue_comments()
-        super::review::get_issue_comments(review_task)
-            .into_iter()
-            .cloned()
-            .collect()
-    } else {
-        // Backward compat: all comments are issues
-        review_task.comments.clone()
-    };
-    comments.sort_by_key(|c| {
-        let sev = c.data.get("severity").map(|s| s.as_str()).unwrap_or("medium");
-        match sev { "high" => 0u8, "medium" => 1, "low" => 2, _ => 1 }
-    });
-
-    // Determine what was reviewed from typed scope data
-    let scope = ReviewScope::from_data(&review_task.data)?;
-
-    let followup_id = match scope.kind {
-        ReviewScopeKind::Task => {
-            // Fix targets a task — add fix subtask to the original task
-            let original_task = find_task(&tasks, &scope.id)?;
-            let assignee = determine_followup_assignee(agent_type, Some(original_task));
-            let template = template_name.as_deref().unwrap_or("aiki/fix");
-            create_fix_task(cwd, review_task, &scope, Some(original_task), &assignee, template, autorun, once)?
-        }
-        ReviewScopeKind::Plan | ReviewScopeKind::Code => {
-            // Fix targets a file — create standalone fix task (no parent)
-            let assignee = determine_followup_assignee(agent_type, None);
-            let template = template_name.as_deref().unwrap_or("aiki/fix");
-            create_fix_task(cwd, review_task, &scope, None, &assignee, template, autorun, once)?
-        }
-        ReviewScopeKind::Session => {
-            return Err(AikiError::InvalidArgument(
-                "Fixing session reviews is not yet supported. Only task-targeted reviews can be fixed.".to_string(),
-            ));
-        }
-    };
-
-    // Re-read tasks to include newly created followup task
-    let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
-    let tasks = &graph.tasks;
-    let scope_set = get_current_scope_set(&graph);
-    let in_progress: Vec<&Task> = get_in_progress(tasks).into_iter().collect();
-    let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
-
-    // Handle execution mode
-    if start {
-        // Reassign task to current agent (caller takes over)
-        if let Some(session) = find_active_session(cwd) {
-            reassign_task(cwd, &followup_id, session.agent_type.as_str())?;
-        }
-        // Start task using core logic (validates, auto-stops, emits events)
-        start_task_core(cwd, &[followup_id.clone()])?;
-        output_followup_started(&followup_id, &scope, &comments, &in_progress, &ready)?;
-    } else if run_async {
-        // Run async and return immediately
-        let options = TaskRunOptions::new();
-        task_run_async(cwd, &followup_id, options)?;
-        output_followup_async(&followup_id, &scope, &comments)?;
-        output_utils::emit_stdout(&followup_id);
-    } else {
-        // Run to completion (default)
-        let options = TaskRunOptions::new();
-        task_run(cwd, &followup_id, options)?;
-        output_followup_completed(&followup_id, &scope, &comments)?;
-        output_utils::emit_stdout(&followup_id);
-    }
-
-    Ok(())
 }
 
 /// Output approved message when no issues found
 fn output_approved(task_id: &str) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Approved",
             task_id,
@@ -376,85 +599,11 @@ fn output_approved(task_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Describe the fix action based on scope
-fn fix_description(scope: &ReviewScope) -> String {
-    match scope.kind {
-        ReviewScopeKind::Task => "Created fix followup subtask under original task".to_string(),
-        _ => format!("Created standalone fix task for {}", scope.name()),
-    }
-}
-
-/// Output followup started message
-fn output_followup_started(
-    followup_id: &str,
-    scope: &ReviewScope,
-    comments: &[TaskComment],
-    in_progress: &[&Task],
-    ready: &[&Task],
-) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit(followup_id, || {
-        let status = format!("{} ({} issue(s)).", fix_description(scope), comments.len());
-        let output = CommandOutput {
-            heading: "Fix Followup",
-            task_id: followup_id,
-            scope: Some(scope),
-            status: &status,
-            issues: Some(comments),
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, in_progress, ready)
-    });
-    Ok(())
-}
-
-/// Output followup async message (for --async mode)
-fn output_followup_async(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
-        let status = format!("{} in background.", fix_description(scope));
-        let output = CommandOutput {
-            heading: "Fix Started",
-            task_id: followup_id,
-            scope: Some(scope),
-            status: &status,
-            issues: Some(comments),
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, &[], &[])
-    });
-    Ok(())
-}
-
-/// Output followup completed message (for blocking mode)
-fn output_followup_completed(followup_id: &str, scope: &ReviewScope, comments: &[TaskComment]) -> Result<()> {
-    use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
-        let status = format!("{} completed.", fix_description(scope));
-        let output = CommandOutput {
-            heading: "Fix Completed",
-            task_id: followup_id,
-            scope: Some(scope),
-            status: &status,
-            issues: Some(comments),
-            hint: None,
-        };
-        let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, &[], &[])
-    });
-    Ok(())
-}
-
 /// Check if a task is a review task.
 ///
 /// A task is considered a review task if:
 /// 1. Its task_type is explicitly "review", OR
 /// 2. It was created from a review template (template starts with "aiki/review")
-///
-/// The fallback to template name provides backward compatibility with review tasks
-/// created before the template set the `type` field in frontmatter.
 pub fn is_review_task(task: &Task) -> bool {
     if task.task_type.as_deref() == Some("review") {
         return true;
@@ -487,74 +636,111 @@ fn determine_followup_assignee(agent_override: Option<AgentType>, reviewed_task:
     Some("claude-code".to_string())
 }
 
-/// Create a fix task, either as a subtask on the original task or standalone.
+/// Create the fix-parent task (container for fix subtasks, like an epic).
 ///
-/// When `parent` is `Some`, the fix is added as a child of the original task
-/// (e.g., X.1) and the original task is reopened if closed.
-/// When `parent` is `None` (file-targeted reviews), a standalone task is created.
-///
-/// Scope data is always passed to the template so `{{data.scope.name}}` works for all scope kinds.
-fn create_fix_task(
+/// Emits `remediates` link to the review task and `fixes` links to the
+/// reviewed targets.
+fn create_fix_parent(
     cwd: &Path,
-    review_task: &Task,
+    review_id: &str,
     scope: &ReviewScope,
-    parent: Option<&Task>,
     assignee: &Option<String>,
-    template_name: &str,
     autorun: bool,
-    once: bool,
 ) -> Result<String> {
-    use super::task::{create_from_template, TemplateTaskParams};
+    let fix_parent_id = generate_task_id("fix-parent");
+    let working_copy = get_working_copy_change_id(cwd);
 
-    if let Some(p) = parent {
-        let events = read_events(cwd)?;
-        let current_tasks = materialize_graph(&events).tasks;
-        reopen_if_closed(cwd, &p.id, &current_tasks, "Subtasks added")?;
+    let name = format!("Fix: {}", scope.name());
+    let mut data = HashMap::new();
+    data.insert("review".to_string(), review_id.to_string());
+
+    // Add scope data
+    for (k, v) in scope.to_data() {
+        data.insert(k, v);
     }
 
-    // Pass scope data to both `data` (persisted on task, {{data.scope.*}}) and
-    // `source_data` (review task metadata, {{source.*}})
-    let scope_data = scope.to_data();
-
-    // Add options.once if flag is set
-    let mut scope_data = scope_data;
-    if once {
-        scope_data.insert("options.once".to_string(), "true".to_string());
-    }
-    let mut source_data = HashMap::new();
-    source_data.insert("name".to_string(), review_task.name.clone());
-    source_data.insert("id".to_string(), review_task.id.clone());
-
-    let params = TemplateTaskParams {
-        template_name: template_name.to_string(),
-        data: scope_data,
-        sources: vec![format!("task:{}", review_task.id)],
+    let event = TaskEvent::Created {
+        task_id: fix_parent_id.clone(),
+        name,
+        slug: None,
+        task_type: None,
+        priority: TaskPriority::P2,
         assignee: assignee.clone(),
-        priority: parent.map(|p| p.priority),
-        parent_id: parent.map(|p| p.id.clone()),
-        parent_name: parent.map(|p| p.name.clone()),
-        source_data,
-        ..Default::default()
+        sources: vec![format!("task:{}", review_id)],
+        template: None,
+        working_copy,
+        instructions: None,
+        data,
+        timestamp: chrono::Utc::now(),
     };
+    write_event(cwd, &event)?;
 
-    let task_id = create_from_template(cwd, params)?;
-
-    // Emit remediates link: fix task remediates the review task
-    // Autorun is opt-in only (--autorun flag); default is no autorun
+    // Emit remediates link: fix-parent remediates the review task
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let autorun_opt = if autorun { Some(true) } else { None };
-    write_link_event_with_autorun(cwd, &graph, "remediates", &task_id, &review_task.id, autorun_opt)?;
+    write_link_event_with_autorun(cwd, &graph, "remediates", &fix_parent_id, review_id, autorun_opt)?;
 
-    // Emit fixes link to the target(s) that were reviewed (traverse validates from review task)
-    let reviewed_targets = graph.edges.targets(&review_task.id, "validates");
+    // Emit fixes link to the target(s) that were reviewed
+    let reviewed_targets = graph.edges.targets(review_id, "validates");
     for target in reviewed_targets {
-        write_link_event(cwd, &graph, "fixes", &task_id, target)?;
+        write_link_event(cwd, &graph, "fixes", &fix_parent_id, target)?;
     }
 
-    Ok(task_id)
+    Ok(fix_parent_id)
 }
 
+/// Create a plan-fix task from the `aiki/plan/fix` template.
+fn create_plan_fix_task(
+    cwd: &Path,
+    review_id: &str,
+    fix_parent_id: &str,
+    assignee: &Option<String>,
+    template_override: Option<&str>,
+) -> Result<String> {
+    let mut data = HashMap::new();
+    data.insert("review".to_string(), review_id.to_string());
+    data.insert("target".to_string(), fix_parent_id.to_string());
+
+    let params = TemplateTaskParams {
+        template_name: template_override.unwrap_or("aiki/plan/fix").to_string(),
+        data,
+        sources: vec![format!("task:{}", review_id)],
+        assignee: assignee.clone(),
+        ..Default::default()
+    };
+
+    create_from_template(cwd, params)
+}
+
+/// Describe the fix action based on scope
+#[allow(dead_code)]
+fn fix_description(scope: &ReviewScope) -> String {
+    match scope.kind {
+        ReviewScopeKind::Task => "Created fix followup subtask under original task".to_string(),
+        _ => format!("Created standalone fix task for {}", scope.name()),
+    }
+}
+
+/// Resolve the plan template from CLI arg or review task data.
+///
+/// Priority: CLI arg > review_task.data["options.fix_template"] > None (caller default).
+fn resolve_plan_template(
+    cli_arg: Option<String>,
+    review_data: &HashMap<String, String>,
+) -> Option<String> {
+    cli_arg.or_else(|| review_data.get("options.fix_template").cloned())
+}
+
+/// Resolves the final template name for fix-plan tasks.
+/// Combines CLI arg / review-data resolution with the default fallback.
+fn resolve_fix_template_name(
+    cli_arg: Option<String>,
+    review_data: &HashMap<String, String>,
+) -> String {
+    resolve_plan_template(cli_arg, review_data)
+        .unwrap_or_else(|| "aiki/plan/fix".to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -753,5 +939,142 @@ mod tests {
             fix_description(&scope),
             "Created standalone fix task for Code (feature.md)"
         );
+    }
+
+    #[test]
+    fn test_resolve_plan_template_cli_override() {
+        let mut data = HashMap::new();
+        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        let result = resolve_plan_template(Some("custom/template".to_string()), &data);
+        assert_eq!(result, Some("custom/template".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_plan_template_from_review_data() {
+        let mut data = HashMap::new();
+        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        let result = resolve_plan_template(None, &data);
+        assert_eq!(result, Some("from/review".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_plan_template_default_none() {
+        let data = HashMap::new();
+        let result = resolve_plan_template(None, &data);
+        assert_eq!(result, None);
+    }
+
+    // has_actionable_issues tests
+
+    #[test]
+    fn test_has_actionable_issues_with_issue_count_zero() {
+        let mut task = make_test_task("review1");
+        task.data.insert("issue_count".to_string(), "0".to_string());
+        assert!(!has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_with_issue_count_positive() {
+        let mut task = make_test_task("review2");
+        task.data.insert("issue_count".to_string(), "3".to_string());
+        assert!(has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_no_data_no_comments() {
+        let task = make_test_task("review3");
+        assert!(!has_actionable_issues(&task));
+    }
+
+    /// Tests the full fix-template resolution chain used by run_fix:
+    /// resolve_plan_template → unwrap_or("aiki/plan/fix") via resolve_fix_template_name.
+    #[test]
+    fn test_resolve_fix_template_name_full_chain() {
+        // 1. CLI arg provided → uses CLI arg (ignores review data and default)
+        let mut data = HashMap::new();
+        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        assert_eq!(
+            resolve_fix_template_name(Some("cli/override".to_string()), &data),
+            "cli/override"
+        );
+
+        // 2. No CLI arg, review data has options.fix_template → uses review data value
+        let mut data = HashMap::new();
+        data.insert("options.fix_template".to_string(), "from/review".to_string());
+        assert_eq!(
+            resolve_fix_template_name(None, &data),
+            "from/review"
+        );
+
+        // 3. No CLI arg, no review data → falls back to "aiki/plan/fix"
+        let data = HashMap::new();
+        assert_eq!(
+            resolve_fix_template_name(None, &data),
+            "aiki/plan/fix"
+        );
+    }
+
+    // determine_review_outcome tests
+
+    #[test]
+    fn test_review_outcome_loopback_when_fix_parent_has_issues() {
+        let outcome = determine_review_outcome(true, "review1", None, None);
+        assert_eq!(outcome, ReviewOutcome::LoopBack("review1".to_string()));
+    }
+
+    #[test]
+    fn test_review_outcome_loopback_when_fix_parent_has_issues_ignores_original() {
+        // Even if original review info is provided, fix-parent issues take precedence
+        let outcome = determine_review_outcome(true, "review1", Some(false), Some("orig1"));
+        assert_eq!(outcome, ReviewOutcome::LoopBack("review1".to_string()));
+    }
+
+    #[test]
+    fn test_review_outcome_re_review_when_no_original_info() {
+        let outcome = determine_review_outcome(false, "review1", None, None);
+        assert_eq!(outcome, ReviewOutcome::ReReviewOriginalScope);
+    }
+
+    #[test]
+    fn test_review_outcome_approved_when_original_passes() {
+        let outcome = determine_review_outcome(false, "review1", Some(false), Some("orig1"));
+        assert_eq!(outcome, ReviewOutcome::Approved("orig1".to_string()));
+    }
+
+    #[test]
+    fn test_review_outcome_loopback_when_original_has_issues() {
+        let outcome = determine_review_outcome(false, "review1", Some(true), Some("orig1"));
+        assert_eq!(outcome, ReviewOutcome::LoopBack("orig1".to_string()));
+    }
+
+    #[test]
+    fn test_review_outcome_consecutive_loop_backs() {
+        // Simulate MAX_QUALITY_ITERATIONS consecutive "fix-parent has issues" outcomes
+        // Each should return LoopBack, demonstrating the loop would continue
+        for i in 0..MAX_QUALITY_ITERATIONS {
+            let review_id = format!("review-iter-{}", i);
+            let outcome = determine_review_outcome(true, &review_id, None, None);
+            assert_eq!(outcome, ReviewOutcome::LoopBack(review_id));
+        }
+    }
+
+    #[test]
+    fn test_review_outcome_approval_breaks_loop() {
+        // Simulate a few failed iterations followed by approval
+        for i in 0..3 {
+            let review_id = format!("review-iter-{}", i);
+            let outcome = determine_review_outcome(true, &review_id, None, None);
+            assert_eq!(outcome, ReviewOutcome::LoopBack(review_id));
+        }
+        // On the next iteration, fix-parent passes and original scope also passes
+        let outcome = determine_review_outcome(false, "fix-review-final", Some(false), Some("orig-final"));
+        assert_eq!(outcome, ReviewOutcome::Approved("orig-final".to_string()));
+    }
+
+    #[test]
+    fn test_max_quality_iterations_value() {
+        // Ensure the constant is set to a reasonable value (not 0 or absurdly large)
+        assert!(MAX_QUALITY_ITERATIONS > 0);
+        assert!(MAX_QUALITY_ITERATIONS <= 100);
     }
 }

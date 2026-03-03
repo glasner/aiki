@@ -212,10 +212,16 @@ impl StatusMonitor {
         writeln!(stderr, "{}", footer)?;
         stderr.flush()?;
 
-        // Track total lines so we can move back up on next render.
-        // ansi content lines + 1 empty line + 1 footer line
-        let content_lines = ansi.chars().filter(|&c| c == '\n').count() as u16 + 1;
-        self.last_line_count = content_lines + 2;
+        // Track total terminal lines so we can move back up on next render.
+        // Must account for line wrapping: a logical line wider than the terminal
+        // occupies multiple terminal rows.
+        let term_width = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80);
+
+        let content_terminal_lines: u16 = count_terminal_lines(&ansi, term_width);
+        // +1 for the empty line, +1 for the footer line
+        self.last_line_count = content_terminal_lines + 2;
         self.has_rendered = true;
         Ok(())
     }
@@ -242,6 +248,58 @@ impl StatusMonitor {
     }
 }
 
+/// Count how many terminal rows an ANSI string occupies, accounting for line wrapping.
+///
+/// Walks the string, tracking visible character width per logical line.
+/// When a `\n` is encountered or the visible width exceeds `term_width`,
+/// a new terminal row is counted. ANSI escape sequences (CSI codes like
+/// `\x1b[0m`, `\x1b[38;2;r;g;bm`) are skipped as they don't occupy
+/// visible space.
+fn count_terminal_lines(ansi: &str, term_width: usize) -> u16 {
+    if term_width == 0 {
+        return ansi.chars().filter(|&c| c == '\n').count() as u16 + 1;
+    }
+
+    let mut terminal_lines: u16 = 1; // at least one line
+    let mut col: usize = 0;
+    let mut chars = ansi.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            terminal_lines += 1;
+            col = 0;
+        } else if ch == '\x1b' {
+            // Skip ANSI escape sequence: ESC [ ... final_byte
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Consume parameter bytes and intermediate bytes until final byte (0x40-0x7E)
+                while let Some(&next) = chars.peek() {
+                    if next.is_ascii_alphanumeric() || next == 'm' {
+                        chars.next();
+                        if next.is_ascii_alphabetic() {
+                            break; // final byte
+                        }
+                    } else if next == ';' {
+                        chars.next(); // parameter separator
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Deferred wrapping: when cursor is at right margin (col == term_width),
+            // writing a character wraps to the next line first.
+            if col == term_width {
+                terminal_lines += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+
+    terminal_lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +310,50 @@ mod tests {
         assert_eq!(monitor.task_id, "test-task-id");
         assert_eq!(monitor.last_event_count, 0);
         assert!(!monitor.has_rendered);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_no_wrap() {
+        // 3 logical lines, each shorter than terminal width
+        assert_eq!(count_terminal_lines("abc\ndef\nghi", 80), 3);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_with_wrap() {
+        // 10 chars in a 5-column terminal → 2 terminal rows (deferred wrap)
+        assert_eq!(count_terminal_lines("1234567890", 5), 2);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_exact_width() {
+        // Exactly 5 chars in a 5-column terminal → 1 row (deferred wrap:
+        // cursor sits at right margin, only wraps when next char is written)
+        assert_eq!(count_terminal_lines("12345", 5), 1);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_one_past_width() {
+        // 6 chars in 5-column terminal → 2 rows (6th char triggers wrap)
+        assert_eq!(count_terminal_lines("123456", 5), 2);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_ansi_ignored() {
+        // ANSI codes should not count toward visible width
+        let ansi = "\x1b[38;2;255;0;0mHi\x1b[0m";
+        // Visible content is "Hi" (2 chars) - fits in 80 columns
+        assert_eq!(count_terminal_lines(ansi, 80), 1);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_multiline_with_ansi() {
+        let ansi = "\x1b[0mline1\x1b[0m\n\x1b[38;2;0;255;0mline2\x1b[0m";
+        assert_eq!(count_terminal_lines(ansi, 80), 2);
+    }
+
+    #[test]
+    fn test_count_terminal_lines_empty() {
+        assert_eq!(count_terminal_lines("", 80), 1);
     }
 
     #[test]

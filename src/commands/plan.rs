@@ -2,9 +2,12 @@
 //!
 //! This module provides the `aiki plan` command which:
 //! - Creates and refines plan documents collaboratively with an AI agent
-//! - Supports three modes: edit existing, create at path, autogenerate filename
+//! - Supports subcommands: `epic` (default) and `fix`
+//! - `aiki plan` / `aiki plan epic [args]` → interactive plan authoring
+//! - `aiki plan fix <review-id>` → create fix plan from review issues
 //! - Always runs interactively (no --async or --start flags)
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -18,6 +21,7 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::session::find_active_session;
+use crate::tasks::runner::{task_run, TaskRunOptions};
 use crate::tasks::templates::{
     create_tasks_from_template, find_templates_dir, load_template, substitute_parent_id,
     VariableContext, PARENT_ID_PLACEHOLDER,
@@ -41,20 +45,47 @@ pub enum PlanMode {
 }
 
 /// Run the plan command
+///
+/// Dispatches to subcommands:
+/// - `aiki plan` (no args) → defaults to epic behavior
+/// - `aiki plan epic [args]` → epic plan authoring
+/// - `aiki plan fix <review-id>` → create fix plan from review issues
+/// - `aiki plan <anything-else>` → epic plan authoring (backward compat)
 pub fn run(
     args: Vec<String>,
     template: Option<String>,
     agent: Option<String>,
+    output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     let cwd = env::current_dir().map_err(|_| {
         AikiError::InvalidArgument("Failed to get current directory".to_string())
     })?;
 
-    // Determine plan mode from arguments
-    let mode = determine_mode(&cwd, &args)?;
+    let output_id = matches!(output_format, Some(super::OutputFormat::Id));
 
-    // Run the plan session
-    run_plan(&cwd, mode, template, agent)
+    // Dispatch based on first argument
+    match args.first().map(|s| s.as_str()) {
+        Some("epic") => {
+            // `aiki plan epic [args...]` → strip "epic" and run epic plan
+            let epic_args = args[1..].to_vec();
+            let mode = determine_mode(&cwd, &epic_args)?;
+            run_epic(&cwd, mode, template, agent, output_id)
+        }
+        Some("fix") => {
+            // `aiki plan fix <review-id>` → create fix plan from review
+            let review_id = args.get(1).ok_or_else(|| {
+                AikiError::InvalidArgument(
+                    "Missing review ID. Usage: aiki plan fix <review-id>".to_string(),
+                )
+            })?;
+            run_fix(&cwd, review_id, template, agent, output_id)
+        }
+        _ => {
+            // No subcommand or unrecognized first arg → default to epic behavior
+            let mode = determine_mode(&cwd, &args)?;
+            run_epic(&cwd, mode, template, agent, output_id)
+        }
+    }
 }
 
 /// Determine plan mode from command arguments
@@ -324,12 +355,13 @@ fn find_unique_path(base_dir: &Path, slug: &str) -> Result<PathBuf> {
     )))
 }
 
-/// Core plan implementation
-fn run_plan(
+/// Core epic plan implementation
+fn run_epic(
     cwd: &Path,
     mode: PlanMode,
     template_name: Option<String>,
     agent: Option<String>,
+    output_id: bool,
 ) -> Result<()> {
     let timestamp = chrono::Utc::now();
 
@@ -398,7 +430,7 @@ fn run_plan(
 
     let plan_task_id = if let Some(task) = existing_task {
         // Resume existing task
-        output_utils::emit_stderr(|| format!("Resuming existing plan task: {}", task.id));
+        output_utils::emit(|| format!("Resuming existing plan task: {}", task.id));
 
         // If agent differs, update assignee
         if let Some(agent) = agent_type {
@@ -415,7 +447,7 @@ fn run_plan(
             &plan_path,
             &initial_idea,
             is_new,
-            template_name.as_deref().unwrap_or("aiki/plan"),
+            template_name.as_deref().unwrap_or("aiki/plan/epic"),
             agent_type.as_ref().map(|a| a.as_str().to_string()),
             timestamp,
         )?
@@ -481,9 +513,11 @@ fn run_plan(
         )
     };
 
-    output_utils::emit_stderr(|| {
-        format!("Spawning Claude agent session for task {}...", plan_task_id)
-    });
+    if !output_id {
+        output_utils::emit(|| {
+            format!("Spawning Claude agent session for task {}...", plan_task_id)
+        });
+    }
 
     // Spawn claude interactively - inherits stdin/stdout/stderr for user interaction
     // Note: We don't use --print or --dangerously-skip-permissions here because
@@ -499,17 +533,23 @@ fn run_plan(
     match status {
         Ok(exit_status) => {
             if exit_status.success() {
-                output_plan_completed(&plan_task_id, &plan_path)?;
+                if !output_id {
+                    output_plan_completed(&plan_task_id, &plan_path)?;
+                }
             } else {
                 // Claude exited with non-zero - could be user cancelled, graceful termination, or error
                 let code = exit_status.code().unwrap_or(-1);
                 if code == 130 {
                     // SIGINT (Ctrl+C) - user cancelled, not an error
-                    output_utils::emit_stderr(|| "Plan session cancelled by user.".to_string());
+                    if !output_id {
+                        output_utils::emit(|| "Plan session cancelled by user.".to_string());
+                    }
                 } else if code == 143 {
                     // SIGTERM - graceful termination (e.g., via `claude --exit` when task closes)
                     // This is expected behavior, not an error
-                    output_plan_completed(&plan_task_id, &plan_path)?;
+                    if !output_id {
+                        output_plan_completed(&plan_task_id, &plan_path)?;
+                    }
                 } else {
                     output_plan_error(&plan_task_id, &format!("Claude exited with code {}", code))?;
                 }
@@ -521,8 +561,9 @@ fn run_plan(
         }
     }
 
-    // Output task ID to stdout if piped
-    output_utils::emit_stdout(&plan_task_id);
+    if output_id {
+        println!("{}", plan_task_id);
+    }
 
     Ok(())
 }
@@ -641,6 +682,62 @@ fn create_plan_task(
     Ok(parent_id)
 }
 
+/// Run `aiki plan fix <review-id>`: create and run a plan-fix task from review issues
+fn run_fix(
+    cwd: &Path,
+    review_id: &str,
+    template_name: Option<String>,
+    agent: Option<String>,
+    output_id: bool,
+) -> Result<()> {
+    use super::task::{create_from_template, TemplateTaskParams};
+
+    let template = template_name.as_deref().unwrap_or("aiki/plan/fix");
+
+    // Build data for the template
+    let mut data = HashMap::new();
+    data.insert("review".to_string(), review_id.to_string());
+    data.insert("target".to_string(), review_id.to_string());
+
+    let params = TemplateTaskParams {
+        template_name: template.to_string(),
+        data,
+        sources: vec![format!("task:{}", review_id)],
+        assignee: agent,
+        ..Default::default()
+    };
+
+    let task_id = create_from_template(cwd, params)?;
+
+    // Ensure plans directory exists
+    let plans_dir = PathBuf::from("/tmp/aiki/plans");
+    fs::create_dir_all(&plans_dir).map_err(|e| {
+        AikiError::InvalidArgument(format!("Cannot create plans directory: {}", e))
+    })?;
+
+    let plan_path = plans_dir.join(format!("{}.md", task_id));
+
+    // Run the task to completion
+    let options = TaskRunOptions::new();
+    task_run(cwd, &task_id, options)?;
+
+    // Output results
+    if output_id {
+        println!("{}", task_id);
+    } else {
+        output_utils::emit(|| {
+            format!(
+                "## Plan Fix Completed\n- **Task:** {}\n- **Review:** {}\n- **Plan:** {}\n",
+                task_id,
+                review_id,
+                plan_path.display()
+            )
+        });
+    }
+
+    Ok(())
+}
+
 /// Output plan started message
 fn output_plan_started(
     plan_id: &str,
@@ -650,7 +747,7 @@ fn output_plan_started(
     ready: &[&Task],
 ) -> Result<()> {
     let action = if is_new { "Creating" } else { "Editing" };
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let content = format!(
             "## Plan Started\n- **Task:** {}\n- **File:** {}\n- {} plan at {}.\n",
             plan_id,
@@ -665,7 +762,7 @@ fn output_plan_started(
 
 /// Output plan completed message
 fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let content = format!(
             "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n",
             plan_id,

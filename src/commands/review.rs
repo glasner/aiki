@@ -2,7 +2,7 @@
 //!
 //! This module provides the `aiki review` command which:
 //! - Creates a review task with subtasks (digest, review)
-//! - Runs the review task (default: completion, --async: async, --start: hand off)
+//! - Runs the review task (default: blocking, --async: async, --start: hand off)
 //! - Supports different review scopes (task ID or session)
 //! - Lists review tasks (list subcommand)
 //! - Shows review task details (show subcommand)
@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::output_utils;
 
 use crate::agents::{determine_reviewer, AgentType};
+use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
@@ -374,6 +375,10 @@ pub struct ReviewArgs {
     #[arg(long)]
     pub autorun: bool,
 
+    /// Output format (e.g., `id` for bare task ID on stdout)
+    #[arg(long, short = 'o', value_name = "FORMAT")]
+    pub output: Option<OutputFormat>,
+
     /// Subcommand (list or show)
     #[command(subcommand)]
     pub subcommand: Option<ReviewSubcommands>,
@@ -409,6 +414,7 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         args.template,
         args.agent,
         args.autorun,
+        args.output,
     )
 }
 
@@ -423,6 +429,8 @@ pub struct CreateReviewParams {
     pub template: Option<String>,
     /// Whether to auto-fix issues (sets data.options.fix)
     pub fix: bool,
+    /// Fix plan template override (e.g., "aiki/plan/fix")
+    pub fix_template: Option<String>,
     /// Enable autorun on the validates link (default: false, opt-in only)
     pub autorun: bool,
 }
@@ -611,6 +619,9 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     if params.fix {
         scope_data.insert("options.fix".to_string(), "true".to_string());
     }
+    if let Some(ref tmpl) = params.fix_template {
+        scope_data.insert("options.fix_template".to_string(), tmpl.clone());
+    }
 
     // Build sources for lineage (not routing)
     let sources = match scope.kind {
@@ -655,6 +666,7 @@ fn run_review(
     template_name: Option<String>,
     agent: Option<String>,
     autorun: bool,
+    output_format: Option<OutputFormat>,
 ) -> Result<()> {
     // Parse agent if provided
     let agent_override = if let Some(ref agent_str) = agent {
@@ -689,6 +701,7 @@ fn run_review(
             agent_override,
             template: template_name,
             fix,
+            fix_template: None,
             autorun,
         },
     ) {
@@ -711,6 +724,8 @@ fn run_review(
 
     let scope = &result.scope;
 
+    let output_id = matches!(output_format, Some(OutputFormat::Id));
+
     // Handle execution mode
     if start {
         // Reassign task to current agent (caller takes over)
@@ -719,19 +734,35 @@ fn run_review(
         }
         // Start task using core logic (validates, auto-stops, emits events)
         start_task_core(cwd, &[review_id.clone()])?;
-        output_review_started(&review_id, scope, &in_progress, &ready)?;
+        if !output_id {
+            output_review_started(&review_id, scope, &in_progress, &ready)?;
+        }
     } else if run_async {
         // Run async and return immediately
         let options = TaskRunOptions::new();
         task_run_async(cwd, &review_id, options)?;
-        output_review_async(&review_id, scope)?;
-        output_utils::emit_stdout(&review_id);
+        if !output_id {
+            output_review_async(&review_id, scope)?;
+        }
     } else {
         // Run to completion (default)
         let options = TaskRunOptions::new();
         task_run(cwd, &review_id, options)?;
-        output_review_completed(&review_id, scope)?;
-        output_utils::emit_stdout(&review_id);
+        if !output_id {
+            // Check data.issue_count to determine hint
+            let events = read_events(cwd)?;
+            let graph = materialize_graph(&events);
+            let has_issues = find_task(&graph.tasks, &review_id)
+                .map(|t| t.data.get("issue_count")
+                    .and_then(|c| c.parse::<usize>().ok())
+                    .unwrap_or(0) > 0)
+                .unwrap_or(false);
+            output_review_completed(&review_id, scope, has_issues)?;
+        }
+    }
+
+    if output_id {
+        println!("{}", review_id);
     }
 
     Ok(())
@@ -740,7 +771,7 @@ fn run_review(
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Approved",
             task_id: "",
@@ -758,7 +789,7 @@ fn output_nothing_to_review() -> Result<()> {
 /// Output review started message (for --start mode)
 fn output_review_started(review_id: &str, scope: &ReviewScope, in_progress: &[&Task], ready: &[&Task]) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    output_utils::emit(review_id, || {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Review Started",
             task_id: review_id,
@@ -776,7 +807,7 @@ fn output_review_started(review_id: &str, scope: &ReviewScope, in_progress: &[&T
 /// Output review async message (for --async mode)
 fn output_review_async(review_id: &str, scope: &ReviewScope) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let output = CommandOutput {
             heading: "Review Started",
             task_id: review_id,
@@ -792,19 +823,24 @@ fn output_review_async(review_id: &str, scope: &ReviewScope) -> Result<()> {
 }
 
 /// Output review completed message (for blocking mode)
-fn output_review_completed(review_id: &str, scope: &ReviewScope) -> Result<()> {
+fn output_review_completed(review_id: &str, scope: &ReviewScope, has_issues: bool) -> Result<()> {
     use super::output::{CommandOutput, format_command_output};
-    output_utils::emit_stderr(|| {
-        let hint = if scope.kind == ReviewScopeKind::Session {
+    output_utils::emit(|| {
+        let hint = if !has_issues || scope.kind == ReviewScopeKind::Session {
             None
         } else {
             Some(format!("Run `aiki fix {}` to remediate.", review_id))
+        };
+        let status = if has_issues {
+            "Review completed."
+        } else {
+            "Review approved - no issues found."
         };
         let output = CommandOutput {
             heading: "Review Completed",
             task_id: review_id,
             scope: Some(scope),
-            status: "Review completed.",
+            status,
             issues: None,
             hint,
         };
@@ -893,7 +929,7 @@ fn run_issue_add(
 
     super::task::comment_on_task(cwd, &task.id, text, data)?;
 
-    output_utils::emit_stderr(|| format!("Added issue to review {}", review_id));
+    output_utils::emit(|| format!("Added issue to review {}", review_id));
     Ok(())
 }
 
@@ -929,7 +965,7 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
         })
         .collect();
 
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let theme = Theme::from_mode(detect_mode());
         let buffer = render_issue_list(&task.id, &task.name, &items, &theme);
         buffer_to_ansi(&buffer)
@@ -957,7 +993,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
     reviews.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     if reviews.is_empty() {
-        output_utils::emit_stderr(|| {
+        output_utils::emit(|| {
             let content = if all {
                 "No review tasks found.\n"
             } else {
@@ -968,7 +1004,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
         return Ok(());
     }
 
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let mut content = String::from("## Reviews\n| ID | Status | Outcome | Issues | Name |\n|----|--------|---------|--------|------|\n");
         for review in &reviews {
             let status_str = match review.status {
@@ -1020,7 +1056,7 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
         )));
     }
 
-    output_utils::emit_stderr(|| {
+    output_utils::emit(|| {
         let status_str = match task.status {
             TaskStatus::Open => "open",
             TaskStatus::InProgress => "in_progress",

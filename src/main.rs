@@ -116,19 +116,28 @@ enum Commands {
         /// Run followup task asynchronously
         #[arg(long = "async")]
         run_async: bool,
-        /// Start task and return control to calling agent
+        /// Internal: continue an async fix from a previously created fix-parent
+        #[arg(long = "_continue-async", hide = true)]
+        continue_async: Option<String>,
+        /// Custom plan template (default: aiki/plan/fix)
         #[arg(long)]
-        start: bool,
-        /// Task template to use (default: aiki/fix)
+        plan: Option<String>,
+        /// Custom decompose template (default: aiki/decompose)
         #[arg(long)]
-        template: Option<String>,
+        decompose: Option<String>,
+        /// Custom loop template (default: aiki/loop)
+        #[arg(long = "loop")]
+        loop_template: Option<String>,
+        /// Custom review template for quality loop review step
+        #[arg(long, default_missing_value = "aiki/review", num_args = 0..=1)]
+        review: Option<String>,
         /// Agent for task assignment (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
         /// Enable autorun (auto-start this fix task when its target closes)
         #[arg(long)]
         autorun: bool,
-        /// Skip loop iterations (sets data.options.once = true)
+        /// Disable post-fix review loop (single pass only)
         #[arg(long)]
         once: bool,
     },
@@ -136,29 +145,37 @@ enum Commands {
     Explore(commands::explore::ExploreArgs),
     /// Create and run code review tasks
     Review(commands::review::ReviewArgs),
+    /// Resolve JJ merge conflicts
+    Resolve(commands::resolve::ResolveArgs),
     /// Manage epics (create from plan files, show status, list)
     Epic {
         #[command(subcommand)]
         command: commands::epic::EpicCommands,
     },
-    /// (deprecated alias for 'aiki epic add')
-    #[command(hide = true)]
+    /// Decompose a plan into subtasks under a target task
     Decompose(commands::decompose::DecomposeArgs),
     /// Build from a plan file (decompose and execute all subtasks)
     Build(commands::build::BuildArgs),
-    /// Interactive plan authoring with AI agent
+    /// Orchestrate a parent task's subtasks via lanes
+    Loop(commands::loop_cmd::LoopArgs),
+    /// Interactive plan authoring with AI agent.
+    /// Subcommands: epic (default), fix.
+    /// Examples: `aiki plan feature.md`, `aiki plan epic Add auth`,
+    /// `aiki plan fix <review-id>`
     Plan {
-        /// Path to plan file and/or description text (variadic - quotes optional).
-        /// Examples: `aiki plan feature.md`, `aiki plan feature.md add JWT auth`,
-        /// `aiki plan Add user authentication`
+        /// Subcommand and arguments. First arg can be 'epic' or 'fix',
+        /// otherwise defaults to epic behavior.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
-        /// Plan template to use (default: aiki/plan)
+        /// Plan template to use (default: aiki/plan/epic)
         #[arg(long)]
         template: Option<String>,
         /// Agent for plan session (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
+        /// Output format (e.g., `id` for bare task ID on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<commands::OutputFormat>,
     },
     /// (deprecated alias for 'aiki plan')
     #[command(hide = true)]
@@ -258,32 +275,35 @@ fn run() -> Result<()> {
         Commands::Fix {
             task_id,
             run_async,
-            start,
-            template,
+            continue_async,
+            plan,
+            decompose,
+            loop_template,
+            review,
             agent,
             autorun,
             once,
-        } => commands::fix::run(task_id, run_async, start, template, agent, autorun, once),
+        } => commands::fix::run(task_id, run_async, continue_async, plan, decompose, loop_template, review, agent, autorun, once),
         Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),
+        Commands::Resolve(args) => commands::resolve::run(args),
         Commands::Epic { command } => commands::epic::run(command),
-        Commands::Decompose(args) => {
-            eprintln!("Warning: 'aiki decompose' is deprecated, use 'aiki epic add' instead.");
-            commands::decompose::run(args)
-        }
+        Commands::Decompose(args) => commands::decompose::run(args),
         Commands::Build(args) => commands::build::run(args),
+        Commands::Loop(args) => commands::loop_cmd::run(args),
         Commands::Plan {
             args,
             template,
             agent,
-        } => commands::plan::run(args, template, agent),
+            output,
+        } => commands::plan::run(args, template, agent, output),
         Commands::Spec {
             args,
             template,
             agent,
         } => {
             eprintln!("Warning: 'aiki spec' is deprecated, use 'aiki plan' instead.");
-            commands::plan::run(args, template, agent)
+            commands::plan::run(args, template, agent, None)
         }
     }
 }

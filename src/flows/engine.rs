@@ -1006,6 +1006,7 @@ impl HookEngine {
                 agent_override,
                 template,
                 fix: false,
+                fix_template: None,
                 autorun: false,
             },
         ) {

@@ -8,13 +8,16 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING};
+use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING, SYM_STARTING};
 
 /// State of a single pipeline phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum PhaseState {
     /// Not yet started.
     Pending,
+    /// Agent is spawning.
+    Starting,
     /// Currently running.
     Active,
     /// Completed successfully.
@@ -24,6 +27,7 @@ pub enum PhaseState {
 }
 
 /// Information about a single pipeline phase.
+#[allow(dead_code)]
 pub struct PhaseInfo {
     /// Phase name, e.g. "build", "review", "fix".
     pub name: &'static str,
@@ -44,25 +48,30 @@ pub struct PhaseInfo {
 /// Renders phases separated by dim `│` separators. Each phase shows
 /// a state symbol, name, optional progress count, elapsed time, and
 /// failure count.
+#[allow(dead_code)]
 pub struct StageTrack<'a> {
     phases: Vec<PhaseInfo>,
     theme: &'a Theme,
 }
 
 impl<'a> StageTrack<'a> {
+    #[allow(dead_code)]
     pub fn new(phases: Vec<PhaseInfo>, theme: &'a Theme) -> Self {
         Self { phases, theme }
     }
 }
 
+#[allow(dead_code)]
 const SEPARATOR: &str = "  │  ";
 
 impl PhaseInfo {
     /// Build the text fragments for this phase.
     /// Returns a list of (text, style) pairs.
+    #[allow(dead_code)]
     fn fragments(&self, theme: &Theme) -> Vec<(String, Style)> {
         let (symbol, color) = match self.state {
             PhaseState::Pending => (SYM_PENDING, theme.dim),
+            PhaseState::Starting => (SYM_STARTING, theme.yellow),
             PhaseState::Active => (SYM_RUNNING, theme.yellow),
             PhaseState::Done => (SYM_CHECK, theme.green),
             PhaseState::Failed => (SYM_FAILED, theme.red),
@@ -449,6 +458,33 @@ mod tests {
         // Note: ✓ is multi-byte but occupies one cell.
         let check_cell = buf.cell((1, 0)).unwrap();
         assert_eq!(check_cell.style().fg, Some(theme.green));
+    }
+
+    #[test]
+    fn starting_phase() {
+        let content = render_to_string(
+            vec![
+                PhaseInfo {
+                    name: "build",
+                    state: PhaseState::Starting,
+                    completed: 0,
+                    total: 0,
+                    elapsed: None,
+                    failed: 0,
+                },
+                PhaseInfo {
+                    name: "review",
+                    state: PhaseState::Pending,
+                    completed: 0,
+                    total: 0,
+                    elapsed: None,
+                    failed: 0,
+                },
+            ],
+            80,
+        );
+        assert!(content.contains("⧗ build"), "got: {}", content);
+        assert!(content.contains("○ review"), "got: {}", content);
     }
 
 }

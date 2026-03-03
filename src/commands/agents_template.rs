@@ -137,20 +137,20 @@ aiki task close <task-id> --summary "Completed: authentication with JWT tokens, 
 
 ### Code Reviews
 
-**When asked to review a task's changes, use `aiki review --start`:**
+**When asked to review a task's changes, use `aiki review`:**
 
 ```bash
-# Review a specific task's changes (you perform the review)
-aiki review <task-id> --start
+# Review a specific task's changes (blocking — you perform the review)
+aiki review <task-id>
 ```
 
-**When to use `aiki review --start`:**
+**When to use `aiki review`:**
 - User asks you to review work done on a task
 - User says "review task X" or provides a task ID to review
 - You want to check the code changes associated with a completed task
 
 **How it works:**
-1. `aiki review <task-id> --start` creates a review task and you perform the review
+1. `aiki review <task-id>` creates a review task and you perform the review (blocking by default)
 2. You'll see instructions to run `aiki task diff` and examine the changes
 3. Track each issue found using `aiki review issue add`:
    ```bash
@@ -160,12 +160,21 @@ aiki review <task-id> --start
    - **Location:** `--file path[:<line>[-<end>]]` (repeatable for multi-file issues)
 4. Close the review task when done
 
-**The `--start` flag means you perform the review yourself** (vs. spawning a background agent).
-
-**After reviewing**, if you found issues, run `aiki fix` to create followup tasks:
+**After reviewing**, if you found issues, run `aiki fix` to create followup tasks from review issues:
 ```bash
 aiki fix <review-task-id>
 ```
+
+### Conflict Resolution
+
+**When you encounter merge conflicts, use `aiki resolve`:**
+
+```bash
+# Resolve merge conflicts in the current workspace
+aiki resolve <change-id>
+```
+
+This opens the conflicted change, lets you resolve the JJ conflict markers, and marks the change as resolved.
 
 **Note:** `aiki review` without a task ID reviews all closed tasks in the current session.
 

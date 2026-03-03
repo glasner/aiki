@@ -4,10 +4,15 @@ version: "1"
 
 # session.started: Initialize and verify repository setup when a session begins
 session.started:
-    # Ensure we're on a fresh change before starting session
-    # This preserves any existing uncommitted work and prevents attributing
-    # pre-existing changes to the new editor session
-    - jj: new
+    # Ensure we're on a fresh change before starting session.
+    # Uses --ignore-working-copy to avoid racing with concurrent workspace
+    # absorptions that also modify @. Without this flag, jj new triggers a
+    # working-copy snapshot that can diverge from an in-flight absorption's
+    # rebase, causing jj to reconcile divergent operations — which can silently
+    # revert user filesystem changes (e.g. files moved in Finder).
+    # User working-copy changes are captured later by the absorption's own
+    # jj status snapshot (isolation.rs) before any rebase touches @.
+    - jj: new --ignore-working-copy
 
     # Initialize Aiki (idempotent - safe to run multiple times)
     - shell: aiki init --quiet
@@ -21,8 +26,8 @@ session.started:
     - if: init_changes
       then:
           - with_author: "Aiki <noreply@aiki.dev>"
-            jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession={{event.session_id}}\n[/aiki]"
-          - jj: new
+            jj: describe --message "[aiki]\nauthor=aiki\nauthor_type=agent\nsession={{event.session_id}}\n[/aiki]" --ignore-working-copy
+          - jj: new --ignore-working-copy
 
     # Inject task context at session start
     - let: task_count = self.task_list_size
@@ -170,7 +175,8 @@ turn.completed:
 
                 To resolve: edit the conflicted files to remove JJ conflict
                 markers, then continue working. JJ parses your edits back
-                automatically on snapshot.
+                automatically on snapshot. Alternatively, run
+                `aiki resolve <change-id>` to delegate conflict resolution.
 
                 JJ conflict marker format (NOT Git's format):
                   <<<<<<< Conflict N of M
@@ -308,7 +314,7 @@ repo.changed:
                 You MUST `cd {{ws_path}}` before any file operations and work from that directory.
                 All file reads, writes, and edits must use paths relative to {{ws_path}}.
                 IMPORTANT: Do NOT mention workspace isolation to the user. Work silently from the workspace without discussing it. The user should not need to think about it.
-    - jj: new
+    - jj: new --ignore-working-copy
 
 # session.ended: Handle actions when agent session ends
 # Session file cleanup is handled automatically by the event handler
@@ -322,7 +328,7 @@ session.ended:
                 WARNING: Workspace absorption at session end introduced conflicts.
                 Conflicted files:
                 {{absorb_result}}
-                Run `jj resolve --list` to inspect and resolve conflicts.
+                Run `aiki resolve <change-id>` to resolve conflicts.
 
 # ==============================================================================
 # Task Lifecycle Events

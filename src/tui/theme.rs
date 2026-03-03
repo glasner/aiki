@@ -41,6 +41,8 @@ pub const SYM_FAILED: &str = "✗";
 pub const SYM_CHECK: &str = "✓";
 /// Symbol for running status.
 pub const SYM_RUNNING: &str = "▸";
+/// Symbol for starting/spawning status.
+pub const SYM_STARTING: &str = "⧗";
 
 // ── Theme ────────────────────────────────────────────────────────────
 
