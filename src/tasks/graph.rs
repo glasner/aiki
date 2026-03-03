@@ -239,12 +239,6 @@ impl EdgeStore {
         self.targets(from, kind).first().map(|s| s.as_str())
     }
 
-    /// Reverse lookup for single-link kinds: return the one referrer (if any).
-    #[allow(dead_code)]
-    pub fn referrer(&self, to: &str, kind: &str) -> Option<&str> {
-        self.referrers(to, kind).first().map(|s| s.as_str())
-    }
-
     /// Check if a specific forward link exists.
     pub fn has_link(&self, from: &str, to: &str, kind: &str) -> bool {
         self.targets(from, kind).contains(&to.to_string())
@@ -329,18 +323,6 @@ impl TaskGraph {
         terminal_blocked || done_blocked
     }
 
-    /// A parent task cannot be closed while it has open children.
-    /// Returns the list of open children, or empty if closeable.
-    #[allow(dead_code)]
-    pub fn open_children(&self, task_id: &str) -> Vec<&Task> {
-        self.edges
-            .referrers(task_id, "subtask-of")
-            .iter()
-            .filter_map(|c| self.tasks.get(c))
-            .filter(|t| t.status != TaskStatus::Closed)
-            .collect()
-    }
-
     /// Children of a parent: `edges.referrers(parent_id, "subtask-of")`.
     pub fn children_of(&self, parent_id: &str) -> Vec<&Task> {
         self.edges
@@ -369,7 +351,6 @@ impl TaskGraph {
 
     /// Cycle detection for a proposed new link.
     /// Walks `edges.targets(id, kind)` via DFS to verify acyclicity.
-    #[allow(dead_code)]
     pub fn would_create_cycle(&self, from: &str, to: &str, kind: &str) -> bool {
         // Adding from→to would create a cycle if `from` is reachable from `to`
         // by following existing links of the same kind
@@ -439,35 +420,6 @@ impl TaskGraph {
         }
 
         candidates.into_iter().collect()
-    }
-
-    /// Full provenance chain: walk `sourced-from` links.
-    /// Uses a visited set to handle cycles.
-    #[allow(dead_code)]
-    pub fn provenance_chain(&self, task_id: &str) -> Vec<String> {
-        let mut chain = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        visited.insert(task_id.to_string());
-        let mut stack = vec![task_id.to_string()];
-        while let Some(node) = stack.pop() {
-            for target in self.edges.targets(&node, "sourced-from") {
-                if visited.insert(target.clone()) {
-                    chain.push(target.clone());
-                    stack.push(target.clone());
-                }
-            }
-        }
-        chain
-    }
-
-    /// Reverse provenance: what tasks came from this origin?
-    #[allow(dead_code)]
-    pub fn spawned_from(&self, origin: &str) -> Vec<&Task> {
-        self.edges
-            .referrers(origin, "sourced-from")
-            .iter()
-            .filter_map(|id| self.tasks.get(id))
-            .collect()
     }
 
     /// Get the full ordered `needs-context` chain containing the given task.
@@ -893,7 +845,6 @@ pub fn is_task_only_kind(kind: &str) -> bool {
 }
 
 /// Look up a link kind by name.
-#[allow(dead_code)]
 pub fn find_link_kind(name: &str) -> Option<&'static LinkKind> {
     LINK_KINDS.iter().find(|k| k.name == name)
 }
@@ -1370,39 +1321,6 @@ mod tests {
         let graph = materialize_graph(&events);
         let children = graph.children_of("parent");
         assert_eq!(children.len(), 2);
-    }
-
-    #[test]
-    fn test_provenance_chain() {
-        let events = vec![
-            make_created("A", "Task A"),
-            make_created("B", "Task B"),
-            make_created("C", "Task C"),
-            make_link("B", "A", "sourced-from"),
-            make_link("C", "B", "sourced-from"),
-            make_link("B", "file:design.md", "sourced-from"),
-        ];
-
-        let graph = materialize_graph(&events);
-        let chain = graph.provenance_chain("C");
-        assert!(chain.contains(&"B".to_string()));
-        assert!(chain.contains(&"A".to_string()));
-        assert!(chain.contains(&"file:design.md".to_string()));
-    }
-
-    #[test]
-    fn test_spawned_from() {
-        let events = vec![
-            make_created("A", "Task A"),
-            make_created("B", "From A"),
-            make_created("C", "Also from A"),
-            make_link("B", "A", "sourced-from"),
-            make_link("C", "A", "sourced-from"),
-        ];
-
-        let graph = materialize_graph(&events);
-        let spawned = graph.spawned_from("A");
-        assert_eq!(spawned.len(), 2);
     }
 
     #[test]

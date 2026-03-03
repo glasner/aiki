@@ -652,22 +652,6 @@ impl<'a> HookComposer<'a> {
         result
     }
 
-    /// Get the current call stack depth.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookComposer API
-    pub fn depth(&self) -> usize {
-        self.call_stack.len()
-    }
-
-    /// Check if a path is already in the call stack.
-    ///
-    /// This is a helper for testing cycle detection.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookComposer API
-    pub fn is_in_stack(&self, path: &Path) -> bool {
-        self.call_stack.contains(&path.to_path_buf())
-    }
-
     /// Extract flow identifier from canonical path for self.* resolution.
     ///
     /// Converts paths like:
@@ -942,21 +926,6 @@ version: "1"
             composer.compose_hook("aiki/nonexistent", EventType::ChangeCompleted, &mut state);
 
         assert!(matches!(result, Err(AikiError::HookNotFound { .. })));
-    }
-
-    #[test]
-    fn test_depth_tracking() {
-        let temp_dir = create_test_project();
-
-        // Create simple flow
-        let flow_path = temp_dir.path().join(".aiki/hooks/aiki/simple.yml");
-        create_flow_file(&flow_path, "Simple Flow", &[], &[], true);
-
-        let mut loader = HookLoader::with_start_dir(temp_dir.path()).unwrap();
-        let composer = HookComposer::new(&mut loader);
-
-        // Initially depth should be 0
-        assert_eq!(composer.depth(), 0);
     }
 
     #[test]

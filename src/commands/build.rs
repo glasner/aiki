@@ -26,6 +26,8 @@ use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events, write_event, Task,
     TaskEvent, TaskOutcome, TaskStatus,
 };
+use crate::tui;
+use crate::tui::theme::{Theme, detect_mode};
 
 /// Build subcommands
 #[derive(Subcommand)]
@@ -425,7 +427,7 @@ fn run_show(cwd: &Path, plan_path: &str, output_format: Option<OutputFormat>) ->
         }
         None => {
             let subtasks = get_subtasks(&graph, &epic.id);
-            output_build_show(epic, &subtasks, &build_tasks)?;
+            output_build_show(epic, &subtasks, &build_tasks, &graph)?;
         }
     }
 
@@ -645,7 +647,7 @@ fn check_epic_blockers(
             })
             .collect();
         return Err(AikiError::InvalidArgument(format!(
-            "Epic {} is blocked by unresolved dependencies: {}",
+            "Epic {} is blocked by unresolved dependencies: {}. Rerun with --restart to start over",
             &epic_id[..epic_id.len().min(8)],
             blocker_names.join(", ")
         )));
@@ -762,96 +764,14 @@ fn output_build_async(build_id: &str, epic_id: &str) -> Result<()> {
 }
 
 /// Output build show (detailed status display)
-fn output_build_show(epic: &Task, subtasks: &[&Task], build_tasks: &[&Task]) -> Result<()> {
-    output_utils::emit_stderr(|| {
-        let completed = subtasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Closed)
-            .count();
-        let total = subtasks.len();
-
-        let status_str = match epic.status {
-            TaskStatus::Open => "open",
-            TaskStatus::InProgress => "in_progress",
-            TaskStatus::Stopped => "stopped",
-            TaskStatus::Closed => "closed",
-        };
-
-        let outcome_str = epic
-            .closed_outcome
-            .as_ref()
-            .map(|o| format!("- **Outcome:** {}\n", o))
-            .unwrap_or_default();
-
-        let plan_str = epic
-            .data
-            .get("plan")
-            .map(|s| format!("- **Plan:** {}\n", s))
-            .unwrap_or_default();
-
-        let mut content = format!(
-            "## Epic: {}\n- **ID:** {}\n- **Status:** {}\n{}{}",
-            &epic.name, &epic.id, status_str, outcome_str, plan_str
-        );
-
-        content.push_str(&format!("- **Progress:** {}/{}\n", completed, total));
-
-        if !subtasks.is_empty() {
-            content.push_str("\n### Subtasks\n| # | ID | Status | Outcome | Name |\n|---|-----|--------|---------|------|\n");
-            for (i, subtask) in subtasks.iter().enumerate() {
-                let sub_status = match subtask.status {
-                    TaskStatus::Open => "open",
-                    TaskStatus::InProgress => "in_progress",
-                    TaskStatus::Stopped => "stopped",
-                    TaskStatus::Closed => "closed",
-                };
-
-                let sub_outcome = subtask
-                    .closed_outcome
-                    .as_ref()
-                    .map(|o| o.to_string())
-                    .unwrap_or_default();
-
-                content.push_str(&format!(
-                    "| {} | {} | {} | {} | {} |\n",
-                    i + 1, &subtask.id, sub_status, sub_outcome, &subtask.name
-                ));
-            }
-        }
-
-        if !build_tasks.is_empty() {
-            content.push_str("\n### Builds\n| ID | Status | Outcome | Name |\n|-----|--------|---------|------|\n");
-            for build in build_tasks {
-                let build_status = match build.status {
-                    TaskStatus::Open => "open",
-                    TaskStatus::InProgress => "in_progress",
-                    TaskStatus::Stopped => "stopped",
-                    TaskStatus::Closed => "closed",
-                };
-
-                let build_outcome = build
-                    .closed_outcome
-                    .as_ref()
-                    .map(|o| o.to_string())
-                    .unwrap_or_default();
-
-                content.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
-                    &build.id, build_status, build_outcome, &build.name
-                ));
-            }
-        }
-
-        if !epic.sources.is_empty() {
-            content.push_str("\n### Sources\n");
-            for source in &epic.sources {
-                content.push_str(&format!("- {}\n", source));
-            }
-        }
-
-        MdBuilder::new("build-show").build(&content, &[], &[])
+fn output_build_show(epic: &Task, subtasks: &[&Task], _build_tasks: &[&Task], graph: &crate::tasks::graph::TaskGraph) -> Result<()> {
+    let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
+    output_utils::emit(&epic.id, || {
+        let theme = Theme::from_mode(detect_mode());
+        let view = tui::builder::build_workflow_view(epic, subtasks, plan_path, graph);
+        let buf = tui::views::workflow::render_workflow(&view, &theme);
+        tui::buffer_ansi::buffer_to_ansi(&buf)
     });
-
     Ok(())
 }
 
@@ -899,6 +819,14 @@ mod tests {
         let mut task = make_task(id, name, status);
         task.data = data;
         task
+    }
+
+    fn empty_graph() -> TaskGraph {
+        TaskGraph {
+            tasks: FastHashMap::default(),
+            edges: EdgeStore::new(),
+            slug_index: FastHashMap::default(),
+        }
     }
 
     fn make_graph(tasks: FastHashMap<String, Task>, edges: EdgeStore) -> TaskGraph {
@@ -1242,7 +1170,8 @@ mod tests {
         let epic = make_task_with_data("epic1", "Epic: Feature", TaskStatus::Open, data);
         let subtasks: Vec<&Task> = vec![];
         let build_tasks: Vec<&Task> = vec![];
-        let result = output_build_show(&epic, &subtasks, &build_tasks);
+        let graph = empty_graph();
+        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
         assert!(result.is_ok());
     }
 
@@ -1269,7 +1198,8 @@ mod tests {
         build.closed_outcome = Some(TaskOutcome::Done);
         let build_tasks: Vec<&Task> = vec![&build];
 
-        let result = output_build_show(&epic, &subtasks, &build_tasks);
+        let graph = empty_graph();
+        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
         assert!(result.is_ok());
     }
 
@@ -1282,7 +1212,8 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![];
         let build_tasks: Vec<&Task> = vec![];
-        let result = output_build_show(&epic, &subtasks, &build_tasks);
+        let graph = empty_graph();
+        let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
         assert!(result.is_ok());
     }
 

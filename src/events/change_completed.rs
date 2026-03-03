@@ -274,49 +274,6 @@ impl ChangeOperation {
         }
     }
 
-    /// Get all file paths affected by this operation (for unified access)
-    /// - Write: files that were created/modified
-    /// - Delete: files that were removed
-    /// - Move: files at their new locations (destinations)
-    #[must_use]
-    #[allow(dead_code)] // Part of ChangeOperation API
-    pub fn file_paths(&self) -> Vec<String> {
-        match self {
-            Self::Write(op) => op.file_paths.clone(),
-            Self::Delete(op) => op.file_paths.clone(),
-            Self::Move(op) => op.destination_paths.clone(),
-        }
-    }
-
-    /// Get edit details if this is a Write operation
-    #[must_use]
-    #[allow(dead_code)] // Part of ChangeOperation API
-    pub fn edit_details(&self) -> &[EditDetail] {
-        match self {
-            Self::Write(op) => &op.edit_details,
-            _ => &[],
-        }
-    }
-
-    /// Get source paths if this is a Move operation
-    #[must_use]
-    #[allow(dead_code)] // Part of ChangeOperation API
-    pub fn source_paths(&self) -> &[String] {
-        match self {
-            Self::Move(op) => &op.source_paths,
-            _ => &[],
-        }
-    }
-
-    /// Get destination paths if this is a Move operation
-    #[must_use]
-    #[allow(dead_code)] // Part of ChangeOperation API
-    pub fn destination_paths(&self) -> &[String] {
-        match self {
-            Self::Move(op) => &op.destination_paths,
-            _ => &[],
-        }
-    }
 }
 
 // ============================================================================
@@ -627,27 +584,6 @@ mod tests {
         assert_eq!(write_op.is_move(), "");
         assert_eq!(delete_op.is_move(), "");
         assert_eq!(move_op.is_move(), "true");
-    }
-
-    #[test]
-    fn test_change_operation_file_paths() {
-        let write_op = ChangeOperation::Write(WriteOperation {
-            file_paths: vec!["a.txt".to_string()],
-            edit_details: vec![],
-        });
-        let delete_op = ChangeOperation::Delete(DeleteOperation {
-            file_paths: vec!["b.txt".to_string()],
-        });
-        let move_op = ChangeOperation::Move(MoveOperation {
-            file_paths: vec!["new.txt".to_string()],
-            source_paths: vec!["old.txt".to_string()],
-            destination_paths: vec!["new.txt".to_string()],
-        });
-
-        // file_paths returns destinations for Move
-        assert_eq!(write_op.file_paths(), vec!["a.txt"]);
-        assert_eq!(delete_op.file_paths(), vec!["b.txt"]);
-        assert_eq!(move_op.file_paths(), vec!["new.txt"]);
     }
 
     #[test]

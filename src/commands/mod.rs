@@ -36,5 +36,6 @@ pub mod otel_receive;
 pub mod review;
 pub mod plan;
 
+pub mod status;
 pub mod task;
 pub mod zed_detection;

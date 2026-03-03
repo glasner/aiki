@@ -21,14 +21,6 @@ pub struct NotifyPayload {
     /// Thread/conversation ID (same as OTel `conversation.id`)
     #[serde(rename = "thread-id")]
     pub thread_id: String,
-    /// Codex's internal turn ID (intentionally unused by aiki).
-    ///
-    /// Aiki generates its own deterministic turn_id as `{conversation_id}:{turn_number}`
-    /// for cross-agent consistency. Codex's turn-id is opaque and not guaranteed stable
-    /// across restarts. We capture it here only for debugging/logging purposes.
-    #[serde(rename = "turn-id")]
-    #[allow(dead_code)]
-    pub turn_id: Option<String>,
     /// Working directory
     pub cwd: String,
     /// The agent's complete response for this turn
@@ -36,7 +28,6 @@ pub struct NotifyPayload {
     pub last_assistant_message: Option<String>,
     /// Input messages (user prompts for this turn)
     #[serde(rename = "input-messages")]
-    #[allow(dead_code)]
     pub input_messages: Option<serde_json::Value>,
 }
 

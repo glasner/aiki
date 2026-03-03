@@ -10,8 +10,6 @@ use std::time::{Duration, Instant};
 // Fixed configuration - convention over configuration
 const WARMUP_ITERATIONS: usize = 3;
 const MEASUREMENT_RUNS: usize = 3;
-#[allow(dead_code)]
-const DEFAULT_EDITS: usize = 50; // Default is in CLI args, kept here for documentation
 
 /// Vendor types for benchmarking
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

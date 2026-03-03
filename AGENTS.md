@@ -54,7 +54,7 @@ When creating implementation plans, **Test-Driven Development (TDD) is critical*
 When performing code reviews, track each issue with structured data:
 
 ```bash
-aiki review issue add <review-id> "Description" --severity high --file src/auth.rs:42
+aiki review issue add <review-id> "Description" --high --file src/auth.rs:42
 ```
 
 **Severity** (pick one per issue):

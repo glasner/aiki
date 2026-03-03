@@ -110,39 +110,14 @@ pub enum ConversationEvent {
     },
 }
 
-/// Materialized session view (computed from events)
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Part of history API
-pub struct Session {
-    pub id: String,
-    pub agent_type: AgentType,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    /// First line of first prompt (for display)
-    pub summary: Option<String>,
-}
-
-/// Materialized log entry (from response events)
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // Part of history API
-pub struct LogEntry {
-    pub session_id: String,
-    pub agent_type: AgentType,
-    pub files_written: Vec<String>,
-    pub summary: Option<String>,
-    pub timestamp: DateTime<Utc>,
-}
-
 /// Summary of a conversation for listing purposes
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Part of history API
 pub struct ConversationSummary {
     pub session_id: String,
     pub agent_type: AgentType,
     pub started_at: DateTime<Utc>,
     pub turn_count: u32,
     pub last_activity: DateTime<Utc>,
-    pub repo_id: Option<String>,
     /// Session mode (background or interactive), if known from SessionStart event
     pub session_mode: Option<SessionMode>,
 }

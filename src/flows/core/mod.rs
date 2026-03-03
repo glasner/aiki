@@ -5,7 +5,6 @@
 
 mod functions;
 
-#[allow(unused_imports)]
 pub use functions::{
     // Commit integration
     generate_coauthors,
@@ -14,7 +13,7 @@ pub use functions::{
     build_move_metadata, build_write_metadata, classify_edits_change, prepare_separation_change,
     restore_original_files_change, write_ai_files_change,
     // Task system functions
-    task_in_progress, task_list_size, task_list_size_for_agent,
+    task_in_progress, task_list_size_for_agent,
     // Workspace isolation functions
     workspace_absorb_all, workspace_ensure_isolated,
 };

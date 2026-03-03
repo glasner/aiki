@@ -14,6 +14,8 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 
 /// Name for the synthetic `.0` subtask auto-created when starting a parent task.
+/// TEMPORARILY UNUSED: digest subtask creation is disabled for performance testing.
+#[allow(dead_code)]
 const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
 
 /// Placeholder prefix/suffix for parent.subtasks.{slug} deferred resolution.
@@ -2154,90 +2156,11 @@ fn run_start(
         }
     }
 
-    // Check if we're starting a parent task with subtasks
-    // If so, auto-create a planning task (.0) and start that instead
-    let mut actual_ids_to_start = ids_to_start.clone();
-
-    if ids_to_start.len() == 1 {
-        let task_id = ids_to_start[0].clone();
-        if has_subtasks(&graph, &task_id) {
-            // Starting a parent task - find or create a digest task among children
-            let existing_digest = graph
-                .edges
-                .referrers(&task_id, "subtask-of")
-                .iter()
-                .find(|child_id| {
-                    graph.tasks.get(*child_id).is_some_and(|t| {
-                        t.name == DIGEST_SUBTASK_NAME && t.status != TaskStatus::Closed
-                    })
-                })
-                .cloned();
-
-            let digest_task_id = if let Some(id) = existing_digest {
-                id
-            } else {
-                // Create the planning task with a full 32-char ID
-                let id = generate_task_id(DIGEST_SUBTASK_NAME);
-                let timestamp = chrono::Utc::now();
-                let working_copy = get_working_copy_change_id(cwd);
-                let planning_event = TaskEvent::Created {
-                    task_id: id.clone(),
-                    name: DIGEST_SUBTASK_NAME.to_string(),
-                    slug: None,
-                    task_type: None,
-                    priority: TaskPriority::default(),
-                    assignee: None,
-                    sources: Vec::new(),
-                    template: None,
-                    working_copy: working_copy.clone(),
-                    instructions: None,
-                    data: std::collections::HashMap::new(),
-                    timestamp,
-                };
-                write_event(cwd, &planning_event)?;
-                write_link_event(cwd, &graph, "subtask-of", &id, &task_id)?;
-
-                // Add the subtask-of edge to the in-memory graph so the
-                // parent preservation lookup (graph.edges.target) works
-                // without needing the new_scope workaround.
-                graph.edges.add(&id, &task_id, "subtask-of");
-
-                // Add to local tasks map for output
-                let task = Task {
-                    id: id.clone(),
-                    name: DIGEST_SUBTASK_NAME.to_string(),
-                    slug: None,
-                    task_type: None,
-                    status: TaskStatus::Open,
-                    priority: TaskPriority::default(),
-                    assignee: None,
-                    sources: Vec::new(),
-                    template: None,
-                    instructions: None,
-                    data: std::collections::HashMap::new(),
-                    created_at: timestamp,
-                    started_at: None,
-                    claimed_by_session: None,
-                    last_session_id: None,
-                    stopped_reason: None,
-                    closed_outcome: None,
-                    summary: None,
-                    turn_started: None,
-                    turn_closed: None,
-                    turn_stopped: None,
-                    comments: Vec::new(),
-                };
-                tasks.insert(id.clone(), task);
-                id
-            };
-
-            // Start both the parent and its digest task.
-            // The parent must transition to InProgress so it doesn't re-appear
-            // in the ready queue after the .0 digest is closed (which would cause
-            // agents to re-start the parent and create duplicate .0 digests).
-            actual_ids_to_start = vec![task_id.clone(), digest_task_id];
-        }
-    }
+    // TEMPORARILY DISABLED: digest (.0) subtask auto-creation
+    // When starting a parent task with subtasks, we used to auto-create a
+    // "Digest subtasks and start first batch" (.0) subtask. Disabled to test
+    // whether skipping it improves agent performance.
+    let actual_ids_to_start = ids_to_start.clone();
 
     // Get tasks before state changes (for output)
     let mut started_tasks: Vec<Task> = actual_ids_to_start
@@ -6253,6 +6176,7 @@ fn create_subtasks_from_entries(
             SubtaskEntry::Composed {
                 template_name: child_template_name,
                 line,
+                ..
             } => {
                 // Validate depth and cycles early
                 if depth > MAX_COMPOSITION_DEPTH {
@@ -6391,20 +6315,50 @@ fn create_subtasks_from_entries(
 
                 let subtask_event = TaskEvent::Created {
                     task_id: subtask_id.clone(),
-                    name: subtask_name,
+                    name: subtask_name.clone(),
                     slug: subtask_def.slug.clone(),
                     task_type: None,
                     priority: subtask_priority,
-                    assignee: subtask_assignee,
-                    sources: subtask_sources,
+                    assignee: subtask_assignee.clone(),
+                    sources: subtask_sources.clone(),
                     template: Some(template_id.to_string()),
                     working_copy: None,
-                    instructions: subtask_instructions,
-                    data: subtask_data,
+                    instructions: subtask_instructions.clone(),
+                    data: subtask_data.clone(),
                     timestamp,
                 };
                 write_event(cwd, &subtask_event)?;
                 write_link_event(cwd, graph, "subtask-of", subtask_id, parent_id)?;
+
+                // Insert into in-memory graph so Phase C write_link_event
+                // validation passes for task-only link kinds (e.g. needs-context)
+                graph.tasks.insert(
+                    subtask_id.clone(),
+                    Task {
+                        id: subtask_id.clone(),
+                        name: subtask_name,
+                        slug: subtask_def.slug.clone(),
+                        task_type: None,
+                        status: TaskStatus::Open,
+                        priority: subtask_priority,
+                        assignee: subtask_assignee,
+                        sources: subtask_sources,
+                        template: Some(template_id.to_string()),
+                        instructions: subtask_instructions,
+                        data: subtask_data,
+                        created_at: timestamp,
+                        started_at: None,
+                        claimed_by_session: None,
+                        last_session_id: None,
+                        stopped_reason: None,
+                        closed_outcome: None,
+                        summary: None,
+                        turn_started: None,
+                        turn_closed: None,
+                        turn_stopped: None,
+                        comments: vec![],
+                    },
+                );
 
                 // Update in-memory slug index
                 if let Some(ref s) = subtask_def.slug {
@@ -6602,32 +6556,39 @@ fn create_subtasks_from_entries(
     // After all subtasks are created, resolve needs-context frontmatter references
     // (e.g., "subtasks.explore") to task IDs and emit link events.
     for (i, entry) in entries.iter().enumerate() {
-        if let SubtaskEntry::Static(subtask_def) = entry {
-            if let Some(ref needs_context_ref) = subtask_def.needs_context {
-                let from_id = &planned[i].task_id;
+        let needs_context_ref: Option<&str> = match entry {
+            SubtaskEntry::Static(subtask_def) => {
+                subtask_def.needs_context.as_deref()
+            }
+            SubtaskEntry::Composed { attributes, .. } => {
+                attributes.get("needs-context").map(|s| s.as_str())
+            }
+        };
 
-                // Parse "subtasks.<slug>" format
-                let slug = needs_context_ref
-                    .strip_prefix("subtasks.")
-                    .ok_or_else(|| AikiError::TemplateProcessingFailed {
-                        details: format!(
-                            "needs-context value '{}' must use 'subtasks.<slug>' format",
-                            needs_context_ref
-                        ),
-                    })?;
+        if let Some(needs_context_ref) = needs_context_ref {
+            let from_id = &planned[i].task_id;
 
-                // Resolve slug to task ID via the slug_map built in Phase A
-                let to_id = slug_map.get(slug).ok_or_else(|| {
-                    AikiError::TemplateProcessingFailed {
-                        details: format!(
-                            "Unknown subtask slug '{}' in needs-context",
-                            slug
-                        ),
-                    }
+            // Parse "subtasks.<slug>" format
+            let slug = needs_context_ref
+                .strip_prefix("subtasks.")
+                .ok_or_else(|| AikiError::TemplateProcessingFailed {
+                    details: format!(
+                        "needs-context value '{}' must use 'subtasks.<slug>' format",
+                        needs_context_ref
+                    ),
                 })?;
 
-                write_link_event(cwd, graph, "needs-context", from_id, to_id)?;
-            }
+            // Resolve slug to task ID via the slug_map built in Phase A
+            let to_id = slug_map.get(slug).ok_or_else(|| {
+                AikiError::TemplateProcessingFailed {
+                    details: format!(
+                        "Unknown subtask slug '{}' in needs-context",
+                        slug
+                    ),
+                }
+            })?;
+
+            write_link_event(cwd, graph, "needs-context", from_id, to_id)?;
         }
     }
 

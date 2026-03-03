@@ -26,6 +26,7 @@ pub mod tools;
 pub mod utils;
 pub mod output_utils;
 pub mod validation;
+pub mod tui;
 
 #[cfg(test)]
 mod test_must_use;

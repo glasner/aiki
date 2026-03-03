@@ -25,6 +25,7 @@ mod tasks;
 mod tools;
 mod utils;
 mod validation;
+mod tui;
 
 use clap::{Parser, Subcommand};
 use error::Result;
@@ -91,6 +92,11 @@ enum Commands {
     Session {
         #[command(subcommand)]
         command: commands::session::SessionCommands,
+    },
+    /// Show status dashboard
+    Status {
+        /// Target to show status for
+        target: Option<String>,
     },
     /// Manage tasks
     Task {
@@ -244,6 +250,7 @@ fn run() -> Result<()> {
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Session { command } => commands::session::run(command),
+        Commands::Status { target } => Ok(commands::status::run(target)?),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),

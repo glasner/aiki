@@ -20,6 +20,9 @@ use crate::session::find_active_session;
 use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
 use crate::tasks::templates::create_review_task_from_template;
 use crate::tasks::md::MdBuilder;
+use crate::tui::buffer_ansi::buffer_to_ansi;
+use crate::tui::theme::{detect_mode, Theme};
+use crate::tui::views::issue_list::{render_issue_list, IssueListItem};
 use crate::tasks::{
     find_task, get_current_scope_set, get_in_progress, get_ready_queue_for_scope_set,
     materialize_graph, read_events, reassign_task, start_task_core,
@@ -910,27 +913,26 @@ fn run_issue_list(cwd: &Path, review_id: &str) -> Result<()> {
 
     let mut issues = get_issue_comments(task);
 
-    if issues.is_empty() {
-        output_utils::emit_stderr(|| format!("No issues found on review {}", review_id));
-        return Ok(());
-    }
-
     // Sort by severity: high → medium → low
     issues.sort_by_key(|c| severity_order(comment_severity(c)));
 
-    output_utils::emit_stderr(|| {
-        let mut out = String::new();
-        for comment in &issues {
-            let severity = comment_severity(comment);
+    let items: Vec<IssueListItem> = issues
+        .iter()
+        .map(|comment| {
+            let severity = comment_severity(comment).to_string();
             let locations = parse_locations(&comment.data);
-            let loc_suffix = format_locations(&locations);
-            if loc_suffix.is_empty() {
-                out.push_str(&format!("  {}: {}\n", severity, &comment.text));
-            } else {
-                out.push_str(&format!("  {}: {} {}\n", severity, &comment.text, loc_suffix));
+            IssueListItem {
+                severity,
+                text: comment.text.clone(),
+                location: format_locations(&locations),
             }
-        }
-        out.trim_end().to_string()
+        })
+        .collect();
+
+    output_utils::emit_stderr(|| {
+        let theme = Theme::from_mode(detect_mode());
+        let buffer = render_issue_list(&task.id, &task.name, &items, &theme);
+        buffer_to_ansi(&buffer)
     });
 
     Ok(())

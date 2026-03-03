@@ -12,6 +12,7 @@ use crate::error::{AikiError, Result};
 use crate::jj::{jj_cmd, JJWorkspace};
 use crate::repos;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -214,8 +215,23 @@ struct AbsorbLock {
 
 impl Drop for AbsorbLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let expected = std::process::id().to_string();
+        if let Ok(content) = fs::read_to_string(&self.path) {
+            if content.trim() == expected {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
     }
+}
+
+fn is_pid_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+fn read_lock_owner_pid(lock_path: &Path) -> Option<u32> {
+    fs::read_to_string(lock_path)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
 }
 
 /// Get the absorb lock file path for a repo.
@@ -243,7 +259,13 @@ fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
             .create_new(true)
             .open(lock_path)
         {
-            Ok(_file) => {
+            Ok(mut file) => {
+                if write!(file, "{}", std::process::id()).is_err() {
+                    let _ = fs::remove_file(lock_path);
+                    return Err(AikiError::WorkspaceAbsorbFailed(
+                        "Failed to write absorb lock owner pid".to_string(),
+                    ));
+                }
                 debug_log(|| format!("Acquired absorb lock at {}", lock_path.display()));
                 return Ok(AbsorbLock {
                     path: lock_path.to_path_buf(),
@@ -251,7 +273,23 @@ fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 if start.elapsed() > max_wait {
-                    // Stale lock — another agent may have crashed. Force-remove and retry.
+                    // If this lock is stale and the owner died, remove it; otherwise,
+                    // keep waiting for the slow holder to finish.
+                    let holder_alive = read_lock_owner_pid(lock_path)
+                        .map(is_pid_alive)
+                        .unwrap_or(false);
+
+                    if holder_alive {
+                        debug_log(|| {
+                            format!(
+                                "Absorb lock still held by live pid after {:?}, waiting",
+                                max_wait
+                            )
+                        });
+                        std::thread::sleep(poll_interval);
+                        continue;
+                    }
+
                     debug_log(|| {
                         format!(
                             "Absorb lock timed out after {:?}, removing stale lock",
@@ -361,22 +399,19 @@ pub fn absorb_workspace(
         repo_root.to_path_buf()
     };
 
-    // Snapshot target working copy BEFORE acquiring the lock or rebasing.
-    // Without this, changes made in the target workspace (e.g., user deleting
-    // files in the main workspace while an agent works in an isolated one) are
-    // not captured into @'s committed tree. The rebase would then compute an
-    // empty diff for @ (old tree == parent tree) and the absorbed result would
-    // silently revert the user's changes.
-    let _ = jj_cmd()
-        .current_dir(&target_dir)
-        .args(["status"])
-        .output();
-
     // Acquire file lock to serialize absorptions across concurrent agents.
     // Without this, concurrent absorptions interleave their two-step rebases,
     // causing each to disconnect from the previous absorption's changes.
     let lock_path = absorb_lock_path(repo_root)?;
     let _lock = acquire_absorb_lock(&lock_path)?;
+
+    // Snapshot target working copy while holding the absorption lock.
+    // Without this, changes made in the target workspace while an agent is
+    // working in an isolated one are not captured into @'s committed tree.
+    let _ = jj_cmd()
+        .current_dir(&target_dir)
+        .args(["status"])
+        .output();
 
     // Step 1: Rebase workspace chain onto target's @-
     //
@@ -438,11 +473,32 @@ pub fn absorb_workspace(
 
     // Sync the working copy after both rebases used --ignore-working-copy.
     // Without this, the filesystem would be stale and the next snapshot would
-    // see the workspace's files as "deleted" — silently reverting the absorbed changes.
-    let _ = jj_cmd()
+    // see the workspace's files as "deleted" — silently reverting the absorbed
+    // changes.
+    let update_output = jj_cmd()
         .current_dir(&target_dir)
         .args(["workspace", "update-stale"])
         .output();
+
+    match update_output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!(
+                "[aiki] WARNING: workspace update-stale failed after absorption — \
+                 filesystem may be stale. Run `jj workspace update-stale` manually.\n\
+                 stderr: {}",
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[aiki] WARNING: workspace update-stale failed to execute after \
+                 absorption: {} — filesystem may be stale.",
+                e
+            );
+        }
+    }
 
     // Log any divergent-operation warning from stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -704,11 +760,11 @@ pub fn cleanup_orphaned_workspaces(repo_root: &Path) -> Result<u32> {
     Ok(cleaned)
 }
 
-/// Find the change ID for a named workspace by parsing `jj workspace list`.
+/// Find the full change ID for a named workspace.
 ///
-/// Returns the short change ID of the workspace's working copy, or None if
-/// the workspace is not found. This avoids using the `workspace_id()` revset
-/// function which doesn't exist in JJ 0.38.
+/// Returns the workspace's full change ID, or None if the workspace is not
+/// found. We parse `jj workspace list` to identify the workspace, then resolve
+/// its short ID to full to avoid short-ID ambiguity.
 ///
 /// Output format: `workspace_name: <short_change_id> <commit_hash> ...`
 pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Result<Option<String>> {
@@ -731,15 +787,56 @@ pub fn find_workspace_change_id(repo_root: &Path, workspace_name: &str) -> Resul
     let list_str = String::from_utf8_lossy(&output.stdout);
     let prefix = format!("{}: ", workspace_name);
 
-    let change_id = list_str
+    let short_change_id = match list_str
         .lines()
         .find(|line| line.starts_with(&prefix))
         .and_then(|line| {
             // After "workspace_name: ", first token is the short change ID
             line[prefix.len()..].trim().split_whitespace().next().map(String::from)
-        });
+        }) {
+        Some(id) => id,
+        None => return Ok(None),
+    };
 
-    Ok(change_id)
+    let output = jj_cmd()
+        .current_dir(repo_root)
+        .args([
+            "log",
+            "-r",
+            &short_change_id,
+            "--no-graph",
+            "-T",
+            "change_id",
+            "--limit",
+            "1",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::WorkspaceAbsorbFailed(format!(
+                "Failed to resolve workspace `{}` short id `{}`: {}",
+                workspace_name,
+                short_change_id,
+                e
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::WorkspaceAbsorbFailed(format!(
+            "Failed to resolve workspace `{}` short id `{}` to full id: {}",
+            workspace_name,
+            short_change_id,
+            stderr.trim()
+        )));
+    }
+
+    let change_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if change_id.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(change_id))
 }
 
 /// Try to determine the repo root from a workspace directory.

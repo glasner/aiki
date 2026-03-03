@@ -20,15 +20,7 @@ fn format_call_stack(stack: &[String]) -> String {
 
 /// Aiki-specific errors with structured error types
 #[derive(Error, Debug)]
-#[allow(dead_code)] // Error variants exist for API completeness
 pub enum AikiError {
-    // Repository errors
-    #[error("Not in a JJ repository. Run 'jj init' or 'aiki init' first")]
-    NotInJjRepo,
-
-    #[error("Failed to initialize JJ workspace")]
-    JjInitFailed,
-
     // File errors
     #[error("File not found: {0}")]
     FileNotFound(PathBuf),
@@ -60,12 +52,6 @@ pub enum AikiError {
     #[error("Invalid variable name: '{0}'. Variable names must start with a letter or underscore, and contain only letters, numbers, and underscores")]
     InvalidVariableName(String),
 
-    #[error("Invalid condition: {0}")]
-    InvalidCondition(String),
-
-    #[error("Action failed with on_failure: stop")]
-    ActionFailed,
-
     // Message assembly errors
     #[error("Invalid message chunk: {0}")]
     InvalidContextChunk(String),
@@ -96,31 +82,15 @@ pub enum AikiError {
     #[error("jj command failed: {0}")]
     JjCommandFailed(String),
 
-    #[error("jj status failed: {0}")]
-    JjStatusFailed(String),
-
-    #[error("git diff failed: {0}")]
-    GitDiffFailed(String),
-
     #[error("Failed to create isolated workspace: {0}")]
     WorkspaceCreationFailed(String),
 
     #[error("Failed to absorb workspace changes: {0}")]
     WorkspaceAbsorbFailed(String),
 
-    // Configuration errors
-    #[error("Failed to read config file: {0}")]
-    ConfigReadFailed(String),
-
-    #[error("Failed to write config file: {0}")]
-    ConfigWriteFailed(String),
-
     // Hook composition errors (Milestone 1.3)
     #[error("Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}")]
     NotInAikiProject { searched_from: PathBuf },
-
-    #[error("Invalid path: '{path}'. {reason}")]
-    InvalidPath { path: String, reason: String },
 
     #[error("Invalid hook path: '{path}'. {reason}")]
     InvalidHookPath { path: String, reason: String },
@@ -191,12 +161,6 @@ Alternatively, install the agent globally:
     #[error("No tasks in ready queue")]
     NoTasksReady,
 
-    #[error("Failed to initialize aiki/tasks branch: {0}")]
-    TaskBranchInitFailed(String),
-
-    #[error("Failed to parse task event: {0}")]
-    TaskEventParseFailed(String),
-
     #[error("{0}")]
     TaskCommentRequired(String),
 
@@ -244,10 +208,6 @@ Alternatively, install the agent globally:
 
     #[error("Failed to spawn agent: {0}")]
     AgentSpawnFailed(String),
-
-    // History/conversation errors
-    #[error("Failed to initialize aiki/conversations branch: {0}")]
-    ConversationsBranchInitFailed(String),
 
     #[error("Cannot resolve --source prompt: no active session found. Use --source prompt:<change_id> to specify explicitly.")]
     NoActiveSessionForPromptSource,
@@ -332,15 +292,6 @@ pub type Result<T> = std::result::Result<T, AikiError>;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_error_display() {
-        let err = AikiError::NotInJjRepo;
-        assert_eq!(
-            err.to_string(),
-            "Not in a JJ repository. Run 'jj init' or 'aiki init' first"
-        );
-    }
 
     #[test]
     fn test_unknown_agent_type() {

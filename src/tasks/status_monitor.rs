@@ -7,10 +7,10 @@ use std::io::{stderr, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::{
-    cursor::{RestorePosition, SavePosition},
+    cursor::MoveUp,
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
@@ -20,6 +20,8 @@ use super::storage::read_events;
 use super::types::{Task, TaskStatus};
 use crate::agents::MonitoredChild;
 use crate::error::Result;
+use crate::tui;
+use crate::tui::theme::{detect_mode, Theme};
 
 /// Default polling interval in milliseconds
 const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
@@ -38,13 +40,6 @@ pub enum MonitorExitReason {
     },
 }
 
-/// Status symbols for task visualization
-const SYMBOL_COMPLETED: &str = "✓";
-const SYMBOL_IN_PROGRESS: &str = "●";
-const SYMBOL_PENDING: &str = "○";
-const SYMBOL_STOPPED: &str = "✗";
-const SYMBOL_COMMENT: &str = "💬";
-
 /// Monitor for real-time task status updates
 pub struct StatusMonitor {
     /// The root task being monitored
@@ -53,12 +48,12 @@ pub struct StatusMonitor {
     last_event_count: usize,
     /// Polling interval
     poll_interval: Duration,
-    /// When monitoring started (for elapsed time)
-    start_time: Instant,
     /// Flag to track if we've already rendered initial state
     has_rendered: bool,
     /// Atomic flag to signal when to stop (for Ctrl+C handling)
     stop_flag: Arc<AtomicBool>,
+    /// Number of lines rendered in the last frame (for cursor-up redraw)
+    last_line_count: u16,
 }
 
 impl StatusMonitor {
@@ -74,9 +69,9 @@ impl StatusMonitor {
             task_id: task_id.to_string(),
             last_event_count: 0,
             poll_interval: Duration::from_millis(poll_interval_ms),
-            start_time: Instant::now(),
             has_rendered: false,
             stop_flag: Arc::new(AtomicBool::new(false)),
+            last_line_count: 0,
         }
     }
 
@@ -177,164 +172,52 @@ impl StatusMonitor {
     }
 
     /// Render the task tree to stderr
+    ///
+    /// Uses cursor-up movement to overwrite the previous frame in place.
+    /// This is more reliable than `SavePosition`/`RestorePosition` which breaks
+    /// when terminal output scrolls past the bottom of the visible area.
     fn render_task_tree(&mut self, graph: &TaskGraph, root_task: &Task) -> Result<()> {
         let mut stderr = stderr();
 
-        // On re-render, restore cursor to saved position and clear everything below.
-        // This avoids counting physical lines (which breaks when lines wrap).
-        if self.has_rendered {
-            stderr.execute(RestorePosition)?;
+        // Move cursor up to overwrite the previous frame
+        if self.has_rendered && self.last_line_count > 0 {
+            stderr.execute(MoveUp(self.last_line_count))?;
             stderr.execute(Clear(ClearType::FromCursorDown))?;
         }
 
-        // Save cursor position before writing so next render can return here
-        stderr.execute(SavePosition)?;
-
-        let mut lines = Vec::new();
-
-        // Render root task
-        let root_line = self.format_task_line(root_task, "", None);
-        lines.push(root_line);
-
-        // Get subtasks (direct children)
-        let subtasks = self.get_sorted_subtasks(graph, &root_task.id);
-        let subtask_count = subtasks.len();
-
-        for (idx, subtask) in subtasks.iter().enumerate() {
-            let is_last = idx == subtask_count - 1;
-            let prefix = if is_last { "└─ " } else { "├─ " };
-            let child_prefix = if is_last { "   " } else { "│  " };
-
-            let task_line = self.format_task_line(subtask, prefix, Some(idx));
-            lines.push(task_line);
-
-            // Show summary for closed tasks, latest comment for in-progress
-            let display_text = if subtask.status == TaskStatus::Closed {
-                subtask.effective_summary().map(|s| s.to_string())
-            } else {
-                subtask.comments.last().map(|c| c.text.clone())
-            };
-            if let Some(text) = display_text {
-                let comment_line = format!(
-                    "{}   └─ {} {}",
-                    child_prefix,
-                    SYMBOL_COMMENT,
-                    format_comment(&text)
-                );
-                lines.push(comment_line);
-            }
-        }
-
-        // Show comments on the parent/root task below the tree
-        if !root_task.comments.is_empty() {
-            lines.push(String::new());
-            for comment in &root_task.comments {
-                let comment_line = format!(
-                    "{} {}",
-                    SYMBOL_COMMENT,
-                    format_comment(&comment.text)
-                );
-                lines.push(comment_line);
-            }
-        }
-
-        // If root task has data.epic or data.target, render the epic task tree below
-        if let Some(epic_id) = root_task.data.get("epic").or_else(|| root_task.data.get("target")) {
+        // Resolve epic from build task's data
+        let (epic, subtasks) = if let Some(epic_id) =
+            root_task.data.get("epic").or_else(|| root_task.data.get("target"))
+        {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
-                lines.push(String::new());
-                let epic_line = self.format_task_line(epic_task, "", None);
-                lines.push(epic_line);
-
-                let epic_subtasks = self.get_sorted_subtasks(graph, epic_id);
-                let epic_subtask_count = epic_subtasks.len();
-
-                for (idx, subtask) in epic_subtasks.iter().enumerate() {
-                    let is_last = idx == epic_subtask_count - 1;
-                    let prefix = if is_last { "└─ " } else { "├─ " };
-                    let child_prefix = if is_last { "   " } else { "│  " };
-
-                    let task_line = self.format_task_line(subtask, prefix, Some(idx));
-                    lines.push(task_line);
-
-                    let display_text = if subtask.status == TaskStatus::Closed {
-                        subtask.effective_summary().map(|s| s.to_string())
-                    } else {
-                        subtask.comments.last().map(|c| c.text.clone())
-                    };
-                    if let Some(text) = display_text {
-                        let comment_line = format!(
-                            "{}   └─ {} {}",
-                            child_prefix,
-                            SYMBOL_COMMENT,
-                            format_comment(&text)
-                        );
-                        lines.push(comment_line);
-                    }
-                }
+                let subs = self.get_sorted_subtasks(graph, epic_id);
+                (epic_task, subs)
+            } else {
+                (root_task, self.get_sorted_subtasks(graph, &root_task.id))
             }
-        }
+        } else {
+            (root_task, self.get_sorted_subtasks(graph, &root_task.id))
+        };
 
-        // Add footer
-        lines.push(String::new());
-        lines.push("[Ctrl+C to detach]".to_string());
+        let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
+        let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
+        let theme = Theme::from_mode(detect_mode());
+        let view = tui::builder::build_workflow_view(epic, &subtask_refs, plan_path, graph);
+        let buf = tui::views::workflow::render_workflow(&view, &theme);
+        let ansi = tui::buffer_ansi::buffer_to_ansi(&buf);
 
-        // Render all lines
-        for line in &lines {
-            writeln!(stderr, "{}", line)?;
-        }
+        let footer = " [Ctrl+C to detach]";
+        writeln!(stderr, "{}", ansi)?;
+        writeln!(stderr)?;
+        writeln!(stderr, "{}", footer)?;
         stderr.flush()?;
 
+        // Track total lines so we can move back up on next render.
+        // ansi content lines + 1 empty line + 1 footer line
+        let content_lines = ansi.chars().filter(|&c| c == '\n').count() as u16 + 1;
+        self.last_line_count = content_lines + 2;
+        self.has_rendered = true;
         Ok(())
-    }
-
-    /// Format a single task line with status symbol and elapsed time
-    ///
-    /// For root tasks, shows full short ID: `[twxlpqwz]`
-    /// For subtasks, shows relative index: `[.1]`, `[.2]`, etc.
-    fn format_task_line(&self, task: &Task, prefix: &str, subtask_index: Option<usize>) -> String {
-        let symbol = match task.status {
-            TaskStatus::Closed => SYMBOL_COMPLETED,
-            TaskStatus::InProgress => SYMBOL_IN_PROGRESS,
-            TaskStatus::Open => SYMBOL_PENDING,
-            TaskStatus::Stopped => SYMBOL_STOPPED,
-        };
-
-        let is_root = subtask_index.is_none();
-        let elapsed = if is_root || task.status == TaskStatus::InProgress {
-            format!(" [{}]", self.format_elapsed())
-        } else {
-            String::new()
-        };
-
-        // Root task: short ID; Subtasks: slug or .N)
-        let id_display = match subtask_index {
-            None => format!("[{}]", &task.id[..8.min(task.id.len())]),
-            Some(num) => {
-                if let Some(ref slug) = task.slug {
-                    slug.clone()
-                } else {
-                    format!(".{})", num)
-                }
-            }
-        };
-
-        let name = &task.name;
-
-        format!("{}{} {} {}{}", prefix, symbol, id_display, name, elapsed)
-    }
-
-    /// Format elapsed time as human-readable string
-    fn format_elapsed(&self) -> String {
-        let elapsed = self.start_time.elapsed();
-        let secs = elapsed.as_secs();
-
-        if secs < 60 {
-            format!("{}s", secs)
-        } else if secs < 3600 {
-            format!("{}m {}s", secs / 60, secs % 60)
-        } else {
-            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-        }
     }
 
     /// Get sorted subtasks for a parent task (sorted by creation time)
@@ -359,34 +242,9 @@ impl StatusMonitor {
     }
 }
 
-/// Format a comment for display (first line only)
-fn format_comment(text: &str) -> String {
-    text.lines().next().unwrap_or("").to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_comment_short() {
-        let result = format_comment("Short comment");
-        assert_eq!(result, "Short comment");
-    }
-
-    #[test]
-    fn test_format_comment_long() {
-        let long = "A".repeat(80);
-        let result = format_comment(&long);
-        assert_eq!(result.len(), 80);
-    }
-
-    #[test]
-    fn test_format_comment_multiline() {
-        let multiline = "First line\nSecond line\nThird line";
-        let result = format_comment(multiline);
-        assert_eq!(result, "First line");
-    }
 
     #[test]
     fn test_status_monitor_new() {

@@ -8,7 +8,6 @@ pub mod runtime;
 mod types;
 
 pub use detect::detect_agent_from_process_tree;
-#[allow(unused_imports)]
 pub use runtime::{
     get_runtime, AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle,
     MonitoredChild,

@@ -111,13 +111,6 @@ impl AikiState {
         &mut self.expression_evaluator
     }
 
-    /// Helper to get the agent type
-    #[must_use]
-    #[allow(dead_code)] // Part of AikiState API
-    pub fn agent_type(&self) -> crate::provenance::AgentType {
-        self.event.agent_type()
-    }
-
     /// Get a variable value by name
     #[must_use]
     pub fn get_variable(&self, name: &str) -> Option<&String> {
@@ -193,13 +186,6 @@ impl AikiState {
     #[must_use]
     pub fn failures(&self) -> &[crate::events::result::Failure] {
         &self.failures
-    }
-
-    /// Get the number of failures
-    #[must_use]
-    #[allow(dead_code)] // Part of AikiState API
-    pub fn failures_count(&self) -> usize {
-        self.failures.len()
     }
 
     /// Clear all let-bound variables and their metadata.
@@ -328,7 +314,11 @@ mod tests {
         // Verify we can access event fields through the enum
         match &ctx.event {
             AikiEvent::ChangeCompleted(e) => {
-                assert_eq!(e.operation.file_paths(), vec!["/test/file.rs".to_string()]);
+                if let ChangeOperation::Write(ref w) = e.operation {
+                    assert_eq!(w.file_paths, vec!["/test/file.rs".to_string()]);
+                } else {
+                    panic!("Expected Write operation");
+                }
             }
             _ => panic!("Expected ChangeCompleted event"),
         }

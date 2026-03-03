@@ -47,19 +47,6 @@ pub struct HookLoader {
 }
 
 impl HookLoader {
-    /// Create a new HookLoader by discovering project root.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AikiError::NotInAikiProject` if no `.aiki/` directory is found.
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            resolver: HookResolver::new()?,
-            cache: HashMap::new(),
-        })
-    }
-
     /// Create a new HookLoader starting search from a specific directory.
     ///
     /// This is useful for testing or when you need to load flows from
@@ -73,6 +60,11 @@ impl HookLoader {
             resolver: HookResolver::with_start_dir(start_dir)?,
             cache: HashMap::new(),
         })
+    }
+
+    /// Get the project root directory.
+    pub fn project_root(&self) -> &Path {
+        self.resolver.project_root()
     }
 
     /// Load a flow and return both the flow and its canonical path.
@@ -189,59 +181,6 @@ impl HookLoader {
         Ok((hook, canonical_path))
     }
 
-    /// Load a flow from the core system (bundled in binary).
-    ///
-    /// This returns the core hook without caching since it's already
-    /// statically compiled into the binary.
-    ///
-    /// # Returns
-    ///
-    /// A reference to the cached core hook.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn load_core_hook() -> &'static Hook {
-        super::bundled::load_core_hook()
-    }
-
-    /// Clear the flow cache.
-    ///
-    /// This is useful for testing or when you need to reload flows
-    /// that may have changed on disk.
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
-    }
-
-    /// Get the number of cached flows.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn cache_size(&self) -> usize {
-        self.cache.len()
-    }
-
-    /// Get the project root directory.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn project_root(&self) -> &Path {
-        self.resolver.project_root()
-    }
-
-    /// Get the home directory.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn home_dir(&self) -> &Path {
-        self.resolver.home_dir()
-    }
-
-    /// Get the default hooks directory for this project.
-    ///
-    /// Returns `{project_root}/.aiki/hooks`.
-    #[must_use]
-    #[allow(dead_code)] // Part of HookLoader API
-    pub fn default_hooks_dir(&self) -> PathBuf {
-        self.resolver.project_root().join(".aiki/hooks")
-    }
-
     /// Load and parse a flow from a file path.
     ///
     /// If the hook has no `name` field in the YAML, autogenerate one from
@@ -269,6 +208,25 @@ impl HookLoader {
         }
 
         Ok(hook)
+    }
+}
+
+#[cfg(test)]
+impl HookLoader {
+    pub fn default_hooks_dir(&self) -> PathBuf {
+        self.resolver.project_root().join(".aiki/hooks")
+    }
+
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    pub fn load_core_hook() -> &'static Hook {
+        super::bundled::load_core_hook()
     }
 }
 
