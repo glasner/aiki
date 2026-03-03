@@ -99,47 +99,12 @@ pub fn generate_task_id(name: &str) -> String {
     result
 }
 
-/// Generate a child task ID
-///
-/// Child IDs are created by appending a numeric suffix to the parent ID.
-/// For example: "a1b2" -> "a1b2.1", "a1b2.1" -> "a1b2.1.1"
-#[must_use]
-#[allow(dead_code)] // Kept for backward-compat bridge tests
-pub fn generate_child_id(parent_id: &str, child_number: usize) -> String {
-    format!("{}.{}", parent_id, child_number)
-}
-
-/// Check if a task ID is a child of another task ID
-#[must_use]
-#[allow(dead_code)] // Part of task ID API
-pub fn is_child_of(task_id: &str, parent_id: &str) -> bool {
-    task_id.starts_with(&format!("{}.", parent_id))
-}
-
 /// Get the parent ID from a child task ID
 ///
 /// Returns `None` if the task ID has no parent (root task).
 #[must_use]
 pub fn get_parent_id(task_id: &str) -> Option<&str> {
     task_id.rsplit_once('.').map(|(parent, _)| parent)
-}
-
-/// Check if a task is a direct child of a parent (not grandchild)
-#[must_use]
-#[allow(dead_code)] // Kept for backward-compat bridge tests
-pub fn is_direct_child_of(task_id: &str, parent_id: &str) -> bool {
-    get_parent_id(task_id) == Some(parent_id)
-}
-
-/// Get the child number from a task ID (the last numeric suffix)
-///
-/// Returns `None` if the task ID has no parent.
-#[must_use]
-#[allow(dead_code)] // Kept for backward-compat bridge tests
-pub fn get_child_number(task_id: &str) -> Option<usize> {
-    task_id
-        .rsplit_once('.')
-        .and_then(|(_, num)| num.parse::<usize>().ok())
 }
 
 /// Check if a string looks like a task ID prefix (shorter than a full ID)
@@ -246,24 +211,6 @@ pub fn is_task_id(input: &str) -> bool {
     true
 }
 
-/// Get the next subtask number for a parent task
-///
-/// Scans the list of task IDs and finds the highest existing subtask number,
-/// then returns the next number. Returns 1 if no subtasks exist.
-#[must_use]
-#[allow(dead_code)] // Kept for backward-compat bridge tests
-pub fn get_next_subtask_number<'a>(
-    parent_id: &str,
-    task_ids: impl Iterator<Item = &'a str>,
-) -> usize {
-    let max_subtask = task_ids
-        .filter(|id| is_direct_child_of(id, parent_id))
-        .filter_map(get_child_number)
-        .max();
-
-    max_subtask.map_or(1, |n| n + 1)
-}
-
 /// Check if a string is a valid slug format.
 ///
 /// Slugs are stable, human-readable handles for subtask references.
@@ -290,6 +237,41 @@ pub fn is_valid_slug(s: &str) -> bool {
     // All chars must be lowercase alphanumeric or hyphen
     s.bytes()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+#[cfg(test)]
+fn generate_child_id(parent_id: &str, child_number: usize) -> String {
+    format!("{}.{}", parent_id, child_number)
+}
+
+#[cfg(test)]
+fn is_child_of(task_id: &str, parent_id: &str) -> bool {
+    task_id.starts_with(&format!("{}.", parent_id))
+}
+
+#[cfg(test)]
+fn is_direct_child_of(task_id: &str, parent_id: &str) -> bool {
+    get_parent_id(task_id) == Some(parent_id)
+}
+
+#[cfg(test)]
+fn get_child_number(task_id: &str) -> Option<usize> {
+    task_id
+        .rsplit_once('.')
+        .and_then(|(_, num)| num.parse::<usize>().ok())
+}
+
+#[cfg(test)]
+fn get_next_subtask_number<'a>(
+    parent_id: &str,
+    task_ids: impl Iterator<Item = &'a str>,
+) -> usize {
+    let max_subtask = task_ids
+        .filter(|id| is_direct_child_of(id, parent_id))
+        .filter_map(get_child_number)
+        .max();
+
+    max_subtask.map_or(1, |n| n + 1)
 }
 
 #[cfg(test)]

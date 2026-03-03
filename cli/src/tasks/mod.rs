@@ -23,20 +23,13 @@ pub mod md;
 
 pub use graph::{materialize_graph, materialize_graph_with_ids, TaskGraph};
 pub use id::{generate_task_id, is_task_id, is_task_id_prefix, is_valid_slug};
-#[allow(unused_imports)]
 pub use manager::{
-    all_subtasks_closed, find_task, find_task_in_graph, get_subtasks, get_current_scope_set,
-    get_in_progress, get_ready_queue, get_ready_queue_for_agent_scoped,
-    get_ready_queue_for_human, get_ready_queue_for_scope_set, get_scoped_ready_queue,
-    get_task_activity_by_turn, get_unclosed_subtasks, has_subtasks,
-    resolve_task_id, resolve_task_id_in_graph, ScopeSet,
+    find_task, get_subtasks, get_current_scope_set,
+    get_in_progress,
+    get_ready_queue_for_scope_set,
 };
-#[allow(unused_imports)]
-pub use runner::{run_task_async_with_output, task_run_async};
-#[allow(unused_imports)]
-pub use storage::{ensure_tasks_branch, read_events, read_events_with_ids, write_event, write_events_batch, write_link_event, write_link_event_with_autorun, EventWithId};
-#[allow(unused_imports)]
-pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskReference, TaskStatus};
+pub use storage::{read_events, read_events_with_ids, write_event, write_link_event, write_link_event_with_autorun};
+pub use types::{Task, TaskActivity, TaskComment, TaskEvent, TaskOutcome, TaskPriority, TaskStatus};
 pub use md::MdBuilder;
 
 use crate::error::{AikiError, Result};

@@ -38,14 +38,6 @@ impl MdBuilder {
         self
     }
 
-    /// Set a single scope (parent task ID when working within a parent's subtasks)
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn with_scope(mut self, scope: &str) -> Self {
-        self.scopes = vec![scope.to_string()];
-        self
-    }
-
     /// Set multiple scopes (when working on subtasks from multiple parents)
     #[must_use]
     pub fn with_scopes(mut self, scopes: &[String]) -> Self {
@@ -158,28 +150,6 @@ pub fn build_transition_context(in_progress: &[&Task], ready_queue: &[&Task]) ->
     out.push_str(&build_context(in_progress, ready_queue));
     out.push_str(&build_footer(ready_queue.len()));
     out
-}
-
-/// Format a task element for output
-#[must_use]
-#[allow(dead_code)]
-pub fn format_task(task: &Task, _include_body: bool) -> String {
-    let mut line = format!(
-        "[{}] {}  {}",
-        task.priority,
-        short_id(&task.id),
-        task.name
-    );
-
-    if let Some(ref task_type) = task.task_type {
-        line.push_str(&format!(" [{}]", task_type));
-    }
-
-    if let Some(ref assignee) = task.assignee {
-        line.push_str(&format!(" (assignee: {})", assignee));
-    }
-
-    line
 }
 
 /// Format a list of tasks for filtered list views

@@ -5,7 +5,6 @@
 use std::process::{Command, Stdio};
 
 use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild};
-use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 
 /// Runtime for Claude Code agent
@@ -26,10 +25,6 @@ impl Default for ClaudeCodeRuntime {
 }
 
 impl AgentRuntime for ClaudeCodeRuntime {
-    fn agent_type(&self) -> AgentType {
-        AgentType::ClaudeCode
-    }
-
     fn spawn_blocking(&self, options: &AgentSpawnOptions) -> Result<AgentSessionResult> {
         let prompt = options.task_prompt();
 
@@ -185,12 +180,6 @@ fn extract_summary(output: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_claude_code_runtime_agent_type() {
-        let runtime = ClaudeCodeRuntime::new();
-        assert_eq!(runtime.agent_type(), AgentType::ClaudeCode);
-    }
 
     #[test]
     fn test_extract_summary_empty() {

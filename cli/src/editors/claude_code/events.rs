@@ -11,8 +11,7 @@ use crate::events::{
     AikiSessionEndedPayload, AikiSessionResumedPayload, AikiSessionStartPayload,
     AikiSessionWillCompactPayload, AikiShellCompletedPayload, AikiShellPermissionAskedPayload,
     AikiTurnCompletedPayload, AikiTurnStartedPayload, AikiWebCompletedPayload,
-    AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation,
-    WriteOperation,
+    AikiWebPermissionAskedPayload, ChangeOperation, DeleteOperation, MoveOperation, WriteOperation,
 };
 use crate::tools::ToolType;
 
@@ -187,7 +186,14 @@ fn build_permission_asked_event_for_tool_type(payload: PreToolUsePayload) -> Aik
         ToolType::Shell => build_shell_permission_asked_event(payload, tool),
         ToolType::Mcp => build_mcp_permission_asked_event(payload),
         ToolType::Web => build_web_permission_asked_event(payload, tool),
-        ToolType::Internal => AikiEvent::Unsupported,
+        ToolType::Internal => {
+            // Special handling for ExitPlanMode: absorb workspace before showing approval prompt
+            if payload.tool_name == "ExitPlanMode" {
+                let session = create_session(&payload.session_id, &payload.cwd);
+                let _ = crate::flows::core::workspace_absorb_all(&session);
+            }
+            AikiEvent::Unsupported
+        }
     }
 }
 
@@ -303,9 +309,7 @@ fn build_change_permission_asked_event_write(
             Vec::new()
         }
         _ => {
-            eprintln!(
-                "[aiki] Warning: Unexpected tool type in change.permission_asked (write)"
-            );
+            eprintln!("[aiki] Warning: Unexpected tool type in change.permission_asked (write)");
             Vec::new()
         }
     };
@@ -530,10 +534,7 @@ fn build_change_completed_event_write(payload: PostToolUsePayload, tool: ClaudeT
 /// Claude Code doesn't currently have a dedicated delete file tool (deletes come
 /// through shell commands like rm/rmdir), but we implement this handler properly
 /// for future compatibility and to ensure the event pipeline doesn't drop operations.
-fn build_change_completed_event_delete(
-    payload: PostToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+fn build_change_completed_event_delete(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     // Extract file paths from tool - if no paths available, use empty list
     let file_paths = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
@@ -569,10 +570,7 @@ fn build_change_completed_event_delete(
 /// Claude Code doesn't currently have a dedicated move/rename tool (moves come
 /// through shell commands like mv), but we implement this handler properly
 /// for future compatibility and to ensure the event pipeline doesn't drop operations.
-fn build_change_completed_event_move(
-    payload: PostToolUsePayload,
-    tool: ClaudeTool,
-) -> AikiEvent {
+fn build_change_completed_event_move(payload: PostToolUsePayload, tool: ClaudeTool) -> AikiEvent {
     // Extract source/destination paths from tool - if no paths available, use empty lists
     let (source_paths, destination_paths) = match tool {
         ClaudeTool::Edit(input) | ClaudeTool::Write(input) | ClaudeTool::NotebookEdit(input) => {
@@ -986,8 +984,7 @@ mod tests {
     #[test]
     fn test_session_start_deserialization_defaults_to_startup() {
         // When source field is missing, it should default to "startup"
-        let json =
-            r#"{"hook_event_name":"SessionStart","session_id":"abc","cwd":"/tmp"}"#;
+        let json = r#"{"hook_event_name":"SessionStart","session_id":"abc","cwd":"/tmp"}"#;
         let event: ClaudeEvent = serde_json::from_str(json).unwrap();
         match event {
             ClaudeEvent::SessionStart { payload } => {

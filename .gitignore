@@ -32,3 +32,6 @@ __pycache__/
 tbench/runs/
 # Nimbalyst local data (not checked into version control)
 nimbalyst-local/
+
+# TUI test snapshot PNGs (generated artifacts)
+cli/tests/snapshots/*.png

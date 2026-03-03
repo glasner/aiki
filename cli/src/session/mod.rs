@@ -156,22 +156,6 @@ impl AikiSessionFile {
         }
     }
 
-    /// Read agent_version from existing session file
-    ///
-    /// Returns None if file doesn't exist or agent_version field not found.
-    /// This allows subsequent events to read cached version without re-detecting.
-    #[allow(dead_code)] // Part of AikiSessionFile API
-    pub fn read_agent_version(&self) -> Option<String> {
-        fs::read_to_string(&self.path).ok().and_then(|content| {
-            // Parse [aiki]...[/aiki] block for agent_version field
-            content
-                .lines()
-                .find(|line| line.starts_with("agent_version="))
-                .and_then(|line| line.strip_prefix("agent_version="))
-                .map(|v| v.to_string())
-        })
-    }
-
     /// Update the session file with parent_pid if not already present.
     ///
     /// This is called when we discover the agent PID via `find_ancestor_by_name`
@@ -698,24 +682,6 @@ impl AikiSession {
     }
 }
 
-/// Count active sessions globally
-#[allow(dead_code)] // Part of session API
-pub fn count_sessions() -> Result<usize> {
-    let sessions_dir = global::global_sessions_dir();
-
-    if !sessions_dir.exists() {
-        return Ok(0);
-    }
-
-    let count = fs::read_dir(&sessions_dir)
-        .map_err(|e| AikiError::Other(anyhow::anyhow!("Failed to read sessions directory: {}", e)))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().is_file())
-        .count();
-
-    Ok(count)
-}
-
 /// Parsed session info for listing
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -798,104 +764,6 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
     sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
 
     Ok(sessions)
-}
-
-/// Result of detecting the current session context
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Part of session API
-pub enum SessionContext {
-    /// No active sessions - likely running from human terminal
-    NoSession,
-    /// Exactly one active session with this agent type
-    SingleSession(AgentType),
-    /// Multiple active sessions - ambiguous context
-    MultipleSessions,
-}
-
-/// Detect the current session context
-///
-/// Returns detailed information about active sessions:
-/// - NoSession: No session files found (human terminal)
-/// - SingleSession(agent): Exactly one active session
-/// - MultipleSessions: More than one session active (ambiguous)
-#[allow(dead_code)] // Part of session API
-pub fn get_session_context(repo_path: impl AsRef<Path>) -> SessionContext {
-    let sessions_dir = repo_path.as_ref().join(".aiki/sessions");
-
-    if !sessions_dir.exists() {
-        return SessionContext::NoSession;
-    }
-
-    let session_files: Vec<_> = match fs::read_dir(&sessions_dir) {
-        Ok(entries) => entries
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().is_file())
-            .collect(),
-        Err(_) => return SessionContext::NoSession,
-    };
-
-    match session_files.len() {
-        0 => SessionContext::NoSession,
-        1 => {
-            // Try to read agent type from the session file
-            if let Ok(content) = fs::read_to_string(session_files[0].path()) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if let Some(agent_str) = line.strip_prefix("agent=") {
-                        if let Some(agent_type) = AgentType::from_str(agent_str) {
-                            return SessionContext::SingleSession(agent_type);
-                        }
-                    }
-                }
-            }
-            // Couldn't parse agent type, treat as no session
-            SessionContext::NoSession
-        }
-        _ => SessionContext::MultipleSessions,
-    }
-}
-
-/// Get the agent type from the current active session, if any
-///
-/// Returns the agent type if there's exactly one active session.
-/// Returns None if there are no sessions or multiple sessions.
-#[allow(dead_code)] // Part of session API
-pub fn get_current_agent_type(repo_path: impl AsRef<Path>) -> Option<AgentType> {
-    match get_session_context(repo_path) {
-        SessionContext::SingleSession(agent) => Some(agent),
-        _ => None,
-    }
-}
-
-/// Check if a specific session is active
-///
-/// Uses deterministic UUID generation to check if the session file exists.
-/// This allows precise session lookup even when multiple sessions are active.
-#[allow(dead_code)] // Part of session API
-/// Check if a session is active by looking for its session file
-pub fn has_active_session(agent_type: AgentType, external_session_id: &str) -> bool {
-    let uuid = AikiSession::generate_uuid(agent_type, external_session_id);
-    let session_file = global::global_sessions_dir().join(&uuid);
-    session_file.exists()
-}
-
-/// End a session and clean up its session file
-#[allow(dead_code)] // Part of session API
-pub fn end_session(
-    agent_type: AgentType,
-    external_session_id: impl Into<String>,
-    detection_method: DetectionMethod,
-    mode: SessionMode,
-) -> Result<()> {
-    let session = AikiSession::new(
-        agent_type,
-        external_session_id,
-        None::<&str>,
-        detection_method,
-        mode,
-    );
-    session.file().delete()?;
-    Ok(())
 }
 
 // ============================================================================
@@ -997,7 +865,6 @@ pub fn find_ancestor_by_name(name: &str) -> Option<u32> {
 
 /// Result of PID-based session lookup
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields are part of SessionMatch API
 pub struct SessionMatch {
     /// The agent type from the session file
     pub agent_type: AgentType,
@@ -1799,9 +1666,6 @@ mod tests {
             "cwd field should not be in session file"
         );
         assert!(content.ends_with("[/aiki]\n"));
-
-        // Verify session count
-        assert_eq!(count_sessions().unwrap(), 1);
     }
 
     #[test]
@@ -1822,9 +1686,6 @@ mod tests {
 
         // Should produce same session UUID
         assert_eq!(session1.uuid(), session2.uuid());
-
-        // Should only have one file
-        assert_eq!(count_sessions().unwrap(), 1);
     }
 
     #[test]
@@ -1916,9 +1777,6 @@ mod tests {
         // Both should exist
         assert!(global::global_sessions_dir().join(session1.uuid()).exists());
         assert!(global::global_sessions_dir().join(session2.uuid()).exists());
-
-        // Should have 2 sessions
-        assert_eq!(count_sessions().unwrap(), 2);
     }
 
     #[test]
@@ -1954,37 +1812,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_end() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
-
-        // Start a session
-        let session = AikiSession::for_hook(
-            AgentType::ClaudeCode,
-            "claude-session-end-test",
-            None::<&str>,
-        );
-        session.file().create().unwrap();
-
-        // Verify it exists
-        assert!(global::global_sessions_dir().join(session.uuid()).exists());
-        assert_eq!(count_sessions().unwrap(), 1);
-
-        // End the session
-        end_session(
-            AgentType::ClaudeCode,
-            "claude-session-end-test",
-            DetectionMethod::Hook,
-            SessionMode::Interactive,
-        )
-        .unwrap();
-
-        // Verify it's gone
-        assert!(!global::global_sessions_dir().join(session.uuid()).exists());
-        assert_eq!(count_sessions().unwrap(), 0);
-    }
-
-    #[test]
     fn test_session_lifecycle() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let (_aiki_home, _guard) = setup_global_aiki_home_inner();
@@ -2017,69 +1844,6 @@ mod tests {
             // Only first create should return true
             assert_eq!(created, i == 0);
         }
-
-        // Should only have 1 session file
-        assert_eq!(count_sessions().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_session_file_stores_agent_version() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
-
-        // Create a session with agent version
-        let session = AikiSession::new(
-            AgentType::ClaudeCode,
-            "test-session-with-version",
-            Some("2.0.61"),
-            DetectionMethod::Hook,
-            SessionMode::Interactive,
-        );
-
-        // Write session file
-        let session_file = session.file();
-        session_file.create().unwrap();
-
-        // Verify agent_version is stored in the file
-        let content = fs::read_to_string(&session_file.path).unwrap();
-        assert!(
-            content.contains("agent_version=2.0.61"),
-            "Session file should contain agent_version"
-        );
-
-        // Verify we can read it back
-        let cached_version = session_file.read_agent_version();
-        assert_eq!(cached_version, Some("2.0.61".to_string()));
-    }
-
-    #[test]
-    fn test_session_file_without_agent_version() {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let (_aiki_home, _guard) = setup_global_aiki_home_inner();
-
-        // Create a session without agent version
-        let session = AikiSession::new(
-            AgentType::ClaudeCode,
-            "test-session-no-version",
-            None::<&str>,
-            DetectionMethod::Hook,
-            SessionMode::Interactive,
-        );
-
-        // Write session file
-        let session_file = session.file();
-        session_file.create().unwrap();
-
-        // Verify agent_version is NOT in the file
-        let content = fs::read_to_string(&session_file.path).unwrap();
-        assert!(
-            !content.contains("agent_version="),
-            "Session file should not contain agent_version field"
-        );
-
-        // Verify read returns None
-        let cached_version = session_file.read_agent_version();
-        assert_eq!(cached_version, None);
     }
 
     // ========================================================================

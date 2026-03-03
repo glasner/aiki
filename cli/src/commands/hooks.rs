@@ -2,10 +2,6 @@ use crate::editors;
 use crate::error::Result;
 use crate::provenance;
 
-// Re-export HookCommandOutput for backwards compatibility
-#[allow(unused_imports)]
-pub use crate::editors::HookCommandOutput;
-
 pub fn run_stdin(agent: String, event: String, payload: Option<String>) -> Result<()> {
     // When running behind the ACP proxy, the proxy handles all event dispatch.
     // Skip editor hooks to avoid duplicate sessions and events.

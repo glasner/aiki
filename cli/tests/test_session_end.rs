@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 #[test]
 fn test_has_context_with_text() {
-    let resp = HookResult::success_with_context("Some autoreply");
+    let resp = HookResult { context: Some("Some autoreply".into()), ..HookResult::success() };
     assert!(
         resp.has_context(),
         "Should have context with non-empty string"
@@ -29,7 +29,7 @@ fn test_has_context_with_text() {
 
 #[test]
 fn test_has_context_empty_string() {
-    let resp = HookResult::success_with_context("");
+    let resp = HookResult { context: Some("".into()), ..HookResult::success() };
     assert!(
         !resp.has_context(),
         "Should not have context with empty string"
@@ -220,10 +220,10 @@ fn test_turn_completed_with_context_action() {
 #[test]
 fn test_documented_behavior() {
     // 1. has_context() checks for non-empty strings
-    let empty = HookResult::success_with_context("");
+    let empty = HookResult { context: Some("".into()), ..HookResult::success() };
     assert!(!empty.has_context());
 
-    let non_empty = HookResult::success_with_context("text");
+    let non_empty = HookResult { context: Some("text".into()), ..HookResult::success() };
     assert!(non_empty.has_context());
 
     // 2. build_context() returns None when assembler is empty

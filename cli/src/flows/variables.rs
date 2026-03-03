@@ -74,14 +74,6 @@ impl VariableResolver {
         self.cache_valid = false;
     }
 
-    /// Add environment variables
-    #[allow(dead_code)] // Part of VariableResolver API
-    pub fn add_env_vars(&mut self, env_vars: &HashMap<String, String>) {
-        self.variables
-            .extend(env_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
-        self.cache_valid = false;
-    }
-
     /// Get all resolved variables as a flat map.
     ///
     /// This resolves lazy variables that haven't been computed yet and returns
@@ -312,22 +304,6 @@ mod tests {
         let mut resolver = VariableResolver::new();
         let err = resolver.resolve("Value: {{undefined}}").unwrap_err();
         assert!(matches!(err, AikiError::VariableNotFound { .. }));
-    }
-
-    #[test]
-    fn test_resolve_env_vars_via_add() {
-        let mut resolver = VariableResolver::new();
-        let mut env_vars = HashMap::new();
-        env_vars.insert("HOME".to_string(), "/home/user".to_string());
-        env_vars.insert("PATH".to_string(), "/usr/bin".to_string());
-        resolver.add_env_vars(&env_vars);
-
-        assert_eq!(
-            resolver
-                .resolve("Home: {{HOME}}, Path: {{PATH}}")
-                .unwrap(),
-            "Home: /home/user, Path: /usr/bin"
-        );
     }
 
     #[test]

@@ -4,6 +4,8 @@ slug: criteria
 
 # Understand Criteria: Plan
 
+**Reminder: You are reviewing this plan, not implementing it.** Evaluate the plan *document* against the criteria below. Do not make any code changes.
+
 Evaluate the plan against these categories:
 
 **Completeness**

@@ -133,38 +133,15 @@ impl AgentSessionResult {
         Self::Detached
     }
 
-    /// Check if the session completed successfully
-    #[must_use]
-    #[allow(dead_code)] // Part of AgentSessionResult API
-    pub fn is_completed(&self) -> bool {
-        matches!(self, Self::Completed { .. })
-    }
-
-    /// Check if the session failed
-    #[must_use]
-    #[allow(dead_code)] // Part of AgentSessionResult API
-    pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Failed { .. })
-    }
-
-    /// Check if the user detached (agent continues in background)
-    #[must_use]
-    #[allow(dead_code)] // Part of AgentSessionResult API
-    pub fn is_detached(&self) -> bool {
-        matches!(self, Self::Detached)
-    }
 }
 
 /// Options for spawning an agent session
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields are part of API
 pub struct AgentSpawnOptions {
     /// Working directory for the agent
     pub cwd: std::path::PathBuf,
     /// Task ID to work on (first task in chain, or standalone)
     pub task_id: String,
-    /// Override the task's assignee (optional)
-    pub agent_override: Option<AgentType>,
     /// Parent session UUID for workspace isolation chaining
     pub parent_session_uuid: Option<String>,
     /// Ordered chain of task IDs for needs-context sessions (head to tail).
@@ -179,18 +156,9 @@ impl AgentSpawnOptions {
         Self {
             cwd: cwd.as_ref().to_path_buf(),
             task_id: task_id.into(),
-            agent_override: None,
             parent_session_uuid: None,
             chain_task_ids: None,
         }
-    }
-
-    /// Set an agent override
-    #[must_use]
-    #[allow(dead_code)] // Part of builder API
-    pub fn with_agent_override(mut self, agent: AgentType) -> Self {
-        self.agent_override = Some(agent);
-        self
     }
 
     /// Set the parent session UUID for workspace isolation chaining
@@ -263,11 +231,7 @@ CRITICAL: Do NOT stop and ask "what should I do next?" - work through ALL subtas
 ///
 /// Each agent type (ClaudeCode, Codex, etc.) has its own runtime that knows
 /// how to spawn and manage sessions for that agent.
-#[allow(dead_code)] // Trait methods are part of runtime API
 pub trait AgentRuntime {
-    /// Returns the agent type this runtime handles
-    fn agent_type(&self) -> AgentType;
-
     /// Spawns an agent session and waits for completion
     ///
     /// This is a blocking operation that:
@@ -313,34 +277,24 @@ mod tests {
     #[test]
     fn test_agent_session_result_constructors() {
         let completed = AgentSessionResult::completed("Task done");
-        assert!(completed.is_completed());
-        assert!(!completed.is_failed());
-        assert!(!completed.is_detached());
+        assert!(matches!(completed, AgentSessionResult::Completed { .. }));
 
         let stopped = AgentSessionResult::stopped("Needs input");
-        assert!(!stopped.is_completed());
-        assert!(!stopped.is_failed());
-        assert!(!stopped.is_detached());
+        assert!(matches!(stopped, AgentSessionResult::Stopped { .. }));
 
         let failed = AgentSessionResult::failed("Crashed");
-        assert!(!failed.is_completed());
-        assert!(failed.is_failed());
-        assert!(!failed.is_detached());
+        assert!(matches!(failed, AgentSessionResult::Failed { .. }));
 
         let detached = AgentSessionResult::detached();
-        assert!(!detached.is_completed());
-        assert!(!detached.is_failed());
-        assert!(detached.is_detached());
+        assert!(matches!(detached, AgentSessionResult::Detached));
     }
 
     #[test]
     fn test_spawn_options() {
-        let options = AgentSpawnOptions::new("/tmp", "task123")
-            .with_agent_override(AgentType::ClaudeCode);
+        let options = AgentSpawnOptions::new("/tmp", "task123");
 
         assert_eq!(options.cwd.to_string_lossy(), "/tmp");
         assert_eq!(options.task_id, "task123");
-        assert_eq!(options.agent_override, Some(AgentType::ClaudeCode));
     }
 
     #[test]

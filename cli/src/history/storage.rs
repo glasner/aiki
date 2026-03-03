@@ -278,7 +278,6 @@ pub fn get_current_turn_number(cwd: &Path, session_id: &str) -> Result<u32> {
 }
 
 /// Read all conversation events from the aiki/conversations branch
-#[allow(dead_code)] // Part of history API
 pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
     if !crate::jj::branch_exists(cwd, CONVERSATIONS_BRANCH)? {
         return Ok(Vec::new());
@@ -342,7 +341,6 @@ pub fn read_events(cwd: &Path) -> Result<Vec<ConversationEvent>> {
 /// Returns a list of conversation summaries, sorted by most recent activity first.
 /// Only sessions that have a `SessionStart` event are included.
 /// If `limit` is `None`, returns all conversations; otherwise truncates to the given limit.
-#[allow(dead_code)] // Part of history API
 pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<ConversationSummary>> {
     let events = read_events(cwd)?;
 
@@ -372,15 +370,14 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
             None => continue, // Skip sessions without a SessionStart event
         };
 
-        let (session_id, agent_type, started_at, repo_id, session_mode) = match session_start {
+        let (session_id, agent_type, started_at, session_mode) = match session_start {
             ConversationEvent::SessionStart {
                 session_id,
                 agent_type,
                 timestamp,
-                repo_id,
                 session_mode,
                 ..
-            } => (session_id.clone(), agent_type.clone(), *timestamp, repo_id.clone(), *session_mode),
+            } => (session_id.clone(), agent_type.clone(), *timestamp, *session_mode),
             _ => unreachable!(),
         };
 
@@ -409,7 +406,6 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
             started_at,
             turn_count,
             last_activity,
-            repo_id,
             session_mode,
         });
     }
@@ -442,7 +438,6 @@ fn escape_metadata_value(value: &str) -> String {
 }
 
 /// Unescape a metadata value
-#[allow(dead_code)] // Used by parse_metadata_block
 fn unescape_metadata_value(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
@@ -603,7 +598,6 @@ fn event_to_metadata_block(event: &ConversationEvent) -> String {
 }
 
 /// Parse list values from metadata fields
-#[allow(dead_code)] // Used by parse_metadata_block
 fn parse_list_field(fields: &HashMap<&str, Vec<&str>>, key: &str) -> Vec<String> {
     fields
         .get(key)
@@ -619,7 +613,6 @@ fn parse_location_metadata(fields: &HashMap<&str, Vec<&str>>) -> (Option<String>
 }
 
 /// Parse a metadata block into a ConversationEvent
-#[allow(dead_code)] // Used by read_events
 fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
     let mut fields: HashMap<&str, Vec<&str>> = HashMap::new();
 

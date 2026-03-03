@@ -1,3 +1,6 @@
+- cleanup issues list (done?)
+- fix review subtasks (just verify template)
+- implement loop refaxtor
 - ux -> share with Paul
 
 - registry

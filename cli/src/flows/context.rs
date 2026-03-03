@@ -187,36 +187,6 @@ impl ContextChunk {
         }
     }
 
-    /// Generate a deterministic checksum ID for this chunk.
-    ///
-    /// This is used for deduplication and change tracking. The same content
-    /// will always produce the same ID.
-    ///
-    /// # Normalization
-    ///
-    /// Trailing newlines are automatically stripped during YAML deserialization,
-    /// so `prepend: |` and `prepend: "text"` produce identical check IDs.
-    ///
-    /// # Returns
-    ///
-    /// An 8-character hex-encoded hash of the chunk's YAML representation.
-    #[must_use]
-    #[allow(dead_code)] // Part of ContextChunk API
-    pub fn check_id(&self) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        // Data is already normalized during deserialization
-        let yaml = serde_yaml::to_string(self).expect("ContextChunk should always serialize");
-
-        let mut hasher = DefaultHasher::new();
-        yaml.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        // Return first 8 hex chars for readability (truncate u64 to 32 bits)
-        format!("{:08x}", (hash & 0xFFFF_FFFF) as u32)
-    }
-
     /// Get prepend items as a vector of strings.
     ///
     /// Returns an empty vector if prepend is None.
@@ -418,46 +388,12 @@ impl ContextAssembler {
         parts.join(&self.separator)
     }
 
-    /// Get the number of chunks accumulated.
-    #[must_use]
-    #[allow(dead_code)] // Part of ContextAssembler API
-    pub fn chunk_count(&self) -> usize {
-        self.chunks.len()
-    }
-
     /// Check if the assembler has any chunks.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
-    /// Clear all accumulated chunks, resetting the assembler.
-    ///
-    /// This is useful for error recovery where you want to discard all
-    /// accumulated chunks without allocating a new assembler.
-    ///
-    /// The original content and separator are preserved.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use aiki::flows::context::{ContextChunk, ContextAssembler, TextLines};
-    ///
-    /// let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n");
-    /// assembler.add_chunk(ContextChunk {
-    ///     prepend: Some(TextLines::Single("bad".to_string())),
-    ///     append: None,
-    /// });
-    ///
-    /// // Error occurred, reset
-    /// assembler.clear();
-    /// assert!(assembler.is_empty());
-    /// assert_eq!(assembler.build(), "original"); // Original preserved
-    /// ```
-    #[allow(dead_code)] // Part of ContextAssembler API
-    pub fn clear(&mut self) {
-        self.chunks.clear();
-    }
 }
 
 #[cfg(test)]
@@ -540,135 +476,6 @@ mod tests {
         assembler.add_chunk(chunk);
 
         assert_eq!(assembler.build(), "line1\nline2\noriginal\nline3");
-    }
-
-    #[test]
-    fn test_check_id_is_deterministic() {
-        let chunk1 = ContextChunk {
-            prepend: Some(TextLines::Single("test".to_string())),
-            append: Some(TextLines::Single("content".to_string())),
-        };
-
-        let chunk2 = ContextChunk {
-            prepend: Some(TextLines::Single("test".to_string())),
-            append: Some(TextLines::Single("content".to_string())),
-        };
-
-        assert_eq!(chunk1.check_id(), chunk2.check_id());
-    }
-
-    #[test]
-    fn test_check_id_differs_for_different_content() {
-        let chunk1 = ContextChunk {
-            prepend: Some(TextLines::Single("test1".to_string())),
-            append: None,
-        };
-
-        let chunk2 = ContextChunk {
-            prepend: Some(TextLines::Single("test2".to_string())),
-            append: None,
-        };
-
-        assert_ne!(chunk1.check_id(), chunk2.check_id());
-    }
-
-    #[test]
-    fn test_yaml_forms_produce_same_check_id() {
-        // Form 1: Block scalar with trailing newline (as it appears in raw YAML)
-        let yaml_block = r#"
-prepend: |
-  line1
-  line2
-"#;
-
-        // Form 2: Array syntax
-        let yaml_array = r#"
-prepend:
-  - "line1"
-  - "line2"
-"#;
-
-        // Form 3: Inline string with \n
-        let yaml_inline = r#"
-prepend: "line1\nline2"
-"#;
-
-        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_array: ContextChunk = serde_yaml::from_str(yaml_array).unwrap();
-        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
-
-        // Forms 1 and 3 should produce identical check IDs (both single strings)
-        assert_eq!(
-            chunk_block.check_id(),
-            chunk_inline.check_id(),
-            "Block scalar and inline string should have same check ID"
-        );
-
-        // Form 2 (array) will have a different check ID because the structure differs
-        // This is intentional - changing YAML structure is considered a flow edit
-        assert_ne!(
-            chunk_block.check_id(),
-            chunk_array.check_id(),
-            "Array form should have different check ID from single string"
-        );
-    }
-
-    #[test]
-    fn test_check_id_normalization_via_yaml() {
-        // Test normalization through YAML deserialization (the real-world path)
-        // Block scalar form (has trailing newline in YAML)
-        let yaml_block = r#"
-prepend: |
-  Header text
-append: |
-  Footer text
-"#;
-
-        // Inline string form (no trailing newline)
-        let yaml_inline = r#"
-prepend: "Header text"
-append: "Footer text"
-"#;
-
-        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
-
-        // Should produce identical check IDs after normalization during deserialization
-        assert_eq!(
-            chunk_block.check_id(),
-            chunk_inline.check_id(),
-            "Trailing newlines should be normalized during YAML deserialization"
-        );
-    }
-
-    #[test]
-    fn test_check_id_normalization_arrays_via_yaml() {
-        // Test array normalization through YAML deserialization
-        // Array with block scalars (each item has trailing newline in YAML)
-        let yaml_block = r#"
-prepend:
-  - |
-    line1
-  - |
-    line2
-"#;
-
-        // Array with inline strings (no trailing newlines)
-        let yaml_inline = r#"
-prepend:
-  - "line1"
-  - "line2"
-"#;
-
-        let chunk_block: ContextChunk = serde_yaml::from_str(yaml_block).unwrap();
-        let chunk_inline: ContextChunk = serde_yaml::from_str(yaml_inline).unwrap();
-
-        // Should produce identical check IDs after normalization during deserialization
-        assert_eq!(
-            chunk_block.check_id(),
-            chunk_inline.check_id(),
-            "Array items should have trailing newlines normalized during YAML deserialization"
-        );
     }
 
     #[test]
@@ -864,73 +671,12 @@ mod assembler_tests {
     }
 
     #[test]
-    fn test_chunk_count() {
-        let mut assembler = ContextAssembler::new(None, "\n");
-        assert_eq!(assembler.chunk_count(), 0);
-
-        assembler.add_chunk(ContextChunk::new());
-        assert_eq!(assembler.chunk_count(), 1);
-
-        assembler.add_chunk(ContextChunk::new());
-        assert_eq!(assembler.chunk_count(), 2);
-    }
-
-    #[test]
     fn test_is_empty() {
         let mut assembler = ContextAssembler::new(None, "\n");
         assert!(assembler.is_empty());
 
         assembler.add_chunk(ContextChunk::new());
         assert!(!assembler.is_empty());
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n\n");
-
-        // Add some chunks
-        assembler.add_chunk(ContextChunk {
-            prepend: Some(TextLines::Single("header".to_string())),
-            append: None,
-        });
-        assembler.add_chunk(ContextChunk {
-            prepend: None,
-            append: Some(TextLines::Single("footer".to_string())),
-        });
-
-        assert_eq!(assembler.chunk_count(), 2);
-        assert!(!assembler.is_empty());
-
-        // Clear all chunks
-        assembler.clear();
-
-        assert_eq!(assembler.chunk_count(), 0);
-        assert!(assembler.is_empty());
-
-        // Original content should be preserved
-        assert_eq!(assembler.build(), "original");
-    }
-
-    #[test]
-    fn test_clear_and_reuse() {
-        let mut assembler = ContextAssembler::new(Some("original".to_string()), "\n\n");
-
-        // First batch of chunks
-        assembler.add_chunk(ContextChunk {
-            prepend: Some(TextLines::Single("bad".to_string())),
-            append: None,
-        });
-
-        // Error occurred, clear
-        assembler.clear();
-
-        // Add good chunks
-        assembler.add_chunk(ContextChunk {
-            prepend: Some(TextLines::Single("good".to_string())),
-            append: None,
-        });
-
-        assert_eq!(assembler.build(), "good\n\noriginal");
     }
 
     #[test]
@@ -1031,31 +777,6 @@ mod assembler_tests {
     }
 
     #[test]
-    fn test_unicode_in_check_id() {
-        // Verify check_id handles Unicode correctly and deterministically
-        let chunk1 = ContextChunk {
-            prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
-            append: None,
-        };
-
-        let chunk2 = ContextChunk {
-            prepend: Some(TextLines::Single("Hello 世界 🌍".to_string())),
-            append: None,
-        };
-
-        let chunk3 = ContextChunk {
-            prepend: Some(TextLines::Single("Hello world".to_string())),
-            append: None,
-        };
-
-        // Same Unicode content should produce same check_id
-        assert_eq!(chunk1.check_id(), chunk2.check_id());
-
-        // Different content should produce different check_id
-        assert_ne!(chunk1.check_id(), chunk3.check_id());
-    }
-
-    #[test]
     fn test_very_long_content() {
         // Test with very long strings (simulating large documentation)
         let long_prepend = "A".repeat(10_000);
@@ -1079,25 +800,6 @@ mod assembler_tests {
         // Verify expected length (with separators)
         let expected_len = long_prepend.len() + 2 + long_original.len() + 2 + long_append.len();
         assert_eq!(result.len(), expected_len);
-    }
-
-    #[test]
-    fn test_very_long_check_id_performance() {
-        // Verify check_id works efficiently with large content
-        let large_content = "X".repeat(100_000);
-
-        let chunk = ContextChunk {
-            prepend: Some(TextLines::Single(large_content)),
-            append: None,
-        };
-
-        // Should complete without panic or excessive memory usage
-        let id = chunk.check_id();
-
-        // Check ID should still be 8 hex chars (format! ensures this)
-        assert_eq!(id.len(), 8);
-        // Verify it's valid hex
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

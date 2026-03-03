@@ -39,10 +39,8 @@ use crate::tasks::{manager, storage};
 use anyhow::Context;
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::jj::jj_cmd;
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -885,108 +883,6 @@ fn normalize_path_for_jj(file_path: &str, cwd: &Path) -> String {
     }
 }
 
-/// Run jj split to create AI change and user change
-#[allow(dead_code)] // Reserved for future split-based separation strategy
-fn run_jj_split(cwd: &Path, message: &str, author: &str, files: &[String]) -> Result<String> {
-    // Build jj split command
-    // Note: jj split doesn't support --author, we'll set it separately
-    let mut cmd = jj_cmd();
-    cmd.current_dir(cwd);
-    cmd.arg("split");
-    cmd.arg("--message").arg(message);
-
-    // Add file paths
-    for file in files {
-        cmd.arg(file);
-    }
-
-    debug_log(|| format!("[flows/core] Running: {:?}", cmd));
-
-    let output = cmd
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to execute jj split: {}", e)))?;
-
-    if !output.status.success() {
-        return Err(AikiError::JjCommandFailed(format!(
-            "jj split failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    let split_output = String::from_utf8_lossy(&output.stdout).to_string();
-
-    // Step 2: Set author on the first part (AI change) using jj metaedit
-    // After split, the first part is at @- (parent of working copy)
-    let mut metaedit_cmd = jj_cmd();
-    metaedit_cmd.current_dir(cwd);
-    metaedit_cmd.arg("metaedit");
-    metaedit_cmd.arg("-r").arg("@-");
-    metaedit_cmd.arg("--author").arg(author);
-    metaedit_cmd.arg("--no-edit"); // Don't open editor
-
-    debug_log(|| {
-        format!(
-            "[flows/core] Setting author on AI change: {:?}",
-            metaedit_cmd
-        )
-    });
-
-    let metaedit_output = metaedit_cmd
-        .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to execute jj metaedit: {}", e)))?;
-
-    if !metaedit_output.status.success() {
-        return Err(AikiError::JjCommandFailed(format!(
-            "jj metaedit failed: {}",
-            String::from_utf8_lossy(&metaedit_output.stderr)
-        )));
-    }
-
-    Ok(split_output)
-}
-
-/// Parse jj split output to extract change IDs
-#[allow(dead_code)] // Reserved for future split-based separation strategy
-fn parse_split_output(output: &str) -> Result<(String, String)> {
-    // jj split output format (example):
-    // "First part: qpvuntsm 12345678 AI changes
-    //  Second part: rlvkpnrz 87654321 (no description set)"
-    //
-    // The format is: "First part: <change_hash_short> <change_hash_long> <description>"
-    // We want the long hash (position 3 in split_whitespace)
-
-    let lines: Vec<&str> = output.lines().collect();
-
-    let ai_change_id = lines
-        .iter()
-        .find(|l| l.contains("First part"))
-        .and_then(|l| {
-            // Extract third word (long change ID hash)
-            // Words: [0]="First", [1]="part:", [2]=short_hash, [3]=long_hash
-            l.split_whitespace().nth(3).map(String::from)
-        })
-        .ok_or_else(|| {
-            AikiError::Other(anyhow::anyhow!(
-                "Failed to parse AI change ID from jj split output"
-            ))
-        })?;
-
-    let user_change_id = lines
-        .iter()
-        .find(|l| l.contains("Second part"))
-        .and_then(|l| {
-            // Extract third word (long change ID hash)
-            l.split_whitespace().nth(3).map(String::from)
-        })
-        .ok_or_else(|| {
-            AikiError::Other(anyhow::anyhow!(
-                "Failed to parse user change ID from jj split output"
-            ))
-        })?;
-
-    Ok((ai_change_id, user_change_id))
-}
-
 // =============================================================================
 // Git Integration Functions
 // =============================================================================
@@ -1026,24 +922,6 @@ pub fn task_list_size_for_agent(cwd: &Path, agent: &crate::agents::AgentType) ->
     let graph = crate::tasks::graph::materialize_graph(&events);
     let scope_set = crate::tasks::manager::get_current_scope_set(&graph);
     let ready = crate::tasks::manager::get_ready_queue_for_agent_scoped(&graph, &scope_set, agent);
-
-    Ok(ActionResult {
-        success: true,
-        exit_code: Some(0),
-        stdout: ready.len().to_string(),
-        stderr: String::new(),
-    })
-}
-
-/// Get the size of the ready task queue (all tasks, no filtering)
-///
-/// Returns the number of open, unblocked tasks in the ready queue.
-/// This is used for context injection in flows to show task count.
-#[allow(dead_code)] // Part of flow function API
-pub fn task_list_size(cwd: &Path) -> Result<ActionResult> {
-    let events = crate::tasks::storage::read_events(cwd)?;
-    let graph = crate::tasks::graph::materialize_graph(&events);
-    let ready = crate::tasks::manager::get_ready_queue(&graph);
 
     Ok(ActionResult {
         success: true,
@@ -1143,6 +1021,7 @@ pub fn workspace_absorb_all(
     let mut absorbed = 0u32;
     let mut has_conflicts = false;
     let mut last_conflicted_files = String::new();
+    let mut seen_repo_roots: Vec<PathBuf> = Vec::new();
 
     // Scan all repo-id directories for workspaces belonging to this session
     let entries = match std::fs::read_dir(&workspaces_dir) {
@@ -1188,6 +1067,10 @@ pub fn workspace_absorb_all(
                 continue;
             }
         };
+
+        if !seen_repo_roots.contains(&repo_root) {
+            seen_repo_roots.push(repo_root.clone());
+        }
 
         let workspace = isolation::IsolatedWorkspace {
             name: workspace_name,
@@ -1290,11 +1173,18 @@ pub fn workspace_absorb_all(
         }
     }
 
-    // Opportunistically clean up orphaned JJ workspaces for the current repo.
+    // Opportunistically clean up orphaned JJ workspaces for repositories that had
+    // absorbed workspaces.
     // This prevents the jj workspace list from growing unbounded with dead sessions.
-    if let Some(repo_root) = isolation::find_jj_root(&std::env::current_dir().unwrap_or_default()) {
+    for repo_root in seen_repo_roots {
         if let Err(e) = isolation::cleanup_orphaned_workspaces(&repo_root) {
-            debug_log(|| format!("[workspace] Orphaned workspace cleanup failed: {}", e));
+            debug_log(|| {
+                format!(
+                    "[workspace] Orphaned workspace cleanup failed for {}: {}",
+                    repo_root.display(),
+                    e
+                )
+            });
         }
     }
 
@@ -1533,17 +1423,4 @@ mod tests {
         assert_eq!(result.stdout, "ExactMatch");
     }
 
-    // =========================================================================
-    // Helper Function Tests
-    // =========================================================================
-
-    #[test]
-    fn test_parse_split_output() {
-        let output = "First part: qpvuntsm 12345678 AI changes\nSecond part: rlvkpnrz 87654321 (no description set)\n";
-
-        let (ai_id, user_id) = parse_split_output(output).unwrap();
-
-        assert_eq!(ai_id, "12345678");
-        assert_eq!(user_id, "87654321");
-    }
 }

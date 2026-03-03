@@ -27,6 +27,8 @@ pub enum SubtaskEntry {
         template_name: String,
         /// Source line number for error reporting
         line: usize,
+        /// Key-value attributes from the subtask marker
+        attributes: HashMap<String, String>,
     },
 }
 
@@ -750,7 +752,7 @@ pub fn create_subtasks_from_inline_loops(
 /// Validate that `<!-- AIKI_SUBTASK_REF:... -->` markers only appear in the # Subtasks section
 fn validate_subtask_ref_placement(content: &str) -> Result<()> {
     let subtask_ref_re =
-        Regex::new(r"<!-- AIKI_SUBTASK_REF:([^:]+):(\d+) -->").expect("Invalid regex");
+        Regex::new(r"<!-- AIKI_SUBTASK_REF:([^:]+):(\d+)(?::(\S+))? -->").expect("Invalid regex");
 
     // Find the # Subtasks heading
     let subtasks_line = content
@@ -804,7 +806,7 @@ fn parse_expanded_subtasks(
     template_name: Option<&str>,
 ) -> Result<Vec<SubtaskEntry>> {
     let subtask_ref_re =
-        Regex::new(r"^<!-- AIKI_SUBTASK_REF:([^:]+):(\d+) -->$").expect("Invalid regex");
+        Regex::new(r"^<!-- AIKI_SUBTASK_REF:([^:]+):(\d+)(?::(\S+))? -->$").expect("Invalid regex");
 
     let mut entries = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
@@ -817,9 +819,34 @@ fn parse_expanded_subtasks(
         if let Some(caps) = subtask_ref_re.captures(line) {
             let template_name = caps.get(1).unwrap().as_str().to_string();
             let source_line: usize = caps.get(2).unwrap().as_str().parse().unwrap_or(0);
+            let attributes = caps
+                .get(3)
+                .map(|m| {
+                    m.as_str()
+                        .split(';')
+                        .filter_map(|pair| {
+                            let mut parts = pair.splitn(2, ':');
+                            let key = parts.next()?.trim();
+                            let raw_value = parts.next()?.trim();
+                            if key.is_empty() {
+                                None
+                            } else {
+                                // Decode percent-encoded special chars in values
+                                let value = raw_value
+                                    .replace("%3A", ":")
+                                    .replace("%3B", ";")
+                                    .replace("%20", " ")
+                                    .replace("%25", "%");
+                                Some((key.to_string(), value))
+                            }
+                        })
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default();
             entries.push(SubtaskEntry::Composed {
                 template_name,
                 line: source_line,
+                attributes,
             });
             i += 1;
         }
@@ -1570,18 +1597,18 @@ Outer: {{loop.index}}
 
         let result = expand_loops(content, &data_sources).unwrap();
 
-        // The outer loop should show 1, 2
-        // Each inner loop should show 1, 2 (not 1, 1 or 2, 2)
+        // loop.index is 0-based, so the outer loop should show 0, 1
+        // Each inner loop should show 0, 1 (its OWN index, not the outer loop's)
         // Expected:
+        // Outer: 0
+        //   Inner: 0
+        //   Inner: 1
         // Outer: 1
+        //   Inner: 0
         //   Inner: 1
-        //   Inner: 2
-        // Outer: 2
-        //   Inner: 1
-        //   Inner: 2
 
-        // Expected pattern: after first "Outer: 1", we should see "Inner: 1" then "Inner: 2"
-        // NOT "Inner: 1" then "Inner: 1"
+        // Expected pattern: after "Outer: 1", we should see "Inner: 0" then "Inner: 1"
+        // (inner loop resets its own index for each outer iteration)
         let lines: Vec<&str> = result
             .lines()
             .map(|l| l.trim())
@@ -1606,8 +1633,8 @@ Outer: {{loop.index}}
 
         assert_eq!(
             inner_values_after_outer_1,
-            vec!["Inner: 1", "Inner: 2"],
-            "After Outer: 1, inner loop should iterate 1, 2. Got: {:?}. Full output:\n{}",
+            vec!["Inner: 0", "Inner: 1"],
+            "After Outer: 1, inner loop should iterate 0, 1 (0-based). Got: {:?}. Full output:\n{}",
             inner_values_after_outer_1,
             result
         );
@@ -1807,9 +1834,10 @@ Instructions.
             _ => panic!("Expected Static"),
         }
         match &entries[1] {
-            SubtaskEntry::Composed { template_name, line } => {
+            SubtaskEntry::Composed { template_name, line, attributes } => {
                 assert_eq!(template_name, "aiki/decompose");
                 assert_eq!(*line, 10);
+                assert!(attributes.is_empty());
             }
             _ => panic!("Expected Composed"),
         }
@@ -1985,5 +2013,127 @@ Review the changes."#;
             !template.parent.instructions.contains("{{data.epic}}"),
             "Template should not use {{{{data.epic}}}} — it uses {{{{data.target}}}}"
         );
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_marker_with_attributes() {
+        let content =
+            "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/review:5:key1:val1;key2:val2 -->\n\n## Run\nExecute.";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 3);
+        match &entries[1] {
+            SubtaskEntry::Composed {
+                template_name,
+                line,
+                attributes,
+            } => {
+                assert_eq!(template_name, "aiki/review");
+                assert_eq!(*line, 5);
+                assert_eq!(attributes.len(), 2);
+                assert_eq!(
+                    attributes.get("key1").map(|s| s.as_str()),
+                    Some("val1")
+                );
+                assert_eq!(
+                    attributes.get("key2").map(|s| s.as_str()),
+                    Some("val2")
+                );
+            }
+            _ => panic!("Expected Composed"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_marker_without_attributes_backward_compat() {
+        let content = "<!-- AIKI_SUBTASK_REF:aiki/decompose:10 -->";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Composed {
+                template_name,
+                line,
+                attributes,
+            } => {
+                assert_eq!(template_name, "aiki/decompose");
+                assert_eq!(*line, 10);
+                assert!(attributes.is_empty());
+            }
+            _ => panic!("Expected Composed"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_attribute_propagation_needs_context() {
+        let content =
+            "<!-- AIKI_SUBTASK_REF:aiki/review:3:needs-context:subtasks.explore;priority:p0 -->";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Composed { attributes, .. } => {
+                assert_eq!(
+                    attributes.get("needs-context").map(|s| s.as_str()),
+                    Some("subtasks.explore")
+                );
+                assert_eq!(
+                    attributes.get("priority").map(|s| s.as_str()),
+                    Some("p0")
+                );
+            }
+            _ => panic!("Expected Composed"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_percent_encoded_values() {
+        // Values with spaces should be percent-encoded in markers
+        let content =
+            "<!-- AIKI_SUBTASK_REF:aiki/review:5:title:my%20task%20name;priority:p0 -->";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Composed { attributes, .. } => {
+                assert_eq!(
+                    attributes.get("title").map(|s| s.as_str()),
+                    Some("my task name")
+                );
+                assert_eq!(
+                    attributes.get("priority").map(|s| s.as_str()),
+                    Some("p0")
+                );
+            }
+            _ => panic!("Expected Composed"),
+        }
+    }
+
+    #[test]
+    fn test_parse_expanded_subtasks_percent_encoded_special_chars() {
+        // Values with colons, semicolons, and percent signs
+        let content =
+            "<!-- AIKI_SUBTASK_REF:aiki/review:5:scope:task%3Aauth%3Blogin;note:100%25 -->";
+        let variables = VariableContext::new();
+        let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            SubtaskEntry::Composed { attributes, .. } => {
+                assert_eq!(
+                    attributes.get("scope").map(|s| s.as_str()),
+                    Some("task:auth;login")
+                );
+                assert_eq!(
+                    attributes.get("note").map(|s| s.as_str()),
+                    Some("100%")
+                );
+            }
+            _ => panic!("Expected Composed"),
+        }
     }
 }

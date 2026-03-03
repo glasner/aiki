@@ -49,6 +49,8 @@ ctrlc = "3.4"
 ahash = "0.8"
 hashbrown = "0.14"
 rhai = "1.24"
+ratatui = "0.29"
+terminal-colorsaurus = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -56,3 +58,5 @@ predicates = "3.0"
 tempfile = "3.0"
 criterion = "0.5"
 uuid = { version = "1.0", features = ["v4"] }
+image = "0.25"
+ab_glyph = "0.2"

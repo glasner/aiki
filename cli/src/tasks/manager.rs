@@ -37,29 +37,6 @@ impl ScopeSet {
 
 /// Get the ready queue (open, unblocked tasks sorted by priority)
 ///
-/// Ready queue contains:
-/// - Open status tasks that are not blocked
-/// - Sorted by priority (P0 first, then P1, P2, P3)
-/// - Then by creation time (oldest first)
-#[must_use]
-pub fn get_ready_queue<'a>(graph: &'a super::graph::TaskGraph) -> Vec<&'a Task> {
-    let mut ready: Vec<&Task> = graph
-        .tasks
-        .values()
-        .filter(|t| t.status == TaskStatus::Open)
-        .filter(|t| !graph.is_blocked(&t.id))
-        .collect();
-
-    // Sort by priority (P0 < P1 < P2 < P3), then by creation time (oldest first)
-    ready.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-    });
-
-    ready
-}
-
 /// Get tasks currently in progress
 #[must_use]
 pub fn get_in_progress(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
@@ -99,25 +76,6 @@ pub fn get_in_progress_task_ids_for_session(
     result.into_iter().map(|t| t.id.clone()).collect()
 }
 
-/// Get stopped tasks
-#[must_use]
-#[allow(dead_code)] // Part of task manager API
-pub fn get_stopped(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
-    tasks
-        .values()
-        .filter(|t| t.status == TaskStatus::Stopped)
-        .collect()
-}
-
-/// Get closed tasks
-#[must_use]
-#[allow(dead_code)] // Part of task manager API
-pub fn get_closed(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
-    tasks
-        .values()
-        .filter(|t| t.status == TaskStatus::Closed)
-        .collect()
-}
 
 /// Find a task by ID or prefix
 ///
@@ -326,31 +284,11 @@ pub fn get_current_scope_set(graph: &super::graph::TaskGraph) -> ScopeSet {
     }
 }
 
-/// Get current scopes as a Vec (for backward compatibility)
-#[must_use]
-#[allow(dead_code)] // Part of task manager API
-pub fn get_current_scopes(graph: &super::graph::TaskGraph) -> Vec<String> {
-    get_current_scope_set(graph).scopes
-}
-
 /// Check if all subtasks of a parent are closed (using graph edge lookups)
 #[must_use]
 pub fn all_subtasks_closed(graph: &super::graph::TaskGraph, parent_id: &str) -> bool {
     let subtasks = get_subtasks(graph, parent_id);
     !subtasks.is_empty() && subtasks.iter().all(|t| t.status == TaskStatus::Closed)
-}
-
-/// Get unclosed subtasks of a parent (using graph edge lookups)
-#[must_use]
-#[allow(dead_code)] // Part of task manager API
-pub fn get_unclosed_subtasks<'a>(
-    graph: &'a super::graph::TaskGraph,
-    parent_id: &str,
-) -> Vec<&'a Task> {
-    get_subtasks(graph, parent_id)
-        .into_iter()
-        .filter(|t| t.status != TaskStatus::Closed)
-        .collect()
 }
 
 /// Get all unclosed descendants of a parent (recursive, using graph edge lookups)
@@ -422,42 +360,6 @@ pub fn get_ready_queue_for_scope_set<'a>(
     ready
 }
 
-/// Get ready queue filtered for human visibility
-///
-/// Returns open, unblocked tasks that are visible to humans:
-/// - Unassigned tasks
-/// - Tasks assigned to "human"
-///
-/// Excludes:
-/// - Tasks assigned to any agent
-/// - Blocked tasks
-#[must_use]
-#[allow(dead_code)] // Part of task manager API
-pub fn get_ready_queue_for_human(graph: &super::graph::TaskGraph) -> Vec<&'_ Task> {
-    let mut ready: Vec<&Task> = graph
-        .tasks
-        .values()
-        .filter(|t| t.status == TaskStatus::Open)
-        .filter(|t| !graph.is_blocked(&t.id))
-        .filter(|t| {
-            let assignee = t
-                .assignee
-                .as_ref()
-                .and_then(|s| Assignee::from_str(s))
-                .unwrap_or(Assignee::Unassigned);
-            assignee.is_visible_to_human()
-        })
-        .collect();
-
-    ready.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-    });
-
-    ready
-}
-
 /// Get ready queue for a scope set, filtered for a specific agent
 ///
 /// Combines scope filtering with agent visibility filtering.
@@ -519,6 +421,78 @@ pub fn get_task_activity_by_turn(
     }
 
     activity
+}
+
+#[cfg(test)]
+fn get_ready_queue<'a>(graph: &'a super::graph::TaskGraph) -> Vec<&'a Task> {
+    let mut ready: Vec<&Task> = graph
+        .tasks
+        .values()
+        .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
+        .collect();
+    ready.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+    ready
+}
+
+#[cfg(test)]
+fn get_stopped(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
+    tasks
+        .values()
+        .filter(|t| t.status == TaskStatus::Stopped)
+        .collect()
+}
+
+#[cfg(test)]
+fn get_closed(tasks: &FastHashMap<String, Task>) -> Vec<&Task> {
+    tasks
+        .values()
+        .filter(|t| t.status == TaskStatus::Closed)
+        .collect()
+}
+
+#[cfg(test)]
+fn get_current_scopes(graph: &super::graph::TaskGraph) -> Vec<String> {
+    get_current_scope_set(graph).scopes
+}
+
+#[cfg(test)]
+fn get_unclosed_subtasks<'a>(
+    graph: &'a super::graph::TaskGraph,
+    parent_id: &str,
+) -> Vec<&'a Task> {
+    get_subtasks(graph, parent_id)
+        .into_iter()
+        .filter(|t| t.status != TaskStatus::Closed)
+        .collect()
+}
+
+#[cfg(test)]
+fn get_ready_queue_for_human(graph: &super::graph::TaskGraph) -> Vec<&'_ Task> {
+    let mut ready: Vec<&Task> = graph
+        .tasks
+        .values()
+        .filter(|t| t.status == TaskStatus::Open)
+        .filter(|t| !graph.is_blocked(&t.id))
+        .filter(|t| {
+            let assignee = t
+                .assignee
+                .as_ref()
+                .and_then(|s| Assignee::from_str(s))
+                .unwrap_or(Assignee::Unassigned);
+            assignee.is_visible_to_human()
+        })
+        .collect();
+    ready.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+    ready
 }
 
 #[cfg(test)]

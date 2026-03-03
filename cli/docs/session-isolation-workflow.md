@@ -165,6 +165,7 @@ and perform all file operations there.
 Triggered on:
 - `turn.completed` (hooks.yaml:146) — after every agent turn
 - `session.ended` (hooks.yaml:299) — when session terminates
+- **Claude Code only**: `ExitPlanMode` PreToolUse (events.rs:193) — when agent requests to exit plan mode, absorbs workspace *before* showing user approval prompt so plan files are visible before user decides whether to approve
 
 ```
  ┌───────────────────────────────────────────────────────────────┐

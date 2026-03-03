@@ -1,5 +1,4 @@
-use anyhow::{anyhow, Context, Result};
-use std::fs;
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 
 /// Detects and validates repository state (Git and JJ)
@@ -64,62 +63,6 @@ impl RepoDetector {
         path.as_ref().join(".jj").exists()
     }
 
-    /// Resolve the Git directory path, handling both regular directories and worktree/submodule files
-    ///
-    /// In normal Git repositories, `.git` is a directory.
-    /// In Git worktrees and submodules, `.git` is a file containing `gitdir: /path/to/real/git/dir`
-    ///
-    /// Returns the path to the actual Git directory, or an error if it cannot be resolved.
-    #[allow(dead_code)] // Part of RepoDetector API
-    pub fn resolve_git_dir<P: AsRef<Path>>(repo_root: P) -> Result<PathBuf> {
-        let git_path = repo_root.as_ref().join(".git");
-
-        if !git_path.exists() {
-            return Err(anyhow!(
-                "No .git file or directory found at repository root"
-            ));
-        }
-
-        // Check if .git is a directory (normal case)
-        if git_path.is_dir() {
-            return Ok(git_path);
-        }
-
-        // .git is a file - parse the gitdir pointer (worktree/submodule case)
-        let content = fs::read_to_string(&git_path)
-            .context("Failed to read .git file - worktree/submodule pointer may be corrupted")?;
-
-        // Parse "gitdir: /path/to/git/dir"
-        let gitdir_line = content
-            .lines()
-            .find(|line| line.starts_with("gitdir: "))
-            .ok_or_else(|| anyhow!("Invalid .git file format - expected 'gitdir:' line"))?;
-
-        let git_dir_str = gitdir_line
-            .strip_prefix("gitdir: ")
-            .ok_or_else(|| anyhow!("Failed to parse gitdir path"))?
-            .trim();
-
-        // Convert to PathBuf and resolve relative paths
-        let git_dir = PathBuf::from(git_dir_str);
-
-        // If the path is relative, resolve it relative to the repo root
-        let resolved = if git_dir.is_absolute() {
-            git_dir
-        } else {
-            repo_root.as_ref().join(git_dir)
-        };
-
-        // Verify the resolved path exists
-        if !resolved.exists() {
-            return Err(anyhow!(
-                "Git directory pointer references non-existent path: {}",
-                resolved.display()
-            ));
-        }
-
-        Ok(resolved)
-    }
 }
 
 #[cfg(test)]
@@ -203,87 +146,4 @@ mod tests {
         assert!(!RepoDetector::has_jj(temp_dir.path()));
     }
 
-    #[test]
-    fn resolve_git_dir_handles_normal_repository() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        fs::create_dir(temp_dir.path().join(".git")).unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path()).unwrap();
-        assert_eq!(result, temp_dir.path().join(".git"));
-    }
-
-    #[test]
-    fn resolve_git_dir_handles_worktree_with_absolute_path() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let real_git_dir = tempfile::tempdir().unwrap();
-
-        // Create a .git file with absolute gitdir pointer (worktree case)
-        let gitdir_content = format!("gitdir: {}", real_git_dir.path().display());
-        fs::write(temp_dir.path().join(".git"), gitdir_content).unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path()).unwrap();
-        assert_eq!(result, real_git_dir.path());
-    }
-
-    #[test]
-    fn resolve_git_dir_handles_worktree_with_relative_path() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        // Create a real git directory as a subdirectory
-        let git_subdir = temp_dir.path().join("some").join("nested").join("git");
-        fs::create_dir_all(&git_subdir).unwrap();
-
-        // Create a .git file with relative gitdir pointer
-        let gitdir_content = "gitdir: some/nested/git";
-        fs::write(temp_dir.path().join(".git"), gitdir_content).unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path()).unwrap();
-        assert_eq!(result, git_subdir);
-    }
-
-    #[test]
-    fn resolve_git_dir_errors_when_git_missing() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path());
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No .git file or directory found"));
-    }
-
-    #[test]
-    fn resolve_git_dir_errors_on_invalid_worktree_pointer() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        // Create a .git file with invalid content
-        fs::write(temp_dir.path().join(".git"), "invalid content").unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path());
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("expected 'gitdir:' line"));
-    }
-
-    #[test]
-    fn resolve_git_dir_errors_when_target_nonexistent() {
-        let temp_dir = tempfile::tempdir().unwrap();
-
-        // Create a .git file pointing to non-existent directory
-        fs::write(
-            temp_dir.path().join(".git"),
-            "gitdir: /nonexistent/path/to/git",
-        )
-        .unwrap();
-
-        let result = RepoDetector::resolve_git_dir(temp_dir.path());
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("references non-existent path"));
-    }
 }

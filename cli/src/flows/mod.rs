@@ -13,15 +13,5 @@ pub mod types;
 mod variables;
 
 pub use bundled::{load_core_hook, load_core_hook_uncached};
-#[allow(unused_imports)]
-pub use composer::{EventType, HookComposer};
-#[allow(unused_imports)]
-pub use context::{ContextAssembler, ContextChunk, TextLines};
 pub use engine::{HookEngine, HookOutcome};
-#[allow(unused_imports)]
-pub use hook_resolver::HookResolver;
-#[allow(unused_imports)]
-pub use loader::HookLoader;
-#[allow(unused_imports)]
-pub use path_resolver::PathResolver;
 pub use state::AikiState;

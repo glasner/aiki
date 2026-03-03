@@ -154,7 +154,7 @@ aiki review <task-id> --start
 2. You'll see instructions to run `aiki task diff` and examine the changes
 3. Track each issue found using `aiki review issue add`:
    ```bash
-   aiki review issue add <review-id> "Description" --severity high --file src/auth.rs:42
+   aiki review issue add <review-id> "Description" --high --file src/auth.rs:42
    ```
    - **Severity:** `--high` (must fix), default medium (should fix), `--low` (could fix)
    - **Location:** `--file path[:<line>[-<end>]]` (repeatable for multi-file issues)

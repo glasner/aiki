@@ -8,9 +8,9 @@ Review task `{{source.id}}` found issues in **{{data.scope.name}}**.
 
 ## Instructions
 
-1. Read the review comments to understand what issues were found:
+1. List the issues from the review to understand what was found:
    ```bash
-   aiki task show {{source.id}} --with-source
+   aiki review issue list {{source.id}}
    ```
 🛑 Do NOT edit code before reading above.
 

@@ -315,7 +315,14 @@ repo.changed:
 session.ended:
     # Absorb isolated workspace changes back into parent/main workspace
     # No-op if no workspaces were created (solo session)
-    - call: self.workspace_absorb_all
+    - let: absorb_result = self.workspace_absorb_all
+    - if: absorb_result != "ok" and absorb_result != "0" and absorb_result
+      then:
+          - log: |
+                WARNING: Workspace absorption at session end introduced conflicts.
+                Conflicted files:
+                {{absorb_result}}
+                Run `jj resolve --list` to inspect and resolve conflicts.
 
 # ==============================================================================
 # Task Lifecycle Events
