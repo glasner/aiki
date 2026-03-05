@@ -43,6 +43,8 @@ pub const SYM_CHECK: &str = "✓";
 pub const SYM_RUNNING: &str = "▸";
 /// Symbol for starting/spawning status.
 pub const SYM_STARTING: &str = "⧗";
+/// Symbol for skipped status.
+pub const SYM_SKIPPED: &str = "─";
 
 // ── Theme ────────────────────────────────────────────────────────────
 

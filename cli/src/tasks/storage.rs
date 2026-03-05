@@ -583,6 +583,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
         TaskEvent::Stopped {
             task_ids,
             reason,
+            session_id,
             turn_id,
             timestamp,
         } => {
@@ -593,6 +594,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             if let Some(reason) = reason {
                 add_metadata_escaped("reason", reason, &mut lines);
             }
+            if let Some(sid) = session_id {
+                add_metadata("session_id", sid, &mut lines);
+            }
             if let Some(tid) = turn_id {
                 add_metadata("turn_id", tid, &mut lines);
             }
@@ -602,6 +606,7 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             task_ids,
             outcome,
             summary,
+            session_id,
             turn_id,
             timestamp,
         } => {
@@ -612,6 +617,9 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("outcome", outcome, &mut lines);
             if let Some(summary) = summary {
                 add_metadata_escaped("summary", summary, &mut lines);
+            }
+            if let Some(sid) = session_id {
+                add_metadata("session_id", sid, &mut lines);
             }
             if let Some(tid) = turn_id {
                 add_metadata("turn_id", tid, &mut lines);
@@ -716,6 +724,22 @@ fn event_to_metadata_block(event: &TaskEvent) -> String {
             add_metadata("kind", kind, &mut lines);
             if let Some(reason) = reason {
                 add_metadata_escaped("reason", reason, &mut lines);
+            }
+            add_metadata_timestamp(timestamp, &mut lines);
+        }
+        TaskEvent::Absorbed {
+            task_ids,
+            session_id,
+            turn_id,
+            timestamp,
+        } => {
+            add_metadata("event", "absorbed", &mut lines);
+            for task_id in task_ids {
+                add_metadata("task_id", task_id, &mut lines);
+            }
+            add_metadata("session_id", session_id, &mut lines);
+            if let Some(tid) = turn_id {
+                add_metadata("turn_id", tid, &mut lines);
             }
             add_metadata_timestamp(timestamp, &mut lines);
         }
@@ -878,6 +902,10 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("reason")
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
+            let session_id = fields
+                .get("session_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             let turn_id = fields
                 .get("turn_id")
                 .and_then(|v| v.first())
@@ -888,6 +916,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
             Some(TaskEvent::Stopped {
                 task_ids,
                 reason,
+                session_id,
                 turn_id,
                 timestamp,
             })
@@ -907,6 +936,10 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 .get("summary")
                 .and_then(|v| v.first())
                 .map(|s| unescape_metadata_value(s));
+            let session_id = fields
+                .get("session_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
             let turn_id = fields
                 .get("turn_id")
                 .and_then(|v| v.first())
@@ -916,6 +949,7 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 task_ids,
                 outcome,
                 summary,
+                session_id,
                 turn_id,
                 timestamp,
             })
@@ -1060,6 +1094,28 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 to,
                 kind,
                 reason,
+                timestamp,
+            })
+        }
+        "absorbed" => {
+            let task_ids = fields
+                .get("task_id")?
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let session_id = fields
+                .get("session_id")?
+                .first()?
+                .to_string();
+            let turn_id = fields
+                .get("turn_id")
+                .and_then(|v| v.first())
+                .map(|s| s.to_string());
+
+            Some(TaskEvent::Absorbed {
+                task_ids,
+                session_id,
+                turn_id,
                 timestamp,
             })
         }
@@ -1285,10 +1341,12 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_roundtrip_stopped() {
         let original = TaskEvent::Stopped {
+            session_id: None,
             task_ids: vec!["task1".to_string()],
             reason: Some("Need more info".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1321,11 +1379,13 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_roundtrip_closed() {
         let original = TaskEvent::Closed {
+            session_id: None,
             task_ids: vec!["task1".to_string(), "task2".to_string()],
             outcome: TaskOutcome::WontDo,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1358,11 +1418,13 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_roundtrip_closed_with_summary() {
         let original = TaskEvent::Closed {
+            session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("Fixed the auth bug".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1390,11 +1452,13 @@ timestamp=2026-01-09T10:30:00Z
     #[test]
     fn test_roundtrip_closed_summary_with_special_chars() {
         let original = TaskEvent::Closed {
+            session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("Fixed bug: added null check\nnew line here".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -2629,10 +2693,12 @@ timestamp=2026-02-10T14:30:00Z
     #[test]
     fn test_roundtrip_stopped_with_turn_id() {
         let original = TaskEvent::Stopped {
+            session_id: None,
             task_ids: vec!["task1".to_string()],
             reason: Some("blocked".to_string()),
             turn_id: Some("turn-xyz-5".to_string()),
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -2654,11 +2720,13 @@ timestamp=2026-02-10T14:30:00Z
     #[test]
     fn test_roundtrip_closed_with_turn_id() {
         let original = TaskEvent::Closed {
+            session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("All done".to_string()),
             turn_id: Some("turn-def-3".to_string()),
             timestamp: Utc::now(),
+            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);

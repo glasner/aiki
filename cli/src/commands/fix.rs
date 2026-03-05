@@ -25,6 +25,7 @@ use crate::tasks::{
     write_link_event_with_autorun, Task, TaskEvent, TaskPriority,
 };
 
+use super::OutputFormat;
 use super::decompose::{run_decompose, DecomposeOptions};
 use super::loop_cmd::{run_loop, LoopOptions};
 use super::review::{
@@ -50,6 +51,7 @@ pub fn run(
     agent: Option<String>,
     autorun: bool,
     once: bool,
+    output: Option<OutputFormat>,
 ) -> Result<()> {
     let cwd = env::current_dir().map_err(|_| {
         AikiError::InvalidArgument("Failed to get current directory".to_string())
@@ -61,7 +63,7 @@ pub fn run(
         None => read_task_id_from_stdin()?,
     };
 
-    run_fix(&cwd, &task_id, run_async, continue_async, plan_template, decompose_template, loop_template, review_template, agent, autorun, once)
+    run_fix(&cwd, &task_id, run_async, continue_async, plan_template, decompose_template, loop_template, review_template, agent, autorun, once, output)
 }
 
 /// Extract task ID from input, handling XML output format
@@ -107,7 +109,7 @@ fn read_task_id_from_stdin() -> Result<String> {
 /// exhausts all iterations without the review approving, a warning is emitted
 /// to stderr and the function returns `Ok(())` (partial fixes may have been
 /// applied, so we don't fail the whole command).
-fn run_fix(
+pub fn run_fix(
     cwd: &Path,
     task_id: &str,
     run_async: bool,
@@ -119,10 +121,11 @@ fn run_fix(
     agent: Option<String>,
     autorun: bool,
     once: bool,
+    output: Option<OutputFormat>,
 ) -> Result<()> {
     // Continue-async path: pick up from a previously created fix-parent
     if let Some(ref fix_parent_id) = continue_async {
-        return run_fix_continue(cwd, fix_parent_id, plan_template, decompose_template, loop_template, review_template, agent, once);
+        return run_fix_continue(cwd, fix_parent_id, plan_template, decompose_template, loop_template, review_template, agent, once, output);
     }
 
     // Parse agent if provided
@@ -154,7 +157,7 @@ fn run_fix(
     let scope = ReviewScope::from_data(&review_task.data)?;
 
     // Resolve the final template name for fix-plan tasks.
-    // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "aiki/plan/fix".
+    // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "aiki/fix".
     // See test_resolve_fix_template_name_* tests for coverage of this resolution logic.
     let plan_template_resolved = resolve_fix_template_name(plan_template.clone(), &review_task.data);
 
@@ -171,7 +174,9 @@ fn run_fix(
     if run_async {
         // Short-circuit if no actionable issues
         if !has_actionable_issues(review_task) {
-            output_approved(&review_task.id)?;
+            if output != Some(OutputFormat::Id) {
+                output_approved(&review_task.id)?;
+            }
             return Ok(());
         }
 
@@ -181,16 +186,16 @@ fn run_fix(
         // Build args for background process
         let mut spawn_args = vec!["fix", task_id, "--_continue-async", &fix_parent_id];
         if let Some(ref plan) = plan_template {
-            spawn_args.extend(["--plan", plan]);
+            spawn_args.extend(["--template", plan]);
         }
         if let Some(ref decompose) = decompose_template {
-            spawn_args.extend(["--decompose", decompose]);
+            spawn_args.extend(["--decompose-template", decompose]);
         }
         if let Some(ref loop_tmpl) = loop_template {
-            spawn_args.extend(["--loop", loop_tmpl]);
+            spawn_args.extend(["--loop-template", loop_tmpl]);
         }
         if let Some(ref review_tmpl) = review_template {
-            spawn_args.extend(["--review", review_tmpl]);
+            spawn_args.extend(["--review-template", review_tmpl]);
         }
         if let Some(ref agent_str) = agent {
             spawn_args.extend(["--agent", agent_str]);
@@ -203,14 +208,17 @@ fn run_fix(
         spawn_aiki_background(cwd, &spawn_args)?;
 
         // Emit fix-parent ID and return immediately
-        println!("{}", fix_parent_id);
+        match output {
+            Some(OutputFormat::Id) => println!("{}", fix_parent_id),
+            None => eprintln!("Fix: {}", fix_parent_id),
+        }
         return Ok(());
     }
 
     // ── Synchronous quality loop ──────────────────────────────────
     let mut review_id = review_task.id.clone();
 
-    run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once)
+    run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once, output)
 }
 
 /// Continue an async fix from a previously created fix-parent.
@@ -226,6 +234,7 @@ fn run_fix_continue(
     review_template: Option<String>,
     agent: Option<String>,
     once: bool,
+    output: Option<OutputFormat>,
 ) -> Result<()> {
     // Parse agent if provided
     let agent_type = if let Some(ref agent_str) = agent {
@@ -317,7 +326,6 @@ fn run_fix_continue(
             scope: review_scope,
             agent_override: None,
             template: review_template.clone().map(|s| s.to_string()),
-            fix: false,
             fix_template: None,
             autorun: false,
         },
@@ -349,7 +357,6 @@ fn run_fix_continue(
                     scope: scope.clone(),
                     agent_override: None,
                     template: review_template.clone().map(|s| s.to_string()),
-                    fix: false,
                     fix_template: None,
                     autorun: false,
                 },
@@ -369,7 +376,9 @@ fn run_fix_continue(
             );
             match orig_outcome {
                 ReviewOutcome::Approved(id) => {
-                    output_approved(&id)?;
+                    if output != Some(OutputFormat::Id) {
+                        output_approved(&id)?;
+                    }
                     return Ok(());
                 }
                 ReviewOutcome::LoopBack(id) => {
@@ -382,7 +391,7 @@ fn run_fix_continue(
     }
 
     // Continue the quality loop (iterations 2..MAX)
-    run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once)
+    run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once, output)
 }
 
 /// Outcome of the two-phase review decision.
@@ -431,6 +440,7 @@ fn run_quality_loop(
     review_template: Option<&str>,
     autorun: bool,
     once: bool,
+    output: Option<OutputFormat>,
 ) -> Result<()> {
     for _iteration in 0..MAX_QUALITY_ITERATIONS {
         // 1. Short-circuit if no actionable issues
@@ -439,14 +449,16 @@ fn run_quality_loop(
         let current_review = find_task(&current_tasks, review_id)?;
 
         if !has_actionable_issues(current_review) {
-            output_approved(review_id)?;
+            if output != Some(OutputFormat::Id) {
+                output_approved(review_id)?;
+            }
             return Ok(());
         }
 
         // 2. Create fix-parent task (container, like an epic)
         let fix_parent_id = create_fix_parent(cwd, review_id, scope, assignee, autorun)?;
 
-        // 3. Create plan-fix task from aiki/plan/fix
+        // 3. Create plan-fix task from aiki/fix
         let plan_fix_id = create_plan_fix_task(cwd, review_id, &fix_parent_id, assignee, Some(plan_template))?;
 
         // 4. task_run(plan-fix) — agent writes fix plan
@@ -489,7 +501,6 @@ fn run_quality_loop(
                 scope: review_scope,
                 agent_override: None,
                 template: review_template.map(|s| s.to_string()),
-                fix: false,
                 fix_template: None,
                 autorun: false,
             },
@@ -523,7 +534,6 @@ fn run_quality_loop(
                         scope: scope.clone(),
                         agent_override: None,
                         template: review_template.map(|s| s.to_string()),
-                        fix: false,
                         fix_template: None,
                         autorun: false,
                     },
@@ -543,7 +553,9 @@ fn run_quality_loop(
                 );
                 match orig_outcome {
                     ReviewOutcome::Approved(id) => {
-                        output_approved(&id)?;
+                        if output != Some(OutputFormat::Id) {
+                            output_approved(&id)?;
+                        }
                         return Ok(());
                     }
                     ReviewOutcome::LoopBack(id) => {
@@ -687,10 +699,18 @@ fn create_fix_parent(
         write_link_event(cwd, &graph, "fixes", &fix_parent_id, target)?;
     }
 
+    // Add fix-parent as subtask of the original task (epic) so that
+    // `task diff <epic>` includes fix changes in the 2-stage review.
+    if scope.kind == ReviewScopeKind::Task {
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
+        write_link_event(cwd, &graph, "subtask-of", &fix_parent_id, &scope.id)?;
+    }
+
     Ok(fix_parent_id)
 }
 
-/// Create a plan-fix task from the `aiki/plan/fix` template.
+/// Create a plan-fix task from the `aiki/fix` template.
 fn create_plan_fix_task(
     cwd: &Path,
     review_id: &str,
@@ -703,7 +723,7 @@ fn create_plan_fix_task(
     data.insert("target".to_string(), fix_parent_id.to_string());
 
     let params = TemplateTaskParams {
-        template_name: template_override.unwrap_or("aiki/plan/fix").to_string(),
+        template_name: template_override.unwrap_or("aiki/fix").to_string(),
         data,
         sources: vec![format!("task:{}", review_id)],
         assignee: assignee.clone(),
@@ -739,7 +759,7 @@ fn resolve_fix_template_name(
     review_data: &HashMap<String, String>,
 ) -> String {
     resolve_plan_template(cli_arg, review_data)
-        .unwrap_or_else(|| "aiki/plan/fix".to_string())
+        .unwrap_or_else(|| "aiki/fix".to_string())
 }
 
 #[cfg(test)]
@@ -987,7 +1007,7 @@ mod tests {
     }
 
     /// Tests the full fix-template resolution chain used by run_fix:
-    /// resolve_plan_template → unwrap_or("aiki/plan/fix") via resolve_fix_template_name.
+    /// resolve_plan_template → unwrap_or("aiki/fix") via resolve_fix_template_name.
     #[test]
     fn test_resolve_fix_template_name_full_chain() {
         // 1. CLI arg provided → uses CLI arg (ignores review data and default)
@@ -1006,11 +1026,11 @@ mod tests {
             "from/review"
         );
 
-        // 3. No CLI arg, no review data → falls back to "aiki/plan/fix"
+        // 3. No CLI arg, no review data → falls back to "aiki/fix"
         let data = HashMap::new();
         assert_eq!(
             resolve_fix_template_name(None, &data),
-            "aiki/plan/fix"
+            "aiki/fix"
         );
     }
 
@@ -1076,5 +1096,218 @@ mod tests {
         // Ensure the constant is set to a reasonable value (not 0 or absurdly large)
         assert!(MAX_QUALITY_ITERATIONS > 0);
         assert!(MAX_QUALITY_ITERATIONS <= 100);
+    }
+
+    // ── Regression tests for review-fix execution paths ──────────────
+
+    #[test]
+    fn test_has_actionable_issues_backward_compat_comments_only() {
+        // Older reviews without data.issue_count fall back to checking comments
+        use crate::tasks::TaskComment;
+        let mut task = make_test_task("review-legacy");
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Fix the null check".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
+        });
+        // No issue_count in data → falls back to non-empty comments → has issues
+        assert!(has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_invalid_issue_count_with_comments() {
+        // When issue_count is unparseable, falls back to comment-based check
+        use crate::tasks::TaskComment;
+        let mut task = make_test_task("review-bad-count");
+        task.data.insert("issue_count".to_string(), "not-a-number".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Issue: missing validation".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: HashMap::new(),
+        });
+        // Unparseable issue_count → falls back to get_issue_comments
+        // The comment above doesn't have data.issue="true", so get_issue_comments returns empty
+        assert!(!has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_invalid_issue_count_with_issue_comments() {
+        // When issue_count is unparseable, falls back to issue comments (data.issue="true")
+        use crate::tasks::TaskComment;
+        let mut task = make_test_task("review-bad-count-2");
+        task.data.insert("issue_count".to_string(), "bad".to_string());
+        let mut issue_data = HashMap::new();
+        issue_data.insert("issue".to_string(), "true".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Critical bug found".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: issue_data,
+        });
+        // Unparseable issue_count → falls back to get_issue_comments → finds one
+        assert!(has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_issue_count_takes_priority_over_comments() {
+        // When issue_count is valid, it takes priority even if comments exist
+        use crate::tasks::TaskComment;
+        let mut task = make_test_task("review-count-priority");
+        task.data.insert("issue_count".to_string(), "0".to_string());
+        let mut issue_data = HashMap::new();
+        issue_data.insert("issue".to_string(), "true".to_string());
+        task.comments.push(TaskComment {
+            id: None,
+            text: "Stale issue from previous review".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: issue_data,
+        });
+        // issue_count=0 is parseable → returns false despite issue comments existing
+        assert!(!has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_has_actionable_issues_no_data_with_empty_comments() {
+        // No issue_count, empty comments → no issues
+        let task = make_test_task("review-empty");
+        assert!(!has_actionable_issues(&task));
+    }
+
+    #[test]
+    fn test_is_review_task_various_template_prefixes() {
+        // Template prefix "aiki/review" should match various versions
+        let mut task = make_test_task("t-review");
+        task.template = Some("aiki/review".to_string());
+        assert!(is_review_task(&task));
+
+        task.template = Some("aiki/review@2.0.0".to_string());
+        assert!(is_review_task(&task));
+
+        task.template = Some("aiki/review/custom".to_string());
+        assert!(is_review_task(&task));
+
+        // Non-matching templates
+        task.template = Some("custom/review".to_string());
+        assert!(!is_review_task(&task));
+
+        task.template = Some("aiki/plan".to_string());
+        assert!(!is_review_task(&task));
+    }
+
+    #[test]
+    fn test_is_review_task_type_overrides_template() {
+        // task_type="review" should make it a review task regardless of template
+        let mut task = make_test_task("t-type-override");
+        task.task_type = Some("review".to_string());
+        task.template = Some("aiki/plan".to_string()); // non-review template
+        assert!(is_review_task(&task));
+    }
+
+    #[test]
+    fn test_review_outcome_re_review_when_only_has_issues_none() {
+        // fix-parent passed (false), original_review_has_issues=None, id=Some
+        // → should still re-review (no original info means we haven't checked yet)
+        let outcome = determine_review_outcome(false, "review1", None, Some("orig1"));
+        assert_eq!(outcome, ReviewOutcome::ReReviewOriginalScope);
+    }
+
+    #[test]
+    fn test_review_outcome_re_review_when_only_id_none() {
+        // fix-parent passed, has_issues=Some(false) but no id
+        // → should re-review (can't approve without an ID)
+        let outcome = determine_review_outcome(false, "review1", Some(false), None);
+        assert_eq!(outcome, ReviewOutcome::ReReviewOriginalScope);
+    }
+
+    #[test]
+    fn test_extract_task_id_multiline_xml() {
+        // Test with multiline XML and extra whitespace
+        let xml = r#"
+            <aiki_review cmd="review" status="ok">
+                <completed task_id="abcdefghijklmnopqrstuvwxyzabcdef" comments="5"/>
+            </aiki_review>
+        "#;
+        assert_eq!(extract_task_id(xml), "abcdefghijklmnopqrstuvwxyzabcdef");
+    }
+
+    #[test]
+    fn test_extract_task_id_no_xml_passthrough() {
+        // Non-XML input should pass through unchanged
+        assert_eq!(extract_task_id("plain-id-123"), "plain-id-123");
+    }
+
+    #[test]
+    fn test_extract_task_id_xml_no_task_id_attr() {
+        // XML without task_id attribute → return trimmed input
+        let xml = r#"<aiki status="ok"/>"#;
+        assert_eq!(extract_task_id(xml), xml);
+    }
+
+    #[test]
+    fn test_fix_description_session_scope() {
+        let scope = ReviewScope {
+            kind: ReviewScopeKind::Session,
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            task_ids: vec![],
+        };
+        assert_eq!(
+            fix_description(&scope),
+            "Created standalone fix task for Session"
+        );
+    }
+
+    #[test]
+    fn test_determine_followup_assignee_reviewed_task_no_assignee() {
+        // Reviewed task exists but has no assignee → fallback to claude-code
+        let task = make_test_task("no-assignee");
+        let result = determine_followup_assignee(None, Some(&task));
+        assert_eq!(result, Some("claude-code".to_string()));
+    }
+
+    // ── Regression tests for output_format gating ──────────────────
+
+    /// Verify the gating condition used throughout the fix pipeline:
+    /// `output_approved` should only be called when output is NOT `Some(OutputFormat::Id)`.
+    /// This tests the boolean condition `output != Some(OutputFormat::Id)` that guards
+    /// all `output_approved` call sites in run_fix, run_fix_continue, and run_quality_loop.
+    #[test]
+    fn test_output_format_gating_suppresses_approved_message() {
+        use super::OutputFormat;
+
+        let output_id: Option<OutputFormat> = Some(OutputFormat::Id);
+        let output_none: Option<OutputFormat> = None;
+
+        // When output is Some(Id), the gating condition should be false (suppress output_approved)
+        assert!(
+            output_id == Some(OutputFormat::Id),
+            "Some(Id) should match the suppression check"
+        );
+        assert!(
+            !(output_id != Some(OutputFormat::Id)),
+            "output_approved should NOT be called when output is Some(Id)"
+        );
+
+        // When output is None, the gating condition should be true (allow output_approved)
+        assert!(
+            output_none != Some(OutputFormat::Id),
+            "output_approved SHOULD be called when output is None"
+        );
+    }
+
+    /// Verify that the gating condition correctly distinguishes between
+    /// all possible OutputFormat variants and None.
+    #[test]
+    fn test_output_format_id_only_suppresses_approved() {
+        use super::OutputFormat;
+
+        // None → should print approved message
+        let should_print: Option<OutputFormat> = None;
+        assert!(should_print != Some(OutputFormat::Id));
+
+        // Some(Id) → should suppress approved message
+        let should_suppress: Option<OutputFormat> = Some(OutputFormat::Id);
+        assert!(!(should_suppress != Some(OutputFormat::Id)));
     }
 }

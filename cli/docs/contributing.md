@@ -272,12 +272,12 @@ Planning happens in `ops/` at the repo root:
 
 | Directory | Purpose |
 |-----------|---------|
-| `ops/now/` | Active specs — work currently in progress |
-| `ops/next/` | Upcoming specs — planned but not started |
+| `ops/now/` | Active plans — work currently in progress |
+| `ops/next/` | Upcoming plans — planned but not started |
 | `ops/research/` | Research notes and explorations |
 | `ops/ROADMAP.md` | Long-term vision |
 
-**Workflow:** write a spec in `ops/now/` before implementing. Specs describe the problem, approach, and deliverables. Mark status as "Done" when complete.
+**Workflow:** write a plan in `ops/now/` before implementing. Plans describe the problem, approach, and deliverables. Mark status as "Done" when complete.
 
 ## Code Style
 

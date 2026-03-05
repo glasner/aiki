@@ -22,7 +22,7 @@ aiki fix <review-task-id> --async
 
 1. **Read review issues** — Fix reads the review task's issue comments (added via `aiki review issue add`). Regular comments are ignored.
 
-2. **Plan** — A fix plan is created from the `aiki/plan/fix` template, describing what needs to change to address each issue.
+2. **Plan** — A fix plan is created from the `aiki/fix` template, describing what needs to change to address each issue.
 
 3. **Decompose** — The plan is decomposed into subtasks, one per issue, each with enough context for an agent to resolve independently.
 
@@ -34,13 +34,22 @@ If no issues are found, fix outputs "Approved" and exits successfully — the re
 
 ## Quality Loop
 
-The Rust-driven quality loop chains review and fix automatically:
+The Rust-driven quality loop chains review and fix with a two-stage review:
 
 ```
-Review ──▶ Fix ──▶ Re-review ──▶ Fix ──▶ ... ──▶ Approved
+Review ──▶ Fix ──▶ Stage 1: Review fix ──▶ Stage 2: Re-review original scope ──▶ Approved
+                         │                         │
+                         ▼                         ▼
+                   (issues?) ──▶ Fix again   (regressions?) ──▶ Fix again
 ```
 
-The loop continues until the re-review finds no issues or a maximum of 10 iterations is reached. This ensures fixes don't introduce new problems. Use `--once` to disable the loop and run a single fix pass.
+Each iteration has two review stages:
+
+1. **Stage 1 — Review the fix.** After subtasks complete, the fix-parent task is reviewed. If the reviewer finds issues with the fix itself (incomplete, incorrect, introduces new bugs), the loop feeds those issues back into another fix cycle.
+
+2. **Stage 2 — Re-review the original scope.** Once the fix-parent review passes, the *original* scope is re-reviewed to catch regressions. If the fixes resolved the original issues but broke something else, the loop feeds the regression issues back into another fix cycle.
+
+Only when both stages pass does fix output "Approved". The loop runs up to 10 iterations before stopping with a warning. Use `--once` to disable the loop entirely and run a single fix pass.
 
 ## Fix Targets
 
@@ -59,8 +68,12 @@ Where the fix task gets attached depends on the review scope:
 | `--async` | Run in the background |
 | `--once` | Single-pass fix (no quality loop) |
 | `--autorun` | Auto-start fix when review closes |
-| `--template <name>` | Use a custom fix template |
+| `--template <name>` | Custom plan template (default: `aiki/fix`) |
+| `--decompose-template <name>` | Custom decompose template (default: `aiki/decompose`) |
+| `--loop-template <name>` | Custom loop template (default: `aiki/loop`) |
+| `--review-template [name]` | Custom review template for quality loop (default: `aiki/review`) |
 | `--agent <type>` | Override fix agent |
+| `-o id` | Output bare task ID to stdout |
 
 ## Stdin Piping
 

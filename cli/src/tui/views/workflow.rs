@@ -49,7 +49,7 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
 
     // Lane DAG: right-aligned overlay on the stage section rows.
     if let Some(ref dag_layout) = view.lane_dag {
-        if should_show_dag(dag_layout) && is_implement_active(&view.stages) {
+        if should_show_dag(dag_layout) && is_loop_active(&view.stages) {
             let dag_width = dag_layout.width;
             let dag_height = dag_layout.height;
             // Skip if stage text + gap + DAG would overflow the width.
@@ -70,14 +70,14 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
     buf
 }
 
-/// Check whether the "implement" sub-stage of the "build" stage is currently active.
-fn is_implement_active(stages: &[StageView]) -> bool {
+/// Check whether the "loop" sub-stage of the "build" stage is currently active.
+fn is_loop_active(stages: &[StageView]) -> bool {
     stages.iter().any(|stage| {
         stage.name == "build"
             && stage
                 .sub_stages
                 .iter()
-                .any(|ss| ss.name == "implement" && ss.state == StageState::Active)
+                .any(|ss| ss.name == "loop" && ss.state == StageState::Active)
     })
 }
 
@@ -181,12 +181,14 @@ mod tests {
                             state: StageState::Done,
                             progress: None,
                             elapsed: Some("0:12".into()),
+                            children: vec![],
                         },
                         SubStageView {
-                            name: "implement".into(),
+                            name: "loop".into(),
                             state: StageState::Active,
                             progress: Some("3/6".into()),
                             elapsed: Some("0:34".into()),
+                            children: vec![],
                         },
                     ],
                     children: vec![],
@@ -232,7 +234,7 @@ mod tests {
         // Stage list
         assert!(text.contains("build"));
         assert!(text.contains("decompose"));
-        assert!(text.contains("implement"));
+        assert!(text.contains("loop"));
         assert!(text.contains("review"));
     }
 
@@ -377,12 +379,14 @@ mod tests {
                             state: StageState::Done,
                             progress: None,
                             elapsed: Some("0:12".into()),
+                            children: vec![],
                         },
                         SubStageView {
-                            name: "implement".into(),
+                            name: "loop".into(),
                             state: StageState::Active,
                             progress: Some("3/6".into()),
                             elapsed: Some("0:34".into()),
+                            children: vec![],
                         },
                     ],
                     children: vec![],
@@ -418,7 +422,7 @@ mod tests {
 
         assert!(text.contains("decompose"));
         assert!(text.contains("0:12"));
-        assert!(text.contains("implement"));
+        assert!(text.contains("loop"));
         assert!(text.contains("3/6"));
         assert!(text.contains("0:34"));
         assert!(text.contains("review"));
@@ -555,9 +559,9 @@ mod tests {
 
     // ── Lane DAG integration ─────────────────────────────────────
 
-    // Verifies that the DAG is rendered when the "implement" sub-stage is Active.
+    // Verifies that the DAG is rendered when the "loop" sub-stage is Active.
     #[test]
-    fn dag_visible_during_implement() {
+    fn dag_visible_during_loop() {
         use crate::tui::widgets::lane_dag::{DagLayout, RenderedLane, RenderedSession, SessionState};
 
         let theme = test_theme();
@@ -576,12 +580,14 @@ mod tests {
                             state: StageState::Done,
                             progress: None,
                             elapsed: Some("0:12".into()),
+                            children: vec![],
                         },
                         SubStageView {
-                            name: "implement".into(),
+                            name: "loop".into(),
                             state: StageState::Active,
                             progress: Some("3/6".into()),
                             elapsed: Some("0:34".into()),
+                            children: vec![],
                         },
                     ],
                     children: vec![],
@@ -703,11 +709,11 @@ mod tests {
     }
 
     #[test]
-    fn dag_hidden_when_implement_not_active() {
+    fn dag_hidden_when_loop_not_active() {
         use crate::tui::widgets::lane_dag::{DagLayout, RenderedLane, RenderedSession, SessionState};
 
         let theme = test_theme();
-        // lane_dag is Some with 2+ lanes (passes should_show_dag), but implement is not active.
+        // lane_dag is Some with 2+ lanes (passes should_show_dag), but loop is not active.
         let view = WorkflowView {
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: make_epic("Feature", vec![]),
@@ -723,12 +729,14 @@ mod tests {
                             state: StageState::Done,
                             progress: None,
                             elapsed: Some("0:12".into()),
+                            children: vec![],
                         },
                         SubStageView {
-                            name: "implement".into(),
+                            name: "loop".into(),
                             state: StageState::Done,
                             progress: Some("6/6".into()),
                             elapsed: Some("1:30".into()),
+                            children: vec![],
                         },
                     ],
                     children: vec![],
@@ -771,11 +779,11 @@ mod tests {
         let buf = render_workflow(&view, &theme);
         let text = buf_text(&buf);
 
-        // DAG should NOT appear because implement sub-stage is Done, not Active
-        assert!(!text.contains('●'), "no done dot when implement not active");
-        assert!(!text.contains('◉'), "no active dot when implement not active");
-        assert!(!text.contains('○'), "no pending dot when implement not active");
-        assert!(!text.contains('━'), "no connector when implement not active");
+        // DAG should NOT appear because loop sub-stage is Done, not Active
+        assert!(!text.contains('●'), "no done dot when loop not active");
+        assert!(!text.contains('◉'), "no active dot when loop not active");
+        assert!(!text.contains('○'), "no pending dot when loop not active");
+        assert!(!text.contains('━'), "no connector when loop not active");
     }
 
     #[test]

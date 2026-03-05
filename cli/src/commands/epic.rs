@@ -27,6 +27,7 @@ use crate::tasks::{
 
 /// Epic subcommands
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum EpicCommands {
     /// Create an epic from a plan file
     Add {
@@ -284,6 +285,7 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
         task_ids: vec![epic_id.to_string()],
         outcome: TaskOutcome::WontDo,
         summary: Some("No subtasks created — epic invalid".to_string()),
+        session_id: None,
         turn_id: None,
         timestamp,
     };
@@ -461,6 +463,7 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
         task_ids: vec![epic_id.to_string()],
         outcome: TaskOutcome::WontDo,
         summary: Some("Closed by --restart".to_string()),
+        session_id: None,
         turn_id: None,
         timestamp,
     };

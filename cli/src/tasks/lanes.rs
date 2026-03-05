@@ -499,30 +499,36 @@ mod tests {
 
     fn make_closed(id: &str) -> TaskEvent {
         TaskEvent::Closed {
+            session_id: None,
             task_ids: vec![id.to_string()],
             outcome: TaskOutcome::Done,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
     fn make_stopped(id: &str) -> TaskEvent {
         TaskEvent::Stopped {
+            session_id: None,
             task_ids: vec![id.to_string()],
             reason: Some("test".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
     fn make_closed_wontdo(id: &str) -> TaskEvent {
         TaskEvent::Closed {
+            session_id: None,
             task_ids: vec![id.to_string()],
             outcome: TaskOutcome::WontDo,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 

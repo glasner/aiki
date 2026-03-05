@@ -891,11 +891,13 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["parent.1".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 

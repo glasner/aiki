@@ -437,6 +437,110 @@ fn test_wait_with_stopped_task_returns_error() {
         .stderr(predicate::str::contains("stopped"));
 }
 
+#[test]
+fn test_wait_with_stopped_task_absorbed() {
+    // Regression: Verify the absorption wait path works for stopped tasks.
+    // Without this, the code path where needs_absorption includes stopped tasks
+    // with session_id and workspace_absorb_all emits Absorbed events could
+    // silently regress.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add, start, and stop a task
+    aiki_task(temp_dir.path(), &["add", "Task to stop and absorb"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["stop", "--reason", "test"]).success();
+
+    // Get the short task ID from stopped tasks
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--stopped"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let short_id = extract_task_id(&stdout).expect("Should find stopped task ID");
+
+    // Get the full 32-char task ID via show -o id
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", &short_id, "-o", "id"])
+        .output()
+        .unwrap();
+    let full_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert_eq!(
+        full_id.len(),
+        32,
+        "Expected 32-char task ID, got '{}' (len {})",
+        full_id,
+        full_id.len()
+    );
+
+    // Write a Stopped event with session_id via jj
+    // (The CLI-generated Stopped event has session_id: None since there's no
+    // active session in test, so we write one manually with a session_id)
+    let stopped_msg = format!(
+        "[aiki-task]\n\
+         event=stopped\n\
+         task_id={}\n\
+         reason=test\n\
+         session_id=test-session-abc\n\
+         timestamp=2026-01-01T00:00:01+00:00\n\
+         [/aiki-task]",
+        full_id
+    );
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "new",
+            "aiki/tasks",
+            "--no-edit",
+            "--ignore-working-copy",
+            "-m",
+            &stopped_msg,
+        ])
+        .output()
+        .expect("Failed to write Stopped event via jj");
+    assert!(
+        jj_output.status.success(),
+        "jj new for Stopped event failed: {}",
+        String::from_utf8_lossy(&jj_output.stderr)
+    );
+
+    // Write an Absorbed event via jj
+    let absorbed_msg = format!(
+        "[aiki-task]\n\
+         event=absorbed\n\
+         task_id={}\n\
+         session_id=test-session-abc\n\
+         timestamp=2026-01-01T00:00:02+00:00\n\
+         [/aiki-task]",
+        full_id
+    );
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "new",
+            "aiki/tasks",
+            "--no-edit",
+            "--ignore-working-copy",
+            "-m",
+            &absorbed_msg,
+        ])
+        .output()
+        .expect("Failed to write Absorbed event via jj");
+    assert!(
+        jj_output.status.success(),
+        "jj new for Absorbed event failed: {}",
+        String::from_utf8_lossy(&jj_output.stderr)
+    );
+
+    // Wait should complete quickly (absorption path) and fail
+    // (stopped tasks always fail wait) with stderr containing "stopped"
+    aiki_wait(temp_dir.path(), &[&short_id])
+        .failure()
+        .stderr(predicate::str::contains("stopped"));
+}
+
 // ============================================================================
 // Task ID Extraction from Markdown Tests (Unit Tests)
 // ============================================================================
@@ -638,9 +742,9 @@ fn test_async_wait_conceptual_flow() {
     );
 
     // 3. Verify wait command works (though task not running)
-    // Close the task first so wait can succeed
-    aiki_task(temp_dir.path(), &["start"]).success();
-    aiki_task(temp_dir.path(), &["close", "--summary", "Test done"]).success();
+    // Start and close the task so wait can succeed
+    aiki_task(temp_dir.path(), &["start", &task_id]).success();
+    aiki_task(temp_dir.path(), &["close", &task_id, "--summary", "Test done"]).success();
 
     // Get the task ID from closed list
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
@@ -656,4 +760,898 @@ fn test_async_wait_conceptual_flow() {
     aiki_wait(temp_dir.path(), &[&closed_task_id])
         .success()
         .stdout(predicate::str::contains(&closed_task_id));
+}
+
+// ============================================================================
+// Review-Fix Execution Path Regression Tests
+// ============================================================================
+
+/// Helper to run aiki review command
+fn aiki_review(path: &std::path::Path, args: &[&str]) -> assert_cmd::assert::Assert {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aiki"));
+    cmd.current_dir(path);
+    cmd.arg("review");
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.assert()
+}
+
+#[test]
+fn test_review_fix_and_start_conflict() {
+    // Regression: --fix and --start cannot be used together.
+    // The error should be caught before target resolution.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add a task to use as review target
+    aiki_task(temp_dir.path(), &["add", "Task to review"]).success();
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find task ID");
+
+    // Running review with both --fix-template and --start should produce an error
+    aiki_review(temp_dir.path(), &[&task_id, "--fix-template", "--start"])
+        .failure()
+        .stderr(predicate::str::contains("--fix-template and --start cannot be used together"));
+}
+
+#[test]
+fn test_review_fix_flag_accepted_by_parser() {
+    // Regression: --fix flag should be recognized by the CLI parser.
+    // The command may fail for other reasons (no agent, etc.) but NOT
+    // as an unrecognized argument.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Fixable task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with --fix-template; it may succeed or fail, but should NOT
+    // produce an "unexpected argument" error (which would indicate --fix-template isn't recognized)
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix-template"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--fix flag should be recognized by the parser, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_review_autorun_flag_accepted_by_parser() {
+    // Regression: --autorun flag should be recognized by the CLI parser.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add a task as review target
+    aiki_task(temp_dir.path(), &["add", "Autorun review task"]).success();
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find task ID");
+
+    // Run review with --autorun; should not produce a parser error
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--autorun", "--start"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--autorun flag should be recognized by the parser, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_review_output_id_no_extra_output() {
+    // Regression: when -o id is used, stdout should contain ONLY the review
+    // task ID — no markdown, no ANSI, no extra lines.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template so `aiki review` can create a review task.
+    // The template needs to exist at .aiki/templates/aiki/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Output ID test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with --start -o id
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--start", "-o", "id"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The command should succeed
+    assert!(
+        output.status.success(),
+        "review --start -o id should succeed, got stderr: {}",
+        stderr
+    );
+
+    // stdout should be exactly one line with only the review task ID
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.is_empty(),
+        "stdout should contain the review task ID"
+    );
+
+    // The review ID should be a valid task ID (all lowercase letters, 32 chars)
+    assert!(
+        trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() == 32,
+        "stdout should be exactly one 32-char lowercase review task ID, got: '{}'",
+        trimmed
+    );
+
+    // Verify no markdown or ANSI control sequences leaked into stdout
+    assert!(
+        !stdout.contains("###") && !stdout.contains("\x1b["),
+        "stdout should not contain markdown headers or ANSI codes, got: '{}'",
+        stdout
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn test_review_fix_output_id_no_extra_output() {
+    // Regression: when --fix -o id is used, stdout should contain ONLY the review
+    // task ID — no markdown, no ANSI, no extra lines.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template so `aiki review` can create a review task.
+    // The template needs to exist at .aiki/templates/aiki/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Output ID test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with --fix-template -o id
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix-template", "-o", "id"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The command should succeed
+    assert!(
+        output.status.success(),
+        "review --fix-template -o id should succeed, got stderr: {}",
+        stderr
+    );
+
+    // stdout should be exactly one line with only the review task ID
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.is_empty(),
+        "stdout should contain the review task ID"
+    );
+
+    // The review ID should be a valid task ID (all lowercase letters, 32 chars)
+    assert!(
+        trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() == 32,
+        "stdout should be exactly one 32-char lowercase review task ID, got: '{}'",
+        trimmed
+    );
+
+    // Verify no markdown or ANSI control sequences leaked into stdout
+    assert!(
+        !stdout.contains("###") && !stdout.contains("\x1b["),
+        "stdout should not contain markdown headers or ANSI codes, got: '{}'",
+        stdout
+    );
+
+    // --- Fix-execution assertions ---
+    // Verify the review task exists and is properly formed
+    let review_id = trimmed;
+    let show_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "show", review_id])
+        .output()
+        .unwrap();
+    assert!(
+        show_output.status.success(),
+        "aiki task show should succeed for review ID {}",
+        review_id
+    );
+    let show_stdout = String::from_utf8_lossy(&show_output.stdout);
+    assert!(
+        show_stdout.contains("Review:"),
+        "review task should be named 'Review: ...', got: {}",
+        show_stdout
+    );
+
+    // Verify data.options.fix was set on the review task by checking the raw
+    // event data stored in JJ commit descriptions on the aiki/tasks branch.
+    // This confirms the --fix flag was properly stored, which is the
+    // precondition for run_fix to execute.
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("options.fix:true"),
+        "Review task should have data.options.fix=true set in event data, got: '{}'",
+        jj_stdout
+    );
+}
+
+// ============================================================================
+// Async Continue Path (--_continue-async) Fix-Template Forwarding Regression Tests
+// ============================================================================
+
+#[test]
+fn test_async_review_fix_template_stores_fix_data() {
+    // Regression: When --fix-template is used with --async, the review task must
+    // store options.fix=true and options.fix_template in its data. This is the
+    // precondition for run_continue_async (review.rs:860-881) to forward the
+    // fix template into run_fix when issues are found.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Async fix-template test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with --fix-template --async -o id
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix-template", "--async", "-o", "id"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The command should succeed (async returns immediately)
+    assert!(
+        output.status.success(),
+        "review --fix-template --async -o id should succeed, got stderr: {}",
+        stderr
+    );
+
+    // stdout should be exactly the review task ID
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() == 32,
+        "stdout should be exactly one 32-char lowercase review task ID, got: '{}'",
+        trimmed
+    );
+
+    // Verify data.options.fix was set on the review task in JJ events.
+    // This is critical: run_continue_async checks fix_template to decide
+    // whether to call run_fix (line 860-862 in review.rs).
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("options.fix:true"),
+        "Async review task should have data.options.fix=true stored, got: '{}'",
+        jj_stdout
+    );
+
+    // Verify data.options.fix_template was also stored (the template name itself).
+    // run_continue_async forwards this value to run_fix as the plan_template arg.
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("options.fix_template:aiki/fix"),
+        "Async review task should store fix_template value, got: '{}'",
+        jj_stdout
+    );
+}
+
+#[test]
+fn test_async_review_without_fix_template_no_fix_data() {
+    // Regression (negative case): When --async is used WITHOUT --fix-template,
+    // the review task must NOT have options.fix set. This corresponds to the
+    // early return in run_continue_async (review.rs:860-862) when
+    // fix_template.is_none().
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Async no-fix test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with --async but WITHOUT --fix-template
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--async", "-o", "id"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The command should succeed
+    assert!(
+        output.status.success(),
+        "review --async -o id should succeed, got stderr: {}",
+        stderr
+    );
+
+    // stdout should be exactly the review task ID
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() == 32,
+        "stdout should be a 32-char lowercase review task ID, got: '{}'",
+        trimmed
+    );
+
+    // Verify data.options.fix is NOT set on the review task.
+    // Without --fix-template, run_continue_async should early-return (line 860-862)
+    // and never call run_fix, regardless of issue count.
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        !jj_stdout.contains("options.fix:true"),
+        "Review without --fix-template should NOT have options.fix set, got: '{}'",
+        jj_stdout
+    );
+}
+
+#[test]
+fn test_continue_async_with_fix_template_flag_accepted() {
+    // Regression: The hidden --_continue-async flag must work with --fix-template.
+    // This is the entry point that run_continue_async uses (review.rs:400-401).
+    // The flag combination must parse correctly (not produce "unexpected argument").
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Call --_continue-async with --fix-template and a fake review ID.
+    // The command will fail (review task doesn't exist), but the flags
+    // should be recognized by the parser (no "unexpected argument" error).
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00", "--fix-template", "aiki/fix"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should NOT be a parser error
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--_continue-async with --fix-template should be accepted by parser, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_continue_async_without_fix_template_flag_accepted() {
+    // Regression: The hidden --_continue-async flag must work WITHOUT --fix-template.
+    // This exercises the early return path in run_continue_async (line 860-862).
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Call --_continue-async without --fix-template and a fake review ID.
+    // The command will fail (review task doesn't exist), but the flag
+    // should be recognized by the parser.
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should NOT be a parser error
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--_continue-async without --fix-template should be accepted by parser, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_async_review_fix_template_custom_value_stored() {
+    // Regression: When --fix-template is given a custom value (not the default),
+    // that custom value must be stored in the review task data so that
+    // run_continue_async forwards it correctly to run_fix.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task
+    aiki_task(temp_dir.path(), &["add", "Custom fix template test"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with a CUSTOM --fix-template value via --async
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix-template", "my-org/custom-fix", "--async", "-o", "id"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "review --fix-template my-org/custom-fix --async -o id should succeed, got stderr: {}",
+        stderr
+    );
+
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() == 32,
+        "stdout should be a 32-char review task ID, got: '{}'",
+        trimmed
+    );
+
+    // Verify the custom fix_template value was stored (not the default "aiki/fix").
+    // run_continue_async reads this from args and passes it to run_fix.
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("options.fix_template:my-org/custom-fix"),
+        "Review should store custom fix_template value 'my-org/custom-fix', got: '{}'",
+        jj_stdout
+    );
+}
+
+// ============================================================================
+// Blocking Review Path: fix-template Forwarding Regression Tests
+// ============================================================================
+
+#[test]
+fn test_blocking_review_fix_template_creates_review_with_fix_options() {
+    // Regression: the blocking review path (review.rs:796-831) should store
+    // options.fix and options.fix_template in the review task data when
+    // --fix-template is provided. This is the precondition for run_fix to be
+    // called after task_run completes.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Blocking fix-template test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run blocking review with --fix-template (default value "aiki/fix")
+    // The command may fail at task_run if no agent is available, but the review
+    // task is created and its data stored BEFORE task_run is called.
+    let _output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix-template", "-o", "id"])
+        .output()
+        .unwrap();
+
+    // Verify the review task was created with options.fix:true in the event data.
+    // This is stored by create_review (review.rs:629-632) before task_run is called,
+    // so it persists regardless of whether the agent succeeded.
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("options.fix:true"),
+        "Review task should have data.options.fix=true, got: '{}'",
+        jj_stdout
+    );
+
+    // Verify options.fix_template is also stored (forwarded from --fix-template)
+    let jj_output2 = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix_template')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout2 = String::from_utf8_lossy(&jj_output2.stdout);
+    assert!(
+        jj_stdout2.contains("options.fix_template:aiki/fix"),
+        "Review task should have data.options.fix_template=aiki/fix, got: '{}'",
+        jj_stdout2
+    );
+}
+
+#[test]
+fn test_blocking_review_issue_count_set_when_issues_exist() {
+    // Regression: when a review task has issues added via `aiki review issue add`
+    // and is then closed, data.issue_count should be set to reflect the number of
+    // issues. This is the other precondition for the blocking review path at
+    // review.rs:804-808 to evaluate has_issues=true.
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Issue count test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Create a review task using --start (assigns to current agent, no task_run)
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--start", "-o", "id"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "review --start -o id should succeed, stderr: {}",
+        stderr
+    );
+    let review_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert!(
+        !review_id.is_empty() && review_id.chars().all(|c| c.is_ascii_lowercase()),
+        "Should get a valid review task ID, got: '{}'",
+        review_id
+    );
+
+    // Add issues to the review task
+    aiki_review(
+        temp_dir.path(),
+        &["issue", "add", &review_id, "Bug found in auth handler", "--high"],
+    )
+    .success();
+
+    aiki_review(
+        temp_dir.path(),
+        &["issue", "add", &review_id, "Missing error handling in API client"],
+    )
+    .success();
+
+    // Close the review task — this triggers issue_count computation (task.rs:2882-2908)
+    aiki_task(
+        temp_dir.path(),
+        &["close", &review_id, "--summary", "Found 2 issues"],
+    )
+    .success();
+
+    // Verify issue_count was set in the event data
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'issue_count')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        jj_stdout.contains("issue_count:2"),
+        "Review task should have data.issue_count=2 after closing with 2 issues, got: '{}'",
+        jj_stdout
+    );
+
+    // Also verify approved:false (since issues exist)
+    assert!(
+        jj_stdout.contains("approved:false"),
+        "Review task should have data.approved=false when issues exist, got: '{}'",
+        jj_stdout
+    );
+}
+
+#[test]
+fn test_blocking_review_no_fix_template_no_fix_options() {
+    // Negative case: when --fix-template is NOT provided, the review task should
+    // NOT have options.fix in its data. This means run_fix will NOT be called
+    // even if issues exist (review.rs:810 condition is false).
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Set up the review template
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(
+        template_dir.join("task.md"),
+        "---\nversion: 2.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the work.\n",
+    )
+    .unwrap();
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "No fix-template test task"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Create a review task WITHOUT --fix-template using --start
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--start", "-o", "id"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "review --start -o id should succeed, stderr: {}",
+        stderr
+    );
+    let review_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Add issues even though no --fix-template was used
+    aiki_review(
+        temp_dir.path(),
+        &["issue", "add", &review_id, "Some issue found", "--high"],
+    )
+    .success();
+
+    // Close the review (sets issue_count > 0)
+    aiki_task(
+        temp_dir.path(),
+        &["close", &review_id, "--summary", "Found issues"],
+    )
+    .success();
+
+    // Verify that options.fix is NOT set in any event data for this review
+    let jj_output = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'options.fix')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
+    assert!(
+        !jj_stdout.contains("options.fix:true"),
+        "Review without --fix-template should NOT have options.fix=true, got: '{}'",
+        jj_stdout
+    );
+
+    // Verify issue_count IS set (issues exist, but fix won't trigger)
+    let jj_output2 = Command::new("jj")
+        .current_dir(temp_dir.path())
+        .args([
+            "log",
+            "-r",
+            "children(ancestors(aiki/tasks)) & description(substring:'issue_count')",
+            "--no-graph",
+            "-T", "description",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .unwrap();
+    let jj_stdout2 = String::from_utf8_lossy(&jj_output2.stdout);
+    assert!(
+        jj_stdout2.contains("issue_count:1"),
+        "Review should have issue_count=1 even without --fix-template, got: '{}'",
+        jj_stdout2
+    );
 }

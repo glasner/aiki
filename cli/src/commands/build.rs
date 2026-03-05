@@ -32,6 +32,7 @@ use crate::tui::theme::{Theme, detect_mode};
 
 /// Build subcommands
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum BuildSubcommands {
     /// Show build/epic status for a plan
     Show {
@@ -59,24 +60,32 @@ pub struct BuildArgs {
     pub restart: bool,
 
     /// Custom decompose template (default: aiki/decompose)
-    #[arg(long)]
-    pub decompose: Option<String>,
+    #[arg(long = "decompose-template")]
+    pub decompose_template: Option<String>,
 
     /// Custom loop template (default: aiki/loop)
-    #[arg(long = "loop")]
+    #[arg(long = "loop-template")]
     pub loop_template: Option<String>,
 
     /// Agent for build orchestration (default: claude-code)
     #[arg(long)]
     pub agent: Option<String>,
 
-    /// Run review after build, optionally with custom template
-    #[arg(long, default_missing_value = "aiki/review", num_args = 0..=1)]
-    pub review: Option<String>,
+    /// Run review after build
+    #[arg(long)]
+    pub review: bool,
 
-    /// Run review+fix after build, optionally with custom fix plan template (implies --review)
-    #[arg(long, default_missing_value = "aiki/plan/fix", num_args = 0..=1)]
-    pub fix: Option<String>,
+    /// Run review after build with custom template (implies --review)
+    #[arg(long = "review-template")]
+    pub review_template: Option<String>,
+
+    /// Run review+fix after build (implies --review)
+    #[arg(long)]
+    pub fix: bool,
+
+    /// Run review+fix after build with custom fix plan template (implies --fix)
+    #[arg(long = "fix-template")]
+    pub fix_template: Option<String>,
 
     /// Internal: continue an async build from a previously created epic
     #[arg(long = "_continue-async", hide = true)]
@@ -115,13 +124,12 @@ pub fn run(args: BuildArgs) -> Result<()> {
         )
     })?;
 
-    // --fix implies --review
-    let review_after = args.review.is_some() || args.fix.is_some();
-    let fix_after = args.fix.is_some();
-
-    // Extract template overrides from review/fix options
-    let review_template = args.review;
-    let fix_template = args.fix;
+    // Resolve --fix / --fix-template into a single Option<String>
+    let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+    // Resolve --review / --review-template (--fix implies --review)
+    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+    let review_after = review_template.is_some();
+    let fix_after = fix_template.is_some();
 
     let output_id = matches!(args.output, Some(OutputFormat::Id));
 
@@ -133,7 +141,7 @@ pub fn run(args: BuildArgs) -> Result<()> {
             &target,
             args.restart,
             args.run_async,
-            args.decompose,
+            args.decompose_template,
             args.loop_template,
             args.agent,
             review_after,
@@ -182,7 +190,7 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
             ))
         })?;
         let options = super::decompose::DecomposeOptions {
-            template: args.decompose.clone(),
+            template: args.decompose_template.clone(),
             agent: agent_type.clone(),
         };
         super::decompose::run_decompose(cwd, &plan_path, &epic_id, options)?;
@@ -200,10 +208,13 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
     run_loop(cwd, &epic_id, loop_options)?;
 
     // Post-build review if requested
-    if args.review.is_some() || args.fix.is_some() {
+    // Resolve --fix / --fix-template and --review / --review-template
+    let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+    if review_template.is_some() {
         let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
-        let fix_after = args.fix.is_some();
-        run_build_review(cwd, &plan_path, &epic_id, fix_after, args.review, args.fix)?;
+        let fix_after = fix_template.is_some();
+        run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template)?;
     }
 
     Ok(())
@@ -317,11 +328,11 @@ fn run_build_plan(
             epic_id.clone(),
         ];
         if let Some(ref tmpl) = decompose_template {
-            spawn_args.push("--decompose".to_string());
+            spawn_args.push("--decompose-template".to_string());
             spawn_args.push(tmpl.clone());
         }
         if let Some(ref tmpl) = loop_template {
-            spawn_args.push("--loop".to_string());
+            spawn_args.push("--loop-template".to_string());
             spawn_args.push(tmpl.clone());
         }
         if let Some(ref a) = agent {
@@ -329,11 +340,11 @@ fn run_build_plan(
             spawn_args.push(a.clone());
         }
         if let Some(ref tmpl) = review_template {
-            spawn_args.push("--review".to_string());
+            spawn_args.push("--review-template".to_string());
             spawn_args.push(tmpl.clone());
         }
         if let Some(ref tmpl) = fix_template {
-            spawn_args.push("--fix".to_string());
+            spawn_args.push("--fix-template".to_string());
             spawn_args.push(tmpl.clone());
         }
 
@@ -458,7 +469,7 @@ fn run_build_epic(
             epic_id.to_string(),
         ];
         if let Some(ref tmpl) = loop_template {
-            spawn_args.push("--loop".to_string());
+            spawn_args.push("--loop-template".to_string());
             spawn_args.push(tmpl.clone());
         }
         if let Some(ref a) = agent {
@@ -467,13 +478,13 @@ fn run_build_epic(
         }
         if review_after {
             if let Some(ref tmpl) = review_template {
-                spawn_args.push("--review".to_string());
+                spawn_args.push("--review-template".to_string());
                 spawn_args.push(tmpl.clone());
             }
         }
         if fix_after {
             if let Some(ref tmpl) = fix_template {
-                spawn_args.push("--fix".to_string());
+                spawn_args.push("--fix-template".to_string());
                 spawn_args.push(tmpl.clone());
             }
         }
@@ -623,6 +634,7 @@ fn cleanup_stale_builds(cwd: &Path, plan_path: &str) -> Result<()> {
             task_ids: vec![build_id.clone()],
             outcome: TaskOutcome::WontDo,
             summary: Some("Stale build cleaned up".to_string()),
+            session_id: None,
             turn_id: None,
             timestamp: chrono::Utc::now(),
         };
@@ -683,6 +695,7 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
         task_ids: vec![epic_id.to_string()],
         outcome: TaskOutcome::WontDo,
         summary: Some("Closed by --restart".to_string()),
+        session_id: None,
         turn_id: None,
         timestamp,
     };
@@ -740,6 +753,7 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
         task_ids: vec![epic_id.to_string()],
         outcome: TaskOutcome::WontDo,
         summary: Some("No subtasks created — epic invalid".to_string()),
+        session_id: None,
         turn_id: None,
         timestamp: chrono::Utc::now(),
     };
@@ -765,8 +779,7 @@ fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool,
         scope,
         agent_override: None,
         template: review_template,
-        fix: with_fix,
-        fix_template,
+        fix_template: if with_fix { fix_template.or_else(|| Some("aiki/fix".to_string())) } else { None },
         autorun: false,
     })?;
 
@@ -1310,11 +1323,13 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: None,
-            fix: None,
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1329,11 +1344,13 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: Some("custom/loop".to_string()),
             agent: None,
-            review: None,
-            fix: None,
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1347,37 +1364,66 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: Some("my/decompose".to_string()),
+            decompose_template: Some("my/decompose".to_string()),
             loop_template: None,
             agent: None,
-            review: None,
-            fix: None,
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
         };
-        assert_eq!(args.decompose.as_deref(), Some("my/decompose"));
+        assert_eq!(args.decompose_template.as_deref(), Some("my/decompose"));
     }
 
     #[test]
-    fn test_fix_implies_review() {
+    fn test_fix_template_implies_review() {
         let args = BuildArgs {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: None,
-            fix: Some("aiki/plan/fix".to_string()),
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: Some("aiki/fix".to_string()),
             continue_async: None,
             output: None,
             subcommand: None,
         };
-        let review_after = args.review.is_some() || args.fix.is_some();
-        let fix_after = args.fix.is_some();
-        assert!(review_after);
-        assert!(fix_after);
+        // Resolve like run() does
+        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        assert!(review_template.is_some());
+        assert!(fix_template.is_some());
+    }
+
+    #[test]
+    fn test_fix_bool_implies_review() {
+        let args = BuildArgs {
+            target: Some("test.md".to_string()),
+            run_async: false,
+            restart: false,
+            decompose_template: None,
+            loop_template: None,
+            agent: None,
+            review: false,
+            review_template: None,
+            fix: true,
+            fix_template: None,
+            continue_async: None,
+            output: None,
+            subcommand: None,
+        };
+        // Resolve like run() does
+        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        assert!(review_template.is_some());
+        assert!(fix_template.is_some());
     }
 
     #[test]
@@ -1386,19 +1432,21 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: Some("aiki/review".to_string()),
-            fix: None,
+            review: true,
+            review_template: None,
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
         };
-        let review_after = args.review.is_some() || args.fix.is_some();
-        let fix_after = args.fix.is_some();
-        assert!(review_after);
-        assert!(!fix_after);
+        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        assert!(review_template.is_some());
+        assert!(fix_template.is_none());
     }
 
     #[test]
@@ -1407,16 +1455,18 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: Some("my/review".to_string()),
-            fix: None,
+            review: false,
+            review_template: Some("my/review".to_string()),
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
         };
-        assert_eq!(args.review.as_deref(), Some("my/review"));
+        assert_eq!(args.review_template.as_deref(), Some("my/review"));
     }
 
     #[test]
@@ -1425,18 +1475,20 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: true,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: None,
-            fix: Some("aiki/plan/fix".to_string()),
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: Some("aiki/fix".to_string()),
             continue_async: None,
             output: None,
             subcommand: None,
         };
         // --fix + --async is allowed (task-based loops)
         assert!(args.run_async);
-        assert!(args.fix.is_some());
+        assert!(args.fix_template.is_some());
     }
 
     #[test]
@@ -1445,19 +1497,21 @@ mod tests {
             target: Some("test.md".to_string()),
             run_async: false,
             restart: false,
-            decompose: None,
+            decompose_template: None,
             loop_template: None,
             agent: None,
-            review: None,
-            fix: None,
+            review: false,
+            review_template: None,
+            fix: false,
+            fix_template: None,
             continue_async: None,
             output: None,
             subcommand: None,
         };
-        let review_after = args.review.is_some() || args.fix.is_some();
-        let fix_after = args.fix.is_some();
-        assert!(!review_after);
-        assert!(!fix_after);
+        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        assert!(review_template.is_none());
+        assert!(fix_template.is_none());
     }
 
     #[test]

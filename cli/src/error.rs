@@ -268,6 +268,9 @@ Alternatively, install the agent globally:
     #[error("Nothing to review - no closed tasks in session")]
     NothingToReview,
 
+    #[error("{0}")]
+    ReviewIssuesMissing(String),
+
     // Plugin errors
     #[error("Invalid plugin reference: '{reference}'. {reason}")]
     InvalidPluginRef { reference: String, reason: String },

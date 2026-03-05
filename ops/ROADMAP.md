@@ -1,16 +1,24 @@
-- agent loading
-- review original after fix
-- review screen cleanup
-- ux -> share with Paul
+Now:
+- wait for aborption (fix from absorption test)
+- fix aiki review <plan.md>
+- review screen cleanup -> build screen cleanup
 
+- share with Paul
+
+Next:
+- finish hooks rename -> rename actions to commands?
 - registry
-- review loop plugin
-
-Next
-- plugin directory
-- plugin search
+- workflow hooks commands -> review loop plug
+- formalize task kinds -> conflict command
+- plugin directory -> plugin search
 - skill injection
 - metrics
+- block in yaml
+- branched sessions
+- cursor third party hooks
+- gemini support
+- debug command
+- discuss command
 
 
 # Aiki Product Roadmap

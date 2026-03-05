@@ -7,6 +7,7 @@ pub enum StageState {
     Starting,
     Active,
     Done,
+    Skipped,
     Failed,
 }
 
@@ -50,6 +51,7 @@ pub struct SubStageView {
     pub state: StageState,
     pub progress: Option<String>,
     pub elapsed: Option<String>,
+    pub children: Vec<StageChild>,
 }
 
 /// Children under a stage.

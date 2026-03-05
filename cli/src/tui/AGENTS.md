@@ -93,7 +93,7 @@ When designing new views, use annotated ASCII art. Left side is literal terminal
 
  ▸ build  3/6  0:34                          ← yellow ▸, yellow text
     ✓ decompose  0:12                        ← green ✓, 4-char indent
-    ▸ implement  3/6  0:34                   ← yellow ▸, 4-char indent
+    ▸ loop  3/6  0:34                        ← yellow ▸, 4-char indent
  ○ review                                    ← dim ○, dim text
 ```
 

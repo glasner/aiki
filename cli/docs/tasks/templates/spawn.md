@@ -157,7 +157,7 @@ Templates can include other templates as subtasks using the `{% subtask %}` dire
 
 - `{% subtask aiki/fix %}` — Always includes the `aiki/fix` template as a subtask
 - `{% subtask aiki/plan if not data.plan %}` — Conditionally includes `aiki/plan` only when `data.plan` is falsy
-- `{% subtask aiki/review/criteria/spec if data.scope.kind == "spec" %}` — Conditional on data values
+- `{% subtask aiki/review/criteria/plan if data.scope.kind == "plan" %}` — Conditional on data values
 
 The included template's `# Task Name` heading becomes a subtask heading (`## Subtask Name`), and its instructions become the subtask body. If the included template has its own frontmatter with `slug`, `priority`, `assignee`, etc., those are preserved.
 
@@ -169,9 +169,9 @@ version: 2.0.0
 type: orchestrator
 ---
 
-# Build: {{data.spec}}
+# Build: {{data.plan}}
 
-**Overall Goal**: Execute plan to implement the spec.
+**Overall Goal**: Execute the plan.
 
 # Subtasks
 

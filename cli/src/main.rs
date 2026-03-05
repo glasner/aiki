@@ -119,18 +119,21 @@ enum Commands {
         /// Internal: continue an async fix from a previously created fix-parent
         #[arg(long = "_continue-async", hide = true)]
         continue_async: Option<String>,
-        /// Custom plan template (default: aiki/plan/fix)
+        /// Custom plan template (default: aiki/fix)
         #[arg(long)]
-        plan: Option<String>,
+        template: Option<String>,
         /// Custom decompose template (default: aiki/decompose)
-        #[arg(long)]
-        decompose: Option<String>,
+        #[arg(long = "decompose-template")]
+        decompose_template: Option<String>,
         /// Custom loop template (default: aiki/loop)
-        #[arg(long = "loop")]
+        #[arg(long = "loop-template")]
         loop_template: Option<String>,
-        /// Custom review template for quality loop review step
-        #[arg(long, default_missing_value = "aiki/review", num_args = 0..=1)]
-        review: Option<String>,
+        /// Enable quality loop review step
+        #[arg(long)]
+        review: bool,
+        /// Quality loop review with custom template (implies --review)
+        #[arg(long = "review-template")]
+        review_template: Option<String>,
         /// Agent for task assignment (default: claude-code)
         #[arg(long)]
         agent: Option<String>,
@@ -140,6 +143,9 @@ enum Commands {
         /// Disable post-fix review loop (single pass only)
         #[arg(long)]
         once: bool,
+        /// Output format (e.g., `id` for bare task ID on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<commands::OutputFormat>,
     },
     /// Explore a scope (plan, code, task, or session)
     Explore(commands::explore::ExploreArgs),
@@ -167,7 +173,7 @@ enum Commands {
         /// otherwise defaults to epic behavior.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
-        /// Plan template to use (default: aiki/plan/epic)
+        /// Plan template to use (default: aiki/plan)
         #[arg(long)]
         template: Option<String>,
         /// Agent for plan session (default: claude-code)
@@ -190,6 +196,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 enum EventCommands {
     /// Trigger PrepareCommitMessage event (for Git's prepare-commit-msg hook)
     #[command(name = "prepare-commit-msg")]
@@ -197,6 +204,7 @@ enum EventCommands {
 }
 
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 enum HooksCommands {
     /// Stdin integration point (Claude Code, Cursor - reads JSON from stdin)
     #[command(hide = true)]
@@ -276,14 +284,20 @@ fn run() -> Result<()> {
             task_id,
             run_async,
             continue_async,
-            plan,
-            decompose,
+            template,
+            decompose_template,
             loop_template,
             review,
+            review_template,
             agent,
             autorun,
             once,
-        } => commands::fix::run(task_id, run_async, continue_async, plan, decompose, loop_template, review, agent, autorun, once),
+            output,
+        } => {
+            // Resolve --review / --review-template into a single Option<String>
+            let review_template = review_template.or(if review { Some("aiki/review".to_string()) } else { None });
+            commands::fix::run(task_id, run_async, continue_async, template, decompose_template, loop_template, review_template, agent, autorun, once, output)
+        }
         Commands::Explore(args) => commands::explore::run(args),
         Commands::Review(args) => commands::review::run(args),
         Commands::Resolve(args) => commands::resolve::run(args),

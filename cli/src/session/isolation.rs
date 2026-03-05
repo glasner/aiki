@@ -444,6 +444,42 @@ pub fn absorb_workspace(
         )));
     }
 
+    // Idempotency guard: After step 1, check if ws_head is already an ancestor
+    // of @. This happens when the same workspace is absorbed twice (e.g., from
+    // both turn.completed and session.ended). In that case, step 1 was a no-op
+    // and step 2 would move @ BACKWARD, orphaning changes absorbed between the
+    // two calls. Skip step 2 to prevent silent data loss.
+    //
+    // Uses the revset `ws_head & ::@` — if ws_head appears in @'s ancestors,
+    // it was already absorbed. On first absorption, ws_head is a sibling of @
+    // (not an ancestor), so this correctly allows step 2 to proceed.
+    let ancestor_check = jj_cmd()
+        .current_dir(&target_dir)
+        .args([
+            "log", "-r", &format!("{} & ::@", ws_head),
+            "--no-graph", "-T", "change_id", "--limit", "1",
+            "--ignore-working-copy",
+        ])
+        .output();
+
+    if let Ok(check_output) = ancestor_check {
+        if check_output.status.success() {
+            let already_ancestor = String::from_utf8_lossy(&check_output.stdout);
+            if !already_ancestor.trim().is_empty() {
+                // ws_head is already an ancestor of @ — this workspace was
+                // already absorbed. Skip step 2 to avoid moving @ backward.
+                debug_log(|| {
+                    format!(
+                        "Workspace '{}' ws_head {} is already an ancestor of @ — \
+                         skipping step 2 (already absorbed)",
+                        workspace.name, ws_head
+                    )
+                });
+                return Ok(AbsorbResult::Skipped);
+            }
+        }
+    }
+
     // Step 2: Rebase target's @ onto workspace head
     //
     // Uses -s (source) to move only @ (a leaf node) onto ws_head, which is now

@@ -18,7 +18,7 @@ aiki review ops/now/user-auth.md --code
 aiki review
 
 # Review and auto-fix
-aiki review <task-id> --fix
+aiki review <task-id> --fix-template
 
 # Hand off review to calling agent (don't run autonomously)
 aiki review <task-id> --start
@@ -82,13 +82,14 @@ By default, Aiki assigns a different agent type for reviews than the one that wr
 
 | Flag | Effect |
 |------|--------|
-| `--fix` | Auto-fix issues after review completes |
+| `--fix-template [template]` | Auto-fix issues after review, optionally with custom fix plan template (default: aiki/fix) |
 | `--async` | Run in the background |
 | `--start` | Assign the review to the calling agent (hand off) |
 | `--code` | Review code implementation (only with file targets) |
 | `--autorun` | Auto-start review when its target task closes |
 | `--template <name>` | Use a custom review template (default: `aiki/review`) |
 | `--agent <type>` | Override reviewer agent |
+| `-o id` | Output bare review task ID to stdout |
 
 ## Subcommands
 
@@ -102,5 +103,27 @@ aiki review show <review-id>
 
 # Manage issues on a review
 aiki review issue add <review-id> "Issue description"
+aiki review issue add <review-id> "Bug in auth" --high --file src/auth.rs:42
+aiki review issue add <review-id> "Style nit" --low --file src/utils.rs
+aiki review issue add <review-id> "Cross-file issue" --file src/a.rs:10 --file src/b.rs:20
 aiki review issue list <review-id>
 ```
+
+### Issue severity
+
+| Flag | Level | Meaning |
+|------|-------|---------|
+| `--high` | High | Must fix: incorrect behavior, bug, or contract violation |
+| *(default)* | Medium | Should fix: suboptimal, missing, or inconsistent |
+| `--low` | Low | Could fix: style, naming, cosmetic |
+
+Alternatively, use `--severity high|medium|low`.
+
+### Issue locations
+
+Use `--file` (repeatable) to attach file locations to an issue:
+
+- `--file src/auth.rs` — file only
+- `--file src/auth.rs:42` — file and line
+- `--file src/auth.rs:42-50` — file and line range
+- `--file src/a.rs:10 --file src/b.rs:20` — multiple files

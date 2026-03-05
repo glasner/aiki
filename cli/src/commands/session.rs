@@ -8,6 +8,7 @@ use clap::Subcommand;
 use std::collections::HashMap;
 
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum SessionCommands {
     /// List sessions
     List {
