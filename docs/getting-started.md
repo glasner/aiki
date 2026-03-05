@@ -185,7 +185,7 @@ aiki review --fix
 ### Build + Review
 
 ```bash
-# Build from a spec, then review the output
+# Build from a plan, then review the output
 aiki build ops/now/my-feature.md --review
 
 # Build, review, and auto-fix

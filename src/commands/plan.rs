@@ -447,7 +447,7 @@ fn run_epic(
             &plan_path,
             &initial_idea,
             is_new,
-            template_name.as_deref().unwrap_or("aiki/plan/epic"),
+            template_name.as_deref().unwrap_or("aiki/plan"),
             agent_type.as_ref().map(|a| a.as_str().to_string()),
             timestamp,
         )?
@@ -692,7 +692,7 @@ fn run_fix(
 ) -> Result<()> {
     use super::task::{create_from_template, TemplateTaskParams};
 
-    let template = template_name.as_deref().unwrap_or("aiki/plan/fix");
+    let template = template_name.as_deref().unwrap_or("aiki/fix");
 
     // Build data for the template
     let mut data = HashMap::new();

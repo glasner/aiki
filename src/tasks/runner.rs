@@ -61,6 +61,7 @@ impl TaskRunOptions {
 
     /// Suppress informational output (spawning, completion messages)
     #[must_use]
+    #[allow(dead_code)]
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
         self
@@ -219,6 +220,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(reason.clone()),
+                        session_id: None,
                         turn_id: None,
                         timestamp: chrono::Utc::now(),
                     };
@@ -258,6 +260,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                     let stop_event = TaskEvent::Stopped {
                         task_ids: vec![task_id.to_string()],
                         reason: Some(format!("Session failed: {}", error)),
+                        session_id: None,
                         turn_id: None,
                         timestamp: chrono::Utc::now(),
                     };
@@ -480,6 +483,7 @@ pub fn task_run_async(
                 let rollback = TaskEvent::Stopped {
                     task_ids: vec![task_id.to_string()],
                     reason: Some(format!("Spawn failed: {}", e)),
+                    session_id: None,
                     turn_id: None,
                     timestamp: chrono::Utc::now(),
                 };
@@ -766,11 +770,13 @@ mod tests {
 
     fn make_closed(id: &str) -> TaskEvent {
         TaskEvent::Closed {
+            session_id: None,
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::Done,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 

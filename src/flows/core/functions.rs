@@ -1176,8 +1176,8 @@ pub fn workspace_absorb_all(
     // Opportunistically clean up orphaned JJ workspaces for repositories that had
     // absorbed workspaces.
     // This prevents the jj workspace list from growing unbounded with dead sessions.
-    for repo_root in seen_repo_roots {
-        if let Err(e) = isolation::cleanup_orphaned_workspaces(&repo_root) {
+    for repo_root in &seen_repo_roots {
+        if let Err(e) = isolation::cleanup_orphaned_workspaces(repo_root) {
             debug_log(|| {
                 format!(
                     "[workspace] Orphaned workspace cleanup failed for {}: {}",
@@ -1189,6 +1189,36 @@ pub fn workspace_absorb_all(
     }
 
     debug_log(|| format!("[workspace] Absorbed {} workspace(s)", absorbed));
+
+    // Emit Absorbed event for tasks closed by this session.
+    // This signals `run_wait` that the session's work is complete,
+    // even when no file changes were absorbed.
+    let session_uuid_str = session_uuid.to_string();
+    for repo_root in &seen_repo_roots {
+        if let Ok(events) = crate::tasks::storage::read_events(repo_root) {
+            let graph = crate::tasks::materialize_graph(&events);
+            let terminal_task_ids: Vec<String> = graph
+                .tasks
+                .iter()
+                .filter(|(_, task)| {
+                    matches!(task.status, crate::tasks::TaskStatus::Closed | crate::tasks::TaskStatus::Stopped)
+                        && task.last_session_id.as_deref() == Some(&session_uuid_str)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            if !terminal_task_ids.is_empty() {
+                let turn_id = crate::tasks::current_turn_id(Some(&session_uuid_str));
+                let absorbed_event = crate::tasks::TaskEvent::Absorbed {
+                    task_ids: terminal_task_ids,
+                    session_id: session_uuid_str.clone(),
+                    turn_id,
+                    timestamp: chrono::Utc::now(),
+                };
+                let _ = crate::tasks::storage::write_event(repo_root, &absorbed_event);
+            }
+        }
+    }
 
     let stdout = if has_conflicts {
         last_conflicted_files

@@ -9,7 +9,7 @@ use ratatui::widgets::Widget;
 
 use aiki::tui::theme::{
     detect_mode, Theme, ThemeMode, SYM_CHECK, SYM_FAILED, SYM_PENDING,
-    SYM_RUNNING,
+    SYM_RUNNING, SYM_SKIPPED,
 };
 
 // ── PNG renderer (inlined from render_png.rs since it's cfg(test)-gated) ─
@@ -574,12 +574,14 @@ fn snapshot_workflow_with_dag() {
                         state: StageState::Done,
                         progress: None,
                         elapsed: Some("0:12".into()),
+                        children: vec![],
                     },
                     SubStageView {
-                        name: "implement".into(),
+                        name: "loop".into(),
                         state: StageState::Active,
                         progress: Some("3/6".into()),
                         elapsed: Some("0:34".into()),
+                        children: vec![],
                     },
                 ],
                 children: vec![],
@@ -868,5 +870,63 @@ fn snapshot_epic_show_mid_fix() {
         assert!(flat.contains("6/6"), "Stage track should show 6/6 for build");
 
         save_png(&buf, &format!("epic_show_mid_fix_{}", suffix), &theme);
+    }
+}
+
+#[test]
+fn snapshot_epic_show_review_approved_fix_skipped() {
+    use aiki::tui::types::{StageState, StageView, SubStageView, WorkflowView, EpicView};
+    use aiki::tui::widgets::stage_list::StageList;
+
+    // Render a stage list where fix is Skipped (review approved, no issues)
+    let stages = vec![
+        StageView {
+            name: "build".into(),
+            state: StageState::Done,
+            progress: Some("4/4".into()),
+            elapsed: Some("1m30".into()),
+            sub_stages: vec![],
+            children: vec![],
+        },
+        StageView {
+            name: "review".into(),
+            state: StageState::Done,
+            progress: Some("approved".into()),
+            elapsed: Some("0:42".into()),
+            sub_stages: vec![],
+            children: vec![],
+        },
+        StageView {
+            name: "fix".into(),
+            state: StageState::Skipped,
+            progress: None,
+            elapsed: None,
+            sub_stages: vec![],
+            children: vec![],
+        },
+    ];
+
+    for (mode, suffix) in [
+        (ThemeMode::Dark, "dark"),
+        (ThemeMode::Light, "light"),
+    ] {
+        let theme = Theme::from_mode(mode);
+        let widget = StageList::new(&stages, &theme);
+        let h = widget.height();
+        assert_eq!(h, 3, "3 stages, all collapsed");
+        let buf = render_widget(StageList::new(&stages, &theme), 60, h);
+        let text = buffer_to_text(&buf);
+
+        // build done
+        assert!(text[0].contains(SYM_CHECK), "build should show ✓: {}", text[0]);
+        assert!(text[0].contains("build"), "line0: {}", text[0]);
+        // review done
+        assert!(text[1].contains(SYM_CHECK), "review should show ✓: {}", text[1]);
+        assert!(text[1].contains("approved"), "line1: {}", text[1]);
+        // fix skipped with ─ symbol
+        assert!(text[2].contains(SYM_SKIPPED), "fix should show ─: {}", text[2]);
+        assert!(text[2].contains("fix"), "line2: {}", text[2]);
+
+        save_png(&buf, &format!("stage_list_fix_skipped_{}", suffix), &theme);
     }
 }

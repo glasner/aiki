@@ -842,10 +842,10 @@ fn test_task_comment() {
     let add_stdout = String::from_utf8_lossy(&add_output.get_output().stdout);
     let task_id = extract_short_id(&add_stdout);
 
-    // Add a comment using --id flag (comment command signature: <TEXT> [--id <ID>])
+    // Add a comment (comment add <ID> <TEXT>)
     aiki_task(
         temp_dir.path(),
-        &["comment", "This is a test comment", "--id", &task_id],
+        &["comment", "add", &task_id, "This is a test comment"],
     )
     .success()
     .stdout(predicate::str::contains("Comment added."));
@@ -866,9 +866,9 @@ fn test_task_comment_with_data() {
         temp_dir.path(),
         &[
             "comment",
-            "Potential null pointer dereference",
-            "--id",
+            "add",
             &task_id,
+            "Potential null pointer dereference",
             "--data",
             "file=src/auth.ts",
             "--data",
@@ -1304,7 +1304,7 @@ Fix all issues identified in the review.
         .args([
             "task",
             "comment",
-            "--id",
+            "add",
             &source_task_id,
             "Missing null check",
             "--data",
@@ -1319,7 +1319,7 @@ Fix all issues identified in the review.
         .args([
             "task",
             "comment",
-            "--id",
+            "add",
             &source_task_id,
             "Unused import",
             "--data",
@@ -2095,4 +2095,167 @@ fn test_task_unlink_with_depends_on() {
         &["unlink", &task_b_id, "--depends-on", &task_a_id],
     )
     .success();
+}
+
+#[test]
+fn test_add_output_id_returns_bare_task_id() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let output = aiki_task(temp_dir.path(), &["add", "Test output id", "--output", "id"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let id = stdout.trim();
+
+    // Should be exactly a 32-char lowercase alpha string
+    assert_eq!(id.len(), 32, "Expected 32-char ID, got '{}' (len={})", id, id.len());
+    assert!(
+        id.chars().all(|c| c.is_ascii_lowercase()),
+        "Expected all lowercase letters, got '{}'",
+        id
+    );
+    // Should NOT contain "Added:" prefix
+    assert!(
+        !stdout.contains("Added"),
+        "Output should be bare ID, got '{}'",
+        stdout
+    );
+}
+
+#[test]
+fn test_dedup_guard_prevents_duplicate_subtask() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent task
+    let output = aiki_task(temp_dir.path(), &["add", "Dedup parent", "--output", "id"]).success();
+    let parent_id = String::from_utf8_lossy(&output.get_output().stdout).trim().to_string();
+
+    // Add subtask with name "Same name"
+    let output1 = aiki_task(
+        temp_dir.path(),
+        &["add", "Same name", "--subtask-of", &parent_id, "--output", "id"],
+    )
+    .success();
+    let id1 = String::from_utf8_lossy(&output1.get_output().stdout).trim().to_string();
+
+    // Add subtask with same name again — should return existing ID
+    let output2 = aiki_task(
+        temp_dir.path(),
+        &["add", "Same name", "--subtask-of", &parent_id, "--output", "id"],
+    )
+    .success();
+    let id2 = String::from_utf8_lossy(&output2.get_output().stdout).trim().to_string();
+
+    // Same ID both times
+    assert_eq!(id1, id2, "Dedup should return same ID, got '{}' vs '{}'", id1, id2);
+}
+
+#[test]
+fn test_dedup_guard_allows_recreation_after_close() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create parent task
+    let output = aiki_task(temp_dir.path(), &["add", "Reopen parent", "--output", "id"]).success();
+    let parent_id = String::from_utf8_lossy(&output.get_output().stdout).trim().to_string();
+
+    // Add subtask
+    let output1 = aiki_task(
+        temp_dir.path(),
+        &["add", "Closeable", "--subtask-of", &parent_id, "--output", "id"],
+    )
+    .success();
+    let id1 = String::from_utf8_lossy(&output1.get_output().stdout).trim().to_string();
+
+    // Start and close the subtask
+    aiki_task(temp_dir.path(), &["start", &id1]).success();
+    aiki_task(temp_dir.path(), &["close", &id1, "--summary", "done"]).success();
+
+    // Add subtask with same name again — should create a NEW one (closed doesn't dedup)
+    let output2 = aiki_task(
+        temp_dir.path(),
+        &["add", "Closeable", "--subtask-of", &parent_id, "--output", "id"],
+    )
+    .success();
+    let id2 = String::from_utf8_lossy(&output2.get_output().stdout).trim().to_string();
+
+    assert_ne!(id1, id2, "Should create new subtask after closing original, got same ID '{}'", id1);
+}
+
+/// Regression test: non-task-scoped reviews (plan/code) should succeed even
+/// though `render_review_workflow` finds no `validates` edge and returns an
+/// empty string.  This exercises the early-return path at review.rs:907-910.
+#[test]
+fn test_review_non_task_scope_succeeds() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create the review/plan template so the review command can resolve it
+    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    std::fs::create_dir_all(&template_dir).expect("Failed to create template dir");
+    std::fs::write(
+        template_dir.join("plan.md"),
+        "---\nversion: 3.0.0\ntype: review\n---\n\n# Review: {{data.scope.name}}\n\nReview the plan.\n",
+    )
+    .expect("Failed to write plan template");
+
+    // Commit the template so aiki can find it
+    Command::new("git")
+        .args(["add", ".aiki/templates"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git add templates failed");
+    Command::new("git")
+        .args(["commit", "-m", "add review template"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit failed");
+
+    // Create an .md file so the review target resolves as Plan scope
+    std::fs::write(temp_dir.path().join("design.md"), "# Design\nSome plan content\n")
+        .expect("Failed to write design.md");
+
+    // Commit the file so the repo has history
+    Command::new("git")
+        .args(["add", "design.md"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git add failed");
+    Command::new("git")
+        .args(["commit", "-m", "add design doc"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit failed");
+
+    // Run a non-task review with --start (plan scope, no validates edge)
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", "design.md", "--start"])
+        .output()
+        .expect("Failed to run aiki review");
+
+    assert!(
+        output.status.success(),
+        "aiki review --start on a plan-scoped file should succeed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Regression test: `aiki task show` with no task ID and no in-progress task
+/// should produce an error message.
+#[test]
+fn test_show_without_id_returns_error() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // No tasks in progress — `aiki task show` with no ID should produce an error
+    let output = aiki_task(temp_dir.path(), &["show"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+
+    assert!(
+        stdout.contains("No task ID provided"),
+        "Expected 'No task ID provided' error, got: {}",
+        stdout
+    );
 }

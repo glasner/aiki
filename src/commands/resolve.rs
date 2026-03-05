@@ -55,7 +55,7 @@ fn has_jj_conflicts(cwd: &Path, change_id: &str) -> bool {
     let output = jj::jj_cmd()
         .current_dir(cwd)
         .args(["resolve", "--list", "-r", change_id])
-        .args(jj::JJ_READONLY_ARGS)
+        .args(["--no-pager", "--ignore-working-copy"])
         .output();
 
     match output {

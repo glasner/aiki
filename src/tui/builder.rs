@@ -33,33 +33,28 @@ pub fn build_workflow_view(
     }
 }
 
-/// Build the lane DAG layout when the implement sub-stage is active.
+/// Build the lane DAG layout when the loop sub-stage is active.
 fn build_lane_dag(
     epic: &Task,
     plan_path: &str,
     graph: &TaskGraph,
     stages: &[StageView],
 ) -> Option<DagLayout> {
-    // Check if the "implement" sub-stage is Active
-    let implement_active = stages.iter().any(|stage| {
+    // Check if the "loop" sub-stage is Active
+    let loop_active = stages.iter().any(|stage| {
         stage.name == "build"
-            && stage
-                .sub_stages
-                .iter()
-                .any(|ss| ss.name == "implement" && matches!(ss.state, StageState::Starting | StageState::Active))
+            && stage.sub_stages.iter().any(|ss| {
+                ss.name == "loop" && matches!(ss.state, StageState::Starting | StageState::Active)
+            })
     });
-    if !implement_active {
+    if !loop_active {
         return None;
     }
 
     // Find the orchestrator task for this epic/plan
     for orch_id in graph.edges.referrers(&epic.id, "orchestrates") {
         if let Some(orch_task) = graph.tasks.get(orch_id) {
-            let orch_plan = orch_task
-                .data
-                .get("plan")
-                .map(|s| s.as_str())
-                .unwrap_or("");
+            let orch_plan = orch_task.data.get("plan").map(|s| s.as_str()).unwrap_or("");
             if orch_plan == plan_path && orch_task.status == TaskStatus::InProgress {
                 let decomposition = derive_lanes(graph, orch_id);
                 let layout = compute_dag_layout(&decomposition, graph);
@@ -123,7 +118,9 @@ fn agent_label(task: &Task) -> Option<String> {
         .or(task.assignee.as_deref());
 
     match agent {
-        Some(a) if a.contains("claude-code") || a == "cc" || a == "claude" => Some("claude".to_string()),
+        Some(a) if a.contains("claude-code") || a == "cc" || a == "claude" => {
+            Some("claude".to_string())
+        }
         Some(a) if a.contains("cursor") || a == "cur" => Some("cursor".to_string()),
         Some(a) if a.contains("codex") => Some("codex".to_string()),
         Some(a) if a.contains("gemini") => Some("gemini".to_string()),
@@ -135,17 +132,9 @@ fn agent_label(task: &Task) -> Option<String> {
 fn format_elapsed(task: &Task) -> Option<String> {
     let started = task.started_at?;
     let end = match task.status {
-        TaskStatus::Closed => task
-            .comments
-            .last()
-            .map(|c| c.timestamp)
-            .unwrap_or(started),
+        TaskStatus::Closed => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
         TaskStatus::InProgress => chrono::Utc::now(),
-        TaskStatus::Stopped => task
-            .comments
-            .last()
-            .map(|c| c.timestamp)
-            .unwrap_or(started),
+        TaskStatus::Stopped => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
         TaskStatus::Open => return None,
     };
 
@@ -183,17 +172,25 @@ fn task_to_subtask_line(task: &Task) -> SubtaskLine {
 }
 
 /// Build the EpicView from the epic task and its subtasks.
-fn build_epic_view(epic: &Task, subtasks: &[&Task], active_stage: &str, stages: &[StageView]) -> EpicView {
+fn build_epic_view(
+    epic: &Task,
+    subtasks: &[&Task],
+    active_stage: &str,
+    stages: &[StageView],
+) -> EpicView {
     let short_id = if epic.id.len() >= 8 {
         epic.id[..8].to_string()
     } else {
         epic.id.clone()
     };
 
-    let subtask_lines: Vec<SubtaskLine> = subtasks.iter().map(|t| task_to_subtask_line(t)).collect();
+    let subtask_lines: Vec<SubtaskLine> =
+        subtasks.iter().map(|t| task_to_subtask_line(t)).collect();
 
     // Collapsed during review/fix stages, or when all stages are done
-    let all_done = stages.iter().all(|s| s.state == StageState::Done);
+    let all_done = stages
+        .iter()
+        .all(|s| s.state == StageState::Done || s.state == StageState::Skipped);
     let collapsed = active_stage == "review" || active_stage == "fix" || all_done;
 
     let collapsed_summary = if collapsed {
@@ -222,17 +219,9 @@ fn compute_total_elapsed(subtasks: &[&Task]) -> Option<String> {
     for task in subtasks {
         if let Some(started) = task.started_at {
             let end = match task.status {
-                TaskStatus::Closed => task
-                    .comments
-                    .last()
-                    .map(|c| c.timestamp)
-                    .unwrap_or(started),
+                TaskStatus::Closed => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
                 TaskStatus::InProgress => chrono::Utc::now(),
-                TaskStatus::Stopped => task
-                    .comments
-                    .last()
-                    .map(|c| c.timestamp)
-                    .unwrap_or(started),
+                TaskStatus::Stopped => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
                 TaskStatus::Open => continue,
             };
             total_secs += (end - started).num_seconds().max(0);
@@ -252,7 +241,10 @@ fn compute_total_elapsed(subtasks: &[&Task]) -> Option<String> {
 /// Determine which stage is currently active.
 fn active_stage_name(stages: &[StageView]) -> String {
     for stage in stages.iter().rev() {
-        if matches!(stage.state, StageState::Starting | StageState::Active | StageState::Failed) {
+        if matches!(
+            stage.state,
+            StageState::Starting | StageState::Active | StageState::Failed
+        ) {
             return stage.name.clone();
         }
     }
@@ -269,7 +261,15 @@ fn build_stages(
 ) -> Vec<StageView> {
     let build_stage = build_build_stage(epic, subtasks, plan_path, graph);
     let review_stage = build_review_stage(epic, graph);
-    let fix_stage = build_fix_stage(epic, graph);
+    let mut fix_stage = build_fix_stage(epic, graph);
+
+    // If review is Done+approved and fix has no tasks, mark fix as Skipped
+    if review_stage.state == StageState::Done
+        && fix_stage.state == StageState::Pending
+        && review_stage.progress.as_deref() == Some("approved")
+    {
+        fix_stage.state = StageState::Skipped;
+    }
 
     vec![build_stage, review_stage, fix_stage]
 }
@@ -290,13 +290,10 @@ fn build_build_stage(
         .iter()
         .filter(|t| {
             t.status == TaskStatus::Stopped
-                || (t.status == TaskStatus::Closed
-                    && t.closed_outcome == Some(TaskOutcome::WontDo))
+                || (t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::WontDo))
         })
         .count();
-    let in_progress = subtasks
-        .iter()
-        .any(|t| t.status == TaskStatus::InProgress);
+    let in_progress = subtasks.iter().any(|t| t.status == TaskStatus::InProgress);
 
     // Check if there's an active orchestrator or decompose task for this epic.
     // This covers the case where the build has started (orchestrator running or
@@ -304,7 +301,11 @@ fn build_build_stage(
     let has_active_orchestrator = has_active_build_task(epic, plan_path, graph);
 
     let state = if total == 0 {
-        if has_active_orchestrator { StageState::Active } else { StageState::Pending }
+        if has_active_orchestrator {
+            StageState::Active
+        } else {
+            StageState::Pending
+        }
     } else if failed > 0 {
         StageState::Failed
     } else if completed == total {
@@ -322,7 +323,7 @@ fn build_build_stage(
     };
 
     // Look for decompose and build sub-stages
-    let sub_stages = build_sub_stages(epic, plan_path, graph);
+    let sub_stages = build_sub_stages(epic, plan_path, graph, subtasks);
 
     // Compute elapsed from epic's build orchestrator or the epic itself
     let elapsed = find_orchestrator_elapsed(epic, plan_path, graph);
@@ -349,8 +350,8 @@ fn has_active_build_task(epic: &Task, plan_path: &str, graph: &TaskGraph) -> boo
         }
     }
 
-    // Check decompose tasks (epic depends-on decompose)
-    for dep_id in graph.edges.targets(&epic.id, "depends-on") {
+    // Check decompose tasks (epic populated-by decompose)
+    for dep_id in graph.edges.targets(&epic.id, "populated-by") {
         if let Some(dep_task) = graph.tasks.get(dep_id) {
             if dep_task.status == TaskStatus::InProgress {
                 return true;
@@ -361,28 +362,31 @@ fn has_active_build_task(epic: &Task, plan_path: &str, graph: &TaskGraph) -> boo
     false
 }
 
-/// Find decompose and implement sub-stages within the build stage.
-fn build_sub_stages(epic: &Task, plan_path: &str, graph: &TaskGraph) -> Vec<SubStageView> {
+/// Find decompose and loop sub-stages within the build stage.
+fn build_sub_stages(
+    epic: &Task,
+    plan_path: &str,
+    graph: &TaskGraph,
+    subtasks: &[&Task],
+) -> Vec<SubStageView> {
     let mut sub_stages = Vec::new();
 
-    // Find decompose task via the epic's depends-on edges.
-    // The decompose task is created separately (not as a child of the orchestrator)
-    // and the epic has a "depends-on" link to it.
-    for dep_id in graph.edges.targets(&epic.id, "depends-on") {
+    // Find decompose task via the epic's populated-by link.
+    for dep_id in graph.edges.targets(&epic.id, "populated-by") {
         if let Some(dep_task) = graph.tasks.get(dep_id) {
-            if dep_task.task_type.as_deref() == Some("decompose") {
-                sub_stages.push(SubStageView {
-                    name: "decompose".to_string(),
-                    state: task_to_stage_state(dep_task),
-                    progress: None,
-                    elapsed: format_elapsed(dep_task),
-                });
-                break;
-            }
+            sub_stages.push(SubStageView {
+                name: "decompose".to_string(),
+                state: task_to_stage_state(dep_task),
+                progress: None,
+                elapsed: format_elapsed(dep_task),
+                children: Vec::new(),
+            });
+            break;
         }
     }
 
-    // Find orchestrator task linked to this epic for the "implement" sub-stage
+    // Find orchestrator task linked to this epic for the "loop" sub-stage
+    let mut loop_found = false;
     let orchestrator_ids = graph.edges.referrers(&epic.id, "orchestrates");
     for orch_id in orchestrator_ids {
         if let Some(orch_task) = graph.tasks.get(orch_id) {
@@ -391,15 +395,39 @@ fn build_sub_stages(epic: &Task, plan_path: &str, graph: &TaskGraph) -> Vec<SubS
                 continue;
             }
 
+            // Add subtasks as children of the loop sub-stage
+            let loop_children: Vec<StageChild> = subtasks
+                .iter()
+                .map(|t| StageChild::Subtask(task_to_subtask_line(t)))
+                .collect();
+
             sub_stages.push(SubStageView {
-                name: "implement".to_string(),
+                name: "loop".to_string(),
                 state: task_to_stage_state(orch_task),
                 progress: None,
                 elapsed: format_elapsed(orch_task),
+                children: loop_children,
             });
 
+            loop_found = true;
             break; // Only one orchestrator per epic
         }
+    }
+
+    // If no orchestrator found yet, show loop as Pending with subtasks (if any exist from decompose)
+    if !loop_found {
+        let loop_children: Vec<StageChild> = subtasks
+            .iter()
+            .map(|t| StageChild::Subtask(task_to_subtask_line(t)))
+            .collect();
+
+        sub_stages.push(SubStageView {
+            name: "loop".to_string(),
+            state: StageState::Pending,
+            progress: None,
+            elapsed: None,
+            children: loop_children,
+        });
     }
 
     sub_stages
@@ -420,12 +448,10 @@ fn find_orchestrator_elapsed(epic: &Task, plan_path: &str, graph: &TaskGraph) ->
         }
     }
 
-    // Fall back to decompose task (via epic's depends-on)
-    for dep_id in graph.edges.targets(&epic.id, "depends-on") {
+    // Fall back to decompose task (via epic's populated-by)
+    for dep_id in graph.edges.targets(&epic.id, "populated-by") {
         if let Some(dep_task) = graph.tasks.get(dep_id) {
-            if dep_task.task_type.as_deref() == Some("decompose") {
-                return format_elapsed(dep_task);
-            }
+            return format_elapsed(dep_task);
         }
     }
 
@@ -590,6 +616,7 @@ fn derive_review_progress(review_task: &Task) -> Option<String> {
 fn stage_state_priority(state: StageState) -> u8 {
     match state {
         StageState::Pending => 0,
+        StageState::Skipped => 0,
         StageState::Done => 1,
         StageState::Starting => 2,
         StageState::Active => 3,
@@ -883,12 +910,8 @@ mod tests {
         let mut review_child_done = review_child.clone();
         review_child_done.closed_outcome = Some(TaskOutcome::Done);
 
-        graph
-            .tasks
-            .insert(review_id.to_string(), review_task);
-        graph
-            .tasks
-            .insert(child_id.to_string(), review_child_done);
+        graph.tasks.insert(review_id.to_string(), review_task);
+        graph.tasks.insert(child_id.to_string(), review_child_done);
         graph.edges.add(review_id, epic_id, "validates");
         graph.edges.add(child_id, review_id, "subtask-of");
 
@@ -952,12 +975,8 @@ mod tests {
             .data
             .insert("issue_count".to_string(), "3".to_string());
 
-        graph
-            .tasks
-            .insert(old_review_id.to_string(), old_review);
-        graph
-            .tasks
-            .insert(new_review_id.to_string(), new_review);
+        graph.tasks.insert(old_review_id.to_string(), old_review);
+        graph.tasks.insert(new_review_id.to_string(), new_review);
         graph.edges.add(old_review_id, epic_id, "validates");
         graph.edges.add(new_review_id, epic_id, "validates");
 
@@ -1024,7 +1043,7 @@ mod tests {
     // ── Decompose sub-stage discovery ────────────────────────────
 
     #[test]
-    fn decompose_substage_found_via_depends_on() {
+    fn decompose_substage_found_via_populated_by() {
         let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
         let decompose_id = "dddddddddddddddddddddddddddddddd";
         let orch_id = "oooooooooooooooooooooooooooooooo";
@@ -1034,18 +1053,18 @@ mod tests {
 
         let mut graph = empty_graph();
 
-        // Decompose task (linked via depends-on, NOT subtask-of orchestrator)
+        // Decompose task (linked via populated-by)
         let mut decompose = make_task(decompose_id, "Decompose plan", TaskStatus::Closed);
-        decompose.task_type = Some("decompose".to_string());
         decompose.closed_outcome = Some(TaskOutcome::Done);
         decompose.started_at = Some(Utc::now() - chrono::Duration::seconds(12));
         graph.tasks.insert(decompose_id.to_string(), decompose);
-        graph.edges.add(epic_id, decompose_id, "depends-on");
+        graph.edges.add(epic_id, decompose_id, "populated-by");
 
         // Orchestrator task
         let mut orch = make_task(orch_id, "Implement", TaskStatus::InProgress);
         orch.task_type = Some("orchestrator".to_string());
-        orch.data.insert("plan".to_string(), "ops/now/test.md".to_string());
+        orch.data
+            .insert("plan".to_string(), "ops/now/test.md".to_string());
         orch.started_at = Some(Utc::now() - chrono::Duration::seconds(30));
         orch.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(orch_id.to_string(), orch);
@@ -1053,11 +1072,11 @@ mod tests {
 
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // Build stage should have 2 sub-stages: decompose + implement
+        // Build stage should have 2 sub-stages: decompose + loop
         assert_eq!(view.stages[0].sub_stages.len(), 2);
         assert_eq!(view.stages[0].sub_stages[0].name, "decompose");
         assert_eq!(view.stages[0].sub_stages[0].state, StageState::Done);
-        assert_eq!(view.stages[0].sub_stages[1].name, "implement");
+        assert_eq!(view.stages[0].sub_stages[1].name, "loop");
         assert_eq!(view.stages[0].sub_stages[1].state, StageState::Active);
     }
 
@@ -1073,20 +1092,21 @@ mod tests {
 
         // Decompose is in-progress (agent claimed)
         let mut decompose = make_task(decompose_id, "Decompose", TaskStatus::InProgress);
-        decompose.task_type = Some("decompose".to_string());
         decompose.started_at = Some(Utc::now() - chrono::Duration::seconds(5));
         decompose.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(decompose_id.to_string(), decompose);
-        graph.edges.add(epic_id, decompose_id, "depends-on");
+        graph.edges.add(epic_id, decompose_id, "populated-by");
 
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
         // Build should be Active (not Pending), because decompose is running
         assert_eq!(view.stages[0].state, StageState::Active);
-        // Sub-stages should show decompose as active
-        assert_eq!(view.stages[0].sub_stages.len(), 1);
+        // Sub-stages should show decompose as active, loop as pending
+        assert_eq!(view.stages[0].sub_stages.len(), 2);
         assert_eq!(view.stages[0].sub_stages[0].name, "decompose");
         assert_eq!(view.stages[0].sub_stages[0].state, StageState::Active);
+        assert_eq!(view.stages[0].sub_stages[1].name, "loop");
+        assert_eq!(view.stages[0].sub_stages[1].state, StageState::Pending);
     }
 
     #[test]
@@ -1105,7 +1125,8 @@ mod tests {
         // Orchestrator is running (agent claimed)
         let mut orch = make_task(orch_id, "Implement", TaskStatus::InProgress);
         orch.task_type = Some("orchestrator".to_string());
-        orch.data.insert("plan".to_string(), "ops/now/test.md".to_string());
+        orch.data
+            .insert("plan".to_string(), "ops/now/test.md".to_string());
         orch.started_at = Some(Utc::now() - chrono::Duration::seconds(10));
         orch.claimed_by_session = Some("session-1".to_string());
         graph.tasks.insert(orch_id.to_string(), orch);
@@ -1119,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn lane_dag_populated_during_implement() {
+    fn lane_dag_populated_during_loop() {
         let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
         let orch_id = "oooooooooooooooooooooooooooooooo";
         let sub1_id = "ssssssssssssssssssssssssssssssss";
@@ -1152,15 +1173,15 @@ mod tests {
 
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // The implement sub-stage should be active and lane_dag should be populated
+        // The loop sub-stage should be active and lane_dag should be populated
         assert!(
             view.lane_dag.is_some(),
-            "lane_dag should be Some when implement sub-stage is active with subtasks"
+            "lane_dag should be Some when loop sub-stage is active with subtasks"
         );
     }
 
     #[test]
-    fn lane_dag_none_when_not_implementing() {
+    fn lane_dag_none_when_not_looping() {
         let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
         let decompose_id = "dddddddddddddddddddddddddddddddd";
 
@@ -1169,7 +1190,7 @@ mod tests {
 
         let mut graph = empty_graph();
 
-        // Only a decompose task (no orchestrator) — implement sub-stage not active
+        // Only a decompose task (no orchestrator) — loop sub-stage not active
         let mut decompose = make_task(decompose_id, "Decompose plan", TaskStatus::InProgress);
         decompose.task_type = Some("decompose".to_string());
         decompose.started_at = Some(Utc::now() - chrono::Duration::seconds(5));
@@ -1178,10 +1199,40 @@ mod tests {
 
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // No orchestrator → no implement sub-stage → lane_dag should be None
+        // No orchestrator → no loop sub-stage → lane_dag should be None
         assert!(
             view.lane_dag.is_none(),
-            "lane_dag should be None when implement sub-stage is not active"
+            "lane_dag should be None when loop sub-stage is not active"
         );
+    }
+
+    #[test]
+    fn fix_skipped_when_review_approved() {
+        let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
+        let review_id = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
+
+        let epic = make_task(epic_id, "Epic", TaskStatus::InProgress);
+        let mut t1 = make_task("a".repeat(32).as_str(), "T1", TaskStatus::Closed);
+        t1.closed_outcome = Some(TaskOutcome::Done);
+        let subtasks: Vec<&Task> = vec![&t1];
+
+        let mut graph = empty_graph();
+
+        // Review task: closed/done with approved
+        let mut review_task = make_task(review_id, "Review", TaskStatus::Closed);
+        review_task.closed_outcome = Some(TaskOutcome::Done);
+        review_task
+            .data
+            .insert("approved".to_string(), "true".to_string());
+        graph.tasks.insert(review_id.to_string(), review_task);
+        graph.edges.add(review_id, epic_id, "validates");
+
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+
+        assert_eq!(view.stages[1].name, "review");
+        assert_eq!(view.stages[1].state, StageState::Done);
+        assert_eq!(view.stages[1].progress, Some("approved".to_string()));
+        assert_eq!(view.stages[2].name, "fix");
+        assert_eq!(view.stages[2].state, StageState::Skipped);
     }
 }

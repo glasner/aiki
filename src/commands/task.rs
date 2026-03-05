@@ -33,8 +33,8 @@ use crate::tasks::{
     generate_task_id, is_task_id, is_task_id_prefix,
     manager::{
         find_task, find_task_in_graph, get_current_scope_set, get_in_progress,
-        get_ready_queue_for_agent_scoped, get_ready_queue_for_scope_set, has_subtasks,
-        resolve_task_id_in_graph, ScopeSet,
+        get_ready_queue_for_agent_scoped, get_ready_queue_for_scope_set, get_subtasks,
+        has_subtasks, resolve_task_id_in_graph, ScopeSet,
     },
     materialize_graph, materialize_graph_with_ids,
     md::{
@@ -225,6 +225,7 @@ fn infer_task_type(task: &Task) -> String {
 
 /// Template subcommands for `aiki task template`
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum TemplateCommands {
     /// List all available templates
     List,
@@ -236,8 +237,29 @@ pub enum TemplateCommands {
     },
 }
 
+/// Comment subcommands
+#[derive(Subcommand)]
+pub enum TaskCommentSubcommands {
+    /// Add a comment to a task
+    Add {
+        /// Task ID to comment on
+        id: String,
+        /// Comment text
+        text: String,
+        /// Add structured data to the comment
+        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        data: Vec<String>,
+    },
+    /// List comments on a task
+    List {
+        /// Task ID to list comments for
+        id: String,
+    },
+}
+
 /// Task subcommands
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum TaskCommands {
     /// Show ready queue (default when no subcommand given)
     List {
@@ -406,6 +428,10 @@ pub enum TaskCommands {
         /// Set priority to P3 (low)
         #[arg(long, group = "priority")]
         p3: bool,
+
+        /// Output format (e.g., `id` for bare task ID on stdout)
+        #[arg(long, short = 'o', value_name = "FORMAT")]
+        output: Option<super::OutputFormat>,
     },
 
     /// Start working on task(s)
@@ -573,7 +599,7 @@ pub enum TaskCommands {
 
     /// Show task details (including subtasks for parent tasks)
     Show {
-        /// Task ID to show (defaults to current in-progress task)
+        /// Task ID to show
         id: Option<String>,
 
         /// Show full diffs for all changes made during this task
@@ -595,7 +621,7 @@ pub enum TaskCommands {
 
     /// Set fields on a task
     Set {
-        /// Task ID (defaults to current in-progress task)
+        /// Task ID
         id: Option<String>,
 
         /// Set priority to P0 (critical/urgent)
@@ -633,7 +659,7 @@ pub enum TaskCommands {
 
     /// Clear optional fields on a task
     Unset {
-        /// Task ID (defaults to current in-progress task)
+        /// Task ID
         id: Option<String>,
 
         /// Clear assignee field
@@ -649,18 +675,10 @@ pub enum TaskCommands {
         data: Vec<String>,
     },
 
-    /// Add a comment to a task
+    /// Manage task comments
     Comment {
-        /// Task ID to comment on (defaults to current in-progress task)
-        #[arg(long)]
-        id: Option<String>,
-
-        /// Comment text (required)
-        text: String,
-
-        /// Add structured data to the comment. Can be specified multiple times.
-        #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
-        data: Vec<String>,
+        #[command(subcommand)]
+        command: TaskCommentSubcommands,
     },
 
     /// Run a task by spawning an agent session
@@ -1025,6 +1043,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
+            output,
         } => run_add(
             &cwd,
             name,
@@ -1051,6 +1070,7 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             p1,
             p2,
             p3,
+            output,
         ),
         TaskCommands::Start {
             ids,
@@ -1146,6 +1166,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             instructions,
             data,
         } => {
+            // Validate task ID first
+            if id.is_none() {
+                let xml = MdBuilder::new("unset")
+                    .error()
+                    .build_error("No task ID provided. Usage: aiki task unset <task-id> [OPTIONS]");
+                aiki_print(&xml);
+                return Ok(());
+            }
             // Validate that at least one field is specified
             if !assignee && !instructions && data.is_empty() {
                 let xml = MdBuilder::new("unset").error().build_error(
@@ -1158,7 +1186,12 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
             }
         }
 
-        TaskCommands::Comment { id, text, data } => run_comment(&cwd, id, text, data),
+        TaskCommands::Comment { command } => match command {
+            TaskCommentSubcommands::Add { id, text, data } => {
+                run_comment_add(&cwd, &id, text, data)
+            }
+            TaskCommentSubcommands::List { id } => run_comment_list(&cwd, &id),
+        },
         TaskCommands::Run {
             id,
             agent,
@@ -1615,6 +1648,7 @@ fn run_add(
     p1: bool,
     _p2: bool,
     p3: bool,
+    output_format: Option<super::OutputFormat>,
 ) -> Result<()> {
     use crate::agents::Assignee;
 
@@ -1693,8 +1727,12 @@ fn run_add(
             .get(&task_id)
             .ok_or_else(|| AikiError::TaskNotFound(task_id.clone()))?;
 
-        // Slim output: single line confirmation
-        aiki_print(&format_action_added(task));
+        // Slim output: bare ID or single line confirmation
+        if matches!(output_format, Some(super::OutputFormat::Id)) {
+            println!("{}", task_id);
+        } else {
+            aiki_print(&format_action_added(task));
+        }
         return Ok(());
     }
 
@@ -1751,6 +1789,20 @@ fn run_add(
         let parent_task = find_task_in_graph(&graph, parent_id)?;
         let parent_id = &parent_task.id; // rebind to canonical ID
         reopen_if_closed(cwd, parent_id, &tasks, "Subtasks added")?;
+
+        // Dedup guard: if an open subtask with the same name already exists, return it
+        let existing_subtasks = get_subtasks(&graph, parent_id);
+        if let Some(dup) = existing_subtasks
+            .iter()
+            .find(|t| t.name == name && t.status != TaskStatus::Closed)
+        {
+            if matches!(output_format, Some(super::OutputFormat::Id)) {
+                println!("{}", dup.id);
+            } else {
+                aiki_print(&format!("Exists: {} — {}\n", short_id(&dup.id), dup.name));
+            }
+            return Ok(());
+        }
 
         // Validate slug uniqueness within parent
         if let Some(ref s) = slug {
@@ -1850,8 +1902,12 @@ fn run_add(
         comments: Vec::new(),
     };
 
-    // Slim output: single line confirmation
-    aiki_print(&format_action_added(&new_task));
+    // Slim output: bare ID or single line confirmation
+    if matches!(output_format, Some(super::OutputFormat::Id)) {
+        println!("{}", new_task.id);
+    } else {
+        aiki_print(&format_action_added(&new_task));
+    }
     Ok(())
 }
 
@@ -2310,6 +2366,7 @@ pub(crate) fn cascade_close_tasks(
         task_ids: task_ids.to_vec(),
         outcome,
         summary: Some(summary.to_string()),
+        session_id: session_match.as_ref().map(|m| m.session_id.clone()),
         turn_id,
         timestamp: close_timestamp,
     };
@@ -2451,6 +2508,7 @@ fn run_stop(
     let stop_event = TaskEvent::Stopped {
         task_ids: task_ids.clone(),
         reason: reason.clone(),
+        session_id: session_match.as_ref().map(|m| m.session_id.clone()),
         turn_id,
         timestamp: chrono::Utc::now(),
     };
@@ -2792,6 +2850,7 @@ fn run_close(
         task_ids: explicit_ids.clone(),
         outcome,
         summary: summary_text.clone(),
+        session_id: our_session_id.clone(),
         turn_id: turn_id.clone(),
         timestamp: close_timestamp,
     };
@@ -2832,6 +2891,20 @@ fn run_close(
         if let Some(task) = graph.tasks.get(id) {
             if super::fix::is_review_task(task) {
                 let issue_count = super::review::get_issue_comments(task).len();
+
+                // Guard: reject review close if summary claims issues but none were recorded
+                if issue_count == 0 && outcome != TaskOutcome::WontDo {
+                    if let Some(ref summary) = summary_text {
+                        if review_summary_claims_issues(summary) {
+                            return Err(AikiError::ReviewIssuesMissing(format!(
+                                "Summary says issues were found but none were recorded.\n\
+                                 Use `aiki review issue add {}` to record each issue, then close again.",
+                                crate::tasks::md::short_id(id)
+                            )));
+                        }
+                    }
+                }
+
                 // Update in-memory state for spawn condition evaluation
                 if let Some(task_mut) = graph.tasks.get_mut(id) {
                     task_mut
@@ -3401,6 +3474,19 @@ fn run_close(
 }
 
 /// Walk the spawned-by chain to determine spawn depth.
+/// Check if a review summary claims issues were found
+fn review_summary_claims_issues(summary: &str) -> bool {
+    let re = regex::Regex::new(r"\b(\d+)\s+issues?\b").unwrap();
+    for cap in re.captures_iter(summary) {
+        if let Ok(n) = cap[1].parse::<u32>() {
+            if n > 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 ///
 /// Returns the number of spawned-by hops from this task to the root.
 /// Used to enforce the max spawn depth guard (10 levels).
@@ -3807,20 +3893,20 @@ fn run_show(
     let events = read_events_with_ids(cwd)?;
     let graph = materialize_graph_with_ids(&events);
     let tasks = &graph.tasks;
-    let in_progress = get_in_progress(&tasks);
 
     // Determine which task to show
     let task_id = if let Some(id) = id {
         let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
-        // Default to first in-progress task
+        // Default to current in-progress task
+        let in_progress = get_in_progress(tasks);
         if let Some(task) = in_progress.first() {
             task.id.clone()
         } else {
             let xml = MdBuilder::new("show")
                 .error()
-                .build_error("No task in progress to show");
+                .build_error("No task ID provided. Usage: aiki task show <task-id>");
             aiki_print(&xml);
             return Ok(());
         }
@@ -4000,6 +4086,7 @@ fn run_show(
     // Context footer (read command - keep it)
     let scope_set = get_current_scope_set(&graph);
     let ready = get_ready_queue_for_scope_set(&graph, &scope_set);
+    let in_progress = get_in_progress(&tasks);
     let in_progress_refs: Vec<_> = in_progress.iter().map(|t| *t).collect();
     content.push_str(&build_context(&in_progress_refs, &ready));
 
@@ -4581,9 +4668,8 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
     let task = find_task_in_graph(&graph, &id)?;
     let id = task.id.clone(); // use canonical ID
 
-    // Build revset pattern for task
-    // For parent tasks with subtasks, match task=<id> AND task=<id>.* (subtasks)
-    let pattern = build_task_revset_pattern(&id);
+    // Build revset pattern for task, including both dot-notation and link-based subtasks
+    let pattern = build_task_revset_pattern_with_graph(&id, &graph);
 
     // Check if any changes exist for this task
     let check_output = jj_cmd()
@@ -4701,7 +4787,7 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
     Ok(())
 }
 
-/// Build revset pattern for a task, including subtasks
+/// Build revset pattern for a task, including dot-notation subtasks.
 ///
 /// For task ID "abc123", this matches:
 /// - description(substring:"task=abc123") - the task itself (provenance metadata)
@@ -4709,11 +4795,49 @@ fn run_diff(cwd: &Path, id: String, summary: bool, stat: bool, name_only: bool) 
 ///
 /// Excludes `::aiki/tasks` to filter out task lifecycle events (which contain
 /// `stopped_task=<id>`, `task_id=<id>`, etc.) that live on a separate branch.
+///
+/// NOTE: This only handles dot-notation subtasks. For link-based subtasks
+/// (connected via `subtask-of` edges), use `build_task_revset_pattern_with_graph`.
 fn build_task_revset_pattern(task_id: &str) -> String {
     format!(
         "(description(substring:\"task={}\") | description(substring:\"task={}.\")) ~ ::aiki/tasks",
         task_id, task_id
     )
+}
+
+/// Build revset pattern for a task including all descendants via `subtask-of` links.
+///
+/// Like `build_task_revset_pattern` but also includes link-based subtasks
+/// (tasks connected via `subtask-of` edges in the graph). This is needed for
+/// epics where fix-parent tasks are linked as subtasks with independent IDs.
+fn build_task_revset_pattern_with_graph(task_id: &str, graph: &crate::tasks::TaskGraph) -> String {
+    let mut patterns = vec![build_task_revset_pattern(task_id)];
+
+    // Collect all descendant task IDs via subtask-of links (BFS)
+    let mut queue: Vec<String> = graph
+        .edges
+        .referrers(task_id, "subtask-of")
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(task_id.to_string());
+
+    while let Some(child_id) = queue.pop() {
+        if !visited.insert(child_id.clone()) {
+            continue;
+        }
+        patterns.push(build_task_revset_pattern(&child_id));
+        for grandchild in graph.edges.referrers(&child_id, "subtask-of") {
+            queue.push(grandchild.to_string());
+        }
+    }
+
+    if patterns.len() == 1 {
+        patterns.into_iter().next().unwrap()
+    } else {
+        format!("({})", patterns.join(" | "))
+    }
 }
 
 /// Get list of files changed during a task
@@ -4863,23 +4987,17 @@ fn run_set(
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let mut tasks = graph.tasks.clone();
-    let in_progress = get_in_progress(&tasks);
 
     // Determine which task to update
     let task_id = if let Some(id) = id {
         let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
-        // Default to first in-progress task
-        if let Some(task) = in_progress.first() {
-            task.id.clone()
-        } else {
-            let xml = MdBuilder::new("set")
-                .error()
-                .build_error("No task in progress to update");
-            aiki_print(&xml);
-            return Ok(());
-        }
+        let xml = MdBuilder::new("set")
+            .error()
+            .build_error("No task ID provided. Usage: aiki task set <task-id> [OPTIONS]");
+        aiki_print(&xml);
+        return Ok(());
     };
 
     // Reject blank name
@@ -5079,23 +5197,17 @@ fn run_unset(
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
     let mut tasks = graph.tasks.clone();
-    let in_progress = get_in_progress(&tasks);
 
     // Determine which task to update
     let task_id = if let Some(id) = id {
         let task = find_task_in_graph(&graph, &id)?;
         task.id.clone()
     } else {
-        // Default to first in-progress task
-        if let Some(task) = in_progress.first() {
-            task.id.clone()
-        } else {
-            let xml = MdBuilder::new("unset")
-                .error()
-                .build_error("No task in progress to update");
-            aiki_print(&xml);
-            return Ok(());
-        }
+        let xml = MdBuilder::new("unset")
+            .error()
+            .build_error("No task ID provided. Usage: aiki task unset <task-id> [OPTIONS]");
+        aiki_print(&xml);
+        return Ok(());
     };
 
     // Write the FieldsCleared event
@@ -5150,35 +5262,45 @@ fn run_unset(
 }
 
 /// Add a comment to a task
-fn run_comment(cwd: &Path, id: Option<String>, text: String, data_args: Vec<String>) -> Result<()> {
+fn run_comment_add(cwd: &Path, id: &str, text: String, data_args: Vec<String>) -> Result<()> {
     // Parse data arguments (verbatim, no coercion for comment metadata)
     let data = parse_data_flags(&data_args, false)?;
 
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
-    let in_progress = get_in_progress(&graph.tasks);
 
-    // Determine which task to comment on
-    let task_id = if let Some(id) = id {
-        let task = find_task_in_graph(&graph, &id)?;
-        task.id.clone()
-    } else {
-        // Default to first in-progress task
-        if let Some(task) = in_progress.first() {
-            task.id.clone()
-        } else {
-            let xml = MdBuilder::new("comment")
-                .error()
-                .build_error("No task in progress to comment on");
-            aiki_print(&xml);
-            return Ok(());
-        }
-    };
+    let task = find_task_in_graph(&graph, id)?;
 
-    comment_on_task(cwd, &task_id, &text, data)?;
+    comment_on_task(cwd, &task.id, &text, data)?;
 
     // Slim output: single line, no context footer
     aiki_print(&format_action_commented());
+    Ok(())
+}
+
+fn run_comment_list(cwd: &Path, id: &str) -> Result<()> {
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+
+    let task = find_task_in_graph(&graph, id)?;
+
+    if task.comments.is_empty() {
+        aiki_print(&format!("No comments on task {} ({})", short_id(&task.id), task.name));
+    } else {
+        let mut output = format!(
+            "Comments on {} ({}):\n",
+            short_id(&task.id),
+            task.name
+        );
+        for comment in &task.comments {
+            let ts = comment.timestamp.format("%Y-%m-%d %H:%M UTC");
+            output.push_str(&format!("- [{}] {}\n", ts, comment.text));
+            for (key, value) in &comment.data {
+                output.push_str(&format!("  {}: {}\n", key, value));
+            }
+        }
+        aiki_print(&output);
+    }
     Ok(())
 }
 
@@ -5377,6 +5499,7 @@ fn run_run(
             let rollback_event = TaskEvent::Stopped {
                 task_ids: vec![cid.clone()],
                 reason: Some("Spawn failed, rolling back claim".to_string()),
+                session_id: None,
                 turn_id: None,
                 timestamp: chrono::Utc::now(),
             };
@@ -5587,6 +5710,7 @@ fn read_wait_task_id_from_stdin() -> Result<String> {
 const WAIT_INITIAL_DELAY_MS: u64 = 100;
 const WAIT_MAX_DELAY_MS: u64 = 2000;
 const WAIT_BACKOFF_MULTIPLIER: u64 = 2;
+const WAIT_ABSORPTION_TIMEOUT_SECS: u64 = 60;
 
 fn run_wait(cwd: &Path, ids: Vec<String>, any: bool, output_format: Option<super::OutputFormat>) -> Result<()> {
     use std::time::Duration;
@@ -5626,6 +5750,73 @@ fn run_wait(cwd: &Path, ids: Vec<String>, any: bool, output_format: Option<super
         };
 
         if done {
+            // Wait for absorption of tasks that ran in isolated sessions
+            {
+                use std::collections::HashSet;
+                use std::time::Instant;
+
+                let absorption_start = Instant::now();
+                let mut absorption_delay_ms = WAIT_INITIAL_DELAY_MS;
+
+                loop {
+                    let events = read_events(cwd)?;
+
+                    let absorbed_tasks: HashSet<String> = events.iter()
+                        .filter_map(|e| match e {
+                            TaskEvent::Absorbed { task_ids, .. } =>
+                                Some(task_ids.iter().cloned()),
+                            _ => None,
+                        })
+                        .flatten()
+                        .collect();
+
+                    // Only check absorption for tasks that have a session_id on their Closed or Stopped event
+                    let needs_absorption: Vec<&str> = ids.iter()
+                        .filter(|id| {
+                            if any && !is_terminal(id) {
+                                return false;
+                            }
+                            events.iter().any(|e| matches!(e,
+                                TaskEvent::Closed { task_ids, session_id: Some(_), .. }
+                                    | TaskEvent::Stopped { task_ids, session_id: Some(_), .. }
+                                    if task_ids.iter().any(|t| t == *id)
+                            ))
+                        })
+                        .map(|s| s.as_str())
+                        .collect();
+
+                    let all_absorbed = needs_absorption.iter()
+                        .all(|id| absorbed_tasks.contains(*id));
+
+                    if all_absorbed || needs_absorption.is_empty() {
+                        break;
+                    }
+
+                    if absorption_start.elapsed() > Duration::from_secs(WAIT_ABSORPTION_TIMEOUT_SECS) {
+                        eprintln!(
+                            "Warning: Not all tasks absorbed after {}s. Run `jj workspace list` to check.",
+                            WAIT_ABSORPTION_TIMEOUT_SECS
+                        );
+                        break;
+                    }
+
+                    std::thread::sleep(Duration::from_millis(absorption_delay_ms));
+                    absorption_delay_ms = (absorption_delay_ms * WAIT_BACKOFF_MULTIPLIER)
+                        .min(WAIT_MAX_DELAY_MS);
+                }
+            }
+
+            // Re-read events/tasks after absorption wait for accurate output
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+
+            // Shadow is_terminal with fresh tasks so output filtering uses up-to-date status
+            let is_terminal = |id: &str| -> bool {
+                find_task(&tasks, id)
+                    .map(|t| matches!(t.status, TaskStatus::Closed | TaskStatus::Stopped))
+                    .unwrap_or(false)
+            };
+
             let output_id = matches!(output_format, Some(super::OutputFormat::Id));
 
             if output_id {
@@ -5954,12 +6145,18 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
     }
 
     // Create parent task event
+    // Use parent.task_type if set, otherwise fall back to defaults.task_type (from frontmatter)
+    let task_type = template
+        .parent
+        .task_type
+        .clone()
+        .or_else(|| template.defaults.task_type.clone());
     let working_copy = get_working_copy_change_id(cwd);
     let create_event = TaskEvent::Created {
         task_id: task_id.clone(),
         name: parent_name.clone(),
         slug: None,
-        task_type: template.parent.task_type.clone(),
+        task_type: task_type.clone(),
         priority,
         assignee: assignee.clone(),
         sources: params.sources.clone(),
@@ -5978,7 +6175,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             id: task_id.clone(),
             name: parent_name.clone(),
             slug: None,
-            task_type: template.parent.task_type.clone(),
+            task_type: task_type.clone(),
             status: TaskStatus::Open,
             priority,
             assignee: assignee.clone(),
@@ -7046,6 +7243,7 @@ fn run_reset(cwd: &Path, confirm: Option<String>) -> Result<()> {
         task_ids: ids_to_close,
         outcome: TaskOutcome::WontDo,
         summary: Some("Reset".to_string()),
+        session_id: session_match.as_ref().map(|m| m.session_id.clone()),
         turn_id,
         timestamp: chrono::Utc::now(),
     };
@@ -7539,5 +7737,128 @@ D src/old_file.ts
         // If no task_id attribute found, return as-is
         let input = "some random text";
         assert_eq!(extract_task_id(input), "some random text");
+    }
+
+    #[test]
+    fn test_build_task_revset_pattern_with_graph_no_subtasks() {
+        use crate::tasks::graph::EdgeStore;
+        use crate::tasks::types::{TaskPriority, TaskStatus};
+
+        let mut tasks = FastHashMap::default();
+        let task = Task {
+            id: "epic".to_string(),
+            name: "Epic".to_string(),
+            slug: None,
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: Vec::new(),
+        };
+        tasks.insert("epic".to_string(), task);
+        let graph = TaskGraph {
+            tasks,
+            edges: EdgeStore::new(),
+            slug_index: FastHashMap::default(),
+        };
+
+        // Without subtasks, should be same as build_task_revset_pattern
+        let pattern = build_task_revset_pattern_with_graph("epic", &graph);
+        assert_eq!(pattern, build_task_revset_pattern("epic"));
+    }
+
+    #[test]
+    fn test_build_task_revset_pattern_with_graph_includes_link_subtasks() {
+        use crate::tasks::graph::EdgeStore;
+        use crate::tasks::types::{TaskPriority, TaskStatus};
+
+        let make = |id: &str| Task {
+            id: id.to_string(),
+            name: id.to_string(),
+            slug: None,
+            task_type: None,
+            status: TaskStatus::Open,
+            priority: TaskPriority::P2,
+            assignee: None,
+            sources: Vec::new(),
+            template: None,
+            instructions: None,
+            data: HashMap::new(),
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            claimed_by_session: None,
+            last_session_id: None,
+            stopped_reason: None,
+            closed_outcome: None,
+            summary: None,
+            turn_started: None,
+            turn_closed: None,
+            turn_stopped: None,
+            comments: Vec::new(),
+        };
+
+        let mut tasks = FastHashMap::default();
+        tasks.insert("epic".to_string(), make("epic"));
+        tasks.insert("fixparent".to_string(), make("fixparent"));
+        tasks.insert("fixchild1".to_string(), make("fixchild1"));
+
+        let mut edges = EdgeStore::new();
+        edges.add("fixparent", "epic", "subtask-of");
+        edges.add("fixchild1", "fixparent", "subtask-of");
+
+        let graph = TaskGraph {
+            tasks,
+            edges,
+            slug_index: FastHashMap::default(),
+        };
+
+        let pattern = build_task_revset_pattern_with_graph("epic", &graph);
+
+        // Should include patterns for epic, fixparent, and fixchild1
+        assert!(pattern.contains("task=epic"));
+        assert!(pattern.contains("task=fixparent"));
+        assert!(pattern.contains("task=fixchild1"));
+    }
+
+    #[test]
+    fn test_review_summary_claims_issues_positive() {
+        assert!(review_summary_claims_issues("Found 3 issues"));
+        assert!(review_summary_claims_issues("1 issue found"));
+        assert!(review_summary_claims_issues("3 issues, all resolved"));
+        assert!(review_summary_claims_issues("Review complete (5 issues)"));
+    }
+
+    #[test]
+    fn test_review_summary_claims_issues_zero() {
+        assert!(!review_summary_claims_issues("0 issues"));
+        assert!(!review_summary_claims_issues("Found 0 issues"));
+    }
+
+    #[test]
+    fn test_review_summary_claims_issues_no_match() {
+        assert!(!review_summary_claims_issues("No issues found"));
+        assert!(!review_summary_claims_issues("Everything looks good"));
+        assert!(!review_summary_claims_issues(""));
+    }
+
+    #[test]
+    fn test_review_summary_claims_issues_false_positives() {
+        assert!(!review_summary_claims_issues("2026 medium-term plan"));
+        assert!(!review_summary_claims_issues("reviewed 5 high-priority items"));
+        assert!(!review_summary_claims_issues("3 high, 1 medium, 0 low"));
     }
 }

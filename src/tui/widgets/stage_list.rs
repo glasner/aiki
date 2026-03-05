@@ -8,7 +8,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::tui::theme::{Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING, SYM_STARTING};
+use crate::tui::theme::{
+    Theme, SYM_CHECK, SYM_FAILED, SYM_PENDING, SYM_RUNNING, SYM_SKIPPED, SYM_STARTING,
+};
 use crate::tui::types::{FixChild, StageChild, StageState, StageView, SubStageView, SubtaskStatus};
 
 /// Vertical stage list widget.
@@ -47,7 +49,28 @@ fn stage_height(stage: &StageView) -> u16 {
     if !is_expanded(stage) {
         return 1;
     }
-    1 + stage.sub_stages.len() as u16 + stage.children.len() as u16
+    let mut height = 1; // Main stage line
+
+    // Add sub-stage lines and their children
+    for sub in &stage.sub_stages {
+        height += 1; // Sub-stage line itself
+        if is_substage_expanded(sub) {
+            height += sub.children.len() as u16;
+        }
+    }
+
+    // Add direct children of the stage
+    height += stage.children.len() as u16;
+
+    height
+}
+
+/// Whether a sub-stage should show its children expanded.
+fn is_substage_expanded(sub: &SubStageView) -> bool {
+    match sub.state {
+        StageState::Pending | StageState::Starting | StageState::Active | StageState::Failed => !sub.children.is_empty(),
+        _ => false,
+    }
 }
 
 /// Symbol and color for a stage state.
@@ -57,6 +80,7 @@ fn state_symbol_color(state: StageState, theme: &Theme) -> (&'static str, Style)
         StageState::Starting => (SYM_STARTING, Style::default().fg(theme.yellow)),
         StageState::Active => (SYM_RUNNING, Style::default().fg(theme.yellow)),
         StageState::Done => (SYM_CHECK, Style::default().fg(theme.green)),
+        StageState::Skipped => (SYM_SKIPPED, Style::default().fg(theme.dim)),
         StageState::Failed => (SYM_FAILED, Style::default().fg(theme.red)),
     }
 }
@@ -94,12 +118,18 @@ fn render_stage_line(
     let mut x = area_x.saturating_add(1); // 1 char left padding
 
     // Symbol
-    if x >= max_x { return; }
+    if x >= max_x {
+        return;
+    }
     buf.set_string(x, y, sym, style);
-    x = x.saturating_add(sym.chars().count() as u16).saturating_add(1); // sym + space
+    x = x
+        .saturating_add(sym.chars().count() as u16)
+        .saturating_add(1); // sym + space
 
     // Name
-    if x >= max_x { return; }
+    if x >= max_x {
+        return;
+    }
     buf.set_string(x, y, &stage.name, style);
     x = x.saturating_add(stage.name.chars().count() as u16);
 
@@ -133,11 +163,17 @@ fn render_sub_stage_line(
     let (sym, style) = state_symbol_color(sub.state, theme);
     let mut x = area_x.saturating_add(4); // 4 char indent
 
-    if x >= max_x { return; }
+    if x >= max_x {
+        return;
+    }
     buf.set_string(x, y, sym, style);
-    x = x.saturating_add(sym.chars().count() as u16).saturating_add(1);
+    x = x
+        .saturating_add(sym.chars().count() as u16)
+        .saturating_add(1);
 
-    if x >= max_x { return; }
+    if x >= max_x {
+        return;
+    }
     buf.set_string(x, y, &sub.name, style);
     x = x.saturating_add(sub.name.chars().count() as u16);
 
@@ -174,11 +210,17 @@ fn render_child_line(
         StageChild::Subtask(sub) => {
             let (sym, style) = subtask_symbol_color(sub.status, theme);
 
-            if x >= max_x { return; }
+            if x >= max_x {
+                return;
+            }
             buf.set_string(x, y, sym, style);
-            x = x.saturating_add(sym.chars().count() as u16).saturating_add(1);
+            x = x
+                .saturating_add(sym.chars().count() as u16)
+                .saturating_add(1);
 
-            if x >= max_x { return; }
+            if x >= max_x {
+                return;
+            }
             buf.set_string(x, y, &sub.name, style);
 
             // Right-aligned: agent + elapsed
@@ -205,24 +247,23 @@ fn render_child_line(
 }
 
 /// Render a FixChild (either a subtask or a review-fix gate).
-fn render_fix_child(
-    fix: &FixChild,
-    theme: &Theme,
-    x: u16,
-    y: u16,
-    max_x: u16,
-    buf: &mut Buffer,
-) {
+fn render_fix_child(fix: &FixChild, theme: &Theme, x: u16, y: u16, max_x: u16, buf: &mut Buffer) {
     match fix {
         FixChild::Subtask(sub) => {
             let (sym, style) = subtask_symbol_color(sub.status, theme);
             let mut cx = x;
 
-            if cx >= max_x { return; }
+            if cx >= max_x {
+                return;
+            }
             buf.set_string(cx, y, sym, style);
-            cx = cx.saturating_add(sym.chars().count() as u16).saturating_add(1);
+            cx = cx
+                .saturating_add(sym.chars().count() as u16)
+                .saturating_add(1);
 
-            if cx >= max_x { return; }
+            if cx >= max_x {
+                return;
+            }
             buf.set_string(cx, y, &sub.name, style);
 
             // Right-aligned: agent + elapsed
@@ -241,20 +282,32 @@ fn render_fix_child(
                 buf.set_string(rx, y, agent, agent_style(agent, theme));
             }
         }
-        FixChild::ReviewFix { number, state, result, agent, elapsed } => {
+        FixChild::ReviewFix {
+            number,
+            state,
+            result,
+            agent,
+            elapsed,
+        } => {
             let (sym, style) = state_symbol_color(*state, theme);
             let mut cx = x;
 
-            if cx >= max_x { return; }
+            if cx >= max_x {
+                return;
+            }
             buf.set_string(cx, y, sym, style);
-            cx = cx.saturating_add(sym.chars().count() as u16).saturating_add(1);
+            cx = cx
+                .saturating_add(sym.chars().count() as u16)
+                .saturating_add(1);
 
             // Name with optional numbering: "review fix" or "review fix #1"
             let name = match number {
                 Some(n) => format!("review fix #{}", n),
                 None => "review fix".to_string(),
             };
-            if cx >= max_x { return; }
+            if cx >= max_x {
+                return;
+            }
             buf.set_string(cx, y, &name, style);
             cx = cx.saturating_add(name.chars().count() as u16);
 
@@ -307,13 +360,30 @@ impl Widget for StageList<'_> {
             // Expanded sub-stages and children
             if is_expanded(stage) {
                 for sub in &stage.sub_stages {
-                    if y >= max_y { break; }
+                    if y >= max_y {
+                        break;
+                    }
                     render_sub_stage_line(sub, self.theme, area.x, y, max_x, buf);
                     y += 1;
+
+                    // Render children of this sub-stage (indented further)
+                    if is_substage_expanded(sub) {
+                        for child in &sub.children {
+                            if y >= max_y {
+                                break;
+                            }
+                            render_child_line(
+                                child, self.theme, area.x, y, area.width, buf,
+                            );
+                            y += 1;
+                        }
+                    }
                 }
 
                 for child in &stage.children {
-                    if y >= max_y { break; }
+                    if y >= max_y {
+                        break;
+                    }
                     render_child_line(child, self.theme, area.x, y, area.width, buf);
                     y += 1;
                 }
@@ -339,7 +409,11 @@ mod tests {
                         buf.cell((x, y))
                             .map(|c| {
                                 let s = c.symbol();
-                                if s.is_empty() { " ".to_string() } else { s.to_string() }
+                                if s.is_empty() {
+                                    " ".to_string()
+                                } else {
+                                    s.to_string()
+                                }
                             })
                             .unwrap_or_default()
                     })
@@ -403,12 +477,14 @@ mod tests {
                     state: StageState::Done,
                     progress: None,
                     elapsed: Some("0:12".into()),
+                    children: vec![],
                 },
                 SubStageView {
-                    name: "implement".into(),
+                    name: "loop".into(),
                     state: StageState::Active,
                     progress: Some("3/6".into()),
                     elapsed: Some("0:34".into()),
+                    children: vec![],
                 },
             ],
             children: vec![],
@@ -417,7 +493,7 @@ mod tests {
         assert!(lines[0].contains("▸ build"), "line0: {}", lines[0]);
         assert!(lines[1].contains("✓ decompose"), "line1: {}", lines[1]);
         assert!(lines[1].contains("0:12"), "line1: {}", lines[1]);
-        assert!(lines[2].contains("▸ implement"), "line2: {}", lines[2]);
+        assert!(lines[2].contains("▸ loop"), "line2: {}", lines[2]);
         assert!(lines[2].contains("3/6"), "line2: {}", lines[2]);
         assert!(lines[2].contains("0:34"), "line2: {}", lines[2]);
     }
@@ -435,12 +511,14 @@ mod tests {
                     state: StageState::Done,
                     progress: None,
                     elapsed: Some("0:12".into()),
+                    children: vec![],
                 },
                 SubStageView {
-                    name: "implement".into(),
+                    name: "loop".into(),
                     state: StageState::Done,
                     progress: Some("6/6".into()),
                     elapsed: Some("2m28s".into()),
+                    children: vec![],
                 },
             ],
             children: vec![],
@@ -483,12 +561,14 @@ mod tests {
                     state: StageState::Done,
                     progress: None,
                     elapsed: Some("0:12".into()),
+                    children: vec![],
                 },
                 SubStageView {
-                    name: "implement".into(),
+                    name: "loop".into(),
                     state: StageState::Failed,
                     progress: Some("8/10".into()),
                     elapsed: Some("2m48s".into()),
+                    children: vec![],
                 },
             ],
             children: vec![],
@@ -499,7 +579,7 @@ mod tests {
         let (_, lines) = render_stages(&stages, 60);
         assert!(lines[0].contains("✗ build"), "line0: {}", lines[0]);
         assert!(lines[1].contains("✓ decompose"), "line1: {}", lines[1]);
-        assert!(lines[2].contains("✗ implement"), "line2: {}", lines[2]);
+        assert!(lines[2].contains("✗ loop"), "line2: {}", lines[2]);
         assert!(lines[2].contains("8/10"), "line2: {}", lines[2]);
         assert!(lines[2].contains("2m48s"), "line2: {}", lines[2]);
     }
@@ -535,10 +615,18 @@ mod tests {
         let (_, lines) = render_stages(&stages, 80);
         assert!(lines[0].contains("▸ fix"), "line0: {}", lines[0]);
         assert!(lines[0].contains("1/2"), "line0: {}", lines[0]);
-        assert!(lines[1].contains("✓ Fix: Missing null check (auth.rs)"), "line1: {}", lines[1]);
+        assert!(
+            lines[1].contains("✓ Fix: Missing null check (auth.rs)"),
+            "line1: {}",
+            lines[1]
+        );
         assert!(lines[1].contains("cursor"), "line1 agent: {}", lines[1]);
         assert!(lines[1].contains("12s"), "line1 elapsed: {}", lines[1]);
-        assert!(lines[2].contains("▸ Fix: Error message format"), "line2: {}", lines[2]);
+        assert!(
+            lines[2].contains("▸ Fix: Error message format"),
+            "line2: {}",
+            lines[2]
+        );
         assert!(lines[2].contains("claude"), "line2 agent: {}", lines[2]);
     }
 
@@ -579,8 +667,16 @@ mod tests {
         assert_eq!(widget.height(), 4);
         let (_, lines) = render_stages(&stages, 80);
         assert!(lines[0].contains("▸ fix"), "line0: {}", lines[0]);
-        assert!(lines[1].contains("✓ Fix: Missing null check"), "line1: {}", lines[1]);
-        assert!(lines[2].contains("✓ Fix: Error message format"), "line2: {}", lines[2]);
+        assert!(
+            lines[1].contains("✓ Fix: Missing null check"),
+            "line1: {}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("✓ Fix: Error message format"),
+            "line2: {}",
+            lines[2]
+        );
         assert!(lines[3].contains("▸ review fix"), "line3: {}", lines[3]);
         assert!(lines[3].contains("claude"), "line3 agent: {}", lines[3]);
     }
@@ -786,8 +882,20 @@ mod tests {
                 progress: None,
                 elapsed: None,
                 sub_stages: vec![
-                    SubStageView { name: "decompose".into(), state: StageState::Done, progress: None, elapsed: None },
-                    SubStageView { name: "implement".into(), state: StageState::Active, progress: None, elapsed: None },
+                    SubStageView {
+                        name: "decompose".into(),
+                        state: StageState::Done,
+                        progress: None,
+                        elapsed: None,
+                        children: vec![],
+                    },
+                    SubStageView {
+                        name: "loop".into(),
+                        state: StageState::Active,
+                        progress: None,
+                        elapsed: None,
+                        children: vec![],
+                    },
                 ],
                 children: vec![],
             },
@@ -814,15 +922,13 @@ mod tests {
             progress: None,
             elapsed: None,
             sub_stages: vec![],
-            children: vec![
-                StageChild::Subtask(SubtaskLine {
-                    name: "Fix null check".into(),
-                    status: SubtaskStatus::Starting,
-                    agent: None,
-                    elapsed: None,
-                    error: None,
-                }),
-            ],
+            children: vec![StageChild::Subtask(SubtaskLine {
+                name: "Fix null check".into(),
+                status: SubtaskStatus::Starting,
+                agent: None,
+                elapsed: None,
+                error: None,
+            })],
         }];
         let (_, lines) = render_stages(&stages, 80);
         assert!(lines[1].contains("⧗ Fix null check"), "line1: {}", lines[1]);
@@ -849,14 +955,13 @@ mod tests {
             state: StageState::Starting,
             progress: None,
             elapsed: None,
-            sub_stages: vec![
-                SubStageView {
-                    name: "decompose".into(),
-                    state: StageState::Starting,
-                    progress: None,
-                    elapsed: None,
-                },
-            ],
+            sub_stages: vec![SubStageView {
+                name: "decompose".into(),
+                state: StageState::Starting,
+                progress: None,
+                elapsed: None,
+                children: vec![],
+            }],
             children: vec![],
         }];
         let theme = test_theme();

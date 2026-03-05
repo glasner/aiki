@@ -13,6 +13,7 @@ use crate::plugins::scanner::derive_plugin_refs;
 use crate::plugins::{check_install_status, plugins_base_dir, InstallStatus, PluginRef};
 
 #[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
 pub enum PluginCommands {
     /// Install a plugin from GitHub (and its dependencies)
     Install {

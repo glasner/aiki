@@ -144,6 +144,7 @@ pub enum TaskEvent {
     Stopped {
         task_ids: Vec<String>,
         reason: Option<String>,
+        session_id: Option<String>,
         /// Turn ID (UUID v5) from the session's current turn
         turn_id: Option<String>,
         timestamp: DateTime<Utc>,
@@ -154,6 +155,7 @@ pub enum TaskEvent {
         outcome: TaskOutcome,
         /// Summary of what was accomplished (replaces closing comment pattern)
         summary: Option<String>,
+        session_id: Option<String>,
         /// Turn ID (UUID v5) from the session's current turn
         turn_id: Option<String>,
         timestamp: DateTime<Utc>,
@@ -216,6 +218,13 @@ pub enum TaskEvent {
         reason: Option<String>,
         timestamp: DateTime<Utc>,
     },
+    /// Changes from these tasks have been absorbed into the parent workspace
+    Absorbed {
+        task_ids: Vec<String>,
+        session_id: String,
+        turn_id: Option<String>,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 impl TaskEvent {
@@ -231,7 +240,8 @@ impl TaskEvent {
             | TaskEvent::Updated { timestamp, .. }
             | TaskEvent::FieldsCleared { timestamp, .. }
             | TaskEvent::LinkAdded { timestamp, .. }
-            | TaskEvent::LinkRemoved { timestamp, .. } => *timestamp,
+            | TaskEvent::LinkRemoved { timestamp, .. }
+            | TaskEvent::Absorbed { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -78,7 +78,7 @@ pub fn run(args: DecomposeArgs) -> Result<()> {
 /// 1. Write `implements-plan` link: target → `file:<plan_path>`
 /// 2. Create decompose task from template with `data.target` and `data.plan`
 /// 3. Write `decomposes-plan` link: decompose task → `file:<plan_path>`
-/// 4. Write `depends-on` link: target → decompose task
+/// 4. Write `populated-by` link: target → decompose task
 /// 5. `task_run(decompose_task)` with agent options
 /// 6. Return decompose task ID
 pub fn run_decompose(
@@ -107,8 +107,8 @@ pub fn run_decompose(
     let graph = materialize_graph(&events);
     write_link_event(cwd, &graph, "decomposes-plan", &decompose_task_id, &spec_target)?;
 
-    // 4. Write depends-on link: target → decompose task
-    write_link_event(cwd, &graph, "depends-on", target_id, &decompose_task_id)?;
+    // 4. Write populated-by link: target → decompose task
+    write_link_event(cwd, &graph, "populated-by", target_id, &decompose_task_id)?;
 
     // 5. task_run(decompose_task) with agent options
     let run_options = if let Some(agent) = options.agent {

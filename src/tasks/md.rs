@@ -160,12 +160,7 @@ pub fn format_task_list(tasks: &[&Task]) -> String {
     let mut md = format!("Tasks ({}):\n", tasks.len());
 
     for task in tasks {
-        let mut line = format!(
-            "[{}] {}  {}",
-            task.priority,
-            short_id(&task.id),
-            task.name
-        );
+        let mut line = format!("[{}] {}  {}", task.priority, short_id(&task.id), task.name);
         if let Some(ref task_type) = task.task_type {
             line.push_str(&format!(" [{}]", task_type));
         }
@@ -207,8 +202,9 @@ pub fn format_action_started(task: &Task, show_name: bool) -> String {
         format!("Started {}", short_id(&task.id))
     };
     let mut md = format!(
-        "{}\n---\nRun `aiki task comment` to leave updates as you go\n",
+        "{}\n---\nRun `aiki task comment add {}` to leave updates as you go\n",
         header,
+        short_id(&task.id),
     );
 
     if let Some(ref instructions) = task.instructions {
@@ -315,7 +311,7 @@ mod tests {
         let md = format_action_started(&task, true);
         assert!(md.starts_with("Started abcdefg"));
         assert!(md.contains("Test task"));
-        assert!(md.contains("Run `aiki task comment`"));
+        assert!(md.contains("Run `aiki task comment add"));
 
         let md_no_name = format_action_started(&task, false);
         assert!(md_no_name.starts_with("Started abcdefg"));
@@ -479,7 +475,9 @@ mod tests {
 
     #[test]
     fn test_builder_error() {
-        let md = MdBuilder::new("start").error().build_error("Task not found");
+        let md = MdBuilder::new("start")
+            .error()
+            .build_error("Task not found");
         assert!(md.contains("Error: Task not found"));
     }
 
@@ -518,8 +516,8 @@ mod tests {
 
     #[test]
     fn test_format_task_list_closed_with_comment_fallback() {
-        use std::collections::HashMap;
         use crate::tasks::types::TaskComment;
+        use std::collections::HashMap;
         let mut task = make_task(
             "abcdefghijklmnopqrstuvwxyzabcdef",
             "Old task",
@@ -535,5 +533,4 @@ mod tests {
         let md = format_task_list(&[&task]);
         assert!(md.contains("↳ Fallback comment summary"));
     }
-
 }

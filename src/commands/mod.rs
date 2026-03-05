@@ -9,7 +9,7 @@ use clap::ValueEnum;
 ///
 /// Currently only `Id` is supported. Future formats (e.g., `Json`) can be
 /// added here and become available on all commands that use this enum.
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     /// Bare task ID (full 32-char), one per line
     Id,

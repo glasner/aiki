@@ -541,20 +541,24 @@ mod tests {
 
     fn make_stopped_event(task_id: &str, reason: Option<&str>) -> TaskEvent {
         TaskEvent::Stopped {
+            session_id: None,
             task_ids: vec![task_id.to_string()],
             reason: reason.map(|s| s.to_string()),
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
     fn make_closed_event(task_id: &str, outcome: TaskOutcome) -> TaskEvent {
         TaskEvent::Closed {
+            session_id: None,
             task_ids: vec![task_id.to_string()],
             outcome,
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
@@ -1484,11 +1488,13 @@ mod tests {
                 timestamp: base_time,
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
+                session_id: None,
             },
             TaskEvent::Reopened {
                 task_id: "a1b2".to_string(),
@@ -1689,11 +1695,13 @@ mod tests {
             },
             // Close task
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(3),
+                session_id: None,
             },
             // Reopen task
             TaskEvent::Reopened {
@@ -1742,11 +1750,13 @@ mod tests {
                 timestamp: base_time,
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
+                session_id: None,
             },
         ];
 
@@ -1771,11 +1781,13 @@ mod tests {
                 timestamp: base_time,
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["a1b2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
+                session_id: None,
             },
             TaskEvent::Reopened {
                 task_id: "a1b2".to_string(),
@@ -2436,6 +2448,7 @@ mod tests {
             make_stopped_event("parent", Some("User stopped")),
             // Simulate cascade_close_tasks: close all unclosed descendants as WontDo
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec![
                     "parent.2".to_string(),
                     "parent.2.1".to_string(),
@@ -2445,6 +2458,7 @@ mod tests {
                 summary: Some(summary.to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2493,11 +2507,13 @@ mod tests {
             // Simulate runner failure: stop the parent, cascade-close descendants
             make_stopped_event("orch", Some("Session failed: agent crashed")),
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["orch.1".to_string(), "orch.2".to_string()],
                 outcome: TaskOutcome::WontDo,
                 summary: Some(summary.to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2544,11 +2560,13 @@ mod tests {
             make_stopped_event("p", None),
             // Only p.2 gets cascade-closed (p.1 already closed)
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["p.2".to_string()],
                 outcome: TaskOutcome::WontDo,
                 summary: Some("Parent orchestrator stopped".to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2601,11 +2619,13 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["blocker".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: None,
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2704,11 +2724,13 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["t1".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2732,10 +2754,12 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Stopped {
+                session_id: None,
                 task_ids: vec!["t1".to_string()],
                 reason: Some("blocked".to_string()),
                 turn_id: Some("turn-bbb".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -2760,17 +2784,21 @@ mod tests {
                 timestamp: Utc::now(),
             },
             TaskEvent::Closed {
+                session_id: None,
                 task_ids: vec!["t2".to_string()],
                 outcome: TaskOutcome::Done,
                 summary: None,
                 turn_id: Some("turn-x".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
             TaskEvent::Stopped {
+                session_id: None,
                 task_ids: vec!["t3".to_string()],
                 reason: None,
                 turn_id: Some("turn-x".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 

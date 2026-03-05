@@ -70,8 +70,8 @@ pub struct LoopArgs {
     pub agent: Option<String>,
 
     /// Template name override (default: aiki/loop)
-    #[arg(long = "loop-template")]
-    pub loop_template: Option<String>,
+    #[arg(long)]
+    pub template: Option<String>,
 
     /// Output format (e.g., `id` for bare task ID on stdout)
     #[arg(long, short = 'o', value_name = "FORMAT")]
@@ -97,7 +97,7 @@ pub fn run(args: LoopArgs) -> Result<()> {
     if let Some(agent) = agent_type {
         options = options.with_agent(agent);
     }
-    if let Some(template) = args.loop_template {
+    if let Some(template) = args.template {
         options = options.with_template(template);
     }
 

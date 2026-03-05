@@ -4,10 +4,10 @@
 /// consistent agent instructions across the codebase.
 
 /// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.15";
+pub const AIKI_BLOCK_VERSION: &str = "1.16";
 
 /// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.15">
+pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.16">
 
 ## ⛔ STOP - Read This First
 
@@ -39,7 +39,7 @@ aiki task close <id> --summary "Created plan at ops/now/rename.md"
 
 **Leave progress comments during long tasks:**
 ```bash
-aiki task comment --id <task-id> "Completed phase 1, now working on phase 2"
+aiki task comment add <task-id> "Completed phase 1, now working on phase 2"
 ```
 
 **When closing tasks, summarize your work:**
@@ -51,18 +51,16 @@ aiki task close <task-id> --summary "What you did"
 
 ## Workspace Isolation
 
-When concurrent agent sessions are detected, aiki creates an isolated JJ workspace for each session to prevent conflicts. The workspace path is injected at the start of each turn via hook context.
+**Every agent session runs in its own isolated JJ workspace.** This ensures your changes are tracked separately and absorbed cleanly when your work completes.
 
-**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like "Let me switch to the isolated workspace" or "I'm working from the isolated workspace." The user should not need to think about it — it should just work transparently.
+**Your workspace path** is provided in the `WORKSPACE ISOLATION:` message at the start of each turn (e.g., `/tmp/aiki/<repo-id>/<session-id>`).
+
+**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like \"Let me switch to the isolated workspace\" or \"I'm working from the isolated workspace.\" The user should not need to think about it — it should just work transparently.
 
 **If you received a `WORKSPACE ISOLATION` message earlier in this session:**
 - You MUST work from the workspace directory specified in that message
 - All file reads, writes, and edits must use paths within the workspace
 - Do NOT switch back to the repo root — stay in the workspace
-
----
-
-## Aiki Task System
 
 **IMPORTANT: Use `aiki task` for ALL task management.** Do not use built-in todo tools (TodoWrite, task lists, etc.). Aiki tasks:
 - Persist in JJ history across sessions
@@ -122,9 +120,9 @@ aiki task close <task-id> --summary "Reviewed, found 3 issues: ..."
 aiki task start "Implement user authentication system"
 
 # As you make progress, add comments
-aiki task comment --id <task-id> "Completed database schema design"
-aiki task comment --id <task-id> "Implemented password hashing"
-aiki task comment --id <task-id> "Added login endpoint, now testing"
+aiki task comment add <task-id> "Completed database schema design"
+aiki task comment add <task-id> "Implemented password hashing"
+aiki task comment add <task-id> "Added login endpoint, now testing"
 
 # Close with final summary
 aiki task close <task-id> --summary "Completed: authentication with JWT tokens, password hashing, and session management"
@@ -258,7 +256,7 @@ aiki task start <id1> <id2> <id3>
 aiki task stop --reason "Blocked on X"
 
 # Add a comment (without closing)
-aiki task comment --id <task-id> "Progress update: ..."
+aiki task comment add <task-id> "Progress update: ..."
 
 # Show task details including comments
 aiki task show <task-id>
@@ -423,7 +421,7 @@ Ready (3):
 ### Workflow
 
 1. **Start before working** - Run `aiki task start` before implementation
-2. **Comment on progress** - Use `aiki task comment` during long/multi-step tasks
+2. **Comment on progress** - Use `aiki task comment add` during long/multi-step tasks
 3. **Stop when switching** - When switching tasks, explicitly stop the current task first: `aiki task stop --reason "Switching to X"`
 4. **Stop when blocked** - Use `aiki task stop --reason` to document blockers
 5. **Close with summary** - Use `aiki task close --summary` to document your work

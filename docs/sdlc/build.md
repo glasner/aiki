@@ -15,21 +15,27 @@ aiki build <epic-id>
 aiki build ops/now/user-auth.md --async
 
 # Build then review
-aiki build ops/now/user-auth.md --review
+aiki build ops/now/user-auth.md --review-template
 
 # Build, review, and auto-fix
-aiki build ops/now/user-auth.md --fix
+aiki build ops/now/user-auth.md --fix-template
 ```
 
 ## How It Works
 
-Build has two phases: **decompose** and **execute**.
+Build is a pipeline of three stages: **epic** → **decompose** → **loop**.
 
-### Phase 1: Decompose
+### Stage 1: Epic
 
-An agent reads the plan file and creates an epic — a parent task with implementation subtasks. For each step identified in the plan, the agent creates a subtask with detailed instructions (enough context for an executing agent to complete it without re-reading the plan).
+Finds or creates an epic task for the plan file. If an epic already exists (from a previous build), it's reused. The epic is the parent task under which all implementation subtasks live.
 
-The agent also sets up dependencies between subtasks using links:
+Draft plans (with `draft: true` in frontmatter) are rejected — finalize the plan first.
+
+### Stage 2: Decompose
+
+An agent reads the plan file and creates subtasks under the epic. For each step identified in the plan, the agent creates a subtask with detailed instructions (enough context for an executing agent to complete it without re-reading the plan).
+
+The agent sets up dependencies between subtasks using links:
 
 | Link type | When to use | Effect |
 |-----------|-------------|--------|
@@ -37,13 +43,11 @@ The agent also sets up dependencies between subtasks using links:
 | `--needs-context` | Task B must share A's in-memory understanding | B runs in the same agent session as A |
 | *(no link)* | Tasks are independent | Tasks run as parallel lanes |
 
-### Phase 2: Execute
+See [Decompose](decompose.md) for full details.
 
-The orchestrator runs subtasks using `aiki task run --next-session`, which automatically picks the next ready task, delegates it to an agent, waits for completion, and moves to the next one.
+### Stage 3: Loop
 
-### Lanes
-
-Dependencies create an execution graph that Aiki schedules into parallel **lanes**:
+The loop orchestrator derives parallel lanes from the dependency graph and executes them concurrently. Independent lanes run in parallel; dependent lanes wait for predecessors.
 
 ```
          ┌─ Frontend ─┐
@@ -53,16 +57,20 @@ Plan ──▶ │             ├──▶ Tests
 
 In this example, Frontend and Backend fan out from Plan (both `--depends-on` Plan) and run in parallel. Tests fans in (depends on both) and waits for both to finish.
 
+See [Loop](loop.md) for full details on lane derivation and execution.
+
 ## Options
 
 | Flag | Effect |
 |------|--------|
 | `--async` | Run in the background, return immediately |
 | `--restart` | Ignore existing epic, create a new one |
-| `--review` | Run a review after all subtasks complete |
-| `--fix` | Run review + fix loop after build (implies `--review`) |
-| `--template <name>` | Use a custom build template (default: `aiki/loop`) |
+| `--review-template [template]` | Run a review after all subtasks complete (optionally with custom template) |
+| `--fix-template [template]` | Run review + fix loop after build (implies `--review-template`) |
+| `--decompose-template <name>` | Custom decompose template (default: `aiki/decompose`) |
+| `--loop-template <name>` | Custom loop template (default: `aiki/loop`) |
 | `--agent <type>` | Choose orchestrator agent (default: `claude-code`) |
+| `-o id` | Output bare task ID to stdout |
 
 ## Subcommands
 

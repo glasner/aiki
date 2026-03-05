@@ -95,6 +95,13 @@ pub const LINK_KINDS: &[LinkKind] = &[
         task_only: false,
     },
     LinkKind {
+        name: "populated-by",
+        max_forward: None,
+        max_reverse: None,
+        blocks_ready: true,
+        task_only: true,
+    },
+    LinkKind {
         name: "adds-plan",
         max_forward: None,
         max_reverse: None,
@@ -293,7 +300,7 @@ impl TaskGraph {
         // "follows-up" kept for backward compat with existing links (renamed to "remediates")
         const TERMINAL_UNBLOCK: &[&str] = &["validates", "remediates", "follows-up"];
         // Link types that only unblock on Closed(Done)
-        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on", "needs-context"];
+        const DONE_ONLY_UNBLOCK: &[&str] = &["blocked-by", "depends-on", "needs-context", "populated-by"];
 
         let terminal_blocked = TERMINAL_UNBLOCK.iter().any(|link_type| {
             self.edges
@@ -816,6 +823,9 @@ fn process_event(
                 }
             }
         }
+        TaskEvent::Absorbed { .. } => {
+            // Absorbed events are informational; they don't change task state.
+        }
     }
 }
 
@@ -878,8 +888,10 @@ mod tests {
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::Done,
             summary: None,
+            session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
@@ -888,8 +900,10 @@ mod tests {
             task_ids: vec![id.to_string()],
             outcome: crate::tasks::types::TaskOutcome::WontDo,
             summary: None,
+            session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
@@ -897,8 +911,10 @@ mod tests {
         TaskEvent::Stopped {
             task_ids: vec![id.to_string()],
             reason: Some("test stop".to_string()),
+            session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
+            session_id: None,
         }
     }
 
@@ -1347,8 +1363,8 @@ mod tests {
 
     #[test]
     fn test_link_kinds_registry() {
-        // Verify all 14 kinds are registered
-        assert_eq!(LINK_KINDS.len(), 14);
+        // Verify all 15 kinds are registered
+        assert_eq!(LINK_KINDS.len(), 15);
 
         let blocked = find_link_kind("blocked-by").unwrap();
         assert!(blocked.blocks_ready);
@@ -1904,8 +1920,10 @@ mod tests {
             TaskEvent::Stopped {
                 task_ids: vec!["t1".to_string()],
                 reason: None,
+                session_id: None,
                 turn_id: Some("turn-aaa-2".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -1930,8 +1948,10 @@ mod tests {
                 task_ids: vec!["t1".to_string()],
                 outcome: crate::tasks::types::TaskOutcome::Done,
                 summary: None,
+                session_id: None,
                 turn_id: Some("turn-aaa-3".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
         ];
 
@@ -1955,8 +1975,10 @@ mod tests {
             TaskEvent::Stopped {
                 task_ids: vec!["t1".to_string()],
                 reason: None,
+                session_id: None,
                 turn_id: Some("turn-aaa-2".to_string()),
                 timestamp: Utc::now(),
+                session_id: None,
             },
             TaskEvent::Started {
                 task_ids: vec!["t1".to_string()],
