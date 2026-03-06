@@ -913,7 +913,7 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     let subtasks: Vec<&Task> = graph.children_of(&epic.id);
 
     let theme = Theme::from_mode(detect_mode());
-    let view = tui::builder::build_workflow_view(epic, &subtasks, plan_path, &graph);
+    let view = tui::builder::build_workflow_view_focused(epic, &subtasks, plan_path, &graph, Some(review_id));
     let buf = tui::views::workflow::render_workflow(&view, &theme);
     Ok(buffer_to_ansi(&buf))
 }

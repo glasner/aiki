@@ -13,13 +13,28 @@ use crate::tui::types::{
 use crate::tui::widgets::lane_dag::{compute_dag_layout, should_show_dag, DagLayout};
 
 /// Build a complete `WorkflowView` from an epic task, its subtasks, and the task graph.
+///
+/// `focus_task_id` — when rendering for a specific review or fix task (e.g. from
+/// the status monitor or `aiki review`), pass that task's ID so the review/fix
+/// stage shows only its children instead of scanning all reviews/fixes on the epic.
 pub fn build_workflow_view(
     epic: &Task,
     subtasks: &[&Task],
     plan_path: &str,
     graph: &TaskGraph,
 ) -> WorkflowView {
-    let stages = build_stages(epic, subtasks, plan_path, graph);
+    build_workflow_view_focused(epic, subtasks, plan_path, graph, None)
+}
+
+/// Like [`build_workflow_view`] but with an explicit focus task.
+pub fn build_workflow_view_focused(
+    epic: &Task,
+    subtasks: &[&Task],
+    plan_path: &str,
+    graph: &TaskGraph,
+    focus_task_id: Option<&str>,
+) -> WorkflowView {
+    let stages = build_stages(epic, subtasks, plan_path, graph, focus_task_id);
     let active_stage = active_stage_name(&stages);
 
     let lane_dag = build_lane_dag(epic, plan_path, graph, &stages);
@@ -258,10 +273,11 @@ fn build_stages(
     subtasks: &[&Task],
     plan_path: &str,
     graph: &TaskGraph,
+    focus_task_id: Option<&str>,
 ) -> Vec<StageView> {
     let build_stage = build_build_stage(epic, subtasks, plan_path, graph);
-    let review_stage = build_review_stage(epic, graph);
-    let mut fix_stage = build_fix_stage(epic, graph);
+    let review_stage = build_review_stage(epic, graph, focus_task_id);
+    let mut fix_stage = build_fix_stage(epic, graph, focus_task_id);
 
     // If review is Done+approved and fix has no tasks, mark fix as Skipped
     if review_stage.state == StageState::Done
@@ -459,7 +475,10 @@ fn find_orchestrator_elapsed(epic: &Task, plan_path: &str, graph: &TaskGraph) ->
 }
 
 /// Build the "review" stage from review tasks in the graph.
-fn build_review_stage(epic: &Task, graph: &TaskGraph) -> StageView {
+///
+/// When `focus_task_id` matches a review task that validates this epic,
+/// use only that review's state/children (no scanning needed).
+fn build_review_stage(epic: &Task, graph: &TaskGraph, focus_task_id: Option<&str>) -> StageView {
     // Find review tasks that validate this epic
     let review_ids = graph.edges.referrers(&epic.id, "validates");
 
@@ -474,6 +493,30 @@ fn build_review_stage(epic: &Task, graph: &TaskGraph) -> StageView {
         };
     }
 
+    // If we have a focused review task, use it directly
+    if let Some(focus_id) = focus_task_id {
+        if let Some(review_task) = review_ids
+            .iter()
+            .find(|id| id.as_str() == focus_id)
+            .and_then(|id| graph.tasks.get(id.as_str()))
+        {
+            let children = graph
+                .children_of(&review_task.id)
+                .into_iter()
+                .map(|c| StageChild::Subtask(task_to_subtask_line(c)))
+                .collect();
+            return StageView {
+                name: "review".to_string(),
+                state: task_to_stage_state(review_task),
+                progress: derive_review_progress(review_task),
+                elapsed: format_elapsed(review_task),
+                sub_stages: Vec::new(),
+                children,
+            };
+        }
+    }
+
+    // No focus — pick the highest-priority review
     let mut state = StageState::Pending;
     let mut elapsed = None;
     let mut children = Vec::new();
@@ -482,24 +525,21 @@ fn build_review_stage(epic: &Task, graph: &TaskGraph) -> StageView {
     for review_id in review_ids {
         if let Some(review_task) = graph.tasks.get(review_id) {
             let review_state = task_to_stage_state(review_task);
-            // When a higher-priority state is found, reset elapsed/progress
-            // so they derive from the winning review (not a stale one).
             if stage_state_priority(review_state) > stage_state_priority(state) {
                 state = review_state;
                 elapsed = format_elapsed(review_task);
                 progress = derive_review_progress(review_task);
+                children.clear();
+                let review_children = graph.children_of(review_id);
+                for child in review_children {
+                    children.push(StageChild::Subtask(task_to_subtask_line(child)));
+                }
             } else if elapsed.is_none() {
                 elapsed = format_elapsed(review_task);
             }
 
             if progress.is_none() {
                 progress = derive_review_progress(review_task);
-            }
-
-            // Add review subtasks as children
-            let review_children = graph.children_of(review_id);
-            for child in review_children {
-                children.push(StageChild::Subtask(task_to_subtask_line(child)));
             }
         }
     }
@@ -515,9 +555,24 @@ fn build_review_stage(epic: &Task, graph: &TaskGraph) -> StageView {
 }
 
 /// Build the "fix" stage from fix tasks in the graph.
-fn build_fix_stage(epic: &Task, graph: &TaskGraph) -> StageView {
+///
+/// When `focus_task_id` matches a fix task that remediates this epic,
+/// use only that fix's state/children.
+fn build_fix_stage(epic: &Task, graph: &TaskGraph, focus_task_id: Option<&str>) -> StageView {
     // Find fix tasks that remediate this epic
-    let fix_ids = graph.edges.referrers(&epic.id, "remediates");
+    let all_fix_ids = graph.edges.referrers(&epic.id, "remediates");
+
+    // If focused on a specific fix task, narrow to just that one
+    let fix_ids: &[String] = if let Some(focus_id) = focus_task_id {
+        if all_fix_ids.iter().any(|id| id.as_str() == focus_id) {
+            // Borrow the matching element from all_fix_ids
+            std::slice::from_ref(all_fix_ids.iter().find(|id| id.as_str() == focus_id).unwrap())
+        } else {
+            all_fix_ids
+        }
+    } else {
+        all_fix_ids
+    };
 
     if fix_ids.is_empty() {
         return StageView {

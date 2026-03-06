@@ -546,7 +546,6 @@ mod tests {
             reason: reason.map(|s| s.to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -558,7 +557,6 @@ mod tests {
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -1494,7 +1492,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
-                session_id: None,
             },
             TaskEvent::Reopened {
                 task_id: "a1b2".to_string(),
@@ -1701,7 +1698,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(3),
-                session_id: None,
             },
             // Reopen task
             TaskEvent::Reopened {
@@ -1756,7 +1752,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
-                session_id: None,
             },
         ];
 
@@ -1787,7 +1782,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: base_time + chrono::Duration::seconds(1),
-                session_id: None,
             },
             TaskEvent::Reopened {
                 task_id: "a1b2".to_string(),
@@ -2458,7 +2452,6 @@ mod tests {
                 summary: Some(summary.to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2513,7 +2506,6 @@ mod tests {
                 summary: Some(summary.to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2566,7 +2558,6 @@ mod tests {
                 summary: Some("Parent orchestrator stopped".to_string()),
                 turn_id: None,
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2625,7 +2616,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2730,7 +2720,6 @@ mod tests {
                 summary: None,
                 turn_id: Some("turn-aaa".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2759,7 +2748,6 @@ mod tests {
                 reason: Some("blocked".to_string()),
                 turn_id: Some("turn-bbb".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -2790,7 +2778,6 @@ mod tests {
                 summary: None,
                 turn_id: Some("turn-x".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
             TaskEvent::Stopped {
                 session_id: None,
@@ -2798,7 +2785,6 @@ mod tests {
                 reason: None,
                 turn_id: Some("turn-x".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 

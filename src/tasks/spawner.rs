@@ -897,7 +897,6 @@ mod tests {
                 summary: None,
                 turn_id: None,
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 

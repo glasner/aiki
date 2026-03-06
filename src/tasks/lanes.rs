@@ -505,7 +505,6 @@ mod tests {
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -516,7 +515,6 @@ mod tests {
             reason: Some("test".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -528,7 +526,6 @@ mod tests {
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
