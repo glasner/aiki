@@ -13,56 +13,9 @@ Aiki automatically tracks which AI agents contributed to your codebase, providin
 - **Flow Engine**: Declarative YAML-based automation for all editor events
 ## Quick Start
 
-### Prerequisites
+For onboarding, setup, and first-run guidance, use the getting started guide:
 
-- Git (for co-author attribution feature)
-- Rust toolchain (for building from source)
-- Jujutsu (jj) (required)
-
-**Note:** jj must be installed in your environment before running aiki init.
-
-### Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/aiki.git
-cd aiki
-
-# Build and install
-cd cli
-cargo install --path .
-```
-
-### Initialize Aiki in Your Project
-
-```bash
-cd your-project
-aiki init
-```
-
-This will:
-- Initialize Jujutsu if not already present
-- Create `.aiki/` directory structure
-- Install Git hooks for automatic co-author attribution
-- Configure Claude Code hooks (global user hooks in `~/.claude/settings.json`)
-- Configure Cursor hooks (global user hooks in `~/.cursor/hooks.json`)
-- Offer to automatically restart editors if they're running
-
-### Check Configuration Health
-
-```bash
-aiki doctor
-```
-
-This checks:
-- Repository setup (JJ, Git, Aiki directory)
-- Global hooks installation (Git, Claude Code, Cursor)
-- Local configuration (Git core.hooksPath)
-
-Add `--fix` to automatically repair issues:
-```bash
-aiki doctor --fix
-```
+- [Getting Started](cli/docs/getting-started.md)
 
 ## Usage
 
