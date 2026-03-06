@@ -37,6 +37,6 @@ Use a dedicated Clawbot agent for doc-focused updates:
 openclaw agent --agent docs-writer --message "Review/refresh Aiki docs for getting-started + user-facing value" --deliver
 ```
 
-Current agent identity: Aiki Docs Writer (~/.openclaw/agents/docs-writer-workspace).
+Current agent identity: em (~/.openclaw/agents/docs-writer-workspace).
 
 Use task templates for in-repo workflow orchestration. Documentation personas are managed through OpenClaw isolated agents.
