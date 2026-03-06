@@ -31,23 +31,12 @@ For setup and first run, use:
 
 ## Delegating Documentation Work
 
-Use this template for doc updates when you want a dedicated pass:
+Use a dedicated Clawbot agent for doc-focused updates:
 
 ```bash
-aiki task start --template aiki/docs-writer
+openclaw agent --agent docs-writer --message "Review/refresh Aiki docs for getting-started + user-facing value" --deliver
 ```
 
-Pass scope to focus the work, for example with --data scope=getting-started or --data scope=sdlc.
+Current agent identity: Aiki Docs Writer (~/.openclaw/agents/docs-writer-workspace).
 
-The technical writer persona is tuned for:
-- concise developer-first prose
-- avoiding duplicated setup guidance
-- consistent terminology (plan -> build -> review -> fix)
-- accurate command snippets
-
-
-## Need Deep Dives
-
-- [Contribution Guide](cli/docs/contributing.md)
-- [Plan](cli/docs/sdlc/plan.md), [Build](cli/docs/sdlc/build.md), [Decompose](cli/docs/sdlc/decompose.md), [Loop](cli/docs/sdlc/loop.md)
-- [Review](cli/docs/sdlc/review.md), [Fix](cli/docs/sdlc/fix.md)
+Use task templates for in-repo workflow orchestration. Documentation personas are managed through OpenClaw isolated agents.
