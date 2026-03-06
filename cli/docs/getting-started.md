@@ -153,7 +153,7 @@ aiki task run <id>
 
 ## Code Review Pipeline
 
-Aiki's review system lets AI agents review each other's work. Commands are pipeable for autonomous workflows.
+Aiki's review system lets AI agents review each other's work. Use command flags to control review and fix behavior.
 
 ### Basic Review
 
@@ -172,14 +172,17 @@ aiki review <task-id>
 aiki fix <review-task-id>
 ```
 
-### Pipeline Pattern
+### Build and Review with Flags
 
 ```bash
-# Autonomous review + fix in one command
-aiki review | aiki fix
-
-# Review with automatic fix loop
+# Run review and automatically fix findings
 aiki review --fix
+
+# Review only, no auto-fix
+aiki review
+
+# Run review on a specific task and auto-fix issues
+aiki review <task-id> --fix
 ```
 
 ### Build + Review

@@ -150,34 +150,33 @@ aiki task close <id> --summary "Validation complete"
 
 Task data is event-sourced and stored on the `aiki/tasks` branch in JJ.
 
+
 ### Code Review
 
-Aiki includes a review system for AI agents to review each other's work with pipeable commands.
+Aiki includes a review system for AI agents to review each other work using command flags.
 
 ```bash
 # Create and run a code review (waits for completion)
 aiki review
 
-# Review specific task
+# Review a specific task
 aiki review <task-id>
 
 # Review asynchronously (returns immediately)
 aiki review --async
 
+# Review and auto-fix findings
+aiki review --fix <task-id>
+
 # Agent takes over review in current session
 aiki review --start
 
-# Create followup tasks from review findings and run them
+# Run fix explicitly from a review task id
 aiki fix <review-task-id>
-
-# Pipeline: autonomous review + fix
-aiki review | aiki fix
-
-# Pipeline with async review
-aiki review --async | aiki wait | aiki fix
 ```
 
 **Review workflow:**
+
 1. `aiki review` creates a review task with subtasks (digest changes, review code)
 2. An agent (default: codex) executes the review, recording issues via `aiki review issue add`
 3. `aiki fix` reads issues from the completed review and creates followup tasks
@@ -194,6 +193,7 @@ aiki review --async | aiki wait | aiki fix
 | `--agent <name>` | Override agent assignment |
 
 **Query commands:**
+
 ```bash
 # List review tasks
 aiki review list
@@ -201,6 +201,7 @@ aiki review list
 # Show review details with comments and followups
 aiki review show <id>
 ```
+
 
 ### Session History
 
