@@ -26,6 +26,26 @@ For setup and first run, use:
 - [Task Types and Links](cli/docs/tasks/kinds.md)
 - [Session Isolation Workflow](cli/docs/session-isolation-workflow.md)
 
+
+
+
+## Delegating Documentation Work
+
+Use this template for doc updates when you want a dedicated pass:
+
+```bash
+aiki task start --template aiki/docs-writer
+```
+
+Pass scope to focus the work, for example with --data scope=getting-started or --data scope=sdlc.
+
+The technical writer persona is tuned for:
+- concise developer-first prose
+- avoiding duplicated setup guidance
+- consistent terminology (plan -> build -> review -> fix)
+- accurate command snippets
+
+
 ## Need Deep Dives
 
 - [Contribution Guide](cli/docs/contributing.md)
