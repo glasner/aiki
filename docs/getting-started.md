@@ -4,10 +4,11 @@ This guide walks you from zero to productive with Aiki — AI code provenance tr
 
 ## Prerequisites
 
-- **Git** — for co-author attribution and version control
-- **Rust toolchain** — for building from source (`rustup` recommended)
+- **Git** — for version control
+- **Rust toolchain** — for building from source (rustup recommended)
+- **Jujutsu (jj)** — required for repository initialization
 
-Jujutsu (jj) is bundled into Aiki via `jj-lib`, so you don't need to install it separately.
+Jujutsu (jj) must be installed in your environment before running aiki init.
 
 ## Installation
 
