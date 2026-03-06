@@ -53,12 +53,6 @@ source ~/.zshrc
 source ~/.bashrc
 ```
 
-After installation (step 1), verify Aiki is on your PATH:
-
-```bash
-aiki --version
-```
-
 Verify prerequisites:
 
 ```bash
@@ -82,6 +76,8 @@ Verify the installation:
 aiki --version
 ```
 
+Expected: prints an Aiki version and confirms it's on your PATH.
+
 ## Initialize a Project
 
 Navigate to any Git repository and run:
@@ -99,8 +95,9 @@ This will:
 
 Init success checks:
 - `.aiki/` exists
-- `.aiki/config.toml` exists
-- `.git/hooks/` contains Aiki-managed hooks
+- `.aiki/repo-id` exists
+- `.aiki/hooks.yml` exists
+- `git config core.hooksPath` points to `~/.aiki/githooks`
 - `jj root` returns the project root
 
 ## Health Check
@@ -115,6 +112,18 @@ This checks repository setup, global hooks, and local configuration. If it finds
 
 ```bash
 aiki doctor --fix
+```
+
+If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/templates` or `Template not found: aiki/review`), bootstrap templates once:
+
+```bash
+cp -R /path/to/aiki/.aiki/templates .aiki/
+```
+
+Then verify:
+
+```bash
+ls .aiki/templates/aiki
 ```
 
 ## Editor Setup
