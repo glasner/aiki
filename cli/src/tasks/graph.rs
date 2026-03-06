@@ -891,7 +891,6 @@ mod tests {
             session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -903,7 +902,6 @@ mod tests {
             session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -914,7 +912,6 @@ mod tests {
             session_id: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         }
     }
 
@@ -1923,7 +1920,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-2".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -1951,7 +1947,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-3".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
         ];
 
@@ -1978,7 +1973,6 @@ mod tests {
                 session_id: None,
                 turn_id: Some("turn-aaa-2".to_string()),
                 timestamp: Utc::now(),
-                session_id: None,
             },
             TaskEvent::Started {
                 task_ids: vec!["t1".to_string()],

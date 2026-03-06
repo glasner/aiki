@@ -110,9 +110,9 @@ Stopped {
 
 ### How it works
 
-1. Agent closes task → `Closed` event written with `session_id`
+1. Agent closes task → `Closed` event written with `session_id` and `turn_id`
 2. `turn.completed` hook fires → `workspace_absorb_all` runs
-3. `workspace_absorb_all` reads task events, finds `Closed` events with matching `session_id`
+3. `workspace_absorb_all` reads task events, finds `Closed` events with matching `turn_id`
 4. Absorption completes (or determines nothing to absorb)
 5. `workspace_absorb_all` writes `Absorbed { task_ids }` for the closed tasks
 6. `run_wait` polls task events; after finding all tasks terminal, checks that each task_id appears in an `Absorbed` event
@@ -168,11 +168,11 @@ Update serialization/deserialization in `cli/src/tasks/md.rs`.
 In `cli/src/flows/core/functions.rs`, after absorption completes:
 
 ```rust
-// Find tasks closed by this session
+// Find tasks closed in this turn
 let closed_task_ids: Vec<String> = events.iter()
     .filter_map(|e| match e {
-        TaskEvent::Closed { task_ids, session_id: Some(sid), .. }
-            if sid == &this_session_id => Some(task_ids.clone()),
+        TaskEvent::Closed { task_ids, turn_id: Some(tid), .. }
+            if tid == &this_turn_id => Some(task_ids.clone()),
         _ => None,
     })
     .flatten()
@@ -191,7 +191,7 @@ if !closed_task_ids.is_empty() {
 
 **Emitted unconditionally** whenever `workspace_absorb_all` runs and there are closed tasks for the session — regardless of whether there were file changes to absorb. This avoids a failure mode where `run_wait` hangs because the agent's final turn had no file changes.
 
-Note: `workspace_absorb_all` knows the `session_id` from the workspace name (`aiki-<session-id>`). It reads task events to find `Closed` events with that session_id.
+Note: `workspace_absorb_all` receives `session_id` from the hook context and obtains `turn_id` from the session history. It reads task events to find `Closed` events matching that turn_id.
 
 #### Step 4: Update `run_wait` to check for `Absorbed`
 
@@ -221,11 +221,6 @@ if done {
 
     let all_absorbed = needs_absorption.iter().all(|id| absorbed_tasks.contains(id));
     if !all_absorbed {
-        if absorption_start.elapsed() > ABSORPTION_TIMEOUT {
-            eprintln!("Warning: Not all tasks absorbed after {}s",
-                ABSORPTION_TIMEOUT.as_secs());
-            break;
-        }
         std::thread::sleep(Duration::from_millis(delay_ms));
         delay_ms = (delay_ms * WAIT_BACKOFF_MULTIPLIER).min(WAIT_MAX_DELAY_MS);
         continue;
@@ -234,13 +229,6 @@ if done {
 }
 ```
 
-#### Step 5: Add absorption timeout
-
-Bounded timeout (60 seconds) to avoid infinite hangs if absorption gets stuck:
-
-```
-Warning: Not all tasks absorbed after 60s. Run `jj workspace list` to check.
-```
 
 ---
 
@@ -287,7 +275,7 @@ Have the agent absorb its workspace before closing the task, so `Closed` implies
 
 1. **Solo sessions (no workspace)**: `session_id` on the `Closed` event will be `None` (or absent). `run_wait` skips the absorption check for tasks without a `session_id` — no workspace means no absorption needed.
 
-2. **Crashed agents**: If an agent crashes, its `session.ended` hook still fires and `workspace_absorb_all` still runs, so `Absorbed` should still be emitted. If the hook itself fails, `wait` will timeout after 60s and return with a warning. Orphaned workspace recovery handles eventual cleanup.
+2. **Crashed agents**: If an agent crashes, its `session.ended` hook still fires and `workspace_absorb_all` still runs, so `Absorbed` should still be emitted. If the hook itself fails, `wait` will continue polling. Orphaned workspace recovery handles eventual cleanup.
 
 3. **Non-async `aiki task run`**: Synchronous runs already block until the agent process exits, which includes hooks running. The race only exists with `--async` where the parent proceeds immediately after task close.
 
@@ -303,7 +291,6 @@ Have the agent absorb its workspace before closing the task, so `Closed` implies
 
 1. Re-run the Phase 2 isolation test (5 agents editing different sections of same file) and verify all 5 sections are present when `cat` runs after `wait` returns
 2. Verify `wait` returns promptly when `Closed` events have no `session_id` (solo sessions, human-closed tasks)
-3. Verify timeout behavior: mock a stuck workspace where `Absorbed` is never emitted, confirm `wait` returns after 60s with a warning
-4. Verify `--any` mode: if waiting for any-of-N, only check absorption for the completed task(s)
-5. Verify multiple `Absorbed` events per session don't cause issues
-6. Verify `session_id` is correctly populated on `Closed`/`Stopped` events from agent sessions
+3. Verify `--any` mode: if waiting for any-of-N, only check absorption for the completed task(s)
+4. Verify multiple `Absorbed` events per session don't cause issues
+5. Verify `session_id` is correctly populated on `Closed`/`Stopped` events from agent sessions

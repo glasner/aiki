@@ -688,8 +688,16 @@ pub enum TaskCommands {
     /// 2. Execute the task (following instructions/subtasks)
     /// 3. Close the task when complete
     Run {
-        /// Task ID to run
-        id: String,
+        /// Task ID to run (required unless --template is provided)
+        id: Option<String>,
+
+        /// Create task from template before running
+        #[arg(long, conflicts_with = "id")]
+        template: Option<String>,
+
+        /// Key=value pairs for template variables (requires --template)
+        #[arg(long, requires = "template")]
+        data: Option<Vec<String>>,
 
         /// Override assignee agent (claude-code, codex)
         #[arg(long)]
@@ -1194,12 +1202,14 @@ pub fn run(command: Option<TaskCommands>) -> Result<()> {
         },
         TaskCommands::Run {
             id,
+            template,
+            data,
             agent,
             run_async,
             next_subtask,
             next_session,
             lane,
-        } => run_run(&cwd, id, agent, run_async, next_subtask, next_session, lane),
+        } => run_run(&cwd, id, template, data, agent, run_async, next_subtask, next_session, lane),
         TaskCommands::Wait { ids, any, output } => run_wait(&cwd, ids, any, output),
         TaskCommands::Lane { id, all } => run_lane(&cwd, id, all),
         TaskCommands::Undo {
@@ -5326,7 +5336,9 @@ pub(crate) fn comment_on_task(
 /// Run a task by spawning an agent session
 fn run_run(
     cwd: &Path,
-    id: String,
+    id: Option<String>,
+    template: Option<String>,
+    data: Option<Vec<String>>,
     agent: Option<String>,
     run_async: bool,
     next_subtask: bool,
@@ -5356,10 +5368,63 @@ fn run_run(
         None
     };
 
+    // Handle template creation if --template provided
+    let id = if let Some(template_name) = template {
+        // Template mode: create task from template, then run it
+        use crate::commands::task::create_from_template;
+        use std::collections::HashMap;
+
+        // Parse data key=value pairs
+        let mut data_map = HashMap::new();
+        if let Some(data_vec) = data {
+            for pair in data_vec {
+                let parts: Vec<&str> = pair.splitn(2, '=').collect();
+                if parts.len() == 2 {
+                    data_map.insert(parts[0].to_string(), parts[1].to_string());
+                } else {
+                    return Err(AikiError::Other(anyhow::anyhow!(
+                        "Invalid --data format '{}'. Expected key=value",
+                        pair
+                    )));
+                }
+            }
+        }
+
+        // Create task from template
+        let params = crate::commands::task::TemplateTaskParams {
+            template_name: template_name.clone(),
+            data: data_map,
+            sources: vec![],
+            assignee: agent.clone(),
+            priority: None,
+            parent_id: None,
+            parent_name: None,
+            source_data: std::collections::HashMap::new(),
+            builtins: std::collections::HashMap::new(),
+            task_id: None,
+        };
+
+        let task_id = create_from_template(cwd, params)?;
+        eprintln!("Added: {} — (created from template {})", task_id, template_name);
+        
+        Some(task_id)
+    } else if let Some(id_val) = id {
+        // Direct ID mode
+        Some(id_val)
+    } else {
+        // Neither id nor template provided
+        return Err(AikiError::Other(anyhow::anyhow!(
+            "Either task ID or --template must be provided"
+        )));
+    };
+
     // Track whether we claimed a subtask (for rollback on failure)
     let mut claimed_id: Option<String> = None;
     // Track chain IDs for chain session execution
     let mut chain_ids: Option<Vec<String>> = None;
+
+    // Unwrap id - guaranteed to be Some by validation above
+    let id = id.expect("id must be Some after validation");
 
     let actual_id = if next_session {
         // Resolve the next ready session of the parent

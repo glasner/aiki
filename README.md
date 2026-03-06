@@ -31,12 +31,12 @@ For setup and first run, use:
 
 ## Delegating Documentation Work
 
-Use a dedicated Clawbot agent for doc-focused updates:
+Use a dedicated Clawbot agent for doc-focused updates (identity: **em**):
 
 ```bash
-openclaw agent --agent docs-writer --message "Review/refresh Aiki docs for getting-started + user-facing value" --deliver
+openclaw agent --agent em --message "Review/refresh Aiki docs for getting-started + user-facing value" --deliver
 ```
 
-Current agent identity: em (~/.openclaw/agents/docs-writer-workspace).
+Current agent identity: em (~/.openclaw/agents/em).
 
 Use task templates for in-repo workflow orchestration. Documentation personas are managed through OpenClaw isolated agents.

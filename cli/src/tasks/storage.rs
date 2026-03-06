@@ -1346,7 +1346,6 @@ timestamp=2026-01-09T10:30:00Z
             reason: Some("Need more info".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1385,7 +1384,6 @@ timestamp=2026-01-09T10:30:00Z
             summary: None,
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1424,7 +1422,6 @@ timestamp=2026-01-09T10:30:00Z
             summary: Some("Fixed the auth bug".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -1458,7 +1455,6 @@ timestamp=2026-01-09T10:30:00Z
             summary: Some("Fixed bug: added null check\nnew line here".to_string()),
             turn_id: None,
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -2693,12 +2689,11 @@ timestamp=2026-02-10T14:30:00Z
     #[test]
     fn test_roundtrip_stopped_with_turn_id() {
         let original = TaskEvent::Stopped {
-            session_id: None,
             task_ids: vec!["task1".to_string()],
             reason: Some("blocked".to_string()),
+            session_id: None,
             turn_id: Some("turn-xyz-5".to_string()),
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -2720,13 +2715,12 @@ timestamp=2026-02-10T14:30:00Z
     #[test]
     fn test_roundtrip_closed_with_turn_id() {
         let original = TaskEvent::Closed {
-            session_id: None,
             task_ids: vec!["task1".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("All done".to_string()),
+            session_id: None,
             turn_id: Some("turn-def-3".to_string()),
             timestamp: Utc::now(),
-            session_id: None,
         };
 
         let block = event_to_metadata_block(&original);
@@ -2868,5 +2862,81 @@ timestamp=2026-02-10T14:30:00Z
         let mut events = Vec::new();
         parse_all_metadata_blocks("no metadata here", &mut events);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_roundtrip_absorbed() {
+        let original = TaskEvent::Absorbed {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            session_id: "sess-123".to_string(),
+            turn_id: Some("turn-456".to_string()),
+            timestamp: DateTime::parse_from_rfc3339("2026-03-04T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("event=absorbed"));
+        assert!(block.contains("task_id=task1"));
+        assert!(block.contains("task_id=task2"));
+        assert!(block.contains("session_id=sess-123"));
+        assert!(block.contains("turn_id=turn-456"));
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Absorbed {
+                task_ids,
+                session_id,
+                turn_id,
+                timestamp,
+            } => {
+                assert_eq!(task_ids, vec!["task1", "task2"]);
+                assert_eq!(session_id, "sess-123");
+                assert_eq!(turn_id, Some("turn-456".to_string()));
+                assert_eq!(timestamp, original.timestamp());
+            }
+            _ => panic!("Expected Absorbed event"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_absorbed_no_turn_id() {
+        let original = TaskEvent::Absorbed {
+            task_ids: vec!["task1".to_string(), "task2".to_string()],
+            session_id: "sess-789".to_string(),
+            turn_id: None,
+            timestamp: DateTime::parse_from_rfc3339("2026-03-04T11:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+
+        let block = event_to_metadata_block(&original);
+        assert!(block.contains("event=absorbed"));
+        assert!(block.contains("session_id=sess-789"));
+        assert!(!block.contains("turn_id="), "Should not contain turn_id when None");
+
+        let start = block.find("[aiki-task]").unwrap() + "[aiki-task]".len();
+        let end = block.find("[/aiki-task]").unwrap();
+        let content = &block[start..end];
+        let parsed = parse_metadata_block(content).expect("Should parse");
+
+        match parsed {
+            TaskEvent::Absorbed {
+                task_ids,
+                session_id,
+                turn_id,
+                timestamp,
+            } => {
+                assert_eq!(task_ids, vec!["task1", "task2"]);
+                assert_eq!(session_id, "sess-789");
+                assert_eq!(turn_id, None);
+                assert_eq!(timestamp, original.timestamp());
+            }
+            _ => panic!("Expected Absorbed event"),
+        }
     }
 }

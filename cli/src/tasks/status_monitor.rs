@@ -162,9 +162,9 @@ impl StatusMonitor {
             match self.poll_and_display(cwd) {
                 Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
                 Ok(false) => continue,
-                Err(e) => {
-                    // Log error but continue monitoring
-                    eprintln!("\nError polling task: {}", e);
+                Err(_) => {
+                    // Silently retry — jj contention during agent shutdown is expected.
+                    // The agent-exit path (try_wait) will handle the final poll.
                     continue;
                 }
             }
@@ -185,24 +185,47 @@ impl StatusMonitor {
             stderr.execute(Clear(ClearType::FromCursorDown))?;
         }
 
-        // Resolve epic from build task's data
-        let (epic, subtasks) = if let Some(epic_id) =
+        // Resolve epic from the running task.
+        // Build/orchestrator tasks store the epic id in data["epic"] or data["target"].
+        // Review tasks link to the epic via a "validates" edge.
+        // Fix tasks link to the epic via a "remediates" edge.
+        //
+        // `focus_task_id` is set when root_task is a review/fix so the builder
+        // shows only that task's children instead of scanning all reviews/fixes.
+        let (epic, subtasks, focus_task_id) = if let Some(epic_id) =
             root_task.data.get("epic").or_else(|| root_task.data.get("target"))
         {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
                 let subs = self.get_sorted_subtasks(graph, epic_id);
-                (epic_task, subs)
+                (epic_task, subs, None)
             } else {
-                (root_task, self.get_sorted_subtasks(graph, &root_task.id))
+                (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
+            }
+        } else if let Some(epic_id) = graph
+            .edges
+            .targets(&root_task.id, "validates")
+            .first()
+            .or_else(|| {
+                graph
+                    .edges
+                    .targets(&root_task.id, "remediates")
+                    .first()
+            })
+        {
+            if let Some(epic_task) = graph.tasks.get(epic_id) {
+                let subs = self.get_sorted_subtasks(graph, epic_id);
+                (epic_task, subs, Some(root_task.id.as_str()))
+            } else {
+                (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
             }
         } else {
-            (root_task, self.get_sorted_subtasks(graph, &root_task.id))
+            (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
         };
 
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
         let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
         let theme = Theme::from_mode(detect_mode());
-        let view = tui::builder::build_workflow_view(epic, &subtask_refs, plan_path, graph);
+        let view = tui::builder::build_workflow_view_focused(epic, &subtask_refs, plan_path, graph, focus_task_id);
         let buf = tui::views::workflow::render_workflow(&view, &theme);
         let ansi = tui::buffer_ansi::buffer_to_ansi(&buf);
 

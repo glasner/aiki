@@ -8,7 +8,65 @@ This guide walks you from zero to productive with Aiki — AI code provenance tr
 - **Rust toolchain** — for building from source (rustup recommended)
 - **Jujutsu (jj)** — required for repository initialization
 
-Jujutsu (jj) must be installed in your environment before running aiki init.
+Jujutsu (jj) must be installed in your environment before running `aiki init`.
+
+Install prerequisites (examples):
+
+### macOS (Homebrew)
+
+```bash
+brew install git rustup-init jj
+rustup-init -y
+```
+
+### Linux
+
+```bash
+# Debian/Ubuntu example
+sudo apt update
+sudo apt install -y git curl build-essential
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+
+# Install jj (pick one)
+cargo install --locked jj-cli
+# or use your distro package if available
+```
+
+Add Cargo's bin directory to your shell profile permanently:
+
+```bash
+# zsh
+grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.zshrc || \
+  echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+
+# bash
+grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.bashrc || \
+  echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+```
+
+Reload your shell config (or open a new shell):
+
+```bash
+# zsh
+source ~/.zshrc
+# bash
+source ~/.bashrc
+```
+
+After installation (step 1), verify Aiki is on your PATH:
+
+```bash
+aiki --version
+```
+
+Verify prerequisites:
+
+```bash
+git --version
+rustc --version
+cargo --version
+jj --version
+```
 
 ## Installation
 
@@ -38,6 +96,12 @@ This will:
 - Create the `.aiki/` directory with default configuration
 - Install Git hooks for automatic co-author attribution
 - Configure editor hooks globally (Claude Code, Cursor)
+
+Init success checks:
+- `.aiki/` exists
+- `.aiki/config.toml` exists
+- `.git/hooks/` contains Aiki-managed hooks
+- `jj root` returns the project root
 
 ## Health Check
 
