@@ -65,135 +65,38 @@ aiki doctor --fix
 
 Since hooks are global, you only need to restart your editor once after `aiki init`. Aiki preserves any existing hooks you had.
 
-## Your First AI Session
+## First Workflow: Plan → Build → Fix
 
-Once Aiki is initialized, just use your AI editor normally. Aiki works in the background:
+Aiki is designed for a simple first run: write a plan, execute it, then let the review/fix loop run automatically.
 
-1. **Session starts** — Aiki creates a fresh JJ change for the session
-2. **AI edits files** — provenance metadata is recorded automatically in JJ change descriptions
-3. **You `git commit`** — Aiki's Git hook adds `Co-authored-by:` lines for AI contributors
-4. **Check attribution** — `aiki blame` shows who wrote what
+### 1) Write a Plan
 
-### See AI Attribution
+Use a markdown plan file (for example, `ops/now/my-feature.md`) with implementation goals.
 
-```bash
-aiki blame src/main.rs
-```
-
-Output:
-
-```
-abc12345 (Claude Code   session-123  High  )    1| fn main() {
-abc12345 (Claude Code   session-123  High  )    2|     println!("Hello, world!");
-def67890 (Cursor        session-456  High  )    3|     // Added by Cursor
-```
-
-Filter by editor:
+### 2) Run Build with Review+Fix
 
 ```bash
-aiki blame src/main.rs --agent claude-code
-```
-
-### See AI Authors
-
-```bash
-# Working copy changes
-aiki authors
-
-# Git trailer format for commit messages
-aiki authors --format=git --changes=staged
-```
-
-## Task Management Basics
-
-Aiki includes an event-sourced task system designed for AI agent workflows. Tasks persist across sessions and are visible to all agents.
-
-### Create and Work on Tasks
-
-```bash
-# Create and start a task in one command
-aiki task start "Implement login validation"
-
-# Add progress notes as you work
-aiki task comment <id> "Added email format check"
-
-# Close when done
-aiki task close <id> --summary "Validation complete"
-```
-
-### View Tasks
-
-```bash
-# See what's ready to work on
-aiki task
-
-# Show details for a specific task
-aiki task show <id>
-```
-
-### Priorities and Subtasks
-
-```bash
-# Create with priority
-aiki task start "Urgent fix" --p0
-
-# Create subtasks for multi-part work
-aiki task add "Fix all review issues" --source prompt
-aiki task add --parent <id> "Fix null check"
-aiki task add --parent <id> "Add error handling"
-aiki task start <id>
-```
-
-### Delegate to Agents
-
-```bash
-# Have another agent work on a task
-aiki task run <id>
-```
-
-## Code Review Pipeline
-
-Aiki's review system lets AI agents review each other's work. Use command flags to control review and fix behavior.
-
-### Basic Review
-
-```bash
-# Create and run a review (waits for completion)
-aiki review
-
-# Review a specific task's changes
-aiki review <task-id>
-```
-
-### Fix Issues Found
-
-```bash
-# Create followup tasks from review findings
-aiki fix <review-task-id>
-```
-
-### Build and Review with Flags
-
-```bash
-# Run review and automatically fix findings
-aiki review --fix
-
-# Review only, no auto-fix
-aiki review
-
-# Run review on a specific task and auto-fix issues
-aiki review <task-id> --fix
-```
-
-### Build + Review
-
-```bash
-# Build from a plan, then review the output
-aiki build ops/now/my-feature.md --review
-
-# Build, review, and auto-fix
 aiki build ops/now/my-feature.md --fix
 ```
+
+Use `--review` first if you want review without auto-fix, then rerun with `--fix` when ready.
+
+### 3) Check Task Progress
+
+```bash
+# Watch the tasks that were created for the plan and review/fix steps
+aiki task
+
+# Open details for a task
+aiki task show <task-id>
+
+# Watch the build-review-fix task chain
+aiki task show <build-task-id>
+```
+
+The build command orchestrates: **plan → decompose → loop → review → fix** (with review/fix iteration enabled by `--fix`).
+
+Use this flow in a real repo before introducing additional commands.
 
 ## Next Steps
 
