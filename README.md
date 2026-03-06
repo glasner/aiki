@@ -2,12 +2,12 @@
 
 Aiki is an AI-aware workflow layer for codebases: provenance-first, multi-agent orchestration, and automatic review/fix loops.
 
-## What It Helps With
+## What it helps with (for developers)
 
-- Track AI-authored changes with Jujutsu and Git co-author attribution.
-- Run a repeatable SDLC with plan -> build -> review -> fix.
-- Keep agent actions in one event-driven workflow engine.
-- Preserve task history and decision context for future debugging and audit.
+- **Move faster with confidence**: start from a clear plan, let Aiki execute it, and trust review/fix feedback to keep changes safe.
+- **Stop attribution guesswork**: keep AI authorship and edit intent attached to each change so teammates know what changed and why.
+- **Keep work coordinated**: let tasks, subtasks, and execution loops replace ad-hoc handoffs between AI assistants.
+- **Scale without chaos**: preserve decision history and session context so the next engineer can pick up work without reconstructing who did what.
 
 ## Quick Start
 
