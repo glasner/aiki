@@ -370,7 +370,7 @@ pub struct ReviewArgs {
     #[arg(long)]
     pub start: bool,
 
-    /// Task template to use (default: scope-specific, e.g. aiki/review/task)
+    /// Task template to use (default: scope-specific, e.g. review/task)
     #[arg(long)]
     pub template: Option<String>,
 
@@ -401,7 +401,7 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         .map_err(|_| AikiError::InvalidArgument("Failed to get current directory".to_string()))?;
 
     // Resolve --fix / --fix-template into a single Option<String>
-    let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+    let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
 
     // Internal: continue an async review+fix from a previously created review task
     if let Some(ref review_id) = args.continue_async {
@@ -444,9 +444,9 @@ pub struct CreateReviewParams {
     pub scope: ReviewScope,
     /// Override the reviewer agent
     pub agent_override: Option<String>,
-    /// Template to use (default: scope-specific, e.g. aiki/review/task)
+    /// Template to use (default: scope-specific, e.g. review/task)
     pub template: Option<String>,
-    /// Fix plan template (e.g., "aiki/fix"); Some means fix is enabled
+    /// Fix plan template (e.g., "fix"); Some means fix is enabled
     pub fix_template: Option<String>,
     /// Enable autorun on the validates link (default: false, opt-in only)
     pub autorun: bool,
@@ -631,8 +631,8 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
 
     // Create review task with subtasks from template
     let default_template = match scope.kind {
-        ReviewScopeKind::Session => "aiki/review/task".to_string(),
-        _ => format!("aiki/review/{}", scope.kind.as_str()),
+        ReviewScopeKind::Session => "review/task".to_string(),
+        _ => format!("review/{}", scope.kind.as_str()),
     };
     let template = params.template.as_deref().unwrap_or(&default_template);
     let mut scope_data = scope.to_data();
@@ -1672,9 +1672,9 @@ mod tests {
 
     #[test]
     fn build_async_review_args_includes_fix_template() {
-        let args = build_async_review_args("rev123", Some("aiki/fix"), None, false);
+        let args = build_async_review_args("rev123", Some("fix"), None, false);
         assert!(args.contains(&"--fix-template".to_string()));
-        assert!(args.contains(&"aiki/fix".to_string()));
+        assert!(args.contains(&"fix".to_string()));
     }
 
     #[test]
@@ -1686,13 +1686,13 @@ mod tests {
 
     #[test]
     fn build_async_review_args_all_flags() {
-        let args = build_async_review_args("rev123", Some("aiki/fix"), Some("claude-code"), true);
+        let args = build_async_review_args("rev123", Some("fix"), Some("claude-code"), true);
         assert_eq!(args, vec![
             "review",
             "--_continue-async",
             "rev123",
             "--fix-template",
-            "aiki/fix",
+            "fix",
             "--agent",
             "claude-code",
             "--autorun",
@@ -1811,26 +1811,26 @@ mod tests {
     #[test]
     fn build_async_review_args_fix_template_only() {
         // Verify --fix-template flag is correctly placed in args for async path
-        let args = build_async_review_args("rev456", Some("aiki/fix"), None, false);
+        let args = build_async_review_args("rev456", Some("fix"), None, false);
         assert_eq!(args, vec![
             "review",
             "--_continue-async",
             "rev456",
             "--fix-template",
-            "aiki/fix",
+            "fix",
         ]);
     }
 
     #[test]
     fn build_async_review_args_fix_template_with_autorun() {
         // --fix-template + --autorun (no agent) for async path
-        let args = build_async_review_args("rev789", Some("aiki/fix"), None, true);
+        let args = build_async_review_args("rev789", Some("fix"), None, true);
         assert_eq!(args, vec![
             "review",
             "--_continue-async",
             "rev789",
             "--fix-template",
-            "aiki/fix",
+            "fix",
             "--autorun",
         ]);
     }

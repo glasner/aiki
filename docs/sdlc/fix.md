@@ -22,11 +22,11 @@ aiki fix <review-task-id> --async
 
 1. **Read review issues** — Fix reads the review task's issue comments (added via `aiki review issue add`). Regular comments are ignored.
 
-2. **Plan** — A fix plan is created from the `aiki/fix` template, describing what needs to change to address each issue.
+2. **Plan** — A fix plan is created from the `fix` template, describing what needs to change to address each issue.
 
 3. **Decompose** — The plan is decomposed into subtasks, one per issue, each with enough context for an agent to resolve independently.
 
-4. **Loop** — Subtasks are executed via `aiki/loop`, which runs each fix through an agent session.
+4. **Loop** — Subtasks are executed via `loop`, which runs each fix through an agent session.
 
 5. **Link back** — Fix tasks emit `remediates` links back to the review and `fixes` links to the reviewed targets, creating a traceable remediation chain.
 
@@ -68,10 +68,10 @@ Where the fix task gets attached depends on the review scope:
 | `--async` | Run in the background |
 | `--once` | Single-pass fix (no quality loop) |
 | `--autorun` | Auto-start fix when review closes |
-| `--template <name>` | Custom plan template (default: `aiki/fix`) |
-| `--decompose-template <name>` | Custom decompose template (default: `aiki/decompose`) |
-| `--loop-template <name>` | Custom loop template (default: `aiki/loop`) |
-| `--review-template [name]` | Custom review template for quality loop (default: `aiki/review`) |
+| `--template <name>` | Custom plan template (default: `fix`) |
+| `--decompose-template <name>` | Custom decompose template (default: `decompose`) |
+| `--loop-template <name>` | Custom loop template (default: `loop`) |
+| `--review-template [name]` | Custom review template for quality loop (default: `review`) |
 | `--agent <type>` | Override fix agent |
 | `-o id` | Output bare task ID to stdout |
 

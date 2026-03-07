@@ -119,13 +119,13 @@ enum Commands {
         /// Internal: continue an async fix from a previously created fix-parent
         #[arg(long = "_continue-async", hide = true)]
         continue_async: Option<String>,
-        /// Custom plan template (default: aiki/fix)
+        /// Custom plan template (default: fix)
         #[arg(long)]
         template: Option<String>,
-        /// Custom decompose template (default: aiki/decompose)
+        /// Custom decompose template (default: decompose)
         #[arg(long = "decompose-template")]
         decompose_template: Option<String>,
-        /// Custom loop template (default: aiki/loop)
+        /// Custom loop template (default: loop)
         #[arg(long = "loop-template")]
         loop_template: Option<String>,
         /// Enable quality loop review step
@@ -173,7 +173,7 @@ enum Commands {
         /// otherwise defaults to epic behavior.
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
-        /// Plan template to use (default: aiki/plan)
+        /// Plan template to use (default: plan)
         #[arg(long)]
         template: Option<String>,
         /// Agent for plan session (default: claude-code)
@@ -295,7 +295,7 @@ fn run() -> Result<()> {
             output,
         } => {
             // Resolve --review / --review-template into a single Option<String>
-            let review_template = review_template.or(if review { Some("aiki/review".to_string()) } else { None });
+            let review_template = review_template.or(if review { Some("review".to_string()) } else { None });
             commands::fix::run(task_id, run_async, continue_async, template, decompose_template, loop_template, review_template, agent, autorun, once, output)
         }
         Commands::Explore(args) => commands::explore::run(args),

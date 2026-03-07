@@ -82,56 +82,86 @@ into
 - Input: message/event stream
 - Output: urgent/actionable/info routing with rationale
 
-## Running a task from a template (required workflow)
+## How to write high-leverage Aiki task templates for agents
 
-Use `aiki task run --template ...` when you want one-shot create + execute.
+Use this as the default template-writing standard for claw agents.
 
-### 1) Pick a template
-Use namespaced template IDs (example: `tu/intel/new-target`).
+### 1) Be explicit about outputs
+- Name exact artifact paths.
+- Use canonical directories (current default: `ops/research/intel/...`, not legacy paths).
+- State expected filenames and minimum required sections.
 
-Template docs:
-- [Task template composition and subtask spawning](tasks/templates/spawn.md)
-- [Task kinds](tasks/kinds.md)
-- [Task links](tasks/links.md)
-- [Template overrides and resolution order](customizing-defaults.md)
+### 2) Encode acceptance criteria in-template
+- Define testable done conditions.
+- Include quality bars: specificity, evidence, non-hype, actionability.
 
-### 2) Run sync (wait for completion)
+### 3) Separate workflow phases clearly
+- Keep phase boundaries explicit (for example: Research -> Mapping -> Opportunities -> Followups -> Brief).
+- Each phase should have one purpose; avoid blended prompts.
+
+### 4) Prefer deterministic variables
+- Require clearly named vars (`target_slug`, IDs, paths) and use them consistently.
+- Fail fast on missing required vars with actionable error messages (`missing var X; provide --data X=...`).
+
+### 5) Minimize ambiguity in instructions
+- Specify audience/persona, tone, and constraints.
+- Explicitly state what **not** to optimize for.
+
+### 6) Include guardrails and escalation paths
+- Read-only by default unless authorized otherwise.
+- Define blocker escalation conditions.
+- Disallow unbounded retries / unclear loops.
+
+### 7) Make templates migration-friendly
+- Use shared constants/conventions for paths and extensions.
+- Avoid hardcoded legacy paths.
+- Keep template semantics explicit (source/compiled direction, including `.md.tmpl` conventions).
+
+### 8) Bias for reusable structure over one-off prose
+- Prefer reusable headings/checklists to bespoke narrative.
+- Add a “first-day minimum useful path” checklist where relevant.
+
+### 9) Require evidence in outputs
+- Link claims to source artifacts/lines when possible.
+- Distinguish facts from assumptions.
+
+### 10) Keep operator experience tight
+- One final report by default.
+- Blocker-only interim updates.
+- No duplicate status spam.
+
+### Recommended template skeleton
+```md
+# <template-id> — <target/context>
+
+## Goal
+## Inputs (required vars)
+## Outputs (exact artifact paths + required sections)
+## Phases (ordered, purpose-distinct)
+## Acceptance criteria (testable)
+## Quality bar
+## Guardrails + escalation
+## Reporting contract
+## First-day minimum useful path
+```
+
+### Namespaced template examples (`tu/intel/...`)
 ```bash
 aiki task run --template tu/intel/new-target \
   --data target_slug=acme \
-  --data target_name="Acme" \
-  --data target_url="https://acme.dev"
+  --data target_name="Acme"
+
+aiki task run --template tu/intel/weekly-synthesis \
+  --data target_slug=acme
 ```
 
-### 3) Run async (return immediately)
-```bash
-aiki task run --template tu/intel/new-target \
-  --data target_slug=acme \
-  --data target_name="Acme" \
-  --data target_url="https://acme.dev" \
-  --async
-```
-
-### 4) When to pass `--agent`
-If template output has no assignee, pass an explicit agent:
-```bash
-aiki task run --template tu/intel/new-target \
-  --data target_slug=acme \
-  --data target_name="Acme" \
-  --data target_url="https://acme.dev" \
-  --agent claude-code \
-  --async
-```
-
-### 5) Expected output patterns
-- Sync: `Added ...`, `Spawning ...`, `Task run complete`, `## Run Completed`
-- Async: `Added ...`, `## Run Started`, then returns immediately
-
-### 6) Common errors to avoid
-- Missing required `--data` variables.
-- Passing `--data` without `--template`.
-- Passing both task ID and `--template` at the same time.
-- Using stale template IDs (use namespaced IDs like `tu/intel/...`).
+### Common failure modes to design for
+- `No templates directory found at: .aiki/templates`
+  - Fix: ensure templates are installed/bootstrapped before first run.
+- `Variable '{data.X}' referenced but not provided`
+  - Fix: include explicit required-vars list and `--data` examples.
+- Wrong namespace or stale path conventions
+  - Fix: use canonical namespaced IDs (`tu/intel/...`) and current artifact roots (`ops/research/intel/...`).
 
 ## Guardrails (non-negotiable)
 

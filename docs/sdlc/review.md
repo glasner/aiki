@@ -87,7 +87,7 @@ By default, Aiki assigns a different agent type for reviews than the one that wr
 | `--start` | Assign the review to the calling agent (hand off) |
 | `--code` | Review code implementation (only with file targets) |
 | `--autorun` | Auto-start review when its target task closes |
-| `--template <name>` | Use a custom review template (default: `aiki/review`) |
+| `--template <name>` | Use a custom review template (default: `review`) |
 | `--agent <type>` | Override reviewer agent |
 | `-o id` | Output bare review task ID to stdout |
 

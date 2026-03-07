@@ -350,7 +350,7 @@ pub fn evaluate_spawns(
                     .unwrap_or(1);
 
                 if current_index1 >= max_iters {
-                    eprintln!(
+                    eprintln!( // stderr-ok: spawn evaluation, never called during monitoring
                         "[aiki] Warning: Loop terminated: max iterations ({}) reached for spawn entry {}",
                         max_iters, index
                     );
@@ -366,7 +366,7 @@ pub fn evaluate_spawns(
         let is_true = match condition_result {
             Ok(b) => b,
             Err(_) => {
-                eprintln!(
+                eprintln!( // stderr-ok: spawn evaluation, never called during monitoring
                     "[aiki] Warning: spawn condition evaluation failed for task {}, spawn index {}: skipping",
                     task.id, index
                 );
@@ -384,7 +384,7 @@ pub fn evaluate_spawns(
         } else if let Some(ref task_config) = entry.task {
             (task_config, false)
         } else {
-            eprintln!(
+            eprintln!( // stderr-ok: spawn evaluation, never called during monitoring
                 "[aiki] Warning: spawn entry {} for task {} has neither 'task' nor 'subtask': skipping",
                 index, task.id
             );
@@ -399,7 +399,7 @@ pub fn evaluate_spawns(
             match evaluate_spawn_data(&mut evaluator, &config.data, &mut data_scope) {
                 Ok(data) => data,
                 Err(e) => {
-                    eprintln!(
+                    eprintln!( // stderr-ok: spawn evaluation, never called during monitoring
                         "[aiki] Warning: spawn data evaluation failed for task {}, spawn index {}: {} — skipping",
                         task.id, index, e
                     );
@@ -497,7 +497,7 @@ mod tests {
             max_iterations: None,
             when: "not data.approved".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -509,7 +509,7 @@ mod tests {
         let actions = evaluate_spawns(&task, &graph, &spawns).actions;
         assert_eq!(actions.len(), 1);
         match &actions[0] {
-            SpawnAction::CreateTask { template, .. } => assert_eq!(template, "aiki/fix"),
+            SpawnAction::CreateTask { template, .. } => assert_eq!(template, "fix"),
             _ => panic!("Expected CreateTask"),
         }
     }
@@ -524,7 +524,7 @@ mod tests {
             max_iterations: None,
             when: "not data.approved".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -574,7 +574,7 @@ mod tests {
                 max_iterations: None,
                 when: "not data.approved".to_string(),
                 task: Some(SpawnTaskConfig {
-                    template: "aiki/fix".to_string(),
+                    template: "fix".to_string(),
                     priority: None,
                     assignee: None,
                     autorun: false,
@@ -626,7 +626,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: Some("p0".to_string()),
                 assignee: None,
                 autorun: false,
@@ -667,7 +667,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -702,7 +702,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -731,7 +731,7 @@ mod tests {
                 max_iterations: None,
                 when: "true".to_string(),
                 task: Some(SpawnTaskConfig {
-                    template: "aiki/fix".to_string(),
+                    template: "fix".to_string(),
                     priority: None,
                     assignee: None,
                     autorun: false,
@@ -767,7 +767,7 @@ mod tests {
                 max_iterations: None,
                 when: "invalid $$$ syntax".to_string(),
                 task: Some(SpawnTaskConfig {
-                    template: "aiki/fix".to_string(),
+                    template: "fix".to_string(),
                     priority: None,
                     assignee: None,
                     autorun: false,
@@ -910,7 +910,7 @@ mod tests {
             max_iterations: None,
             when: "not subtasks.review.data.approved".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -989,7 +989,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -1034,7 +1034,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,
@@ -1065,7 +1065,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: true,
@@ -1093,7 +1093,7 @@ mod tests {
             max_iterations: None,
             when: "true".to_string(),
             task: Some(SpawnTaskConfig {
-                template: "aiki/fix".to_string(),
+                template: "fix".to_string(),
                 priority: None,
                 assignee: None,
                 autorun: false,

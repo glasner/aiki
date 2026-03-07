@@ -5,11 +5,12 @@
 
 use std::io::IsTerminal;
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::agents::{
-    detect_agent_from_process_tree, get_runtime, AgentSessionResult, AgentSpawnOptions, AgentType,
-    Assignee, BackgroundHandle,
+    detect_agent_from_process_tree, get_runtime, AgentRuntime, AgentSessionResult,
+    AgentSpawnOptions, AgentType, Assignee, BackgroundHandle,
 };
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
@@ -23,6 +24,7 @@ use crate::tasks::{
     md::MdBuilder,
     TaskGraph,
 };
+use crate::tui::live_screen::LiveScreen;
 
 /// Options for running a task
 #[derive(Debug, Clone)]
@@ -120,16 +122,82 @@ fn resolve_agent_type(
     Err(AikiError::TaskNoAssignee(task_id.to_string()))
 }
 
-/// Run a task by spawning an agent session
+// ---------------------------------------------------------------------------
+// ScreenSession — owns a shared LiveScreen + SIGINT handler
+// ---------------------------------------------------------------------------
+
+/// Owns a shared `LiveScreen` and scoped SIGINT handler for multi-task screen sessions.
+pub struct ScreenSession {
+    screen: LiveScreen,
+    stop_flag: Arc<AtomicBool>,
+    #[cfg(unix)]
+    sig_id: signal_hook::SigId,
+}
+
+impl ScreenSession {
+    /// Create a new session: enters alternate screen and registers a SIGINT handler.
+    pub fn new() -> Result<Self> {
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let screen = LiveScreen::new()?;
+
+        #[cfg(unix)]
+        let sig_id = {
+            let flag = Arc::clone(&stop_flag);
+            signal_hook::flag::register(signal_hook::consts::SIGINT, flag)
+                .map_err(|e| AikiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        };
+
+        Ok(Self {
+            screen,
+            stop_flag,
+            #[cfg(unix)]
+            sig_id,
+        })
+    }
+
+    /// Access the shared screen.
+    pub fn screen(&mut self) -> &mut LiveScreen {
+        &mut self.screen
+    }
+
+    /// Shared stop flag for monitors.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop_flag)
+    }
+}
+
+impl Drop for ScreenSession {
+    fn drop(&mut self) {
+        // Unregister the SIGINT handler to restore default behavior
+        #[cfg(unix)]
+        signal_hook::low_level::unregister(self.sig_id);
+
+        // Defense-in-depth: LiveScreen's Drop handles normal cleanup,
+        // but call restore_terminal() as a safety net.
+        crate::tui::live_screen::restore_terminal();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extracted helpers for task_run / task_run_on_session
+// ---------------------------------------------------------------------------
+
+/// Validated and prepared state for running a task.
+struct PreparedTaskRun {
+    task_id: String,
+    agent_type: AgentType,
+    runtime: Box<dyn AgentRuntime>,
+    spawn_options: AgentSpawnOptions,
+}
+
+/// Validate a task, resolve the agent, emit a Started event, and build spawn options.
 ///
-/// This function:
-/// 1. Loads the task from the aiki/tasks branch
-/// 2. Validates the task can be run (not closed)
-/// 3. Determines which agent to use (from options or task assignee)
-/// 4. Spawns the agent session with task context
-/// 5. Shows real-time status updates while waiting (if TTY)
-/// 6. Handles the result and updates task state
-pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+/// Extracts the shared setup logic from `task_run()`.
+fn prepare_task_run(
+    cwd: &Path,
+    task_id: &str,
+    options: &TaskRunOptions,
+) -> Result<PreparedTaskRun> {
     let chain_task_ids = options.chain_task_ids.clone();
 
     // Load task from events
@@ -146,7 +214,7 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     }
 
     // Determine which agent to use
-    let agent_type = resolve_agent_type(cwd, task_id, &task, &options)?;
+    let agent_type = resolve_agent_type(cwd, task_id, &task, options)?;
 
     // Get runtime for the agent
     let runtime = get_runtime(agent_type).ok_or_else(|| {
@@ -154,8 +222,6 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     })?;
 
     // Emit Started event before spawning to transition task to InProgress immediately.
-    // The agent will later claim the task with its session_id via `aiki task start`.
-    // This eliminates the visual gap where the task shows as pending while the agent boots.
     if task.status == TaskStatus::Open {
         let pre_start = TaskEvent::Started {
             task_ids: vec![task_id.to_string()],
@@ -165,15 +231,6 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
             timestamp: chrono::Utc::now(),
         };
         write_event(cwd, &pre_start)?;
-    }
-
-    // Print status to stderr to avoid corrupting piped output
-    if !options.quiet {
-        eprintln!(
-            "Spawning {} agent session for task {}...",
-            agent_type.display_name(),
-            task_id
-        );
     }
 
     // Build spawn options with parent session UUID for workspace isolation chaining
@@ -186,27 +243,276 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
         spawn_options = spawn_options.with_chain(chain);
     }
 
+    Ok(PreparedTaskRun {
+        task_id: task_id.to_string(),
+        agent_type,
+        runtime,
+        spawn_options,
+    })
+}
+
+/// Convert a `MonitorExitReason` into an `AgentSessionResult`.
+///
+/// Reads the final task state to determine the appropriate result.
+fn map_exit_reason(
+    cwd: &Path,
+    task_id: &str,
+    exit_reason: MonitorExitReason,
+) -> Result<AgentSessionResult> {
+    match exit_reason {
+        MonitorExitReason::UserDetached => {
+            Ok(AgentSessionResult::detached())
+        }
+        MonitorExitReason::AgentExited { stderr } => {
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+
+            if let Some(task) = tasks.get(task_id) {
+                match task.status {
+                    TaskStatus::Closed => {
+                        let summary = task
+                            .effective_summary()
+                            .unwrap_or_default()
+                            .to_string();
+                        Ok(AgentSessionResult::Completed { summary })
+                    }
+                    TaskStatus::Stopped => {
+                        let reason = task
+                            .stopped_reason
+                            .clone()
+                            .unwrap_or_else(|| "Task stopped".to_string());
+                        Ok(AgentSessionResult::Stopped { reason })
+                    }
+                    _ => {
+                        let error = if stderr.trim().is_empty() {
+                            "Agent process exited without completing task".to_string()
+                        } else {
+                            format!(
+                                "Agent process exited without completing task:\n{}",
+                                stderr.trim()
+                            )
+                        };
+                        Ok(AgentSessionResult::Failed { error })
+                    }
+                }
+            } else {
+                let error = if stderr.trim().is_empty() {
+                    "Task not found after agent exit".to_string()
+                } else {
+                    format!("Task not found after agent exit:\n{}", stderr.trim())
+                };
+                Ok(AgentSessionResult::Failed { error })
+            }
+        }
+        MonitorExitReason::MonitorFailed { reason } => {
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+
+            if let Some(task) = tasks.get(task_id) {
+                match task.status {
+                    TaskStatus::Closed => {
+                        let summary = task
+                            .effective_summary()
+                            .unwrap_or_default()
+                            .to_string();
+                        Ok(AgentSessionResult::Completed { summary })
+                    }
+                    TaskStatus::Stopped => {
+                        let stop_reason = task
+                            .stopped_reason
+                            .clone()
+                            .unwrap_or_else(|| "Task stopped".to_string());
+                        Ok(AgentSessionResult::Stopped { reason: stop_reason })
+                    }
+                    _ => {
+                        Ok(AgentSessionResult::Failed {
+                            error: format!("Monitor failed: {}", reason),
+                        })
+                    }
+                }
+            } else {
+                Ok(AgentSessionResult::Failed {
+                    error: format!("Monitor failed and task not found: {}", reason),
+                })
+            }
+        }
+        MonitorExitReason::TaskCompleted => {
+            let events = read_events(cwd)?;
+            let tasks = materialize_graph(&events).tasks;
+
+            if let Some(task) = tasks.get(task_id) {
+                match task.status {
+                    TaskStatus::Closed => {
+                        let summary = task
+                            .effective_summary()
+                            .unwrap_or_default()
+                            .to_string();
+                        Ok(AgentSessionResult::Completed { summary })
+                    }
+                    TaskStatus::Stopped => {
+                        let reason = task
+                            .stopped_reason
+                            .clone()
+                            .unwrap_or_else(|| "Task stopped".to_string());
+                        Ok(AgentSessionResult::Stopped { reason })
+                    }
+                    _ => {
+                        Ok(AgentSessionResult::Completed {
+                            summary: String::new(),
+                        })
+                    }
+                }
+            } else {
+                Ok(AgentSessionResult::Failed {
+                    error: "Task not found after completion".to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Run a task by spawning an agent session
+///
+/// This function:
+/// 1. Loads the task from the aiki/tasks branch
+/// 2. Validates the task can be run (not closed)
+/// 3. Determines which agent to use (from options or task assignee)
+/// 4. Spawns the agent session with task context
+/// 5. Shows real-time status updates while waiting (if TTY)
+/// 6. Handles the result and updates task state
+pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+    let quiet = options.quiet;
+
+    let prepared = prepare_task_run(cwd, task_id, &options)?;
+    let task_id = &prepared.task_id;
+
+    // Print status to stderr to avoid corrupting piped output
+    if !quiet {
+        eprintln!( // stderr-ok: pre-LiveScreen
+            "Spawning {} agent session for task {}...",
+            prepared.agent_type.display_name(),
+            task_id
+        );
+    }
+
     // Check if we should show live status updates
-    let show_status = std::io::stderr().is_terminal() && !options.quiet;
+    let show_status = std::io::stderr().is_terminal() && !quiet;
 
     // Spawn agent session and optionally monitor status
     let result = if show_status {
         // Run agent in background thread while monitoring status in foreground
-        run_with_status_monitor(cwd, task_id, runtime.as_ref(), &spawn_options)?
+        run_with_status_monitor(cwd, task_id, prepared.runtime.as_ref(), &prepared.spawn_options)?
     } else {
         // Simple blocking spawn (no status display)
-        runtime.spawn_blocking(&spawn_options)?
+        prepared.runtime.spawn_blocking(&prepared.spawn_options)?
     };
 
-    // Handle result - the agent is responsible for claiming and closing the task
-    // We just need to handle failures where the agent didn't complete properly
+    handle_session_result(cwd, task_id, result, options.quiet)?;
+
+    Ok(())
+}
+
+/// Run agent with real-time status monitoring
+///
+/// Spawns the agent in background and monitors status in the foreground.
+/// Uses LiveScreen (alternate screen) for rendering. Ctrl+C is handled by the
+/// crossterm event loop during raw mode, and by a scoped SIGINT handler outside it.
+fn run_with_status_monitor(
+    cwd: &Path,
+    task_id: &str,
+    runtime: &dyn crate::agents::AgentRuntime,
+    spawn_options: &AgentSpawnOptions,
+) -> Result<AgentSessionResult> {
+    // Spawn agent with child handle for proper exit detection
+    let mut monitored_child = runtime.spawn_monitored(spawn_options)?;
+
+    // Create status monitor
+    let mut monitor = StatusMonitor::new(task_id);
+
+    // Register scoped SIGINT handler — only active during monitoring.
+    // During raw mode, Ctrl+C is delivered as a crossterm key event, not SIGINT.
+    // This handler covers the windows outside raw mode (startup/teardown).
+    #[cfg(unix)]
+    let sig_id = {
+        let stop_flag = monitor.stop_flag();
+        signal_hook::flag::register(signal_hook::consts::SIGINT, stop_flag)
+            .map_err(|e| AikiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+    };
+
+    // Wrap LiveScreen lifecycle in catch_unwind as defense-in-depth.
+    // Drop handles normal cleanup; this is a safety net for panics.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)
+    }));
+
+    // Defensive cleanup — idempotent, safe even after Drop already ran
+    crate::tui::live_screen::restore_terminal();
+
+    // Unregister the SIGINT handler to restore default behavior
+    #[cfg(unix)]
+    signal_hook::low_level::unregister(sig_id);
+
+    let exit_reason = match result {
+        Ok(inner) => inner?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+
+    map_exit_reason(cwd, task_id, exit_reason)
+}
+
+/// Run a task on an existing `ScreenSession` (shared screen).
+///
+/// Like `task_run` but:
+/// - Uses the caller's `ScreenSession` instead of creating its own `LiveScreen`
+/// - Does NOT print "Spawning..." or "Task run complete" messages
+/// - Does NOT call `restore_terminal()` — the caller's `ScreenSession` owns cleanup
+/// - Returns `AgentSessionResult` instead of `()`
+pub fn task_run_on_session(
+    cwd: &Path,
+    task_id: &str,
+    options: TaskRunOptions,
+    session: &mut ScreenSession,
+) -> Result<AgentSessionResult> {
+    let prepared = prepare_task_run(cwd, task_id, &options)?;
+    let task_id = &prepared.task_id;
+
+    // Spawn agent with child handle for proper exit detection
+    let mut monitored_child = prepared.runtime.spawn_monitored(&prepared.spawn_options)?;
+
+    // Create status monitor with the session's shared stop flag
+    let mut monitor = StatusMonitor::new_with_stop_flag(task_id, session.stop_flag());
+
+    // Wrap in catch_unwind as defense-in-depth (session owns cleanup)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        monitor.monitor_on_screen(cwd, &mut monitored_child, session.screen())
+    }));
+
+    let exit_reason = match result {
+        Ok(inner) => inner?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+
+    map_exit_reason(cwd, task_id, exit_reason)
+}
+
+/// Handle an `AgentSessionResult` with the same semantics as `task_run()`:
+/// emit stop events, cascade-close orchestrator subtasks, and propagate errors.
+///
+/// Set `quiet` to suppress "Task run complete" and summary messages (useful for
+/// callers operating inside a shared screen session).
+pub fn handle_session_result(
+    cwd: &Path,
+    task_id: &str,
+    result: AgentSessionResult,
+    quiet: bool,
+) -> Result<()> {
     match &result {
         AgentSessionResult::Completed { summary } => {
             // Agent completed successfully - it should have closed the task itself
-            if !options.quiet {
-                eprintln!("Task run complete");
+            if !quiet {
+                eprintln!("Task run complete"); // stderr-ok: post-LiveScreen
                 if !summary.is_empty() {
-                    eprintln!("Summary: {}", summary);
+                    eprintln!("Summary: {}", summary); // stderr-ok: post-LiveScreen
                 }
             }
         }
@@ -238,12 +544,12 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
                     }
                 }
             }
-            eprintln!("Task {} stopped: {}", task_id, reason);
+            eprintln!("Task {} stopped: {}", task_id, reason); // stderr-ok: post-LiveScreen
         }
         AgentSessionResult::Detached => {
             // User detached via Ctrl+C - agent continues running in background
             // Do NOT emit TaskEvent::Stopped since the agent is still working
-            eprintln!(
+            eprintln!( // stderr-ok: post-LiveScreen
                 "Detached. Task {} still running. Use `aiki task show {}` to check status.",
                 &task_id[..8.min(task_id.len())],
                 task_id
@@ -283,120 +589,6 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
     }
 
     Ok(())
-}
-
-/// Run agent with real-time status monitoring
-///
-/// Spawns the agent in background and monitors status in the foreground.
-/// Ctrl+C signals the monitor to stop (detach), but the agent continues running.
-fn run_with_status_monitor(
-    cwd: &Path,
-    task_id: &str,
-    runtime: &dyn crate::agents::AgentRuntime,
-    spawn_options: &AgentSpawnOptions,
-) -> Result<AgentSessionResult> {
-    // Spawn agent with child handle for proper exit detection
-    // This properly handles zombie processes by using try_wait() instead of kill(pid, 0)
-    let mut monitored_child = runtime.spawn_monitored(spawn_options)?;
-
-    // Create status monitor (no longer needs PID since we check exit ourselves)
-    let mut monitor = StatusMonitor::new(task_id);
-    let stop_flag = monitor.stop_flag();
-
-    // Set up Ctrl+C handler to signal monitor to stop
-    let stop_flag_ctrlc = stop_flag.clone();
-    let _ = ctrlc::set_handler(move || {
-        stop_flag_ctrlc.store(true, Ordering::Relaxed);
-    });
-
-    // Run status monitor until task completes, user detaches, or agent exits
-    let exit_reason = monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)?;
-
-    match exit_reason {
-        MonitorExitReason::UserDetached => {
-            // User detached via Ctrl+C - agent continues running in background
-            Ok(AgentSessionResult::detached())
-        }
-        MonitorExitReason::AgentExited { stderr } => {
-            // Agent exited without task reaching terminal state - check final status
-            let events = read_events(cwd)?;
-            let tasks = materialize_graph(&events).tasks;
-
-            if let Some(task) = tasks.get(task_id) {
-                match task.status {
-                    TaskStatus::Closed => {
-                        // Task was closed right before agent exited
-                        let summary = task
-                            .effective_summary()
-                            .unwrap_or_default()
-                            .to_string();
-                        Ok(AgentSessionResult::Completed { summary })
-                    }
-                    TaskStatus::Stopped => {
-                        // Task was stopped
-                        let reason = task
-                            .stopped_reason
-                            .clone()
-                            .unwrap_or_else(|| "Task stopped".to_string());
-                        Ok(AgentSessionResult::Stopped { reason })
-                    }
-                    _ => {
-                        // Agent crashed without completing task - include stderr if available
-                        let error = if stderr.trim().is_empty() {
-                            "Agent process exited without completing task".to_string()
-                        } else {
-                            format!(
-                                "Agent process exited without completing task:\n{}",
-                                stderr.trim()
-                            )
-                        };
-                        Ok(AgentSessionResult::Failed { error })
-                    }
-                }
-            } else {
-                let error = if stderr.trim().is_empty() {
-                    "Task not found after agent exit".to_string()
-                } else {
-                    format!("Task not found after agent exit:\n{}", stderr.trim())
-                };
-                Ok(AgentSessionResult::Failed { error })
-            }
-        }
-        MonitorExitReason::TaskCompleted => {
-            // Task reached terminal state - check final status
-            let events = read_events(cwd)?;
-            let tasks = materialize_graph(&events).tasks;
-
-            if let Some(task) = tasks.get(task_id) {
-                match task.status {
-                    TaskStatus::Closed => {
-                        let summary = task
-                            .effective_summary()
-                            .unwrap_or_default()
-                            .to_string();
-                        Ok(AgentSessionResult::Completed { summary })
-                    }
-                    TaskStatus::Stopped => {
-                        let reason = task
-                            .stopped_reason
-                            .clone()
-                            .unwrap_or_else(|| "Task stopped".to_string());
-                        Ok(AgentSessionResult::Stopped { reason })
-                    }
-                    _ => {
-                        // Shouldn't happen but handle gracefully
-                        Ok(AgentSessionResult::Completed {
-                            summary: String::new(),
-                        })
-                    }
-                }
-            } else {
-                Ok(AgentSessionResult::Failed {
-                    error: "Task not found after completion".to_string(),
-                })
-            }
-        }
-    }
 }
 
 /// Run a task and output result

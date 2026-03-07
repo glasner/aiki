@@ -1,7 +1,7 @@
 //! Template resolution and discovery
 //!
 //! Handles finding template files in the filesystem:
-//! - Built-in templates: `.aiki/templates/aiki/`
+//! - Built-in templates: `.aiki/templates/`
 //! - Custom templates: `.aiki/templates/{namespace}/`
 
 use crate::error::{AikiError, Result};
@@ -23,7 +23,7 @@ pub enum SubtaskEntry {
     Static(TaskDefinition),
     /// A reference to another template that should be composed as a nested subtask
     Composed {
-        /// Template name (e.g., "aiki/decompose")
+        /// Template name (e.g., "decompose")
         template_name: String,
         /// Source line number for error reporting
         line: usize,
@@ -35,7 +35,7 @@ pub enum SubtaskEntry {
 /// Information about a discovered template
 #[derive(Debug, Clone)]
 pub struct TemplateInfo {
-    /// Template name (e.g., "aiki/review")
+    /// Template name (e.g., "review")
     pub name: String,
     /// Description from frontmatter (if available)
     pub description: Option<String>,
@@ -67,11 +67,41 @@ pub fn find_templates_dir(start_path: &Path) -> Result<PathBuf> {
 /// Load a template by name
 ///
 /// # Arguments
-/// * `name` - Template name (e.g., "aiki/review", "myorg/refactor-cleanup")
+/// * `name` - Template name (e.g., "review", "plan", "myorg/refactor-cleanup")
 /// * `templates_dir` - The templates directory path
 pub fn load_template(name: &str, templates_dir: &Path) -> Result<TaskTemplate> {
-    let file_path = resolve_template_path(name, templates_dir)?;
-    load_template_file(&file_path, name)
+    let normalized = normalize_template_ref(name, false);
+    let file_path = resolve_template_path(&normalized, templates_dir)?;
+    load_template_file(&file_path, &normalized)
+}
+
+/// Load a template by name (quiet mode — suppresses deprecation warnings)
+#[allow(dead_code)]
+pub fn load_template_quiet(name: &str, templates_dir: &Path) -> Result<TaskTemplate> {
+    let normalized = normalize_template_ref(name, true);
+    let file_path = resolve_template_path(&normalized, templates_dir)?;
+    load_template_file(&file_path, &normalized)
+}
+
+/// Normalize a legacy `aiki/` prefixed template ref to the new short form.
+///
+/// If `name` starts with `aiki/` and stripping the prefix yields a known
+/// aiki/default template name, returns the short form (e.g., `aiki/plan` → `plan`).
+/// Emits a deprecation warning in non-quiet mode.
+pub fn normalize_template_ref(name: &str, quiet: bool) -> String {
+    if let Some(stripped) = name.strip_prefix("aiki/") {
+        let known = super::builtin::known_default_template_names();
+        if known.iter().any(|k| k == stripped) {
+            if !quiet {
+                eprintln!( // stderr-ok: template validation, never called during monitoring
+                    "warning: Template ref '{}' uses deprecated syntax. Use '{}' instead.",
+                    name, stripped
+                );
+            }
+            return stripped.to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// Resolve a template name to its file path.
@@ -80,6 +110,7 @@ pub fn load_template(name: &str, templates_dir: &Path) -> Result<TaskTemplate> {
 /// 1. `.aiki/templates/{name}.md` (project-local)
 /// 2. For three-part refs (`ns/plugin/template`):
 ///    `~/.aiki/plugins/{ns}/{plugin}/templates/{template}.md` (installed plugin)
+/// 3. Legacy fallback (no manifest): `.aiki/templates/aiki/{name}.md`
 fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
     // 1. Project-local: .aiki/templates/{name}.md
     let relative_path = format!("{}.md", name);
@@ -105,6 +136,18 @@ fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
             if plugin_path.is_file() {
                 return Ok(plugin_path);
             }
+        }
+    }
+
+    // 3. Legacy fallback: if no manifest exists, check .aiki/templates/aiki/{name}.md
+    let manifest_path = templates_dir
+        .parent()
+        .map(|p| p.join(".manifest.json"))
+        .unwrap_or_default();
+    if !manifest_path.exists() {
+        let legacy_path = templates_dir.join("aiki").join(&relative_path);
+        if legacy_path.is_file() {
+            return Ok(legacy_path);
         }
     }
 
@@ -687,7 +730,7 @@ pub fn create_subtask_entries_with_name(
 ) -> Result<Vec<SubtaskEntry>> {
     // First, process conditionals (which emits loop markers and subtask ref markers)
     // Populate EvalContext from VariableContext so that {{data.*}} interpolation
-    // works inside {% subtask %} template names (e.g., {% subtask aiki/review/{{data.scope.kind}} %})
+    // works inside {% subtask %} template names (e.g., {% subtask review/{{data.scope.kind}} %})
     let mut ctx = super::conditionals::EvalContext::new();
     for (key, value) in &variables.data {
         ctx.set(format!("data.{}", key), value);
@@ -943,7 +986,7 @@ pub fn has_subtask_refs(content: &str) -> bool {
 /// * `scope_data` - Data fields from `ReviewScope::to_data()` (scope.kind, scope.id, scope.name)
 /// * `sources` - Source references for lineage (e.g., `["task:abc123"]`)
 /// * `assignee` - Optional assignee for the review task
-/// * `template_name` - Template name (e.g., "aiki/review")
+/// * `template_name` - Template name (e.g., "review")
 ///
 /// # Returns
 /// The task ID of the created review parent task
@@ -1045,11 +1088,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_test_templates(dir: &Path) {
-        // Create aiki/review.md
-        let aiki_dir = dir.join("aiki");
-        fs::create_dir_all(&aiki_dir).unwrap();
+        // Create review.md at templates root
         fs::write(
-            aiki_dir.join("review.md"),
+            dir.join("review.md"),
             r#"---
 description: General code review
 type: review
@@ -1100,7 +1141,7 @@ Find opportunities.
         assert_eq!(templates.len(), 2);
 
         let names: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"aiki/review"));
+        assert!(names.contains(&"review"));
         assert!(names.contains(&"myorg/refactor"));
     }
 
@@ -1109,8 +1150,8 @@ Find opportunities.
         let temp_dir = TempDir::new().unwrap();
         create_test_templates(temp_dir.path());
 
-        let template = load_template("aiki/review", temp_dir.path()).unwrap();
-        assert_eq!(template.name, "aiki/review");
+        let template = load_template("review", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "review");
         assert_eq!(
             template.description,
             Some("General code review".to_string())
@@ -1138,12 +1179,12 @@ Find opportunities.
         let temp_dir = TempDir::new().unwrap();
         create_test_templates(temp_dir.path());
 
-        let result = load_template("review", temp_dir.path());
+        let result = load_template("revew", temp_dir.path());
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = err.to_string();
-        // Should suggest aiki/review
-        assert!(msg.contains("aiki/review"));
+        // Should suggest review
+        assert!(msg.contains("review"));
     }
 
     #[test]
@@ -1209,7 +1250,7 @@ No frontmatter here.
         let temp_dir = TempDir::new().unwrap();
         create_test_templates(temp_dir.path());
 
-        let template = load_template("aiki/review", temp_dir.path()).unwrap();
+        let template = load_template("review", temp_dir.path()).unwrap();
 
         let mut variables = VariableContext::new();
         variables.set_data("scope.name", "Task (abc123)");
@@ -1701,7 +1742,7 @@ Build the feature.
 ## Setup environment
 Install dependencies.
 
-{% subtask aiki/decompose %}
+{% subtask decompose %}
 
 ## Execute plan
 Run each plan subtask.
@@ -1720,7 +1761,7 @@ Run each plan subtask.
         // Second entry: composed
         match &entries[1] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/decompose");
+                assert_eq!(template_name, "decompose");
             }
             _ => panic!("Expected Composed, got Static"),
         }
@@ -1740,7 +1781,7 @@ Review the target.
 
 # Subtasks
 
-{% subtask aiki/review/plan %}
+{% subtask review/plan %}
 "#;
         let variables = VariableContext::new();
         let entries = create_subtask_entries(content, &variables, None).unwrap();
@@ -1748,7 +1789,7 @@ Review the target.
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/review/plan");
+                assert_eq!(template_name, "review/plan");
             }
             _ => panic!("Expected Composed"),
         }
@@ -1762,7 +1803,7 @@ Review target.
 
 # Subtasks
 
-{% subtask aiki/review/plan if data.file_type == "plan" %}
+{% subtask review/plan if data.file_type == "plan" %}
 "#;
         let mut variables = VariableContext::new();
         variables.set_data("file_type", "plan");
@@ -1773,7 +1814,7 @@ Review target.
         assert_eq!(entries.len(), 1);
         match &entries[0] {
             SubtaskEntry::Composed { template_name, .. } => {
-                assert_eq!(template_name, "aiki/review/plan");
+                assert_eq!(template_name, "review/plan");
             }
             _ => panic!("Expected Composed"),
         }
@@ -1783,7 +1824,7 @@ Review target.
     fn test_create_subtask_entries_subtask_ref_outside_subtasks_section() {
         let content = r#"# Task
 
-{% subtask aiki/decompose %}
+{% subtask decompose %}
 
 # Subtasks
 
@@ -1800,25 +1841,25 @@ Instructions.
 
     #[test]
     fn test_has_subtask_refs() {
-        assert!(has_subtask_refs("{% subtask aiki/decompose %}"));
-        assert!(has_subtask_refs("some text\n{% subtask aiki/review/plan if data.type == \"plan\" %}\nmore"));
+        assert!(has_subtask_refs("{% subtask decompose %}"));
+        assert!(has_subtask_refs("some text\n{% subtask review/plan if data.type == \"plan\" %}\nmore"));
         assert!(!has_subtask_refs("no subtask refs here"));
         assert!(!has_subtask_refs("{% if data.plan %}...{% endif %}"));
         // HTML-commented subtask refs should NOT be detected
-        assert!(!has_subtask_refs("<!--{% subtask aiki/fix/loop if data.options.fix %}-->"));
+        assert!(!has_subtask_refs("<!--{% subtask fix/loop if data.options.fix %}-->"));
         // Mixed: real ref + commented ref — should detect the real one
-        assert!(has_subtask_refs("{% subtask aiki/decompose %}\n<!--{% subtask aiki/fix/loop %}-->"));
+        assert!(has_subtask_refs("{% subtask decompose %}\n<!--{% subtask fix/loop %}-->"));
     }
 
     #[test]
     fn test_validate_subtask_ref_placement_ok() {
-        let content = "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:5 -->";
+        let content = "# Task\n\nInstructions.\n\n# Subtasks\n\n<!-- AIKI_SUBTASK_REF:decompose:5 -->";
         assert!(validate_subtask_ref_placement(content).is_ok());
     }
 
     #[test]
     fn test_validate_subtask_ref_placement_before_subtasks() {
-        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:3 -->\n\n# Subtasks\n\n## Work";
+        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:decompose:3 -->\n\n# Subtasks\n\n## Work";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
@@ -1826,7 +1867,7 @@ Instructions.
 
     #[test]
     fn test_validate_subtask_ref_placement_no_subtasks_section() {
-        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:3 -->";
+        let content = "# Task\n\n<!-- AIKI_SUBTASK_REF:decompose:3 -->";
         let result = validate_subtask_ref_placement(content);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("outside # Subtasks section"));
@@ -1834,7 +1875,7 @@ Instructions.
 
     #[test]
     fn test_parse_expanded_subtasks_with_refs() {
-        let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/decompose:10 -->\n\n## Run\nExecute.";
+        let content = "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:decompose:10 -->\n\n## Run\nExecute.";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -1845,7 +1886,7 @@ Instructions.
         }
         match &entries[1] {
             SubtaskEntry::Composed { template_name, line, attributes } => {
-                assert_eq!(template_name, "aiki/decompose");
+                assert_eq!(template_name, "decompose");
                 assert_eq!(*line, 10);
                 assert!(attributes.is_empty());
             }
@@ -1932,19 +1973,17 @@ Review the changes."#;
         assert!(vars.contains(&"parent.subtasks.explore".to_string()));
     }
 
-    // --- aiki/loop template tests ---
+    // --- loop template tests ---
 
     #[test]
     fn test_loop_template_exists_and_parses_as_orchestrator() {
         let temp_dir = TempDir::new().unwrap();
-        let aiki_dir = temp_dir.path().join("aiki");
-        fs::create_dir_all(&aiki_dir).unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
-        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
-        assert_eq!(template.name, "aiki/loop");
+        let template = load_template("loop", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "loop");
         assert_eq!(template.version, Some("2.0.0".to_string()));
         assert_eq!(template.defaults.task_type, Some("orchestrator".to_string()));
     }
@@ -1952,13 +1991,11 @@ Review the changes."#;
     #[test]
     fn test_loop_template_contains_lane_commands() {
         let temp_dir = TempDir::new().unwrap();
-        let aiki_dir = temp_dir.path().join("aiki");
-        fs::create_dir_all(&aiki_dir).unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
-        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
+        let template = load_template("loop", temp_dir.path()).unwrap();
 
         let instructions = &template.parent.instructions;
         assert!(
@@ -1986,33 +2023,29 @@ Review the changes."#;
     #[test]
     fn test_loop_template_resolves_via_standard_path() {
         let temp_dir = TempDir::new().unwrap();
-        let aiki_dir = temp_dir.path().join("aiki");
-        fs::create_dir_all(&aiki_dir).unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
-        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
         let templates = list_templates(temp_dir.path()).unwrap();
         let names: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
         assert!(
-            names.contains(&"aiki/loop"),
-            "aiki/loop should be discoverable via list_templates"
+            names.contains(&"loop"),
+            "loop should be discoverable via list_templates"
         );
 
-        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
-        assert_eq!(template.name, "aiki/loop");
+        let template = load_template("loop", temp_dir.path()).unwrap();
+        assert_eq!(template.name, "loop");
     }
 
     #[test]
     fn test_loop_template_uses_data_target() {
         let temp_dir = TempDir::new().unwrap();
-        let aiki_dir = temp_dir.path().join("aiki");
-        fs::create_dir_all(&aiki_dir).unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/aiki/loop.md");
-        fs::write(aiki_dir.join("loop.md"), loop_content).unwrap();
+        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
-        let template = load_template("aiki/loop", temp_dir.path()).unwrap();
+        let template = load_template("loop", temp_dir.path()).unwrap();
 
         assert!(
             template.parent.name.contains("{{data.target}}"),
@@ -2028,7 +2061,7 @@ Review the changes."#;
     #[test]
     fn test_parse_expanded_subtasks_marker_with_attributes() {
         let content =
-            "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:aiki/review:5:key1:val1;key2:val2 -->\n\n## Run\nExecute.";
+            "## Setup\nInstall deps.\n\n<!-- AIKI_SUBTASK_REF:review:5:key1:val1;key2:val2 -->\n\n## Run\nExecute.";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2039,7 +2072,7 @@ Review the changes."#;
                 line,
                 attributes,
             } => {
-                assert_eq!(template_name, "aiki/review");
+                assert_eq!(template_name, "review");
                 assert_eq!(*line, 5);
                 assert_eq!(attributes.len(), 2);
                 assert_eq!(
@@ -2057,7 +2090,7 @@ Review the changes."#;
 
     #[test]
     fn test_parse_expanded_subtasks_marker_without_attributes_backward_compat() {
-        let content = "<!-- AIKI_SUBTASK_REF:aiki/decompose:10 -->";
+        let content = "<!-- AIKI_SUBTASK_REF:decompose:10 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2068,7 +2101,7 @@ Review the changes."#;
                 line,
                 attributes,
             } => {
-                assert_eq!(template_name, "aiki/decompose");
+                assert_eq!(template_name, "decompose");
                 assert_eq!(*line, 10);
                 assert!(attributes.is_empty());
             }
@@ -2079,7 +2112,7 @@ Review the changes."#;
     #[test]
     fn test_parse_expanded_subtasks_attribute_propagation_needs_context() {
         let content =
-            "<!-- AIKI_SUBTASK_REF:aiki/review:3:needs-context:subtasks.explore;priority:p0 -->";
+            "<!-- AIKI_SUBTASK_REF:review:3:needs-context:subtasks.explore;priority:p0 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2103,7 +2136,7 @@ Review the changes."#;
     fn test_parse_expanded_subtasks_percent_encoded_values() {
         // Values with spaces should be percent-encoded in markers
         let content =
-            "<!-- AIKI_SUBTASK_REF:aiki/review:5:title:my%20task%20name;priority:p0 -->";
+            "<!-- AIKI_SUBTASK_REF:review:5:title:my%20task%20name;priority:p0 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 
@@ -2127,7 +2160,7 @@ Review the changes."#;
     fn test_parse_expanded_subtasks_percent_encoded_special_chars() {
         // Values with colons, semicolons, and percent signs
         let content =
-            "<!-- AIKI_SUBTASK_REF:aiki/review:5:scope:task%3Aauth%3Blogin;note:100%25 -->";
+            "<!-- AIKI_SUBTASK_REF:review:5:scope:task%3Aauth%3Blogin;note:100%25 -->";
         let variables = VariableContext::new();
         let entries = parse_expanded_subtasks(content, &variables, None).unwrap();
 

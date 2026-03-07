@@ -3,7 +3,7 @@
 //! This module provides the `aiki loop` command and the shared `run_loop()`
 //! function used by `build.rs`, `fix.rs`, and the CLI.
 //!
-//! `run_loop()` creates a loop task from the `aiki/loop` template, wires up
+//! `run_loop()` creates a loop task from the `loop` template, wires up
 //! the `orchestrates` link, and runs the task (sync or async).
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use crate::agents::AgentType;
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
-use crate::tasks::runner::{task_run, task_run_async, TaskRunOptions};
+use crate::tasks::runner::{handle_session_result, task_run, task_run_async, task_run_on_session, ScreenSession, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events,
@@ -26,7 +26,7 @@ pub struct LoopOptions {
     pub run_async: bool,
     /// Agent type override
     pub agent: Option<AgentType>,
-    /// Template name override (default: "aiki/loop")
+    /// Template name override (default: "loop")
     pub template: Option<String>,
 }
 
@@ -69,7 +69,7 @@ pub struct LoopArgs {
     #[arg(long)]
     pub agent: Option<String>,
 
-    /// Template name override (default: aiki/loop)
+    /// Template name override (default: loop)
     #[arg(long)]
     pub template: Option<String>,
 
@@ -101,7 +101,7 @@ pub fn run(args: LoopArgs) -> Result<()> {
         options = options.with_template(template);
     }
 
-    let loop_task_id = run_loop(&cwd, &args.parent_id, options)?;
+    let loop_task_id = run_loop(&cwd, &args.parent_id, options, None)?;
 
     if matches!(args.output, Some(OutputFormat::Id)) {
         println!("{}", loop_task_id);
@@ -112,12 +112,17 @@ pub fn run(args: LoopArgs) -> Result<()> {
 
 /// Shared loop function used by `aiki loop`, `build.rs`, and `fix.rs`.
 ///
-/// Creates a loop task from the `aiki/loop` template with `data.target` set to
+/// Creates a loop task from the `loop` template with `data.target` set to
 /// the parent task ID, writes an `orchestrates` link from the loop task to the
 /// parent, and runs the task.
 ///
 /// Returns the loop task ID.
-pub fn run_loop(cwd: &Path, parent_id: &str, options: LoopOptions) -> Result<String> {
+pub fn run_loop(
+    cwd: &Path,
+    parent_id: &str,
+    options: LoopOptions,
+    session: Option<&mut ScreenSession>,
+) -> Result<String> {
     // Validate parent task exists and has subtasks
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
@@ -132,7 +137,7 @@ pub fn run_loop(cwd: &Path, parent_id: &str, options: LoopOptions) -> Result<Str
         )));
     }
 
-    // Create loop task from aiki/loop template
+    // Create loop task from loop template
     let mut data = HashMap::new();
     data.insert("target".to_string(), parent_id.clone());
 
@@ -143,7 +148,7 @@ pub fn run_loop(cwd: &Path, parent_id: &str, options: LoopOptions) -> Result<Str
         .or_else(|| Some("claude-code".to_string()));
 
     let params = super::task::TemplateTaskParams {
-        template_name: options.template.unwrap_or_else(|| "aiki/loop".to_string()),
+        template_name: options.template.unwrap_or_else(|| "loop".to_string()),
         data,
         assignee,
         ..Default::default()
@@ -163,7 +168,10 @@ pub fn run_loop(cwd: &Path, parent_id: &str, options: LoopOptions) -> Result<Str
         TaskRunOptions::new()
     };
 
-    if options.run_async {
+    if let Some(session) = session {
+        let session_result = task_run_on_session(cwd, &loop_task_id, task_run_options, session)?;
+        handle_session_result(cwd, &loop_task_id, session_result, true)?;
+    } else if options.run_async {
         let _handle = task_run_async(cwd, &loop_task_id, task_run_options)?;
         output_loop_async(&loop_task_id, &parent_id)?;
     } else {

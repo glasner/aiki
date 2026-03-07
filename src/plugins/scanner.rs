@@ -258,7 +258,7 @@ other_key: aiki/core/not-a-template
 
     #[test]
     fn test_scan_yaml_ignores_two_part() {
-        let yaml = "template: aiki/review\n";
+        let yaml = "template: review\n";
         let refs = scan_yaml_for_refs(yaml);
         assert!(refs.is_empty());
     }

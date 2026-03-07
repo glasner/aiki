@@ -114,7 +114,7 @@ This checks repository setup, global hooks, and local configuration. If it finds
 aiki doctor --fix
 ```
 
-If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/templates` or `Template not found: aiki/review`), bootstrap templates once:
+If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/templates` or `Template not found: review`), bootstrap templates once:
 
 ```bash
 cp -R /path/to/aiki/.aiki/templates .aiki/

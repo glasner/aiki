@@ -2,7 +2,7 @@
 //!
 //! This module provides the `aiki resolve` command which:
 //! - Takes a change ID that has JJ merge conflicts
-//! - Creates a task from the `aiki/resolve` template
+//! - Creates a task from the `resolve` template
 //! - Supports run modes: blocking (default), --async, --start
 
 use std::collections::HashMap;
@@ -95,12 +95,12 @@ pub fn run(args: ResolveArgs) -> Result<()> {
         find_active_session(&cwd).map(|s| s.agent_type.as_str().to_string())
     });
 
-    // Create resolve task from aiki/resolve template
+    // Create resolve task from resolve template
     let mut data = HashMap::new();
     data.insert("conflict_id".to_string(), args.change_id.clone());
 
     let params = TemplateTaskParams {
-        template_name: "aiki/resolve".to_string(),
+        template_name: "resolve".to_string(),
         data,
         sources: vec![format!("conflict:{}", args.change_id)],
         assignee,

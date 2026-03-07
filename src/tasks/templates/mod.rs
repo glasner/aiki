@@ -71,7 +71,7 @@
 //!
 //! ```bash
 //! # Create task from template
-//! aiki task create --template aiki/review --data scope="@"
+//! aiki task create --template review --data scope="@"
 //!
 //! # Create and start in one command
 //! aiki task start --template myorg/refactor --data scope="src/auth.rs"
@@ -80,20 +80,27 @@
 //! aiki task template list
 //! ```
 
+pub mod builtin;
 pub mod conditionals;
+pub mod manifest;
 pub mod parser;
 pub mod resolver;
 pub mod spawn_config;
+pub mod sync;
 pub mod types;
 pub mod variables;
 
+#[allow(unused_imports)]
 pub use resolver::{
     convert_data, create_review_task_from_template,
     create_subtask_entries_from_template,
     create_tasks_from_template, find_templates_dir, get_working_copy_change_id,
     has_inline_loops, has_subtask_refs, list_templates, load_template,
+    load_template_quiet, normalize_template_ref,
     parse_priority, substitute_parent_id, SubtaskEntry, PARENT_ID_PLACEHOLDER,
 };
+#[allow(unused_imports)]
+pub use builtin::default_plugin_templates;
 pub use types::TaskTemplate;
 pub use variables::{
     coerce_to_string, find_variables, substitute_with_template_name,

@@ -7,6 +7,7 @@
 //! - Supports async (background) execution
 
 use std::env;
+use std::io::IsTerminal;
 use crate::output_utils;
 use std::path::Path;
 
@@ -21,7 +22,7 @@ use crate::config::get_aiki_binary_path;
 use crate::error::{AikiError, Result};
 use crate::plans::{parse_plan_metadata, PlanGraph};
 use crate::tasks::id::{is_task_id, is_task_id_prefix};
-use crate::tasks::runner::{task_run, TaskRunOptions};
+use crate::tasks::runner::{handle_session_result, ScreenSession, task_run, task_run_on_session, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
     find_task, get_subtasks, materialize_graph, read_events, write_event, Task,
@@ -59,11 +60,11 @@ pub struct BuildArgs {
     #[arg(long)]
     pub restart: bool,
 
-    /// Custom decompose template (default: aiki/decompose)
+    /// Custom decompose template (default: decompose)
     #[arg(long = "decompose-template")]
     pub decompose_template: Option<String>,
 
-    /// Custom loop template (default: aiki/loop)
+    /// Custom loop template (default: loop)
     #[arg(long = "loop-template")]
     pub loop_template: Option<String>,
 
@@ -125,9 +126,9 @@ pub fn run(args: BuildArgs) -> Result<()> {
     })?;
 
     // Resolve --fix / --fix-template into a single Option<String>
-    let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
+    let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
     // Resolve --review / --review-template (--fix implies --review)
-    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
     let review_after = review_template.is_some();
     let fix_after = fix_template.is_some();
 
@@ -193,7 +194,7 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
             template: args.decompose_template.clone(),
             agent: agent_type.clone(),
         };
-        super::decompose::run_decompose(cwd, &plan_path, &epic_id, options)?;
+        super::decompose::run_decompose(cwd, &plan_path, &epic_id, options, None)?;
     }
 
     // Now run the loop (synchronous — we're already in background)
@@ -205,16 +206,16 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
         loop_options = loop_options.with_template(tmpl);
     }
 
-    run_loop(cwd, &epic_id, loop_options)?;
+    run_loop(cwd, &epic_id, loop_options, None)?;
 
     // Post-build review if requested
     // Resolve --fix / --fix-template and --review / --review-template
-    let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
-    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+    let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
     if review_template.is_some() {
         let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
         let fix_after = fix_template.is_some();
-        run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template)?;
+        run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template, None)?;
     }
 
     Ok(())
@@ -358,11 +359,18 @@ fn run_build_plan(
         return Ok(());
     }
 
-    // Sync path: ensure we always have an epic before running.
+    // Sync path: create shared screen session for TTY builds
+    let mut session = if std::io::stderr().is_terminal() {
+        Some(ScreenSession::new()?)
+    } else {
+        None
+    };
+
+    // Ensure we always have an epic before running.
     // If no existing epic was found, create one via the decompose agent.
     let epic_id = match epic_id {
         Some(id) => id,
-        None => find_or_create_epic(cwd, plan_path, decompose_template.as_deref())?,
+        None => find_or_create_epic(cwd, plan_path, decompose_template.as_deref(), session.as_mut())?,
     };
 
     // Check if epic is blocked before running loop
@@ -379,7 +387,10 @@ fn run_build_plan(
         loop_options = loop_options.with_template(tmpl);
     }
 
-    let loop_task_id = run_loop(cwd, &epic_id, loop_options)?;
+    let loop_task_id = run_loop(cwd, &epic_id, loop_options, session.as_mut())?;
+
+    // Drop screen before printing final output
+    drop(session);
 
     // After build completes, re-read tasks to get final state
     let events = read_events(cwd)?;
@@ -404,9 +415,15 @@ fn run_build_plan(
         output_build_completed(&loop_task_id, final_epic_id, &subtask_refs)?;
     }
 
-    // Run post-build review if requested (sync path)
+    // Run post-build review if requested (sync path) — needs its own session
     if review_after {
-        run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template)?;
+        let mut review_session = if std::io::stderr().is_terminal() {
+            Some(ScreenSession::new()?)
+        } else {
+            None
+        };
+        run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template, review_session.as_mut())?;
+        drop(review_session);
     }
 
     Ok(())
@@ -499,7 +516,13 @@ fn run_build_epic(
         return Ok(());
     }
 
-    // Sync path: run loop to orchestrate epic's subtasks
+    // Sync path: create shared screen session for TTY builds
+    let mut session = if std::io::stderr().is_terminal() {
+        Some(ScreenSession::new()?)
+    } else {
+        None
+    };
+
     let mut loop_options = LoopOptions::new();
     if let Some(agent) = agent_type {
         loop_options = loop_options.with_agent(agent);
@@ -508,7 +531,10 @@ fn run_build_epic(
         loop_options = loop_options.with_template(tmpl);
     }
 
-    let loop_task_id = run_loop(cwd, epic_id, loop_options)?;
+    let loop_task_id = run_loop(cwd, epic_id, loop_options, session.as_mut())?;
+
+    // Drop screen before printing final output
+    drop(session);
 
     // After build completes, re-read tasks to get final state
     let events = read_events(cwd)?;
@@ -523,9 +549,15 @@ fn run_build_epic(
         output_build_completed(&loop_task_id, epic_id, &subtasks)?;
     }
 
-    // Run post-build review if requested (sync path)
+    // Run post-build review if requested (sync path) — needs its own session
     if review_after {
-        run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template)?;
+        let mut review_session = if std::io::stderr().is_terminal() {
+            Some(ScreenSession::new()?)
+        } else {
+            None
+        };
+        run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template, review_session.as_mut())?;
+        drop(review_session);
     }
 
     Ok(())
@@ -766,7 +798,7 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
 /// Creates a code review scoped to the plan's implementation, optionally
 /// including a fix subtask if `with_fix` is true. Runs the review to completion
 /// (blocking).
-fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>) -> Result<()> {
+fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>, session: Option<&mut ScreenSession>) -> Result<()> {
     use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
 
     let scope = ReviewScope {
@@ -779,13 +811,18 @@ fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool,
         scope,
         agent_override: None,
         template: review_template,
-        fix_template: if with_fix { fix_template.or_else(|| Some("aiki/fix".to_string())) } else { None },
+        fix_template: if with_fix { fix_template.or_else(|| Some("fix".to_string())) } else { None },
         autorun: false,
     })?;
 
     // Run the review to completion (blocking)
     let options = TaskRunOptions::new();
-    task_run(cwd, &result.review_task_id, options)?;
+    if let Some(session) = session {
+        let session_result = task_run_on_session(cwd, &result.review_task_id, options, session)?;
+        handle_session_result(cwd, &result.review_task_id, session_result, true)?;
+    } else {
+        task_run(cwd, &result.review_task_id, options)?;
+    }
 
     output_build_review_completed(&result.review_task_id, plan_path, with_fix)?;
 
@@ -1390,14 +1427,14 @@ mod tests {
             review: false,
             review_template: None,
             fix: false,
-            fix_template: Some("aiki/fix".to_string()),
+            fix_template: Some("fix".to_string()),
             continue_async: None,
             output: None,
             subcommand: None,
         };
         // Resolve like run() does
-        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
         assert!(review_template.is_some());
         assert!(fix_template.is_some());
     }
@@ -1420,8 +1457,8 @@ mod tests {
             subcommand: None,
         };
         // Resolve like run() does
-        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
         assert!(review_template.is_some());
         assert!(fix_template.is_some());
     }
@@ -1443,8 +1480,8 @@ mod tests {
             output: None,
             subcommand: None,
         };
-        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
         assert!(review_template.is_some());
         assert!(fix_template.is_none());
     }
@@ -1481,7 +1518,7 @@ mod tests {
             review: false,
             review_template: None,
             fix: false,
-            fix_template: Some("aiki/fix".to_string()),
+            fix_template: Some("fix".to_string()),
             continue_async: None,
             output: None,
             subcommand: None,
@@ -1508,8 +1545,8 @@ mod tests {
             output: None,
             subcommand: None,
         };
-        let fix_template = args.fix_template.or(if args.fix { Some("aiki/fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("aiki/review".to_string()) } else { None });
+        let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
+        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
         assert!(review_template.is_none());
         assert!(fix_template.is_none());
     }

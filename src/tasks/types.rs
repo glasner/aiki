@@ -120,7 +120,7 @@ pub enum TaskEvent {
         assignee: Option<String>,
         /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
         sources: Vec<String>,
-        /// Template used to create this task (e.g., "aiki/review@1.0.0")
+        /// Template used to create this task (e.g., "review@1.0.0")
         template: Option<String>,
         /// Working copy change_id at creation time (for historical template lookup)
         working_copy: Option<String>,
@@ -272,7 +272,7 @@ pub struct Task {
     pub assignee: Option<String>,
     /// Sources that spawned this task (e.g., "file:ops/now/design.md", "task:abc123")
     pub sources: Vec<String>,
-    /// Template used to create this task (e.g., "aiki/review@1.0.0")
+    /// Template used to create this task (e.g., "review@1.0.0")
     pub template: Option<String>,
     /// Instructions from template (with variables substituted)
     pub instructions: Option<String>,

@@ -616,7 +616,7 @@ pub struct ReviewConfig {
     #[serde(default)]
     pub agent: Option<String>,
 
-    /// Optional template override (default: aiki/review)
+    /// Optional template override (default: review)
     #[serde(default)]
     pub template: Option<String>,
 }
