@@ -33,7 +33,7 @@ Each entry must have exactly one of `task` or `subtask` — not both, not neithe
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `template` | yes | — | Template to instantiate (e.g., `aiki/fix`). Use `self` to re-instantiate the current template. |
+| `template` | yes | — | Template to instantiate (e.g., `fix`). Use `self` to re-instantiate the current template. |
 | `priority` | no | inherited | Priority override. Inherits from spawner if not set. |
 | `assignee` | no | template default | Assignee override. |
 | `data` | no | `{}` | Data fields passed to the spawned task. Values are evaluated (see [Data values](#data-values)). |
@@ -61,7 +61,7 @@ Subtask maps contain: `status`, `outcome`, `data`, `priority`.
 spawns:
   - when: "not data.approved"
     task:
-      template: aiki/fix
+      template: fix
       data:
         review_task: "{{this.id}}"
 ```
@@ -82,7 +82,7 @@ spawns:
 spawns:
   - when: "not data.approved"
     task:
-      template: aiki/fix
+      template: fix
   - when: "data.issue_count > 3"
     task:
       template: aiki/follow-up
@@ -155,9 +155,9 @@ Templates can include other templates as subtasks using the `{% subtask %}` dire
 
 ### How it works
 
-- `{% subtask aiki/fix %}` — Always includes the `aiki/fix` template as a subtask
-- `{% subtask aiki/plan if not data.plan %}` — Conditionally includes `aiki/plan` only when `data.plan` is falsy
-- `{% subtask aiki/review/criteria/plan if data.scope.kind == "plan" %}` — Conditional on data values
+- `{% subtask fix %}` — Always includes the `fix` template as a subtask
+- `{% subtask plan if not data.plan %}` — Conditionally includes `plan` only when `data.plan` is falsy
+- `{% subtask review/criteria/plan if data.scope.kind == "plan" %}` — Conditional on data values
 
 The included template's `# Task Name` heading becomes a subtask heading (`## Subtask Name`), and its instructions become the subtask body. If the included template has its own frontmatter with `slug`, `priority`, `assignee`, etc., those are preserved.
 
@@ -175,7 +175,7 @@ type: orchestrator
 
 # Subtasks
 
-{% subtask aiki/plan if not data.plan %}
+{% subtask plan if not data.plan %}
 
 ## Execute Subtasks
 ---
@@ -280,7 +280,7 @@ subtasks: source.comments # Data source path for subtask iteration
 spawns:                   # Conditional task creation on close
   - when: "not data.approved"
     task:
-      template: aiki/fix
+      template: fix
 ---
 ```
 

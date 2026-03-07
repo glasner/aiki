@@ -177,15 +177,15 @@ mod tests {
 
     #[test]
     fn test_template_id_without_version() {
-        let template = TaskTemplate::new("aiki/review");
-        assert_eq!(template.template_id(), "aiki/review");
+        let template = TaskTemplate::new("review");
+        assert_eq!(template.template_id(), "review");
     }
 
     #[test]
     fn test_template_id_with_version() {
-        let mut template = TaskTemplate::new("aiki/review");
+        let mut template = TaskTemplate::new("review");
         template.version = Some("1.2.0".to_string());
-        assert_eq!(template.template_id(), "aiki/review@1.2.0");
+        assert_eq!(template.template_id(), "review@1.2.0");
     }
 
     #[test]
@@ -299,7 +299,7 @@ loop:
 spawns:
   - when: "not approved"
     task:
-      template: aiki/fix
+      template: fix
 "#;
         let fm: TemplateFrontmatter = serde_yaml::from_str(yaml).unwrap();
         assert!(fm.loop_config.is_some());

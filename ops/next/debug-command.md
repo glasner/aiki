@@ -44,4 +44,4 @@ Takes a bug report (issue, error log, user description) and produces structured 
 
 ## Related
 
-- [implement-loop-refactor.md](../now/implement-loop-refactor.md) — introduces `aiki/plan/fix`, `aiki/plan/epic`, and `aiki/loop` that this builds on
+- [implement-loop-refactor.md](../now/implement-loop-refactor.md) — introduces `plan/fix`, `plan/epic`, and `loop` that this builds on

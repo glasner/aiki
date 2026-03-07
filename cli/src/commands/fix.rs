@@ -10,13 +10,13 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
-use crate::tasks::runner::{task_run, TaskRunOptions};
+use crate::tasks::runner::{ScreenSession, handle_session_result, task_run, task_run_on_session, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
@@ -157,7 +157,7 @@ pub fn run_fix(
     let scope = ReviewScope::from_data(&review_task.data)?;
 
     // Resolve the final template name for fix-plan tasks.
-    // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "aiki/fix".
+    // Priority chain: CLI --plan-template arg > review_task.data["options.fix_template"] > "fix".
     // See test_resolve_fix_template_name_* tests for coverage of this resolution logic.
     let plan_template_resolved = resolve_fix_template_name(plan_template.clone(), &review_task.data);
 
@@ -218,7 +218,18 @@ pub fn run_fix(
     // ── Synchronous quality loop ──────────────────────────────────
     let mut review_id = review_task.id.clone();
 
-    run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once, output)
+    // Create shared screen session for TTY (unified view across stages)
+    let mut session = if io::stderr().is_terminal() {
+        Some(ScreenSession::new()?)
+    } else {
+        None
+    };
+
+    let result = run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once, output, &mut session);
+
+    drop(session);
+
+    result
 }
 
 /// Continue an async fix from a previously created fix-parent.
@@ -283,9 +294,16 @@ fn run_fix_continue(
     // Step 3: Create plan-fix task
     let plan_fix_id = create_plan_fix_task(cwd, &review_id, fix_parent_id, &assignee, Some(&plan_template_resolved))?;
 
+    // Create shared screen session for TTY (unified view across stages)
+    let mut session = if io::stderr().is_terminal() {
+        Some(ScreenSession::new()?)
+    } else {
+        None
+    };
+
     // Step 4: task_run(plan-fix)
     let run_options = TaskRunOptions::new();
-    task_run(cwd, &plan_fix_id, run_options)?;
+    run_task_with_session(cwd, &plan_fix_id, run_options, &mut session)?;
 
     // Step 5-6: Decompose plan into subtasks under fix-parent
     let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
@@ -293,7 +311,7 @@ fn run_fix_continue(
         template: decompose_template.clone(),
         agent: assignee.as_deref().and_then(AgentType::from_str),
     };
-    run_decompose(cwd, &plan_path, fix_parent_id, decompose_options)?;
+    run_decompose(cwd, &plan_path, fix_parent_id, decompose_options, session.as_mut())?;
 
     // Step 7: Delete plan file
     let _ = std::fs::remove_file(&plan_path);
@@ -303,10 +321,11 @@ fn run_fix_continue(
     if let Some(ref tmpl) = loop_template {
         loop_options = loop_options.with_template(tmpl.clone());
     }
-    run_loop(cwd, fix_parent_id, loop_options)?;
+    run_loop(cwd, fix_parent_id, loop_options, session.as_mut())?;
 
     // Step 9: if --once, we're done
     if once {
+        drop(session);
         return Ok(());
     }
 
@@ -332,7 +351,7 @@ fn run_fix_continue(
     )?;
 
     let run_options = TaskRunOptions::new();
-    task_run(cwd, &review_result.review_task_id, run_options)?;
+    run_task_with_session(cwd, &review_result.review_task_id, run_options, &mut session)?;
 
     // Two-phase review decision
     let events_with_ids = read_events_with_ids(cwd)?;
@@ -362,7 +381,7 @@ fn run_fix_continue(
                 },
             )?;
             let run_options = TaskRunOptions::new();
-            task_run(cwd, &original_review_result.review_task_id, run_options)?;
+            run_task_with_session(cwd, &original_review_result.review_task_id, run_options, &mut session)?;
 
             let events_with_ids = read_events_with_ids(cwd)?;
             let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
@@ -376,6 +395,7 @@ fn run_fix_continue(
             );
             match orig_outcome {
                 ReviewOutcome::Approved(id) => {
+                    drop(session);
                     if output != Some(OutputFormat::Id) {
                         output_approved(&id)?;
                     }
@@ -391,7 +411,11 @@ fn run_fix_continue(
     }
 
     // Continue the quality loop (iterations 2..MAX)
-    run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once, output)
+    let result = run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once, output, &mut session);
+
+    drop(session);
+
+    result
 }
 
 /// Outcome of the two-phase review decision.
@@ -441,6 +465,7 @@ fn run_quality_loop(
     autorun: bool,
     once: bool,
     output: Option<OutputFormat>,
+    session: &mut Option<ScreenSession>,
 ) -> Result<()> {
     for _iteration in 0..MAX_QUALITY_ITERATIONS {
         // 1. Short-circuit if no actionable issues
@@ -458,12 +483,12 @@ fn run_quality_loop(
         // 2. Create fix-parent task (container, like an epic)
         let fix_parent_id = create_fix_parent(cwd, review_id, scope, assignee, autorun)?;
 
-        // 3. Create plan-fix task from aiki/fix
+        // 3. Create plan-fix task from fix template
         let plan_fix_id = create_plan_fix_task(cwd, review_id, &fix_parent_id, assignee, Some(plan_template))?;
 
         // 4. task_run(plan-fix) — agent writes fix plan
         let run_options = TaskRunOptions::new();
-        task_run(cwd, &plan_fix_id, run_options)?;
+        run_task_with_session(cwd, &plan_fix_id, run_options, session)?;
 
         // 5-6. Decompose plan into subtasks under fix-parent
         let plan_path = format!("/tmp/aiki/plans/{}.md", plan_fix_id);
@@ -471,7 +496,7 @@ fn run_quality_loop(
             template: decompose_template.map(|s| s.to_string()),
             agent: assignee.as_deref().and_then(AgentType::from_str),
         };
-        run_decompose(cwd, &plan_path, &fix_parent_id, decompose_options)?;
+        run_decompose(cwd, &plan_path, &fix_parent_id, decompose_options, session.as_mut())?;
 
         // 7. Delete plan file (content now lives as subtasks)
         let _ = std::fs::remove_file(&plan_path);
@@ -481,7 +506,7 @@ fn run_quality_loop(
         if let Some(tmpl) = loop_template {
             loop_options = loop_options.with_template(tmpl.to_string());
         }
-        run_loop(cwd, &fix_parent_id, loop_options)?;
+        run_loop(cwd, &fix_parent_id, loop_options, session.as_mut())?;
 
         // 9. if --once: break
         if once {
@@ -508,7 +533,7 @@ fn run_quality_loop(
 
         // 11. task_run(review) — agent reviews the fix
         let run_options = TaskRunOptions::new();
-        task_run(cwd, &review_result.review_task_id, run_options)?;
+        run_task_with_session(cwd, &review_result.review_task_id, run_options, session)?;
 
         // 12-14. Two-phase review decision
         let events_with_ids = read_events_with_ids(cwd)?;
@@ -539,7 +564,7 @@ fn run_quality_loop(
                     },
                 )?;
                 let run_options = TaskRunOptions::new();
-                task_run(cwd, &original_review_result.review_task_id, run_options)?;
+                run_task_with_session(cwd, &original_review_result.review_task_id, run_options, session)?;
 
                 let events_with_ids = read_events_with_ids(cwd)?;
                 let current_tasks = materialize_graph_with_ids(&events_with_ids).tasks;
@@ -579,6 +604,22 @@ fn run_quality_loop(
     Ok(())
 }
 
+/// Run a task using the shared screen session if available, otherwise standalone.
+fn run_task_with_session(
+    cwd: &Path,
+    task_id: &str,
+    options: TaskRunOptions,
+    session: &mut Option<ScreenSession>,
+) -> Result<()> {
+    if let Some(s) = session.as_mut() {
+        let result = task_run_on_session(cwd, task_id, options, s)?;
+        handle_session_result(cwd, task_id, result, true)?;
+    } else {
+        task_run(cwd, task_id, options)?;
+    }
+    Ok(())
+}
+
 /// Check if a review task has actionable issues.
 fn has_actionable_issues(review_task: &Task) -> bool {
     if let Some(issue_count) = review_task.data.get("issue_count") {
@@ -615,13 +656,13 @@ fn output_approved(task_id: &str) -> Result<()> {
 ///
 /// A task is considered a review task if:
 /// 1. Its task_type is explicitly "review", OR
-/// 2. It was created from a review template (template starts with "aiki/review")
+/// 2. It was created from a review template (template starts with "review" or legacy "aiki/review")
 pub fn is_review_task(task: &Task) -> bool {
     if task.task_type.as_deref() == Some("review") {
         return true;
     }
     if let Some(ref template) = task.template {
-        if template.starts_with("aiki/review") {
+        if template.starts_with("review") || template.starts_with("aiki/review") {
             return true;
         }
     }
@@ -710,7 +751,7 @@ fn create_fix_parent(
     Ok(fix_parent_id)
 }
 
-/// Create a plan-fix task from the `aiki/fix` template.
+/// Create a plan-fix task from the `fix` template.
 fn create_plan_fix_task(
     cwd: &Path,
     review_id: &str,
@@ -723,7 +764,7 @@ fn create_plan_fix_task(
     data.insert("target".to_string(), fix_parent_id.to_string());
 
     let params = TemplateTaskParams {
-        template_name: template_override.unwrap_or("aiki/fix").to_string(),
+        template_name: template_override.unwrap_or("fix").to_string(),
         data,
         sources: vec![format!("task:{}", review_id)],
         assignee: assignee.clone(),
@@ -759,7 +800,7 @@ fn resolve_fix_template_name(
     review_data: &HashMap<String, String>,
 ) -> String {
     resolve_plan_template(cli_arg, review_data)
-        .unwrap_or_else(|| "aiki/fix".to_string())
+        .unwrap_or_else(|| "fix".to_string())
 }
 
 #[cfg(test)]
@@ -1007,7 +1048,7 @@ mod tests {
     }
 
     /// Tests the full fix-template resolution chain used by run_fix:
-    /// resolve_plan_template → unwrap_or("aiki/fix") via resolve_fix_template_name.
+    /// resolve_plan_template → unwrap_or("fix") via resolve_fix_template_name.
     #[test]
     fn test_resolve_fix_template_name_full_chain() {
         // 1. CLI arg provided → uses CLI arg (ignores review data and default)
@@ -1026,11 +1067,11 @@ mod tests {
             "from/review"
         );
 
-        // 3. No CLI arg, no review data → falls back to "aiki/fix"
+        // 3. No CLI arg, no review data → falls back to "fix"
         let data = HashMap::new();
         assert_eq!(
             resolve_fix_template_name(None, &data),
-            "aiki/fix"
+            "fix"
         );
     }
 
@@ -1177,15 +1218,22 @@ mod tests {
 
     #[test]
     fn test_is_review_task_various_template_prefixes() {
-        // Template prefix "aiki/review" should match various versions
+        // New format: "review" prefix
         let mut task = make_test_task("t-review");
+        task.template = Some("review".to_string());
+        assert!(is_review_task(&task));
+
+        task.template = Some("review@2.0.0".to_string());
+        assert!(is_review_task(&task));
+
+        task.template = Some("review/custom".to_string());
+        assert!(is_review_task(&task));
+
+        // Legacy format: "aiki/review" prefix (backward compat)
         task.template = Some("aiki/review".to_string());
         assert!(is_review_task(&task));
 
         task.template = Some("aiki/review@2.0.0".to_string());
-        assert!(is_review_task(&task));
-
-        task.template = Some("aiki/review/custom".to_string());
         assert!(is_review_task(&task));
 
         // Non-matching templates

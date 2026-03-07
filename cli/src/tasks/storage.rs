@@ -170,7 +170,7 @@ pub fn write_link_event_with_autorun(
                                 timestamp,
                             };
                             write_event(cwd, &supersedes_event)?;
-                            eprintln!(
+                            eprintln!( // stderr-ok: write-path only, never called during monitoring
                                 "Superseded: {} previously {} {}",
                                 short_id(old_target),
                                 if kind == "implements-plan" { "implemented" } else { "orchestrated" },
@@ -179,7 +179,7 @@ pub fn write_link_event_with_autorun(
                         }
                         // If old_target is a file path, skip the supersedes link silently (bug #4 fix)
                     } else if kind == "subtask-of" {
-                        eprintln!(
+                        eprintln!( // stderr-ok: write-path only, never called during monitoring
                             "Re-parented: {} moved from {} to {}",
                             short_id(from),
                             short_id(old_target),
@@ -218,7 +218,7 @@ pub fn write_link_event_with_autorun(
                             timestamp,
                         };
                         write_event(cwd, &supersedes_event)?;
-                        eprintln!(
+                        eprintln!( // stderr-ok: write-path only, never called during monitoring
                             "Superseded: {} previously {} {}",
                             short_id(old_from),
                             if kind == "orchestrates" { "orchestrated" } else { "implemented" },
@@ -1007,7 +1007,9 @@ fn parse_metadata_block(block: &str) -> Option<TaskEvent> {
                 Some(v) => {
                     let value = v.first().map(|s| *s).unwrap_or("");
                     if value.is_empty() {
-                        eprintln!("Warning: ignoring updated event with empty assignee for task {task_id}. Use `aiki task unset <id> assignee` to clear the assignee.");
+                        // stderr-ok: suppressed — can fire inside LiveScreen via read_events().
+                        // Was a warning print; replaced with debug_assert guard.
+                        crate::debug_assert_no_live_screen!();
                         return None;
                     }
                     Some(value.to_string())

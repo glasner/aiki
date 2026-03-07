@@ -202,11 +202,23 @@ fn build_epic_view(
     let subtask_lines: Vec<SubtaskLine> =
         subtasks.iter().map(|t| task_to_subtask_line(t)).collect();
 
-    // Collapsed during review/fix stages, or when all stages are done
+    // Collapsed during review/fix stages, when all stages are done,
+    // or during an active build when loop has children (avoids duplicating
+    // subtasks in both the epic tree and the loop sub-stage).
     let all_done = stages
         .iter()
         .all(|s| s.state == StageState::Done || s.state == StageState::Skipped);
-    let collapsed = active_stage == "review" || active_stage == "fix" || all_done;
+    let loop_active_with_children = stages.iter().any(|s| {
+        s.name == "build"
+            && matches!(s.state, StageState::Starting | StageState::Active)
+            && s.sub_stages
+                .iter()
+                .any(|ss| ss.name == "loop" && !ss.children.is_empty())
+    });
+    let collapsed = active_stage == "review"
+        || active_stage == "fix"
+        || all_done
+        || loop_active_with_children;
 
     let collapsed_summary = if collapsed {
         let total_elapsed = compute_total_elapsed(subtasks);
@@ -401,6 +413,12 @@ fn build_sub_stages(
         }
     }
 
+    // Enforce sequential state: if decompose is not Done, loop can't be active yet.
+    let decompose_done = sub_stages
+        .first()
+        .map(|s| matches!(s.state, StageState::Done | StageState::Skipped))
+        .unwrap_or(true); // no decompose stage means it's implicitly done
+
     // Find orchestrator task linked to this epic for the "loop" sub-stage
     let mut loop_found = false;
     let orchestrator_ids = graph.edges.referrers(&epic.id, "orchestrates");
@@ -417,9 +435,28 @@ fn build_sub_stages(
                 .map(|t| StageChild::Subtask(task_to_subtask_line(t)))
                 .collect();
 
+            // Derive loop state with two overrides:
+            // 1. Cap to Pending if decompose hasn't finished yet
+            // 2. Stay Active if subtasks are still running (orchestrator may close early)
+            let has_running_subtasks = subtasks
+                .iter()
+                .any(|t| t.status == TaskStatus::InProgress);
+            let loop_state = if !decompose_done {
+                StageState::Pending
+            } else if has_running_subtasks
+                && matches!(
+                    task_to_stage_state(orch_task),
+                    StageState::Done | StageState::Skipped
+                )
+            {
+                StageState::Active
+            } else {
+                task_to_stage_state(orch_task)
+            };
+
             sub_stages.push(SubStageView {
                 name: "loop".to_string(),
-                state: task_to_stage_state(orch_task),
+                state: loop_state,
                 progress: None,
                 elapsed: format_elapsed(orch_task),
                 children: loop_children,
@@ -932,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_during_build() {
+    fn collapsed_during_build_with_loop_children() {
         let epic = make_task(
             "abcdefghijklmnopqrstuvwxyzabcdef",
             "Epic",
@@ -944,9 +981,9 @@ mod tests {
         let graph = empty_graph();
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // Build is active → epic should be expanded
-        assert!(!view.epic.collapsed);
-        assert!(view.epic.collapsed_summary.is_none());
+        // Build is active with loop children → epic collapses to avoid duplication
+        assert!(view.epic.collapsed);
+        assert!(view.epic.collapsed_summary.is_some());
     }
 
     #[test]
@@ -1131,6 +1168,41 @@ mod tests {
         assert_eq!(view.stages[0].sub_stages.len(), 2);
         assert_eq!(view.stages[0].sub_stages[0].name, "decompose");
         assert_eq!(view.stages[0].sub_stages[0].state, StageState::Done);
+        assert_eq!(view.stages[0].sub_stages[1].name, "loop");
+        assert_eq!(view.stages[0].sub_stages[1].state, StageState::Active);
+    }
+
+    #[test]
+    fn loop_stays_active_while_subtasks_running() {
+        let epic_id = "abcdefghijklmnopqrstuvwxyzabcdef";
+        let decompose_id = "dddddddddddddddddddddddddddddddd";
+        let orch_id = "oooooooooooooooooooooooooooooooo";
+
+        let epic = make_task(epic_id, "Epic", TaskStatus::InProgress);
+        // Subtask is still running
+        let mut t1 = make_task("a".repeat(32).as_str(), "T1", TaskStatus::InProgress);
+        t1.claimed_by_session = Some("session-1".to_string());
+        let subtasks: Vec<&Task> = vec![&t1];
+
+        let mut graph = empty_graph();
+
+        // Decompose done
+        let mut decompose = make_task(decompose_id, "Decompose", TaskStatus::Closed);
+        decompose.closed_outcome = Some(TaskOutcome::Done);
+        graph.tasks.insert(decompose_id.to_string(), decompose);
+        graph.edges.add(epic_id, decompose_id, "populated-by");
+
+        // Orchestrator is DONE (closed early while agents still run)
+        let mut orch = make_task(orch_id, "Implement", TaskStatus::Closed);
+        orch.closed_outcome = Some(TaskOutcome::Done);
+        orch.data
+            .insert("plan".to_string(), "ops/now/test.md".to_string());
+        graph.tasks.insert(orch_id.to_string(), orch);
+        graph.edges.add(orch_id, epic_id, "orchestrates");
+
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+
+        // Loop should stay Active (not Done) because subtask is still running
         assert_eq!(view.stages[0].sub_stages[1].name, "loop");
         assert_eq!(view.stages[0].sub_stages[1].state, StageState::Active);
     }

@@ -12,7 +12,7 @@ Currently, customizing workflows (like code review criteria) requires editing te
 2. **Not portable**: Customizations are tied to the repo, not easily shared across projects
 3. **Rigid structure**: Adding custom review criteria requires creating new subtask template files
 
-Example: To customize code review criteria, users must edit `.aiki/templates/aiki/review/criteria/code.md`.
+Example: To customize code review criteria, users must edit `.aiki/templates/review/criteria/code.md`.
 
 ## Proposed Solution
 
@@ -260,21 +260,21 @@ Skills are injected when an agent starts a task via `aiki task start`. Aiki foll
 
 **Before** (current state):
 ```
-.aiki/templates/aiki/review.md           # Main template
-.aiki/templates/aiki/review/criteria/
+.aiki/templates/review.md           # Main template
+.aiki/templates/review/criteria/
 ├── code.md                              # Code review criteria
 └── plan.md                              # Plan review criteria
 ```
 
 The template uses conditional subtasks:
 ```liquid
-{% subtask aiki/review/criteria/plan if data.scope.kind == "plan" %}
-{% subtask aiki/review/criteria/code if data.scope.kind != "plan" %}
+{% subtask review/criteria/plan if data.scope.kind == "plan" %}
+{% subtask review/criteria/code if data.scope.kind != "plan" %}
 ```
 
 **After** (with skills):
 ```
-.aiki/templates/aiki/review.md           # Main template (simplified)
+.aiki/templates/review.md           # Main template (simplified)
 .aiki/skills/aiki-review/
 ├── SKILL.md                             # Review criteria (all in one)
 └── references/
@@ -431,8 +431,8 @@ Aiki will parse and store all Claude Code extension fields but implement their b
 4. Test convention-based injection end-to-end
 
 ### Phase 4: Review Workflow Migration
-1. Update `.aiki/templates/aiki/review.md` to reference `aiki-review` skill
-2. Remove `.aiki/templates/aiki/review/criteria/*` subtask templates
+1. Update `.aiki/templates/review.md` to reference `aiki-review` skill
+2. Remove `.aiki/templates/review/criteria/*` subtask templates
 3. Add `references/` directory to `aiki-review` skill for supplementary content
 4. Test review workflow with skill injection (both `aiki review` and `aiki task run`)
 

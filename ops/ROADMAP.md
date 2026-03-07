@@ -1,6 +1,4 @@
 Now:
-- wait for aborption (fix from absorption test)
-- fix aiki review <plan.md>
 - review screen cleanup -> build screen cleanup
 
 - share with Paul

@@ -100,12 +100,12 @@ Review the changes for:
 - Performance issues
 - Test coverage gaps
 
-{{> aiki/review/criteria/code}}
+{{> review/criteria/code}}
 
 Report findings as task comments.
 ```
 
-The `{{> aiki/review/criteria/code}}` syntax includes a partial from another plugin's templates.
+The `{{> review/criteria/code}}` syntax includes a partial from another plugin's templates.
 
 ## Dependencies
 

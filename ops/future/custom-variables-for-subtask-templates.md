@@ -42,7 +42,7 @@ variable_ref  := identifier ("." identifier)*
 ```markdown
 # Parent template sets data.spec = "feature.md"
 
-{% subtask aiki/plan with spec="different.md" %}
+{% subtask plan with spec="different.md" %}
 
 # Plan template sees: data.spec = "different.md" (overridden)
 ```
@@ -50,14 +50,14 @@ variable_ref  := identifier ("." identifier)*
 ### Add new variable
 
 ```markdown
-{% subtask aiki/review with scope="auth module", scope_id=data.task_id %}
+{% subtask review with scope="auth module", scope_id=data.task_id %}
 ```
 
 ### In loops with dynamic values
 
 ```markdown
 {% for module in data.modules %}
-{% subtask aiki/review with scope=module.name %}
+{% subtask review with scope=module.name %}
 {% endfor %}
 ```
 
@@ -87,7 +87,7 @@ Variables set by `with` are added to the `data.*` namespace of the child templat
 
 ```markdown
 {% for file in data.modified_files %}
-{% subtask aiki/review with target=file.path %}
+{% subtask review with target=file.path %}
 {% endfor %}
 ```
 
@@ -95,10 +95,10 @@ Variables set by `with` are added to the `data.*` namespace of the child templat
 
 ```markdown
 # Default review scope is the whole task
-{% subtask aiki/review %}
+{% subtask review %}
 
 # But for security-critical code, narrow the scope
-{% subtask aiki/review with scope="auth module" if data.touches_auth %}
+{% subtask review with scope="auth module" if data.touches_auth %}
 ```
 
 ### 3. Parameterized workflows

@@ -45,7 +45,7 @@ on:
 
 **Parameters:**
 - `path` (optional) - Path to plan file. If omitted, prompts user for description
-- `template` (optional) - Template to use (default: `aiki/plan`)
+- `template` (optional) - Template to use (default: `plan`)
 - `agent` (optional) - Agent for session (default: `claude-code`)
 
 **Behavior:**
@@ -69,7 +69,7 @@ on:
 - `plan` (required) - Path to plan file
 - `async` (optional) - Run asynchronously (default: false)
 - `start` (optional) - Start implementation after decomposition (default: false)
-- `template` (optional) - Decompose template (default: `aiki/decompose`)
+- `template` (optional) - Decompose template (default: `decompose`)
 - `agent` (optional) - Agent for decomposition (default: `claude-code`)
 
 **Behavior:**
@@ -92,7 +92,7 @@ on:
 **Parameters:**
 - `plan` (required) - Path to plan file
 - `async` (optional) - Run asynchronously (default: false)
-- `template` (optional) - Build template (default: `aiki/build`)
+- `template` (optional) - Build template (default: `build`)
 - `agent` (optional) - Agent for build (default: `claude-code`)
 
 **Behavior:**

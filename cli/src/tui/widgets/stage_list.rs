@@ -203,8 +203,45 @@ fn render_child_line(
     area_width: u16,
     buf: &mut Buffer,
 ) {
+    render_child_line_inner(child, theme, area_x, y, area_width, buf, false);
+}
+
+/// Render a sub-stage child line with ⎿ connector and deeper indent.
+fn render_substage_child_line(
+    child: &StageChild,
+    theme: &Theme,
+    area_x: u16,
+    y: u16,
+    area_width: u16,
+    buf: &mut Buffer,
+) {
+    render_child_line_inner(child, theme, area_x, y, area_width, buf, true);
+}
+
+/// Inner render for child lines.
+///
+/// When `nested` is true, uses deeper indent (7 chars) and draws a ⎿ connector
+/// to visually nest children under their parent sub-stage.
+fn render_child_line_inner(
+    child: &StageChild,
+    theme: &Theme,
+    area_x: u16,
+    y: u16,
+    area_width: u16,
+    buf: &mut Buffer,
+    nested: bool,
+) {
     let max_x = area_x.saturating_add(area_width);
-    let mut x = area_x.saturating_add(4); // 4 char indent
+    let indent = if nested { 7u16 } else { 4u16 };
+    let mut x = area_x.saturating_add(indent);
+
+    // Draw ⎿ connector for nested children
+    if nested {
+        let connector_x = area_x.saturating_add(5);
+        if connector_x < max_x {
+            buf.set_string(connector_x, y, "⎿", theme.dim_style());
+        }
+    }
 
     match child {
         StageChild::Subtask(sub) => {
@@ -366,13 +403,13 @@ impl Widget for StageList<'_> {
                     render_sub_stage_line(sub, self.theme, area.x, y, max_x, buf);
                     y += 1;
 
-                    // Render children of this sub-stage (indented further)
+                    // Render children of this sub-stage (nested with ⎿ connector)
                     if is_substage_expanded(sub) {
                         for child in &sub.children {
                             if y >= max_y {
                                 break;
                             }
-                            render_child_line(
+                            render_substage_child_line(
                                 child, self.theme, area.x, y, area.width, buf,
                             );
                             y += 1;

@@ -24,7 +24,7 @@ aiki decompose ops/now/user-auth.md --target <task-id> -o id
 
 2. **Link plan** — Writes an `implements-plan` link from the target task to the plan file (`file:<path>`).
 
-3. **Create decompose task** — Creates a task from the `aiki/decompose` template with `data.target` (the parent task ID) and `data.plan` (the plan file path).
+3. **Create decompose task** — Creates a task from the `decompose` template with `data.target` (the parent task ID) and `data.plan` (the plan file path).
 
 4. **Wire provenance** — Writes `decomposes-plan` (decompose task → plan file) and `populated-by` (target → decompose task) links for traceability.
 
@@ -67,7 +67,7 @@ The loop orchestrator will run both tasks in one session, preserving context bet
 | Flag | Effect |
 |------|--------|
 | `--target <id>` | **(required)** Parent task ID to create subtasks under |
-| `--template <name>` | Decompose template (default: `aiki/decompose`) |
+| `--template <name>` | Decompose template (default: `decompose`) |
 | `--agent <type>` | Agent for decomposition (default: `claude-code`) |
 | `-o id` | Output bare task ID to stdout |
 

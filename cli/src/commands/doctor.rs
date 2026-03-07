@@ -4,6 +4,9 @@ use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::repos::RepoDetector;
+use crate::tasks::templates::builtin::default_plugin_templates;
+use crate::tasks::templates::manifest::{checksum, RepoManifest};
+use crate::tasks::templates::sync::sync_plugin_templates;
 use anyhow::Context;
 use std::env;
 use std::fs;
@@ -535,6 +538,11 @@ pub fn run(fix: bool) -> Result<()> {
         println!();
     }
 
+    // Check template health
+    issues_found += check_templates(&project_root, fix);
+
+    println!();
+
     // Summary
     if issues_found == 0 {
         println!("✓ All checks passed! Aiki is healthy.");
@@ -548,6 +556,227 @@ pub fn run(fix: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check template health: manifest presence, schema compatibility, missing/dirty files, legacy dirs.
+///
+/// Returns the number of issues found.
+fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
+    let aiki_dir = project_root.join(".aiki");
+    if !aiki_dir.exists() {
+        return 0;
+    }
+
+    println!("Templates:");
+
+    let manifest_path = aiki_dir.join(".manifest.json");
+    let templates_dir = aiki_dir.join("templates");
+
+    // (a) Check manifest existence and schema
+    if manifest_path.exists() {
+        // Try to parse just the schema field
+        let content = match fs::read_to_string(&manifest_path) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("  ✗ Failed to read manifest: {}", e);
+                return 1;
+            }
+        };
+
+        #[derive(serde::Deserialize)]
+        struct SchemaCheck {
+            schema: Option<u32>,
+        }
+
+        let schema = match serde_json::from_str::<SchemaCheck>(&content) {
+            Ok(check) => check.schema.unwrap_or(1),
+            Err(_) => {
+                println!("  ✗ Corrupt manifest at .aiki/.manifest.json");
+                return 1;
+            }
+        };
+
+        // CURRENT_SCHEMA is 1 in manifest.rs
+        if schema > 1 {
+            println!(
+                "  ✗ Manifest schema version {} is not supported by this CLI (supports version 1). Upgrade your CLI to manage templates."
+            , schema);
+            // Can't safely proceed — skip all other template checks
+            return 1;
+        }
+    } else {
+        println!("  ⚠ Templates not managed yet, run 'aiki init'");
+        return 0;
+    }
+
+    // Load manifest for detailed checks
+    let manifest = match RepoManifest::load(project_root) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            // Shouldn't happen since we checked exists above, but be safe
+            println!("  ⚠ Templates not managed yet, run 'aiki init'");
+            return 0;
+        }
+        Err(e) => {
+            println!("  ✗ Failed to load manifest: {}", e);
+            return 1;
+        }
+    };
+
+    // Accumulates issues across all plugins (intentionally outside the per-plugin loop)
+    let mut issues = 0;
+
+    // Get the source templates for comparison
+    let source_templates = default_plugin_templates();
+
+    // Build source checksum lookup for detecting dirty adoptions.
+    // A dirty-adopted file has manifest checksum == source checksum but disk != manifest,
+    // which is expected (not a real modification).
+    let source_checksums: std::collections::HashMap<&str, String> = source_templates
+        .iter()
+        .map(|(path, content)| (*path, checksum(content)))
+        .collect();
+
+    // Check each plugin in manifest
+    for (plugin_ref, plugin_entry) in &manifest.templates {
+        let install_root = &plugin_entry.install_root;
+        let mut up_to_date = 0usize;
+        let mut missing_files: Vec<String> = Vec::new();
+        let mut dirty_files: Vec<String> = Vec::new();
+        let mut adopted_files: Vec<String> = Vec::new();
+
+        for (file_name, file_entry) in &plugin_entry.files {
+            let disk_path = templates_dir.join(install_root).join(file_name);
+
+            if !disk_path.exists() {
+                // (c) Missing on-disk file
+                missing_files.push(file_name.clone());
+            } else {
+                // Check if dirty
+                if let Ok(on_disk) = fs::read(&disk_path) {
+                    let disk_cksum = checksum(&on_disk);
+                    if disk_cksum != file_entry.checksum {
+                        // Distinguish dirty adoption from genuine modification:
+                        // If the manifest checksum matches the source template checksum,
+                        // this file was dirty-adopted (user had it before sync). The
+                        // mismatch is expected — not a real modification.
+                        let is_dirty_adoption = source_checksums
+                            .get(file_name.as_str())
+                            .map_or(false, |src_cksum| *src_cksum == file_entry.checksum);
+                        if is_dirty_adoption {
+                            adopted_files.push(file_name.clone());
+                        } else {
+                            dirty_files.push(file_name.clone());
+                        }
+                    } else {
+                        up_to_date += 1;
+                    }
+                } else {
+                    println!("    ✗ Cannot read template: {}", file_name);
+                    issues += 1;
+                }
+            }
+        }
+
+        // Print summary header
+        println!("  Templates ({}):", plugin_ref);
+
+        if up_to_date > 0 {
+            println!("    ✓ {} template(s) up to date", up_to_date);
+        }
+
+        // (d) Dirty/modified templates
+        if !dirty_files.is_empty() {
+            println!(
+                "    ⚠ {} template(s) modified locally: {}",
+                dirty_files.len(),
+                dirty_files.join(", ")
+            );
+            println!("      (delete and re-init to reset)");
+        }
+
+        // Dirty-adopted templates: pre-existing user files adopted into manifest.
+        // The disk/manifest mismatch is expected — not a problem.
+        if !adopted_files.is_empty() {
+            println!(
+                "    ✓ {} template(s) customized (pre-existing): {}",
+                adopted_files.len(),
+                adopted_files.join(", ")
+            );
+        }
+
+        // (c) Missing files
+        if !missing_files.is_empty() {
+            if fix {
+                // Re-install missing templates via sync
+                if plugin_ref == "aiki/default" {
+                    let mut fix_manifest =
+                        RepoManifest::load(project_root).unwrap().unwrap_or_else(RepoManifest::new);
+                    match std::fs::create_dir_all(&templates_dir) {
+                        Ok(_) => {
+                            match sync_plugin_templates(
+                                &mut fix_manifest,
+                                plugin_ref,
+                                install_root,
+                                env!("CARGO_PKG_VERSION"),
+                                &source_templates,
+                                &templates_dir,
+                            ) {
+                                Ok(report) => {
+                                    if report.installed > 0 {
+                                        println!(
+                                            "    ✓ Reinstalled {} template(s)",
+                                            report.installed
+                                        );
+                                    }
+                                    let _ = fix_manifest.save(project_root);
+                                }
+                                Err(e) => {
+                                    println!("    ✗ Failed to reinstall templates: {}", e);
+                                    issues += missing_files.len();
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            println!("    ✗ Failed to create templates directory: {}", err);
+                            issues += missing_files.len();
+                        }
+                    }
+                } else {
+                    for name in &missing_files {
+                        println!(
+                            "    ⚠ Template '{}' is in manifest but missing from disk. Cannot auto-fix non-default plugin.",
+                            name
+                        );
+                    }
+                    issues += missing_files.len();
+                }
+            } else {
+                for name in &missing_files {
+                    println!(
+                        "    ⚠ Template '{}' is in manifest but missing from disk. Run 'aiki doctor --fix' to reinstall.",
+                        name
+                    );
+                }
+                issues += missing_files.len();
+            }
+        }
+    }
+
+    // If manifest has no templates at all, just show the count
+    if manifest.templates.is_empty() {
+        println!("  ✓ Manifest present (no templates tracked)");
+    }
+
+    // (e) Check for stale legacy directory
+    let legacy_dir = templates_dir.join("aiki");
+    if legacy_dir.is_dir() {
+        println!("  ⚠ Legacy template directory found: .aiki/templates/aiki/");
+        println!("    Run 'aiki init' to migrate, or remove manually if empty");
+        issues += 1;
+    }
+
+    issues
 }
 
 /// Check if a command string invokes aiki hooks stdin with specific agent/event
@@ -1549,5 +1778,154 @@ mod tests {
         .unwrap();
         let mapping = yaml.as_mapping().unwrap();
         assert_eq!(validate_event_keys(mapping, ""), 1);
+    }
+
+    // ---- Template health check tests ----
+
+    #[test]
+    fn test_check_templates_missing_manifest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join(".aiki")).unwrap();
+        // No .manifest.json → should report warning, 0 issues (not an error)
+        let issues = check_templates(repo, false);
+        assert_eq!(issues, 0);
+    }
+
+    #[test]
+    fn test_check_templates_unsupported_schema() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        std::fs::create_dir_all(&aiki_dir).unwrap();
+        std::fs::write(
+            aiki_dir.join(".manifest.json"),
+            r#"{"schema": 999, "templates": {}}"#,
+        )
+        .unwrap();
+
+        let issues = check_templates(repo, false);
+        assert_eq!(issues, 1);
+    }
+
+    #[test]
+    fn test_check_templates_dirty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        let templates_dir = aiki_dir.join("templates");
+        std::fs::create_dir_all(&templates_dir).unwrap();
+
+        // Write a file that differs from manifest checksum
+        std::fs::write(templates_dir.join("plan.md"), b"# User modified").unwrap();
+
+        let mut manifest = RepoManifest::new();
+        let plugin = manifest.get_or_create_plugin("aiki/default", "0.1.0", ".");
+        plugin.files.insert(
+            "plan.md".to_string(),
+            crate::tasks::templates::manifest::FileEntry {
+                checksum: checksum(b"# Original content"),
+                version: None,
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        manifest.save(repo).unwrap();
+
+        let issues = check_templates(repo, false);
+        // Dirty templates are informational, not issues
+        assert_eq!(issues, 0);
+    }
+
+    #[test]
+    fn test_check_templates_missing_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        let templates_dir = aiki_dir.join("templates");
+        std::fs::create_dir_all(&templates_dir).unwrap();
+
+        // Manifest says file exists but it doesn't on disk
+        let mut manifest = RepoManifest::new();
+        let plugin = manifest.get_or_create_plugin("aiki/default", "0.1.0", ".");
+        plugin.files.insert(
+            "ghost.md".to_string(),
+            crate::tasks::templates::manifest::FileEntry {
+                checksum: checksum(b"ghost"),
+                version: None,
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        manifest.save(repo).unwrap();
+
+        let issues = check_templates(repo, false);
+        assert_eq!(issues, 1);
+    }
+
+    #[test]
+    fn test_check_templates_fix_reinstalls_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        let templates_dir = aiki_dir.join("templates");
+        std::fs::create_dir_all(&templates_dir).unwrap();
+
+        // Set up manifest with a file that's in the default plugin source but missing on disk
+        let source_templates = default_plugin_templates();
+        let (first_name, _first_content) = source_templates[0];
+
+        let mut manifest = RepoManifest::new();
+        let plugin = manifest.get_or_create_plugin("aiki/default", "0.1.0", ".");
+        plugin.files.insert(
+            first_name.to_string(),
+            crate::tasks::templates::manifest::FileEntry {
+                checksum: checksum(b"old content"),
+                version: None,
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        );
+        manifest.save(repo).unwrap();
+
+        // File doesn't exist on disk
+        assert!(!templates_dir.join(first_name).exists());
+
+        // Run with fix=true
+        let issues = check_templates(repo, true);
+        assert_eq!(issues, 0);
+
+        // File should now exist
+        assert!(templates_dir.join(first_name).exists());
+    }
+
+    #[test]
+    fn test_check_templates_skips_sync_unsupported_schema() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        std::fs::create_dir_all(&aiki_dir).unwrap();
+        std::fs::write(
+            aiki_dir.join(".manifest.json"),
+            r#"{"schema": 999, "templates": {}}"#,
+        )
+        .unwrap();
+
+        // Even with fix=true, should not attempt sync
+        let issues = check_templates(repo, true);
+        assert_eq!(issues, 1);
+    }
+
+    #[test]
+    fn test_check_templates_legacy_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        let aiki_dir = repo.join(".aiki");
+        let templates_dir = aiki_dir.join("templates");
+        std::fs::create_dir_all(templates_dir.join("aiki")).unwrap();
+
+        // Create a valid manifest so we get past the manifest check
+        let manifest = RepoManifest::new();
+        manifest.save(repo).unwrap();
+
+        let issues = check_templates(repo, false);
+        assert_eq!(issues, 1); // Legacy directory counts as an issue
     }
 }

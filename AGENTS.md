@@ -231,6 +231,15 @@ aiki task show <id2>
 
 **The `--async` flag is ONLY for launching tasks in parallel** — it does NOT mean "fire and forget". You still must wait for all async tasks to finish (using `aiki task wait`) and read their results before responding to the user.
 
+**Scenario 4: Run a task from a template**
+```bash
+# Create and run a task from a template in one step
+aiki task run --template review/code-review --data scope=src/auth.rs
+
+# Inspect results
+aiki task show <task-id>
+```
+
 ### ❌ WRONG: Using native subagents
 ```
 # Claude Code - Don't use the Task tool
@@ -297,6 +306,10 @@ aiki task run <id2> --async
 aiki task wait <id1> <id2>    # block until all finish
 aiki task show <id1>          # inspect results
 aiki task show <id2>          # inspect results
+
+# Run a task from a template (create + run in one step)
+aiki task run --template <namespace/name>
+aiki task run --template <namespace/name> --data key=value
 
 # Filter tasks by source
 aiki task list --source file:ops/now/design.md

@@ -68,7 +68,7 @@ aiki loop <parent-task-id>
 
 ### Resolve
 
-`aiki resolve` resolves JJ merge conflicts. It takes a change ID with conflicts, creates a task from the `aiki/resolve` template, and runs an agent to resolve the conflicts.
+`aiki resolve` resolves JJ merge conflicts. It takes a change ID with conflicts, creates a task from the `resolve` template, and runs an agent to resolve the conflicts.
 
 ```bash
 aiki resolve <change-id>

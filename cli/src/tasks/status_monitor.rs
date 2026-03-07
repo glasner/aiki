@@ -3,17 +3,13 @@
 //! Provides live terminal visualization of task progress during sync execution.
 //! Shows subtasks and comments as they're created by the working agent.
 
-use std::io::{stderr, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::{
-    cursor::MoveUp,
-    terminal::{Clear, ClearType},
-    ExecutableCommand,
-};
+use ratatui::layout::{Constraint, Layout};
+use ratatui::text::Line;
 
 use super::graph::{materialize_graph, TaskGraph};
 use super::storage::read_events;
@@ -21,10 +17,8 @@ use super::types::{Task, TaskStatus};
 use crate::agents::MonitoredChild;
 use crate::error::Result;
 use crate::tui;
+use crate::tui::live_screen::{BlitWidget, ExitReason, LiveScreen};
 use crate::tui::theme::{detect_mode, Theme};
-
-/// Default polling interval in milliseconds
-const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 /// Reason for monitor to stop
 #[derive(Debug, Clone)]
@@ -38,6 +32,8 @@ pub enum MonitorExitReason {
         /// Captured stderr output from the agent (if any)
         stderr: String,
     },
+    /// Monitor encountered persistent failures (e.g., poll errors)
+    MonitorFailed { reason: String },
 }
 
 /// Monitor for real-time task status updates
@@ -46,32 +42,34 @@ pub struct StatusMonitor {
     task_id: String,
     /// Number of events at last poll (to detect changes)
     last_event_count: usize,
-    /// Polling interval
-    poll_interval: Duration,
     /// Flag to track if we've already rendered initial state
     has_rendered: bool,
-    /// Atomic flag to signal when to stop (for Ctrl+C handling)
+    /// Atomic flag to signal when to stop (for Ctrl+C handling outside raw mode)
     stop_flag: Arc<AtomicBool>,
-    /// Number of lines rendered in the last frame (for cursor-up redraw)
-    last_line_count: u16,
 }
 
 impl StatusMonitor {
     /// Create a new status monitor for a task
     #[must_use]
     pub fn new(task_id: &str) -> Self {
-        let poll_interval_ms = std::env::var("AIKI_STATUS_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_POLL_INTERVAL_MS);
-
         Self {
             task_id: task_id.to_string(),
             last_event_count: 0,
-            poll_interval: Duration::from_millis(poll_interval_ms),
             has_rendered: false,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            last_line_count: 0,
+        }
+    }
+
+    /// Create a new status monitor with an externally-owned stop flag.
+    ///
+    /// Used by `ScreenSession` where the stop flag is shared across monitors.
+    #[must_use]
+    pub fn new_with_stop_flag(task_id: &str, stop_flag: Arc<AtomicBool>) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            last_event_count: 0,
+            has_rendered: false,
+            stop_flag,
         }
     }
 
@@ -81,125 +79,82 @@ impl StatusMonitor {
         Arc::clone(&self.stop_flag)
     }
 
-    /// Poll for new events and update display if state changed
+    /// Poll for new events and return the view data if state changed.
     ///
-    /// Returns Ok(true) if task reached terminal state (closed/stopped)
-    pub fn poll_and_display(&mut self, cwd: &Path) -> Result<bool> {
+    /// Returns `Ok((changed, is_terminal))` where `changed` indicates new events
+    /// were seen and `is_terminal` indicates the task reached a terminal state.
+    fn poll(&mut self, cwd: &Path) -> Result<(bool, bool)> {
         let events = read_events(cwd)?;
         let graph = materialize_graph(&events);
 
         // Find the root task
         let root_task = match graph.tasks.get(&self.task_id) {
             Some(task) => task,
-            None => return Ok(false), // Task not found yet, keep waiting
+            None => return Ok((false, false)), // Task not found yet, keep waiting
         };
 
         // Check if we should update display (new events since last poll)
-        let should_render = events.len() != self.last_event_count || !self.has_rendered;
+        let changed = events.len() != self.last_event_count || !self.has_rendered;
 
-        if should_render {
+        if changed {
             self.last_event_count = events.len();
-            self.render_task_tree(&graph, root_task)?;
             self.has_rendered = true;
         }
 
         // Check if task reached terminal state
         let is_terminal = matches!(root_task.status, TaskStatus::Closed | TaskStatus::Stopped);
 
-        Ok(is_terminal)
+        Ok((changed, is_terminal))
     }
 
-    /// Monitor until task completion, detach, or agent exit (using MonitoredChild)
-    ///
-    /// This version properly handles zombie processes by using `try_wait()` on the
-    /// child process instead of checking if the PID is alive with `kill(pid, 0)`.
-    ///
-    /// Returns the reason why monitoring stopped.
-    pub fn monitor_until_complete_with_child(
-        &mut self,
-        cwd: &Path,
-        child: &mut MonitoredChild,
-    ) -> Result<MonitorExitReason> {
-        // Initial render
-        let _ = self.poll_and_display(cwd);
+    /// Build the workflow view buffer from current task state.
+    fn build_view(&self, cwd: &Path) -> Result<ratatui::buffer::Buffer> {
+        let events = read_events(cwd)?;
+        let graph = materialize_graph(&events);
 
-        loop {
-            // Check stop flag (Ctrl+C)
-            if self.stop_flag.load(Ordering::Relaxed) {
-                self.render_detach_message()?;
-                return Ok(MonitorExitReason::UserDetached);
+        let root_task = match graph.tasks.get(&self.task_id) {
+            Some(task) => task,
+            None => {
+                // Return an empty buffer if task not found yet
+                return Ok(ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+                    0, 0, 80, 1,
+                )));
             }
+        };
 
-            // Sleep for poll interval
-            std::thread::sleep(self.poll_interval);
+        let (epic, subtasks, focus_task_id) = self.resolve_epic(&graph, root_task);
 
-            // Check if agent process exited using try_wait()
-            // This properly handles zombie processes by calling wait() internally
-            match child.try_wait() {
-                Ok(Some(_exit_status)) => {
-                    // Agent exited - capture stderr and do one final poll to check task status
-                    let stderr = child.read_stderr();
-                    match self.poll_and_display(cwd) {
-                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                        _ => return Ok(MonitorExitReason::AgentExited { stderr }),
-                    }
-                }
-                Ok(None) => {
-                    // Process is still running, continue monitoring
-                }
-                Err(e) => {
-                    // Error checking process status - treat as exited
-                    eprintln!("\nError checking agent status: {}", e);
-                    let stderr = child.read_stderr();
-                    match self.poll_and_display(cwd) {
-                        Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                        _ => return Ok(MonitorExitReason::AgentExited { stderr }),
-                    }
-                }
-            }
-
-            // Poll and update display
-            match self.poll_and_display(cwd) {
-                Ok(true) => return Ok(MonitorExitReason::TaskCompleted),
-                Ok(false) => continue,
-                Err(_) => {
-                    // Silently retry — jj contention during agent shutdown is expected.
-                    // The agent-exit path (try_wait) will handle the final poll.
-                    continue;
-                }
-            }
-        }
+        let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
+        let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
+        let theme = Theme::from_mode(detect_mode());
+        let view = tui::builder::build_workflow_view_focused(
+            epic,
+            &subtask_refs,
+            plan_path,
+            &graph,
+            focus_task_id,
+        );
+        Ok(tui::views::workflow::render_workflow(&view, &theme))
     }
 
-    /// Render the task tree to stderr
+    /// Resolve epic from the running task.
     ///
-    /// Uses cursor-up movement to overwrite the previous frame in place.
-    /// This is more reliable than `SavePosition`/`RestorePosition` which breaks
-    /// when terminal output scrolls past the bottom of the visible area.
-    fn render_task_tree(&mut self, graph: &TaskGraph, root_task: &Task) -> Result<()> {
-        let mut stderr = stderr();
-
-        // Move cursor up to overwrite the previous frame
-        if self.has_rendered && self.last_line_count > 0 {
-            stderr.execute(MoveUp(self.last_line_count))?;
-            stderr.execute(Clear(ClearType::FromCursorDown))?;
-        }
-
-        // Resolve epic from the running task.
-        // Build/orchestrator tasks store the epic id in data["epic"] or data["target"].
-        // Review tasks link to the epic via a "validates" edge.
-        // Fix tasks link to the epic via a "remediates" edge.
-        //
-        // `focus_task_id` is set when root_task is a review/fix so the builder
-        // shows only that task's children instead of scanning all reviews/fixes.
-        let (epic, subtasks, focus_task_id) = if let Some(epic_id) =
-            root_task.data.get("epic").or_else(|| root_task.data.get("target"))
+    /// Build/orchestrator tasks store the epic id in data["epic"] or data["target"].
+    /// Review tasks link to the epic via a "validates" edge.
+    /// Fix tasks link to the epic via a "remediates" edge.
+    fn resolve_epic<'a>(
+        &self,
+        graph: &'a TaskGraph,
+        root_task: &'a Task,
+    ) -> (&'a Task, Vec<&'a Task>, Option<&'a str>) {
+        if let Some(epic_id) = root_task
+            .data
+            .get("epic")
+            .or_else(|| root_task.data.get("target"))
         {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
                 let subs = self.get_sorted_subtasks(graph, epic_id);
-                (epic_task, subs, None)
-            } else {
-                (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
+                return (epic_task, subs, None);
             }
         } else if let Some(epic_id) = graph
             .edges
@@ -214,39 +169,15 @@ impl StatusMonitor {
         {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
                 let subs = self.get_sorted_subtasks(graph, epic_id);
-                (epic_task, subs, Some(root_task.id.as_str()))
-            } else {
-                (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
+                return (epic_task, subs, Some(root_task.id.as_str()));
             }
-        } else {
-            (root_task, self.get_sorted_subtasks(graph, &root_task.id), None)
-        };
+        }
 
-        let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
-        let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
-        let theme = Theme::from_mode(detect_mode());
-        let view = tui::builder::build_workflow_view_focused(epic, &subtask_refs, plan_path, graph, focus_task_id);
-        let buf = tui::views::workflow::render_workflow(&view, &theme);
-        let ansi = tui::buffer_ansi::buffer_to_ansi(&buf);
-
-        let footer = " [Ctrl+C to detach]";
-        writeln!(stderr, "{}", ansi)?;
-        writeln!(stderr)?;
-        writeln!(stderr, "{}", footer)?;
-        stderr.flush()?;
-
-        // Track total terminal lines so we can move back up on next render.
-        // Must account for line wrapping: a logical line wider than the terminal
-        // occupies multiple terminal rows.
-        let term_width = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(80);
-
-        let content_terminal_lines: u16 = count_terminal_lines(&ansi, term_width);
-        // +1 for the empty line, +1 for the footer line
-        self.last_line_count = content_terminal_lines + 2;
-        self.has_rendered = true;
-        Ok(())
+        (
+            root_task,
+            self.get_sorted_subtasks(graph, &root_task.id),
+            None,
+        )
     }
 
     /// Get sorted subtasks for a parent task (sorted by creation time)
@@ -256,71 +187,179 @@ impl StatusMonitor {
         subtasks
     }
 
-    /// Render detach message when Ctrl+C is pressed
-    fn render_detach_message(&self) -> Result<()> {
-        let mut stderr = stderr();
-        writeln!(stderr)?;
-        writeln!(
-            stderr,
-            "Detached. Task {} still running. Use `aiki task show {}` to check status.",
-            &self.task_id[..8.min(self.task_id.len())],
-            self.task_id
-        )?;
-        stderr.flush()?;
-        Ok(())
-    }
-}
+    /// Run the event loop on an existing screen.
+    ///
+    /// Contains all the monitoring logic: stop flag checking, agent process
+    /// exit detection with bounded reconciliation, task state polling, frame
+    /// drawing, and error tracking. Used by both `monitor_on_screen` and
+    /// `monitor_until_complete_with_child`.
+    fn run_event_loop(
+        &mut self,
+        cwd: &Path,
+        child: &mut MonitoredChild,
+        screen: &mut LiveScreen,
+    ) -> Result<MonitorExitReason> {
+        let mut errors: Vec<String> = Vec::new();
+        let mut consecutive_poll_failures: usize = 0;
 
-/// Count how many terminal rows an ANSI string occupies, accounting for line wrapping.
-///
-/// Walks the string, tracking visible character width per logical line.
-/// When a `\n` is encountered or the visible width exceeds `term_width`,
-/// a new terminal row is counted. ANSI escape sequences (CSI codes like
-/// `\x1b[0m`, `\x1b[38;2;r;g;bm`) are skipped as they don't occupy
-/// visible space.
-fn count_terminal_lines(ansi: &str, term_width: usize) -> u16 {
-    if term_width == 0 {
-        return ansi.chars().filter(|&c| c == '\n').count() as u16 + 1;
-    }
+        let exit_reason = screen.run(|screen| {
+            // Check stop flag (for SIGINT received outside raw mode)
+            if self.stop_flag.load(Ordering::Relaxed) {
+                return Ok(Some(ExitReason::UserDetached));
+            }
 
-    let mut terminal_lines: u16 = 1; // at least one line
-    let mut col: usize = 0;
-    let mut chars = ansi.chars().peekable();
+            // Check if agent process exited
+            match child.try_wait() {
+                Ok(Some(_exit_status)) => {
+                    // Agent exited — do bounded reconciliation
+                    const RECONCILE_RETRIES: usize = 5;
+                    const RECONCILE_DELAY_MS: u64 = 200;
 
-    while let Some(ch) = chars.next() {
-        if ch == '\n' {
-            terminal_lines += 1;
-            col = 0;
-        } else if ch == '\x1b' {
-            // Skip ANSI escape sequence: ESC [ ... final_byte
-            if chars.peek() == Some(&'[') {
-                chars.next(); // consume '['
-                // Consume parameter bytes and intermediate bytes until final byte (0x40-0x7E)
-                while let Some(&next) = chars.peek() {
-                    if next.is_ascii_alphanumeric() || next == 'm' {
-                        chars.next();
-                        if next.is_ascii_alphabetic() {
-                            break; // final byte
+                    let stderr_output = child.read_stderr();
+                    for _ in 0..RECONCILE_RETRIES {
+                        match self.poll(cwd) {
+                            Ok((_, is_terminal)) => {
+                                let buf = self.build_view(cwd).ok();
+                                draw_frame(screen, buf.as_ref())?;
+                                if is_terminal {
+                                    return Ok(Some(ExitReason::TaskCompleted));
+                                }
+                            }
+                            Err(e) => {
+                                errors.push(format!("Poll error during reconciliation: {}", e));
+                            }
                         }
-                    } else if next == ';' {
-                        chars.next(); // parameter separator
+                        std::thread::sleep(Duration::from_millis(RECONCILE_DELAY_MS));
+                    }
+                    return Ok(Some(ExitReason::AgentExited {
+                        stderr: stderr_output,
+                    }));
+                }
+                Ok(None) => {
+                    // Still running, continue
+                }
+                Err(e) => {
+                    // Error checking process status — do bounded reconciliation
+                    const RECONCILE_RETRIES: usize = 5;
+                    const RECONCILE_DELAY_MS: u64 = 200;
+
+                    errors.push(format!("Error checking agent status: {}", e));
+                    let stderr_output = child.read_stderr();
+                    for _ in 0..RECONCILE_RETRIES {
+                        if let Ok((_, true)) = self.poll(cwd) {
+                            return Ok(Some(ExitReason::TaskCompleted));
+                        }
+                        std::thread::sleep(Duration::from_millis(RECONCILE_DELAY_MS));
+                    }
+                    return Ok(Some(ExitReason::AgentExited {
+                        stderr: stderr_output,
+                    }));
+                }
+            }
+
+            // Poll task state
+            match self.poll(cwd) {
+                Ok((_changed, is_terminal)) => {
+                    consecutive_poll_failures = 0;
+                    let buf = self.build_view(cwd).ok();
+                    draw_frame(screen, buf.as_ref())?;
+                    if is_terminal {
+                        Ok(Some(ExitReason::TaskCompleted))
                     } else {
-                        break;
+                        Ok(None)
+                    }
+                }
+                Err(e) => {
+                    consecutive_poll_failures += 1;
+                    if consecutive_poll_failures >= 5 {
+                        errors.push(format!("Persistent poll failure ({}x): {}", consecutive_poll_failures, e));
+                        Ok(Some(ExitReason::MonitorFailed { reason: format!("Persistent poll failure ({}x): {}", consecutive_poll_failures, e) }))
+                    } else {
+                        // Silently retry — jj contention during agent shutdown is expected.
+                        Ok(None)
                     }
                 }
             }
-        } else {
-            // Deferred wrapping: when cursor is at right margin (col == term_width),
-            // writing a character wraps to the next line first.
-            if col == term_width {
-                terminal_lines += 1;
-                col = 0;
-            }
-            col += 1;
+        })?;
+
+        // Print any errors collected during monitoring
+        for err in &errors {
+            eprintln!("{}", err); // stderr-ok: after monitor loop
+        }
+
+        // Convert ExitReason to MonitorExitReason
+        match exit_reason {
+            ExitReason::TaskCompleted => Ok(MonitorExitReason::TaskCompleted),
+            ExitReason::UserDetached => Ok(MonitorExitReason::UserDetached),
+            ExitReason::MonitorFailed { reason } => Ok(MonitorExitReason::MonitorFailed { reason }),
+            ExitReason::AgentExited { stderr } => Ok(MonitorExitReason::AgentExited { stderr }),
         }
     }
 
-    terminal_lines
+    /// Monitor on an existing `LiveScreen` (caller-owned).
+    ///
+    /// Like `monitor_until_complete_with_child` but uses a shared screen
+    /// instead of creating its own. The caller is responsible for screen
+    /// lifecycle (creation and cleanup).
+    pub fn monitor_on_screen(
+        &mut self,
+        cwd: &Path,
+        child: &mut MonitoredChild,
+        screen: &mut LiveScreen,
+    ) -> Result<MonitorExitReason> {
+        if self.stop_flag.load(Ordering::Relaxed) {
+            return Ok(MonitorExitReason::UserDetached);
+        }
+
+        self.run_event_loop(cwd, child, screen)
+    }
+
+    /// Monitor until task completion, detach, or agent exit using LiveScreen.
+    ///
+    /// Enters alternate screen mode and runs an event loop that:
+    /// - Polls crossterm events (resize, Ctrl+C)
+    /// - Checks if agent process exited via `child.try_wait()`
+    /// - On agent exit, does bounded reconciliation (up to 5 retries × 200ms)
+    /// - Polls task state and draws the frame
+    pub fn monitor_until_complete_with_child(
+        &mut self,
+        cwd: &Path,
+        child: &mut MonitoredChild,
+    ) -> Result<MonitorExitReason> {
+        // Check stop flag before entering the live screen (covers startup window)
+        if self.stop_flag.load(Ordering::Relaxed) {
+            return Ok(MonitorExitReason::UserDetached);
+        }
+
+        // Enter alternate screen
+        let mut screen = LiveScreen::new()?;
+
+        // Run the event loop
+        let result = self.run_event_loop(cwd, child, &mut screen);
+
+        // Screen drops here, restoring the terminal.
+        drop(screen);
+
+        result
+    }
+}
+
+/// Draw a single frame with the workflow view and footer.
+fn draw_frame(screen: &mut LiveScreen, buf: Option<&ratatui::buffer::Buffer>) -> Result<()> {
+    screen.draw(|f| {
+        let chunks = Layout::vertical([
+            Constraint::Min(0),    // workflow view
+            Constraint::Length(1), // footer
+        ])
+        .split(f.area());
+
+        if let Some(buf) = buf {
+            f.render_widget(BlitWidget::new(buf.clone()), chunks[0]);
+        }
+
+        let footer = Line::from(" [Ctrl+C to detach]").right_aligned();
+        f.render_widget(footer, chunks[1]);
+    })
 }
 
 #[cfg(test)]
@@ -336,56 +375,15 @@ mod tests {
     }
 
     #[test]
-    fn test_count_terminal_lines_no_wrap() {
-        // 3 logical lines, each shorter than terminal width
-        assert_eq!(count_terminal_lines("abc\ndef\nghi", 80), 3);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_with_wrap() {
-        // 10 chars in a 5-column terminal → 2 terminal rows (deferred wrap)
-        assert_eq!(count_terminal_lines("1234567890", 5), 2);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_exact_width() {
-        // Exactly 5 chars in a 5-column terminal → 1 row (deferred wrap:
-        // cursor sits at right margin, only wraps when next char is written)
-        assert_eq!(count_terminal_lines("12345", 5), 1);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_one_past_width() {
-        // 6 chars in 5-column terminal → 2 rows (6th char triggers wrap)
-        assert_eq!(count_terminal_lines("123456", 5), 2);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_ansi_ignored() {
-        // ANSI codes should not count toward visible width
-        let ansi = "\x1b[38;2;255;0;0mHi\x1b[0m";
-        // Visible content is "Hi" (2 chars) - fits in 80 columns
-        assert_eq!(count_terminal_lines(ansi, 80), 1);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_multiline_with_ansi() {
-        let ansi = "\x1b[0mline1\x1b[0m\n\x1b[38;2;0;255;0mline2\x1b[0m";
-        assert_eq!(count_terminal_lines(ansi, 80), 2);
-    }
-
-    #[test]
-    fn test_count_terminal_lines_empty() {
-        assert_eq!(count_terminal_lines("", 80), 1);
-    }
-
-    #[test]
     fn test_monitor_exit_reason_variants() {
         // Test that we can construct all variants
         let _completed = MonitorExitReason::TaskCompleted;
         let _detached = MonitorExitReason::UserDetached;
         let _exited = MonitorExitReason::AgentExited {
             stderr: "test error".to_string(),
+        };
+        let _monitor_failed = MonitorExitReason::MonitorFailed {
+            reason: "test failure".to_string(),
         };
 
         // Test that AgentExited carries stderr
@@ -397,6 +395,15 @@ mod tests {
         } else {
             panic!("Expected AgentExited variant");
         }
-    }
 
+        // Test that MonitorFailed carries reason
+        let exit_reason = MonitorExitReason::MonitorFailed {
+            reason: "poll timeout".to_string(),
+        };
+        if let MonitorExitReason::MonitorFailed { reason } = exit_reason {
+            assert_eq!(reason, "poll timeout");
+        } else {
+            panic!("Expected MonitorFailed variant");
+        }
+    }
 }

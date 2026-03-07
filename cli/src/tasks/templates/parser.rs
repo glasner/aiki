@@ -452,8 +452,8 @@ Examine the code.
 Review for issues.
 "#;
 
-        let template = parse_template(content, "aiki/review", "review.md").unwrap();
-        assert_eq!(template.name, "aiki/review");
+        let template = parse_template(content, "review", "review.md").unwrap();
+        assert_eq!(template.name, "review");
         assert_eq!(template.version, Some("1.2.0".to_string()));
         assert_eq!(template.description, Some("Test template".to_string()));
         assert_eq!(template.defaults.task_type, Some("review".to_string()));
@@ -567,11 +567,11 @@ Content.
 
     #[test]
     fn test_template_id() {
-        let mut template = TaskTemplate::new("aiki/review");
-        assert_eq!(template.template_id(), "aiki/review");
+        let mut template = TaskTemplate::new("review");
+        assert_eq!(template.template_id(), "review");
 
         template.version = Some("1.0.0".to_string());
-        assert_eq!(template.template_id(), "aiki/review@1.0.0");
+        assert_eq!(template.template_id(), "review@1.0.0");
     }
 
     #[test]
@@ -671,13 +671,13 @@ type: review
 spawns:
   - when: not data.approved
     task:
-      template: aiki/fix
+      template: fix
       priority: p0
       data:
         max_iterations: 3
   - when: data.needs_analysis
     subtask:
-      template: aiki/analysis
+      template: analysis
       assignee: claude-code
 ---
 
@@ -686,7 +686,7 @@ spawns:
 Review the changes.
 "#;
 
-        let template = parse_template(content, "aiki/review", "review.md").unwrap();
+        let template = parse_template(content, "review", "review.md").unwrap();
         assert_eq!(template.spawns.len(), 2);
 
         // First spawn: standalone task
@@ -694,7 +694,7 @@ Review the changes.
         assert!(template.spawns[0].task.is_some());
         assert!(template.spawns[0].subtask.is_none());
         let task_cfg = template.spawns[0].task.as_ref().unwrap();
-        assert_eq!(task_cfg.template, "aiki/fix");
+        assert_eq!(task_cfg.template, "fix");
         assert_eq!(task_cfg.priority, Some("p0".to_string()));
 
         // Second spawn: subtask
@@ -702,7 +702,7 @@ Review the changes.
         assert!(template.spawns[1].task.is_none());
         assert!(template.spawns[1].subtask.is_some());
         let subtask_cfg = template.spawns[1].subtask.as_ref().unwrap();
-        assert_eq!(subtask_cfg.template, "aiki/analysis");
+        assert_eq!(subtask_cfg.template, "analysis");
         assert_eq!(subtask_cfg.assignee, Some("claude-code".to_string()));
     }
 
@@ -728,9 +728,9 @@ version: "1.0.0"
 spawns:
   - when: not data.approved
     task:
-      template: aiki/fix
+      template: fix
     subtask:
-      template: aiki/analysis
+      template: analysis
 ---
 
 # Review task
@@ -738,7 +738,7 @@ spawns:
 Review the changes.
 "#;
 
-        let result = parse_template(content, "aiki/review", "review.md");
+        let result = parse_template(content, "review", "review.md");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("both 'task' and 'subtask'"), "Error: {}", err);
@@ -757,7 +757,7 @@ spawns:
 Review the changes.
 "#;
 
-        let result = parse_template(content, "aiki/review", "review.md");
+        let result = parse_template(content, "review", "review.md");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("neither 'task' nor 'subtask'"), "Error: {}", err);
@@ -774,7 +774,7 @@ slug: criteria
 Evaluate the implementation.
 "#;
 
-        let template = parse_template(content, "aiki/review/criteria/code", "code.md").unwrap();
+        let template = parse_template(content, "review/criteria/code", "code.md").unwrap();
         assert_eq!(template.parent.slug, Some("criteria".to_string()));
         assert_eq!(template.parent.name, "Understand Criteria: Code");
     }
@@ -863,7 +863,7 @@ loop:
 spawns:
   - when: "not data.approved"
     task:
-      template: aiki/fix
+      template: fix
 ---
 
 # Looping task with spawns
@@ -876,7 +876,7 @@ Do something.
         assert_eq!(template.spawns[0].when, "not data.approved");
         assert_eq!(
             template.spawns[0].task.as_ref().unwrap().template,
-            "aiki/fix"
+            "fix"
         );
         assert_eq!(template.spawns[1].when, "not (data.approved)");
         assert_eq!(

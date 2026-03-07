@@ -71,7 +71,7 @@ Not all sections are required — the agent adapts the structure to fit the topi
 
 | Flag | Effect |
 |------|--------|
-| `--template <name>` | Use a custom plan template (default: `aiki/plan`) |
+| `--template <name>` | Use a custom plan template (default: `plan`) |
 | `--agent <type>` | Choose which agent runs the session (default: `claude-code`) |
 
 ## Tips

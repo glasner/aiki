@@ -40,7 +40,7 @@ pub struct ExploreArgs {
     #[arg(long)]
     pub start: bool,
 
-    /// Task template to use (default: aiki/explore)
+    /// Task template to use (default: explore)
     #[arg(long)]
     pub template: Option<String>,
 
@@ -141,8 +141,8 @@ pub fn run(args: ExploreArgs) -> Result<()> {
         });
 
     // Create explore task from template
-    // Route to scope-specific template: aiki/explore/{kind}
-    let default_template = format!("aiki/explore/{}", scope.kind.as_str());
+    // Route to scope-specific template: explore/{kind}
+    let default_template = format!("explore/{}", scope.kind.as_str());
     let template = args.template.as_deref().unwrap_or(&default_template);
     let scope_data = scope.to_data();
 

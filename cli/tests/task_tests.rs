@@ -2191,7 +2191,7 @@ fn test_review_non_task_scope_succeeds() {
     init_aiki_repo(temp_dir.path());
 
     // Create the review/plan template so the review command can resolve it
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     std::fs::create_dir_all(&template_dir).expect("Failed to create template dir");
     std::fs::write(
         template_dir.join("plan.md"),
@@ -2257,5 +2257,88 @@ fn test_show_without_id_returns_error() {
         stdout.contains("No task ID provided"),
         "Expected 'No task ID provided' error, got: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_run_requires_id_or_template() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(temp_dir.path(), &["run"])
+        .failure()
+        .stderr(predicate::str::contains(
+            "Either task ID or --template must be provided",
+        ));
+}
+
+#[test]
+fn test_run_id_conflicts_with_template() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(temp_dir.path(), &["run", "someid", "--template", "foo"])
+        .failure();
+    // Clap produces "cannot be used with" error
+}
+
+#[test]
+fn test_run_data_requires_template() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    aiki_task(temp_dir.path(), &["run", "someid", "--data", "key=value"])
+        .failure();
+    // Clap produces "required by" or "requires" error
+}
+
+#[test]
+fn test_run_invalid_data_format() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Need to create the template first so it gets past template lookup
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "foo",
+        "---\nversion: 1.0.0\ndescription: Test\n---\n# Test\nBody",
+    );
+
+    aiki_task(
+        temp_dir.path(),
+        &["run", "--template", "test/foo", "--data", "invalid-no-equals"],
+    )
+    .failure()
+    .stderr(predicate::str::contains("Invalid --data format"));
+}
+
+#[test]
+fn test_run_template_creates_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    let templates_dir = temp_dir.path().join(".aiki/templates");
+    create_template(
+        &templates_dir,
+        "test",
+        "run-me",
+        "---\nversion: 1.0.0\ndescription: Runnable test\n---\n# Run: {{data.key}}\nBody with {{data.key}}",
+    );
+
+    // This will create the task from template and then try to run it.
+    // The run may fail at agent spawning, but we should see the task was created.
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "run", "--template", "test/run-me", "--data", "key=hello"])
+        .output()
+        .expect("Failed to run command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Added:") && stderr.contains("created from template"),
+        "Expected task creation message in stderr, got: {}",
+        stderr
     );
 }

@@ -15,6 +15,7 @@ use super::decompose::{run_decompose, DecomposeOptions};
 use crate::agents::AgentType;
 use crate::output_utils;
 use crate::config::get_aiki_binary_path;
+use crate::tasks::runner::ScreenSession;
 use crate::error::{AikiError, Result};
 use crate::tasks::id::is_task_id;
 use crate::tasks::templates::get_working_copy_change_id;
@@ -38,7 +39,7 @@ pub enum EpicCommands {
         #[arg(long)]
         restart: bool,
 
-        /// Decompose template to use (default: aiki/decompose)
+        /// Decompose template to use (default: decompose)
         #[arg(long)]
         template: Option<String>,
 
@@ -138,7 +139,7 @@ fn run_add(
                 close_epic(cwd, &epic.id)?;
             }
         }
-        let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
+        let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
         return output_epic_result(cwd, &epic_id, true, output_format);
     }
 
@@ -152,7 +153,7 @@ fn run_add(
             if subtasks.is_empty() {
                 // Invalid epic (no subtasks) — decompose agent failed
                 close_epic_as_invalid(cwd, &epic.id)?;
-                let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
+                let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
                 return output_epic_result(cwd, &epic_id, true, output_format);
             }
 
@@ -166,7 +167,7 @@ fn run_add(
         }
         _ => {
             // No epic, or epic is closed — create new
-            let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type)?;
+            let epic_id = create_epic(cwd, plan_path, template_name.as_deref(), agent_type, None)?;
             output_epic_result(cwd, &epic_id, true, output_format)
         }
     }
@@ -183,6 +184,7 @@ fn create_epic(
     plan_path: &str,
     template_name: Option<&str>,
     agent_type: Option<AgentType>,
+    session: Option<&mut ScreenSession>,
 ) -> Result<String> {
     // Create the epic task first so the decompose agent can add subtasks to it
     let epic_id = create_epic_task(cwd, plan_path)?;
@@ -191,7 +193,7 @@ fn create_epic(
         template: template_name.map(|s| s.to_string()),
         agent: agent_type,
     };
-    run_decompose(cwd, plan_path, &epic_id, options)?;
+    run_decompose(cwd, plan_path, &epic_id, options, session)?;
 
     Ok(epic_id)
 }
@@ -257,6 +259,7 @@ pub fn find_or_create_epic(
     cwd: &Path,
     plan_path: &str,
     decompose_template: Option<&str>,
+    session: Option<&mut ScreenSession>,
 ) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
@@ -269,12 +272,12 @@ pub fn find_or_create_epic(
             let subtasks = get_subtasks(&graph, &epic.id);
             if subtasks.is_empty() {
                 close_epic_as_invalid(cwd, &epic.id)?;
-                create_epic(cwd, plan_path, decompose_template, None)
+                create_epic(cwd, plan_path, decompose_template, None, session)
             } else {
                 Ok(epic.id.clone())
             }
         }
-        _ => create_epic(cwd, plan_path, decompose_template, None),
+        _ => create_epic(cwd, plan_path, decompose_template, None, session),
     }
 }
 

@@ -25,7 +25,7 @@ aiki loop <parent-task-id> -o id
 
 1. **Validate** — Confirms the parent task exists and has subtasks.
 
-2. **Create loop task** — Creates a task from the `aiki/loop` template with `data.target` set to the parent task ID.
+2. **Create loop task** — Creates a task from the `loop` template with `data.target` set to the parent task ID.
 
 3. **Wire orchestration link** — Writes an `orchestrates` link from the loop task to the parent (1:1 — each parent has at most one orchestrator).
 
@@ -112,7 +112,7 @@ The loop orchestrator starts sessions via `aiki task run <parent-id> --next-sess
 | Flag | Effect |
 |------|--------|
 | `--async` | Run in the background, return immediately |
-| `--template <name>` | Loop template (default: `aiki/loop`) |
+| `--template <name>` | Loop template (default: `loop`) |
 | `--agent <type>` | Agent for loop orchestration (default: `claude-code`) |
 | `-o id` | Output bare loop task ID to stdout |
 

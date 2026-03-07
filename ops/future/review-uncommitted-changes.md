@@ -118,7 +118,7 @@ if let Some(scope) = params.diff_scope {
 
 ### Template
 
-A new template `aiki/review-diff` provides the review instructions. The template adapts its title based on the scope:
+A new template `review-diff` provides the review instructions. The template adapts its title based on the scope:
 
 ```markdown
 ---
@@ -279,7 +279,7 @@ xqrmnpst
 3. **`cli/src/tasks/templates/resolver.rs`**
    - Update `create_review_task_from_template` to accept optional diff content as a builtin variable
 
-4. **`.aiki/templates/aiki/review-diff.md`** (new)
+4. **`.aiki/templates/review-diff.md`** (new)
    - Review template for working copy changes with `{{diff}}` placeholder
 
 ### Implementation Steps

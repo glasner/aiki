@@ -10,7 +10,7 @@ use super::OutputFormat;
 use super::task::{create_from_template, TemplateTaskParams};
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
-use crate::tasks::runner::{task_run, TaskRunOptions};
+use crate::tasks::runner::{handle_session_result, task_run, task_run_on_session, ScreenSession, TaskRunOptions};
 use crate::tasks::{find_task, materialize_graph, read_events, write_link_event};
 
 /// Options for `run_decompose` that callers can customize.
@@ -29,7 +29,7 @@ pub struct DecomposeArgs {
     #[arg(long)]
     pub target: String,
 
-    /// Decompose template to use (default: aiki/decompose)
+    /// Decompose template to use (default: decompose)
     #[arg(long)]
     pub template: Option<String>,
 
@@ -62,7 +62,7 @@ pub fn run(args: DecomposeArgs) -> Result<()> {
         agent: agent_type,
     };
 
-    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options)?;
+    let decompose_task_id = run_decompose(&cwd, &args.plan_path, &args.target, options, None)?;
 
     match args.output {
         Some(OutputFormat::Id) => println!("{}", decompose_task_id),
@@ -86,6 +86,7 @@ pub fn run_decompose(
     plan_path: &str,
     target_id: &str,
     options: DecomposeOptions,
+    session: Option<&mut ScreenSession>,
 ) -> Result<String> {
     let spec_target = make_spec_target(plan_path);
 
@@ -116,7 +117,12 @@ pub fn run_decompose(
     } else {
         TaskRunOptions::new()
     };
-    task_run(cwd, &decompose_task_id, run_options)?;
+    if let Some(session) = session {
+        let result = task_run_on_session(cwd, &decompose_task_id, run_options, session)?;
+        handle_session_result(cwd, &decompose_task_id, result, true)?;
+    } else {
+        task_run(cwd, &decompose_task_id, run_options)?;
+    }
 
     // 6. Return decompose task ID
     Ok(decompose_task_id)
@@ -141,7 +147,7 @@ fn build_decompose_params(
     let template = options
         .template
         .as_deref()
-        .unwrap_or("aiki/decompose");
+        .unwrap_or("decompose");
 
     let assignee = options
         .agent
@@ -195,7 +201,7 @@ mod tests {
         let params =
             build_decompose_params("ops/now/feat.md", "target123", "file:ops/now/feat.md", &options);
 
-        assert_eq!(params.template_name, "aiki/decompose");
+        assert_eq!(params.template_name, "decompose");
         assert_eq!(params.assignee, Some("claude-code".to_string()));
         assert_eq!(params.data.get("plan").unwrap(), "ops/now/feat.md");
         assert_eq!(params.data.get("target").unwrap(), "target123");
@@ -296,7 +302,7 @@ mod tests {
     #[test]
     fn test_decompose_template_uses_data_target_not_data_epic() {
         let template_content =
-            include_str!("../../../.aiki/templates/aiki/decompose.md");
+            include_str!("../../../.aiki/templates/decompose.md");
         assert!(
             template_content.contains("{{data.target}}"),
             "Decompose template must use {{{{data.target}}}}"

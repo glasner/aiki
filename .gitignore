@@ -35,3 +35,4 @@ nimbalyst-local/
 
 # TUI test snapshot PNGs (generated artifacts)
 cli/tests/snapshots/*.png
+.aiki/.manifest.json

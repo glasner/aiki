@@ -232,7 +232,7 @@ pub enum TemplateCommands {
 
     /// Show details of a specific template
     Show {
-        /// Template name (e.g., "aiki/review")
+        /// Template name (e.g., "review")
         name: String,
     },
 }
@@ -301,7 +301,7 @@ pub enum TaskCommands {
         #[arg(long)]
         source: Option<String>,
 
-        /// Filter to tasks created from a specific template (e.g., "aiki/review", "myorg/build@1.0")
+        /// Filter to tasks created from a specific template (e.g., "review", "myorg/build@1.0")
         #[arg(long)]
         template: Option<String>,
 
@@ -322,13 +322,13 @@ pub enum TaskCommands {
     ///
     /// Examples:
     ///   aiki task add "Implement user auth"
-    ///   aiki task add --template aiki/review --data scope="@"
+    ///   aiki task add --template review --data scope="@"
     ///   aiki task add --template myorg/build --source file:ops/now/feature.md
     Add {
         /// Task name (required unless --template is provided)
         name: Option<String>,
 
-        /// Create from a template (e.g., "aiki/review", "myorg/refactor-cleanup")
+        /// Create from a template (e.g., "review", "myorg/refactor-cleanup")
         #[arg(long)]
         template: Option<String>,
 
@@ -441,7 +441,7 @@ pub enum TaskCommands {
     /// Examples:
     ///   aiki task start "Implement user auth"  # Quick-start: create and start
     ///   aiki task start xmryrzwl...           # Start existing task by ID
-    ///   aiki task start --template aiki/review --data scope="@"  # Create from template and start
+    ///   aiki task start --template review --data scope="@"  # Create from template and start
     Start {
         /// Task ID(s) or description to start
         ///
@@ -1467,8 +1467,8 @@ fn run_list(
 
     // Helper closure to check template filter
     // Supports exact match and version-agnostic matching:
-    // - "aiki/review" matches "aiki/review" and "aiki/review@1.0.0"
-    // - "aiki/review@1.0.0" only matches "aiki/review@1.0.0"
+    // - "review" matches "review" and "review@1.0.0"
+    // - "review@1.0.0" only matches "review@1.0.0"
     let matches_template = |task: &Task| -> bool {
         match (&filter_template, &task.template) {
             (None, _) => true,        // No filter applied
@@ -3623,7 +3623,7 @@ fn execute_spawn_action(
             .template
             .as_ref()
             .map(|t| {
-                // Strip version suffix (e.g., "aiki/review@1.0.0" -> "aiki/review")
+                // Strip version suffix (e.g., "review@1.0.0" -> "review")
                 t.split('@').next().unwrap_or(t).to_string()
             })
             .ok_or_else(|| AikiError::TemplateProcessingFailed {
@@ -5372,30 +5372,16 @@ fn run_run(
     let id = if let Some(template_name) = template {
         // Template mode: create task from template, then run it
         use crate::commands::task::create_from_template;
-        use std::collections::HashMap;
 
-        // Parse data key=value pairs
-        let mut data_map = HashMap::new();
-        if let Some(data_vec) = data {
-            for pair in data_vec {
-                let parts: Vec<&str> = pair.splitn(2, '=').collect();
-                if parts.len() == 2 {
-                    data_map.insert(parts[0].to_string(), parts[1].to_string());
-                } else {
-                    return Err(AikiError::Other(anyhow::anyhow!(
-                        "Invalid --data format '{}'. Expected key=value",
-                        pair
-                    )));
-                }
-            }
-        }
+        // Parse data key=value pairs (with coercion, matching task add/start --template)
+        let data_map = parse_data_flags(&data.unwrap_or_default(), true)?;
 
         // Create task from template
         let params = crate::commands::task::TemplateTaskParams {
             template_name: template_name.clone(),
             data: data_map,
             sources: vec![],
-            assignee: agent.clone(),
+            assignee: None,
             priority: None,
             parent_id: None,
             parent_name: None,
@@ -6067,7 +6053,7 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
 /// fields it needs; the rest use defaults.
 #[derive(Default)]
 pub struct TemplateTaskParams {
-    /// Template name (e.g., "aiki/review", "aiki/build")
+    /// Template name (e.g., "review", "aiki/build")
     pub template_name: String,
     /// Data variables for template substitution (key=value pairs)
     pub data: HashMap<String, String>,

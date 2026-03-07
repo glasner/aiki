@@ -11,7 +11,7 @@ draft: true
 **Related Documents**:
 - [SDLC Docs](cli/docs/sdlc.md) - Workflow documentation
 - [Resolve Command](cli/src/commands/resolve.rs) - Current resolve implementation
-- [Resolve Template](.aiki/templates/aiki/resolve.md) - Current resolve template
+- [Resolve Template](.aiki/templates/resolve.md) - Current resolve template
 - [Isolation Module](cli/src/session/isolation.rs) - Workspace absorption & conflict detection
 
 ---
@@ -109,7 +109,7 @@ The `conflicts()` revset is already used in `functions.rs:1111` for post-absorpt
 
 ### Template Move
 
-- Current: `.aiki/templates/aiki/resolve.md`
+- Current: `.aiki/templates/resolve.md`
 - New: `.aiki/templates/aiki/conflict/resolve.md`
 
 The `create_from_template()` function already supports nested paths — template name becomes `"aiki/conflict/resolve"`.
@@ -136,7 +136,7 @@ The `create_from_template()` function already supports nested paths — template
 2. Move resolve logic from `resolve.rs` into `conflict.rs` (or keep as `conflict/resolve.rs` submodule — prefer single file since resolve is only ~150 lines of logic)
 3. Update `main.rs`: replace `Resolve` variant with `Conflict` variant
 4. Update `commands/mod.rs`: replace `pub mod resolve` with `pub mod conflict`
-5. Move template: `.aiki/templates/aiki/resolve.md` → `.aiki/templates/aiki/conflict/resolve.md`
+5. Move template: `.aiki/templates/resolve.md` → `.aiki/templates/aiki/conflict/resolve.md`
 6. Update template name reference in the command code
 
 ### Phase 2: Add `conflict list`

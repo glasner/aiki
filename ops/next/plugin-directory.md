@@ -117,15 +117,15 @@ on:
         └── way/                    # or "core" - pick a plugin name
             ├── hooks.yaml          # moved from hooks/aiki/core/hooks.yaml
             └── templates/
-                ├── fix.md          # moved from templates/aiki/fix.md
-                └── review.md       # moved from templates/aiki/review.md
+                ├── fix.md          # moved from templates/fix.md
+                └── review.md       # moved from templates/review.md
 ```
 
 ### Breaking Change
 
-References change from two-part to three-part:
-- `aiki/review` → `aiki/way/review`
-- `aiki/fix` → `aiki/way/fix`
+References change from short-form to three-part:
+- `review` → `aiki/way/review`
+- `fix` → `aiki/way/fix`
 
 ## Files to Update
 
@@ -135,7 +135,7 @@ References change from two-part to three-part:
 
 Change path resolution:
 ```rust
-// Old: "aiki/review" → .aiki/templates/aiki/review.md
+// Old: "review" → .aiki/templates/review.md
 // New: "aiki/way/review" → .aiki/plugins/aiki/way/templates/review.md
 
 fn resolve_template_path(name: &str, plugins_dir: &Path) -> Result<PathBuf> {

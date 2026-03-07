@@ -172,7 +172,7 @@ fn test_task_run_requires_task_id() {
     // Try running without task ID - should fail with argument error
     aiki_task(temp_dir.path(), &["run"])
         .failure()
-        .stderr(predicate::str::contains("required"));
+        .stderr(predicate::str::contains("must be provided"));
 }
 
 #[test]
@@ -796,9 +796,9 @@ fn test_review_fix_and_start_conflict() {
     let task_id = extract_task_id(&stdout).expect("Should find task ID");
 
     // Running review with both --fix-template and --start should produce an error
-    aiki_review(temp_dir.path(), &[&task_id, "--fix-template", "--start"])
+    aiki_review(temp_dir.path(), &[&task_id, "--fix-template", "fix", "--start"])
         .failure()
-        .stderr(predicate::str::contains("--fix-template and --start cannot be used together"));
+        .stderr(predicate::str::contains("--fix and --start cannot be used together"));
 }
 
 #[test]
@@ -879,8 +879,8 @@ fn test_review_output_id_no_extra_output() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template so `aiki review` can create a review task.
-    // The template needs to exist at .aiki/templates/aiki/review/task.md
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    // The template needs to exist at .aiki/templates/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -950,8 +950,8 @@ fn test_review_fix_output_id_no_extra_output() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template so `aiki review` can create a review task.
-    // The template needs to exist at .aiki/templates/aiki/review/task.md
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    // The template needs to exist at .aiki/templates/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -973,10 +973,10 @@ fn test_review_fix_output_id_no_extra_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
 
-    // Run review with --fix-template -o id
+    // Run review with --fix-template fix -o id
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", &task_id, "--fix-template", "-o", "id"])
+        .args(["review", &task_id, "--fix-template", "fix", "-o", "id"])
         .output()
         .unwrap();
 
@@ -1069,7 +1069,7 @@ fn test_async_review_fix_template_stores_fix_data() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1091,10 +1091,10 @@ fn test_async_review_fix_template_stores_fix_data() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
 
-    // Run review with --fix-template --async -o id
+    // Run review with --fix-template fix --async -o id
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", &task_id, "--fix-template", "--async", "-o", "id"])
+        .args(["review", &task_id, "--fix-template", "fix", "--async", "-o", "id"])
         .output()
         .unwrap();
 
@@ -1154,7 +1154,7 @@ fn test_async_review_fix_template_stores_fix_data() {
         .unwrap();
     let jj_stdout = String::from_utf8_lossy(&jj_output.stdout);
     assert!(
-        jj_stdout.contains("options.fix_template:aiki/fix"),
+        jj_stdout.contains("options.fix_template:fix"),
         "Async review task should store fix_template value, got: '{}'",
         jj_stdout
     );
@@ -1170,7 +1170,7 @@ fn test_async_review_without_fix_template_no_fix_data() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1253,7 +1253,7 @@ fn test_continue_async_with_fix_template_flag_accepted() {
     // should be recognized by the parser (no "unexpected argument" error).
     let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00", "--fix-template", "aiki/fix"])
+        .args(["review", "--_continue-async", "nonexistentreviewtaskidpadding00", "--fix-template", "fix"])
         .output()
         .unwrap();
 
@@ -1302,7 +1302,7 @@ fn test_async_review_fix_template_custom_value_stored() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1347,7 +1347,7 @@ fn test_async_review_fix_template_custom_value_stored() {
         trimmed
     );
 
-    // Verify the custom fix_template value was stored (not the default "aiki/fix").
+    // Verify the custom fix_template value was stored (not the default "fix").
     // run_continue_async reads this from args and passes it to run_fix.
     let jj_output = Command::new("jj")
         .current_dir(temp_dir.path())
@@ -1383,7 +1383,7 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1405,12 +1405,12 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
 
-    // Run blocking review with --fix-template (default value "aiki/fix")
+    // Run blocking review with --fix-template fix
     // The command may fail at task_run if no agent is available, but the review
     // task is created and its data stored BEFORE task_run is called.
     let _output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
         .current_dir(temp_dir.path())
-        .args(["review", &task_id, "--fix-template", "-o", "id"])
+        .args(["review", &task_id, "--fix-template", "fix", "-o", "id"])
         .output()
         .unwrap();
 
@@ -1451,8 +1451,8 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
         .unwrap();
     let jj_stdout2 = String::from_utf8_lossy(&jj_output2.stdout);
     assert!(
-        jj_stdout2.contains("options.fix_template:aiki/fix"),
-        "Review task should have data.options.fix_template=aiki/fix, got: '{}'",
+        jj_stdout2.contains("options.fix_template:fix"),
+        "Review task should have data.options.fix_template=fix, got: '{}'",
         jj_stdout2
     );
 }
@@ -1467,7 +1467,7 @@ fn test_blocking_review_issue_count_set_when_issues_exist() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1565,7 +1565,7 @@ fn test_blocking_review_no_fix_template_no_fix_options() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/aiki/review");
+    let template_dir = temp_dir.path().join(".aiki/templates/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),

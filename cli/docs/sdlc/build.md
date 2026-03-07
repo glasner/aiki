@@ -67,8 +67,8 @@ See [Loop](loop.md) for full details on lane derivation and execution.
 | `--restart` | Ignore existing epic, create a new one |
 | `--review` | Run a review after all subtasks complete |
 | `--fix` | Run review + fix loop after build (implies `--review`) |
-| `--decompose-template <name>` | Custom decompose template (default: `aiki/decompose`) |
-| `--loop-template <name>` | Custom loop template (default: `aiki/loop`) |
+| `--decompose-template <name>` | Custom decompose template (default: `decompose`) |
+| `--loop-template <name>` | Custom loop template (default: `loop`) |
 | `--agent <type>` | Choose orchestrator agent (default: `claude-code`) |
 | `-o id` | Output bare task ID to stdout |
 
