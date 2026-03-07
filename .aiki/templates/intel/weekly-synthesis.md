@@ -6,7 +6,7 @@ Merge release and issue signals into one weekly decision memo for Aiki.
 ## Inputs
 - `ops/now/monitor/{{target_slug}}/weekly-release-synthesis.md`
 - `ops/now/monitor/{{target_slug}}/weekly-issue-synthesis.md`
-- Any active intel brief updates under `ops/now/intel/{{target_slug}}/*.md`
+- Any active intel brief updates under `ops/research/intel/{{target_slug}}/*.md`
 
 ## Output
 Create/update:

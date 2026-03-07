@@ -23,7 +23,7 @@ Collect evidence (URLs + short notes) from:
 - Public repo(s) and org page (if any)
 - Public demos/videos/social threads where product behavior is shown
 
-Output artifact: `ops/now/intel/{{target_slug}}/research.md`
+Output artifact: `ops/research/intel/{{target_slug}}/research.md`
 
 ### 3) Aiki relevance map
 For each major capability, classify:
@@ -32,7 +32,7 @@ For each major capability, classify:
 - Opportunity type: copy / counter / ignore
 - Why now (timing signal)
 
-Output artifact: `ops/now/intel/{{target_slug}}/aiki-map.md`
+Output artifact: `ops/research/intel/{{target_slug}}/aiki-map.md`
 
 ### 4) Opportunity scoring
 Create a ranked list of opportunities (top 10 max) scored on:
@@ -44,7 +44,7 @@ Create a ranked list of opportunities (top 10 max) scored on:
 Scoring formula:
 `score = 0.35*pain + 0.35*fit + 0.20*gtm + 0.10*(6-complexity)`
 
-Output artifact: `ops/now/intel/{{target_slug}}/opportunities.md`
+Output artifact: `ops/research/intel/{{target_slug}}/opportunities.md`
 
 ### 5) Convert top opportunities to execution tasks
 Create exactly:
@@ -58,10 +58,10 @@ Each task must include:
 - Scope guardrails
 - Estimated effort (S/M/L)
 
-Output artifact: `ops/now/intel/{{target_slug}}/followups.md`
+Output artifact: `ops/research/intel/{{target_slug}}/followups.md`
 
 ## Deliverable
-`ops/now/intel/{{target_slug}}/brief.md` containing:
+`ops/research/intel/{{target_slug}}/brief.md` containing:
 1. What {{target_name}} is
 2. What matters for Aiki
 3. Top 3 recommendations this week
