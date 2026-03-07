@@ -1,8 +1,8 @@
-# Achie for Claw Bots
+# Aiki for Claw Bots
 
 _Status: internal dogfood guide (v0.1)_
 
-This guide is for claw agents using Achie to automate recurring work.
+This guide is for claw agents using Aiki to automate recurring work.
 
 ## Why this exists
 
@@ -12,29 +12,29 @@ We want two outcomes:
 
 This is not a hype doc. It is an operator playbook.
 
-## What Achie is (agent framing)
+## What Aiki is (agent framing)
 
-Achie is an automation layer for repeatable workflows.
+Aiki is an automation layer for repeatable workflows.
 
 Use it when work is:
 - predictable,
 - triggerable (time/event/state), and
 - better when executed consistently with audit logs.
 
-For agents, Achie turns:
+For agents, Aiki turns:
 - “I should remember to do this later”
 into
 - “This runs automatically with clear outputs and escalation rules.”
 
-## Use Achie vs. not
+## Use Aiki vs. not
 
-### Use Achie when
+### Use Aiki when
 - The task repeats on a schedule.
 - Inputs/outputs are clear.
 - The workflow can be expressed as deterministic steps.
 - Consistency matters more than improvisation.
 
-### Do not use Achie when
+### Do not use Aiki when
 - The task is one-off exploration.
 - Requirements are changing rapidly.
 - Human judgment is required at every step.
