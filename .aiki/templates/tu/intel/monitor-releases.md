@@ -1,4 +1,4 @@
-# intel/monitor-releases — {{target_name}}
+# tu/intel/monitor-releases — {{target_name}}
 
 ## Goal
 Track product and release movement from {{target_name}} and surface implications for Aiki.

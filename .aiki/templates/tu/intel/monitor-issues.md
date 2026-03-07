@@ -1,4 +1,4 @@
-# intel/monitor-issues — {{target_name}}
+# tu/intel/monitor-issues — {{target_name}}
 
 ## Goal
 Track recurring user pain, feature demand, and enterprise blockers from {{target_name}} issue activity.

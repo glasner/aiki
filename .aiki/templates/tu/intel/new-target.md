@@ -1,4 +1,4 @@
-# intel/new-target — {{target_name}}
+# tu/intel/new-target — {{target_name}}
 
 ## Goal
 Produce a complete competitive-intel brief on {{target_name}} and convert findings into Aiki-relevant opportunities.

@@ -1,4 +1,4 @@
-# intel/weekly-synthesis — {{target_name}}
+# tu/intel/weekly-synthesis — {{target_name}}
 
 ## Goal
 Merge release and issue signals into one weekly decision memo for Aiki.
