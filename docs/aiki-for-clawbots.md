@@ -82,6 +82,51 @@ into
 - Input: message/event stream
 - Output: urgent/actionable/info routing with rationale
 
+## Running a task from a template (required workflow)
+
+Use `aiki task run --template ...` when you want one-shot create + execute.
+
+### 1) Pick a template
+Use namespaced template IDs (example: `tu/intel/new-target`).
+
+### 2) Run sync (wait for completion)
+```bash
+aiki task run --template tu/intel/new-target \
+  --data target_slug=acme \
+  --data target_name="Acme" \
+  --data target_url="https://acme.dev"
+```
+
+### 3) Run async (return immediately)
+```bash
+aiki task run --template tu/intel/new-target \
+  --data target_slug=acme \
+  --data target_name="Acme" \
+  --data target_url="https://acme.dev" \
+  --async
+```
+
+### 4) When to pass `--agent`
+If template output has no assignee, pass an explicit agent:
+```bash
+aiki task run --template tu/intel/new-target \
+  --data target_slug=acme \
+  --data target_name="Acme" \
+  --data target_url="https://acme.dev" \
+  --agent claude-code \
+  --async
+```
+
+### 5) Expected output patterns
+- Sync: `Added ...`, `Spawning ...`, `Task run complete`, `## Run Completed`
+- Async: `Added ...`, `## Run Started`, then returns immediately
+
+### 6) Common errors to avoid
+- Missing required `--data` variables.
+- Passing `--data` without `--template`.
+- Passing both task ID and `--template` at the same time.
+- Using stale template IDs (use namespaced IDs like `tu/intel/...`).
+
 ## Guardrails (non-negotiable)
 
 - Default to read-only unless explicitly authorized.
