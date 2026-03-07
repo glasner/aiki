@@ -128,8 +128,9 @@ pub fn run(args: BuildArgs) -> Result<()> {
     // Resolve --fix / --fix-template into a single Option<String>
     let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
     // Resolve --review / --review-template (--fix implies --review)
-    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
-    let review_after = review_template.is_some();
+    // Pass through explicit --review-template only; None lets create_review pick scope-specific default
+    let review_template = args.review_template.clone();
+    let review_after = review_template.is_some() || args.review || fix_template.is_some();
     let fix_after = fix_template.is_some();
 
     let output_id = matches!(args.output, Some(OutputFormat::Id));
@@ -211,8 +212,10 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
     // Post-build review if requested
     // Resolve --fix / --fix-template and --review / --review-template
     let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
-    let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
-    if review_template.is_some() {
+    // Pass through explicit --review-template only; None lets create_review pick scope-specific default
+    let review_template = args.review_template;
+    let review_after = review_template.is_some() || args.review || fix_template.is_some();
+    if review_after {
         let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
         let fix_after = fix_template.is_some();
         run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template, None)?;
@@ -343,6 +346,8 @@ fn run_build_plan(
         if let Some(ref tmpl) = review_template {
             spawn_args.push("--review-template".to_string());
             spawn_args.push(tmpl.clone());
+        } else if review_after {
+            spawn_args.push("--review".to_string());
         }
         if let Some(ref tmpl) = fix_template {
             spawn_args.push("--fix-template".to_string());
@@ -493,16 +498,18 @@ fn run_build_epic(
             spawn_args.push("--agent".to_string());
             spawn_args.push(a.clone());
         }
-        if review_after {
-            if let Some(ref tmpl) = review_template {
-                spawn_args.push("--review-template".to_string());
-                spawn_args.push(tmpl.clone());
-            }
+        if let Some(ref tmpl) = review_template {
+            spawn_args.push("--review-template".to_string());
+            spawn_args.push(tmpl.clone());
+        } else if review_after {
+            spawn_args.push("--review".to_string());
         }
         if fix_after {
             if let Some(ref tmpl) = fix_template {
                 spawn_args.push("--fix-template".to_string());
                 spawn_args.push(tmpl.clone());
+            } else {
+                spawn_args.push("--fix".to_string());
             }
         }
 
@@ -1434,8 +1441,10 @@ mod tests {
         };
         // Resolve like run() does
         let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
-        assert!(review_template.is_some());
+        let review_template = args.review_template.clone();
+        let review_after = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review_after);
+        assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_some());
     }
 
@@ -1458,8 +1467,10 @@ mod tests {
         };
         // Resolve like run() does
         let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
-        assert!(review_template.is_some());
+        let review_template = args.review_template.clone();
+        let review_after = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review_after);
+        assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_some());
     }
 
@@ -1481,8 +1492,10 @@ mod tests {
             subcommand: None,
         };
         let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
-        assert!(review_template.is_some());
+        let review_template = args.review_template.clone();
+        let review_after = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(review_after);
+        assert!(review_template.is_none()); // No explicit template — create_review picks default
         assert!(fix_template.is_none());
     }
 
@@ -1546,7 +1559,9 @@ mod tests {
             subcommand: None,
         };
         let fix_template = args.fix_template.or(if args.fix { Some("fix".to_string()) } else { None });
-        let review_template = args.review_template.or(if args.review || fix_template.is_some() { Some("review".to_string()) } else { None });
+        let review_template = args.review_template.clone();
+        let review_after = review_template.is_some() || args.review || fix_template.is_some();
+        assert!(!review_after);
         assert!(review_template.is_none());
         assert!(fix_template.is_none());
     }
