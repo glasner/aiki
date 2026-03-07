@@ -89,6 +89,12 @@ Use `aiki task run --template ...` when you want one-shot create + execute.
 ### 1) Pick a template
 Use namespaced template IDs (example: `tu/intel/new-target`).
 
+Template docs:
+- [Task template composition and subtask spawning](tasks/templates/spawn.md)
+- [Task kinds](tasks/kinds.md)
+- [Task links](tasks/links.md)
+- [Template overrides and resolution order](customizing-defaults.md)
+
 ### 2) Run sync (wait for completion)
 ```bash
 aiki task run --template tu/intel/new-target \
