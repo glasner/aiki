@@ -294,8 +294,9 @@ fn run() -> Result<()> {
             once,
             output,
         } => {
-            // Resolve --review / --review-template into a single Option<String>
-            let review_template = review_template.or(if review { Some("review".to_string()) } else { None });
+            // Pass through explicit --review-template only; create_review picks scope-specific default
+            // --review flag is a no-op for fix (fix always runs reviews), kept for CLI symmetry with build
+            let _ = review;
             commands::fix::run(task_id, run_async, continue_async, template, decompose_template, loop_template, review_template, agent, autorun, once, output)
         }
         Commands::Explore(args) => commands::explore::run(args),
