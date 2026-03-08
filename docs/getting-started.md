@@ -150,10 +150,10 @@ Use a markdown plan file (for example, `ops/now/my-feature.md`) with implementat
 ### 2) Run Build with Review+Fix
 
 ```bash
-aiki build ops/now/my-feature.md --fix
+aiki build ops/now/my-feature.md -f
 ```
 
-Use `--review` first if you want review without auto-fix, then rerun with `--fix` when ready.
+Use `-r` first if you want review without auto-fix, then rerun with `-f` when ready.
 
 ### 3) Check Task Progress
 

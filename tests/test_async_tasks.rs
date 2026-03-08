@@ -1655,3 +1655,244 @@ fn test_blocking_review_no_fix_template_no_fix_options() {
         jj_stdout2
     );
 }
+
+// ============================================================================
+// Short Flag Alias Tests
+// ============================================================================
+
+#[test]
+fn test_review_short_fix_flag_recognized() {
+    // -f short flag should be recognized as equivalent to --fix
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Add and close a task so we have something to review
+    aiki_task(temp_dir.path(), &["add", "Test task for short flag"]).success();
+    aiki_task(temp_dir.path(), &["start"]).success();
+    aiki_task(temp_dir.path(), &["close", "--summary", "Done"]).success();
+
+    // Get the closed task ID
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["task", "list", "--closed"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let task_id = extract_task_id(&stdout).expect("Should find closed task ID");
+
+    // Run review with -f (short flag)
+    let short_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "-f"])
+        .output()
+        .unwrap();
+    let short_stderr = String::from_utf8_lossy(&short_output.stderr);
+    assert!(
+        !short_stderr.contains("unexpected argument"),
+        "-f short flag should be recognized by the parser, got stderr: {}",
+        short_stderr
+    );
+
+    // Run review with --fix (long flag)
+    let long_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["review", &task_id, "--fix"])
+        .output()
+        .unwrap();
+    let long_stderr = String::from_utf8_lossy(&long_output.stderr);
+    assert!(
+        !long_stderr.contains("unexpected argument"),
+        "--fix long flag should be recognized by the parser, got stderr: {}",
+        long_stderr
+    );
+
+    // Assert behavioral equivalence
+    assert_eq!(
+        short_output.status.code(),
+        long_output.status.code(),
+        "review -f and review --fix should have the same exit code (short={:?}, long={:?})",
+        short_output.status.code(),
+        long_output.status.code()
+    );
+    let short_stdout = String::from_utf8_lossy(&short_output.stdout);
+    let long_stdout = String::from_utf8_lossy(&long_output.stdout);
+    assert_eq!(
+        short_stdout.is_empty(),
+        long_stdout.is_empty(),
+        "review -f and review --fix should both produce output or both be empty\n  short stdout: {}\n  long stdout: {}",
+        short_stdout,
+        long_stdout
+    );
+}
+
+#[test]
+fn test_build_short_review_flag_recognized() {
+    // -r short flag should be recognized by the build command parser
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a minimal plan file
+    std::fs::write(
+        temp_dir.path().join("test-plan.md"),
+        "# Test Plan\n\nA test plan.\n",
+    )
+    .unwrap();
+
+    // Run build with -r (short flag)
+    let short_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "-r"])
+        .output()
+        .unwrap();
+    let short_stderr = String::from_utf8_lossy(&short_output.stderr);
+    assert!(
+        !short_stderr.contains("unexpected argument"),
+        "-r short flag should be recognized by the build parser, got stderr: {}",
+        short_stderr
+    );
+
+    // Run build with --review (long flag)
+    let long_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "--review"])
+        .output()
+        .unwrap();
+    let long_stderr = String::from_utf8_lossy(&long_output.stderr);
+    assert!(
+        !long_stderr.contains("unexpected argument"),
+        "--review long flag should be recognized by the build parser, got stderr: {}",
+        long_stderr
+    );
+
+    // Assert behavioral equivalence
+    assert_eq!(
+        short_output.status.code(),
+        long_output.status.code(),
+        "build -r and build --review should have the same exit code (short={:?}, long={:?})",
+        short_output.status.code(),
+        long_output.status.code()
+    );
+    let short_stdout = String::from_utf8_lossy(&short_output.stdout);
+    let long_stdout = String::from_utf8_lossy(&long_output.stdout);
+    assert_eq!(
+        short_stdout.is_empty(),
+        long_stdout.is_empty(),
+        "build -r and build --review should both produce output or both be empty\n  short stdout: {}\n  long stdout: {}",
+        short_stdout,
+        long_stdout
+    );
+}
+
+#[test]
+fn test_build_short_fix_flag_recognized() {
+    // -f short flag should be recognized by the build command parser
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    std::fs::write(
+        temp_dir.path().join("test-plan.md"),
+        "# Test Plan\n\nA test plan.\n",
+    )
+    .unwrap();
+
+    // Run build with -f (short flag)
+    let short_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "-f"])
+        .output()
+        .unwrap();
+    let short_stderr = String::from_utf8_lossy(&short_output.stderr);
+    assert!(
+        !short_stderr.contains("unexpected argument"),
+        "-f short flag should be recognized by the build parser, got stderr: {}",
+        short_stderr
+    );
+
+    // Run build with --fix (long flag)
+    let long_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "--fix"])
+        .output()
+        .unwrap();
+    let long_stderr = String::from_utf8_lossy(&long_output.stderr);
+    assert!(
+        !long_stderr.contains("unexpected argument"),
+        "--fix long flag should be recognized by the build parser, got stderr: {}",
+        long_stderr
+    );
+
+    // Assert behavioral equivalence
+    assert_eq!(
+        short_output.status.code(),
+        long_output.status.code(),
+        "build -f and build --fix should have the same exit code (short={:?}, long={:?})",
+        short_output.status.code(),
+        long_output.status.code()
+    );
+    let short_stdout = String::from_utf8_lossy(&short_output.stdout);
+    let long_stdout = String::from_utf8_lossy(&long_output.stdout);
+    assert_eq!(
+        short_stdout.is_empty(),
+        long_stdout.is_empty(),
+        "build -f and build --fix should both produce output or both be empty\n  short stdout: {}\n  long stdout: {}",
+        short_stdout,
+        long_stdout
+    );
+}
+
+#[test]
+fn test_build_combined_short_flags() {
+    // -r and -f combined should be recognized by the build command parser
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    std::fs::write(
+        temp_dir.path().join("test-plan.md"),
+        "# Test Plan\n\nA test plan.\n",
+    )
+    .unwrap();
+
+    // Run build with -r -f (short flags)
+    let short_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "-r", "-f"])
+        .output()
+        .unwrap();
+    let short_stderr = String::from_utf8_lossy(&short_output.stderr);
+    assert!(
+        !short_stderr.contains("unexpected argument"),
+        "-r -f combined should be recognized by the build parser, got stderr: {}",
+        short_stderr
+    );
+
+    // Run build with --review --fix (long flags)
+    let long_output = Command::new(assert_cmd::cargo::cargo_bin!("aiki"))
+        .current_dir(temp_dir.path())
+        .args(["build", "test-plan.md", "--review", "--fix"])
+        .output()
+        .unwrap();
+    let long_stderr = String::from_utf8_lossy(&long_output.stderr);
+    assert!(
+        !long_stderr.contains("unexpected argument"),
+        "--review --fix combined should be recognized by the build parser, got stderr: {}",
+        long_stderr
+    );
+
+    // Assert behavioral equivalence
+    assert_eq!(
+        short_output.status.code(),
+        long_output.status.code(),
+        "build -r -f and build --review --fix should have the same exit code (short={:?}, long={:?})",
+        short_output.status.code(),
+        long_output.status.code()
+    );
+    let short_stdout = String::from_utf8_lossy(&short_output.stdout);
+    let long_stdout = String::from_utf8_lossy(&long_output.stdout);
+    assert_eq!(
+        short_stdout.is_empty(),
+        long_stdout.is_empty(),
+        "build -r -f and build --review --fix should both produce output or both be empty\n  short stdout: {}\n  long stdout: {}",
+        short_stdout,
+        long_stdout
+    );
+}

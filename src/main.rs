@@ -129,7 +129,7 @@ enum Commands {
         #[arg(long = "loop-template")]
         loop_template: Option<String>,
         /// Enable quality loop review step
-        #[arg(long)]
+        #[arg(long, short = 'r')]
         review: bool,
         /// Quality loop review with custom template (implies --review)
         #[arg(long = "review-template")]

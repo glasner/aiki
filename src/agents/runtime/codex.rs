@@ -2,10 +2,24 @@
 //!
 //! Spawns Codex sessions using the `codex` CLI in non-interactive mode.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild};
 use crate::error::{AikiError, Result};
+
+/// Check if the working directory is inside a git repository.
+/// Walks up from `dir` looking for a `.git` directory or file.
+fn has_git_repo(dir: &Path) -> bool {
+    let mut current = Some(dir);
+    while let Some(d) = current {
+        if d.join(".git").exists() {
+            return true;
+        }
+        current = d.parent();
+    }
+    false
+}
 
 /// Runtime for Codex agent
 pub struct CodexRuntime;
@@ -34,6 +48,10 @@ impl AgentRuntime for CodexRuntime {
         let mut cmd = Command::new("codex");
         cmd.current_dir(&options.cwd)
             .args(["exec", "--full-auto", &prompt]);
+        // JJ workspaces don't have .git — tell Codex to skip the git repo check
+        if !has_git_repo(&options.cwd) {
+            cmd.arg("--skip-git-repo-check");
+        }
         // Propagate parent session UUID for workspace isolation chaining
         if let Some(ref uuid) = options.parent_session_uuid {
             cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
@@ -86,6 +104,10 @@ impl AgentRuntime for CodexRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // JJ workspaces don't have .git — tell Codex to skip the git repo check
+        if !has_git_repo(&options.cwd) {
+            cmd.arg("--skip-git-repo-check");
+        }
         // Propagate parent session UUID for workspace isolation chaining
         if let Some(ref uuid) = options.parent_session_uuid {
             cmd.env("AIKI_PARENT_SESSION_UUID", uuid);
@@ -122,6 +144,10 @@ impl AgentRuntime for CodexRuntime {
             .stdout(Stdio::null())
             // Capture stderr so we can report errors when the agent fails
             .stderr(Stdio::piped());
+        // JJ workspaces don't have .git — tell Codex to skip the git repo check
+        if !has_git_repo(&options.cwd) {
+            cmd.arg("--skip-git-repo-check");
+        }
         // Propagate parent session UUID for workspace isolation chaining
         if let Some(ref uuid) = options.parent_session_uuid {
             cmd.env("AIKI_PARENT_SESSION_UUID", uuid);

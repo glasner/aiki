@@ -71,6 +71,7 @@ Where the fix task gets attached depends on the review scope:
 | `--template <name>` | Custom plan template (default: `fix`) |
 | `--decompose-template <name>` | Custom decompose template (default: `decompose`) |
 | `--loop-template <name>` | Custom loop template (default: `loop`) |
+| `-r`, `--review` | Enable quality loop review step |
 | `--review-template [name]` | Custom review template for quality loop (default: `review`) |
 | `--agent <type>` | Override fix agent |
 | `-o id` | Output bare task ID to stdout |
