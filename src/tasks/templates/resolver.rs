@@ -1,8 +1,8 @@
 //! Template resolution and discovery
 //!
 //! Handles finding template files in the filesystem:
-//! - Built-in templates: `.aiki/templates/`
-//! - Custom templates: `.aiki/templates/{namespace}/`
+//! - User templates: `.aiki/{TASKS_DIR_NAME}/`
+//! - Namespaced templates: `.aiki/{TASKS_DIR_NAME}/{namespace}/`
 
 use crate::error::{AikiError, Result};
 use crate::tasks::TaskPriority;
@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use super::parser::parse_template;
 use super::types::{TaskDefinition, TaskTemplate};
 use super::variables::{substitute, substitute_with_template_name, VariableContext};
+use super::TASKS_DIR_NAME;
 use crate::tasks::types::TaskComment;
 use regex::Regex;
 
@@ -43,12 +44,12 @@ pub struct TemplateInfo {
 
 /// Find the templates directory for a project
 ///
-/// Searches upward from the current directory for `.aiki/templates/`
+/// Searches upward from the current directory for `.aiki/{TASKS_DIR_NAME}/`
 pub fn find_templates_dir(start_path: &Path) -> Result<PathBuf> {
     let mut current = start_path;
 
     loop {
-        let templates_dir = current.join(".aiki").join("templates");
+        let templates_dir = current.join(".aiki").join(TASKS_DIR_NAME);
         if templates_dir.is_dir() {
             return Ok(templates_dir);
         }
@@ -57,7 +58,11 @@ pub fn find_templates_dir(start_path: &Path) -> Result<PathBuf> {
             Some(parent) => current = parent,
             None => {
                 return Err(AikiError::TemplatesDirectoryNotFound {
-                    path: start_path.join(".aiki/templates").display().to_string(),
+                    path: start_path
+                        .join(".aiki")
+                        .join(TASKS_DIR_NAME)
+                        .display()
+                        .to_string(),
                 })
             }
         }
@@ -107,12 +112,11 @@ pub fn normalize_template_ref(name: &str, quiet: bool) -> String {
 /// Resolve a template name to its file path.
 ///
 /// Resolution order:
-/// 1. `.aiki/templates/{name}.md` (project-local)
+/// 1. `.aiki/{TASKS_DIR_NAME}/{name}.md` (project-local)
 /// 2. For three-part refs (`ns/plugin/template`):
 ///    `~/.aiki/plugins/{ns}/{plugin}/templates/{template}.md` (installed plugin)
-/// 3. Legacy fallback (no manifest): `.aiki/templates/aiki/{name}.md`
 fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
-    // 1. Project-local: .aiki/templates/{name}.md
+    // 1. Project-local: .aiki/{TASKS_DIR_NAME}/{name}.md
     let relative_path = format!("{}.md", name);
     let full_path = templates_dir.join(&relative_path);
 
@@ -136,18 +140,6 @@ fn resolve_template_path(name: &str, templates_dir: &Path) -> Result<PathBuf> {
             if plugin_path.is_file() {
                 return Ok(plugin_path);
             }
-        }
-    }
-
-    // 3. Legacy fallback: if no manifest exists, check .aiki/templates/aiki/{name}.md
-    let manifest_path = templates_dir
-        .parent()
-        .map(|p| p.join(".manifest.json"))
-        .unwrap_or_default();
-    if !manifest_path.exists() {
-        let legacy_path = templates_dir.join("aiki").join(&relative_path);
-        if legacy_path.is_file() {
-            return Ok(legacy_path);
         }
     }
 
@@ -1974,12 +1966,14 @@ Review the changes."#;
     }
 
     // --- loop template tests ---
+    // Note: include_str! paths below match BUILTIN_TEMPLATES_SOURCE (see mod.rs).
+    // Macros require string literals so these can't reference the constant directly.
 
     #[test]
     fn test_loop_template_exists_and_parses_as_orchestrator() {
         let temp_dir = TempDir::new().unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        let loop_content = include_str!("core/loop.md");
         fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
         let template = load_template("loop", temp_dir.path()).unwrap();
@@ -1992,7 +1986,7 @@ Review the changes."#;
     fn test_loop_template_contains_lane_commands() {
         let temp_dir = TempDir::new().unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        let loop_content = include_str!("core/loop.md");
         fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
         let template = load_template("loop", temp_dir.path()).unwrap();
@@ -2024,7 +2018,7 @@ Review the changes."#;
     fn test_loop_template_resolves_via_standard_path() {
         let temp_dir = TempDir::new().unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        let loop_content = include_str!("core/loop.md");
         fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
         let templates = list_templates(temp_dir.path()).unwrap();
@@ -2042,7 +2036,7 @@ Review the changes."#;
     fn test_loop_template_uses_data_target() {
         let temp_dir = TempDir::new().unwrap();
 
-        let loop_content = include_str!("../../../../.aiki/templates/loop.md");
+        let loop_content = include_str!("core/loop.md");
         fs::write(temp_dir.path().join("loop.md"), loop_content).unwrap();
 
         let template = load_template("loop", temp_dir.path()).unwrap();
@@ -2178,5 +2172,70 @@ Review the changes."#;
             }
             _ => panic!("Expected Composed"),
         }
+    }
+
+    // ===== Template Directory Structure Tests =====
+
+    #[test]
+    fn test_user_templates_discovered_in_tasks_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path().join(".aiki").join(TASKS_DIR_NAME);
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        fs::write(
+            tasks_dir.join("review.md"),
+            "---\ndescription: A review template\n---\n\n# Review\n\nReview the code.\n",
+        )
+        .unwrap();
+
+        let found = find_templates_dir(temp_dir.path()).unwrap();
+        assert_eq!(found, tasks_dir);
+
+        let templates = list_templates(&found).unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].name, "review");
+    }
+
+    #[test]
+    fn test_legacy_templates_dir_not_searched() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create template ONLY in the legacy .aiki/templates/ path
+        let legacy_dir = temp_dir.path().join(".aiki/templates");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(
+            legacy_dir.join("review.md"),
+            "---\ndescription: Legacy template\n---\n\n# Review\n\nReview.\n",
+        )
+        .unwrap();
+
+        // find_templates_dir should NOT find the legacy directory
+        let result = find_templates_dir(temp_dir.path());
+        assert!(
+            result.is_err(),
+            "find_templates_dir should not discover templates in .aiki/templates/"
+        );
+    }
+
+    #[test]
+    fn test_init_creates_tasks_dir() {
+        // Verify the TASKS_DIR_NAME constant is "tasks"
+        assert_eq!(TASKS_DIR_NAME, "tasks");
+
+        // Verify sync_default_templates creates .aiki/tasks/
+        let temp_dir = TempDir::new().unwrap();
+        fs::create_dir_all(temp_dir.path().join(".aiki")).unwrap();
+
+        use super::super::sync::sync_default_templates;
+        sync_default_templates(temp_dir.path(), true).unwrap();
+
+        assert!(
+            temp_dir.path().join(".aiki/tasks").exists(),
+            "sync_default_templates should create .aiki/tasks/"
+        );
+        assert!(
+            !temp_dir.path().join(".aiki/templates").exists(),
+            "sync_default_templates should NOT create .aiki/templates/"
+        );
     }
 }

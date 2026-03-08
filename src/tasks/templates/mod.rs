@@ -90,6 +90,18 @@ pub mod sync;
 pub mod types;
 pub mod variables;
 
+/// Directory name under `.aiki/` for user-defined task templates (runtime discovery).
+///
+/// Used to construct paths like `{repo_root}/.aiki/{TASKS_DIR_NAME}/`.
+pub const TASKS_DIR_NAME: &str = "tasks";
+
+/// Relative path from repo root to the built-in template source directory.
+///
+/// The `include_dir!` macro in `builtin.rs` must use a matching string literal
+/// (macros cannot reference constants).
+#[allow(dead_code)]
+pub const BUILTIN_TEMPLATES_SOURCE: &str = "cli/src/tasks/templates/core";
+
 #[allow(unused_imports)]
 pub use resolver::{
     convert_data, create_review_task_from_template,
@@ -106,3 +118,11 @@ pub use variables::{
     coerce_to_string, find_variables, substitute_with_template_name,
     VariableContext,
 };
+
+/// Helper: construct the user tasks directory path relative to a repo root.
+///
+/// Returns `{repo_root}/.aiki/{TASKS_DIR_NAME}`.
+#[allow(dead_code)]
+pub fn user_tasks_dir(repo_root: &std::path::Path) -> std::path::PathBuf {
+    repo_root.join(".aiki").join(TASKS_DIR_NAME)
+}
