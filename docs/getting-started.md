@@ -114,16 +114,18 @@ This checks repository setup, global hooks, and local configuration. If it finds
 aiki doctor --fix
 ```
 
-If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/templates` or `Template not found: review`), bootstrap templates once:
+> **Upgrading from pre-1.x?** Rename `.aiki/templates/` to `.aiki/tasks/`.
+
+If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/tasks` or `Template not found: review`), bootstrap templates once:
 
 ```bash
-cp -R /path/to/aiki/.aiki/templates .aiki/
+cp -R /path/to/aiki/.aiki/tasks .aiki/
 ```
 
 Then verify:
 
 ```bash
-ls .aiki/templates/aiki
+ls .aiki/tasks/aiki
 ```
 
 ## Editor Setup

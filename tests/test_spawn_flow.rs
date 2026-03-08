@@ -104,7 +104,7 @@ fn test_spawn_on_close_basic() {
     init_aiki_repo(temp_dir.path());
 
     // Create a simple template for spawning
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -146,7 +146,7 @@ fn test_spawn_condition_false_no_spawn() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -187,7 +187,7 @@ fn test_spawn_condition_not_approved() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -230,7 +230,7 @@ fn test_spawn_approved_no_spawn() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -275,7 +275,7 @@ fn test_spawn_shows_spawned_by_link() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -317,7 +317,7 @@ fn test_spawn_subtask_creates_child() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -372,7 +372,7 @@ fn test_spawn_subtask_precedence_over_task() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -431,7 +431,7 @@ fn test_spawn_priority_inheritance() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -481,7 +481,7 @@ fn test_spawn_wont_do_no_spawn() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -528,7 +528,7 @@ fn test_spawn_approved_defaults_false_in_template_substitution() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
 
     // Spawned task template that uses {{spawner.approved}} in its body
     create_template(

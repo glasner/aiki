@@ -7,6 +7,7 @@ use crate::repos::RepoDetector;
 use crate::tasks::templates::builtin::default_plugin_templates;
 use crate::tasks::templates::manifest::{checksum, RepoManifest};
 use crate::tasks::templates::sync::sync_plugin_templates;
+use crate::tasks::templates::TASKS_DIR_NAME;
 use anyhow::Context;
 use std::env;
 use std::fs;
@@ -570,7 +571,7 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
     println!("Templates:");
 
     let manifest_path = aiki_dir.join(".manifest.json");
-    let templates_dir = aiki_dir.join("templates");
+    let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
 
     // (a) Check manifest existence and schema
     if manifest_path.exists() {
@@ -738,7 +739,7 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
                             }
                         }
                         Err(err) => {
-                            println!("    ✗ Failed to create templates directory: {}", err);
+                            println!("    ✗ Failed to create tasks directory: {}", err);
                             issues += missing_files.len();
                         }
                     }
@@ -771,7 +772,7 @@ fn check_templates(project_root: &std::path::Path, fix: bool) -> usize {
     // (e) Check for stale legacy directory
     let legacy_dir = templates_dir.join("aiki");
     if legacy_dir.is_dir() {
-        println!("  ⚠ Legacy template directory found: .aiki/templates/aiki/");
+        println!("  ⚠ Legacy template directory found: .aiki/{}/aiki/", TASKS_DIR_NAME);
         println!("    Run 'aiki init' to migrate, or remove manually if empty");
         issues += 1;
     }
@@ -1813,7 +1814,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = dir.path();
         let aiki_dir = repo.join(".aiki");
-        let templates_dir = aiki_dir.join("templates");
+        let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
         std::fs::create_dir_all(&templates_dir).unwrap();
 
         // Write a file that differs from manifest checksum
@@ -1841,7 +1842,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = dir.path();
         let aiki_dir = repo.join(".aiki");
-        let templates_dir = aiki_dir.join("templates");
+        let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
         std::fs::create_dir_all(&templates_dir).unwrap();
 
         // Manifest says file exists but it doesn't on disk
@@ -1866,7 +1867,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = dir.path();
         let aiki_dir = repo.join(".aiki");
-        let templates_dir = aiki_dir.join("templates");
+        let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
         std::fs::create_dir_all(&templates_dir).unwrap();
 
         // Set up manifest with a file that's in the default plugin source but missing on disk
@@ -1918,7 +1919,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = dir.path();
         let aiki_dir = repo.join(".aiki");
-        let templates_dir = aiki_dir.join("templates");
+        let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
         std::fs::create_dir_all(templates_dir.join("aiki")).unwrap();
 
         // Create a valid manifest so we get past the manifest check

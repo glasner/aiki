@@ -147,9 +147,6 @@ pub fn run(quiet: bool) -> Result<()> {
             // Even on re-init, ensure hookfile exists
             ensure_hooks_yml(&repo_root, quiet)?;
 
-            // Migrate legacy template layout before sync
-            crate::tasks::templates::sync::migrate_legacy_template_layout(&repo_root, quiet)?;
-
             // Sync built-in templates on re-init (picks up new/updated templates)
             crate::tasks::templates::sync::sync_default_templates(&repo_root, quiet)?;
 
@@ -330,9 +327,6 @@ pub fn run(quiet: bool) -> Result<()> {
         println!("\nConfiguring agent instructions...");
     }
     ensure_agents_md(&repo_root, quiet)?;
-
-    // Migrate legacy template layout before sync
-    crate::tasks::templates::sync::migrate_legacy_template_layout(&repo_root, quiet)?;
 
     // Sync built-in templates
     if !quiet {

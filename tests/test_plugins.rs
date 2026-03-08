@@ -258,7 +258,7 @@ fn test_template_resolution_three_part_ref_falls_back_to_plugin() {
     let tmp = TempDir::new().unwrap();
     let aiki_home = TempDir::new().unwrap();
 
-    // Create project .aiki/templates/ (empty — no override)
+    // Create project .aiki/tasks/ (empty — no override)
     let project_templates = tmp.path().join(".aiki").join("templates");
     fs::create_dir_all(&project_templates).unwrap();
 
@@ -306,7 +306,7 @@ fn test_template_resolution_project_override_wins() {
     )
     .unwrap();
 
-    // Create project override at .aiki/templates/testns2/overplug/task.md
+    // Create project override at .aiki/tasks/testns2/overplug/task.md
     let project_tpl = project_templates.join("testns2").join("overplug");
     fs::create_dir_all(&project_tpl).unwrap();
     fs::write(

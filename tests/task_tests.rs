@@ -1210,7 +1210,7 @@ fn test_template_add_creates_static_subtasks() {
     init_aiki_repo(temp_dir.path());
 
     // Create a template with static subtasks
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -1264,7 +1264,7 @@ fn test_template_add_with_dynamic_subtasks() {
     init_aiki_repo(temp_dir.path());
 
     // Create a template with dynamic subtasks using inline loops
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -1372,7 +1372,7 @@ fn test_template_dynamic_subtasks_requires_source() {
     init_aiki_repo(temp_dir.path());
 
     // Create a template with dynamic subtasks using inline loops
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -1408,7 +1408,7 @@ fn test_template_unknown_data_source_fails() {
     init_aiki_repo(temp_dir.path());
 
     // Create a template with unknown data source using inline loop
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -1470,7 +1470,7 @@ fn test_template_static_subtasks_honor_frontmatter_sources() {
     let source_task_id = extract_short_id(&stdout);
 
     // Create a template with static subtasks that have frontmatter sources
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -2191,7 +2191,7 @@ fn test_review_non_task_scope_succeeds() {
     init_aiki_repo(temp_dir.path());
 
     // Create the review/plan template so the review command can resolve it
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     std::fs::create_dir_all(&template_dir).expect("Failed to create template dir");
     std::fs::write(
         template_dir.join("plan.md"),
@@ -2201,7 +2201,7 @@ fn test_review_non_task_scope_succeeds() {
 
     // Commit the template so aiki can find it
     Command::new("git")
-        .args(["add", ".aiki/templates"])
+        .args(["add", ".aiki/tasks"])
         .current_dir(temp_dir.path())
         .output()
         .expect("git add templates failed");
@@ -2298,7 +2298,7 @@ fn test_run_invalid_data_format() {
     init_aiki_repo(temp_dir.path());
 
     // Need to create the template first so it gets past template lookup
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",
@@ -2319,7 +2319,7 @@ fn test_run_template_creates_task() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());
 
-    let templates_dir = temp_dir.path().join(".aiki/templates");
+    let templates_dir = temp_dir.path().join(".aiki/tasks");
     create_template(
         &templates_dir,
         "test",

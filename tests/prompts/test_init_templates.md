@@ -1,4 +1,4 @@
-You are testing aiki's `init` command, specifically how it writes templates to `.aiki/templates/`. Run through ALL phases carefully and report results.
+You are testing aiki's `init` command, specifically how it writes templates to `.aiki/tasks/`. Run through ALL phases carefully and report results.
 
 ## Setup
 - Run `aiki task start "Test aiki init: template writing and sync" --source prompt`
@@ -28,14 +28,14 @@ This should complete without errors.
 
 ### 1.2 Verify the template directory structure
 
-Check that `.aiki/templates/` was created with the expected files:
+Check that `.aiki/tasks/` was created with the expected files:
 
-    ls -R .aiki/templates/
+    ls -R .aiki/tasks/
 
 **Expected file tree (aiki/default plugin templates):**
 
 ```
-.aiki/templates/
+.aiki/tasks/
 ├── decompose.md
 ├── fix.md
 ├── loop.md
@@ -59,20 +59,20 @@ Check that `.aiki/templates/` was created with the expected files:
 
 Count them:
 
-    find .aiki/templates -name '*.md' -not -path '*/tu/*' | wc -l
+    find .aiki/tasks -name '*.md' -not -path '*/tu/*' | wc -l
     # Should be 12
 
 ### 1.3 Verify template content has valid YAML frontmatter
 
 Each template should be a Markdown file with YAML frontmatter (delimited by `---`). Check a sampling:
 
-    head -6 .aiki/templates/plan.md
+    head -6 .aiki/tasks/plan.md
     # Should show: ---\nversion: 1.0.0\ntype: plan\n...
 
-    head -6 .aiki/templates/review/code.md
+    head -6 .aiki/tasks/review/code.md
     # Should show: ---\nversion: 3.0.0\ntype: review\n...
 
-    head -6 .aiki/templates/decompose.md
+    head -6 .aiki/tasks/decompose.md
     # Should show frontmatter with version and type fields
 
 **For each template checked, verify:**
@@ -133,13 +133,13 @@ The manifest should be valid JSON with this structure:
 
 Pick 3 templates and verify their manifest checksums match the actual file content:
 
-    shasum -a 256 .aiki/templates/plan.md
+    shasum -a 256 .aiki/tasks/plan.md
     # Compare the hash with the "checksum" value in .manifest.json for "plan.md"
 
-    shasum -a 256 .aiki/templates/review/code.md
+    shasum -a 256 .aiki/tasks/review/code.md
     # Compare with manifest entry for "review/code.md"
 
-    shasum -a 256 .aiki/templates/loop.md
+    shasum -a 256 .aiki/tasks/loop.md
     # Compare with manifest entry for "loop.md"
 
 The SHA256 hashes should match (ignoring the `sha256:` prefix in the manifest).
@@ -164,9 +164,9 @@ Test that running `aiki init` again does NOT overwrite existing templates and th
 Save the current state for comparison:
 
     cp .aiki/.manifest.json /tmp/manifest-before.json
-    shasum -a 256 .aiki/templates/plan.md > /tmp/hashes-before.txt
-    shasum -a 256 .aiki/templates/review/code.md >> /tmp/hashes-before.txt
-    shasum -a 256 .aiki/templates/fix.md >> /tmp/hashes-before.txt
+    shasum -a 256 .aiki/tasks/plan.md > /tmp/hashes-before.txt
+    shasum -a 256 .aiki/tasks/review/code.md >> /tmp/hashes-before.txt
+    shasum -a 256 .aiki/tasks/fix.md >> /tmp/hashes-before.txt
 
 ### 3.1 Run `aiki init` again
 
@@ -176,9 +176,9 @@ Should complete without errors.
 
 ### 3.2 Verify templates are unchanged
 
-    shasum -a 256 .aiki/templates/plan.md > /tmp/hashes-after.txt
-    shasum -a 256 .aiki/templates/review/code.md >> /tmp/hashes-after.txt
-    shasum -a 256 .aiki/templates/fix.md >> /tmp/hashes-after.txt
+    shasum -a 256 .aiki/tasks/plan.md > /tmp/hashes-after.txt
+    shasum -a 256 .aiki/tasks/review/code.md >> /tmp/hashes-after.txt
+    shasum -a 256 .aiki/tasks/fix.md >> /tmp/hashes-after.txt
 
     diff /tmp/hashes-before.txt /tmp/hashes-after.txt
     # Should produce no output (files are identical)
@@ -193,7 +193,7 @@ If timestamps changed, verify checksums in the manifest are identical to before.
 
 ### 3.4 Verify the template count hasn't changed
 
-    find .aiki/templates -name '*.md' -not -path '*/tu/*' | wc -l
+    find .aiki/tasks -name '*.md' -not -path '*/tu/*' | wc -l
     # Should still be 12
 
 ### 3.5 Record phase 3 results
@@ -211,9 +211,9 @@ Test that user-modified templates are NOT overwritten when running `aiki init` a
 Edit `plan.md` to add a custom line at the top of the content (after frontmatter):
 
     # Save original for later comparison
-    cp .aiki/templates/plan.md /tmp/plan-original.md
+    cp .aiki/tasks/plan.md /tmp/plan-original.md
 
-Now edit `.aiki/templates/plan.md` — add a line after the second `---` (end of frontmatter):
+Now edit `.aiki/tasks/plan.md` — add a line after the second `---` (end of frontmatter):
 
 ```
 <!-- CUSTOM: User-added instruction for this repo -->
@@ -221,12 +221,12 @@ Now edit `.aiki/templates/plan.md` — add a line after the second `---` (end of
 
 Verify the edit:
 
-    head -10 .aiki/templates/plan.md
+    head -10 .aiki/tasks/plan.md
     # Should show frontmatter + the custom line
 
 Record the new hash:
 
-    shasum -a 256 .aiki/templates/plan.md > /tmp/plan-modified-hash.txt
+    shasum -a 256 .aiki/tasks/plan.md > /tmp/plan-modified-hash.txt
 
 ### 4.1 Run `aiki init` again
 
@@ -234,19 +234,19 @@ Record the new hash:
 
 ### 4.2 Verify the modified template was preserved
 
-    shasum -a 256 .aiki/templates/plan.md > /tmp/plan-after-init-hash.txt
+    shasum -a 256 .aiki/tasks/plan.md > /tmp/plan-after-init-hash.txt
     diff /tmp/plan-modified-hash.txt /tmp/plan-after-init-hash.txt
     # Should produce no output — the user's modification was preserved
 
-    grep 'CUSTOM: User-added' .aiki/templates/plan.md
+    grep 'CUSTOM: User-added' .aiki/tasks/plan.md
     # Should find the custom line — it was NOT overwritten
 
 ### 4.3 Verify unmodified templates are still intact
 
-    shasum -a 256 .aiki/templates/review/code.md
+    shasum -a 256 .aiki/tasks/review/code.md
     # Should match the original manifest checksum (unmodified template left alone)
 
-    shasum -a 256 .aiki/templates/decompose.md
+    shasum -a 256 .aiki/tasks/decompose.md
     # Should also match the original manifest checksum
 
 ### 4.4 Record phase 4 results
@@ -261,8 +261,8 @@ Test that if a user deletes a template, `aiki init` restores it.
 
 ### 5.0 Delete a template
 
-    rm .aiki/templates/resolve.md
-    ls .aiki/templates/resolve.md 2>&1
+    rm .aiki/tasks/resolve.md
+    ls .aiki/tasks/resolve.md 2>&1
     # Should report "No such file or directory"
 
 ### 5.1 Run `aiki init`
@@ -271,25 +271,25 @@ Test that if a user deletes a template, `aiki init` restores it.
 
 ### 5.2 Verify the deleted template was restored
 
-    ls .aiki/templates/resolve.md
+    ls .aiki/tasks/resolve.md
     # Should exist again
 
-    head -6 .aiki/templates/resolve.md
+    head -6 .aiki/tasks/resolve.md
     # Should show valid frontmatter (version, type fields)
 
 ### 5.3 Verify the restored template matches the source
 
     # The manifest checksum for resolve.md should match the restored file
-    shasum -a 256 .aiki/templates/resolve.md
+    shasum -a 256 .aiki/tasks/resolve.md
     # Compare with the checksum in .manifest.json for "resolve.md"
 
 ### 5.4 Verify other templates were not affected
 
-    find .aiki/templates -name '*.md' -not -path '*/tu/*' | wc -l
+    find .aiki/tasks -name '*.md' -not -path '*/tu/*' | wc -l
     # Should be 12
 
     # The user-modified plan.md from Phase 4 should still have the custom line
-    grep 'CUSTOM: User-added' .aiki/templates/plan.md
+    grep 'CUSTOM: User-added' .aiki/tasks/plan.md
     # Should still find it
 
 ### 5.5 Record phase 5 results
@@ -376,7 +376,7 @@ Close the parent task with results:
     aiki task close <PARENT> --summary "Results: Phase 1 (fresh init templates): PASS/FAIL. Phase 2 (manifest correctness): PASS/FAIL. Phase 3 (re-init idempotency): PASS/FAIL. Phase 4 (user modification preservation): PASS/FAIL. Phase 5 (deleted template restoration): PASS/FAIL. Phase 6 (template usability): PASS/FAIL. Phase 7 (other init artifacts): PASS/FAIL. Details: ..."
 
 **Report format:** For each phase and sub-check, state PASS or FAIL with details. Include any error output verbatim. Pay special attention to:
-- Were all 12 default templates written to `.aiki/templates/`?
+- Were all 12 default templates written to `.aiki/tasks/`?
 - Did each template have valid YAML frontmatter with version and type fields?
 - Did the manifest accurately track all templates with correct checksums?
 - Was re-init idempotent (no unnecessary overwrites)?

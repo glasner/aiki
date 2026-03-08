@@ -1,8 +1,9 @@
 use crate::error::Result;
 use crate::tasks::templates::builtin::default_plugin_templates;
 use crate::tasks::templates::manifest::{checksum, FileEntry, RepoManifest};
+use crate::tasks::templates::TASKS_DIR_NAME;
 use chrono::Utc;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Summary of what a sync operation did.
 #[derive(Debug)]
@@ -194,110 +195,11 @@ pub fn sync_plugin_templates(
     Ok(report)
 }
 
-/// Migrate legacy template layout (`.aiki/templates/aiki/` → `.aiki/templates/`).
-///
-/// Runs BEFORE sync in init. Only triggers when the legacy directory exists
-/// AND no manifest file exists (indicating a pre-migration install).
-pub fn migrate_legacy_template_layout(repo_root: &Path, quiet: bool) -> Result<()> {
-    let templates_dir = repo_root.join(".aiki").join("templates");
-    let legacy_dir = templates_dir.join("aiki");
-    let manifest_path = repo_root.join(".aiki").join(".manifest.json");
-
-    // Only migrate if legacy dir exists AND no manifest (pre-migration state)
-    if !legacy_dir.is_dir() || manifest_path.exists() {
-        return Ok(());
-    }
-
-    if !quiet {
-        eprintln!("Migrating legacy template layout..."); // stderr-ok: pre-LiveScreen
-    }
-
-    // Collect all files under the legacy directory
-    let files = collect_legacy_files(&legacy_dir, &legacy_dir)?;
-
-    for (rel_path, legacy_full) in &files {
-        let target = templates_dir.join(rel_path);
-
-        if !target.exists() {
-            // Target doesn't exist → move
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(legacy_full, &target)?;
-        } else {
-            // Target exists → compare hashes
-            let legacy_content = std::fs::read(legacy_full)?;
-            let target_content = std::fs::read(&target)?;
-            if checksum(&legacy_content) == checksum(&target_content) {
-                // Identical → just remove legacy file
-                std::fs::remove_file(legacy_full)?;
-            } else {
-                // Different → save as backup, warn
-                let backup = target.with_extension("backup-legacy");
-                std::fs::rename(legacy_full, &backup)?;
-                if !quiet {
-                    eprintln!( // stderr-ok: pre-LiveScreen
-                        "warning: Conflict for '{}' — legacy version saved as '{}'",
-                        rel_path,
-                        backup.display()
-                    );
-                }
-            }
-        }
-    }
-
-    // Remove empty legacy directory tree
-    remove_dir_if_empty(&legacy_dir);
-
-    if !quiet {
-        eprintln!("✓ Legacy template migration complete"); // stderr-ok: pre-LiveScreen
-    }
-
-    Ok(())
-}
-
-/// Recursively collect files under a directory, returning (relative_path, absolute_path).
-fn collect_legacy_files(base: &Path, current: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let mut files = Vec::new();
-    if !current.is_dir() {
-        return Ok(files);
-    }
-    for entry in std::fs::read_dir(current)?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            files.extend(collect_legacy_files(base, &path)?);
-        } else if path.is_file() {
-            let rel = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
-            files.push((rel, path));
-        }
-    }
-    Ok(files)
-}
-
-/// Remove a directory and its parents if empty.
-fn remove_dir_if_empty(dir: &Path) {
-    // Try removing the directory (only succeeds if empty)
-    if std::fs::remove_dir(dir).is_ok() {
-        // Try removing empty parent directories too
-        if let Some(parent) = dir.parent() {
-            // Don't go above templates/
-            if parent.file_name().map_or(false, |n| n != "templates") {
-                remove_dir_if_empty(parent);
-            }
-        }
-    }
-}
-
 /// Sync built-in default templates to disk.
 pub fn sync_default_templates(repo_root: &Path, quiet: bool) -> Result<SyncReport> {
     let mut manifest = RepoManifest::load(repo_root)?.unwrap_or_else(RepoManifest::new);
 
-    let templates_dir = repo_root.join(".aiki").join("templates");
+    let templates_dir = repo_root.join(".aiki").join(TASKS_DIR_NAME);
     std::fs::create_dir_all(&templates_dir)?;
 
     let source_templates = default_plugin_templates();
@@ -827,7 +729,7 @@ mod tests {
         assert!(repo_root.join(".aiki/.manifest.json").exists());
 
         // Templates should exist (at root, not in aiki/ subdir)
-        assert!(repo_root.join(".aiki/templates/plan.md").exists());
+        assert!(repo_root.join(".aiki/tasks/plan.md").exists());
 
         // .gitignore should be updated
         let gitignore = std::fs::read_to_string(repo_root.join(".gitignore")).unwrap();

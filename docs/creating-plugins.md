@@ -134,7 +134,7 @@ ln -s /path/to/my-plugin ~/.aiki/plugins/myuser/my-plugin
 
 Then include it in a test project's `.aiki/hooks.yml` and verify the behavior.
 
-Alternatively, use project-level overrides — place files directly in `.aiki/templates/myuser/my-plugin/` to test template changes without a symlink.
+Alternatively, use project-level overrides — place files directly in `.aiki/tasks/myuser/my-plugin/` to test template changes without a symlink.
 
 ## Publishing
 

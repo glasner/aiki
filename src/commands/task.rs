@@ -1907,6 +1907,7 @@ fn run_add(
         closed_outcome: None,
         summary: None,
         turn_started: None,
+                closed_at: None,
         turn_closed: None,
         turn_stopped: None,
         comments: Vec::new(),
@@ -2176,6 +2177,7 @@ fn run_start(
                 closed_outcome: None,
                 summary: None,
                 turn_started: None,
+                closed_at: None,
                 turn_closed: None,
                 turn_stopped: None,
                 comments: Vec::new(),
@@ -2569,6 +2571,7 @@ fn run_stop(
                 closed_outcome: None,
                 summary: None,
                 turn_started: None,
+                closed_at: None,
                 turn_closed: None,
                 turn_stopped: None,
                 comments: Vec::new(),
@@ -5951,15 +5954,15 @@ fn run_wait(cwd: &Path, ids: Vec<String>, any: bool, output_format: Option<super
 
 /// Handle template subcommands (list, show)
 fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
-    use crate::tasks::templates::{find_templates_dir, list_templates, load_template};
+    use crate::tasks::templates::{find_templates_dir, list_templates, load_template, TASKS_DIR_NAME};
 
     // Find templates directory
     let templates_dir = match find_templates_dir(cwd) {
         Ok(dir) => dir,
         Err(_) => {
-            // No templates directory found - show helpful message
+            // No tasks directory found - show helpful message
             let xml = MdBuilder::new("template").build_error(
-                "No templates directory found. Create .aiki/templates/ to add templates.",
+                &format!("No tasks directory found. Create .aiki/{}/ to add templates.", TASKS_DIR_NAME),
             );
             aiki_print(&xml);
             return Ok(());
@@ -5972,7 +5975,7 @@ fn run_template(cwd: &Path, command: TemplateCommands) -> Result<()> {
 
             if templates.is_empty() {
                 let md = MdBuilder::new("template")
-                    .build_error("No templates found. Create template files in .aiki/templates/");
+                    .build_error(&format!("No templates found in .aiki/{}/. Add template files to get started.", TASKS_DIR_NAME));
                 aiki_print(&md);
                 return Ok(());
             }
@@ -6242,6 +6245,7 @@ pub fn create_from_template(cwd: &Path, params: TemplateTaskParams) -> Result<St
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: vec![],
@@ -6636,6 +6640,7 @@ fn create_subtasks_from_entries(
                         closed_outcome: None,
                         summary: None,
                         turn_started: None,
+                closed_at: None,
                         turn_closed: None,
                         turn_stopped: None,
                         comments: vec![],
@@ -6786,6 +6791,7 @@ fn create_subtasks_from_entries(
                         closed_outcome: None,
                         summary: None,
                         turn_started: None,
+                closed_at: None,
                         turn_closed: None,
                         turn_stopped: None,
                         comments: vec![],
@@ -7443,6 +7449,7 @@ D src/old_file.ts
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -7550,6 +7557,7 @@ D src/old_file.ts
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -7589,6 +7597,7 @@ D src/old_file.ts
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -7816,6 +7825,7 @@ D src/old_file.ts
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -7857,6 +7867,7 @@ D src/old_file.ts
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),

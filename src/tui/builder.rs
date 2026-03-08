@@ -150,7 +150,10 @@ fn elapsed_secs(task: &Task) -> i64 {
         None => return 0,
     };
     let end = match task.status {
-        TaskStatus::Closed => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
+        TaskStatus::Closed => task
+            .closed_at
+            .or_else(|| task.comments.last().map(|c| c.timestamp))
+            .unwrap_or(started),
         TaskStatus::InProgress => chrono::Utc::now(),
         TaskStatus::Stopped => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
         TaskStatus::Open => return 0,
@@ -231,16 +234,8 @@ fn build_epic_view(
         || all_done
         || loop_active_with_children;
 
-    let collapsed_summary = if collapsed {
-        let total_elapsed = compute_total_elapsed(subtasks);
-        Some(format!(
-            "{} subtasks  {}",
-            subtasks.len(),
-            total_elapsed.unwrap_or_default()
-        ))
-    } else {
-        None
-    };
+    // Collapsed summary disabled — stages below already show all the info.
+    let collapsed_summary = None;
 
     EpicView {
         short_id,
@@ -355,7 +350,14 @@ fn build_build_stage(
         StageState::Pending
     };
 
-    let progress = if total > 0 {
+    // Progress is shown on the loop sub-stage, not the build stage itself.
+    // Only show it on build when collapsed (Done/Skipped/Failed).
+    let progress = if total > 0
+        && matches!(
+            state,
+            StageState::Done | StageState::Skipped | StageState::Failed
+        )
+    {
         Some(format!("{}/{}", completed, total))
     } else {
         None
@@ -430,6 +432,18 @@ fn build_sub_stages(
         .map(|s| matches!(s.state, StageState::Done | StageState::Skipped))
         .unwrap_or(true); // no decompose stage means it's implicitly done
 
+    // Compute progress from subtasks for the loop sub-stage
+    let total = subtasks.len();
+    let completed = subtasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done))
+        .count();
+    let loop_progress = if total > 0 {
+        Some(format!("{}/{}", completed, total))
+    } else {
+        None
+    };
+
     // Find orchestrator task linked to this epic for the "loop" sub-stage
     let mut loop_found = false;
     let orchestrator_ids = graph.edges.referrers(&epic.id, "orchestrates");
@@ -475,7 +489,7 @@ fn build_sub_stages(
             sub_stages.push(SubStageView {
                 name: "loop".to_string(),
                 state: loop_state,
-                progress: None,
+                progress: loop_progress.clone(),
                 elapsed: loop_elapsed,
                 children: loop_children,
             });
@@ -495,7 +509,7 @@ fn build_sub_stages(
         sub_stages.push(SubStageView {
             name: "loop".to_string(),
             state: StageState::Pending,
-            progress: None,
+            progress: loop_progress,
             elapsed: None,
             children: loop_children,
         });
@@ -764,6 +778,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
@@ -833,7 +848,10 @@ mod tests {
         // Build stage
         assert_eq!(view.stages[0].name, "build");
         assert_eq!(view.stages[0].state, StageState::Active);
-        assert_eq!(view.stages[0].progress, Some("2/3".to_string()));
+        // Progress is on the loop sub-stage, not the build stage
+        assert_eq!(view.stages[0].progress, None);
+        let loop_sub = view.stages[0].sub_stages.iter().find(|s| s.name == "loop");
+        assert_eq!(loop_sub.unwrap().progress, Some("2/3".to_string()));
         // Review + fix should be pending
         assert_eq!(view.stages[1].name, "review");
         assert_eq!(view.stages[1].state, StageState::Pending);
@@ -981,10 +999,9 @@ mod tests {
 
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // Review is active → epic should be collapsed
+        // Review is active → epic should be collapsed (no summary line)
         assert!(view.epic.collapsed);
-        assert!(view.epic.collapsed_summary.is_some());
-        assert!(view.epic.collapsed_summary.unwrap().contains("1 subtasks"));
+        assert!(view.epic.collapsed_summary.is_none());
     }
 
     #[test]
@@ -1000,9 +1017,10 @@ mod tests {
         let graph = empty_graph();
         let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
 
-        // Build is active with loop children → epic collapses to avoid duplication
+        // Build is active with loop children → epic collapses to avoid duplication,
+        // but no summary line (subtasks are visible under loop)
         assert!(view.epic.collapsed);
-        assert!(view.epic.collapsed_summary.is_some());
+        assert!(view.epic.collapsed_summary.is_none());
     }
 
     #[test]
@@ -1282,7 +1300,10 @@ mod tests {
 
         // Build should be Active because orchestrator is running
         assert_eq!(view.stages[0].state, StageState::Active);
-        assert_eq!(view.stages[0].progress, Some("0/2".to_string()));
+        // Progress is on the loop sub-stage, not the build stage
+        assert_eq!(view.stages[0].progress, None);
+        let loop_sub = view.stages[0].sub_stages.iter().find(|s| s.name == "loop");
+        assert_eq!(loop_sub.unwrap().progress, Some("0/2".to_string()));
     }
 
     #[test]
