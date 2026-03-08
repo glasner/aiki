@@ -73,7 +73,7 @@ pub struct BuildArgs {
     pub agent: Option<String>,
 
     /// Run review after build
-    #[arg(long)]
+    #[arg(long, short = 'r')]
     pub review: bool,
 
     /// Run review after build with custom template (implies --review)
@@ -81,7 +81,7 @@ pub struct BuildArgs {
     pub review_template: Option<String>,
 
     /// Run review+fix after build (implies --review)
-    #[arg(long)]
+    #[arg(long, short = 'f')]
     pub fix: bool,
 
     /// Run review+fix after build with custom fix plan template (implies --fix)
@@ -427,8 +427,9 @@ fn run_build_plan(
         } else {
             None
         };
-        run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template, review_session.as_mut())?;
-        drop(review_session);
+        let result = run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template, review_session.as_mut());
+        drop(review_session); // Always restore terminal before propagating errors
+        result?;
     }
 
     Ok(())
@@ -563,8 +564,9 @@ fn run_build_epic(
         } else {
             None
         };
-        run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template, review_session.as_mut())?;
-        drop(review_session);
+        let result = run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template, review_session.as_mut());
+        drop(review_session); // Always restore terminal before propagating errors
+        result?;
     }
 
     Ok(())

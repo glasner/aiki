@@ -143,17 +143,23 @@ fn agent_label(task: &Task) -> Option<String> {
     }
 }
 
-/// Format elapsed time from started_at to now (in-progress) or last event.
-fn format_elapsed(task: &Task) -> Option<String> {
-    let started = task.started_at?;
+/// Get elapsed seconds for a task (0 if not started or open).
+fn elapsed_secs(task: &Task) -> i64 {
+    let started = match task.started_at {
+        Some(s) => s,
+        None => return 0,
+    };
     let end = match task.status {
         TaskStatus::Closed => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
         TaskStatus::InProgress => chrono::Utc::now(),
         TaskStatus::Stopped => task.comments.last().map(|c| c.timestamp).unwrap_or(started),
-        TaskStatus::Open => return None,
+        TaskStatus::Open => return 0,
     };
+    (end - started).num_seconds().max(0)
+}
 
-    let secs = (end - started).num_seconds().max(0);
+/// Format a raw seconds value as elapsed string.
+fn format_secs(secs: i64) -> Option<String> {
     if secs == 0 {
         return None;
     }
@@ -162,6 +168,11 @@ fn format_elapsed(task: &Task) -> Option<String> {
     } else {
         Some(format!("{}m{:02}", secs / 60, secs % 60))
     }
+}
+
+/// Format elapsed time from started_at to now (in-progress) or last event.
+fn format_elapsed(task: &Task) -> Option<String> {
+    format_secs(elapsed_secs(task))
 }
 
 /// Get the error text for a failed/stopped task.
@@ -353,8 +364,8 @@ fn build_build_stage(
     // Look for decompose and build sub-stages
     let sub_stages = build_sub_stages(epic, plan_path, graph, subtasks);
 
-    // Compute elapsed from epic's build orchestrator or the epic itself
-    let elapsed = find_orchestrator_elapsed(epic, plan_path, graph);
+    // Compute total accrued elapsed across all build sub-stage tasks
+    let elapsed = compute_build_elapsed(epic, plan_path, graph);
 
     StageView {
         name: "build".to_string(),
@@ -454,11 +465,18 @@ fn build_sub_stages(
                 task_to_stage_state(orch_task)
             };
 
+            // Only show elapsed when the loop has actually started
+            let loop_elapsed = if loop_state == StageState::Pending {
+                None
+            } else {
+                format_elapsed(orch_task)
+            };
+
             sub_stages.push(SubStageView {
                 name: "loop".to_string(),
                 state: loop_state,
                 progress: None,
-                elapsed: format_elapsed(orch_task),
+                elapsed: loop_elapsed,
                 children: loop_children,
             });
 
@@ -486,29 +504,30 @@ fn build_sub_stages(
     sub_stages
 }
 
-/// Find elapsed time from the orchestrator or decompose task.
-fn find_orchestrator_elapsed(epic: &Task, plan_path: &str, graph: &TaskGraph) -> Option<String> {
-    // Try orchestrator first
-    let orchestrator_ids = graph.edges.referrers(&epic.id, "orchestrates");
-    for orch_id in orchestrator_ids {
+/// Compute total accrued build elapsed by summing decompose + orchestrator times.
+fn compute_build_elapsed(epic: &Task, plan_path: &str, graph: &TaskGraph) -> Option<String> {
+    let mut total_secs: i64 = 0;
+
+    // Add decompose task time
+    for dep_id in graph.edges.targets(&epic.id, "populated-by") {
+        if let Some(dep_task) = graph.tasks.get(dep_id) {
+            total_secs += elapsed_secs(dep_task);
+            break;
+        }
+    }
+
+    // Add orchestrator (loop) task time
+    for orch_id in graph.edges.referrers(&epic.id, "orchestrates") {
         if let Some(orch_task) = graph.tasks.get(orch_id) {
             let orch_plan = orch_task.data.get("plan").map(|s| s.as_str()).unwrap_or("");
             if orch_plan == plan_path {
-                if let Some(elapsed) = format_elapsed(orch_task) {
-                    return Some(elapsed);
-                }
+                total_secs += elapsed_secs(orch_task);
+                break;
             }
         }
     }
 
-    // Fall back to decompose task (via epic's populated-by)
-    for dep_id in graph.edges.targets(&epic.id, "populated-by") {
-        if let Some(dep_task) = graph.tasks.get(dep_id) {
-            return format_elapsed(dep_task);
-        }
-    }
-
-    None
+    format_secs(total_secs)
 }
 
 /// Build the "review" stage from review tasks in the graph.

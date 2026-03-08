@@ -355,7 +355,7 @@ pub struct ReviewArgs {
     pub code: bool,
 
     /// Auto-fix issues after review
-    #[arg(long)]
+    #[arg(long, short = 'f')]
     pub fix: bool,
 
     /// Auto-fix with custom template (implies --fix)

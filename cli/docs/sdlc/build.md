@@ -15,10 +15,10 @@ aiki build <epic-id>
 aiki build ops/now/user-auth.md --async
 
 # Build then review
-aiki build ops/now/user-auth.md --review
+aiki build ops/now/user-auth.md -r
 
 # Build, review, and auto-fix
-aiki build ops/now/user-auth.md --fix
+aiki build ops/now/user-auth.md -f
 ```
 
 ## How It Works
@@ -65,8 +65,8 @@ See [Loop](loop.md) for full details on lane derivation and execution.
 |------|--------|
 | `--async` | Run in the background, return immediately |
 | `--restart` | Ignore existing epic, create a new one |
-| `--review` | Run a review after all subtasks complete |
-| `--fix` | Run review + fix loop after build (implies `--review`) |
+| `-r`, `--review` | Run a review after all subtasks complete |
+| `-f`, `--fix` | Run review + fix loop after build (implies `--review`) |
 | `--decompose-template <name>` | Custom decompose template (default: `decompose`) |
 | `--loop-template <name>` | Custom loop template (default: `loop`) |
 | `--agent <type>` | Choose orchestrator agent (default: `claude-code`) |

@@ -18,7 +18,7 @@ aiki review ops/now/user-auth.md --code
 aiki review
 
 # Review and auto-fix
-aiki review <task-id> --fix
+aiki review <task-id> -f
 
 # Hand off review to calling agent (don't run autonomously)
 aiki review <task-id> --start
@@ -82,7 +82,7 @@ By default, Aiki assigns a different agent type for reviews than the one that wr
 
 | Flag | Effect |
 |------|--------|
-| `--fix` | Auto-fix issues after review |
+| `-f`, `--fix` | Auto-fix issues after review |
 | `--async` | Run in the background |
 | `--start` | Assign the review to the calling agent (hand off) |
 | `--code` | Review code implementation (only with file targets) |
