@@ -10,11 +10,11 @@ This creates three risks:
 
 ## Goal
 Separate built-in templates from user customizations through directory structure:
-- **System templates:** `aiki/core/templates/**/*.md` (new location for built-in templates)
+- **System templates:** `cli/src/tasks/templates/core/**/*.md` (new location for built-in templates)
 - **User templates:** `.aiki/tasks/**/*.md` (user-defined templates in repo)
 
 Templates and rendered outputs both use `.md` extension - location distinguishes them:
-- Templates live in `aiki/core/templates/` or `.aiki/tasks/`
+- Templates live in `cli/src/tasks/templates/core/` or `.aiki/tasks/`
 - Rendered task docs live in `.aiki/sessions/` or task storage
 
 Make the canonical user-facing directory reflect product language:
@@ -30,7 +30,7 @@ Two coordinated changes:
 ## Proposed behavior
 
 ### New behavior (only)
-- Built-in template discovery: `aiki/core/templates/**/*.md`.
+- Built-in template discovery: `cli/src/tasks/templates/core/**/*.md`.
 - User template discovery: `.aiki/tasks/**/*.md`.
 - Rendered outputs also use `.md` (distinguished by location).
 - CLI/docs/help reference only `.aiki/tasks`.
@@ -49,19 +49,19 @@ Deliverable: short impact table (component → file(s) → change type).
 
 ### Phase 2 — Canonical constants and helpers
 Centralize canonical values in shared helpers/constants:
-- `AikiCoreTemplatesDir = "aiki/core/templates"`
+- `AikiCoreTemplatesDir = "cli/src/tasks/templates/core"`
 - `AikiUserTasksDir = ".aiki/tasks"`
 
 Replace scattered string literals and ad-hoc checks.
 
 ### Phase 3 — System template migration
 Move built-in templates from `aiki/default` to `aiki/core`:
-1. Move all templates from `aiki/default/templates/` to `aiki/core/templates/`.
+1. Move all templates from `aiki/default/templates/` to `cli/src/tasks/templates/core/`.
 2. Update any hardcoded references in code.
 
 ### Phase 4 — Loader/render pipeline update
 Update template loader to:
-1. Load built-in templates from `aiki/core/templates/**/*.md` ONLY.
+1. Load built-in templates from `cli/src/tasks/templates/core/**/*.md` ONLY.
 2. Load user templates from `.aiki/tasks/**/*.md` ONLY.
 3. Remove all legacy path fallback logic.
 4. Preserve deterministic ordering.
@@ -79,19 +79,19 @@ Update `aiki init` to:
 ### Phase 7 — Docs and examples update
 Update docs/examples/scripts:
 - `.aiki/templates/...` → `.aiki/tasks/...`
-- `aiki/default/templates/...` → `aiki/core/templates/...`
+- `aiki/default/templates/...` → `cli/src/tasks/templates/core/...`
 - Remove all references to legacy paths.
 - Add upgrade note: "If upgrading from pre-1.x, move `.aiki/templates/` to `.aiki/tasks/` manually."
 
 ### Phase 8 — Test coverage
 Add tests for:
 1. Fresh repo uses only `.aiki/tasks/*.md` for user templates.
-2. Built-in templates load from `aiki/core/templates/*.md`.
+2. Built-in templates load from `cli/src/tasks/templates/core/*.md`.
 3. Old paths are not recognized (no fallback).
 4. `aiki init` creates `.aiki/tasks/` directory.
 
 ## Acceptance criteria
-1. Built-in templates stored in `aiki/core/templates/**/*.md`.
+1. Built-in templates stored in `cli/src/tasks/templates/core/**/*.md`.
 2. User template location is `.aiki/tasks/**/*.md`.
 3. No legacy path support (hard switch).
 4. Docs/examples only show canonical format.

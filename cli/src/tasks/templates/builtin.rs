@@ -1,6 +1,7 @@
 use include_dir::{include_dir, Dir};
 
-static TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../.aiki/templates");
+// Canonical path: BUILTIN_TEMPLATES_SOURCE (see mod.rs). Macro requires a string literal.
+static TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/tasks/templates/core");
 
 /// Subdirectories that belong to the aiki/default plugin.
 /// Other top-level directories (e.g., `intel/`) are excluded.
