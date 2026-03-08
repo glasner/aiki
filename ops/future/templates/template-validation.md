@@ -14,13 +14,13 @@ Add a command to validate template syntax without creating a task.
 
 ```bash
 # Validate a template without creating a task
-aiki task template validate .aiki/templates/myorg/my-template.md
+aiki task template validate .aiki/tasks/myorg/my-template.md
 
 # Validate all templates in a directory
-aiki task template validate .aiki/templates/myorg/
+aiki task template validate .aiki/tasks/myorg/
 
 # Validate during development with watch mode
-aiki task template validate --watch .aiki/templates/myorg/custom.md
+aiki task template validate --watch .aiki/tasks/myorg/custom.md
 ```
 
 ## Output
@@ -28,7 +28,7 @@ aiki task template validate --watch .aiki/templates/myorg/custom.md
 ### Valid Template
 
 ```
-✓ Template is valid: .aiki/templates/myorg/my-template.md
+✓ Template is valid: .aiki/tasks/myorg/my-template.md
   - Name: Custom Review
   - Assignee: codex
   - Priority: p2
@@ -39,7 +39,7 @@ aiki task template validate --watch .aiki/templates/myorg/custom.md
 ### Invalid Template
 
 ```
-✗ Template validation failed: .aiki/templates/myorg/broken.md
+✗ Template validation failed: .aiki/tasks/myorg/broken.md
 
 Errors:
   Line 5: Invalid YAML frontmatter

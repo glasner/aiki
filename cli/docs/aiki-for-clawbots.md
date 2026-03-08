@@ -156,7 +156,7 @@ aiki task run --template tu/intel/weekly-synthesis \
 ```
 
 ### Common failure modes to design for
-- `No templates directory found at: .aiki/templates`
+- `No templates directory found at: .aiki/tasks`
   - Fix: ensure templates are installed/bootstrapped before first run.
 - `Variable '{data.X}' referenced but not provided`
   - Fix: include explicit required-vars list and `--data` examples.

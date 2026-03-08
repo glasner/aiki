@@ -279,20 +279,22 @@ Use sparingly — autoreplies trigger additional agent turns.
 
 Aiki uses markdown templates for tasks (plans, reviews, fixes). Override built-in templates by creating files in your project:
 
+> **Upgrading from pre-1.x?** Rename `.aiki/templates/` to `.aiki/tasks/`.
+
 ```
-.aiki/templates/plan.md      # Override the plan template
-.aiki/templates/review.md    # Override the review template
-.aiki/templates/fix.md       # Override the fix template
+.aiki/tasks/plan.md      # Override the plan template
+.aiki/tasks/review.md    # Override the review template
+.aiki/tasks/fix.md       # Override the fix template
 ```
 
-**Resolution order:** project (`.aiki/templates/`) → user (`~/.aiki/templates/`) → built-in
+**Resolution order:** project (`.aiki/tasks/`) → user (`~/.aiki/tasks/`) → built-in
 
 ## User-Level Customization
 
 Apply customizations across all your projects:
 
 - `~/.aiki/hooks/` — global hook files (loaded via `include:`)
-- `~/.aiki/templates/` — global template overrides
+- `~/.aiki/tasks/` — global template overrides
 
 Example: create `~/.aiki/hooks/my-defaults/hooks.yaml` and include it in any project:
 

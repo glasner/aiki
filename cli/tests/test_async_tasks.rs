@@ -879,8 +879,8 @@ fn test_review_output_id_no_extra_output() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template so `aiki review` can create a review task.
-    // The template needs to exist at .aiki/templates/review/task.md
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    // The template needs to exist at .aiki/tasks/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -950,8 +950,8 @@ fn test_review_fix_output_id_no_extra_output() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template so `aiki review` can create a review task.
-    // The template needs to exist at .aiki/templates/review/task.md
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    // The template needs to exist at .aiki/tasks/review/task.md
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1069,7 +1069,7 @@ fn test_async_review_fix_template_stores_fix_data() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1170,7 +1170,7 @@ fn test_async_review_without_fix_template_no_fix_data() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1302,7 +1302,7 @@ fn test_async_review_fix_template_custom_value_stored() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1383,7 +1383,7 @@ fn test_blocking_review_fix_template_creates_review_with_fix_options() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1467,7 +1467,7 @@ fn test_blocking_review_issue_count_set_when_issues_exist() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),
@@ -1565,7 +1565,7 @@ fn test_blocking_review_no_fix_template_no_fix_options() {
     init_aiki_repo(temp_dir.path());
 
     // Set up the review template
-    let template_dir = temp_dir.path().join(".aiki/templates/review");
+    let template_dir = temp_dir.path().join(".aiki/tasks/review");
     fs::create_dir_all(&template_dir).unwrap();
     fs::write(
         template_dir.join("task.md"),

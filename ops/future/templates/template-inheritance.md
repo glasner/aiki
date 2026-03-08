@@ -12,7 +12,7 @@ Allow templates to extend other templates, inheriting their structure and instru
 
 ## Syntax
 
-File: `.aiki/templates/myorg/custom-security.md`
+File: `.aiki/tasks/myorg/custom-security.md`
 
 ```markdown
 ---
@@ -59,7 +59,7 @@ aiki review --template myorg/custom-security
 
 ## Implementation Considerations
 
-- **Resolution order**: Built-in templates (`aiki/`) → user templates (`.aiki/templates/`)
+- **Resolution order**: Built-in templates (`aiki/`) → user templates (`.aiki/tasks/`)
 - **Circular dependency detection**: Prevent `A extends B, B extends A`
 - **Deep nesting**: Should we limit inheritance depth? (e.g., max 3 levels)
 - **Variable substitution**: Run after inheritance resolution

@@ -710,6 +710,7 @@ fn make_mock_task(
         closed_outcome: outcome,
         summary: None,
         turn_started: None,
+        closed_at: None,
         turn_closed: None,
         turn_stopped: None,
         comments: vec![],

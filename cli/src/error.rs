@@ -242,7 +242,7 @@ Alternatively, install the agent globally:
     #[error("Invalid template structure\n  File: {file}\n  {details}")]
     TemplateStructureInvalid { file: String, details: String },
 
-    #[error("No templates directory found at: {path}")]
+    #[error("No tasks directory found at: {path}")]
     TemplatesDirectoryNotFound { path: String },
 
     #[error("Template processing failed: {details}")]

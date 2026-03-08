@@ -655,6 +655,7 @@ fn process_event(
                     closed_outcome: None,
                     summary: None,
                     turn_started: None,
+                    closed_at: None,
                     turn_closed: None,
                     turn_stopped: None,
                     comments: Vec::new(),
@@ -700,6 +701,7 @@ fn process_event(
             outcome,
             summary,
             turn_id,
+            timestamp,
             ..
         } => {
             for task_id in task_ids {
@@ -708,6 +710,7 @@ fn process_event(
                     task.closed_outcome = Some(*outcome);
                     task.summary = summary.clone();
                     task.claimed_by_session = None;
+                    task.closed_at = Some(*timestamp);
                     task.turn_closed = turn_id.clone();
                 }
             }

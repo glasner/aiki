@@ -293,6 +293,8 @@ pub struct Task {
     pub summary: Option<String>,
     /// Turn ID when this task was most recently started
     pub turn_started: Option<String>,
+    /// When the task was closed
+    pub closed_at: Option<DateTime<Utc>>,
     /// Turn ID when this task was closed
     pub turn_closed: Option<String>,
     /// Turn ID when this task was stopped (if currently stopped)
@@ -409,6 +411,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
+            closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),

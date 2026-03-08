@@ -8,11 +8,11 @@
 
 ## Overview
 
-Specialized built-in templates can be added to `.aiki/templates/`:
+Specialized built-in templates can be added to `.aiki/tasks/`:
 
-- **`security`** (`.aiki/templates/security.md`) - Deep security analysis (SQL injection, XSS, auth, crypto)
-- **`performance`** (`.aiki/templates/performance.md`) - Performance bottlenecks, algorithm efficiency
-- **`style`** (`.aiki/templates/style.md`) - Code style, naming conventions, documentation
+- **`security`** (`.aiki/tasks/security.md`) - Deep security analysis (SQL injection, XSS, auth, crypto)
+- **`performance`** (`.aiki/tasks/performance.md`) - Performance bottlenecks, algorithm efficiency
+- **`style`** (`.aiki/tasks/style.md`) - Code style, naming conventions, documentation
 
 ## Usage
 
@@ -27,6 +27,6 @@ aiki task add --template security
 ## Implementation Notes
 
 - Templates should be bundled with the CLI
-- Installed to `.aiki/templates/` during `aiki init`
+- Installed to `.aiki/tasks/` during `aiki init`
 - Can be customized by users after installation
 - Should cover common code review scenarios

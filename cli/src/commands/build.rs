@@ -25,8 +25,8 @@ use crate::tasks::id::{is_task_id, is_task_id_prefix};
 use crate::tasks::runner::{handle_session_result, ScreenSession, task_run, task_run_on_session, TaskRunOptions};
 use crate::tasks::md::MdBuilder;
 use crate::tasks::{
-    find_task, get_subtasks, materialize_graph, read_events, write_event, Task,
-    TaskEvent, TaskOutcome, TaskStatus,
+    find_task, get_subtasks, materialize_graph, read_events, write_event,
+    write_link_event, Task, TaskEvent, TaskOutcome, TaskStatus,
 };
 use crate::tui;
 use crate::tui::theme::{Theme, detect_mode};
@@ -807,7 +807,7 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
 /// Creates a code review scoped to the plan's implementation, optionally
 /// including a fix subtask if `with_fix` is true. Runs the review to completion
 /// (blocking).
-fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>, session: Option<&mut ScreenSession>) -> Result<()> {
+fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>, session: Option<&mut ScreenSession>) -> Result<()> {
     use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
 
     let scope = ReviewScope {
@@ -823,6 +823,11 @@ fn run_build_review(cwd: &Path, plan_path: &str, _epic_id: &str, with_fix: bool,
         fix_template: if with_fix { fix_template.or_else(|| Some("fix".to_string())) } else { None },
         autorun: false,
     })?;
+
+    // Link review to epic so the status monitor shows the epic view
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    write_link_event(cwd, &graph, "validates", &result.review_task_id, epic_id)?;
 
     // Run the review to completion (blocking)
     let options = TaskRunOptions::new();
@@ -929,6 +934,7 @@ mod tests {
             closed_outcome: None,
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),

@@ -135,7 +135,7 @@ References change from short-form to three-part:
 
 Change path resolution:
 ```rust
-// Old: "review" → .aiki/templates/review.md
+// Old: "review" → .aiki/tasks/review.md
 // New: "aiki/way/review" → .aiki/plugins/aiki/way/templates/review.md
 
 fn resolve_template_path(name: &str, plugins_dir: &Path) -> Result<PathBuf> {

@@ -12,7 +12,7 @@ Automatically populate template variables from repository context (git/jj status
 
 ## Syntax
 
-File: `.aiki/templates/contextual-review.md`
+File: `.aiki/tasks/contextual-review.md`
 
 ```markdown
 # Review by {assignee}

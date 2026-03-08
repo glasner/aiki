@@ -279,7 +279,7 @@ xqrmnpst
 3. **`cli/src/tasks/templates/resolver.rs`**
    - Update `create_review_task_from_template` to accept optional diff content as a builtin variable
 
-4. **`.aiki/templates/review-diff.md`** (new)
+4. **`.aiki/tasks/review-diff.md`** (new)
    - Review template for working copy changes with `{{diff}}` placeholder
 
 ### Implementation Steps

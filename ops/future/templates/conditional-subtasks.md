@@ -12,7 +12,7 @@ Allow subtasks to be conditionally included based on repository context (file ex
 
 ## Syntax
 
-File: `.aiki/templates/myorg/multi-language-test.md`
+File: `.aiki/tasks/myorg/multi-language-test.md`
 
 ```markdown
 # Run Tests

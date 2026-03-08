@@ -11,6 +11,7 @@ use crate::plugins::deps::{install_with_deps, resolve_deps, InstallReport};
 use crate::plugins::git::{pull_plugin, remove_plugin};
 use crate::plugins::scanner::derive_plugin_refs;
 use crate::plugins::{check_install_status, plugins_base_dir, InstallStatus, PluginRef};
+use crate::tasks::templates::TASKS_DIR_NAME;
 
 #[derive(Subcommand)]
 #[command(disable_help_subcommand = true)]
@@ -228,7 +229,7 @@ fn run_list() -> Result<()> {
             }
 
             // Check for overrides
-            let templates_dir = aiki_dir.join("templates");
+            let templates_dir = aiki_dir.join(TASKS_DIR_NAME);
             if templates_dir.is_dir() {
                 let overrides = find_overrides(&templates_dir, &project_refs);
                 if !overrides.is_empty() {

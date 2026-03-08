@@ -368,7 +368,7 @@ When reviewing a file, check for closest directory-specific template:
 ```bash
 aiki review src/security/auth.rs
 # Uses .aiki/review-templates/src/security/review.md if exists
-# Falls back to .aiki/templates/review.md
+# Falls back to .aiki/tasks/review.md
 ```
 
 ---

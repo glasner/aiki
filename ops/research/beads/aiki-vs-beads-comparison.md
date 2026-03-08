@@ -399,7 +399,7 @@ Beads has no built-in template system. The closest equivalents:
 
 ### Aiki: Full Template Engine
 
-Templates are Markdown files with YAML frontmatter in `.aiki/templates/`:
+Templates are Markdown files with YAML frontmatter in `.aiki/tasks/`:
 
 ```markdown
 ---

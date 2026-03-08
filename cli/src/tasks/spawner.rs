@@ -477,6 +477,7 @@ mod tests {
             closed_outcome: Some(TaskOutcome::Done),
             summary: None,
             turn_started: None,
+                closed_at: None,
             turn_closed: None,
             turn_stopped: None,
             comments: Vec::new(),
