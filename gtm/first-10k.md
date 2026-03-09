@@ -64,6 +64,10 @@ The fastest path is **service-first, then productized recurring usage**:
 
 ---
 
+## 30-day founder presence check
+- Publish 2 proof posts using `gtm/meta/tu.md` channel stack (blog + X) by end of day 7.
+- Ensure one maintainer-facing owner packet format is available before first Clawbot outreach wave.
+
 ## 60-day execution plan
 
 ### Days 1–7
