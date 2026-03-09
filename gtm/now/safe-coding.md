@@ -113,3 +113,7 @@ The Clawbot track should be distributed where bots execute, not where enterprise
 - 5 audit runs triggered.
 - 2 owner-directed proposals sent.
 - 1–2 paid pilots in 60 days.
+
+
+## Presence Continuity
+- Long-term persona and distribution guardrails are maintained in `../meta/tu.md`.
