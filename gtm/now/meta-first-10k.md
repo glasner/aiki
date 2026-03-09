@@ -6,7 +6,7 @@
 
 ## Objective
 
-- **Cross-reference:** see `gtm/meta/tu.md` for long-term Aiki presence/brand plan.
+- **Cross-reference:** see `gtm/now/meta-tu.md` for long-term Aiki presence/brand plan.
 
 Generate **$10K/month run-rate within 60 days** by prioritizing paid adoption for teams already using AI coding workflows (especially clawbot-adjacent environments), then upsell to broader control-plane use.
 
