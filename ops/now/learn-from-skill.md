@@ -1,37 +1,73 @@
 # Learn from Skill Injection (Plan)
 
+**Date**: 2026-03-09
+**Status**: Draft
+**Purpose**: Define and lock a reusable plan format before reworking AGENTS/skill instructions.
+
+**Related Documents**:
+- `ops/done/fix-not-running.md`
+- `ops/done/command-startup.md`
+- `ops/done/build-screen-cleanup.md`
+- `ops/done/task-template-formalization.md`
+- `ops/done/short-flags-for-workflow.md`
+
+---
+
+## Executive Summary
+Recent AGENTS compacting removed some needed instruction detail. To prevent repeating that regression, we will adopt a standard plan structure for `ops/now` before any future AGENTS/skill edits.
+
+## Problem
+Plan docs in `ops/now` have not been using one stable heading template, which increases risk of missing required execution rules or review flow details during AGENTS/skill work.
+
 ## Goal
-Capture a deliberate rollout plan for improving skill-driven instruction quality without losing AGENTS portability.
+Create a durable, repeatable plan format that captures required constraints (`aiki task` preconditions, delegation, evidence) while remaining easy to update.
 
-## Context
-- Recent attempt to compact AGENTS and move instructions into one workflow sidecar removed too much detail.
-- Need a safer plan for what stays in AGENTS vs what moves into skills.
+## Scope
+- In scope:
+  - Update `ops/now/learn-from-skill.md` to match the standard.
+  - Record the standard in durable memory for future adherence.
+  - No AGENTS/CLI code changes in this pass.
 
-## Plan
+- Out of scope:
+  - Re-implementing the full AGENTS/sidecar redesign.
+  - Moving runtime logic.
 
-1. Define mandatory AGENTS hard requirements
-   - Keep only execution preconditions and irreversible constraints.
-   - Preserve exact command required before state-changing work.
+## Proposed behavior
+All future AGENTS/skill plans should use this required structure:
 
-2. Inventory current workflow instructions
-   - List commands, anti-patterns, review flow, and escalation rules.
-   - Tag which instructions are policy-critical vs convenience.
+**Header block**
+- Title
+- `**Date**`, `**Status**`, `**Purpose**`
+- Optional `**Related Documents**`
 
-3. Design skill decomposition
-   - aiki-task-workflow (core stateful lifecycle + delegation)
-   - aiki-review (review + issue severity + fix flow)
-   - Optional: aiki-conflict-resolution (JJ conflict handling)
+**Plan body sections**
+- `## Executive Summary` (for non-trivial changes)
+- `## Problem`
+- `## Goal`
+- `## Scope`
+- `## Proposed behavior`
+- `## Implementation plan`
+- `## Acceptance criteria`
+- `## Risks / caveats`
+- Optional `## Immediate next steps`
 
-4. Draft migration test
-   - Create a short diff-based checklist comparing AGENTS vs skill content coverage.
-   - Validate with a pilot request before broad rollout.
+## Implementation plan
 
-5. Rollout and evidence
-   - Apply first in a feature branch.
-   - Run one non-production task to verify delegation + task-close proof paths.
-   - Log any lost detail immediately into a new memory/done note.
+### Phase 1 — Apply template now
+1. Keep this file as the canonical now-plan template example.
+2. Use explicit headers above.
+3. Require numbered phases under `Implementation plan`.
 
-## Acceptance
-- AGENTS remains short and action-complete.
-- No required instruction is lost when compacting.
-- New plan is committed in ops/now/learn-from-skill.md.
+### Phase 2 — Enforce by usage
+1. For next AGENTS/skill update, start from this template.
+2. Validate each section exists before editing state.
+3. Include evidence/validation requirements in every closeout summary.
+
+## Acceptance criteria
+1. This plan includes metadata + all required sections.
+2. Future AGENTS/skill plans include `Problem`, `Goal`, `Scope`, `Proposed behavior`, `Implementation plan`, and `Acceptance criteria`.
+3. Memory records the source files used to define the template.
+
+## Risks / caveats
+- Overly rigid format can slow one-off notes, so keep this as a default for planning/implementation docs.
+- Legacy existing plans may remain inconsistent unless backfilled intentionally.
