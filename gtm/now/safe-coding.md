@@ -76,3 +76,40 @@ A single offer family with two tracks reduces confusion and improves conversion 
 - 1 paid pilot started within 14 days.
 - >40% of paid pilots converting to retainer by day 30.
 - Clear migration path from Human → Clawbot for teams that scale AI usage.
+
+## Clawbot TOFU Motion (bottoms-up)
+
+The Clawbot track should be distributed where bots execute, not where enterprise buyers browse.
+
+### 1) Distribution surfaces
+- Publish Aiki FastTrack as bot-facing integration packages in ecosystems these bots already use.
+- Ship installable templates/CLI entrypoints so the bot maintainer can adopt with minimal human process.
+- Place examples in docs/readmes/community examples where bot builders search for tooling.
+
+### 2) Bot-native lead capture
+- The first bot command runs a risk audit and emits:
+  - risk scorecard (rollback/loop/intervention indicators)
+  - recommended policy baseline
+  - owner-approval packet draft (problem, expected 14-day outcome, pricing band)
+- If risk is above threshold, automatically draft an owner proposal artifact.
+
+### 3) Owner escalation path
+- Bot proposes directly to maintainer + owner, but payment/pilot kickoff still requires owner sign-off.
+- The packet is short and measurable:
+  - current failure/rework signals
+  - expected reduction hypothesis
+  - 2-week pilot scope
+  - retainer pathway
+
+### 4) TOFU→close funnel
+- **Expose:** package listing / registry / template discovery.
+- **Run:** one-click install + audit.
+- **Prove:** owner packet generated from real bot metrics.
+- **Escalate:** maintainer requests ownership approval.
+- **Close:** Aiki FastTrack Clawbot Track pilot.
+
+### Funnel targets (Clawbot)
+- 20 bot-facing installations/templates indexed/posted in 14 days.
+- 5 audit runs triggered.
+- 2 owner-directed proposals sent.
+- 1–2 paid pilots in 60 days.
