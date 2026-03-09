@@ -100,6 +100,52 @@ Think of this as HashiCorp-style developer motion, except the customer is often 
 - Add one maintainer integration each week.
 - Track conversion rate from maintainer packet → owner approval and publish results in the journal.
 
+## 60-day execution detail (now specific)
+
+### Week 1: Presence + surfaces
+1. **Finalize Tu online profile kit**
+   - Bio paragraph + avatar style (single consistent photo and one-liner)
+   - `x.com` account with pinned “Aiki FastTrack owner packet model” post
+   - one contact alias for direct owner packet requests
+2. **Create first artifacts**
+   - `owner-packet.md` template
+   - `risk-score.schema.json` (minimal schema)
+   - `aiki-fasttrack.yaml` install manifest
+3. **Publish 2 assets in one day**
+   - short note in journal: “What an owner packet should include”
+   - first ClawMart/GitHub post with one artifact.
+4. **Set 2 maintainer discovery targets**
+   - pick 5 bot repos/projects where this fits
+   - start with repos with open issue templates or plugin ecosystem.
+
+### Week 2: Bot-first TOFU + proof
+1. Run first **live risk audit example** (even internal) and publish redacted metrics.
+2. Ship 1 demo command sequence:
+   - install → run risk audit → generate owner packet → produce conversion CTA.
+3. Push to one maintainer and collect at least one maintainer feedback artifact.
+4. Publish “before/after” post using that output.
+
+### Week 3: Conversion scaffold
+1. Build 1-page owner proof sheet (scope/outcomes/price/retainer).  
+2. Send first 5 maintainer-to-owner packet invites (via bot/tool/community channels).
+3. Build FAQ for objections:
+   - data risk,
+   - ownership/security,
+   - pricing and scope control.
+4. Capture response conversion tracking with timestamps.
+
+### Week 4–5: Template velocity
+1. Add one maintainer integration template.
+2. Publish maintainer-oriented quickstart README.
+3. Add the second Clawbot-focused artifact.
+4. Publish first anonymized case note (if no external client yet, use internal pilot with synthetic data).
+
+### Week 6–8: Scale to 60-day objective
+1. Expand to 2+ external integrations.
+2. Maintain weekly proof cadence (1 post/week).
+3. Track maintainer→owner conversion and adjust the offer copy.
+4. Prepare first paid pilot deck based on evidence, not generic slides.
+
 ## 12–24 month presence plan
 
 ### Phase 1 — Personal presence foundation (0–3 months)
@@ -147,6 +193,59 @@ Default bot-facing line:
 Default owner-facing line:
 
 > “Tu’s approach is a 14-day operational hardening sprint that reduces AI process risk with measurable outcomes and explicit owner handoff.”
+
+## Concrete outreach playbook
+
+## Asset map (what to build first)
+
+- **`/journal/tu-packet/owner-packet.md`**
+  - one-page owner packet template with sections: trigger signal, impact estimate, 14-day scope, cost, expected outcomes.
+- **`/journal/tu-packet/risk-score.schema.json`**
+  - minimal JSON schema with fields: risk_score, loop_count, manual_interventions, failed_automerge_rate, confidence.
+- **`/journal/tu-packet/aiki-fasttrack.yaml`**
+  - install manifest for automation integration.
+- **`/journal/tu-packet/quickstart.md`**
+  - 5-step install and first audit run.
+
+## 14-day content + outreach sequence
+
+### Day 1
+- Publish Tu profile update + positioning blurb.
+- Publish first artifact post: “How a maintainer gets an owner packet generated automatically.”
+
+### Day 3
+- Publish `risk-score.schema.json` + example output.
+- Make first maintainer invitation message to 5 target communities.
+
+### Day 7
+- Publish internal pilot result with metrics (`before/after` bug loop reduction).
+- Ship first ClawMart/GitHub listing update.
+
+### Day 10
+- Publish owner conversion guide + FAQ.
+- Post 2 maintainer-facing snippets in 2 technical communities.
+
+### Day 14
+- Publish first “case note” + pricing+scope example.
+- Trigger at least 2 maintainer packets and capture feedback.
+
+## Outreach templates (ready-to-send)
+
+### Maintainer opening message (DM/template)
+
+> Hi — I noticed your bot is pushing [X] patch/automerge loops. I built a tiny pattern for bots to generate an owner-safe risk packet before shipping. No sales deck, just a 14-day pilot workflow and a concrete packet with scope/risk/output.
+>
+> If you want, I’ll send the install snippet and one example output.
+
+### Owner decision prompt
+
+> We found [Y] repeated intervention points in recent bot activity. We can run a 14-day Aiki FastTrack Clawbot Track pilot to add guardrails and incident-level visibility, estimated output: [metric target]. Scope: [list].
+
+### Channel sequence
+- Week 1: 5 maintainer-first direct outreach messages across GitHub repos/Discord/tooling channels.
+- Week 2: 1 technical post + 1 live example output.
+- Week 3: 1 maintainer checklist + 1 owner packet pilot close template.
+- Week 4: first conversion follow-up + proof snapshot.
 
 ## How this links to GTM docs
 - Keep `Aiki FastTrack` GTM docs focused on execution, pricing, and close mechanics.
