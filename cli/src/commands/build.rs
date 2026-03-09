@@ -29,6 +29,7 @@ use crate::tasks::{
     write_link_event, Task, TaskEvent, TaskOutcome, TaskStatus,
 };
 use crate::tui;
+use crate::tui::loading_screen::LoadingScreen;
 use crate::tui::theme::{Theme, detect_mode};
 
 /// Build subcommands
@@ -364,9 +365,22 @@ fn run_build_plan(
         return Ok(());
     }
 
-    // Sync path: create shared screen session for TTY builds
-    let mut session = if std::io::stderr().is_terminal() {
-        Some(ScreenSession::new()?)
+    // Sync path: show loading screen with immediate visual feedback
+    let mut loading = if std::io::stderr().is_terminal() {
+        let mut l = LoadingScreen::new("Loading task graph...")?;
+        l.set_filepath(plan_path);
+        Some(l)
+    } else {
+        None
+    };
+
+    if let Some(ref mut l) = loading {
+        l.set_step("Finding or creating epic...");
+    }
+
+    // Transition loading → session before find_or_create_epic (which may run decompose agent)
+    let mut session = if let Some(l) = loading {
+        Some(ScreenSession::from_live_screen(l.into_live_screen()?)?)
     } else {
         None
     };
@@ -422,8 +436,15 @@ fn run_build_plan(
 
     // Run post-build review if requested (sync path) — needs its own session
     if review_after {
-        let mut review_session = if std::io::stderr().is_terminal() {
-            Some(ScreenSession::new()?)
+        let review_loading = if std::io::stderr().is_terminal() {
+            let mut l = LoadingScreen::new("Preparing review...")?;
+            l.set_filepath(plan_path);
+            Some(l)
+        } else {
+            None
+        };
+        let mut review_session = if let Some(l) = review_loading {
+            Some(ScreenSession::from_live_screen(l.into_live_screen()?)?)
         } else {
             None
         };
@@ -524,9 +545,17 @@ fn run_build_epic(
         return Ok(());
     }
 
-    // Sync path: create shared screen session for TTY builds
-    let mut session = if std::io::stderr().is_terminal() {
-        Some(ScreenSession::new()?)
+    // Sync path: show loading screen with immediate visual feedback
+    let loading = if std::io::stderr().is_terminal() {
+        let mut l = LoadingScreen::new("Loading task graph...")?;
+        l.set_task_context(epic_id, &epic.name);
+        Some(l)
+    } else {
+        None
+    };
+
+    let mut session = if let Some(l) = loading {
+        Some(ScreenSession::from_live_screen(l.into_live_screen()?)?)
     } else {
         None
     };
@@ -559,8 +588,15 @@ fn run_build_epic(
 
     // Run post-build review if requested (sync path) — needs its own session
     if review_after {
-        let mut review_session = if std::io::stderr().is_terminal() {
-            Some(ScreenSession::new()?)
+        let review_loading = if std::io::stderr().is_terminal() {
+            let mut l = LoadingScreen::new("Preparing review...")?;
+            l.set_filepath(&plan_path);
+            Some(l)
+        } else {
+            None
+        };
+        let mut review_session = if let Some(l) = review_loading {
+            Some(ScreenSession::from_live_screen(l.into_live_screen()?)?)
         } else {
             None
         };

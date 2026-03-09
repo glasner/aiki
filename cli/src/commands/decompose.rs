@@ -303,7 +303,7 @@ mod tests {
     fn test_decompose_template_uses_data_target_not_data_epic() {
         // Canonical path: BUILTIN_TEMPLATES_SOURCE (see templates/mod.rs). Macro requires literal.
         let template_content =
-            include_str!("../../tasks/templates/core/decompose.md");
+            include_str!("../tasks/templates/core/decompose.md");
         assert!(
             template_content.contains("{{data.target}}"),
             "Decompose template must use {{{{data.target}}}}"

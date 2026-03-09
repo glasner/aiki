@@ -120,6 +120,12 @@ impl LiveScreen {
         Ok(Self { terminal })
     }
 
+    /// Wrap an existing terminal. Assumes raw mode and alternate screen are already active.
+    pub(crate) fn from_terminal(terminal: Terminal<CrosstermBackend<Stderr>>) -> Self {
+        LIVE_SCREEN_ACTIVE.with(|f| f.set(true));
+        Self { terminal }
+    }
+
     /// Draw a single frame.
     pub fn draw<F>(&mut self, render_fn: F) -> Result<()>
     where

@@ -6,7 +6,7 @@ When running `aiki build` in sync/TTY mode, there is a long pause with a complet
 
 ## Root Cause
 
-The sync path in `build.rs` enters the alternate screen (`ScreenSession::new()`) at line 368 **before** doing any of the expensive work that follows. The alternate screen is blank, and the first frame isn't drawn until the status monitor's event loop starts polling much later.
+The sync path in `build.rs` enters the alternate screen (`ScreenSession::new()`) at line 369 **before** doing any of the expensive work that follows. The alternate screen is blank, and the first frame isn't drawn until the status monitor's event loop starts polling much later.
 
 ### Timeline of what happens
 
@@ -74,14 +74,14 @@ The `aiki review` command delegates to the shared `task_run()` function in `runn
 3. run_with_status_monitor():
    a. runtime.spawn_monitored()              (process start)
    b. StatusMonitor::new()                   (fast)
-   c. LiveScreen::enter()                    ← BLANK SCREEN STARTS HERE
+   c. LiveScreen::new()                      ← BLANK SCREEN STARTS HERE
    d. First monitor_until_complete iteration:
       - read_events() → jj log              (slow, subprocess)
       - build_view()                         (fast)
    e. FIRST FRAME DRAWN                      ← BLANK SCREEN ENDS
 ```
 
-**Key difference from build:** The blank screen period is shorter because `run_with_status_monitor` calls `LiveScreen::enter()` (via `monitor_until_complete_with_child`) after spawning the agent. However, **steps 1-2 happen with no terminal feedback** — the user sees a frozen shell prompt during 4-6 jj subprocess calls.
+**Key difference from build:** The blank screen period is shorter because `run_with_status_monitor` calls `LiveScreen::new()` (via `monitor_until_complete_with_child` at status_monitor.rs:335) after spawning the agent. However, **steps 1-2 happen with no terminal feedback** — the user sees a frozen shell prompt during 4-6 jj subprocess calls.
 
 ### Pre-screen work impact
 
@@ -149,7 +149,7 @@ If the fix cycle triggers multiple iterations (fix → review → fix again), ea
 
 | Command | Blank Screen Severity | Root Cause |
 |---------|----------------------|------------|
-| `aiki build` | **High** | `ScreenSession::new()` at line 368 before epic creation & task prep (~10-12 jj calls) |
+| `aiki build` | **High** | `ScreenSession::new()` at line 369 before epic creation & task prep (~10-12 jj calls) |
 | `aiki fix` | **Very High** | `ScreenSession::new()` at line 223 before quality loop setup (~8-10 jj calls per iteration) |
 | `aiki review` | **Low** | `LiveScreen` entered after agent spawn, but 4-6 jj calls happen silently before screen |
 
@@ -169,7 +169,7 @@ The core problem is that expensive setup work happens either:
 
 ### Solution: Early LoadingScreen
 
-Introduce a **LoadingScreen** that appears immediately and shows progress during expensive setup.
+Introduce a **LoadingScreen** that enters the alternate screen immediately and shows a single status line that updates as each setup step completes. The screen shows only the *current* step — no progressive checklist, just one `⧗ <label>...` line that changes text as work progresses.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -184,7 +184,7 @@ Expensive Setup Work          ← USER SEES: frozen prompt
     - create tasks/epics
     - write_event() → jj new
     ↓
-ScreenSession::new() / LiveScreen::enter()
+ScreenSession::new() → LiveScreen::new()
     ↓
 Blank Alternate Screen        ← USER SEES: blank screen
     ↓
@@ -205,191 +205,217 @@ First Frame Rendered          ← USER SEES: content (finally!)
 
 Shell Prompt (visible)
     ↓
-LoadingScreen::enter()         ← Immediate visual feedback!
+LoadingScreen::new()           ← Immediate alt-screen + first frame!
     ↓
-┌──────────────────────────────────────────────┐
-│  🔄 Preparing...                              │
-│  ▸ Loading task graph                        │ ← Shows progress
-│                                              │
-└──────────────────────────────────────────────┘
+ ⧗ Loading task graph...      ← Single status line, updates in-place
     ↓
-Expensive Setup Work (with progress updates)
-    - read_events() → jj log          → Update: "✓ Loaded task graph"
-    - materialize_graph()              → Update: "▸ Finding tasks"
-    - create tasks/epics               → Update: "▸ Creating epic"
-    - write_event() → jj new          → Update: "✓ Created epic"
+Expensive Setup Work (with step updates)
+    - read_events() → jj log          → set_step("Finding or creating epic...")
+    - find_or_create_epic()            → set_context(filepath, task_id, desc)
+    - write_event() → jj new          → set_step("Spawning agent session...")
     ↓
-LoadingScreen::transition_to(MainScreen)
+loading.into_live_screen()     ← Hands off alternate screen ownership
     ↓
-Main Screen (ScreenSession/LiveScreen)
+ScreenSession wraps LiveScreen / StatusMonitor uses LiveScreen
     ↓
-Continue Work (still visible to user)
-    - read_events() → jj log          → Shows in main screen
-    - spawn_monitored()                → Shows "Spawning agent..."
-    ↓
-First Frame with Live Status          ← Smooth transition!
+First Frame with Live Status   ← Smooth transition, no flicker!
 ```
 
 ### Key Abstraction: LoadingScreen
 
 ```rust
-/// A lightweight loading screen shown during expensive command setup
+/// A lightweight loading screen shown during expensive command setup.
+///
+/// Enters the alternate screen immediately on construction and renders
+/// a single status line (`⧗ <step>...`). As setup progresses, callers
+/// update the step label and optionally add context lines (filepath,
+/// task ID + description) that accumulate above the step line.
+///
+/// Rendering uses ratatui's `terminal.draw()` for consistency with the
+/// rest of the TUI. Each `set_step()` / `set_context()` call triggers
+/// an immediate synchronous redraw — no event loop needed.
 pub struct LoadingScreen {
-    /// Alternate screen handle (entered immediately)
-    screen: AlternateScreen,
-    
-    /// Current loading message
-    status: String,
-    
-    /// Progress items (with completion state)
-    items: Vec<LoadingItem>,
-}
+    /// Ratatui terminal (owns the alternate screen via CrosstermBackend<Stderr>)
+    terminal: Terminal<CrosstermBackend<Stderr>>,
 
-struct LoadingItem {
-    label: String,
-    state: LoadingState,
-}
+    /// Optional filepath shown at the top
+    filepath: Option<String>,
 
-enum LoadingState {
-    Pending,        // ▸ Item
-    InProgress,     // 🔄 Item
-    Complete,       // ✓ Item
+    /// Optional task context: (change_id, description)
+    task_context: Option<(String, String)>,
+
+    /// Current step label (shown as "⧗ <step>...")
+    step: String,
 }
 
 impl LoadingScreen {
-    /// Enter alternate screen and show initial loading state
-    pub fn enter(title: &str) -> Result<Self>;
-    
-    /// Add a progress item
-    pub fn add_item(&mut self, label: &str) -> ItemHandle;
-    
-    /// Update an item's state
-    pub fn update_item(&mut self, handle: ItemHandle, state: LoadingState);
-    
-    /// Update the main status message
-    pub fn set_status(&mut self, status: &str);
-    
-    /// Transition to main screen (hands off alternate screen ownership)
-    pub fn transition_to_main(self) -> MainScreen;
-    
-    /// Exit and return to shell (if not transitioning)
-    pub fn exit(self);
+    /// Enter alternate screen, enable raw mode, render initial frame.
+    /// Returns a no-op stub if stderr is not a terminal.
+    pub fn new(initial_step: &str) -> Result<Self>;
+
+    /// Update the current step label and redraw.
+    pub fn set_step(&mut self, label: &str);
+
+    /// Set the filepath context line (rendered above the step).
+    pub fn set_filepath(&mut self, path: &str);
+
+    /// Set the task context line: "[change_id] description".
+    pub fn set_task_context(&mut self, change_id: &str, description: &str);
+
+    /// Show an error frame ("✗ <step>\n   <message>"), then leave
+    /// the alternate screen and reprint the error to stderr so it
+    /// persists in terminal scrollback.
+    pub fn fail(self, message: &str);
+
+    /// Consume self and return the underlying LiveScreen, preserving
+    /// the alternate screen session. The caller wraps it in either
+    /// a ScreenSession (for build/fix) or passes it to StatusMonitor
+    /// (for review/task-run).
+    pub fn into_live_screen(self) -> LiveScreen;
 }
 ```
+
+**Why `into_live_screen()` instead of `transition_to_main()`:**
+
+The existing codebase has two consumers of the alternate screen:
+
+1. **`ScreenSession`** (build.rs, fix.rs) — wraps a `LiveScreen` + SIGINT handler. Used when multiple tasks share one screen session.
+2. **`StatusMonitor::monitor_until_complete_with_child()`** (status_monitor.rs:335) — currently creates its own `LiveScreen::new()`. Needs to accept an existing `LiveScreen` instead.
+
+`into_live_screen()` returns a bare `LiveScreen` that either consumer can adopt:
+
+```rust
+// Build/fix path: wrap in ScreenSession
+let screen = loading.into_live_screen();
+let session = ScreenSession::from_live_screen(screen)?;  // new constructor
+
+// Review/task-run path: pass to StatusMonitor
+let screen = loading.into_live_screen();
+monitor.monitor_until_complete_with_child_on_screen(cwd, child, screen)?;  // new method
+```
+
+This requires two small additions:
+- `ScreenSession::from_live_screen(screen: LiveScreen) -> Result<Self>` — wraps existing screen + installs SIGINT handler (no new `LiveScreen::new()` call).
+- `StatusMonitor::monitor_until_complete_with_child_on_screen()` — like the existing method but accepts a `LiveScreen` parameter instead of creating one internally.
 
 ### Integration Points
 
-#### 1. `aiki build`
+#### 1. `aiki build` (`run_build_plan()` in build.rs)
 
 ```rust
-// build.rs line ~150
-pub fn run_build_sync(...) -> Result<()> {
-    // IMMEDIATE FEEDBACK: Enter LoadingScreen
-    let mut loading = LoadingScreen::enter("Building Plan")?;
-    
-    // Show what we're doing
-    let graph_item = loading.add_item("Loading task graph");
-    let events = read_events(cwd)?;
-    loading.update_item(graph_item, LoadingState::Complete);
-    
-    let epic_item = loading.add_item("Finding or creating epic");
-    let epic_id = find_or_create_epic(cwd, ...)?;
-    loading.update_item(epic_item, LoadingState::Complete);
-    
-    let prep_item = loading.add_item("Preparing task");
-    let prepared = prepare_task_run(cwd, &plan_id, &options)?;
-    loading.update_item(prep_item, LoadingState::Complete);
-    
-    loading.set_status("Starting agent...");
-    let spawn_item = loading.add_item("Spawning agent session");
-    
-    // Transition to main monitoring screen
-    let mut main_screen = loading.transition_to_main();
-    loading.update_item(spawn_item, LoadingState::Complete);
-    
-    // Continue with monitoring (already visible)
-    monitor_until_complete(&mut main_screen, ...)?;
+pub fn run_build_plan(...) -> Result<()> {
+    // IMMEDIATE FEEDBACK
+    let mut loading = LoadingScreen::new("Loading task graph...")?;
+    loading.set_filepath(&plan_path.display().to_string());
+
+    // Steps 2-5: pre-screen work (now visible)
+    let events = read_events(cwd)?;                          // jj log
+    let graph = materialize_graph(&events)?;
+    let existing_epic = find_epic_for_plan(&graph, plan_id);
+
+    loading.set_step("Finding or creating epic...");
+    let epic = find_or_create_epic(cwd, ...)?;               // jj log + jj new ×N
+    loading.set_task_context(&epic.change_id, &epic.description);
+
+    loading.set_step("Preparing task...");
+    let prepared = prepare_task_run(cwd, &task_id, &options)?; // jj log + jj new
+
+    loading.set_step("Spawning agent session...");
+
+    // Transition: hand off to ScreenSession
+    let screen = loading.into_live_screen();
+    let mut session = ScreenSession::from_live_screen(screen)?;
+
+    // Main screen renders first frame immediately
+    run_loop(cwd, ..., &mut session)?;
+    drop(session);
+    // ... final output ...
 }
 ```
 
-#### 2. `aiki fix`
+#### 2. `aiki fix` (`run_fix()` in fix.rs)
 
 ```rust
-// fix.rs line ~150
 pub fn run_fix(...) -> Result<()> {
-    let mut loading = LoadingScreen::enter("Fix Quality Loop")?;
-    
-    let graph_item = loading.add_item("Loading task graph");
-    let events = read_events_with_ids(cwd)?;
-    loading.update_item(graph_item, LoadingState::Complete);
-    
-    let review_item = loading.add_item("Finding review task");
-    let review_task = find_task(&tasks, task_id)?;
-    loading.update_item(review_item, LoadingState::Complete);
-    
-    // Transition to ScreenSession (shared across quality loop iterations)
-    let mut session = loading.transition_to_session()?;
-    
-    // Quality loop runs on the visible session
+    let mut loading = LoadingScreen::new("Loading task graph...")?;
+
+    let events = read_events_with_ids(cwd)?;                 // jj log
+    let graph = materialize_graph_with_ids(&events)?;
+    let review_task = find_task(&graph, task_id)?;
+
+    loading.set_step("Checking for actionable issues...");
+    let scope = ReviewScope::from_data(&review_task)?;
+    let template = resolve_fix_template_name(&review_task)?;
+    let assignee = determine_followup_assignee(...)?;
+
+    // Show context once we know what we're fixing
+    loading.set_filepath(&scope.filepath);
+
+    loading.set_step("Creating fix plan...");
+
+    // Transition: hand off to ScreenSession (shared across quality loop)
+    let screen = loading.into_live_screen();
+    let mut session = ScreenSession::from_live_screen(screen)?;
+
     run_quality_loop(cwd, ..., &mut session)?;
+    drop(session);
 }
 ```
 
-#### 3. `aiki review` (via `task_run`)
+#### 3. `aiki review` / `aiki task run` (via `task_run()` in runner.rs)
 
 ```rust
-// runner.rs line ~383
 pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     let show_status = std::io::stderr().is_terminal() && !options.quiet;
-    
+
     if show_status {
-        let mut loading = LoadingScreen::enter("Starting Review")?;
-        
-        let prep_item = loading.add_item("Preparing task");
-        let prepared = prepare_task_run(cwd, task_id, &options)?;
-        loading.update_item(prep_item, LoadingState::Complete);
-        
-        loading.set_status("Spawning agent...");
-        let spawn_item = loading.add_item("Starting agent session");
+        let mut loading = LoadingScreen::new("Preparing task...")?;
+
+        let prepared = prepare_task_run(cwd, task_id, &options)?; // jj log + jj new
+        loading.set_task_context(&prepared.change_id, &prepared.description);
+
+        loading.set_step("Spawning agent session...");
         let mut monitored = prepared.runtime.spawn_monitored(&prepared.spawn_options)?;
-        loading.update_item(spawn_item, LoadingState::Complete);
-        
-        // Transition to live monitoring
-        let mut main_screen = loading.transition_to_main();
-        
-        let result = monitor_until_complete(&mut main_screen, &mut monitored)?;
+
+        // Transition: hand off to StatusMonitor
+        let screen = loading.into_live_screen();
+        let mut monitor = StatusMonitor::new(task_id);
+        let result = monitor.monitor_until_complete_with_child_on_screen(
+            cwd, &mut monitored, screen
+        )?;
+
         handle_session_result(cwd, task_id, result, options.quiet)?;
     } else {
         // Non-TTY path (no LoadingScreen)
-        ...
+        let prepared = prepare_task_run(cwd, task_id, &options)?;
+        let result = prepared.runtime.spawn_blocking(&prepared.spawn_options)?;
+        handle_session_result(cwd, task_id, result, options.quiet)?;
     }
 }
 ```
-
-#### 4. `aiki task run` (same as review)
-
-`aiki task run` delegates to `task_run()`, so it automatically gets the LoadingScreen behavior when in TTY mode.
 
 ### Benefits
 
 1. **Immediate feedback**: User sees something within milliseconds
 2. **Progress visibility**: User knows what's happening during slow operations
-3. **Smooth transition**: Loading scene hands off to main screen seamlessly
+3. **Smooth transition**: Loading screen hands off to main screen seamlessly
 4. **Consistent UX**: All commands use the same loading pattern
 5. **No blank screens**: Alternate screen is never empty
 
 ### Implementation Notes
 
-- **LoadingScreen** should be lightweight (simple text rendering, no fancy TUI)
-- Progress updates should be cheap (single line redraws, not full screen rebuilds)
-- Transition should reuse the alternate screen handle (no flicker)
-- For commands without screens (non-TTY), LoadingScreen is a no-op
+- **Rendering**: Uses `terminal.draw()` (ratatui) for each step update — synchronous, immediate, consistent with the rest of the TUI. No event loop needed; each `set_step()` call redraws the full frame.
+- **Transition**: `into_live_screen()` extracts the `Terminal<CrosstermBackend<Stderr>>` and wraps it in a `LiveScreen`. No alternate screen exit/re-enter — single continuous session.
+- **Non-TTY**: When stderr is not a terminal, `LoadingScreen::new()` returns a no-op variant. All methods are stubs.
+- **Ctrl+C during loading**: The loading phase is short (1-5s) and no agent is running yet. Default SIGINT behavior (process exit) is acceptable. No custom handler needed until `ScreenSession` / `StatusMonitor` takes over.
+- **Terminal resize during loading**: Not handled. The loading screen is simple enough (a few lines of text) that stale layout from a resize is harmless for a 1-5s window.
+- **Error handling**: `LoadingScreen::fail()` renders the error frame (`✗ <step>` + indented message), pauses briefly (~500ms) so the user sees it, then leaves the alternate screen and reprints the error to stderr. This ensures the error persists in terminal scrollback (alternate screen content vanishes on exit).
 
 ---
 
 ## Loading Screen Mockups
 
-Steps appear progressively — each step is added when its work begins (not pre-rendered as a checklist). Only the current step shows `⧗`; completed steps show `✓`.
+Each screen shows only the current loading step with `⧗`. No progressive checkmarks — screens transition directly to the next step.
 
 ### `aiki build` — Frame Sequence
 
@@ -397,45 +423,48 @@ Steps appear progressively — each step is added when its work begins (not pre-
 
 ```
 [80 cols]
- Building plan...                                ← hi+bold
-                                                 ← blank row
- ⧗ Loading task graph                            ← yellow ⧗, text label
+ ops/now/design.md 
+
+ ⧗ Loading task graph...
 ```
 
-**Frame 2** (~200ms, graph loaded)
-
-```
-[80 cols]
- Building plan...                                ← hi+bold
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ⧗ Finding or creating epic                      ← yellow ⧗, text label
-```
-
-**Frame 3** (~1.5s, epic created)
+**Frame 2** (~200ms, graph loaded, finding epic)
 
 ```
 [80 cols]
- Building plan...                                ← hi+bold
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✓ Finding or creating epic                      ← green ✓, text label
- ⧗ Preparing task                                ← yellow ⧗, text label
+ ops/now/design.md 
+
+ ⧗ Finding or creating epic...
 ```
 
-**Frame 4** (~2.5s, task prepared)
+**Frame 3** (~1.5s, epic found/created, shows epic details)
 
 ```
 [80 cols]
- Starting agent...                               ← hi+bold (status changes)
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✓ Finding or creating epic                      ← green ✓, text label
- ✓ Preparing task                                ← green ✓, text label
- ⧗ Spawning agent session                        ← yellow ⧗, text label
+ ops/now/design.md                                     
+                                                         
+ [luppzupt] Implement webhook event handling     
+ 
+ ⧗ Spawning agent session...
 ```
 
-**Frame 5** (~3s) — transitions to `ScreenSession`. Loading screen hands off the alternate screen buffer; main screen renders its first frame immediately. No blank gap.
+**Frame 4** (~3s, transition to main screen)
+
+Buffer clears and the `ScreenSession` renders its first frame immediately on the same alternate screen. No flicker.
+
+```
+[80 cols]
+ ops/now/webhooks.md                                     
+                                                         
+ [luppzupt] Implement webhook event handling                                        
+                                                         
+ ▸ build                                                 
+    ⧗ decompose                                          
+ ○ review                                                
+ ○ fix
+```
+
+This is the standard `epic_show` view: PathLine + EpicTree + StageTrack. The first subtask shows `⧗` (starting) because the agent is spawning.
 
 ---
 
@@ -445,100 +474,126 @@ Steps appear progressively — each step is added when its work begins (not pre-
 
 ```
 [80 cols]
- Preparing fix...                                ← hi+bold
-                                                 ← blank row
- ⧗ Loading task graph                            ← yellow ⧗, text label
+ ⧗ Loading task graph...
 ```
 
 **Frame 2** (~200ms)
 
 ```
 [80 cols]
- Preparing fix...                                ← hi+bold
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ⧗ Finding review task                           ← yellow ⧗, text label
+ ⧗ Finding review task...
 ```
 
 **Frame 3** (~400ms)
 
 ```
 [80 cols]
- Preparing fix...                                ← hi+bold
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✓ Finding review task                           ← green ✓, text label
- ⧗ Checking for actionable issues                ← yellow ⧗, text label
+ ⧗ Checking for actionable issues...
 ```
 
-**Frame 4** (~600ms)
+**Frame 4** (~800ms, shows filepath and epic after creation)
 
 ```
 [80 cols]
- Creating fix task...                            ← hi+bold (status changes)
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✓ Finding review task                           ← green ✓, text label
- ✓ Checking for actionable issues                ← green ✓, text label
- ⧗ Creating fix task from template               ← yellow ⧗, text label
+ ops/now/webhooks.md
+
+ [xqrmnpst] Fix: Code review issues
+
+ ⧗ Creating plan...
 ```
 
-**Frame 5** (~2s)
+**Frame 5** (~2.5s, transition to main screen)
+
+Buffer clears; `ScreenSession` renders first frame. The fix task's first subtask shows `⧗` (starting).
 
 ```
 [80 cols]
- Starting agent...                               ← hi+bold (status changes)
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✓ Finding review task                           ← green ✓, text label
- ✓ Checking for actionable issues                ← green ✓, text label
- ✓ Creating fix task from template               ← green ✓, text label
- ⧗ Spawning agent session                        ← yellow ⧗, text label
+ ops/now/webhooks.md
+
+ [xqrmnpst] Fix: Code review issues
+ ⎿ ⧗ Fix null pointer in auth handler
+
+ ⧗ build  0/1              │  ○ review  │  ○ fix
 ```
 
-Transitions to `ScreenSession` for the quality loop. Subsequent loop iterations render on the already-visible session.
+Subsequent quality loop iterations (fix → re-review → fix again) render directly on this session — no return to loading screen.
 
 ---
 
-### `aiki review` / `aiki task run` — Frame Sequence
+
+### `aiki review` — Frame Sequence
+
+`aiki review` must first **create** the review task, then run it.
 
 **Frame 1** (~0ms)
 
 ```
 [80 cols]
- Preparing task...                               ← hi+bold
-                                                 ← blank row
- ⧗ Preparing task run                            ← yellow ⧗, text label
+ ⧗ Loading task graph...
 ```
 
-**Frame 2** (~500ms)
+**Frame 2** (~200ms)
 
 ```
 [80 cols]
- Starting agent...                               ← hi+bold (status changes)
-                                                 ← blank row
- ✓ Preparing task run                            ← green ✓, text label
- ⧗ Spawning agent session                        ← yellow ⧗, text label
+ ⧗ Creating review task...
 ```
 
-**Frame 3** (~800ms) — transitions to `LiveScreen`. Shortest sequence since review does the least pre-work.
+**Frame 3** (~800ms, after task created and scope determined)
+
+```
+[80 cols]
+ ops/now/webhooks.md
+
+ [oorznprs] Review: webhooks implementation
+
+ ⧗ Spawning agent session...
+```
+
+**Frame 4** (~1.5s, transition to main screen)
+
+### `aiki task run` — Frame Sequence
+
+`aiki task run` is given an **existing** task and runs it.
+
+**Frame 1** (~0ms)
+
+```
+[80 cols]
+ ⧗ Loading task...
+```
+
+**Frame 2** (~200ms, after task loaded)
+
+```
+[80 cols]
+ [xqrmnpst] Fix null pointer in auth handler
+
+ ⧗ Spawning agent session...
+```
+
+**Frame 3** (~1s, transition to main screen)
+
+```
+[80 cols]
+ [xqrmnpst] Fix null pointer in auth handler              claude-code
+
+ ⧗ build  0/0                      │  ○ review  │  ○ fix
+```
 
 ---
-
-### Error State
 
 If a step fails, the screen shows failure and exits to the shell.
 
 ```
 [80 cols]
- Build failed                                    ← hi+bold
-                                                 ← blank row
- ✓ Loading task graph                            ← green ✓, text label
- ✗ Finding or creating epic                      ← red ✗, text label
-   no plan file found at ops/now/webhooks.md     ← red, 3-char indent
+ ops/now/design.md
+
+ ✗ Finding or creating epic
+   no plan file found at ops/now/webhooks.md
 ```
 
-Error text indents 3 chars (aligned under step label, past symbol + space). Screen exits alternate screen after rendering this frame.
+Error text indents 3 chars (aligned under step label, past symbol + space). After rendering this frame, the screen pauses briefly (~500ms), then exits the alternate screen and reprints the error to stderr so it persists in terminal scrollback.
 
 ---
 
@@ -546,32 +601,34 @@ Error text indents 3 chars (aligned under step label, past symbol + space). Scre
 
 ```
 [80 cols]
- <status message>                                ← hi+bold
-                                                 ← blank row
- <sym> <step label>                              ← symbol + space + label
- <sym> <step label>
+ <filepath>
+ 
+ [<task-id>] <task description>     ← shown after epic/task is found/created
+ 
  <sym> <step label>
 ```
 
 - 1-char left padding on all lines (matching existing TUI margin)
-- Status message: `hi_style()` — bold, high-contrast
+- Filepath: `text_style()` — primary text color
+- Task ID (in brackets): `dim_style()` — dim brackets, `hi_style()` for description
 - Step labels: `text_style()` — primary text color
-- Symbol colors: `⧗` yellow, `✓` green, `✗` red
+- Symbol colors: `⧗` yellow, `✗` red
 - No borders, no boxes, no right-aligned metadata
 - `[80 cols]` default width (no width-dependent layout)
 
 ### Transition Behavior
 
-Loading screen owns the alternate screen buffer. On transition:
+Loading screen owns the alternate screen buffer (via a ratatui `Terminal<CrosstermBackend<Stderr>>`). On transition:
 
-1. Final frame renders (all steps `✓`)
-2. Buffer clears
-3. Ownership passes to `ScreenSession` / `LiveScreen`
-4. Main screen renders first frame immediately
+1. Final loading frame renders (showing filepath/task context + "Spawning agent session...")
+2. Caller invokes `loading.into_live_screen()` — extracts the `Terminal` and wraps it in a `LiveScreen`
+3. Caller passes the `LiveScreen` to either:
+   - `ScreenSession::from_live_screen()` (build, fix) — wraps it + installs SIGINT handler
+   - `StatusMonitor::monitor_until_complete_with_child_on_screen()` (review, task-run) — runs the event loop on it
+4. Main screen clears the buffer and renders first frame immediately
 
-No flicker — single alternate screen session, no exit/re-enter.
+No flicker — single alternate screen session throughout. Raw mode and hidden cursor persist across the transition.
 
 ### Non-TTY Behavior
 
-When stderr is not a terminal (piped output, CI, `--quiet`): `LoadingScreen` is a no-op — all methods are stubs, no alternate screen entered.
-
+When stderr is not a terminal (piped output, CI, `--quiet`): `LoadingScreen::new()` returns a no-op variant. All methods are stubs, no alternate screen entered. `into_live_screen()` still returns a valid `LiveScreen` (creating one fresh) so callers don't need conditional logic.

@@ -342,6 +342,23 @@ impl StatusMonitor {
 
         result
     }
+
+    /// Like `monitor_until_complete_with_child` but uses a provided `LiveScreen`
+    /// instead of creating a new one.
+    ///
+    /// Used when a `LoadingScreen` has already entered the alternate screen.
+    /// The caller is responsible for screen cleanup (Drop).
+    pub fn monitor_until_complete_with_child_on_screen(
+        &mut self,
+        cwd: &Path,
+        child: &mut MonitoredChild,
+        screen: &mut LiveScreen,
+    ) -> Result<MonitorExitReason> {
+        if self.stop_flag.load(Ordering::Relaxed) {
+            return Ok(MonitorExitReason::UserDetached);
+        }
+        self.run_event_loop(cwd, child, screen)
+    }
 }
 
 /// Draw a single frame with the workflow view and footer.

@@ -73,14 +73,14 @@ First thing the user sees after `aiki build ops/now/feature.md`. The decompose a
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build                                        ← yellow all
-    ⧗ decompose                                 ← yellow ⧗ (hourglass), yellow text
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build                                                 ← yellow all
+    ⧗ decompose                                          ← yellow ⧗, yellow text
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
@@ -93,24 +93,25 @@ Decompose agent is running, breaking the plan into subtasks. Subtasks appear und
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  0/2  0:08                       cc     ← yellow all, progress, elapsed, cyan cc
-    ▸ decompose  0:08                            ← yellow, dim 0:08
-    ○ loop  0/2                                  ← dim ○, dim text (pending), progress
-       ○ Write handler                           ← dim ○, dim name
-       ○ Add validation                          ← dim ○, dim name
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  0/2  8s                                        ← yellow all, progress, elapsed
+    ▸ decompose  8s                                      ← yellow ▸, yellow text, yellow 8s
+    ○ loop  0/2                                          ← dim ○, dim text, dim progress
+     ⎿ ○ Write handler                                  ← dim ⎿, dim ○, dim name
+     ⎿ ○ Add validation                                 ← dim ⎿, dim ○, dim name
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
-- Decompose agent actively creating subtasks - they appear under loop as they're added
+- Decompose agent actively creating subtasks — they appear under loop as they're added
 - Build stage shows progress (0/2) as subtasks are created
 - Loop sub-stage shown as Pending with progress (0/2)
-- Subtasks visible immediately as decompose creates them (not waiting for decompose to finish)
+- Subtasks use `⎿` connector at indent 7 (children of sub-stage)
+- No agent badge on stage lines — only on child lines
 
 ### 3. Build In-Progress — Decompose Done, Loop Starting
 
@@ -118,24 +119,24 @@ Decompose finished (all subtasks created), loop agent spawning. First subtask ag
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  0/3  0:20                       cc     ← yellow all, progress, elapsed, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ⧗ loop  0/3                              ○  ← yellow ⧗ (hourglass), progress, DAG (pending)
-       ○ Write handler                           ← dim ○, dim name
-       ○ Add validation                          ← dim ○, dim name
-       ○ Add tests                               ← dim ○, dim name
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  0/3  20s                                       ← yellow all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ⧗ loop  0/3                                      ○   ← yellow ⧗, progress, DAG (pending)
+     ⎿ ○ Write handler                                  ← dim ⎿, dim ○, dim name
+     ⎿ ○ Add validation                                 ← dim ⎿, dim ○, dim name
+     ⎿ ○ Add tests                                      ← dim ⎿, dim ○, dim name
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
 - Subtasks now visible under loop (just created by decompose)
 - Decompose done (✓), loop Starting (⧗)
-- DAG shows pending session (○) aligned with loop line
+- DAG shows pending session (○) right-aligned on loop line
 
 ### 4. Build In-Progress — Loop Running (First Subtask)
 
@@ -143,42 +144,44 @@ Loop is executing subtasks. First subtask agent spawned.
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  0/3  0:22                       cc     ← yellow all, progress, elapsed, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ▸ loop  0/3  0:10                        ◉  ← yellow, progress, elapsed, DAG (active)
-       ⧗ Write handler                           ← yellow ⧗, yellow name
-       ○ Add validation                          ← dim ○, dim name
-       ○ Add tests                               ← dim ○, dim name
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  0/3  22s                                       ← yellow all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ▸ loop  0/3  10s                                 ◉   ← yellow ▸, progress, elapsed, DAG (active)
+     ⎿ ⧗ Write handler                                  ← dim ⎿, yellow ⧗, yellow name
+     ⎿ ○ Add validation                                 ← dim ⎿, dim ○, dim name
+     ⎿ ○ Add tests                                      ← dim ⎿, dim ○, dim name
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 ### 5. Build In-Progress — Multiple Subtasks Running
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  1/3  0:57                       cc     ← yellow all, progress, elapsed, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ▸ loop  1/3  0:45                      ●━━◉  ← yellow, progress, elapsed, DAG
-       ✓ Write handler                cc  45s    ← green ✓, cyan cc, dim 45s
-       ▸ Add validation               cc 0:12    ← yellow ▸, cyan cc, dim 0:12
-       ○ Add tests                               ← dim ○, dim name
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  1/3  57s                                       ← yellow all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ▸ loop  1/3  45s                             ●━━◉    ← yellow ▸, progress, elapsed, DAG
+     ⎿ ✓ Write handler                     claude  45s   ← dim ⎿, green ✓, text name, cyan claude, dim 45s
+     ⎿ ▸ Add validation                    claude  12s   ← dim ⎿, yellow ▸, text name, cyan claude, dim 12s
+     ⎿ ○ Add tests                                      ← dim ⎿, dim ○, dim name
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
 - Progress shown on build stage line (1/3)
-- Subtasks shown as children under loop sub-stage
-- Lane DAG always shown on loop line (right-aligned), shows sequential session progress
+- Subtasks shown as children under loop sub-stage with `⎿` connectors
+- Agent badges show display labels (`claude`, `cursor`) not abbreviations
+- Agent + elapsed right-aligned on child lines, not on stage lines
+- Lane DAG right-aligned on loop line, shows sequential session progress
 
 ### 6. Build In-Progress — With Lane DAG (Concurrent)
 
@@ -186,42 +189,43 @@ When loop has forked subtasks across multiple concurrent sessions:
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  1/4  1:02                       cc     ← yellow, progress, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ▸ loop  1/4  0:50                ●━━●━━◉     ← yellow, progress, elapsed, DAG (multi-lane)
-       ✓ Write handler                cc  45s    ← green ✓, cyan cc       ○
-       ▸ Add validation               cc 0:12    ← yellow ▸, cyan cc
-       ▸ Implement retry logic        cd 0:08    ← yellow ▸, cyan cd (concurrent)
-       ○ Add tests                               ← dim ○
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  1/4  1m02                                      ← yellow all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ▸ loop  1/4  50s                         ●━━●━━◉     ← yellow ▸, progress, elapsed, DAG (multi-lane)
+     ⎿ ✓ Write handler                     claude  45s   ← dim ⎿, green ✓, text name, cyan claude, dim 45s
+     ⎿ ▸ Add validation                    claude  12s   ← dim ⎿, yellow ▸, text name, cyan claude, dim 12s
+     ⎿ ▸ Implement retry logic             codex   8s   ← dim ⎿, yellow ▸, text name, fg codex, dim 8s
+     ⎿ ○ Add tests                                      ← dim ⎿, dim ○, dim name
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
 - Progress shown on build stage line (1/4)
-- Lane DAG aligned with loop line, shows multi-lane fork/merge topology
-- Additional lane rows appear below loop line to show concurrent sessions
+- Lane DAG right-aligned on loop line, shows multi-lane fork/merge topology
+- Agent badges use display labels: `claude` (cyan), `codex` (fg)
+- No agent badge on stage lines — only on child lines
 
 ### 7. Build In-Progress — Last Subtask Finishing
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ▸ build  2/3  1:38                       cc     ← yellow all, progress, elapsed, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ▸ loop  2/3  1:26                  ●━━●━━◉  ← yellow, progress, elapsed, DAG
-       ✓ Write handler                cc  45s    ← green ✓, cyan cc, dim 45s
-       ✓ Add validation               cc  38s    ← green ✓, cyan cc, dim 38s
-       ▸ Add tests                    cc 0:15    ← yellow ▸, cyan cc, dim 0:15
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ▸ build  2/3  1m38                                      ← yellow all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ▸ loop  2/3  1m26                        ●━━●━━◉     ← yellow ▸, progress, elapsed, DAG
+     ⎿ ✓ Write handler                     claude  45s   ← dim ⎿, green ✓, text name, cyan claude, dim 45s
+     ⎿ ✓ Add validation                    claude  38s   ← dim ⎿, green ✓, text name, cyan claude, dim 38s
+     ⎿ ▸ Add tests                         claude  15s   ← dim ⎿, yellow ▸, text name, cyan claude, dim 15s
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 ### 8. Build Completed (No Review)
@@ -230,21 +234,21 @@ Build finished, no `--review` flag. All subtasks done.
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✓ build  3/3 done  1:57                        ← green all, completion summary
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
-
----
-Run `aiki review luppzupt` to review.          ← dim text, next action
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✓ build  3/3  1m57                                      ← green all, progress, elapsed
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
+                                                         ← blank row
+---                                                      ← dim rule
+Run `aiki review luppzupt` to review.                    ← dim text, next action
 ```
 
 **Notes:**
-- Build stage shows "3/3 done" completion summary on stage line
-- Epic tree collapsed (no subtasks shown, summary on stage line instead)
+- Build stage collapsed to single Done line with progress + elapsed
+- Epic tree collapsed (no subtasks shown)
 - Review/fix still Pending — they weren't requested
 - Next action shown: run review command with epic ID
 
@@ -254,26 +258,26 @@ When some subtasks failed during the loop:
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✗ build  2/3  1:57                       cc     ← red all, progress, elapsed, cyan cc
-    ✓ decompose  12s                             ← green, dim 12s
-    ✗ loop  2/3  1:45                            ← red, progress, elapsed
-       ✓ Write handler                cc  45s    ← green ✓, cyan cc, dim 45s
-       ✗ Add validation               cc  38s    ← red ✗, cyan cc, dim 38s
-         Connection refused                      ← red, indented error
-       ✓ Add tests                    cc  22s    ← green ✓, cyan cc, dim 22s
- ○ review                                       ← dim ○, dim text
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✗ build  2/3  1m57                                      ← red all, progress, elapsed
+    ✓ decompose  12s                                     ← green ✓, dim 12s
+    ✗ loop  2/3  1m45                                    ← red ✗, red text, red progress, red elapsed
+     ⎿ ✓ Write handler                     claude  45s   ← dim ⎿, green ✓, text name, cyan claude, dim 45s
+     ⎿ ✗ Add validation                    claude  38s   ← dim ⎿, red ✗, text name, cyan claude, dim 38s
+         Connection refused                              ← red, indented error
+     ⎿ ✓ Add tests                         claude  22s   ← dim ⎿, green ✓, text name, cyan claude, dim 22s
+ ○ review                                                ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
 - Build stage Failed (✗), expanded to show sub-stages
-- Failed subtask shows error line underneath
+- Failed subtask shows error line underneath (indented past `⎿` + symbol)
 - Loop sub-stage also Failed with partial progress
-- Subtasks shown under loop even when build fails
+- Subtasks use `⎿` connectors (children of sub-stage)
 
 ### 10. Build + Review Starting
 
@@ -281,39 +285,40 @@ Build done, review auto-starting (from `aiki build --review`).
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✓ build  3/3 done  1m57s                       ← green all, completion summary
- ▸ review                                       ← yellow all
-    ⧗ explore                                   ← yellow ⧗ (hourglass), yellow text
-    ○ criteria                                  ← dim
-    ○ record-issues                             ← dim
- ○ fix                                          ← dim ○, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✓ build  3/3  1m57                                      ← green all, progress, elapsed
+ ▸ review                                                ← yellow all
+    ⧗ explore                                            ← yellow ⧗, yellow text
+    ○ criteria                                           ← dim ○, dim text
+    ○ record-issues                                      ← dim ○, dim text
+ ○ fix                                                   ← dim ○, dim text
 ```
 
 **Notes:**
 - Epic tree collapses when review becomes active (no subtasks shown)
-- Build stage shows completion summary (3/3 done) on stage line
-- Build stage collapsed to single Done line
+- Build stage collapsed to single Done line with progress + elapsed
+- Review stage expanded (Active), showing sub-stages
 
 ### 11. Build + Review Completed — Approved (0 Issues)
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✓ build  3/3 done  1m57s                       ← green all, completion summary
- ✓ review  approved  0:42                       ← green all
- ─ fix                                          ← dim ─, dim text
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✓ build  3/3  1m57                                      ← green all, progress, elapsed
+ ✓ review  approved  42s                                 ← green all
+ ─ fix                                                   ← dim ─, dim text
 ```
 
 **Notes:**
 - Epic collapsed (no subtasks shown)
-- Build stage shows completion summary (3/3 done) on stage line
+- Build stage collapsed to single Done line
+- `approved` comes from `stage.progress` — rendered in same green style as stage
 - Fix shows `─` (skipped) — review found 0 issues, fix not needed
 - This is the same terminal state as review-screen-cleanup screen #12
 
@@ -321,41 +326,42 @@ Build done, review auto-starting (from `aiki build --review`).
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✓ build  3/3 done  1m57s                       ← green all, completion summary
- ✓ review  2 issues found  0:42                 ← green ✓, green text, yellow "2 issues found"
- ○ fix                                          ← dim ○, dim text
-
----
-Run `aiki fix rlztrklp` to remediate.          ← dim text, next action
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✓ build  3/3  1m57                                      ← green all, progress, elapsed
+ ✓ review  2 issues  42s                                 ← green all (progress = "2 issues")
+ ○ fix                                                   ← dim ○, dim text
+                                                         ← blank row
+---                                                      ← dim rule
+Run `aiki fix rlztrklp` to remediate.                    ← dim text, next action
 ```
 
 ### 13. Build + Review + Fix In-Progress
 
 ```
 [80 cols]
- ops/now/ feature.md                           ← dim dir, text filename
-
- [luppzupt] Implement webhooks                 ← dim brackets, hi+bold name
-
- ✓ build  3/3 done  1m57s                       ← green all, completion summary
- ✓ review  2 issues found  0:42                 ← green ✓, green text, yellow "2 issues found"
- ▸ fix  1/2  0:18                         cc     ← yellow all, progress, elapsed, cyan cc
-    ✓ plan  2s                                   ← green ✓, dim 2s
-    ✓ decompose  4s                              ← green ✓, dim 4s
-    ▸ loop  1/2  0:12                            ← yellow ▸, progress, elapsed
-       ✓ Fix: Missing null check  cur  12s      ← green ✓, magenta cur, dim 12s
-       ▸ Fix: Error message format  cc 0:06     ← yellow ▸, cyan cc, dim 0:06
+ ops/now/feature.md                                      ← dim dir, text filename
+                                                         ← blank row
+ [luppzupt] Implement webhooks                           ← dim brackets, hi+bold name
+                                                         ← blank row
+ ✓ build  3/3  1m57                                      ← green all, progress, elapsed
+ ✓ review  2 issues  42s                                 ← green all (progress = "2 issues")
+ ▸ fix  1/2  18s                                         ← yellow all, progress, elapsed
+    ✓ plan  2s                                           ← green ✓, dim 2s
+    ✓ decompose  4s                                      ← green ✓, dim 4s
+    ▸ loop  1/2  12s                                     ← yellow ▸, progress, elapsed
+     ⎿ ✓ Fix: Missing null check           cursor  12s   ← dim ⎿, green ✓, text name, magenta cursor, dim 12s
+     ⎿ ▸ Fix: Error message format         claude   6s   ← dim ⎿, yellow ▸, text name, cyan claude, dim 6s
 ```
 
 **Notes:**
 - Fix stage has plan → decompose → loop (build has no plan step)
-- Fix tasks appear as children under loop sub-stage (like build subtasks)
+- Fix tasks use `⎿` connectors (children of loop sub-stage)
+- Agent badges show display labels: `cursor` (magenta), `claude` (cyan)
+- No agent badge on stage lines — only on child lines
 - Progress shown on fix stage line (1/2) and loop sub-stage (1/2)
-- Build stage shows completion summary (3/3 done)
 - Epic section empty (no Fix #1 header needed since progress shown on stage)
 
 ### 14–17. Review-Fix, Rereview, Repeated Fix Cycles — DEFERRED

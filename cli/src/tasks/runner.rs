@@ -25,6 +25,7 @@ use crate::tasks::{
     TaskGraph,
 };
 use crate::tui::live_screen::LiveScreen;
+use crate::tui::loading_screen::LoadingScreen;
 
 /// Options for running a task
 #[derive(Debug, Clone)]
@@ -135,16 +136,18 @@ pub struct ScreenSession {
 }
 
 impl ScreenSession {
-    /// Create a new session: enters alternate screen and registers a SIGINT handler.
-    pub fn new() -> Result<Self> {
+    /// Create a session from an existing `LiveScreen`, preserving the alternate screen.
+    ///
+    /// Used when a `LoadingScreen` has already entered the alternate screen and
+    /// hands off ownership via `into_live_screen()`.
+    pub fn from_live_screen(screen: LiveScreen) -> Result<Self> {
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let screen = LiveScreen::new()?;
 
         #[cfg(unix)]
         let sig_id = {
             let flag = Arc::clone(&stop_flag);
             signal_hook::flag::register(signal_hook::consts::SIGINT, flag)
-                .map_err(|e| AikiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+                .map_err(|e| AikiError::Io(std::io::Error::other(e)))?
         };
 
         Ok(Self {
@@ -382,46 +385,63 @@ fn map_exit_reason(
 /// 6. Handles the result and updates task state
 pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     let quiet = options.quiet;
+    let show_status = std::io::stderr().is_terminal() && !quiet;
+
+    // Create LoadingScreen for TTY mode
+    let mut loading = if show_status {
+        Some(LoadingScreen::new("Loading task...")?)
+    } else {
+        None
+    };
 
     let prepared = prepare_task_run(cwd, task_id, &options)?;
     let task_id = &prepared.task_id;
 
-    // Print status to stderr to avoid corrupting piped output
-    if !quiet {
-        eprintln!( // stderr-ok: pre-LiveScreen
+    // Show task context on loading screen
+    if let Some(ref mut l) = loading {
+        let events = read_events(cwd)?;
+        let tasks = materialize_graph(&events).tasks;
+        if let Some(task) = tasks.get(task_id.as_str()) {
+            l.set_task_context(&task_id[..8], &task.name);
+        }
+        l.set_step("Spawning agent session...");
+    }
+
+    // Print status for non-TTY path
+    if !show_status && !quiet {
+        eprintln!( // stderr-ok: non-TTY path
             "Spawning {} agent session for task {}...",
             prepared.agent_type.display_name(),
             task_id
         );
     }
 
-    // Check if we should show live status updates
-    let show_status = std::io::stderr().is_terminal() && !quiet;
-
     // Spawn agent session and optionally monitor status
     let result = if show_status {
-        // Run agent in background thread while monitoring status in foreground
-        run_with_status_monitor(cwd, task_id, prepared.runtime.as_ref(), &prepared.spawn_options)?
+        run_with_status_monitor_loading(cwd, task_id, prepared.runtime.as_ref(), &prepared.spawn_options, loading)?
     } else {
-        // Simple blocking spawn (no status display)
         prepared.runtime.spawn_blocking(&prepared.spawn_options)?
     };
 
-    handle_session_result(cwd, task_id, result, options.quiet)?;
+    handle_session_result(cwd, task_id, result, quiet)?;
 
     Ok(())
 }
 
-/// Run agent with real-time status monitoring
+/// Run agent with real-time status monitoring, optionally transitioning from a LoadingScreen.
 ///
 /// Spawns the agent in background and monitors status in the foreground.
-/// Uses LiveScreen (alternate screen) for rendering. Ctrl+C is handled by the
-/// crossterm event loop during raw mode, and by a scoped SIGINT handler outside it.
-fn run_with_status_monitor(
+/// If a `LoadingScreen` is provided, it is converted into a `LiveScreen` without
+/// leaving the alternate screen. Otherwise, a fresh `LiveScreen` is created.
+///
+/// Ctrl+C is handled by the crossterm event loop during raw mode, and by a
+/// scoped SIGINT handler outside it.
+fn run_with_status_monitor_loading(
     cwd: &Path,
     task_id: &str,
-    runtime: &dyn crate::agents::AgentRuntime,
+    runtime: &dyn AgentRuntime,
     spawn_options: &AgentSpawnOptions,
+    loading: Option<LoadingScreen>,
 ) -> Result<AgentSessionResult> {
     // Spawn agent with child handle for proper exit detection
     let mut monitored_child = runtime.spawn_monitored(spawn_options)?;
@@ -442,7 +462,13 @@ fn run_with_status_monitor(
     // Wrap LiveScreen lifecycle in catch_unwind as defense-in-depth.
     // Drop handles normal cleanup; this is a safety net for panics.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)
+        if let Some(l) = loading {
+            // Transition loading screen to live screen (stays in alternate screen)
+            let mut screen = l.into_live_screen()?;
+            monitor.monitor_until_complete_with_child_on_screen(cwd, &mut monitored_child, &mut screen)
+        } else {
+            monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)
+        }
     }));
 
     // Defensive cleanup — idempotent, safe even after Drop already ran
