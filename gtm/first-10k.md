@@ -125,3 +125,14 @@ Minimum viable mix:
 3. Book first three discovery calls.
 4. Name the pilot owner + retainer owner for each potential client.
 
+
+## Operator-first GTM framing
+
+The “Hire an AI” playbook reinforces a shift from feature sales to operating model sales:
+- persistent identity + memory + escalation boundaries,
+- measurable outcomes (before/after signals),
+- owner-only final control for paid commitments.
+
+If a prospect cares about speed, this framing should map to two proof gates:
+1) bot emits usable evidence in a maintainer workflow,
+2) owner packet turns that into a 14-day paid sprint decision.

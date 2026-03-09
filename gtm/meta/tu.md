@@ -250,3 +250,31 @@ Default owner-facing line:
 ## How this links to GTM docs
 - Keep `Aiki FastTrack` GTM docs focused on execution, pricing, and close mechanics.
 - This file defines Tu’s public tone, proof habits, and long-horizon presence discipline so GTM language stays consistent.
+
+## Lessons imported from Felix's "Hire an AI" playbook
+
+### 1) Position as **operating hire**, not a product
+Treat Aiki FastTrack as a working operating pattern:
+- persistent memory (`MEMORY.md` + daily logs),
+- explicit role boundaries (`SOUL.md` / `IDENTITY.md`),
+- and measurable control loops (risk score, interventions, owner packet).
+
+### 2) Trust ladder (governed autonomy)
+- **Read-only first:** bot can observe and report.
+- **Draft + approval:** bot drafts, human/owner approves before external action.
+- **Bounded execute:** only pre-approved, reversible actions.
+- **Full autonomy (rare):** only for low-risk repetitive tasks.
+
+This is a differentiator in clawbot motion: every packet and output should map to a rung.
+
+### 3) Security default for operations
+- `Email` and any non-verified command channel is treated as **untrusted input**.
+- No autonomous action on external instructions.
+- Every owner packet contains: trigger signal → risk profile → proposed intervention.
+
+### 4) Repeatable operator artifacts
+Keep these as part of core distribution, not optional docs:
+- Identity pack (`SOUL.md` / `IDENTITY.md` style profile)
+- Evidence pack (`risk-score.schema.json`, sample packet)
+- Escalation pack (escalation triggers + fallback behavior)
+- Postmortem/post-close summary snippets for proof

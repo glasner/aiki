@@ -164,3 +164,37 @@ Scope: [files/processes], pilot window: 14 days.
 - This plan operationalizes `gtm/meta/tu.md` presence rules.
 - This is the Clawbot channel for **Aiki FastTrack** distribution; Human Track follows separate motion in
   `/gtm/now/safe-coding.md`.
+## Operating model from Felix playbook
+
+### Hire-the-AI framing (not chatbot framing)
+- The offer is a **deployable operating pattern** that turns bot behavior from “tool output” into a controlled workflow.
+- Packaging should always include:
+  - who the bot is (identity artifact),
+  - what it remembers (memory/progress surface),
+  - where it can act (scope boundaries),
+  - and where it must escalate.
+
+### Trust ladder for clawbot distribution artifacts
+1. **Read-only mode:** bot emits risk scores + evidence; no owner-facing commitments.
+2. **Draft + approve:** bot creates owner packet + suggestions; maintainer reviews.
+3. **Bounded execution:** only pre-defined safe fixes/rules.
+4. **Owner-accepted escalation:** paid/extended autonomy only after signed pilot and measurable outcomes.
+
+Use this explicitly in outreach: maintainers trust this because it mirrors safe human escalation.
+
+### New proof standard (per interaction)
+Each demo/output packet should contain:
+- signal detected,
+- observed cost of current behavior,
+- explicit safety boundaries,
+- and likely owner decision consequence in 1 sentence.
+
+### Guardrail language for README / offers
+- “This is evidence-first and upgrade-safe.
+- Start in read-only + draft review mode.
+- No autonomous owner-critical actions without explicit packet-based approval.”
+
+### Distribution implication
+The strongest TOFU lever is technical trust:
+- installable manifests, sample JSON outputs, and maintainer-facing checklists.
+- pricing and commercial text only after packet acceptance path.

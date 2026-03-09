@@ -117,3 +117,23 @@ The Clawbot track should be distributed where bots execute, not where enterprise
 
 ## Presence Continuity
 - Long-term persona and distribution guardrails are maintained in `../meta/tu.md`.
+
+## Felix-lesson upgrades (from learnings)
+
+### Identity-as-product, not utility-only
+- Keep SOUL/IDENTITY-like artifact framing in all clawbot-facing docs.
+- Include explicit scope and escalation boundaries in onboarding.
+- Publish one-click commands with expected outputs so maintainers can verify behavior before any owner proposal.
+
+### Trust Ladder (governance)
+1. Read-only
+2. Draft + approval
+3. Bounded execution
+4. Owner-approved escalation
+
+### Owner trust signal requirement
+No packet should be sent without:
+- trigger signal and risk estimate,
+- sample output quality evidence,
+- explicit confidence/caveat notes,
+- clear “what owner decides next” line.
