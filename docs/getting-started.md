@@ -1,38 +1,34 @@
 # Getting Started with Aiki
 
-This guide walks you from zero to productive with Aiki — AI code provenance tracking and workflow orchestration.
+Aiki is practical if you treat it like an onboarding checklist: install it, init once, run the health check, then run one real task.
 
-## Prerequisites
+This page is the minimal path from zero to first workflow.
 
-- **Git** — for version control
-- **Rust toolchain** — for building from source (rustup recommended)
-- **Jujutsu (jj)** — required for repository initialization
+## 1) Install prerequisites
 
-Jujutsu (jj) must be installed in your environment before running `aiki init`.
+You need:
 
-Install prerequisites (examples):
+- **Git**
+- **Rust toolchain** (for building from source)
+- **Jujutsu (`jj`)**
 
-### macOS (Homebrew)
+### macOS
 
 ```bash
 brew install git rustup-init jj
 rustup-init -y
 ```
 
-### Linux
+### Linux (Debian/Ubuntu)
 
 ```bash
-# Debian/Ubuntu example
 sudo apt update
 sudo apt install -y git curl build-essential
 curl https://sh.rustup.rs -sSf | sh -s -- -y
-
-# Install jj (pick one)
-cargo install --locked jj-cli
-# or use your distro package if available
+cargo install --locked jj-cli  # or use your distro package if available
 ```
 
-Add Cargo's bin directory to your shell profile permanently:
+Make sure Cargo binaries are on your PATH:
 
 ```bash
 # zsh
@@ -42,18 +38,12 @@ grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.zshrc || \
 # bash
 grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.bashrc || \
   echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+
+# Reload shell
+source ~/.zshrc   # or source ~/.bashrc
 ```
 
-Reload your shell config (or open a new shell):
-
-```bash
-# zsh
-source ~/.zshrc
-# bash
-source ~/.bashrc
-```
-
-Verify prerequisites:
+Verify:
 
 ```bash
 git --version
@@ -62,7 +52,7 @@ cargo --version
 jj --version
 ```
 
-## Installation
+## 2) Install Aiki
 
 ```bash
 git clone https://github.com/glasner/aiki.git
@@ -70,113 +60,108 @@ cd aiki/cli
 cargo install --path .
 ```
 
-Verify the installation:
+Then confirm:
 
 ```bash
 aiki --version
 ```
 
-Expected: prints an Aiki version and confirms it's on your PATH.
+## 3) Initialize a repo for Aiki
 
-## Initialize a Project
-
-Navigate to any Git repository and run:
+From any Git repository:
 
 ```bash
 cd your-project
 aiki init
 ```
 
-This will:
-- Initialize Jujutsu (non-colocated, independent from your `.git`)
-- Create the `.aiki/` directory with default configuration
-- Install Git hooks for automatic co-author attribution
-- Configure editor hooks globally (Claude Code, Cursor)
+That does all of this:
 
-Init success checks:
-- `.aiki/` exists
-- `.aiki/repo-id` exists
-- `.aiki/hooks.yml` exists
-- `git config core.hooksPath` points to `~/.aiki/githooks`
-- `jj root` returns the project root
+- Creates `.aiki/` with defaults
+- Adds `.aiki/hooks.yml`
+- Generates `.aiki/repo-id`
+- Configures Git hooks (`~/.aiki/githooks`)
+- Boots local JJ workspace metadata
+- Installs editor hooks (Claude Code, Cursor, Codex)
 
-## Health Check
+Quick checks:
 
-Verify everything is set up correctly:
+```bash
+ls .aiki
+ls .aiki/hooks.yml
+git config core.hooksPath
+jj root
+```
+
+## 4) Run health check
+
+Use this to catch setup issues fast:
 
 ```bash
 aiki doctor
 ```
 
-This checks repository setup, global hooks, and local configuration. If it finds issues:
+If anything is fixable:
 
 ```bash
 aiki doctor --fix
 ```
 
-> **Upgrading from pre-1.x?** Rename `.aiki/templates/` to `.aiki/tasks/`.
-
-If your first `aiki plan`/`aiki build` reports missing templates (for example `No templates directory found at: .aiki/tasks` or `Template not found: review`), bootstrap templates once:
+If you hit template warnings on first run:
 
 ```bash
-cp -R /path/to/aiki/.aiki/tasks .aiki/
+cp -R /path/to/aiki/.aiki/templates .aiki/
+ls .aiki/templates/aiki
 ```
 
-Then verify:
+Expected symptom: `No templates directory found at: .aiki/templates`.
+
+Current setup is healthy even with non-blocking telemetry warning:
+`OTel receiver not listening`.
+
+## 5) First workflow: plan → build → fix
+
+Run this when you want one end-to-end proof that the orchestration works.
+
+### 5.1 Write a plan
+
+Create `ops/now/my-feature.md` with clear goal, scope, and acceptance criteria.
+
+### 5.2 Execute
 
 ```bash
-ls .aiki/tasks/aiki
+aiki build ops/now/my-feature.md --fix
 ```
 
-## Editor Setup
-
-`aiki init` configures all supported editors automatically. Here's what gets set up:
-
-| Editor | What happens |
-|--------|-------------|
-| **Claude Code** | Lifecycle hooks added to `~/.claude/settings.json` |
-| **Cursor** | File edit hooks added to `~/.cursor/hooks.json` |
-| **Codex** | OTel receiver configured |
-| **Zed** | ACP proxy available via `aiki acp claude-code` |
-
-Since hooks are global, you only need to restart your editor once after `aiki init`. Aiki preserves any existing hooks you had.
-
-## First Workflow: Plan → Build → Fix
-
-Aiki is designed for a simple first run: write a plan, execute it, then let the review/fix loop run automatically.
-
-### 1) Write a Plan
-
-Use a markdown plan file (for example, `ops/now/my-feature.md`) with implementation goals.
-
-### 2) Run Build with Review+Fix
+Need only review first?
 
 ```bash
-aiki build ops/now/my-feature.md -f
+aiki build ops/now/my-feature.md --review
 ```
 
-Use `-r` first if you want review without auto-fix, then rerun with `-f` when ready.
-
-### 3) Check Task Progress
+### 5.3 Watch progress
 
 ```bash
-# Watch the tasks that were created for the plan and review/fix steps
-aiki task
-
-# Open details for a task
-aiki task show <task-id>
-
-# Watch the build-review-fix task chain
-aiki task show <build-task-id>
+aiki task                # list active/completed tasks
+aiki task show <task-id> # inspect a task
 ```
 
-The build command orchestrates: **plan → decompose → loop → review → fix** (with review/fix iteration enabled by `--fix`).
+The build path is: `plan → decompose → loop → review → fix`.
 
-Use this flow in a real repo before introducing additional commands.
+## 6) Editor integrations
 
-## Next Steps
+`aiki init` wires hooks automatically:
 
-- [SDLC: Plan, Build, Review, Fix](sdlc.md) — the full AI development lifecycle
-- [Customizing Defaults](customizing-defaults.md) — modify Aiki's behavior with flows, events, context injection, and template overrides
-- [Creating Plugins](creating-plugins.md) — build reusable, shareable hooks and templates
-- [Contributing](contributing.md) — develop Aiki itself
+- **Claude Code**: `~/.claude/settings.json`
+- **Cursor**: `~/.cursor/hooks.json`
+- **Codex**: `~/.codex/config.toml` (OTel exporter configured)
+- **Zed**: `aiki acp claude-code`
+
+Hooks are global, so one restart after first init is usually enough.
+
+## 7) Next docs
+
+- [SDLC: Plan, Build, Review, Fix](sdlc.md)
+- [Customizing Defaults](customizing-defaults.md)
+- [Creating Plugins](creating-plugins.md)
+- [Contributing](contributing.md)
