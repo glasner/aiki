@@ -1,96 +1,65 @@
 ---
 name: aiki-task-workflow
-description: Workflow contract and delegation protocol for running work with `aiki task` lifecycle, review, and validation.
+description: Detailed workflow for running state-changing work with aiki task lifecycle, review, and delegation.
 ---
 
 # Aiki Task Workflow Skill
 
-## Core rule
-Before **any state-changing action** (edit/create/delete/run commands that change repo state), start with:
+## TL;DR Commands
 
 ```bash
-aiki task start "<description>" --source prompt
-```
-
-Reading files and diagnostics is not work and does not require a task.
-
-Never use native spawner tooling (`Task`, `spawn_agent`, background agents, etc.). Use `aiki task ...` only.
-
-## What counts as work
-- Any file modification (write/edit/delete)
-- Any build/deploy/installer/configuration change
-- Any multi-step implementation or investigation
-- Any review with concrete findings
-
-Do **not** start a task for:
-- read-only questions
-- read-only file reads (`sed`, `cat`, `ls`, `git status`)
-
-## Task start patterns
-- One-step: `aiki task start "Task summary"`
-- Two-step: `aiki task add "Task summary"` then `aiki task start <id>`
-- Template-driven: `aiki task start` + `aiki task run --template ...`
-
-Use `--source prompt` when the user request itself is the task driver.
-
-## Delegation protocol
-- Create/run from task ID: `aiki task run <id>`
-- Parallel only: create multiple task IDs, run with `--async`, then `aiki task wait <id1> <id2> ...`
-- `--async` is **not** fire-and-forget; inspect all `aiki task show <id>` results before replying.
-
-## Progress + closure
-- For long work: `aiki task comment add <id> "..."`
-- Close only when done: `aiki task close <id> --summary "what/why/results"`
-- Do not keep stale open tasks. Leave open only if actively in progress.
-- Include task IDs in user-visible summaries and tie results to IDs.
-
-## Review path
-If asked for review of changes:
-
-```bash
-aiki review <task-id> --start
-```
-
-- Add issues with severity + location:
-  - `aiki review issue add <review-id> "..." --high --file src/foo.rs:42`
-  - supported severities: `--high` / `--low`
-- If follow-up is needed: `aiki fix <review-id>`
-
-## Validation requirements
-Every closed task summary should include:
-- what changed
-- how validated (command or proof)
-- IDs (task/review IDs, output paths)
-- pass/fail + any warnings
-
-## Conflict resolution
-Resolve JJ markers before close:
-- `<<<<<<<`
-- `=======`
-- `>>>>>>>`
-- `%%%%%%%`
-- `+++++++`
-
-## Priorities
-`p0` > `p1` > `p2` > `p3`.
-
-## Quick command sheet
-
-```bash
-aiki task add/start "Task summary"
+aiki task start "Task summary"                      # quick start + tracking
 aiki task comment add <id> "progress update"
-aiki task run <id>
-aiki task run <id> --async
-aiki task wait <id1> <id2>
-aiki task show <id>
-aiki task close <id> --summary "done"
-aiki review <id> --start
+aiki task run <id>                                # execute task run
+aiki task wait <id1> <id2>                        # wait for async runs
+aiki task show <id>                               # inspect results and evidence
+aiki task close <id> --summary "done"             # close with concise outcome
+aiki review <task-id> --start                      # start review task for completed work
 aiki review issue add <id> "..." --high --file path:line
 ```
 
-## Bad patterns to avoid
-- Starting tasks after edits
-- Using native subagent spawners
-- Closing a task immediately after start
-- Responding before async results are collected
-- Generic prose without IDs or evidence
+## Always Do Before Changing State
+1. `aiki task start "..."` (or `aiki task add` then `aiki task start`).
+2. Perform work.
+3. Add progress comments for multi-step work.
+4. Close task with evidence-rich summary.
+
+## Delegation Flow
+- Synchronous: `aiki task run <id>`.
+- Parallel: `aiki task run <idA> --async` + `aiki task run <idB> --async`, then `aiki task wait <idA> <idB>`.
+- Do not respond before results are inspected.
+
+## Common Anti-Patterns (Avoid)
+- Creating tasks after edits.
+- Delegating with native subagent spawners.
+- Exiting without closing task.
+- Generic progress with no task IDs.
+- Closing before verifying outcomes.
+
+## Review Path
+- Start review from task ID: `aiki review <task-id> --start`
+- Add concrete issues: `aiki review issue add <review-task-id> "..." --high --file <path>:<line>`
+- If follow-up is needed: `aiki fix <review-task-id>`.
+
+## Conflict Resolution
+When conflict text appears, resolve markers manually:
+- `<<<<<<< Conflict N of M`
+- `%%%%%%% Changes from base`
+- `+++++++ Contents of side #2`
+- `>>>>>>> ...`
+
+## Evidence Required in Summaries
+Include at minimum:
+- what changed
+- validation command
+- result IDs
+- pass/fail status and warnings
+
+## Task Priorities
+`p0` (urgent) > `p1` (high) > `p2` (normal) > `p3` (low)
+
+## Quick Review Use Cases
+- `aiki task start "Review code in foo.rs"`
+- `aiki review <task-id> --start`
+- `aiki review issue add <id> "scope bug" --high --file src/foo.rs:45`
+- `aiki fix <review-id>` for follow-up tasks
