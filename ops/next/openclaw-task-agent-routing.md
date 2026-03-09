@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-09  
 **Status**: Draft  
-**Purpose**: Support namespaced bot targeting in `aiki task run` and prepare headless openclaw execution parity with `claude-code`/`codex`.
+**Purpose**: Treat `openclaw:<id>` as a first-class `--agent` target for `aiki task run`, with clean separation between target parsing and built-in agent runtime families.
 
 **Related docs**: 
 - `ops/now/learn-from-skill.md` (template pattern)
@@ -10,112 +10,117 @@
 ---
 
 ## Executive Summary
-`aiki task run --agent` currently accepts only fixed built-in agent types (`claude-code`, `codex`, `cursor`, `gemini`, `unknown`). To support routing to individual clawbots in openclaw, we need a namespaced agent target format and runtime dispatch path for `openclaw:<id>` (e.g. `openclaw:tu`).
+`aiki task run --agent` currently accepts only fixed built-in agent types (`claude-code`, `codex`, `cursor`, `gemini`, `unknown`). To route work to a specific clawbot, we need a namespaced execution target syntax (`openclaw:<id>`, e.g. `openclaw:tu`) and a runtime dispatch model that preserves existing semantics.
 
-This plan proposes a minimal change set:
-1. add a typed agent target parser (`builtin` + `openclaw:<id>`),
-2. pass that target through existing `run` execution flow,
-3. add an `OpenClawRuntime` adapter, and
-4. update CLI help + tests + docs.
+This plan keeps behavior stable for existing flows while making `openclaw:tu` feel like a first-class agent selector.
+
+The change set is:
+1. model **execution targets** as `AgentTarget`
+   - builtins (`AgentType`) and
+   - namespaced `openclaw:<id>`
+2. thread that target through `run` execution paths
+3. dispatch to new `OpenClawRuntime`
+4. update docs/tests with clear contract gates.
 
 ## Problem
-- `aiki task run --agent` rejects `openclaw:tu`-style values today because `AgentType::from_str` only supports hardcoded agents.
+- `aiki task run --agent` rejects `openclaw:tu` today because `AgentType::from_str` only supports built-in identifiers.
 - `get_runtime` currently accepts only `AgentType` and only supports `claude-code` / `codex` execution.
-- Existing event fields (`TaskEvent::Started.agent_type`) can carry any string, but task resolution/selection is still enum-driven, so actual routing cannot reach openclaw bot instances.
+- Runtime selection and event metadata share the same `AgentType` pathway, which blocks introducing named bot targets without overloading enums.
 
 ## Goal
-Make `aiki task run --agent openclaw:<id>` (example `openclaw:tu`) route to a dedicated openclaw bot in headless mode, while preserving existing built-ins behavior.
+Make `aiki task run --agent openclaw:<id>` (example `openclaw:tu`) route to a dedicated openclaw bot in headless mode, while preserving existing built-in execution behavior.
 
 ## Scope
 ### In scope
 - `aiki task run --agent` parsing/validation for namespaced openclaw identities.
-- Execution-time dispatch from task run path (`TaskRunOptions` → agent resolution → runtime lookup).
+- Execution-time dispatch from task run path (`TaskRunOptions` → resolution → runtime lookup).
 - New `OpenClawRuntime` implementation under `cli/src/agents/runtime`.
 - Help/docs updates showing `openclaw:<id>`.
-- Unit tests for parse/dispatch behavior (and optional runtime constructor smoke behavior).
+- Unit tests for parse/dispatch behavior.
 
 ### Out of scope
 - UI for selecting bots in `aiki task add/start`.
-- New task assignee semantics for openclaw in shared task visibility (can be separate phase).
 - Changes to openclaw-side storage semantics.
+- Changing task visibility/assignee model for `openclaw:<id>` in the core DAG (separate phase).
 
 ## Proposed behavior
-- `aiki task run --agent openclaw:tu ...` is accepted.
-- `aiki task run` still accepts existing built-ins (`claude-code`, `codex`) unchanged.
-- If parser can’t recognize an `openclaw:` target or runtime launch fails, user gets explicit, actionable errors:
+- `aiki task run --agent openclaw:tu ...` is accepted and resolved as an explicit target.
+- User-facing semantics are still “agent-style” (`openclaw:tu`), but internal routing uses a separate target model so assignee visibility logic is not exploded with bot ids.
+- Existing built-in behavior (`claude-code`, `codex`) is unchanged.
+- If parser can’t recognize a target or runtime launch fails, return explicit errors:
   - `UnknownAgentType` for malformed targets
-  - `AgentNotSupported` for known but non-executable agent kinds
-  - `OpenClawRuntimeUnavailable`-style error if CLI binary/config missing (new error class if needed)
+  - `AgentNotSupported` for known but non-executable kinds
+  - `OpenClawRuntimeUnavailable` (new if needed) for missing CLI/binary/contract mismatch
 
 ## Implementation plan
 
 ### Phase 1 — Target parsing and execution model
 1. Update `cli/src/agents/types.rs`
-   - Keep `AgentType` as-is for existing built-ins.
-   - Add a new enum/type for execution targets, e.g. `AgentTarget`:
+   - Keep `AgentType` as-is for built-in family/runtime choices (`claude-code`, `codex`, `cursor`, `gemini`, `unknown`).
+   - Add new execution target type `AgentTarget`:
      - `Builtin(AgentType)`
      - `OpenClaw { bot_id: String }`
    - Add parser:
      - `openclaw:<id>` => `AgentTarget::OpenClaw { bot_id: <id> }`
-     - keep existing built-in aliases (`claude`, `claude-code`, `codex`, ...).
-   - Add helper methods for canonical string render (`agent_target.as_str()`) used by event/task metadata.
+     - existing built-in aliases (`claude`, `claude-code`, `codex`, ...).
+   - Add canonical render helper (`AgentTarget::as_str`) for logging/event metadata.
 
 2. Update `cli/src/tasks/runner.rs`
    - Change `TaskRunOptions.agent_override` to hold `Option<AgentTarget>`.
-   - Update `resolve_agent_type` (renamed or refactored) to return `AgentTarget`:
+   - Update the resolver (currently `resolve_agent_type`) to return `AgentTarget`:
      - explicit `--agent` override first,
-     - task assignee second (currently maps from `Assignee` -> `AgentType`),
+     - task assignee fallback second (maps existing task assignee to `AgentType`)
      - active session/process fallback third.
-   - Keep `AgentType`-based logic for current assignee resolution paths.
-   - Ensure downstream event-writing (`TaskEvent::Started.agent_type`) can carry `openclaw:tu` where appropriate.
+   - Keep current `AgentType` visibility/assignee rules intact.
+   - Ensure downstream `TaskEvent::Started.agent_type` can represent target strings like `openclaw:tu` where applicable.
 
 3. Update `cli/src/commands/task.rs`
-   - In `Run` CLI definition, expand docs from `claude-code, codex` to include `openclaw:<id>`.
-   - In `run_run()`, replace `AgentType::from_str(agent_str)` parsing with `AgentTarget::from_str(agent_str)`.
+   - In `Run` CLI doc for `--agent`, include `openclaw:<id>` explicitly.
+   - In `run_run()`, replace `AgentType::from_str(agent_str)` with `AgentTarget::from_str(agent_str)` for override validation.
 
 ### Phase 2 — Runtime dispatch + spawn adapter
 1. Update `cli/src/agents/runtime/mod.rs`
-   - Update `get_runtime` to accept/dispatch `AgentTarget`.
-   - Return existing `ClaudeCodeRuntime`/`CodexRuntime` for builtin targets.
-   - Return new `OpenClawRuntime` for `AgentTarget::OpenClaw { .. }`.
+   - Change `get_runtime` to dispatch on `AgentTarget`.
+   - `AgentTarget::Builtin(AgentType::ClaudeCode | Codex)` => existing runtimes.
+   - `AgentTarget::OpenClaw { .. }` => new `OpenClawRuntime`.
 
 2. Add `cli/src/agents/runtime/openclaw.rs`
-   - Implement `AgentRuntime` methods (`spawn_blocking`, `spawn_background`, `spawn_monitored`).
+   - Implement `AgentRuntime` (`spawn_blocking`, `spawn_background`, `spawn_monitored`).
    - Define headless invocation contract in one place (`openclaw` binary + args + env):
-     - carry `task_prompt()` via argument or stdin
-     - carry `options.task_id` via env (`AIKI_TASK`) and session markers (matching existing convention)
-     - carry `bot_id` metadata via env (e.g. `OPENCLAW_BOT_ID=<id>`), with a TODO/fallback for CLI param location if invocation shape differs.
-   - Add extraction summary/error handling consistent with existing runtimes.
+     - pass prompt via arg or stdin as needed
+     - pass task context via `AIKI_TASK`
+     - pass bot identifier via env (e.g. `OPENCLAW_BOT_ID=<id>`)
+   - Map summary/error output to `AgentSessionResult` consistent with existing runtimes.
 
-3. Update `cli/src/agents/runtime/mod.rs` exports (`mod openclaw; pub use ...`).
+3. Export `openclaw` runtime in `cli/src/agents/runtime/mod.rs`.
 
 ### Phase 3 — Validation and docs
 1. Add tests:
-   - parse tests in `cli/src/agents/types.rs`:
-     - `openclaw:tu` accepted,
-     - case variants invalid values rejected.
+   - parse/format tests in `cli/src/agents/types.rs`:
+     - `openclaw:tu` accepted
+     - malformed ids rejected (including `openclaw`, `openclaw:`)
    - dispatch tests in runtime module:
-     - builtin agent still resolves,
-     - `get_runtime` returns runtime for `openclaw:tu` target.
+     - builtin target still resolves
+     - `openclaw:tu` dispatches to new runtime
 
-2. Add/update CLI output examples in `ops/next`/`ops/now` doc:
+2. Update CLI docs/examples (and `ops/now`/`ops/next` notes):
    - `aiki task run --agent openclaw:tu --template ...`
 
-3. Quick smoke check:
-   - `cargo test -p aiki` for parser/runtime tests;
-   - if environment cannot execute `openclaw` binary, test should assert missing-tool handling path (no hanging, clear error).
+3. Smoke checks:
+   - `cargo test -p aiki` for parser/runtime tests.
+   - if binary invocation is unavailable in CI/local, tests must exercise graceful failure path only.
 
 ## Acceptance criteria
-1. `aiki task run --agent openclaw:tu` is parse-valid and does not reject at validation time.
+1. `aiki task run --agent openclaw:tu` is accepted (no early rejection as unknown built-in).
 2. Existing `--agent codex|claude-code` behavior remains unchanged.
-3. `run` execution path passes target through to runner/runtime and selects openclaw runtime for `openclaw:*`.
-4. `agent_type` metadata for started runs remains meaningful, with started events showing `openclaw:tu` when requested.
-5. Unit tests cover parse and dispatch; no regressions in current codex/claude flows.
+3. Run execution passes execution targets through to runtime selection and picks openclaw runtime for `openclaw:*` targets.
+4. Started metadata/events preserve meaningful target labels (`openclaw:tu`).
+5. Unit tests for parse + dispatch pass with no regressions in Claude/Codex paths.
 
 ## Risks / caveats
-- Runtime command contract depends on stable headless invocation surface for openclaw; if no stable contract is confirmed, this should remain blocked at a “manual gate” until a concrete CLI shape is validated.
-- `AgentSessionResult` mapping depends on reliable exit/error signaling from openclaw process; we need a short real payload/exit audit before enabling strict automation.
+- Implementation is blocked until openclaw headless contract is verified (binary path, args, env, and exit semantics).
+- `AgentSessionResult` mapping relies on reliable openclaw exit/error signals; run a short real payload/exit audit before strict automation assumptions.
 
 ## Next
-- Confirm openclaw headless command contract (args/env/exit semantics).
-- Then implement phases 1–3 in small patches with targeted tests after each.
+- Confirm headless `openclaw` contract (args/env/exit semantics).
+- Then implement phases 1–3 in minimal patches, each with targeted tests.
