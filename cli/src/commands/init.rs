@@ -1,4 +1,4 @@
-use crate::commands::agents_template::{AIKI_BLOCK_TEMPLATE, AIKI_BLOCK_VERSION};
+use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
@@ -405,7 +405,7 @@ fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
         // Check for <aiki> block
         if !content.contains("<aiki version=") {
             // Prepend block
-            let updated = format!("{}\n{}", AIKI_BLOCK_TEMPLATE, content);
+            let updated = format!("{}\n{}", aiki_block_template(), content);
             fs::write(&agents_path, updated).context("Failed to update AGENTS.md")?;
             if !quiet {
                 println!("✓ Added <aiki> block to AGENTS.md");
@@ -421,7 +421,7 @@ fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
         }
     } else {
         // Create new AGENTS.md with just the block
-        fs::write(&agents_path, AIKI_BLOCK_TEMPLATE).context("Failed to create AGENTS.md")?;
+        fs::write(&agents_path, aiki_block_template()).context("Failed to create AGENTS.md")?;
         if !quiet {
             println!("✓ Created AGENTS.md with task system instructions");
         }

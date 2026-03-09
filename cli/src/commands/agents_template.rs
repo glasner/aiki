@@ -3,11 +3,16 @@
 /// This template is used by both `aiki init` and `aiki doctor` to ensure
 /// consistent agent instructions across the codebase.
 
-/// Current version of the AIKI block template
-pub const AIKI_BLOCK_VERSION: &str = "1.16";
+/// Current version of the AIKI block — derived from Cargo.toml at compile time
+pub const AIKI_BLOCK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Template for the <aiki> block in AGENTS.md
-pub const AIKI_BLOCK_TEMPLATE: &str = r#"<aiki version="1.16">
+/// Returns the full <aiki> block template with the current version
+pub fn aiki_block_template() -> String {
+    format!("<aiki version=\"{}\">{}",  AIKI_BLOCK_VERSION, AIKI_BLOCK_INNER)
+}
+
+/// Template body (everything after the opening tag)
+const AIKI_BLOCK_INNER: &str = r#"
 
 ## ⛔ STOP - Read This First
 
