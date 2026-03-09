@@ -17,6 +17,7 @@ use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::tasks::runner::{ScreenSession, handle_session_result, task_run, task_run_on_session, TaskRunOptions};
+use crate::tui::loading_screen::LoadingScreen;
 use crate::tasks::md::MdBuilder;
 use crate::tasks::templates::get_working_copy_change_id;
 use crate::tasks::{
@@ -218,9 +219,14 @@ pub fn run_fix(
     // ── Synchronous quality loop ──────────────────────────────────
     let mut review_id = review_task.id.clone();
 
-    // Create shared screen session for TTY (unified view across stages)
+    // Create loading screen for immediate TTY feedback, then transition to ScreenSession
     let mut session = if io::stderr().is_terminal() {
-        Some(ScreenSession::new()?)
+        let mut loading = LoadingScreen::new("Loading task graph...")?;
+        loading.set_filepath(&scope.name());
+        loading.set_task_context(&review_task.id, &review_task.name);
+        loading.set_step("Starting quality loop...");
+        let screen = loading.into_live_screen()?;
+        Some(ScreenSession::from_live_screen(screen)?)
     } else {
         None
     };
@@ -294,9 +300,14 @@ fn run_fix_continue(
     // Step 3: Create plan-fix task
     let plan_fix_id = create_plan_fix_task(cwd, &review_id, fix_parent_id, &assignee, Some(&plan_template_resolved))?;
 
-    // Create shared screen session for TTY (unified view across stages)
+    // Create loading screen for immediate TTY feedback, then transition to ScreenSession
     let mut session = if io::stderr().is_terminal() {
-        Some(ScreenSession::new()?)
+        let mut loading = LoadingScreen::new("Preparing fix...")?;
+        loading.set_filepath(&scope.name());
+        loading.set_task_context(fix_parent_id, &fix_parent.name);
+        loading.set_step("Starting fix pipeline...");
+        let screen = loading.into_live_screen()?;
+        Some(ScreenSession::from_live_screen(screen)?)
     } else {
         None
     };

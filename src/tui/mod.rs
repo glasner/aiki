@@ -1,6 +1,7 @@
 pub mod buffer_ansi;
 pub mod builder;
 pub mod live_screen;
+pub mod loading_screen;
 pub mod theme;
 pub mod types;
 pub mod views;
