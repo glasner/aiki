@@ -1,9 +1,10 @@
 Now:
-- review screen cleanup -> build screen cleanup
-
+- figure out marking a release
+- cut v0.1.0
 - share with Paul
 
 Next:
+- move aiki context out into an aiki skill (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
 - registry
 - workflow hooks commands -> review loop plug
@@ -17,6 +18,7 @@ Next:
 - gemini support
 - debug command
 - discuss command
+- decision command
 
 
 # Aiki Product Roadmap
