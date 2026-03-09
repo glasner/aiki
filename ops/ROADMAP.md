@@ -4,7 +4,7 @@ Now:
 - share with Paul
 
 Next:
-- move aiki context out into an aiki skill (reduce AGENTS.md)
+- move aiki context out into an aiki skill(s) (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
 - registry
 - workflow hooks commands -> review loop plug
