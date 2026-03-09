@@ -33,7 +33,18 @@ use error::Result;
 #[derive(Parser)]
 #[command(name = "aiki")]
 #[command(version)]
-#[command(about = "AI code review engine", long_about = None)]
+#[command(
+    about = "Aiki CLI for autonomous code workflows",
+    long_about = r#"Aiki is a local CLI for autonomous AI-assisted review and execution.
+
+Core workflows:
+- aiki init: set up agent hooks and repository integration.
+- aiki review: run and inspect review sessions.
+- aiki plan / aiki task / aiki fix / aiki build / aiki loop: plan, execute, and iterate AI work.
+- aiki status, aiki blame, aiki session: inspect live state.
+
+Run aiki <command> --help for subcommand-specific docs before each command.
+"#)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
