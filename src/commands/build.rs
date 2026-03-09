@@ -856,7 +856,7 @@ fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, 
         scope,
         agent_override: None,
         template: review_template,
-        fix_template: if with_fix { fix_template.or_else(|| Some("fix".to_string())) } else { None },
+        fix_template: if with_fix { fix_template.clone().or_else(|| Some("fix".to_string())) } else { None },
         autorun: false,
     })?;
 
@@ -872,6 +872,32 @@ fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, 
         handle_session_result(cwd, &result.review_task_id, session_result, true)?;
     } else {
         task_run(cwd, &result.review_task_id, options)?;
+    }
+
+    // Check if review found issues and invoke fix if requested
+    let events = read_events(cwd)?;
+    let graph = materialize_graph(&events);
+    let has_issues = find_task(&graph.tasks, &result.review_task_id)
+        .map(|t| t.data.get("issue_count")
+            .and_then(|c| c.parse::<usize>().ok())
+            .unwrap_or(0) > 0)
+        .unwrap_or(false);
+
+    if with_fix && has_issues {
+        super::fix::run_fix(
+            cwd,
+            &result.review_task_id,
+            false,          // not async
+            None,           // no continue-async
+            fix_template,   // forward caller's fix template
+            None,           // default decompose template
+            None,           // default loop template
+            None,           // default review template
+            None,           // no agent override
+            false,          // not autorun
+            false,          // not --once
+            None,           // no output format override
+        )?;
     }
 
     output_build_review_completed(&result.review_task_id, plan_path, with_fix)?;

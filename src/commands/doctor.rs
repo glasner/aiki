@@ -1,4 +1,4 @@
-use crate::commands::agents_template::{AIKI_BLOCK_TEMPLATE, AIKI_BLOCK_VERSION};
+use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
 use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
@@ -307,7 +307,7 @@ pub fn run(fix: bool) -> Result<()> {
                                 let updated = format!(
                                     "{}{}{}",
                                     before.trim_end(),
-                                    AIKI_BLOCK_TEMPLATE,
+                                    aiki_block_template(),
                                     after.trim_start()
                                 );
                                 match fs::write(&agents_path, updated) {
@@ -331,7 +331,7 @@ pub fn run(fix: bool) -> Result<()> {
                     println!("  ⚠ AGENTS.md missing <aiki> block");
                     if fix {
                         // Prepend block to existing content
-                        let updated = format!("{}\n{}", AIKI_BLOCK_TEMPLATE, content);
+                        let updated = format!("{}\n{}", aiki_block_template(), content);
                         match fs::write(&agents_path, updated) {
                             Ok(()) => {
                                 println!("    ✓ Added <aiki> block to AGENTS.md");
@@ -354,7 +354,7 @@ pub fn run(fix: bool) -> Result<()> {
     } else {
         println!("  ⚠ AGENTS.md not found");
         if fix {
-            match fs::write(&agents_path, AIKI_BLOCK_TEMPLATE) {
+            match fs::write(&agents_path, aiki_block_template()) {
                 Ok(()) => {
                     println!("    ✓ Created AGENTS.md with task system instructions");
                 }
