@@ -568,23 +568,30 @@ pub fn restart_otel_receiver() -> Result<()> {
 fn restart_otel_receiver_macos() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let plist_path = home_dir.join("Library/LaunchAgents/com.aiki.otel-receive.plist");
+    let domain_target = format!("gui/{}", unsafe { libc::getuid() });
+    let service_target = format!("{}/com.aiki.otel-receive", domain_target);
 
-    // Unload (stop)
+    // Bootout (stop) — ignore errors, may not be loaded
     let _ = Command::new("launchctl")
-        .args(["unload", "-w"])
-        .arg(&plist_path)
+        .args(["bootout", &service_target])
         .output();
 
-    // Reload (start)
+    // Clear the disabled override left by any prior `launchctl unload -w`.
+    // Without this, bootstrap fails with EIO (error 5).
+    let _ = Command::new("launchctl")
+        .args(["enable", &service_target])
+        .output();
+
+    // Bootstrap (start)
     let output = Command::new("launchctl")
-        .args(["load", "-w"])
+        .args(["bootstrap", &domain_target])
         .arg(&plist_path)
         .output()
-        .context("Failed to run launchctl load")?;
+        .context("Failed to run launchctl bootstrap")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("launchctl load failed: {}", stderr.trim());
+        anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
     }
 
     Ok(())
@@ -608,30 +615,37 @@ fn install_otel_receiver_macos(aiki_path: &str) -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let agents_dir = home_dir.join("Library/LaunchAgents");
     let plist_path = agents_dir.join("com.aiki.otel-receive.plist");
+    let domain_target = format!("gui/{}", unsafe { libc::getuid() });
+    let service_target = format!("{}/com.aiki.otel-receive", domain_target);
 
     fs::create_dir_all(&agents_dir).context("Failed to create ~/Library/LaunchAgents")?;
 
-    // Unload existing if present (ignore errors - may not be loaded)
+    // Bootout existing if present (ignore errors — may not be loaded)
     if plist_path.exists() {
         let _ = Command::new("launchctl")
-            .args(["unload", "-w"])
-            .arg(&plist_path)
+            .args(["bootout", &service_target])
             .output();
     }
 
     let plist_content = generate_launchd_plist(aiki_path);
     fs::write(&plist_path, &plist_content).context("Failed to write launchd plist")?;
 
-    // Load the agent
+    // Clear the disabled override left by any prior `launchctl unload -w`.
+    // Without this, bootstrap fails with EIO (error 5).
+    let _ = Command::new("launchctl")
+        .args(["enable", &service_target])
+        .output();
+
+    // Bootstrap the agent (registers plist + activates socket)
     let output = Command::new("launchctl")
-        .args(["load", "-w"])
+        .args(["bootstrap", &domain_target])
         .arg(&plist_path)
         .output()
-        .context("Failed to run launchctl load")?;
+        .context("Failed to run launchctl bootstrap")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("launchctl load failed: {}", stderr.trim());
+        anyhow::bail!("launchctl bootstrap failed: {}", stderr.trim());
     }
 
     Ok(())
