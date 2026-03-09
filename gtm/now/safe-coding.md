@@ -1,8 +1,8 @@
-# Safe Coding Spine (2-track offer)
+# Aiki FastTrack (2-track offer)
 
 **Date:** 2026-03-09  
 **Owner:** Tu/Jordan  
-**Goal:** Expand `Safe Coding Spine` into two practical GTM entry tracks for faster closes.
+**Goal:** Expand `Aiki FastTrack` into two practical GTM entry tracks for faster closes.
 
 ## Why split it
 Current buyers are mixed:
@@ -13,7 +13,7 @@ A single offer family with two tracks reduces confusion and improves conversion 
 
 ---
 
-## Safe Coding Spine — Human Track
+## Aiki FastTrack — Human Track
 
 **Position:** "Set your team up with a safe, enforceable coding workflow in Aiki."  
 **Audience:** teams where most implementation is still human-driven (AI adoption is early or inconsistent).
@@ -37,7 +37,7 @@ A single offer family with two tracks reduces confusion and improves conversion 
 
 ---
 
-## Safe Coding Spine — Clawbot Track
+## Aiki FastTrack — Clawbot Track
 
 **Position:** "Make your coding bots productive at scale without turning into technical debt."  
 **Audience:** teams already running custom/internal bots (or integrating public clawbots).

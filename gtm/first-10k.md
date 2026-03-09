@@ -10,7 +10,7 @@ Generate **$10K/month run-rate within 60 days** by prioritizing paid adoption fo
 ## Core hypothesis
 The fastest path is **service-first, then productized recurring usage**:
 
-1. Deliver working outcomes quickly via a fixed-scope **Safe Coding Spine** engagement.
+1. Deliver working outcomes quickly via a fixed-scope **Aiki FastTrack** engagement.
 2. Convert delivery into recurring managed operations / platform subscriptions.
 3. Expand to **General Workflow** packages only after coding value is proven.
 
@@ -18,7 +18,7 @@ The fastest path is **service-first, then productized recurring usage**:
 
 ## Priority offers (ranked)
 
-### 1) Safe Coding Spine (Primary)
+### 1) Aiki FastTrack (Primary)
 **Position:** Scale clawbot or AI coding assistants from “promising but fragile” to predictable production behavior.
 
 **Offer:** 1–2 week paid sprint for 1–3 coding bots/repos.
@@ -64,7 +64,7 @@ The fastest path is **service-first, then productized recurring usage**:
 ## 60-day execution plan
 
 ### Days 1–7
-- Finalize one-pager offer + 1-page scope template for Safe Coding Spine.
+- Finalize one-pager offer + 1-page scope template for **Aiki FastTrack**.
 - Build a 10-target list (AI-native teams, dev agencies, infra teams adopting bots).
 - Publish a one-click discovery call offer: **$5k fixed transformation sprint, 2-week delivery**.
 
@@ -89,8 +89,8 @@ The fastest path is **service-first, then productized recurring usage**:
 
 ### Days 46–60
 - Close 3 paid engagements across:
-  - 2 Spine sprints + 1 retainer, **or**
-  - 1 Spine + 1 Clawbot integration + 1 retainer
+  - 2 Aiki FastTrack sprints + 1 retainer, **or**
+  - 1 Aiki FastTrack + 1 Clawbot integration + 1 retainer
 - Verify monthly run-rate and adjust pricing if needed.
 
 ---
@@ -98,8 +98,8 @@ The fastest path is **service-first, then productized recurring usage**:
 ## Target pipeline for $10k run-rate
 
 Minimum viable mix:
-- **2 x Safe Coding Spine @ $5k each** = $10k in first 60 days (gross),
-- or **1 Spine + 1 Clawbot + 1 retainer** = $4k + $2.5k + $2.5k = $9k (close gap with second sprint/retainer).
+- **2 x Aiki FastTrack @ $5k each** = $10k in first 60 days (gross),
+- or **1 Aiki FastTrack + 1 Clawbot + 1 retainer** = $4k + $2.5k + $2.5k = $9k (close gap with second sprint/retainer).
 
 ## Go/no-go metrics (check at Day 30)
 - Pipeline value created: **>$25k** (3x target)
@@ -113,7 +113,7 @@ Minimum viable mix:
 - 5.4 model instability risk: avoid building new commitments around unstable model assumptions.
 
 ## Immediate next actions (today)
-1. Draft and send Safe Coding Spine offer to 5 top prospects.
+1.  draft and send Aiki FastTrack offer to 5 top prospects.
 2. Stand up onboarding checklist + acceptance criteria draft.
 3. Book first three discovery calls.
 4. Name the pilot owner + retainer owner for each potential client.
