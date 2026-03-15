@@ -1,9 +1,5 @@
 # Getting Started with Aiki
 
-Aiki is practical if you treat it like an onboarding checklist: install it, init once, run the health check, then run one real task.
-
-This page is the minimal path from zero to first workflow.
-
 ## 1) Install prerequisites
 
 > Git is assumed to be installed already.
