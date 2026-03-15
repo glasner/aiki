@@ -16,7 +16,7 @@ Next:
 - branched sessions
 - cursor third party hooks
 - gemini support
-- debug command
+- aiki debug > aiki decompose workflow
 - discuss command
 - decision command
 

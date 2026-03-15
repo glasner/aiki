@@ -4,6 +4,7 @@ use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::global;
 use crate::jj;
+use crate::prerequisites;
 use crate::repos::RepoDetector;
 use crate::repos;
 use anyhow::Context;
@@ -113,6 +114,8 @@ include:
 "#;
 
 pub fn run(quiet: bool) -> Result<()> {
+    prerequisites::check_prerequisites(quiet)?;
+
     // Get current directory
     let current_dir = env::current_dir().context("Failed to get current directory")?;
 

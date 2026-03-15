@@ -158,6 +158,14 @@ Each workspace is a JJ workspace sharing the same underlying repo
 (`.jj/repo` points back to the original). Agents `cd` into their workspace
 and perform all file operations there.
 
+**Sandbox implications:** JJ operations in an isolated workspace write to the
+shared repo store (the path in `.jj/repo`), which lives outside the workspace
+tree. Sandboxed agents (e.g. Codex with `--full-auto` / `workspace-write`
+sandbox) must be told about this path via `--add-dir`, otherwise the sandbox
+blocks writes to the JJ store and the agent silently fails to update task
+state. See `codex.rs:apply_jj_flags()` which reads `.jj/repo` and passes
+`--add-dir` pointing to the parent `.jj` directory when the store is external.
+
 ---
 
 ### Phase 4: Workspace Absorption (Turn Completion)
@@ -508,6 +516,7 @@ If an agent crashes before cleanup:
 | `cli/src/flows/core/hooks.yaml` | Event handlers that wire everything together |
 | `cli/src/flows/core/functions.rs` | Native functions: `workspace_ensure_isolated`, `workspace_absorb_all`, `detect_workspace_conflicts` |
 | `cli/src/events/session_started.rs` | Session lifecycle: prune dead PIDs, create session file, run core hook |
+| `cli/src/agents/runtime/codex.rs` | Codex agent spawning: `apply_jj_flags()` adds `--add-dir` for shared JJ store |
 
 ---
 
@@ -525,6 +534,7 @@ If an agent crashes before cleanup:
 | Both steps use `--ignore-working-copy` | After step 1 rebases the workspace chain, JJ's working-copy tracking is stale. Step 2 also uses `--ignore-working-copy`, then `workspace update-stale` syncs the filesystem |
 | Retry count with force-absorb at 3 | Prevents infinite conflict loops; lets human intervene after reasonable attempts |
 | `jj new --ignore-working-copy` in default workspace | `session.started` and `repo.changed` hooks run `jj new` in the default workspace, which can race with concurrent absorptions. Without `--ignore-working-copy`, `jj new` triggers a working-copy snapshot that diverges from an in-flight absorption's rebase, causing jj to reconcile divergent operations and silently revert user filesystem changes (e.g. files moved in Finder). User changes are captured later by the absorption's own `jj status` target snapshot |
+| Codex `--add-dir` for shared JJ store | JJ workspaces share the repo store (`.jj/repo` is a text file pointing to the original repo's `.jj/repo` directory). Codex's `workspace-write` sandbox only allows writes under the cwd; `--add-dir` whitelists the shared store so `aiki task` commands can write JJ operations. Without this, the agent silently fails to update task state. `codex.rs:apply_jj_flags()` reads `.jj/repo` and adds `--add-dir` only when the store is external (safe no-op for non-workspace repos where `.jj/repo` is a directory) |
 
 ---
 

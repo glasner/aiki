@@ -16,6 +16,7 @@ mod history;
 mod jj;
 mod output_utils;
 mod plugins;
+mod prerequisites;
 mod provenance;
 mod repos;
 
