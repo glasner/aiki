@@ -16,6 +16,7 @@ pub mod global;
 pub mod history;
 pub mod jj;
 pub mod plugins;
+pub mod prerequisites;
 pub mod provenance;
 pub mod repos;
 

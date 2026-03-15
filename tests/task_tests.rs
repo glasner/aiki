@@ -2261,6 +2261,64 @@ fn test_show_without_id_returns_error() {
 }
 
 #[test]
+fn test_show_output_summary_rejects_open_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task (stays open/ready)
+    let output = aiki_task(temp_dir.path(), &["add", "Test task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // --output summary on an open task should fail
+    aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"])
+        .failure();
+}
+
+#[test]
+fn test_show_output_summary_emits_summary_for_closed_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create and start a task
+    let output = aiki_task(temp_dir.path(), &["add", "Test task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    aiki_task(temp_dir.path(), &["start", &task_id]).success();
+
+    // Close with a summary
+    aiki_task(temp_dir.path(), &["close", &task_id, "--summary", "My test summary"]).success();
+
+    // --output summary on a closed task should succeed and print only the summary
+    let output = aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    assert!(
+        stdout.contains("My test summary"),
+        "Expected summary text in stdout, got: {}", stdout
+    );
+}
+
+#[test]
+fn test_show_output_summary_rejects_closed_task_without_summary() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    init_aiki_repo(temp_dir.path());
+
+    // Create a task
+    let output = aiki_task(temp_dir.path(), &["add", "Test task"]).success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let task_id = extract_short_id(&stdout);
+
+    // Close without a summary
+    aiki_task(temp_dir.path(), &["close", &task_id]).success();
+
+    // --output summary on a closed task without summary should fail
+    aiki_task(temp_dir.path(), &["show", &task_id, "--output", "summary"])
+        .failure()
+        .stderr(predicate::str::contains("closed but has no summary"));
+}
+
+#[test]
 fn test_run_requires_id_or_template() {
     let temp_dir = tempfile::tempdir().unwrap();
     init_aiki_repo(temp_dir.path());

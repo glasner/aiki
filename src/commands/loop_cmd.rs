@@ -103,6 +103,7 @@ pub fn run(args: LoopArgs) -> Result<()> {
 
     let loop_task_id = run_loop(&cwd, &args.parent_id, options, None)?;
 
+    // --output id: emit bare task ID and exit before orchestration
     if matches!(args.output, Some(OutputFormat::Id)) {
         println!("{}", loop_task_id);
     }

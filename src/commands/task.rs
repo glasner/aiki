@@ -13,9 +13,16 @@ use std::path::Path;
 use crate::agents::AgentType;
 use crate::error::{AikiError, Result};
 
+/// Output format for task commands that support summary output.
+#[derive(Clone, Debug, PartialEq, clap::ValueEnum)]
+pub enum TaskOutputFormat {
+    /// Bare task ID (full 32-char), one per line
+    Id,
+    /// Task summary/completion comment only
+    Summary,
+}
+
 /// Name for the synthetic `.0` subtask auto-created when starting a parent task.
-/// TEMPORARILY UNUSED: digest subtask creation is disabled for performance testing.
-#[allow(dead_code)]
 const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
 
 /// Placeholder prefix/suffix for parent.subtasks.{slug} deferred resolution.
@@ -614,9 +621,9 @@ pub enum TaskCommands {
         #[arg(long)]
         with_instructions: bool,
 
-        /// Output format (e.g., `id` for bare task ID on stdout)
+        /// Output format (e.g., `id` for bare task ID, `summary` for completion summary)
         #[arg(long, short = 'o', value_name = "FORMAT")]
-        output: Option<super::OutputFormat>,
+        output: Option<TaskOutputFormat>,
     },
 
     /// Set fields on a task
@@ -2063,7 +2070,7 @@ fn run_start(
         TaskPriority::default() // P2
     };
     let events = read_events(cwd)?;
-    let graph = materialize_graph(&events);
+    let mut graph = materialize_graph(&events);
     let mut tasks = graph.tasks.clone();
 
     // Detect current session early - needed for start event
@@ -2213,6 +2220,37 @@ fn run_start(
                     return Ok(());
                 }
             }
+            // Check if the task is blocked by unresolved dependencies
+            if graph.is_blocked(&full_id) {
+                let blockers: Vec<String> = graph
+                    .edges
+                    .targets(&full_id, "blocked-by")
+                    .iter()
+                    .filter(|bid| {
+                        graph.tasks.get(*bid).map_or(true, |t| {
+                            !(t.status == TaskStatus::Closed
+                                && t.closed_outcome == Some(TaskOutcome::Done))
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                let blocker_display = if blockers.is_empty() {
+                    "unresolved dependencies".to_string()
+                } else {
+                    blockers
+                        .iter()
+                        .map(|b| crate::tasks::md::short_id(b))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let xml = MdBuilder::new("start").error().build_error(&format!(
+                    "Task '{}' is blocked by: {}. Close the blocking task(s) first.",
+                    crate::tasks::md::short_id(&full_id),
+                    blocker_display
+                ));
+                aiki_print(&xml);
+                std::process::exit(1);
+            }
             resolved_ids.push(full_id);
         }
         resolved_ids
@@ -2242,11 +2280,91 @@ fn run_start(
         }
     }
 
-    // TEMPORARILY DISABLED: digest (.0) subtask auto-creation
-    // When starting a parent task with subtasks, we used to auto-create a
-    // "Digest subtasks and start first batch" (.0) subtask. Disabled to test
-    // whether skipping it improves agent performance.
-    let actual_ids_to_start = ids_to_start.clone();
+    // Check if we're starting a parent task with subtasks
+    // If so, auto-create a planning task (.0) and start that instead
+    let mut actual_ids_to_start = ids_to_start.clone();
+
+    if ids_to_start.len() == 1 {
+        let task_id = ids_to_start[0].clone();
+        if has_subtasks(&graph, &task_id) {
+            // Starting a parent task - find or create a digest task among children
+            let existing_digest = graph
+                .edges
+                .referrers(&task_id, "subtask-of")
+                .iter()
+                .find(|child_id| {
+                    graph.tasks.get(*child_id).is_some_and(|t| {
+                        t.name == DIGEST_SUBTASK_NAME && t.status != TaskStatus::Closed
+                    })
+                })
+                .cloned();
+
+            let digest_task_id = if let Some(id) = existing_digest {
+                id
+            } else {
+                // Create the planning task with a full 32-char ID
+                let id = generate_task_id(DIGEST_SUBTASK_NAME);
+                let timestamp = chrono::Utc::now();
+                let working_copy = get_working_copy_change_id(cwd);
+                let planning_event = TaskEvent::Created {
+                    task_id: id.clone(),
+                    name: DIGEST_SUBTASK_NAME.to_string(),
+                    slug: None,
+                    task_type: None,
+                    priority: TaskPriority::default(),
+                    assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    working_copy: working_copy.clone(),
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
+                    timestamp,
+                };
+                write_event(cwd, &planning_event)?;
+                write_link_event(cwd, &graph, "subtask-of", &id, &task_id)?;
+
+                // Add the subtask-of edge to the in-memory graph so the
+                // parent preservation lookup (graph.edges.target) works
+                // without needing the new_scope workaround.
+                graph.edges.add(&id, &task_id, "subtask-of");
+
+                // Add to local tasks map for output
+                let task = Task {
+                    id: id.clone(),
+                    name: DIGEST_SUBTASK_NAME.to_string(),
+                    slug: None,
+                    task_type: None,
+                    status: TaskStatus::Open,
+                    priority: TaskPriority::default(),
+                    assignee: None,
+                    sources: Vec::new(),
+                    template: None,
+                    instructions: None,
+                    data: std::collections::HashMap::new(),
+                    created_at: timestamp,
+                    started_at: None,
+                    claimed_by_session: None,
+                    last_session_id: None,
+                    stopped_reason: None,
+                    closed_outcome: None,
+                    summary: None,
+                    turn_started: None,
+                    turn_closed: None,
+                    turn_stopped: None,
+                    closed_at: None,
+                    comments: Vec::new(),
+                };
+                tasks.insert(id.clone(), task);
+                id
+            };
+
+            // Start both the parent and its digest task.
+            // The parent must transition to InProgress so it doesn't re-appear
+            // in the ready queue after the .0 digest is closed (which would cause
+            // agents to re-start the parent and create duplicate .0 digests).
+            actual_ids_to_start = vec![task_id.clone(), digest_task_id];
+        }
+    }
 
     // Get tasks before state changes (for output)
     let mut started_tasks: Vec<Task> = actual_ids_to_start
@@ -3899,7 +4017,7 @@ fn run_show(
     show_diff: bool,
     with_source: bool,
     with_instructions: bool,
-    output_format: Option<super::OutputFormat>,
+    output_format: Option<TaskOutputFormat>,
 ) -> Result<()> {
     use crate::tasks::manager::get_subtasks;
 
@@ -3926,12 +4044,32 @@ fn run_show(
     };
 
     // If --output id, print bare task ID and return
-    if matches!(output_format, Some(super::OutputFormat::Id)) {
+    if matches!(output_format, Some(TaskOutputFormat::Id)) {
         println!("{}", task_id);
         return Ok(());
     }
 
     let task = tasks.get(&task_id).expect("Task should exist");
+
+    // If --output summary, print task summary only (closed tasks only)
+    if matches!(output_format, Some(TaskOutputFormat::Summary)) {
+        if task.status != TaskStatus::Closed {
+            return Err(AikiError::InvalidArgument(
+                format!("Task {} has no summary (not yet closed)", short_id(&task_id))
+            ));
+        }
+        match task.effective_summary() {
+            Some(summary) => {
+                println!("{}", summary);
+            }
+            None => {
+                return Err(AikiError::InvalidArgument(
+                    format!("Task {} is closed but has no summary", short_id(&task_id))
+                ));
+            }
+        }
+        return Ok(());
+    }
 
     // Get subtasks if this is a parent task
     let subtasks = get_subtasks(&graph, &task_id);

@@ -3,6 +3,7 @@ use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
+use crate::prerequisites::{check_command_version, PREREQUISITES};
 use crate::repos::RepoDetector;
 use crate::tasks::templates::builtin::default_plugin_templates;
 use crate::tasks::templates::manifest::{checksum, RepoManifest};
@@ -21,6 +22,24 @@ pub fn run(fix: bool) -> Result<()> {
     } else {
         println!("Checking Aiki health...\n");
     }
+
+    // Check prerequisites
+    println!("Prerequisites:");
+
+    for &(cmd, description) in PREREQUISITES {
+        match check_command_version(cmd) {
+            Some(version) => {
+                println!("  ✓ {} ({})", description, version);
+            }
+            None => {
+                println!("  ✗ {} not found", description);
+                println!("    → Install {} and ensure it's on your PATH", description);
+                issues_found += 1;
+            }
+        }
+    }
+
+    println!();
 
     // Check repository setup
     println!("Repository:");

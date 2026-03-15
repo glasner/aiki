@@ -226,15 +226,14 @@ fn generate_slug(description: &str) -> String {
 /// Whether the interactive prompt should fire.
 ///
 /// Interactive prompt fires when:
+/// - Creating a new file (not editing existing)
 /// - Not autogen mode (description IS the idea)
 /// - No trailing CLI text was provided (args_text was empty)
 ///
-/// When args_text is non-empty, initial_idea already contains the user's
-/// guidance merged in, so we skip the prompt. When args_text is empty,
-/// initial_idea is only the filename-derived topic (e.g., "Dark Mode"),
-/// and the user may want to add more specific guidance interactively.
-fn initial_idea_needs_input(mode: &PlanMode, has_cli_text: bool) -> bool {
-    !matches!(mode, PlanMode::Autogen { .. }) && !has_cli_text
+/// When editing an existing file, skip the prompt and go straight to the agent,
+/// which will digest the plan and ask clarifying questions.
+fn initial_idea_needs_input(mode: &PlanMode, has_cli_text: bool, is_new: bool) -> bool {
+    is_new && !matches!(mode, PlanMode::Autogen { .. }) && !has_cli_text
 }
 
 /// Prompt for multi-line text input using crossterm raw mode.
@@ -392,11 +391,11 @@ fn run_epic(
     };
 
     // Interactive prompt fires when no CLI text was provided (except autogen mode)
-    if initial_idea_needs_input(&mode, has_cli_text) && io::stdin().is_terminal() {
+    if initial_idea_needs_input(&mode, has_cli_text, is_new) && io::stdin().is_terminal() {
         let header = if initial_idea.is_empty() {
-            format!("Plan: {}", plan_path.display())
+            format!("What would you like to accomplish with this plan?\nPlan file: {}", plan_path.display())
         } else {
-            format!("Plan: {} ({})", plan_path.display(), initial_idea)
+            format!("What would you like to accomplish with this plan?\nPlan file: {} ({})\n", plan_path.display(), initial_idea)
         };
         if let Some(text) = prompt_multiline_input(&header)? {
             if initial_idea.is_empty() {
@@ -952,7 +951,7 @@ mod tests {
             slug: "add-auth".to_string(),
         };
         // Autogen never prompts — the description IS the idea
-        assert!(!initial_idea_needs_input(&mode, false));
+        assert!(!initial_idea_needs_input(&mode, false, true));
     }
 
     #[test]
@@ -961,7 +960,7 @@ mod tests {
             description: "Add auth".to_string(),
             slug: "add-auth".to_string(),
         };
-        assert!(!initial_idea_needs_input(&mode, true));
+        assert!(!initial_idea_needs_input(&mode, true, true));
     }
 
     #[test]
@@ -972,7 +971,7 @@ mod tests {
             text: String::new(),
         };
         // No CLI text — should prompt for guidance
-        assert!(initial_idea_needs_input(&mode, false));
+        assert!(initial_idea_needs_input(&mode, false, true));
     }
 
     #[test]
@@ -983,7 +982,7 @@ mod tests {
             text: "add JWT auth".to_string(),
         };
         // CLI text provided — skip prompt
-        assert!(!initial_idea_needs_input(&mode, true));
+        assert!(!initial_idea_needs_input(&mode, true, true));
     }
 
     #[test]
@@ -992,8 +991,8 @@ mod tests {
             path: PathBuf::from("existing.md"),
             text: String::new(),
         };
-        // Edit mode with no CLI text — should prompt
-        assert!(initial_idea_needs_input(&mode, false));
+        // Edit mode with no CLI text — should NOT prompt (go straight to agent)
+        assert!(!initial_idea_needs_input(&mode, false, false));
     }
 
     #[test]
@@ -1003,6 +1002,6 @@ mod tests {
             text: "add rate limiting".to_string(),
         };
         // Edit mode with CLI text — skip prompt
-        assert!(!initial_idea_needs_input(&mode, true));
+        assert!(!initial_idea_needs_input(&mode, true, false));
     }
 }

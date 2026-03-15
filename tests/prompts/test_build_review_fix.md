@@ -1,18 +1,18 @@
-You are testing aiki's build, review, and fix pipeline commands. Run through ALL phases carefully and report results.
+You are testing aiki's `build --fix` pipeline end-to-end. The goal is to verify that `aiki build <plan> --fix` correctly chains build → review → fix, and to diagnose exactly where the pipeline breaks if it does.
 
 ## Setup
-- Run `aiki task start "Test build/review/fix pipeline: comprehensive command test" --source prompt`
+- Run `aiki task start "Test build --fix pipeline: task graph verification" --source prompt`
 - Note the task ID as PARENT
 
 ---
 
-## Phase 1: `aiki build <plan.md>`
+## Phase 1: `aiki build <plan.md>` (baseline — no --fix)
 
-Test that `aiki build` creates an epic from a plan file, runs decompose to create subtasks, then runs the loop to execute them.
+Establish that a plain build works before testing the full pipeline.
 
-### 1.0 Create a plan file
+### 1.0 Create plan file
 
-Create `test-plan.md` with this content:
+Create `test-plan.md`:
 
 ```markdown
 ---
@@ -30,264 +30,290 @@ Create a small greeting utility module for testing purposes.
 2. Create `test-greetings/farewell.py` with a function `farewell(name: str) -> str` that returns `"Goodbye, {name}!"`
 ```
 
-Commit it so the build command can see it:
+Commit it:
 
-    jj commit -m "Add test-plan.md for build/review/fix pipeline test"
+    jj commit -m "Add test-plan.md for build pipeline test"
 
 ### 1.1 Run the build
 
     aiki build test-plan.md
 
-This should run synchronously. Wait for it to complete.
+Wait for it to complete.
 
 ### 1.2 Verify build results
 
 **Check epic was created:**
-- `aiki task` — should show the epic task linked to `test-plan.md`
-- The epic should have subtasks created by the decompose phase
+- `aiki task` — should show the epic task
+- `aiki task show <epic-id>` — should have subtasks, all closed
 
-**Check subtasks were executed:**
-- `aiki task show <epic-id>` — all subtasks should be closed/completed
-- The files described in the plan should exist:
-  - `test-greetings/hello.py` — should contain a `greet()` function
-  - `test-greetings/farewell.py` — should contain a `farewell()` function
-
-**Check JJ history:**
-- `jj log -r ..@` — should show changes from the build agents
-- Each change should have `[aiki]` metadata in its description
+**Check files exist:**
+- `test-greetings/hello.py` — should contain a `greet()` function
+- `test-greetings/farewell.py` — should contain a `farewell()` function
 
 ### 1.3 Record phase 1 results
 
-Note: PASS if build completed, epic was created with subtasks, subtasks were executed, and output files exist. FAIL otherwise with details.
+PASS if build completed, epic created with subtasks, subtasks executed, output files exist. FAIL otherwise with details.
 
 ---
 
-## Phase 2: `aiki review <task-id>`
+## Phase 2: `aiki build <plan.md> --fix` — the main event
 
-Test that `aiki review` creates a review task, runs the reviewer agent, and records issues.
+This is the critical test. We need to verify that `--fix` triggers the full pipeline: build → review → fix, and trace it through the task graph.
 
-### 2.0 Setup
+### 2.0 Create plan that will produce reviewable code
 
-Identify the epic task ID from phase 1. If phase 1 failed, create a simple task manually:
+Create `test-plan-fixable.md` with intentionally simple/buggy code so the reviewer has something to find:
 
-    aiki task start "Create a test file with a deliberate bug"
+```markdown
+---
+title: Create data utilities
+scope: test-datautil/
+---
 
-Then create `buggy.py` with intentionally reviewable code:
+# Create data utilities
+
+Build a small data utility module. Keep implementations deliberately simple.
+
+## Tasks
+
+1. Create `test-datautil/parser.py` with a function `parse_csv(text: str) -> list[dict]` that splits a CSV string into rows and returns a list of dicts. Use basic string splitting (not the csv module). Do not handle edge cases like quoted fields or empty lines.
+2. Create `test-datautil/stats.py` with functions `mean(values)` and `median(values)`. The mean function should just do `sum(values) / len(values)` without handling empty lists. The median function should sort and return the middle element without handling even-length lists correctly.
+3. Create `test-datautil/transform.py` with a function `normalize(values: list) -> list` that normalizes numeric values to 0-1 range. Use `(v - min) / (max - min)` without handling the case where all values are equal (division by zero).
+```
+
+Commit it:
+
+    jj commit -m "Add test-plan-fixable.md for build --fix pipeline test"
+
+### 2.1 Run build --fix
+
+    aiki build test-plan-fixable.md --fix
+
+This should run the full pipeline synchronously:
+1. **Build phase:** create epic → decompose → loop (execute subtasks)
+2. **Review phase:** create review task → run review agent → record issues
+3. **Fix phase:** if issues found → create fix-parent → plan-fix → decompose → loop → post-fix review
+
+Wait for it to complete. Note any errors or early exits.
+
+### 2.2 Verify the task graph — build phase
+
+Run `aiki task` to see the full task list.
+
+**Find the epic:**
+- Look for a task named something like "Create data utilities" (from the plan title)
+- Run `aiki task show <epic-id>`
+- **Check:** Epic should have `data.plan` field pointing to `test-plan-fixable.md`
+- **Check:** Epic should have subtasks (the decomposed implementation tasks)
+- **Check:** All build subtasks should be closed/completed
+- **Check:** `aiki task show <epic-id>` should show subtask details
+
+**Find the build/loop task:**
+- Should be a subtask or linked task with the build execution
+- Should be closed
+
+### 2.3 Verify the task graph — review phase
+
+This is the critical checkpoint. The review MUST exist as a task in the graph.
+
+**Find the review task:**
+- Run `aiki task list --source file:test-plan-fixable.md` to find all tasks linked to the plan
+- Look for a task with "review" or "Review" in the name
+- The review task should have a `validates` edge pointing to the epic
+
+**If NO review task exists:** This is the main failure mode we're testing for. Record:
+- The exact command output from `aiki build test-plan-fixable.md --fix`
+- The full `aiki task` listing
+- `aiki task show <epic-id>` output
+- Whether the build completed synchronously or spawned an async process
+- Any error messages during the review creation phase
+
+**If a review task DOES exist, verify its structure:**
+- `aiki task show <review-task-id>` — examine the full task data
+- **Check `data.scope_kind`:** Should be `code`
+- **Check `data.scope_id`:** Should be `test-plan-fixable.md` (the plan path)
+- **Check `data.issue_count`:** Should be set (even if "0")
+- **Check `data.options.fix`:** Should be `true`
+- **Check `data.options.fix_template`:** Should be `fix`
+- **Check task status:** Should be closed (review completed)
+- `aiki review issue list <review-task-id>` — list any issues found
+
+### 2.4 Verify the task graph — fix phase
+
+**If the review found issues (issue_count > 0):**
+
+Find the fix-parent task:
+- Look for a task named "Fix: ..." in the task list
+- Run `aiki task show <fix-parent-id>`
+- **Check `data.review`:** Should point to the review task ID
+- **Check `data.scope_kind`:** Should match the review's scope
+- **Check source:** Should include `task:<review-task-id>`
+- **Check subtasks:** Should have plan-fix and implementation subtasks
+- **Check status:** All fix subtasks should be closed
+
+**If the review found NO issues (issue_count = 0 or not set):**
+- This is acceptable — the code may have been good enough
+- But check: is `data.issue_count` actually set on the review task? If it's missing (not "0", but absent), this exposes Bug 2 from ops/now/fix-flag-issues.md — the `has_issues` check in `build.rs` returns `false` when the field is missing, even though issues may exist as comments
+- Run `aiki task show <review-task-id>` and check if there are comments that look like issues
+
+### 2.5 Verify the full pipeline chain
+
+Reconstruct the chain from the task graph:
+
+```
+Epic (build target)
+  ├── subtask: implementation task 1 (closed)
+  ├── subtask: implementation task 2 (closed)
+  ├── subtask: implementation task 3 (closed)
+  └── validates ← Review task (closed)
+                     ├── data.issue_count = N
+                     └── source: task:<review-id> ← Fix-parent (if issues found)
+                          ├── subtask: plan-fix (closed)
+                          ├── subtask: fix implementation tasks (closed)
+                          └── Post-fix review (if quality loop ran)
+```
+
+**Verify:**
+1. Epic exists and all build subtasks are closed
+2. Review task exists with `validates` edge to epic
+3. Review task has `data.scope_kind=code` and `data.scope_id=<plan_path>`
+4. Review task has `data.issue_count` set
+5. If issues > 0: fix-parent exists with `data.review=<review_id>`
+6. If fix ran: fix subtasks are closed
+7. If quality loop ran: post-fix review task exists
+
+Record the FULL task graph for the report. Use `aiki task show` for each task in the chain.
+
+### 2.6 Verify code files
+
+Regardless of whether fix ran:
+- `test-datautil/parser.py` should exist with a `parse_csv` function
+- `test-datautil/stats.py` should exist with `mean` and `median` functions
+- `test-datautil/transform.py` should exist with a `normalize` function
+
+If fix ran, check whether the code was actually improved (e.g., empty list handling added, division by zero guarded).
+
+### 2.7 Record phase 2 results
+
+For each sub-check, state PASS or FAIL:
+- [ ] Build phase completed (epic + subtasks closed)
+- [ ] Review task was created (exists in task graph)
+- [ ] Review task has `validates` edge to epic
+- [ ] Review task has correct scope data (`scope_kind=code`, `scope_id=<plan>`)
+- [ ] Review task has `data.issue_count` set
+- [ ] If issues found: fix pipeline ran (fix-parent + subtasks exist)
+- [ ] If fix ran: fix subtasks all closed
+- [ ] Code files exist and are functional
+
+---
+
+## Phase 3: `aiki build <plan.md> --fix` — Ctrl+C resilience (Bug 1 check)
+
+Test what happens if the review agent is interrupted.
+
+### 3.0 Setup
+
+Create `test-plan-interrupt.md`:
+
+```markdown
+---
+title: Add string utilities
+scope: test-stringutil/
+---
+
+# Add string utilities
+
+## Tasks
+
+1. Create `test-stringutil/case.py` with functions `to_snake_case(s: str) -> str` and `to_camel_case(s: str) -> str`
+```
+
+Commit it:
+
+    jj commit -m "Add test-plan-interrupt.md for interrupt test"
+
+### 3.1 Run build --fix and interrupt during review
+
+    aiki build test-plan-interrupt.md --fix
+
+When you see the review loading screen (after build completes, before review finishes), press Ctrl+C.
+
+### 3.2 Verify behavior after interrupt
+
+- **Check:** Did the command exit cleanly or error?
+- **Check:** `aiki task` — what's the state of the task graph?
+- **Check:** Was a review task created (even if incomplete)?
+- **Check:** Did the CLI print a success message ("Build Completed" / "Review completed") despite the interrupt?
+
+**Known Bug 1:** If Ctrl+C during review, `handle_session_result` returns `Ok(())` for the `Stopped` variant, and the pipeline continues — potentially printing success and skipping fix even though the review never completed.
+
+### 3.3 Record phase 3 results
+
+PASS if interrupted build does NOT falsely report success. FAIL if the pipeline continues after Ctrl+C and reports success/skips fix.
+
+---
+
+## Phase 4: `aiki review <task-id> --fix` (standalone review + fix)
+
+Test the review+fix flow independently from build.
+
+### 4.0 Setup
+
+Create a task with deliberately bad code:
+
+    aiki task start "Create code with bugs for review --fix test"
+
+Create `buggy.py`:
 
 ```python
-def divide(a, b):
-    return a / b  # No zero-division check
+import subprocess
 
-def parse_age(s):
-    return int(s)  # No error handling for non-numeric input
+def run_command(user_input):
+    subprocess.call("echo " + user_input, shell=True)  # command injection
 
-def read_config(path):
-    f = open(path)  # No context manager, no error handling
-    data = f.read()
-    return data
+def average(numbers):
+    return sum(numbers) / len(numbers)  # crashes on empty list
+
+def read_file(path):
+    f = open(path)  # no context manager
+    return f.read()
 ```
 
 Close the task:
 
     aiki task close <task-id> --summary "Created buggy.py with deliberate issues"
 
-### 2.1 Run the review
-
-    aiki review <task-id>
-
-This should run synchronously. Wait for it to complete.
-
-### 2.2 Verify review results
-
-**Check review task was created:**
-- `aiki task` — should show a review task
-- `aiki task show <review-task-id>` — should show the review task details
-
-**Check issues were recorded:**
-- `aiki review issue list <review-task-id>` — should list issues found
-- Issues should reference specific files and lines
-- Issues should have severity levels (high/medium/low)
-
-**Check review task structure:**
-- The review task should have the correct scope (task scope pointing to the reviewed task)
-- The review task should be linked to the original task
-
-### 2.3 Note the review task ID
-
-Save the review task ID for phase 4 (fix) and phase 5 (fix --once). If no issues were found, the review passed cleanly — note this as a data point but the test still passes.
-
-### 2.4 Record phase 2 results
-
-Note: PASS if review task was created, ran to completion, and either found issues or approved. FAIL if the command errored or produced no output.
-
----
-
-## Phase 3: `aiki review <task-id> --fix`
-
-Test the combined review+fix flow: review runs first, then if issues are found, fix pipeline automatically kicks in.
-
-### 3.0 Setup
-
-Create a new task with code that will definitely produce review issues:
-
-    aiki task start "Create code with security issues for review --fix test"
-
-Create `insecure.py`:
-
-```python
-import subprocess
-import sqlite3
-
-def run_command(user_input):
-    # Command injection vulnerability
-    subprocess.call("echo " + user_input, shell=True)
-
-def query_db(user_input):
-    # SQL injection vulnerability
-    conn = sqlite3.connect("test.db")
-    conn.execute("SELECT * FROM users WHERE name = '" + user_input + "'")
-
-def set_password(password):
-    # Storing password in plaintext
-    with open("passwords.txt", "a") as f:
-        f.write(password + "\n")
-```
-
-Close the task:
-
-    aiki task close <task-id> --summary "Created insecure.py with security vulnerabilities"
-
-### 3.1 Run review --fix
+### 4.1 Run review --fix
 
     aiki review <task-id> --fix
 
-This should:
-1. Run the review phase (find issues)
-2. Automatically trigger the fix pipeline
-3. The fix pipeline creates a plan, decomposes it, runs the loop
-4. A post-fix review checks the fixes
-
 Wait for it to complete.
 
-### 3.2 Verify review --fix results
+### 4.2 Verify through task graph
 
-**Check the review found issues:**
-- `aiki review issue list <review-task-id>` — should list security issues
+**Review task:**
+- `aiki task show <review-task-id>` — should have `data.scope_kind=task`, `data.scope_id=<task-id>`
+- `data.options.fix` should be `true`
+- `data.issue_count` should be > 0
 
-**Check fix pipeline ran:**
-- `aiki task` — should show fix-related tasks (fix-parent, plan-fix, etc.)
-- The fix tasks should be closed/completed
-
-**Check code was actually fixed:**
-- `cat insecure.py` — the security vulnerabilities should be remediated:
-  - Command injection should use parameterized calls or shlex
-  - SQL injection should use parameterized queries
-  - Password storage should use hashing
-
-**Check the quality loop:**
-- There should be a post-fix review task
-- The post-fix review should have fewer (or zero) issues
-
-### 3.3 Record phase 3 results
-
-Note: PASS if review found issues, fix pipeline ran, and code was improved. FAIL otherwise with details.
-
----
-
-## Phase 4: `aiki fix <review-task-id>`
-
-Test the fix command standalone — given a review task with issues, create a fix plan, decompose, and loop.
-
-### 4.0 Setup
-
-If phase 2 produced a review task with issues, use that review task ID. Otherwise, create a setup:
-
-    aiki task start "Create code with bugs for fix test"
-
-Create `broken.py`:
-
-```python
-def fibonacci(n):
-    # Bug: doesn't handle n=0 or n=1 correctly
-    if n == 1:
-        return 1
-    return fibonacci(n-1) + fibonacci(n-2)  # Stack overflow for n=0
-
-def average(numbers):
-    # Bug: crashes on empty list
-    return sum(numbers) / len(numbers)
-
-def find_max(lst):
-    # Bug: returns None for single-element list
-    max_val = lst[0]
-    for i in range(1, len(lst)):
-        if lst[i] > max_val:
-            max_val = lst[i]
-    # Missing return statement
-```
-
-Close the task:
-
-    aiki task close <task-id> --summary "Created broken.py with bugs"
-
-Run a review to get a review task with issues:
-
-    aiki review <task-id>
-
-Note the review task ID.
-
-### 4.1 Run fix
-
-    aiki fix <review-task-id>
-
-This should:
-1. Check for actionable issues in the review
-2. Create a fix-parent task
-3. Create a plan-fix task (generates a fix plan)
-4. Run decompose on the plan
-5. Run the loop to execute fix subtasks
-6. Run a post-fix review
-7. If issues remain, loop back (quality loop)
-8. Continue until approved or MAX_QUALITY_ITERATIONS
-
-Wait for it to complete.
-
-### 4.2 Verify fix results
-
-**Check the fix pipeline structure:**
-- `aiki task` — should show fix-parent, plan-fix, and implementation subtasks
-- All fix tasks should be closed/completed
-
-**Check code was fixed:**
-- `cat broken.py` — bugs should be remediated:
-  - `fibonacci(0)` should work (return 0)
-  - `average([])` should handle empty lists
-  - `find_max` should have a return statement
-
-**Check the quality loop ran:**
-- There should be at least one post-fix review
-- If the first fix attempt didn't fully resolve issues, there should be multiple iterations
-- The final review should approve (or reach max iterations)
-
-**Check the output:**
-- The command should output "Approved" if all issues were resolved
-- Or indicate that max iterations were reached
+**Fix pipeline:**
+- Fix-parent task should exist with `data.review=<review-task-id>`
+- Fix subtasks should be closed
+- Post-fix review should exist (quality loop)
 
 ### 4.3 Record phase 4 results
 
-Note: PASS if fix pipeline ran (plan → decompose → loop → review cycle), issues were addressed, and the quality loop completed. FAIL otherwise with details.
+PASS if review found issues AND fix pipeline ran end-to-end through the task graph. FAIL otherwise.
 
 ---
 
-## Phase 5: `aiki fix <review-task-id> --once`
-
-Test the single-pass fix mode — same as `aiki fix` but without the post-fix review loop.
+## Phase 5: `aiki fix <review-id> --once` (single pass, no quality loop)
 
 ### 5.0 Setup
 
-Create a new task and review:
+Create a new task, write some code, close it, and run a standalone review:
 
-    aiki task start "Create code with style issues for fix --once test"
+    aiki task start "Create code for fix --once test"
 
 Create `messy.py`:
 
@@ -298,23 +324,11 @@ def   calculateTotal(  items ,tax_rate):
         t = t + i
     t = t + t * tax_rate
     return t
-
-def    processData(   d  ):
-    r = []
-    for x in d:
-        if x > 0:
-            r.append(x * 2)
-        else:
-            r.append(0)
-    return r
 ```
 
-Close the task:
+Close and review:
 
-    aiki task close <task-id> --summary "Created messy.py with style issues"
-
-Run a review:
-
+    aiki task close <task-id> --summary "Created messy.py"
     aiki review <task-id>
 
 Note the review task ID.
@@ -323,95 +337,20 @@ Note the review task ID.
 
     aiki fix <review-task-id> --once
 
-This should:
-1. Check for actionable issues
-2. Create fix-parent task
-3. Create plan-fix task
-4. Run decompose
-5. Run loop to execute fixes
-6. **STOP** — no post-fix review, no quality loop
+### 5.2 Verify through task graph
 
-### 5.2 Verify fix --once results
+**Check fix pipeline ran:**
+- Fix-parent task exists
+- Fix subtasks all closed
 
-**Check it ran the fix pipeline:**
-- `aiki task` — should show fix-parent and subtasks
-- All fix tasks should be closed/completed
-
-**Check code was fixed:**
-- `cat messy.py` — style issues should be improved
-
-**Critical: Verify no post-fix review ran:**
+**Critical — verify NO post-fix review:**
 - There should be NO review task created after the fix
-- The command should complete after the loop phase without entering a quality loop
-- This is the key difference from `aiki fix` (phase 4)
+- The fix-parent should NOT have a `validates` edge pointing to it
+- This is the key difference from `aiki fix` (without `--once`)
 
 ### 5.3 Record phase 5 results
 
-Note: PASS if fix ran a single pass (plan → decompose → loop) and stopped WITHOUT a post-fix review. FAIL if a post-fix review was created or the command errored.
-
----
-
-## Phase 6: `aiki build <plan.md> --fix`
-
-Test the full build+review+fix pipeline — build runs first, then review, then fix if issues found.
-
-### 6.0 Create a plan that will produce reviewable output
-
-Create `test-plan-fixable.md`:
-
-```markdown
----
-title: Create data processing module
-scope: test-dataproc/
----
-
-# Create data processing module
-
-Build a small data processing module. Intentionally keep the implementation simple so the reviewer can find improvements.
-
-## Tasks
-
-1. Create `test-dataproc/parser.py` with a function `parse_csv(path: str) -> list[dict]` that reads a CSV file and returns a list of dictionaries. Use basic file I/O (not the csv module) to keep it simple.
-2. Create `test-dataproc/transform.py` with a function `normalize(data: list[dict], field: str) -> list[dict]` that normalizes a numeric field to 0-1 range.
-3. Create `test-dataproc/stats.py` with functions `mean(values)`, `median(values)`, and `std_dev(values)` for basic statistics.
-```
-
-Commit it:
-
-    jj commit -m "Add test-plan-fixable.md for build --fix pipeline test"
-
-### 6.1 Run build --fix
-
-    aiki build test-plan-fixable.md --fix
-
-This should run the full pipeline:
-1. **Build phase:** decompose → loop (create the code)
-2. **Review phase:** review the built code
-3. **Fix phase:** if issues found, run fix pipeline (plan → decompose → loop → review loop)
-
-Wait for it to complete.
-
-### 6.2 Verify build --fix results
-
-**Check build completed:**
-- The epic task should exist and its subtasks should be closed
-- The code files should exist in `test-dataproc/`
-
-**Check review ran after build:**
-- A review task should exist linked to the epic
-- `aiki review issue list <review-task-id>` — should show issues found (or approved)
-
-**Check fix ran after review (if issues found):**
-- Fix-related tasks should exist
-- The code should be improved compared to the initial build output
-
-**Check the full pipeline chain:**
-- `aiki task` — should show the epic, review, and fix tasks in a clear hierarchy
-- The timeline should show: build → review → fix → post-fix review
-
-### 6.3 Record phase 6 results
-
-Note: PASS if the full build → review → fix pipeline completed end-to-end. FAIL otherwise with details.
+PASS if fix ran single pass and stopped without post-fix review. FAIL otherwise.
 
 ---
 
@@ -419,8 +358,8 @@ Note: PASS if the full build → review → fix pipeline completed end-to-end. F
 
 Remove all test artifacts:
 
-    rm -rf test-greetings/ test-dataproc/
-    rm -f test-plan.md test-plan-fixable.md buggy.py insecure.py broken.py messy.py
+    rm -rf test-greetings/ test-datautil/ test-stringutil/
+    rm -f test-plan.md test-plan-fixable.md test-plan-interrupt.md buggy.py messy.py
 
 ---
 
@@ -428,14 +367,16 @@ Remove all test artifacts:
 
 Close the parent task with results:
 
-    aiki task close <PARENT> --summary "Results: Phase 1 (build): PASS/FAIL. Phase 2 (review): PASS/FAIL. Phase 3 (review --fix): PASS/FAIL. Phase 4 (fix): PASS/FAIL. Phase 5 (fix --once): PASS/FAIL. Phase 6 (build --fix): PASS/FAIL. Details: ..."
+    aiki task close <PARENT> --summary "Results: Phase 1 (build): PASS/FAIL. Phase 2 (build --fix): PASS/FAIL. Phase 3 (interrupt): PASS/FAIL. Phase 4 (review --fix): PASS/FAIL. Phase 5 (fix --once): PASS/FAIL. Details: ..."
 
-**Report format:** For each phase and sub-check, state PASS or FAIL with details. Include any error output verbatim. Pay special attention to:
-- Did `aiki build` correctly create an epic, decompose subtasks, and run the loop?
-- Did `aiki review` create a review task and record issues?
-- Did `aiki review --fix` chain review → fix automatically?
-- Did `aiki fix` run the full quality loop (plan → decompose → loop → review, repeating)?
-- Did `aiki fix --once` stop after a single pass (no post-fix review)?
-- Did `aiki build --fix` chain build → review → fix end-to-end?
-- Were all task links correct (epic, review scope, fix-parent relationships)?
-- Did the agents produce actual code changes (not just empty tasks)?
+**Report format:** For each phase and sub-check, state PASS or FAIL with details. Include task IDs and data field values. Pay special attention to:
+
+1. **Did `build --fix` create a review task?** (Phase 2.3) — This is the PRIMARY check. The previous run of `build --fix` failed to create a review at all. If the review task is missing, report everything you can find about why.
+
+2. **Does the review task have correct data fields?** (Phase 2.3) — `scope_kind`, `scope_id`, `issue_count`, `options.fix`, `options.fix_template`
+
+3. **Does the `has_issues` check work correctly?** (Phase 2.4) — Known Bug 2: `build.rs` only checks `data.issue_count` and returns false if missing, while `fix.rs` falls back to checking comments. If `issue_count` is missing but issues exist as comments, the fix will be silently skipped.
+
+4. **Does the pipeline handle interrupts correctly?** (Phase 3) — Known Bug 1: `handle_session_result` returns `Ok(())` for Stopped/Detached, causing the pipeline to continue.
+
+5. **Task graph completeness:** For each pipeline phase, the full chain of tasks should be reconstructable from the task graph. Missing edges or tasks indicate a bug.
