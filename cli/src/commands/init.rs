@@ -251,8 +251,19 @@ pub fn run(quiet: bool) -> Result<()> {
         }
         match config::install_otel_receiver() {
             Ok(()) => {
-                if !quiet {
-                    println!("✓ OTel receiver installed (socket-activated on 127.0.0.1:19876)");
+                // Wait for launchd/systemd to actually bind the socket
+                match config::wait_for_otel_receiver() {
+                    Ok(()) => {
+                        if !quiet {
+                            println!("✓ OTel receiver installed (listening on 127.0.0.1:19876)");
+                        }
+                    }
+                    Err(_) => {
+                        if !quiet {
+                            println!("⚠ OTel receiver installed but not yet listening");
+                            println!("  Run: aiki doctor --fix");
+                        }
+                    }
                 }
             }
             Err(e) => {
