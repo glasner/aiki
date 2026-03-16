@@ -1,0 +1,40 @@
+name: Sync cli/ to public repo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cli/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync cli/ to public repo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Split and push cli/
+        env:
+          PUBLIC_REPO_PAT: ${{ secrets.PUBLIC_REPO_PAT }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Ensure deterministic branch name per workflow run
+          BRANCH="cli-sync-${GITHUB_SHA}"
+
+          # Split the cli subtree and push
+          git subtree split --prefix=cli -b "$BRANCH"
+          git push "https://x-access-token:${PUBLIC_REPO_PAT}@github.com/glasner/aiki.git" "$BRANCH:main" --force
+
+          git branch -D "$BRANCH"
