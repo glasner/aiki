@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 /// Save the current git core.hooksPath configuration before installing aiki hooks
 ///
@@ -563,6 +565,18 @@ pub fn restart_otel_receiver() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Wait for the OTel receiver socket to become ready (up to ~2s).
+/// Returns Ok if the socket is listening, Err if it times out.
+pub fn wait_for_otel_receiver() -> Result<()> {
+    let addr: SocketAddr = "127.0.0.1:19876".parse().unwrap();
+    for _ in 0..10 {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("OTel receiver did not become ready within 2 seconds")
 }
 
 fn restart_otel_receiver_macos() -> Result<()> {
