@@ -30,18 +30,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # Trim accidental whitespace/newlines from secret values pasted into settings.
+          PUBLIC_REPO_PAT=$(printf '%s' "$PUBLIC_REPO_PAT" | tr -d '\r\n\t ')
+
           if [ -z "${PUBLIC_REPO_PAT:-}" ]; then
             echo "PUBLIC_REPO_PAT is empty"
             exit 1
           fi
 
-          # Quick debug: prove PAT token resolves and has repo scope
-          echo "Checking token identity and scope..."
+          # Quick identity/probe to prove the token is valid for this run.
+          echo "Checking token identity and scope probe..."
           PAT_USER=$(curl -sSf -H "Authorization: Bearer ${PUBLIC_REPO_PAT}" https://api.github.com/user | python3 -c 'import sys, json; print(json.load(sys.stdin).get("login", "<unknown>"))')
           echo "PAT identity: ${PAT_USER}"
-
-          PAT_SCOPE=$(curl -sSf -D - -H "Authorization: Bearer ${PUBLIC_REPO_PAT}" https://api.github.com/user | sed -n '/^x-oauth-scopes:/Ip; /^x-accepted-oauth-scopes:/Ip')
-          echo "Scopes: ${PAT_SCOPE}"
 
           # Ensure deterministic branch name per workflow run
           BRANCH="cli-sync-${GITHUB_SHA}"
