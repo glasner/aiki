@@ -30,7 +30,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Trim accidental whitespace/newlines from secret values pasted into settings.
+          # Trim accidental whitespace/newlines from secret values.
           PUBLIC_REPO_PAT=$(printf '%s' "$PUBLIC_REPO_PAT" | tr -d '\r\n\t ')
 
           if [ -z "${PUBLIC_REPO_PAT:-}" ]; then
@@ -38,16 +38,20 @@ jobs:
             exit 1
           fi
 
-          # Quick identity/probe to prove the token is valid for this run.
-          echo "Checking token identity and scope probe..."
+          # Quick probe for token validity.
           PAT_USER=$(curl -sSf -H "Authorization: Bearer ${PUBLIC_REPO_PAT}" https://api.github.com/user | python3 -c 'import sys, json; print(json.load(sys.stdin).get("login", "<unknown>"))')
           echo "PAT identity: ${PAT_USER}"
 
-          # Ensure deterministic branch name per workflow run
           BRANCH="cli-sync-${GITHUB_SHA}"
-
-          # Split the cli subtree and push
           git subtree split --prefix=cli -b "$BRANCH"
-          git push "https://x-access-token:${PUBLIC_REPO_PAT}@github.com/glasner/aiki.git" "$BRANCH:main" --force
 
+          # Use explicit netrc auth for robustness with fine-grained PATs.
+          cat > ~/.netrc <<EOF_NETRC
+machine github.com
+login x-access-token
+password $PUBLIC_REPO_PAT
+EOF_NETRC
+          chmod 600 ~/.netrc
+
+          git push https://github.com/glasner/aiki.git "$BRANCH:main" --force
           git branch -D "$BRANCH"
