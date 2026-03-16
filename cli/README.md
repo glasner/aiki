@@ -1,98 +1,51 @@
-# Optimizing Rust Builds on macOS (Apple Silicon)
+# Aiki: AI coding with engineer control
 
-## Step 1: Disable XProtect for Terminal (Biggest Win)
+Aiki is a workflow layer for teams that let AI edit code without losing control.
+It keeps every AI-assisted change tied to a task, tracks how it was made, and gives you a built-in review loop so work stays reviewable instead of becoming context soup.
 
-macOS scans every new binary for malware via XProtect. This adds seconds per
-build script and can make test suites 2-3x slower.
+For teams, this means AI can move faster **without** becoming a black box.
 
-**Fix:** Add your terminal app as a Developer Tool.
+## What Aiki solves
 
-```bash
-open "x-apple.systempreferences:com.apple.preference.security?Privacy_DevTools"
-```
+AI coding in a repository usually breaks into the same two problems:
 
-Toggle on your terminal app (Terminal, iTerm, etc.). Restart the terminal.
+1. **Context falls apart** across sessions and agents.
+2. **Quality gets uneven** when speed is the only goal.
 
-Reference: https://nnethercote.github.io/2025/09/04/faster-rust-builds-on-mac.html
+Aiki addresses both by making edits first-class, trackable work items:
 
-## Step 2: Use lld for Debug Builds
+- **Provenance by default** — every change is linked to tasks, comments, and agent sessions.
+- **Task orchestration** — planning, execution, review, and fixes run as connected stages.
+- **Multi-tool consistency** — the same workflow works across Claude Code, Codex, and other tools.
+- **Safe concurrency** — parallel agents can work in isolated workspaces and merge cleanly.
 
-The default Apple linker is slower than LLVM's `lld` for incremental debug
-builds. Expected improvement: 20-50% faster linking.
+## Start in 2 minutes
 
-```bash
-brew install llvm
-```
+If this is your first run:
 
-Add to your project's `.cargo/config.toml`:
+- Follow **[Getting Started](docs/getting-started.md)** for install + repository bootstrap.
+- Run `aiki init` and `aiki doctor` in one repo.
+- Try one tiny change and watch it flow as a task:
+  - start in your chat tool
+  - `aiki task start`
+  - AI makes the edit
+  - `aiki task show` / `aiki task diff` show what happened.
 
-```toml
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/opt/llvm/bin/ld64.lld"]
-```
+## Two workflow modes
 
-## Step 3: Enable sccache
+### 1) Chat mode (human-in-the-loop)
+Use AI inside your normal editor workflow for interactive work. Aiki records each step so you can pause, inspect, and intervene anytime.
 
-Caches compiled crates across builds. Unchanged crates are skipped entirely on
-subsequent builds.
+### 2) Headless mode (Plan → Build → Review → Fix)
+Use `aiki plan`, `aiki build`, and (optionally) `aiki review`/`aiki fix` for larger, repeatable changes with less manual coordination.
 
-```bash
-cargo install sccache
-```
+This is the path for “spec first, execute later” work where automation should run as a loop until clean.
 
-Add to `~/.cargo/config.toml` (global):
+## What to read next
 
-```toml
-[build]
-rustc-wrapper = "sccache"
-```
-
-## Step 4: Disable Spotlight Indexing for Project Directories
-
-Spotlight indexes build artifacts in `target/`, causing unnecessary I/O
-contention during builds.
-
-```bash
-mdutil -i off ~/path/to/project
-```
-
-Or: System Settings > Siri & Spotlight > Spotlight Privacy > add project folders.
-
-## Step 5: Kill Claude Code Zombie Processes
-
-Claude Code has a known idle CPU bug where each instance pins ~100% of one CPU
-core even when idle. On a MacBook Air M4 with only 4 performance cores, stale
-sessions quickly starve builds.
-
-```bash
-pkill -f claude
-```
-
-Alias for convenience:
-
-```bash
-echo 'alias cc-kill="pkill -f claude"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Run `cc-kill` between sessions to reclaim cores.
-
-## Step 6: Keep Rust Up to Date
-
-The Rust compiler receives regular performance improvements. As of Rust 1.90+,
-LLD is the default linker on Linux (macOS still requires manual setup per
-Step 2).
-
-```bash
-rustup update stable
-```
-
-## Expected Impact
-
-| Optimization           | Impact                            |
-|------------------------|-----------------------------------|
-| XProtect fix           | Up to 2-3x faster test execution  |
-| lld linker             | 20-50% faster incremental linking |
-| sccache                | Skip unchanged crate compilation  |
-| Spotlight off           | Less I/O contention during builds |
-| Kill zombie processes  | Reclaim CPU cores for builds      |
+- **[Getting Started](docs/getting-started.md)** — install and first run
+- **[SDLC: Plan, Build, Review, Fix](docs/sdlc.md)** — full workflow loop
+- **[Customizing Defaults](docs/customizing-defaults.md)** — project-specific event hooks and policy
+- **[Creating Plugins](docs/creating-plugins.md)** — share reusable flows/templates
+- **[Task Types and Links](docs/tasks/kinds.md)** — task graph relationships
+- **[Session Isolation Workflow](docs/session-isolation.md)** — how concurrent sessions stay safe
