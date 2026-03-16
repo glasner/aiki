@@ -36,6 +36,12 @@ When your team adopts Aiki:
 - You retain control points (`aiki doctor`, stop conditions, and review gates)
   without removing automation.
 
+### Why JJ fits well
+
+Aiki is built on a change-based workflow (Jujutsu/JJ). That makes AI edits
+naturally reviewable and reversible: each task creates a JJ change record with
+stable IDs, so provenance, reruns, and follow-up fixes are easier to track.
+
 ## Opinionated defaults, composable underneath
 
 Aiki starts with sensible defaults for teams that want guardrails out of the box,
