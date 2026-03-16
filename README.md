@@ -1,51 +1,74 @@
-# Aiki: AI coding with engineer control
+# Aiki: Structured AI coding with safe defaults
 
-Aiki is a workflow layer for teams that let AI edit code without losing control.
-It keeps every AI-assisted change tied to a task, tracks how it was made, and gives you a built-in review loop so work stays reviewable instead of becoming context soup.
+Aiki gives teams a practical way to let AI edit code without losing control.
+It provides a structured workflow for planning, executing, reviewing, and fixing
+AI-suggested work, while keeping the whole process visible, attributable, and
+safe to adapt.
 
-For teams, this means AI can move faster **without** becoming a black box.
+## What Aiki is
 
-## What Aiki solves
+Aiki is a layer on top of your repo and your AI tools that turns AI edits into
+trackable work:
 
-AI coding in a repository usually breaks into the same two problems:
+- **Opinionated defaults** for task tracking, provenance, and review/fix loops
+- **Consistent handoffs** across Claude Code, Codex, and other agents
+- **Safe concurrency** via isolated sessions and session-aware workflows
 
-1. **Context falls apart** across sessions and agents.
-2. **Quality gets uneven** when speed is the only goal.
+## Why it matters
 
-Aiki addresses both by making edits first-class, trackable work items:
+Most teams start with fast AI code changes and immediately lose one of two things:
 
-- **Provenance by default** — every change is linked to tasks, comments, and agent sessions.
-- **Task orchestration** — planning, execution, review, and fixes run as connected stages.
-- **Multi-tool consistency** — the same workflow works across Claude Code, Codex, and other tools.
-- **Safe concurrency** — parallel agents can work in isolated workspaces and merge cleanly.
+1. **Context** — what changed, why, and who changed it
+2. **Quality control** — why some changes are reviewed, others are skipped
 
-## Start in 2 minutes
+Aiki addresses both by giving AI work a workflow shape that stays
+human-readable: every change is attached to a task, reviewed in a loop, and
+recorded in history.
 
-If this is your first run:
+## What changes when you use Aiki
 
-- Follow **[Getting Started](docs/getting-started.md)** for install + repository bootstrap.
-- Run `aiki init` and `aiki doctor` in one repo.
-- Try one tiny change and watch it flow as a task:
-  - start in your chat tool
-  - `aiki task start`
-  - AI makes the edit
-  - `aiki task show` / `aiki task diff` show what happened.
+When your team adopts Aiki:
 
-## Two workflow modes
+- Every AI task is started, described, and tracked as a task.
+- You can inspect work in real time (`aiki task show`), and review exact edits
+  (`aiki task diff`).
+- Reviews and fixes become part of the same workflow instead of a separate ad hoc step.
+- You retain control points (`aiki doctor`, stop conditions, and review gates)
+  without removing automation.
+
+## Opinionated defaults, composable underneath
+
+Aiki starts with sensible defaults for teams that want guardrails out of the box,
+and gives you extension points when you want more control:
+
+- **Customize behavior** via flow hooks in `.aiki/hooks.yml`.
+- **Adapt templates** and **extend with plugins** to encode team-specific policies.
+- **Build your own agent harness** by composing primitives (task links, hooks,
+  templates) instead of rewriting core behavior.
+
+## Run your first workflow (about 2 minutes)
+
+1. Follow **[Getting Started](docs/getting-started.md)** to install and bootstrap.
+2. In one repo: `aiki init` and then `aiki doctor`.
+3. Run a tiny change in your chat workflow and verify:
+   - `aiki task show <task-id>`
+   - `aiki task diff <task-id>`
+
+## Two paths, same foundation
 
 ### 1) Chat mode (human-in-the-loop)
-Use AI inside your normal editor workflow for interactive work. Aiki records each step so you can pause, inspect, and intervene anytime.
+Use AI interactively in your editor, with task-level traceability and review
+readiness built in.
 
 ### 2) Headless mode (Plan → Build → Review → Fix)
-Use `aiki plan`, `aiki build`, and (optionally) `aiki review`/`aiki fix` for larger, repeatable changes with less manual coordination.
+Use `aiki plan`, `aiki build`, and `aiki review`/`aiki fix` for repeatable
+spec-to-implementation runs.
 
-This is the path for “spec first, execute later” work where automation should run as a loop until clean.
-
-## What to read next
+## Next: deeper docs
 
 - **[Getting Started](docs/getting-started.md)** — install and first run
-- **[SDLC: Plan, Build, Review, Fix](docs/sdlc.md)** — full workflow loop
-- **[Customizing Defaults](docs/customizing-defaults.md)** — project-specific event hooks and policy
-- **[Creating Plugins](docs/creating-plugins.md)** — share reusable flows/templates
-- **[Task Types and Links](docs/tasks/kinds.md)** — task graph relationships
-- **[Session Isolation Workflow](docs/session-isolation.md)** — how concurrent sessions stay safe
+- **[SDLC: Plan, Build, Review, Fix](docs/sdlc.md)** — end-to-end flow model
+- **[Customizing Defaults](docs/customizing-defaults.md)** — hook/events and custom flow behavior
+- **[Creating Plugins](docs/creating-plugins.md)** — packages for reusable harness logic
+- **[Task Types and Links](docs/tasks/kinds.md)** — dependency and review graph semantics
+- **[Session Isolation Workflow](docs/session-isolation.md)** — safe multi-agent execution
