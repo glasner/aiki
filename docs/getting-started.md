@@ -7,7 +7,7 @@
 ### macOS
 
 ```bash
-brew install jj rustup-init
+brew install jj rust
 rustup-init -y
 ```
 
