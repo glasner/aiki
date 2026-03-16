@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Split and push cli/
         env:
@@ -45,13 +46,8 @@ jobs:
           BRANCH="cli-sync-${GITHUB_SHA}"
           git subtree split --prefix=cli -b "$BRANCH"
 
-          # Use explicit netrc auth for robustness with fine-grained PATs.
-          cat > ~/.netrc <<EOF_NETRC
-machine github.com
-login x-access-token
-password $PUBLIC_REPO_PAT
-EOF_NETRC
-          chmod 600 ~/.netrc
+          # Push via explicit URL + no inherited credential helpers.
+          git -c credential.helper= -c http.https://github.com/.extraheader= \
+            push "https://x-access-token:${PUBLIC_REPO_PAT}@github.com/glasner/aiki.git" "$BRANCH:main" --force
 
-          git push https://github.com/glasner/aiki.git "$BRANCH:main" --force
           git branch -D "$BRANCH"
