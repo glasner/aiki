@@ -1,7 +1,8 @@
-# ClawMart Listing Draft — Give Your Claw a Coding Team
+# Free ClawMart Offer — Give Your Claw a Coding Team
 
 **Status:** near-publish draft  
-**Date:** 2026-03-17
+**Date:** 2026-03-17  
+**Role:** free adoption wedge
 
 ---
 
@@ -19,7 +20,7 @@
 
 Stop letting your claw manage coding through one long fragile Claude chat.
 
-This skill teaches your OpenClaw instance a better way to get code written. Instead of asking one agent to plan, code, review, and declare itself done in the same pass, your claw learns to manage multiple coding agents through proper stages for planning, review, fixes, and real done criteria.
+This free skill teaches your OpenClaw instance a better way to get code written. Instead of asking one agent to plan, code, review, and declare itself done in the same pass, your claw learns to manage multiple coding agents through proper stages for planning, review, fixes, and real done criteria.
 
 **Your claw stays the interface. Aiki teaches it how to manage coding agents like a real coding team.**
 
@@ -89,6 +90,19 @@ This is not just a better prompt. It is a better operating method for coding wor
 - says work is done when it is not
 - struggles to separate planning from execution
 - needs a better way to manage more than one coding agent
+
+---
+
+## Why It’s Free
+
+This offer is free because its job is adoption.
+
+The goal is to:
+- teach the method
+- drive installs
+- generate reviews
+- prove the pain language
+- and create pull-through into higher-touch Aiki work later
 
 ---
 
