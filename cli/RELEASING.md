@@ -10,31 +10,49 @@ Aiki uses [semver](https://semver.org/): `major.minor.patch` (e.g., `v0.1.0`).
 
 ## Version Source of Truth
 
-The version in `cli/Cargo.toml` is the single source of truth. It's used at compile time for:
-- The `aiki --version` output
-- The `<aiki version="...">` tag in AGENTS.md/CLAUDE.md
+The version in `cli/Cargo.toml` is the single source of truth. It is used for:
+- `aiki --version`
+- release artifact naming
+- `<aiki version="...">` values in agent metadata
 
-## How to Release
+## New Release Flow (Homebrew + GitHub Releases)
+
+From the repo root (`/Users/glasner/code/aiki`):
+
+1. Bump the version in `cli/Cargo.toml`.
+2. Rebuild/check locally as needed:
+   ```bash
+   cargo build
+   aiki doctor --fix
+   ```
+3. Commit your changes.
+4. Push a version tag:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+A push to a version tag triggers:
+- GitHub Actions release workflow
+- Cross-platform artifacts for GitHub Releases
+- Auto-updated Homebrew formula in `glasner/homebrew-tap`
+
+> Note: you do **not** manually run `gh release create` anymore.
+
+## GitHub Release Notes
+
+`dist` publishes an auto-generated body.
+
+- Title/body comes from `cargo-dist`
+- Homebrew install command is embedded automatically
+
+## Optional local validation
+
+Before cutting a real release, run:
 
 ```bash
-# 1. Bump the version in cli/Cargo.toml
-#    e.g., version = "0.2.0"
-
-# 2. Rebuild so the new version is compiled in
-cargo build
-
-# 3. Update AGENTS.md block to match (uses new compiled version)
-aiki doctor --fix
-
-# 4. Commit the version bump
-
-# 5. Create the release (auto-generates notes from commits since last tag)
-gh release create v0.2.0 --title "v0.2.0" --generate-notes
+cd cli
+~/.cargo/bin/dist plan
 ```
 
-## Conventions
-
-- Tag format: `v0.1.0` (prefixed with `v`)
-- Release titles match the tag: `v0.1.0`
-- Release notes: auto-generated from commits, edited if needed
-- No build artifacts — aiki is source-distributed
+This prints the planned release matrix and artifact set.
