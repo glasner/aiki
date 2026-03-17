@@ -27,7 +27,7 @@ This free skill teaches your OpenClaw instance a better way to get code written.
 That means your claw learns to:
 - separate planning from coding
 - separate review from fixes
-- enforce explicit done criteria
+- stop calling half-finished work done
 - recover partial completions cleanly
 - escalate risky or unclear work instead of pretending it is solved
 
@@ -63,6 +63,7 @@ This is not just a better prompt. It is a better operating method for coding wor
 ### Before
 - one claw runs one long coding conversation
 - planning, coding, checking, and fixing blur together
+- the agent loses the plot over time
 - agents say they are done too early
 - humans end up babysitting execution
 
@@ -71,6 +72,7 @@ This is not just a better prompt. It is a better operating method for coding wor
 - work moves through proper stages
 - review and fixes happen in separate passes
 - done criteria are explicit
+- partial work is easier to recover
 - coding output gets more reliable
 
 ---

@@ -107,9 +107,9 @@ more than direct revenue.
 
 ---
 
-## Language strategy
+## Research-backed problem language
 
-The strongest problem language is not:
+The strongest external language is not:
 - SDLC
 - orchestration
 - software factory
@@ -125,13 +125,22 @@ The strongest real user language is:
 - humans end up babysitting
 - you need separate review / verification passes
 
-So the ClawMart language should stay grounded in:
+This pattern repeated across:
+- Hacker News Claude Code/context discussions
+- Reddit Claude Code threads
+- Felix’s PDF
+- Felix’s ClawMart listing + reviews
+
+### Strategic implication
+ClawMart copy should stay grounded in:
 - drift,
 - fake-done completion,
 - blurred phases,
 - partial completion recovery,
 - less babysitting,
 - and “manage coding agents like a team.”
+
+We should use our internal language to design the product, but not to headline the offer.
 
 ---
 
@@ -151,7 +160,7 @@ Current subtitle direction:
 
 > *Teach your claw to manage multiple coding agents through proper stages for planning, review, fixes, and explicit done criteria.*
 
-This is a good working direction for the free wedge.
+This is a good working direction for the free wedge, but the body copy should do most of the selling using research-backed pain language.
 
 ---
 
@@ -177,6 +186,12 @@ A free skill/package that teaches claws a better default method for managing cod
 - generate reviews
 - create proof language
 - surface the best premium upgrade conversations
+
+### What language it should earn in reviews
+- “stopped treating Claude like one long coding chat”
+- “turned my claw into a manager”
+- “stopped calling half-finished work done”
+- “less babysitting”
 
 ---
 
@@ -243,7 +258,7 @@ If the free offer lands but the premium upgrade is vague, we lose the real busin
 
 ## Immediate next steps
 
-1. Finalize the free listing copy.
+1. Finalize the free listing copy using research-backed pain language.
 2. Keep the first ClawMart offer free.
 3. Create a separate premium FastTrack-for-claws doc.
 4. Keep refining language using real review/problem phrasing from the market.
