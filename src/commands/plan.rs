@@ -763,8 +763,9 @@ fn output_plan_started(
 fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
     output_utils::emit(|| {
         let content = format!(
-            "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n",
+            "## Plan Completed\n- **Task:** {}\n- **File:** {}\n- Created: {}\n\n---\nRun `aiki build {}` to build.\n",
             plan_id,
+            plan_path.display(),
             plan_path.display(),
             plan_path.display()
         );

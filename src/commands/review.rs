@@ -910,10 +910,11 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     };
 
     let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
+    let repo_name = crate::repos::repo_folder_name(cwd);
     let subtasks: Vec<&Task> = graph.children_of(&epic.id);
 
     let theme = Theme::from_mode(detect_mode());
-    let view = tui::builder::build_workflow_view_focused(epic, &subtasks, plan_path, &graph, Some(review_id));
+    let view = tui::builder::build_workflow_view_focused(epic, &subtasks, plan_path, &repo_name, &graph, Some(review_id));
     let buf = tui::views::workflow::render_workflow(&view, &theme);
     Ok(buffer_to_ansi(&buf))
 }
@@ -949,12 +950,13 @@ fn output_review_async(cwd: &Path, review_id: &str) -> Result<()> {
 /// Output review completed message (for blocking mode)
 fn output_review_completed(cwd: &Path, review_id: &str) -> Result<()> {
     let rendered = render_review_workflow(cwd, review_id)?;
+    let hint = format!("\n---\nRun `aiki fix {}` to remediate.\n", review_id);
     output_utils::emit(|| {
         let status = format!("Completed: {review_id}\n");
         if rendered.trim().is_empty() {
-            format!("{status}Review completed — run `aiki task show {review_id}` for details.\n")
+            format!("{status}Review completed — run `aiki task show {review_id}` for details.{hint}")
         } else {
-            format!("{status}{rendered}")
+            format!("{status}{rendered}{hint}")
         }
     });
     Ok(())
