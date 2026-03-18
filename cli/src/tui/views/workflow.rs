@@ -36,7 +36,7 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
 
     // Row 0: PathLine
     let path_area = Rect::new(0, 0, WIDTH, 1);
-    PathLine::new(&view.plan_path, theme).render(path_area, &mut buf);
+    PathLine::new(&view.repo_name, &view.plan_path, theme).render(path_area, &mut buf);
 
     // Rows 2..N: EpicTree (row 1 is blank)
     let tree_area = Rect::new(0, 2, WIDTH, epic_height);
@@ -161,6 +161,7 @@ mod tests {
     fn basic_layout() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: make_epic(
                 "Epic name",
@@ -208,8 +209,9 @@ mod tests {
         let buf = render_workflow(&view, &theme);
         let text = buf_text(&buf);
 
-        // Row 0: PathLine
+        // Row 0: PathLine (with [repo_name] prefix)
         let line0 = buf_line(&buf, 0);
+        assert!(line0.contains("[test-repo]"), "prefix: {}", line0);
         assert!(line0.contains("ops/now/"), "path dir: {}", line0);
         assert!(line0.contains("webhooks.md"), "path file: {}", line0);
 
@@ -242,6 +244,7 @@ mod tests {
     fn height_calculation_basic() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: make_epic(
                 "Test",
@@ -274,6 +277,7 @@ mod tests {
     fn collapsed_epic() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: EpicView {
                 short_id: "luppzupt".to_string(),
@@ -333,6 +337,7 @@ mod tests {
     fn collapsed_epic_no_summary() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: EpicView {
                 short_id: "abcdefgh".to_string(),
@@ -365,6 +370,7 @@ mod tests {
     fn expanded_stages() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/feature.md".to_string(),
             epic: make_epic("Feature", vec![]),
             stages: vec![
@@ -433,6 +439,7 @@ mod tests {
     fn stage_with_children() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/fix.md".to_string(),
             epic: make_epic("Fix issues", vec![]),
             stages: vec![
@@ -480,6 +487,7 @@ mod tests {
     fn all_done_state() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: EpicView {
                 short_id: "luppzupt".to_string(),
@@ -542,6 +550,7 @@ mod tests {
     fn no_stages() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: make_epic("Solo", vec![]),
             stages: vec![],
@@ -566,6 +575,7 @@ mod tests {
 
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: make_epic("Feature", vec![]),
             stages: vec![
@@ -641,6 +651,7 @@ mod tests {
     fn dag_hidden_when_none() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: make_epic("Feature", vec![]),
             stages: vec![
@@ -672,6 +683,7 @@ mod tests {
         let theme = test_theme();
         // 1 lane, 2 sessions → should_show_dag returns false.
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: make_epic("Feature", vec![]),
             stages: vec![
@@ -715,6 +727,7 @@ mod tests {
         let theme = test_theme();
         // lane_dag is Some with 2+ lanes (passes should_show_dag), but loop is not active.
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/webhooks.md".to_string(),
             epic: make_epic("Feature", vec![]),
             stages: vec![
@@ -790,6 +803,7 @@ mod tests {
     fn epic_with_error_lines() {
         let theme = test_theme();
         let view = WorkflowView {
+            repo_name: "test-repo".to_string(),
             plan_path: "ops/now/test.md".to_string(),
             epic: make_epic(
                 "With errors",

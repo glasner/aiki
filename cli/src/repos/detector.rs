@@ -63,6 +63,16 @@ impl RepoDetector {
         path.as_ref().join(".jj").exists()
     }
 
+    /// Get the repo folder name (last path component of the git root).
+    ///
+    /// Falls back to the `cwd` folder name if `.git` can't be found.
+    pub fn repo_folder_name(&self) -> String {
+        let root = self.find_repo_root().ok().unwrap_or_else(|| self.current_dir.clone());
+        root.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 #[cfg(test)]

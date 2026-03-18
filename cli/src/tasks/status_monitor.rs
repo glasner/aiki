@@ -125,12 +125,14 @@ impl StatusMonitor {
         let (epic, subtasks, focus_task_id) = self.resolve_epic(&graph, root_task);
 
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
+        let repo_name = crate::repos::repo_folder_name(cwd);
         let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
         let theme = Theme::from_mode(detect_mode());
         let view = tui::builder::build_workflow_view_focused(
             epic,
             &subtask_refs,
             plan_path,
+            &repo_name,
             &graph,
             focus_task_id,
         );

@@ -27,6 +27,7 @@ pub fn render_epic_show(
     epic: &Task,
     subtasks: &[&Task],
     plan_path: &str,
+    repo_name: &str,
     theme: &Theme,
 ) -> Buffer {
     let epic_view = task_to_epic_view(epic, subtasks);
@@ -47,7 +48,7 @@ pub fn render_epic_show(
 
     // Row 0: PathLine
     let path_area = Rect::new(0, 0, 80, 1);
-    PathLine::new(plan_path, theme).render(path_area, &mut buf);
+    PathLine::new(repo_name, plan_path, theme).render(path_area, &mut buf);
 
     // Rows 2..N: EpicTree (row 1 is blank)
     let tree_area = Rect::new(0, 2, 80, tree_height);
@@ -290,7 +291,7 @@ mod tests {
         t2.closed_outcome = Some(TaskOutcome::Done);
 
         let subtasks: Vec<&Task> = vec![&t1, &t2];
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/webhooks.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/webhooks.md", "test-repo", &theme);
         let text = buf_text(&buf);
 
         // Path line should be present
@@ -335,7 +336,7 @@ mod tests {
         );
 
         let subtasks: Vec<&Task> = vec![&done, &running, &pending];
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/feature.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/feature.md", "test-repo", &theme);
         let text = buf_text(&buf);
 
         assert!(text.contains("Build feature"), "Should contain epic name");
@@ -357,7 +358,7 @@ mod tests {
         );
 
         let subtasks: Vec<&Task> = vec![];
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/solo.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/solo.md", "test-repo", &theme);
         let text = buf_text(&buf);
 
         // Should have path, epic header, and stage track
