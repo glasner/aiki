@@ -1,8 +1,10 @@
 # Dynamic Agent/Runtime Support
 
 **Date**: 2026-01-30
-**Status**: Future Work
+**Status**: Superseded by [Better Agent Detection](../now/better-agent-detection.md)
 **Purpose**: Make reviewer/assignee selection dynamic based on available runtimes
+
+> **Note:** This plan has been folded into [better-agent-detection.md](../now/better-agent-detection.md), which adds installation checking on top of the registry/dynamic-selection ideas here. Agent preferences moved to [user-settings.md](user-settings.md).
 
 ---
 

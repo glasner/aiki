@@ -364,14 +364,17 @@ When sharing patterns (e.g., team templates):
 
 ### Access Control
 
-```toml
-# ~/.aiki/twin/config.toml
-[permissions]
-auto_approve = true          # Allow twin to auto-approve
-auto_comment = true          # Allow twin to add comments
-auto_reject = false          # Never auto-reject (always human)
-max_auto_approve_per_hour = 10  # Rate limit
-require_mfa_for_settings = true
+**Prereq:** [user-settings](user-settings.md) — twin config lives in the `twin` section of `~/.aiki/config.yaml`.
+
+```yaml
+# ~/.aiki/config.yaml — twin section
+twin:
+  permissions:
+    auto_approve: true           # Allow twin to auto-approve
+    auto_comment: true           # Allow twin to add comments
+    auto_reject: false           # Never auto-reject (always human)
+    max_auto_approve_per_hour: 10  # Rate limit
+    require_mfa_for_settings: true
 ```
 
 ---

@@ -54,6 +54,8 @@ aiki task close <task-id> --summary "What you did"
 - All file reads, writes, and edits must use paths within the workspace
 - Do NOT switch back to the repo root — stay in the workspace
 
+**Git commands:** The isolated workspace is a JJ workspace, not a git repo. When the user asks you to "commit", they mean a **git commit in the main repo** (the original working directory, e.g., `/Users/.../code/aiki`). Run all git commands (`git add`, `git commit`, `git status`, `git diff`, etc.) from the main repo path, not from the workspace.
+
 **After context compaction**, the workspace path from earlier messages may be lost. To recover:
 1. Your current working directory is still the workspace — continue using it
 2. If your cwd contains `/tmp/aiki/`, you are in an isolated workspace

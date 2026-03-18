@@ -21,23 +21,23 @@ The original idea of `.aiki-boundary` marker files has a conflict: per-repo `.ai
 ### Alternative Approaches to Explore
 
 #### 1. Workspaces Configuration
-Centralized config in `~/.aiki/config.toml` defining workspace boundaries by path patterns (similar to Git's `includeIf`):
+**Prereq:** [user-settings](user-settings.md) — provides `~/.aiki/config.yaml` infrastructure.
 
-```toml
-[[workspace]]
-name = "personal"
-paths = ["/Users/me/personal/**"]
-home = "~/.aiki/workspaces/personal"
+Centralized config in `~/.aiki/config.yaml` defining workspace boundaries by path patterns (similar to Git's `includeIf`):
 
-[[workspace]]
-name = "client-a"
-paths = ["/Users/me/work/client-a/**"]
-home = "~/.aiki/workspaces/client-a"
+```yaml
+workspaces:
+  - name: personal
+    paths: ["/Users/me/personal/**"]
+    home: ~/.aiki/workspaces/personal
 
-[[workspace]]
-name = "client-b"
-paths = ["/Users/me/work/client-b/**"]
-home = "~/.aiki/workspaces/client-b"
+  - name: client-a
+    paths: ["/Users/me/work/client-a/**"]
+    home: ~/.aiki/workspaces/client-a
+
+  - name: client-b
+    paths: ["/Users/me/work/client-b/**"]
+    home: ~/.aiki/workspaces/client-b
 ```
 
 **Pros:**

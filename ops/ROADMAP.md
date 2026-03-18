@@ -1,11 +1,16 @@
+Bugs:
+- async session end
+- better agent detection
+- better recovery from api errors
+
 Now:
-- figure out marking a release
-- cut v0.1.0
-- share with Paul
+
 
 Next:
+- context usage re: lance
 - move aiki context out into an aiki skill(s) (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
+- clawmart fasttrack
 - registry
 - workflow hooks commands -> review loop plug
 - formalize task kinds -> conflict command
@@ -16,7 +21,7 @@ Next:
 - branched sessions
 - cursor third party hooks
 - gemini support
-- aiki debug > aiki decompose workflow
+- aiki debug workflow (for bringing in issues)
 - discuss command
 - decision command
 

@@ -45,5 +45,5 @@ aiki task add "Add dark mode"
 
 - Requires Task Types to be implemented first
 - Use regex patterns for matching
-- Allow project-level configuration in `.aiki/config.toml`
+- Allow project-level configuration in `.aiki/config.yaml` (prereq: [user-settings](../user-settings.md))
 - Fallback to manual type selection if pattern doesn't match
