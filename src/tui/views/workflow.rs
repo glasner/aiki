@@ -70,14 +70,13 @@ pub fn render_workflow(view: &WorkflowView, theme: &Theme) -> Buffer {
     buf
 }
 
-/// Check whether the "loop" sub-stage of the "build" stage is currently active.
+/// Check whether any stage has an active "loop" sub-stage.
 fn is_loop_active(stages: &[StageView]) -> bool {
     stages.iter().any(|stage| {
-        stage.name == "build"
-            && stage
-                .sub_stages
-                .iter()
-                .any(|ss| ss.name == "loop" && ss.state == StageState::Active)
+        stage
+            .sub_stages
+            .iter()
+            .any(|ss| ss.name == "loop" && ss.state == StageState::Active)
     })
 }
 

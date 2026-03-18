@@ -122,12 +122,34 @@ impl StatusMonitor {
             }
         };
 
+        let repo_name = crate::repos::repo_folder_name(cwd);
+        let theme = Theme::from_mode(detect_mode());
+
+        // Review tasks use the plan review pipeline: plan → review → build
+        if root_task.task_type.as_deref() == Some("review") {
+            let subtasks = self.get_sorted_subtasks(&graph, &root_task.id);
+            let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
+            let plan_path = root_task
+                .data
+                .get("scope.id")
+                .or_else(|| root_task.data.get("plan"))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let view = tui::builder::build_plan_review_view(
+                root_task,
+                &subtask_refs,
+                plan_path,
+                &repo_name,
+                &graph,
+            );
+            return Ok(tui::views::workflow::render_workflow(&view, &theme));
+        }
+
+        // Default: build pipeline (build → review → fix)
         let (epic, subtasks, focus_task_id) = self.resolve_epic(&graph, root_task);
 
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
-        let repo_name = crate::repos::repo_folder_name(cwd);
         let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
-        let theme = Theme::from_mode(detect_mode());
         let view = tui::builder::build_workflow_view_focused(
             epic,
             &subtask_refs,

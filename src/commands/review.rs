@@ -894,15 +894,40 @@ fn output_nothing_to_review() -> Result<()> {
     Ok(())
 }
 
-/// Render the workflow view for a review task by finding its epic via the `validates` edge.
+/// Render the workflow view for a review task.
+///
+/// For plan/code reviews, uses the plan review pipeline (plan → review → build).
+/// For task reviews with a validates edge, falls back to the build pipeline.
 fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
 
-    // Find the review task
-    let _review_task = find_task(&graph.tasks, review_id)?;
+    let review_task = find_task(&graph.tasks, review_id)?;
+    let repo_name = crate::repos::repo_folder_name(cwd);
+    let theme = Theme::from_mode(detect_mode());
 
-    // Follow validates edge to find the epic
+    // Plan/code reviews: use the plan review pipeline (plan → review → build)
+    if review_task.task_type.as_deref() == Some("review") {
+        let plan_path = review_task
+            .data
+            .get("scope.id")
+            .or_else(|| review_task.data.get("plan"))
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
+        let mut subtasks = graph.children_of(&review_task.id);
+        subtasks.sort_by_key(|t| t.created_at);
+        let view = tui::builder::build_plan_review_view(
+            review_task,
+            &subtasks,
+            plan_path,
+            &repo_name,
+            &graph,
+        );
+        let buf = tui::views::workflow::render_workflow(&view, &theme);
+        return Ok(buffer_to_ansi(&buf));
+    }
+
+    // Task reviews: follow validates edge to find the epic, use build pipeline
     let epic_ids = graph.edges.targets(review_id, "validates");
     let epic = match epic_ids.first().and_then(|id| graph.tasks.get(id.as_str())) {
         Some(epic) => epic,
@@ -910,10 +935,8 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     };
 
     let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
-    let repo_name = crate::repos::repo_folder_name(cwd);
     let subtasks: Vec<&Task> = graph.children_of(&epic.id);
 
-    let theme = Theme::from_mode(detect_mode());
     let view = tui::builder::build_workflow_view_focused(epic, &subtasks, plan_path, &repo_name, &graph, Some(review_id));
     let buf = tui::views::workflow::render_workflow(&view, &theme);
     Ok(buffer_to_ansi(&buf))
