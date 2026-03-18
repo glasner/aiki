@@ -51,6 +51,71 @@ pub fn build_workflow_view_focused(
     }
 }
 
+/// Build a `WorkflowView` for a plan review: plan → review → build.
+///
+/// When reviewing a plan, the stages represent the plan lifecycle:
+/// - `plan` (Done) — the plan has been decomposed
+/// - `review` (Active, expanded) — the current review operation
+/// - `build` (Pending) — implementation after review
+pub fn build_plan_review_view(
+    review_task: &Task,
+    subtasks: &[&Task],
+    plan_path: &str,
+    repo_name: &str,
+    graph: &TaskGraph,
+) -> WorkflowView {
+    // Plan stage: Done (the plan exists, that's why we're reviewing it)
+    let plan_stage = StageView {
+        name: "plan".to_string(),
+        state: StageState::Done,
+        progress: None,
+        elapsed: None,
+        sub_stages: Vec::new(),
+        children: Vec::new(),
+    };
+
+    // Review stage: reuses build stage logic for decompose/loop orchestration.
+    // The review task acts as the "epic" for orchestration (its children are the review subtasks,
+    // and orchestrators/decompose tasks link to it).
+    let mut review_stage = build_build_stage(review_task, subtasks, plan_path, graph);
+    review_stage.name = "review".to_string();
+
+    // The build stage logic derives state from subtasks/orchestrator. But early in the
+    // review lifecycle (before decompose creates subtasks), the review task itself may
+    // be in progress while the stage shows Pending. Use the review task's own state
+    // as a floor.
+    if review_stage.state == StageState::Pending {
+        let task_state = task_to_stage_state(review_task);
+        if !matches!(task_state, StageState::Pending) {
+            review_stage.state = task_state;
+        }
+    }
+
+    // Build stage: Pending (implementation comes after review)
+    let build_stage = StageView {
+        name: "build".to_string(),
+        state: StageState::Pending,
+        progress: None,
+        elapsed: None,
+        sub_stages: Vec::new(),
+        children: Vec::new(),
+    };
+
+    let stages = vec![plan_stage, review_stage, build_stage];
+    let active_stage = active_stage_name(&stages);
+
+    let lane_dag = build_lane_dag(review_task, plan_path, graph, &stages);
+    let epic_view = build_epic_view(review_task, subtasks, &active_stage, &stages);
+
+    WorkflowView {
+        repo_name: repo_name.to_string(),
+        plan_path: plan_path.to_string(),
+        epic: epic_view,
+        stages,
+        lane_dag,
+    }
+}
+
 /// Build the lane DAG layout when the loop sub-stage is active.
 fn build_lane_dag(
     epic: &Task,
@@ -58,12 +123,11 @@ fn build_lane_dag(
     graph: &TaskGraph,
     stages: &[StageView],
 ) -> Option<DagLayout> {
-    // Check if the "loop" sub-stage is Active
+    // Check if any stage has an active "loop" sub-stage
     let loop_active = stages.iter().any(|stage| {
-        stage.name == "build"
-            && stage.sub_stages.iter().any(|ss| {
-                ss.name == "loop" && matches!(ss.state, StageState::Starting | StageState::Active)
-            })
+        stage.sub_stages.iter().any(|ss| {
+            ss.name == "loop" && matches!(ss.state, StageState::Starting | StageState::Active)
+        })
     });
     if !loop_active {
         return None;
@@ -226,8 +290,7 @@ fn build_epic_view(
         .iter()
         .all(|s| s.state == StageState::Done || s.state == StageState::Skipped);
     let loop_active_with_children = stages.iter().any(|s| {
-        s.name == "build"
-            && matches!(s.state, StageState::Starting | StageState::Active)
+        matches!(s.state, StageState::Starting | StageState::Active)
             && s.sub_stages
                 .iter()
                 .any(|ss| ss.name == "loop" && !ss.children.is_empty())
@@ -1404,5 +1467,101 @@ mod tests {
         assert_eq!(view.stages[1].progress, Some("approved".to_string()));
         assert_eq!(view.stages[2].name, "fix");
         assert_eq!(view.stages[2].state, StageState::Skipped);
+    }
+
+    // ── Plan review pipeline tests ─────────────────────────────────
+
+    #[test]
+    fn plan_review_produces_plan_review_build_stages() {
+        let mut review_task = make_task(
+            "reviewtaskidabcdefghijklmnopqrst",
+            "Review: Plan (feature.md)",
+            TaskStatus::InProgress,
+        );
+        review_task.task_type = Some("review".to_string());
+        review_task.claimed_by_session = Some("session-1".to_string());
+
+        let graph = empty_graph();
+        let view = build_plan_review_view(
+            &review_task,
+            &[],
+            "ops/now/feature.md",
+            "test-repo",
+            &graph,
+        );
+
+        assert_eq!(view.plan_path, "ops/now/feature.md");
+        assert_eq!(view.repo_name, "test-repo");
+        assert_eq!(view.stages.len(), 3);
+        assert_eq!(view.stages[0].name, "plan");
+        assert_eq!(view.stages[0].state, StageState::Done);
+        assert_eq!(view.stages[1].name, "review");
+        assert_eq!(view.stages[1].state, StageState::Active);
+        assert_eq!(view.stages[2].name, "build");
+        assert_eq!(view.stages[2].state, StageState::Pending);
+    }
+
+    #[test]
+    fn plan_review_epic_is_collapsed() {
+        let mut review_task = make_task(
+            "reviewtaskidabcdefghijklmnopqrst",
+            "Review: Plan (feature.md)",
+            TaskStatus::InProgress,
+        );
+        review_task.task_type = Some("review".to_string());
+        review_task.claimed_by_session = Some("session-1".to_string());
+
+        let graph = empty_graph();
+        let view = build_plan_review_view(
+            &review_task,
+            &[],
+            "ops/now/feature.md",
+            "test-repo",
+            &graph,
+        );
+
+        assert!(view.epic.collapsed, "epic should be collapsed during review");
+        assert_eq!(view.epic.name, "Review: Plan (feature.md)");
+    }
+
+    #[test]
+    fn plan_review_with_subtasks() {
+        let mut review_task = make_task(
+            "reviewtaskidabcdefghijklmnopqrst",
+            "Review: Plan (feature.md)",
+            TaskStatus::InProgress,
+        );
+        review_task.task_type = Some("review".to_string());
+        review_task.claimed_by_session = Some("session-1".to_string());
+
+        let t1 = make_task("a".repeat(32).as_str(), "Explore Scope", TaskStatus::Open);
+        let mut t2 = make_task(
+            "b".repeat(32).as_str(),
+            "Review & Record Issues",
+            TaskStatus::InProgress,
+        );
+        t2.claimed_by_session = Some("session-2".to_string());
+
+        let subtasks: Vec<&Task> = vec![&t1, &t2];
+        let graph = empty_graph();
+        let view = build_plan_review_view(
+            &review_task,
+            &subtasks,
+            "ops/now/feature.md",
+            "test-repo",
+            &graph,
+        );
+
+        let review_stage = &view.stages[1];
+        assert_eq!(review_stage.name, "review");
+
+        let loop_sub = review_stage
+            .sub_stages
+            .iter()
+            .find(|ss| ss.name == "loop");
+        assert!(loop_sub.is_some(), "should have loop sub-stage");
+        let loop_sub = loop_sub.unwrap();
+        assert_eq!(loop_sub.progress, Some("0/2".to_string()));
+        assert_eq!(loop_sub.children.len(), 2);
     }
 }
