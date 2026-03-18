@@ -511,6 +511,7 @@ fn snapshot_workflow_with_dag() {
     use aiki::tui::views::workflow::render_workflow;
 
     let view = WorkflowView {
+        repo_name: "test-repo".to_string(),
         plan_path: "ops/now/webhooks.md".to_string(),
         epic: EpicView {
             short_id: "luppzupt".to_string(),
@@ -734,7 +735,7 @@ fn snapshot_epic_show_build_complete() {
         (ThemeMode::Light, "light"),
     ] {
         let theme = Theme::from_mode(mode);
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/webhooks.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/webhooks.md", "test-repo", &theme);
         let text = buffer_to_text(&buf);
         let flat = text.join("\n");
 
@@ -782,7 +783,7 @@ fn snapshot_epic_show_build_failure() {
         (ThemeMode::Light, "light"),
     ] {
         let theme = Theme::from_mode(mode);
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/auth-migration.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/auth-migration.md", "test-repo", &theme);
         let text = buffer_to_text(&buf);
         let flat = text.join("\n");
 
@@ -819,7 +820,7 @@ fn snapshot_epic_show_build_in_progress() {
         (ThemeMode::Light, "light"),
     ] {
         let theme = Theme::from_mode(mode);
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/rollout.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/rollout.md", "test-repo", &theme);
         let text = buffer_to_text(&buf);
         let flat = text.join("\n");
 
@@ -857,7 +858,7 @@ fn snapshot_epic_show_mid_fix() {
         (ThemeMode::Light, "light"),
     ] {
         let theme = Theme::from_mode(mode);
-        let buf = render_epic_show(&epic, &subtasks, "ops/now/auth-refactor.md", &theme);
+        let buf = render_epic_show(&epic, &subtasks, "ops/now/auth-refactor.md", "test-repo", &theme);
         let text = buffer_to_text(&buf);
         let flat = text.join("\n");
 

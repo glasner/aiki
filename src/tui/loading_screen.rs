@@ -24,6 +24,7 @@ use crate::tui::theme::{detect_mode, Theme, SYM_FAILED, SYM_STARTING};
 enum Inner {
     Live {
         terminal: Terminal<CrosstermBackend<Stderr>>,
+        repo_name: String,
         filepath: Option<String>,
         task_context: Option<(String, String)>,
         step: String,
@@ -75,9 +76,13 @@ impl LoadingScreen {
             }
         };
 
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let repo_name = crate::repos::repo_folder_name(&cwd);
+
         let mut screen = Self {
             inner: Inner::Live {
                 terminal,
+                repo_name,
                 filepath: None,
                 task_context: None,
                 step: initial_step.to_string(),
@@ -173,11 +178,12 @@ impl LoadingScreen {
     // -- private ------------------------------------------------------------
 
     fn redraw(&mut self) {
-        let Inner::Live { terminal, filepath, task_context, step } = &mut self.inner else {
+        let Inner::Live { terminal, repo_name, filepath, task_context, step } = &mut self.inner else {
             return;
         };
 
         let theme = Theme::from_mode(detect_mode());
+        let rn = repo_name.clone();
         let fp = filepath.clone();
         let tc = task_context.clone();
         let st = step.clone();
@@ -189,12 +195,18 @@ impl LoadingScreen {
             // Blank line for top padding
             lines.push(Line::from(""));
 
-            // Optional filepath line
+            // Optional filepath line (with [repo_name] prefix)
             if let Some(ref path) = fp {
-                lines.push(Line::from(vec![
+                let prefix = format!("[{}]", rn);
+                let mut spans = vec![
                     Span::raw(" "),
-                    Span::styled(path.clone(), theme.text_style()),
-                ]));
+                    Span::styled(prefix, theme.dim_style()),
+                ];
+                if !path.is_empty() {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(path.clone(), theme.text_style()));
+                }
+                lines.push(Line::from(spans));
                 lines.push(Line::from(""));
             }
 

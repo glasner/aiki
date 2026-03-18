@@ -21,9 +21,10 @@ pub fn build_workflow_view(
     epic: &Task,
     subtasks: &[&Task],
     plan_path: &str,
+    repo_name: &str,
     graph: &TaskGraph,
 ) -> WorkflowView {
-    build_workflow_view_focused(epic, subtasks, plan_path, graph, None)
+    build_workflow_view_focused(epic, subtasks, plan_path, repo_name, graph, None)
 }
 
 /// Like [`build_workflow_view`] but with an explicit focus task.
@@ -31,6 +32,7 @@ pub fn build_workflow_view_focused(
     epic: &Task,
     subtasks: &[&Task],
     plan_path: &str,
+    repo_name: &str,
     graph: &TaskGraph,
     focus_task_id: Option<&str>,
 ) -> WorkflowView {
@@ -41,6 +43,7 @@ pub fn build_workflow_view_focused(
     let epic_view = build_epic_view(epic, subtasks, &active_stage, &stages);
 
     WorkflowView {
+        repo_name: repo_name.to_string(),
         plan_path: plan_path.to_string(),
         epic: epic_view,
         stages,
@@ -815,7 +818,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1, &t2];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/webhooks.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/webhooks.md", "test-repo", &graph);
 
         assert_eq!(view.plan_path, "ops/now/webhooks.md");
         assert_eq!(view.epic.short_id, "abcdefgh");
@@ -842,7 +845,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1, &t2, &t3];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages.len(), 3);
         // Build stage
@@ -873,7 +876,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1, &t2];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages[0].state, StageState::Done);
         assert_eq!(view.stages[0].progress, Some("2/2".to_string()));
@@ -892,7 +895,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1, &t2];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages[0].state, StageState::Failed);
     }
@@ -906,7 +909,7 @@ mod tests {
         );
         let subtasks: Vec<&Task> = vec![];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/solo.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/solo.md", "test-repo", &graph);
 
         assert_eq!(view.epic.subtasks.len(), 0);
         assert_eq!(view.stages[0].state, StageState::Pending);
@@ -997,7 +1000,7 @@ mod tests {
         graph.tasks.insert(review_id.to_string(), review_task);
         graph.edges.add(review_id, epic_id, "validates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Review is active → epic should be collapsed (no summary line)
         assert!(view.epic.collapsed);
@@ -1015,7 +1018,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Build is active with loop children → epic collapses to avoid duplication,
         // but no summary line (subtasks are visible under loop)
@@ -1044,7 +1047,7 @@ mod tests {
         graph.edges.add(review_id, epic_id, "validates");
         graph.edges.add(child_id, review_id, "subtask-of");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages[1].name, "review");
         assert_eq!(view.stages[1].state, StageState::Active);
@@ -1070,7 +1073,7 @@ mod tests {
 
         let subtasks: Vec<&Task> = vec![&t1];
         let graph = empty_graph();
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Build done + review/fix pending → epic should NOT collapse
         assert_eq!(view.stages[0].state, StageState::Done);
@@ -1109,7 +1112,7 @@ mod tests {
         graph.edges.add(old_review_id, epic_id, "validates");
         graph.edges.add(new_review_id, epic_id, "validates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // State should be Active (from new review, highest priority)
         assert_eq!(view.stages[1].state, StageState::Active);
@@ -1151,7 +1154,7 @@ mod tests {
         graph.edges.add(rem2_id, fix_id, "subtask-of");
         graph.edges.add(rf_id, fix_id, "subtask-of");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages[2].name, "fix");
         assert_eq!(view.stages[2].state, StageState::Active);
@@ -1199,7 +1202,7 @@ mod tests {
         graph.tasks.insert(orch_id.to_string(), orch);
         graph.edges.add(orch_id, epic_id, "orchestrates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Build stage should have 2 sub-stages: decompose + loop
         assert_eq!(view.stages[0].sub_stages.len(), 2);
@@ -1237,7 +1240,7 @@ mod tests {
         graph.tasks.insert(orch_id.to_string(), orch);
         graph.edges.add(orch_id, epic_id, "orchestrates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Loop should stay Active (not Done) because subtask is still running
         assert_eq!(view.stages[0].sub_stages[1].name, "loop");
@@ -1261,7 +1264,7 @@ mod tests {
         graph.tasks.insert(decompose_id.to_string(), decompose);
         graph.edges.add(epic_id, decompose_id, "populated-by");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Build should be Active (not Pending), because decompose is running
         assert_eq!(view.stages[0].state, StageState::Active);
@@ -1296,7 +1299,7 @@ mod tests {
         graph.tasks.insert(orch_id.to_string(), orch);
         graph.edges.add(orch_id, epic_id, "orchestrates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // Build should be Active because orchestrator is running
         assert_eq!(view.stages[0].state, StageState::Active);
@@ -1338,7 +1341,7 @@ mod tests {
         graph.edges.add(sub1_id, orch_id, "subtask-of");
         graph.edges.add(sub2_id, orch_id, "subtask-of");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // The loop sub-stage should be active and lane_dag should be populated
         assert!(
@@ -1364,7 +1367,7 @@ mod tests {
         graph.tasks.insert(decompose_id.to_string(), decompose);
         graph.edges.add(epic_id, decompose_id, "depends-on");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         // No orchestrator → no loop sub-stage → lane_dag should be None
         assert!(
@@ -1394,7 +1397,7 @@ mod tests {
         graph.tasks.insert(review_id.to_string(), review_task);
         graph.edges.add(review_id, epic_id, "validates");
 
-        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", &graph);
+        let view = build_workflow_view(&epic, &subtasks, "ops/now/test.md", "test-repo", &graph);
 
         assert_eq!(view.stages[1].name, "review");
         assert_eq!(view.stages[1].state, StageState::Done);

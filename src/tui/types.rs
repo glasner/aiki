@@ -85,6 +85,8 @@ pub struct EpicView {
 /// Top-level workflow view data model.
 #[derive(Debug, Clone)]
 pub struct WorkflowView {
+    /// Repository folder name shown as `[name]` prefix in the path line.
+    pub repo_name: String,
     pub plan_path: String,
     pub epic: EpicView,
     pub stages: Vec<StageView>,

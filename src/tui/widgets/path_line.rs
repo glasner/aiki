@@ -1,6 +1,7 @@
 //! Path line widget.
 //!
-//! Renders a file path with a dimmed directory portion and normal filename.
+//! Renders a `[repo_name] path` breadcrumb with dimmed prefix/directory
+//! and normal filename.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -8,18 +9,20 @@ use ratatui::widgets::Widget;
 
 use crate::tui::theme::Theme;
 
-/// A widget that renders a file path with dimmed directory and normal filename.
+/// A widget that renders a repo-prefixed file path breadcrumb.
 ///
-/// Given `ops/now/webhooks.md`, renders `ops/now/` in [`Theme::dim_style`] and
-/// `webhooks.md` in [`Theme::fg_style`].
+/// Given prefix `"aiki"` and path `"ops/now/webhooks.md"`, renders
+/// `[aiki] ops/now/` in [`Theme::dim_style`] and `webhooks.md` in
+/// [`Theme::fg_style`].
 pub struct PathLine<'a> {
+    prefix: &'a str,
     path: &'a str,
     theme: &'a Theme,
 }
 
 impl<'a> PathLine<'a> {
-    pub fn new(path: &'a str, theme: &'a Theme) -> Self {
-        Self { path, theme }
+    pub fn new(prefix: &'a str, path: &'a str, theme: &'a Theme) -> Self {
+        Self { prefix, path, theme }
     }
 }
 
@@ -35,6 +38,33 @@ impl Widget for PathLine<'_> {
         // Leading space for left padding.
         if x < max_x {
             buf.set_string(x, area.y, " ", self.theme.fg_style());
+            x = x.saturating_add(1);
+        }
+
+        // Render [prefix] in dim style (only if prefix is non-empty).
+        if !self.prefix.is_empty() {
+            // Opening bracket
+            if x < max_x {
+                buf.set_string(x, area.y, "[", self.theme.dim_style());
+                x = x.saturating_add(1);
+            }
+            // Prefix text
+            let prefix_len = self.prefix.len() as u16;
+            let fits = prefix_len.min(max_x.saturating_sub(x));
+            if fits > 0 {
+                buf.set_string(x, area.y, &self.prefix[..fits as usize], self.theme.dim_style());
+                x = x.saturating_add(fits);
+            }
+            // Closing bracket
+            if x < max_x {
+                buf.set_string(x, area.y, "]", self.theme.dim_style());
+                x = x.saturating_add(1);
+            }
+        }
+
+        // Space between prefix and path (only if there is a path).
+        if !self.path.is_empty() && x < max_x {
+            buf.set_string(x, area.y, " ", self.theme.dim_style());
             x = x.saturating_add(1);
         }
 
@@ -79,22 +109,26 @@ mod tests {
         let theme = test_theme();
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
-        PathLine::new("ops/now/webhooks.md", &theme).render(area, &mut buf);
+        PathLine::new("aiki", "ops/now/webhooks.md", &theme).render(area, &mut buf);
 
         let content: String = buf
             .content()
             .iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
             .collect();
-        assert!(content.starts_with(" ops/now/webhooks.md"));
+        // " [aiki] ops/now/webhooks.md"
+        assert!(content.starts_with(" [aiki] ops/now/webhooks.md"), "got: {}", content);
 
-        // Directory portion (after leading space) should be dim.
-        // Leading space at x=0, "ops/now/" starts at x=1.
-        let dir_cell = buf.cell((1, 0)).unwrap().style();
+        // Prefix (after leading space) should be dim.
+        let bracket_cell = buf.cell((1, 0)).unwrap().style();
+        assert_eq!(bracket_cell.fg, theme.dim_style().fg);
+
+        // Directory portion: " [aiki] " is 8 chars, "ops/now/" starts at x=8.
+        let dir_cell = buf.cell((8, 0)).unwrap().style();
         assert_eq!(dir_cell.fg, theme.dim_style().fg);
 
-        // Filename starts at x=9 ("ops/now/" is 8 chars + 1 leading space).
-        let file_cell = buf.cell((9, 0)).unwrap().style();
+        // Filename starts at x=16 (" [aiki] ops/now/" is 16 chars).
+        let file_cell = buf.cell((16, 0)).unwrap().style();
         assert_eq!(file_cell.fg, theme.fg_style().fg);
     }
 
@@ -103,18 +137,56 @@ mod tests {
         let theme = test_theme();
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
-        PathLine::new("README.md", &theme).render(area, &mut buf);
+        PathLine::new("myrepo", "README.md", &theme).render(area, &mut buf);
 
         let content: String = buf
             .content()
             .iter()
             .map(|c| c.symbol().chars().next().unwrap_or(' '))
             .collect();
-        assert!(content.starts_with(" README.md"));
+        // " [myrepo] README.md"
+        assert!(content.starts_with(" [myrepo] README.md"), "got: {}", content);
 
-        // All text (after leading space) should be fg style.
-        let file_cell = buf.cell((1, 0)).unwrap().style();
+        // Filename (after " [myrepo] ") should be fg style. x=10.
+        let file_cell = buf.cell((10, 0)).unwrap().style();
         assert_eq!(file_cell.fg, theme.fg_style().fg);
+    }
+
+    #[test]
+    fn empty_path_shows_prefix_only() {
+        let theme = test_theme();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        PathLine::new("aiki", "", &theme).render(area, &mut buf);
+
+        let content: String = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        // " [aiki]" with no trailing space (no path follows).
+        assert!(content.starts_with(" [aiki]"), "got: {}", content);
+        // No path content after prefix.
+        assert!(!content.trim().ends_with('/'));
+    }
+
+    #[test]
+    fn empty_prefix_shows_path_only() {
+        let theme = test_theme();
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        PathLine::new("", "ops/now/test.md", &theme).render(area, &mut buf);
+
+        let content: String = buf
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        // " ops/now/test.md" (leading space, no brackets, just path)
+        assert!(content.starts_with("  ops/now/test.md") || content.starts_with(" ops/now/test.md"),
+            "got: {}", content);
+        // Path should be present without any brackets
+        assert!(!content.contains('['), "should not have brackets: {}", content);
     }
 
     #[test]
@@ -122,7 +194,7 @@ mod tests {
         let theme = test_theme();
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
-        PathLine::new("ops/now/webhooks.md", &theme).render(area, &mut buf);
+        PathLine::new("aiki", "ops/now/webhooks.md", &theme).render(area, &mut buf);
         // No panic on zero-sized area.
     }
 }
