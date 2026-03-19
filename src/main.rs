@@ -13,6 +13,7 @@ mod flows;
 mod parsing;
 mod global;
 mod history;
+mod instructions;
 mod jj;
 mod output_utils;
 mod plugins;

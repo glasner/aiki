@@ -219,9 +219,20 @@ fn prepare_task_run(
     // Determine which agent to use
     let agent_type = resolve_agent_type(cwd, task_id, &task, options)?;
 
+    // Verify the agent CLI is actually installed
+    if !agent_type.is_installed() {
+        return Err(AikiError::AgentNotInstalled {
+            agent: agent_type.as_str().to_string(),
+            hint: agent_type.install_hint().to_string(),
+        });
+    }
+
     // Get runtime for the agent
     let runtime = get_runtime(agent_type).ok_or_else(|| {
-        AikiError::AgentNotSupported(agent_type.as_str().to_string())
+        AikiError::AgentNotInstalled {
+            agent: agent_type.as_str().to_string(),
+            hint: agent_type.install_hint().to_string(),
+        }
     })?;
 
     // Emit Started event before spawning to transition task to InProgress immediately.
@@ -669,9 +680,21 @@ pub fn task_run_async(
     // Determine which agent to use
     let agent_type = resolve_agent_type(cwd, task_id, &task, &options)?;
 
+    // Verify the agent CLI is actually installed
+    if !agent_type.is_installed() {
+        return Err(AikiError::AgentNotInstalled {
+            agent: agent_type.as_str().to_string(),
+            hint: agent_type.install_hint().to_string(),
+        });
+    }
+
     // Get runtime for the agent
-    let runtime = get_runtime(agent_type)
-        .ok_or_else(|| AikiError::AgentNotSupported(agent_type.as_str().to_string()))?;
+    let runtime = get_runtime(agent_type).ok_or_else(|| {
+        AikiError::AgentNotInstalled {
+            agent: agent_type.as_str().to_string(),
+            hint: agent_type.install_hint().to_string(),
+        }
+    })?;
 
     // Emit Started event before spawning to transition task to InProgress immediately.
     if task.status == TaskStatus::Open {

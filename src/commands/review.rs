@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::output_utils;
 
 use super::async_spawn;
-use crate::agents::{determine_reviewer, AgentType};
+use crate::agents::{determine_reviewer, is_agent_available, AgentType};
 use crate::commands::OutputFormat;
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
@@ -625,9 +625,24 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
     };
 
     // Determine assignee for review task
-    let assignee = params
-        .agent_override
-        .or_else(|| Some(determine_reviewer(worker.as_deref())));
+    let assignee = match params.agent_override {
+        Some(a) => a,
+        None => determine_reviewer(worker.as_deref())?,
+    };
+
+    // Validate the reviewer agent is actually installed
+    if !is_agent_available(&assignee) {
+        let agent_type = AgentType::from_str(&assignee);
+        let hint = agent_type
+            .map(|a| a.install_hint().to_string())
+            .unwrap_or_else(|| format!("Unknown agent: {}", assignee));
+        return Err(AikiError::AgentNotInstalled {
+            agent: assignee,
+            hint,
+        });
+    }
+
+    let assignee = Some(assignee);
 
     // Create review task with subtasks from template
     let default_template = match scope.kind {
@@ -856,7 +871,12 @@ fn run_continue_async(
     autorun: bool,
 ) -> Result<()> {
     // Run the review
-    let options = TaskRunOptions::new();
+    let mut options = TaskRunOptions::new();
+    if let Some(ref agent_str) = agent {
+        if let Some(agent_type) = AgentType::from_str(agent_str) {
+            options = options.with_agent(agent_type);
+        }
+    }
     task_run(cwd, review_id, options)?;
 
     if fix_template.is_none() {
@@ -1219,33 +1239,43 @@ fn show_review(cwd: &Path, task_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::determine_reviewer_with;
 
     #[test]
-    fn test_determine_reviewer_opposite_claude() {
-        // Worker is claude-code, reviewer should be codex
-        let result = determine_reviewer(Some("claude-code"));
-        assert_eq!(result, "codex".to_string());
+    fn test_determine_reviewer_empty_list_errors() {
+        let result = determine_reviewer_with(None, &[]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_determine_reviewer_opposite_codex() {
-        // Worker is codex, reviewer should be claude-code
-        let result = determine_reviewer(Some("codex"));
-        assert_eq!(result, "claude-code".to_string());
+    fn test_determine_reviewer_single_agent_no_worker() {
+        let agents = [AgentType::ClaudeCode];
+        let result = determine_reviewer_with(None, &agents).unwrap();
+        assert_eq!(result, "claude-code");
     }
 
     #[test]
-    fn test_determine_reviewer_default() {
-        // No worker, default to codex
-        let result = determine_reviewer(None);
-        assert_eq!(result, "codex".to_string());
+    fn test_determine_reviewer_single_agent_matching_worker() {
+        // Self-review when only the worker agent is available
+        let agents = [AgentType::ClaudeCode];
+        let result = determine_reviewer_with(Some("claude-code"), &agents).unwrap();
+        assert_eq!(result, "claude-code");
     }
 
     #[test]
-    fn test_determine_reviewer_unknown_agent() {
-        // Unknown worker, default to codex
-        let result = determine_reviewer(Some("unknown-agent"));
-        assert_eq!(result, "codex".to_string());
+    fn test_determine_reviewer_two_agents_cross_review() {
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+        // Worker is claude-code → reviewer should be codex
+        let result = determine_reviewer_with(Some("claude-code"), &agents).unwrap();
+        assert_eq!(result, "codex");
+    }
+
+    #[test]
+    fn test_determine_reviewer_unknown_worker() {
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+        // Unknown worker → returns first available
+        let result = determine_reviewer_with(Some("unknown-agent"), &agents).unwrap();
+        assert_eq!(result, "claude-code");
     }
 
     // ReviewScopeKind tests

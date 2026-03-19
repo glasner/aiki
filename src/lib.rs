@@ -14,6 +14,7 @@ pub mod parsing;
 pub mod flows;
 pub mod global;
 pub mod history;
+pub mod instructions;
 pub mod jj;
 pub mod plugins;
 pub mod prerequisites;
