@@ -90,6 +90,49 @@ impl AgentType {
             AgentType::Unknown => "Unknown",
         }
     }
+
+    /// Get the CLI binary name for spawnable agents.
+    ///
+    /// Returns `Some("binary")` for agents that have a runtime and can be spawned,
+    /// `None` for agents that can't be spawned (e.g., Cursor, Gemini).
+    #[must_use]
+    pub fn cli_binary(&self) -> Option<&'static str> {
+        match self {
+            AgentType::ClaudeCode => Some("claude"),
+            AgentType::Codex => Some("codex"),
+            AgentType::Cursor | AgentType::Gemini | AgentType::Unknown => None,
+        }
+    }
+
+    /// Check if this agent's CLI binary is available on PATH.
+    ///
+    /// Returns `true` only for spawnable agents whose binary is found.
+    /// Does NOT run `--version` or any other subcommand — just checks existence.
+    #[must_use]
+    pub fn is_installed(&self) -> bool {
+        let Some(binary) = self.cli_binary() else {
+            return false;
+        };
+        which::which(binary).is_ok()
+    }
+
+    /// Get platform-specific install instructions for this agent
+    #[must_use]
+    pub fn install_hint(&self) -> String {
+        match self {
+            AgentType::ClaudeCode => {
+                if cfg!(target_os = "macos") {
+                    "Install: brew install claude-code (or: npm install -g @anthropic-ai/claude-code)".to_string()
+                } else {
+                    "Install: npm install -g @anthropic-ai/claude-code".to_string()
+                }
+            }
+            AgentType::Codex => "Install: npm install -g @openai/codex".to_string(),
+            AgentType::Cursor => "Install Cursor from https://cursor.com (task execution not yet supported)".to_string(),
+            AgentType::Gemini => "Gemini task execution not yet supported".to_string(),
+            AgentType::Unknown => "No install instructions available for unknown agent type".to_string(),
+        }
+    }
 }
 
 impl fmt::Display for AgentType {

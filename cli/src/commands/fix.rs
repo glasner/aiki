@@ -13,7 +13,7 @@ use std::env;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
-use crate::agents::AgentType;
+use crate::agents::{AgentType, get_available_agents};
 use crate::error::{AikiError, Result};
 use crate::output_utils;
 use crate::tasks::runner::{ScreenSession, handle_session_result, task_run, task_run_on_session, TaskRunOptions};
@@ -166,9 +166,9 @@ pub fn run_fix(
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
-            determine_followup_assignee(agent_type, original_task)
+            Some(determine_followup_assignee(agent_type, original_task, None)?)
         }
-        _ => determine_followup_assignee(agent_type, None),
+        _ => Some(determine_followup_assignee(agent_type, None, None)?),
     };
 
     // Async spawn path: create fix-parent synchronously, then spawn background process
@@ -231,7 +231,7 @@ pub fn run_fix(
         None
     };
 
-    let result = run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), autorun, once, output, &mut session);
+    let result = run_quality_loop(cwd, &mut review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), agent.as_deref(), autorun, once, output, &mut session);
 
     drop(session);
 
@@ -285,9 +285,9 @@ fn run_fix_continue(
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
-            determine_followup_assignee(agent_type, original_task)
+            Some(determine_followup_assignee(agent_type, original_task, None)?)
         }
-        _ => determine_followup_assignee(agent_type, None),
+        _ => Some(determine_followup_assignee(agent_type, None, None)?),
     };
 
     // Resolve plan template from review task data
@@ -354,7 +354,7 @@ fn run_fix_continue(
         cwd,
         CreateReviewParams {
             scope: review_scope,
-            agent_override: None,
+            agent_override: agent.clone(),
             template: review_template.clone().map(|s| s.to_string()),
             fix_template: None,
             autorun: false,
@@ -385,7 +385,7 @@ fn run_fix_continue(
                 cwd,
                 CreateReviewParams {
                     scope: scope.clone(),
-                    agent_override: None,
+                    agent_override: agent.clone(),
                     template: review_template.clone().map(|s| s.to_string()),
                     fix_template: None,
                     autorun: false,
@@ -422,7 +422,7 @@ fn run_fix_continue(
     }
 
     // Continue the quality loop (iterations 2..MAX)
-    let result = run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), false, once, output, &mut session);
+    let result = run_quality_loop(cwd, &mut current_review_id, &scope, &assignee, &plan_template_resolved, decompose_template.as_deref(), loop_template.as_deref(), review_template.as_deref(), agent.as_deref(), false, once, output, &mut session);
 
     drop(session);
 
@@ -473,6 +473,7 @@ fn run_quality_loop(
     decompose_template: Option<&str>,
     loop_template: Option<&str>,
     review_template: Option<&str>,
+    agent_override: Option<&str>,
     autorun: bool,
     once: bool,
     output: Option<OutputFormat>,
@@ -535,7 +536,7 @@ fn run_quality_loop(
             cwd,
             CreateReviewParams {
                 scope: review_scope,
-                agent_override: None,
+                agent_override: agent_override.map(|s| s.to_string()),
                 template: review_template.map(|s| s.to_string()),
                 fix_template: None,
                 autorun: false,
@@ -568,7 +569,7 @@ fn run_quality_loop(
                     cwd,
                     CreateReviewParams {
                         scope: scope.clone(),
-                        agent_override: None,
+                        agent_override: agent_override.map(|s| s.to_string()),
                         template: review_template.map(|s| s.to_string()),
                         fix_template: None,
                         autorun: false,
@@ -684,20 +685,38 @@ pub fn is_review_task(task: &Task) -> bool {
 ///
 /// The followup should be assigned to whoever did the original work (the reviewed task's assignee),
 /// not the opposite of the reviewer. The person who wrote the code should fix issues in their code.
-fn determine_followup_assignee(agent_override: Option<AgentType>, reviewed_task: Option<&Task>) -> Option<String> {
+fn determine_followup_assignee(
+    agent_override: Option<AgentType>,
+    reviewed_task: Option<&Task>,
+    available_agents: Option<&[AgentType]>,
+) -> Result<String> {
+    // Tier 1: Explicit agent override
     if let Some(agent) = agent_override {
-        return Some(agent.as_str().to_string());
+        return Ok(agent.as_str().to_string());
     }
 
-    // Assign to whoever did the original work
+    // Tier 2: Original task assignee
     if let Some(task) = reviewed_task {
         if let Some(ref assignee) = task.assignee {
-            return Some(assignee.clone());
+            return Ok(assignee.clone());
         }
     }
 
-    // Fallback to claude-code if we can't determine the original worker
-    Some("claude-code".to_string())
+    // Tier 3-5: Use agent registry
+    let available = match available_agents {
+        Some(agents) => agents.to_vec(),
+        None => get_available_agents(),
+    };
+    match available.len() {
+        1 => Ok(available[0].as_str().to_string()), // Tier 3: Unambiguous single agent
+        n if n > 1 => Err(AikiError::Other(anyhow::anyhow!(
+            "Cannot determine which agent to assign fix tasks to. Multiple agents installed: {}. Use --agent to specify.",
+            available.iter().map(|a| a.as_str()).collect::<Vec<_>>().join(", ")
+        ))),
+        _ => Err(AikiError::Other(anyhow::anyhow!(
+            "No agent CLIs found on PATH. Install claude or codex to use task delegation."
+        ))),
+    }
 }
 
 /// Create the fix-parent task (container for fix subtasks, like an epic).
@@ -862,9 +881,9 @@ mod tests {
             comments: Vec::new(),
         };
 
-        // Override should take precedence
-        let result = determine_followup_assignee(Some(AgentType::Codex), Some(&task));
-        assert_eq!(result, Some("codex".to_string()));
+        // Override should take precedence (Tier 1)
+        let result = determine_followup_assignee(Some(AgentType::Codex), Some(&task), None);
+        assert_eq!(result.unwrap(), "codex");
     }
 
     #[test]
@@ -896,16 +915,34 @@ mod tests {
             comments: Vec::new(),
         };
 
-        // Should return the reviewed task's assignee (claude-code fixes their own work)
-        let result = determine_followup_assignee(None, Some(&reviewed_task));
-        assert_eq!(result, Some("claude-code".to_string()));
+        // Should return the reviewed task's assignee (Tier 2: claude-code fixes their own work)
+        let result = determine_followup_assignee(None, Some(&reviewed_task), None);
+        assert_eq!(result.unwrap(), "claude-code");
     }
 
     #[test]
-    fn test_determine_followup_assignee_no_reviewed_task() {
-        // If we can't find the reviewed task, fall back to claude-code
-        let result = determine_followup_assignee(None, None);
-        assert_eq!(result, Some("claude-code".to_string()));
+    fn test_determine_followup_assignee_no_reviewed_task_no_agents() {
+        // No agents available → error
+        let result = determine_followup_assignee(None, None, Some(&[]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No agent CLIs found"));
+    }
+
+    #[test]
+    fn test_determine_followup_assignee_no_reviewed_task_single_agent() {
+        // Single agent available → returns it (Tier 3)
+        let agents = [AgentType::ClaudeCode];
+        let result = determine_followup_assignee(None, None, Some(&agents));
+        assert_eq!(result.unwrap(), "claude-code");
+    }
+
+    #[test]
+    fn test_determine_followup_assignee_no_reviewed_task_multiple_agents() {
+        // Multiple agents available → error requesting --agent (Tier 4)
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+        let result = determine_followup_assignee(None, None, Some(&agents));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--agent"));
     }
 
     fn make_test_task(id: &str) -> Task {
@@ -1321,11 +1358,31 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_followup_assignee_reviewed_task_no_assignee() {
-        // Reviewed task exists but has no assignee → fallback to claude-code
+    fn test_determine_followup_assignee_reviewed_task_no_assignee_no_agents() {
+        // Reviewed task with no assignee, no agents → error
         let task = make_test_task("no-assignee");
-        let result = determine_followup_assignee(None, Some(&task));
-        assert_eq!(result, Some("claude-code".to_string()));
+        let result = determine_followup_assignee(None, Some(&task), Some(&[]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No agent CLIs found"));
+    }
+
+    #[test]
+    fn test_determine_followup_assignee_reviewed_task_no_assignee_single_agent() {
+        // Reviewed task with no assignee, single agent → returns it (Tier 3)
+        let task = make_test_task("no-assignee");
+        let agents = [AgentType::Codex];
+        let result = determine_followup_assignee(None, Some(&task), Some(&agents));
+        assert_eq!(result.unwrap(), "codex");
+    }
+
+    #[test]
+    fn test_determine_followup_assignee_reviewed_task_no_assignee_multiple_agents() {
+        // Reviewed task with no assignee, multiple agents → error requesting --agent (Tier 4)
+        let task = make_test_task("no-assignee");
+        let agents = [AgentType::ClaudeCode, AgentType::Codex];
+        let result = determine_followup_assignee(None, Some(&task), Some(&agents));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--agent"));
     }
 
     // ── Regression tests for output_format gating ──────────────────

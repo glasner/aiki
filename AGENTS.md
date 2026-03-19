@@ -1,4 +1,4 @@
-<aiki version="1.16">
+<aiki version="0.1.0">
 
 ## ⛔ STOP - Read This First
 
@@ -40,42 +40,20 @@ aiki task close <task-id> --summary "What you did"
 
 ---
 
-
 ## Workspace Isolation
 
 **Every agent session runs in its own isolated JJ workspace.** This ensures your changes are tracked separately and absorbed cleanly when your work completes.
 
 **Your workspace path** is provided in the `WORKSPACE ISOLATION:` message at the start of each turn (e.g., `/tmp/aiki/<repo-id>/<session-id>`).
 
-**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like "Let me switch to the isolated workspace" or "I'm working from the isolated workspace." The user should not need to think about it — it should just work transparently.
+**Do NOT mention workspace isolation to the user.** Work silently from the workspace without discussing it. Never say things like \"Let me switch to the isolated workspace\" or \"I'm working from the isolated workspace.\" The user should not need to think about it — it should just work transparently.
 
 **If you received a `WORKSPACE ISOLATION` message earlier in this session:**
 - You MUST work from the workspace directory specified in that message
 - All file reads, writes, and edits must use paths within the workspace
 - Do NOT switch back to the repo root — stay in the workspace
 
-**Git commands:** The isolated workspace is a JJ workspace, not a git repo. When the user asks you to "commit", they mean a **git commit in the main repo** (the original working directory, e.g., `/Users/.../code/aiki`). Run all git commands (`git add`, `git commit`, `git status`, `git diff`, etc.) from the main repo path, not from the workspace.
-
-**After context compaction**, the workspace path from earlier messages may be lost. To recover:
-1. Your current working directory is still the workspace — continue using it
-2. If your cwd contains `/tmp/aiki/`, you are in an isolated workspace
-3. The workspace path will be re-confirmed on the next turn via hook context
-
-### Conflict Resolution
-
-If you receive a `CONFLICT RESOLUTION REQUIRED` message after completing a turn:
-
-1. You are still in your isolated workspace — check the conflicted files listed in the message
-2. Open each conflicted file and find the JJ conflict markers:
-   - `<<<<<<< Conflict N of M` — start of conflict block
-   - `%%%%%%% Changes from base` — diff showing one side's changes
-   - `+++++++ Contents of side #2` — the other side's content
-   - `>>>>>>> Conflict N of M ends` — end of conflict block
-3. Replace each entire conflict block with the correct merged content
-4. Once all conflicts are resolved, your changes will be absorbed automatically on the next turn
-
----
-
+**IMPORTANT: Use `aiki task` for ALL task management.** Do not use built-in todo tools (TodoWrite, task lists, etc.). Aiki tasks:
 - Persist in JJ history across sessions
 - Are visible to other agents and humans
 - Survive context compaction
@@ -108,12 +86,10 @@ aiki task start <task-id>
 
 ```bash
 # ALWAYS do this first, before reading/analyzing/implementing:
-aiki task start "Review assign-tasks.md design" --source prompt
+aiki task start "Review assign-tasks.md design"
 # ... now do the work ...
 aiki task close <task-id> --summary "Reviewed, found 3 issues: ..."
 ```
-
-Using `--source prompt` links the task to the user's request that triggered it.
 
 ### When to Use Tasks
 
@@ -150,20 +126,20 @@ aiki task close <task-id> --summary "Completed: authentication with JWT tokens, 
 
 ### Code Reviews
 
-**When asked to review a task's changes, use `aiki review --start`:**
+**When asked to review a task's changes, use `aiki review`:**
 
 ```bash
-# Review a specific task's changes (you perform the review)
-aiki review <task-id> --start
+# Review a specific task's changes (blocking — you perform the review)
+aiki review <task-id>
 ```
 
-**When to use `aiki review --start`:**
+**When to use `aiki review`:**
 - User asks you to review work done on a task
 - User says "review task X" or provides a task ID to review
 - You want to check the code changes associated with a completed task
 
 **How it works:**
-1. `aiki review <task-id> --start` creates a review task and you perform the review
+1. `aiki review <task-id>` creates a review task and you perform the review (blocking by default)
 2. You'll see instructions to run `aiki task diff` and examine the changes
 3. Track each issue found using `aiki review issue add`:
    ```bash
@@ -173,12 +149,21 @@ aiki review <task-id> --start
    - **Location:** `--file path[:<line>[-<end>]]` (repeatable for multi-file issues)
 4. Close the review task when done
 
-**The `--start` flag means you perform the review yourself** (vs. spawning a background agent).
-
 **After reviewing**, if you found issues, run `aiki fix` to create followup tasks from review issues:
 ```bash
 aiki fix <review-task-id>
 ```
+
+### Conflict Resolution
+
+**When you encounter merge conflicts, use `aiki resolve`:**
+
+```bash
+# Resolve merge conflicts in the current workspace
+aiki resolve <change-id>
+```
+
+This opens the conflicted change, lets you resolve the JJ conflict markers, and marks the change as resolved.
 
 **Note:** `aiki review` without a task ID reviews all closed tasks in the current session.
 
@@ -193,13 +178,13 @@ Native subagent tools include:
 
 **Why:** Native subagents run without aiki context. Their work isn't tracked, isn't visible to other agents/humans, and doesn't persist. `aiki task run` gives the spawned agent the same aiki integration you have.
 
-**⚠️ CRITICAL: Always wait for results before responding.** After running `aiki task run`, you MUST wait for the task to finish and inspect its results BEFORE responding to the user. Never just fire off tasks and tell the user "they're running in the background" — the whole point of delegation is to get results back and synthesize them.
-
 **Scenario 1: User asks you to delegate an existing task**
 ```bash
-# Run synchronously (wait for agent to finish, then inspect results)
+# Run synchronously (wait for agent to finish)
 aiki task run <task-id>
-aiki task show <task-id>
+
+# Run in background (return immediately)
+aiki task run <task-id> --async
 ```
 
 **Scenario 2: User asks you to have a subagent do something new**
@@ -207,11 +192,8 @@ aiki task show <task-id>
 # 1. Create a task describing the work
 aiki task add "Description of the work to delegate"
 
-# 2. Run it with a subagent (waits for completion)
+# 2. Run it with a subagent
 aiki task run <task-id>
-
-# 3. Inspect results before responding
-aiki task show <task-id>
 ```
 
 **Scenario 3: User asks you to run multiple things in parallel**
@@ -220,26 +202,9 @@ aiki task show <task-id>
 aiki task add "First piece of work"
 aiki task add "Second piece of work"
 
-# Launch them concurrently with --async
+# Run them concurrently in background
 aiki task run <id1> --async
 aiki task run <id2> --async
-
-# IMPORTANT: Wait for ALL tasks to complete, then inspect results
-aiki task wait <id1> <id2>
-aiki task show <id1>
-aiki task show <id2>
-# Now synthesize the results and respond to the user
-```
-
-**The `--async` flag is ONLY for launching tasks in parallel** — it does NOT mean "fire and forget". You still must wait for all async tasks to finish (using `aiki task wait`) and read their results before responding to the user.
-
-**Scenario 4: Run a task from a template**
-```bash
-# Create and run a task from a template in one step
-aiki task run --template review/code-review --data scope=src/auth.rs
-
-# Inspect results
-aiki task show <task-id>
 ```
 
 ### ❌ WRONG: Using native subagents
@@ -272,9 +237,6 @@ aiki task start "Task description"
 # Quick-start with priority
 aiki task start "Urgent fix" --p0
 
-# Quick-start with source (track where task came from)
-aiki task start "Implement feature X" --source file:ops/now/design.md
-
 # Start existing task by ID
 aiki task start <task-id>
 
@@ -299,23 +261,21 @@ aiki task close <task-id> --wont-do --summary "Already handled by existing code"
 # Close multiple tasks
 aiki task close <id1> <id2> <id3> --summary "All done"
 
-# Delegate task to a subagent (waits for completion)
+# Delegate task to a subagent
 aiki task run <task-id>
 
-# Delegate multiple tasks in parallel
-aiki task run <id1> --async
-aiki task run <id2> --async
-aiki task wait <id1> <id2>    # block until all finish
-aiki task show <id1>          # inspect results
-aiki task show <id2>          # inspect results
+# Delegate in background
+aiki task run <task-id> --async
 
-# Run a task from a template (create + run in one step)
-aiki task run --template <namespace/name>
-aiki task run --template <namespace/name> --data key=value
+# Add a relationship between tasks
+aiki task link <id> --blocked-by <blocker-id>       # Block until blocker closes
+aiki task link <id> --sourced-from file:design.md   # Track provenance
+aiki task link <id> --subtask-of <parent-id>        # Set parent
+aiki task link <id> --implements ops/now/plan.md     # Link to plan (emits implements-plan)
+aiki task link <id> --fixes task:<target-id>         # Fix targets a task or file
 
-# Filter tasks by source
-aiki task list --source file:ops/now/design.md
-aiki task list --source ops/now/design.md  # partial match works
+# Remove a relationship
+aiki task unlink <id> --blocked-by <blocker-id>
 ```
 
 ### Handling Multiple Requests (Subtasks)
@@ -373,9 +333,10 @@ aiki task start <id>
 ### Parent Task Behavior
 
 When you start a parent task with subtasks:
-1. `aiki task` now shows only subtasks (scoped view)
-2. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
-3. **After all subtasks are done**, review the work to make sure nothing was missed, then close the parent with a summary comment:
+1. A `.0` subtask auto-starts: "Review all subtasks and start first batch"
+2. `aiki task` now shows only subtasks (scoped view)
+3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
+4. **After all subtasks are done**, review the work to make sure nothing was missed, then close the parent with a summary comment:
    ```bash
    aiki task close <parent-id> --summary "All 3 subtasks done: fixed null check, added error handling, removed unused import"
    ```
@@ -385,59 +346,14 @@ When you start a parent task with subtasks:
 Instead of creating a mental todo list or using built-in tools:
 
 ```bash
-# Break down the work (with source for traceability)
-aiki task add "Research existing implementation" --source file:ops/now/design.md
-aiki task add "Design the solution" --source file:ops/now/design.md
-aiki task add "Implement changes" --source file:ops/now/design.md
-aiki task add "Add tests" --source file:ops/now/design.md
+# Break down the work
+aiki task add "Research existing implementation"
+aiki task add "Design the solution"
+aiki task add "Implement changes"
+aiki task add "Add tests"
 
 # Start the first task
 aiki task start <id>
-```
-
-### Task Sources
-
-The `--source` flag tracks where tasks originate from. This enables:
-- **Plan lineage** - Link tasks to design docs or plans that spawned them
-- **Review lineage** - Link followup tasks to code reviews
-- **Prompt lineage** - Link tasks to the user prompt that triggered them
-- **Traceability** - Answer "why does this task exist?"
-
-**Source prefixes:**
-| Prefix | Meaning | Example |
-|--------|---------|---------|
-| `file:` | File path (design doc, plan) | `file:ops/now/design.md` |
-| `task:` | Another task (follow-up, review) | `task:xqrmnpst` |
-| `comment:` | Specific comment within a task | `comment:c1a2b3c4` |
-| `issue:` | External issue tracker | `issue:GH-123` |
-| `prompt:` | User prompt that triggered work | `prompt:nzwtoqqr` |
-
-**Linking tasks to prompts:**
-
-Use `--source prompt` to automatically link a task to the user's latest prompt:
-
-```bash
-# Quick-start with prompt source (RECOMMENDED for agents)
-aiki task start "Implement feature X" --source prompt
-
-# The system resolves "prompt" to the actual change_id, e.g., "prompt:nzwtoqqr"
-```
-
-This creates traceability from tasks back to the user request that triggered them.
-
-```bash
-# Task from a design document
-aiki task add "Implement session tracking" --source file:ops/now/design.md
-
-# Task with multiple sources (from another task + specific comment)
-aiki task add "Fix auth bug" --source task:abc123 --source comment:c1a2b3c4
-
-# Quick-start with source
-aiki task start "Implement X" --source file:ops/now/design.md
-
-# Query tasks from a specific source
-aiki task list --source file:ops/now/design.md
-aiki task list --source ops/now/design.md  # partial match works
 ```
 
 ### Task Output Format
@@ -538,7 +454,6 @@ Example:
 
 - **Using TodoWrite instead of `aiki task`** ← Most common mistake!
 - **Using the Task tool instead of `aiki task run`** ← Native subagents lack aiki context!
-- **Responding before delegated tasks finish** ← Always wait for `aiki task run` results and inspect them before replying!
 - **Not leaving progress comments on long tasks** ← Easy to forget!
 - **Not reporting completed tasks to user** ← User can't see what was done!
 - **Not explicitly stopping tasks before switching to new work** ← Tasks don't auto-stop!
@@ -553,4 +468,35 @@ Example:
 ### Task Priorities
 
 `p0` (urgent) → `p1` (high) → `p2` (normal, default) → `p3` (low)
+
+### Task Relationships (Links)
+
+Tasks can be linked to express relationships. Use `aiki task link` to create links:
+
+| Link Kind | Direction | Meaning | Blocks Ready Queue? |
+|---|---|---|---|
+| `blocked-by` | task → blocker | Can't start until blocker closes | Yes |
+| `depends-on` | task → dependency | Strict: only Done unblocks | Yes |
+| `validates` | review → task | Review validates this task | Yes |
+| `remediates` | fix → review | Fix remediates this review | Yes |
+| `sourced-from` | task → origin | Where this task came from | No |
+| `subtask-of` | child → parent | Parent-child hierarchy | No |
+| `implements-plan` | epic → plan | Epic implements this plan (1:1) | No |
+| `decomposes-plan` | decompose → plan | Decompose task reads this plan | No |
+| `adds-plan` | task → plan | Task created/modified this plan | No |
+| `orchestrates` | orchestrator → epic | Orchestrator drives this epic (1:1) | No |
+| `fixes` | fix → target | Fix task targets this file/task | No |
+| `supersedes` | new → old | New task replaces old one | No |
+| `spawned-by` | child → spawner | Automatic process provenance | No |
+
+**When to use links:**
+- `--blocked-by` / `--depends-on`: Task A can't start until task B is done
+- `--sourced-from`: Track where a task came from (auto-emitted with `--source`)
+- `--subtask-of`: Express parent-child relationships
+- `--implements`: Link an epic task to its plan file (emits `implements-plan`)
+- `--fixes`: Link a fix task to the file or task it fixes
+
+**Auto-replace:** Single-link kinds (`subtask-of`, `implements-plan`, `orchestrates`, `supersedes`) automatically replace existing links when a new one is added.
+
+**Cycle detection:** `blocked-by` and `subtask-of` links are checked for cycles at write time.
 </aiki>

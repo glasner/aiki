@@ -7,11 +7,12 @@ Now:
 
 
 Next:
-- context usage re: lance
+
 - move aiki context out into an aiki skill(s) (reduce AGENTS.md)
 - finish hooks rename -> rename actions to commands?
-- clawmart fasttrack
 - registry
+- clawmart fasttrack
+- context usage re: lance
 - workflow hooks commands -> review loop plug
 - formalize task kinds -> conflict command
 - plugin directory -> plugin search

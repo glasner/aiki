@@ -219,7 +219,7 @@ fn run_continue_async(cwd: &Path, epic_id: &str, args: BuildArgs) -> Result<()> 
     if review_after {
         let plan_path = epic.data.get("plan").cloned().unwrap_or_default();
         let fix_after = fix_template.is_some();
-        run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template, None)?;
+        run_build_review(cwd, &plan_path, &epic_id, fix_after, review_template, fix_template, args.agent, None)?;
     }
 
     Ok(())
@@ -448,7 +448,7 @@ fn run_build_plan(
         } else {
             None
         };
-        let result = run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template, review_session.as_mut());
+        let result = run_build_review(cwd, plan_path, final_epic_id, fix_after, review_template, fix_template, agent, review_session.as_mut());
         drop(review_session); // Always restore terminal before propagating errors
         result?;
     }
@@ -600,7 +600,7 @@ fn run_build_epic(
         } else {
             None
         };
-        let result = run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template, review_session.as_mut());
+        let result = run_build_review(cwd, &plan_path, epic_id, fix_after, review_template, fix_template, agent, review_session.as_mut());
         drop(review_session); // Always restore terminal before propagating errors
         result?;
     }
@@ -843,7 +843,7 @@ fn close_epic_as_invalid(cwd: &Path, epic_id: &str) -> Result<()> {
 /// Creates a code review scoped to the plan's implementation, optionally
 /// including a fix subtask if `with_fix` is true. Runs the review to completion
 /// (blocking).
-fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>, session: Option<&mut ScreenSession>) -> Result<()> {
+fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, review_template: Option<String>, fix_template: Option<String>, agent: Option<String>, session: Option<&mut ScreenSession>) -> Result<()> {
     use super::review::{create_review, CreateReviewParams, ReviewScope, ReviewScopeKind};
 
     let scope = ReviewScope {
@@ -854,7 +854,7 @@ fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, 
 
     let result = create_review(cwd, CreateReviewParams {
         scope,
-        agent_override: None,
+        agent_override: agent.clone(),
         template: review_template,
         fix_template: if with_fix { fix_template.clone().or_else(|| Some("fix".to_string())) } else { None },
         autorun: false,
@@ -893,7 +893,7 @@ fn run_build_review(cwd: &Path, plan_path: &str, epic_id: &str, with_fix: bool, 
             None,           // default decompose template
             None,           // default loop template
             None,           // default review template
-            None,           // no agent override
+            agent,          // forward agent override
             false,          // not autorun
             false,          // not --once
             None,           // no output format override

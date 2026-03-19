@@ -203,8 +203,11 @@ Alternatively, install the agent globally:
     #[error("Task '{0}' has no assignee and no --agent specified")]
     TaskNoAssignee(String),
 
-    #[error("Agent '{0}' does not support task execution")]
-    AgentNotSupported(String),
+    #[error("No agent CLIs found. Install claude-code or codex to continue.")]
+    NoAgentsAvailable,
+
+    #[error("Agent '{agent}' is not available.\n  {hint}")]
+    AgentNotInstalled { agent: String, hint: String },
 
     #[error("Failed to spawn agent: {0}")]
     AgentSpawnFailed(String),
@@ -280,6 +283,10 @@ Alternatively, install the agent globally:
 
     #[error("Plugin operation failed for '{plugin}': {details}")]
     PluginOperationFailed { plugin: String, details: String },
+
+    // Instructions file errors
+    #[error("Both AGENTS.md and CLAUDE.md exist as separate files.\nAiki needs one canonical file with a symlink for the other.\nOptions:\n    aiki init --instructions-file AGENTS.md\n    aiki init --instructions-file CLAUDE.md\nRun with one of these flags to resolve.")]
+    InstructionsConflict,
 
     // Generic wrapper for underlying errors
     #[error(transparent)]
