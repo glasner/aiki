@@ -634,14 +634,14 @@ pub fn handle_session_result(
 pub fn run_task_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     match task_run(cwd, task_id, options) {
         Ok(()) => {
-            let md = MdBuilder::new("run")
-                .build(&format!("## Run Completed\n- **Task:** {}\n", task_id), &[], &[]);
+            let md = MdBuilder::new()
+                .build(&format!("## Run Completed\n- **Task:** {}\n", task_id));
             println!("{}", md);
             Ok(())
         }
         Err(e) => {
-            let md = MdBuilder::new("run")
-                .error()
+            let md = MdBuilder::new()
+                
                 .build_error(&e.to_string());
             println!("{}", md);
             Err(e)
@@ -743,19 +743,17 @@ pub fn task_run_async(
 pub fn run_task_async_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     match task_run_async(cwd, task_id, options) {
         Ok(handle) => {
-            let md = MdBuilder::new("run").build(
+            let md = MdBuilder::new().build(
                 &format!(
                     "## Run Started\n- **Task:** {}\n- Task started asynchronously.\n",
                     handle.task_id
                 ),
-                &[],
-                &[],
             );
             println!("{}", md);
             Ok(())
         }
         Err(e) => {
-            let md = MdBuilder::new("run").error().build_error(&e.to_string());
+            let md = MdBuilder::new().build_error(&e.to_string());
             println!("{}", md);
             Err(e)
         }
@@ -776,30 +774,21 @@ pub enum SubtaskResolution<'a> {
 
 /// Resolve the next ready subtask of a parent task.
 ///
-/// Looks at all subtasks of the parent (excluding the synthetic `.0` digest subtask),
-/// and returns the first ready (open + unblocked) subtask sorted by priority then
+/// Returns the first ready (open + unblocked) subtask sorted by priority then
 /// creation time.
 ///
 /// Returns:
 /// - `Ready(task)` if a ready subtask is found
-/// - `AllComplete` if all non-digest subtasks are closed
+/// - `AllComplete` if all subtasks are closed
 /// - `Blocked(unclosed)` if subtasks exist but none are ready
-/// - `NoSubtasks` if the parent has no subtasks (excluding digest)
+/// - `NoSubtasks` if the parent has no subtasks
 pub fn resolve_next_subtask<'a>(
     graph: &'a TaskGraph,
     parent_id: &str,
 ) -> SubtaskResolution<'a> {
     use crate::tasks::manager::get_subtasks;
 
-    // The DIGEST_SUBTASK_NAME constant is defined in commands/task.rs.
-    // Rather than creating a cross-module dependency, we match by the known name.
-    const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
-
-    // Get all subtasks, excluding the synthetic .0 digest
-    let subtasks: Vec<&Task> = get_subtasks(graph, parent_id)
-        .into_iter()
-        .filter(|t| t.name != DIGEST_SUBTASK_NAME)
-        .collect();
+    let subtasks: Vec<&Task> = get_subtasks(graph, parent_id);
 
     if subtasks.is_empty() {
         return SubtaskResolution::NoSubtasks;
@@ -901,12 +890,9 @@ pub fn resolve_next_session_in_lane<'a>(
             format!("Lane '{}' not found", lane_head)
         ))?;
 
-    const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
-
     // Get subtasks filtered to this lane
     let subtasks: Vec<&Task> = get_subtasks(graph, parent_id)
         .into_iter()
-        .filter(|t| t.name != DIGEST_SUBTASK_NAME)
         .filter(|t| lane_task_ids.contains(&t.id))
         .collect();
 
@@ -1087,6 +1073,8 @@ mod tests {
             SessionResolution::NoSubtasks
         ));
     }
+
+    // --- stop_stale_subtasks tests ---
 
     #[test]
     fn test_resolve_next_session_non_head_chain_member() {

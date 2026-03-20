@@ -66,7 +66,7 @@ pub struct StartTaskResult;
 /// - Quick-start (description → new task) - caller should create task first
 /// - Template creation - caller should create from template first
 /// - Reopen logic - caller should reopen before calling this
-/// - Parent/subtask handling (.0 decompose task) - caller should handle this
+/// - Parent/subtask handling - caller should handle stale subtask cleanup
 ///
 /// # Arguments
 /// * `cwd` - Working directory

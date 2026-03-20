@@ -20,13 +20,12 @@ final review/wrap-up of the parent.
 - Skips if parent is already Closed or InProgress
 - Uses `all_subtasks_closed()` from `manager.rs`
 
-## 3. Auto-create + auto-start `.0` planning subtask (on parent start)
+## 3. Stop stale subtasks on parent start
 
 **Location:** `../commands/task.rs` — `run_start()`
 
-When a parent task with subtasks is started, a `.0` planning subtask is auto-created
-(if it doesn't already exist) named "Review all subtasks and start first batch".
-The `.0` subtask is started **instead of** the parent itself.
+When a parent task with subtasks is started, any in-progress subtasks from a
+previous (dead) session are stopped. This gives the new session a clean slate.
 
 ## 4. Quick-start: create + start atomically
 
@@ -62,7 +61,7 @@ subtask without the parent.
 |-----------------------|--------------------------------|-----------------------------------------|
 | Auto-start parent     | Closing last subtask           | Parent transitions to InProgress        |
 | Auto-start next child | Closing subtask (parent owned) | Next pending subtask started            |
-| Auto-create .0        | Starting parent with subtasks  | Planning subtask created and started    |
+| Stop stale subtasks   | Starting parent with subtasks  | In-progress subtasks stopped            |
 | Quick-start           | `task start "desc"`            | New task created and started            |
 | Template start        | `task start --template X`      | Template task created and started       |
 

@@ -51,16 +51,12 @@ pub enum LaneStatus {
     Blocked,
 }
 
-// ── Digest subtask name (must match commands/task.rs) ───────────────
-
-const DIGEST_SUBTASK_NAME: &str = "Digest subtasks and start first batch";
-
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Derive lanes from the subtask DAG of `parent_id`.
 ///
 /// Algorithm:
-/// 1. Collect subtasks (excluding the synthetic digest subtask).
+/// 1. Collect subtasks.
 /// 2. Build `needs-context` chains → multi-task sessions.
 /// 3. Collapse each chain into a single "session node" for DAG analysis.
 /// 4. Walk `depends-on` edges between session-nodes to form lanes:
@@ -73,7 +69,6 @@ pub fn derive_lanes(graph: &TaskGraph, parent_id: &str) -> LaneDecomposition {
     let subtasks = get_subtasks(graph, parent_id);
     let subtask_ids: HashSet<String> = subtasks
         .iter()
-        .filter(|t| t.name != DIGEST_SUBTASK_NAME)
         .map(|t| t.id.clone())
         .collect();
 
@@ -695,22 +690,6 @@ mod tests {
         assert_eq!(decomp.lanes.len(), 2);
         assert!(decomp.lanes[0].depends_on_lanes.is_empty());
         assert!(decomp.lanes[1].depends_on_lanes.is_empty());
-    }
-
-    #[test]
-    fn test_digest_subtask_excluded() {
-        let events = vec![
-            make_created("P", "Parent"),
-            make_created("D", DIGEST_SUBTASK_NAME),
-            make_created("A", "Task A"),
-            make_link("D", "P", "subtask-of"),
-            make_link("A", "P", "subtask-of"),
-        ];
-        let graph = materialize_graph(&events);
-        let decomp = derive_lanes(&graph, "P");
-
-        assert_eq!(decomp.lanes.len(), 1);
-        assert_eq!(decomp.lanes[0].head_task_id, "A");
     }
 
     #[test]
