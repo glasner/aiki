@@ -162,13 +162,16 @@ pub fn run_fix(
     // See test_resolve_fix_template_name_* tests for coverage of this resolution logic.
     let plan_template_resolved = resolve_fix_template_name(plan_template.clone(), &review_task.data);
 
-    // Determine assignee for fix tasks
+    // Determine assignee for fix tasks.
+    // For task-scoped reviews, look up the original task's assignee (the agent who
+    // did the work should fix it). For other scopes (code, plan), fall back to the
+    // review task's assignee since there's no "original author" task.
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
             Some(determine_followup_assignee(agent_type, original_task, None)?)
         }
-        _ => Some(determine_followup_assignee(agent_type, None, None)?),
+        _ => Some(determine_followup_assignee(agent_type, Some(review_task), None)?),
     };
 
     // Async spawn path: create fix-parent synchronously, then spawn background process
@@ -281,17 +284,19 @@ fn run_fix_continue(
     // Get scope from fix-parent's data
     let scope = ReviewScope::from_data(&fix_parent.data)?;
 
-    // Determine assignee
+    // Load review task (needed for both assignee fallback and template resolution)
+    let review_task = find_task(&tasks, &review_id)?;
+
+    // Determine assignee (same logic as sync path)
     let assignee = match scope.kind {
         ReviewScopeKind::Task => {
             let original_task = find_task(&tasks, &scope.id).ok();
             Some(determine_followup_assignee(agent_type, original_task, None)?)
         }
-        _ => Some(determine_followup_assignee(agent_type, None, None)?),
+        _ => Some(determine_followup_assignee(agent_type, Some(review_task), None)?),
     };
 
     // Resolve plan template from review task data
-    let review_task = find_task(&tasks, &review_id)?;
     let plan_template_resolved = resolve_fix_template_name(plan_template, &review_task.data);
 
     // Run the pipeline from plan-fix step onward for this fix-parent,

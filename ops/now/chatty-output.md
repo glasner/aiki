@@ -266,6 +266,32 @@ No active stage, so nothing dims (except plan/edit which are always dim as Meta)
 
 ### Build failed (error case)
 
+**Mid-build: one lane fails while another is still running.** The failing lane keeps its block form with `✗` replacing `▸`. The other lane continues. Previously completed lanes have already collapsed to flat `✓` lines above.
+
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Decomposed into 6 subtasks                                        12s        ← dim
+
+ ✓ Explore webhook requirements                              8s  claude      ← green (collapsed from earlier lane)
+ ✓ Create implementation plan                                6s  claude
+
+ ┃  ✗ Implement webhook route handler                                          ← surface bg, red ✗
+ ┃    Error: Connection refused to test database                               ← surface bg, red, indented
+ ┃  ○ Write integration tests                                                  ← surface bg, dim ○ (skipped)
+ ┃  cursor/sonnet-4.6 · 28% · $0.14                              48s          ← surface bg, dim footer
+
+ ┃  ▸ Verify Stripe signatures                                                ← surface bg, yellow ▸ (still running)
+ ┃  claude/opus-4.6 · 42% · $0.35                                32s          ← surface bg, dim footer
+
+ ○ Add idempotency key tracking                                               ← dim ○ (unassigned)
+```
+
+**Terminal state: all lanes done/failed, collapsed to flat list.**
+
 ```
  webhooks.md                                                                   ← hi+bold
 
@@ -275,14 +301,16 @@ No active stage, so nothing dims (except plan/edit which are always dim as Meta)
  Decomposed into 6 subtasks                                        12s        ← dim
  ✓ Explore webhook requirements                              8s  claude      ← green
  ✓ Create implementation plan                                6s  claude
+ ✓ Verify Stripe signatures                                 32s  claude      ← green
  ✗ Implement webhook route handler                          48s  cursor      ← red ✗
    Error: Connection refused to test database                                  ← red, indented
- ○ Verify Stripe signatures                                                    ← dim, skipped
- ○ Add idempotency key tracking
- ○ Write integration tests
+ ○ Write integration tests                                                    ← dim, skipped
+ ○ Add idempotency key tracking                                               ← dim, skipped
 
  Build failed: 1 subtask errored                                               ← red
 ```
+
+Lane blocks collapse to flat lines on completion (success or failure). The `✗` line retains its error detail. Pending subtasks in the failed lane and unassigned subtasks show as `○` (skipped).
 
 ---
 
@@ -304,6 +332,7 @@ The key rhythm: **agent block appears → work happens → block collapses to a 
 10. **Summary at the end.** "Done in N iterations, Xm total"
 11. **The whole pipeline is one scroll.** Plan creation → edit → build → review → fix → re-review, all in order
 12. **Previous stages dim.** Completed stages fade so your eye falls on the current action
+13. **Failed lanes keep their block.** A lane with a `✗` subtask stays in block form (surface bg) until the build stage resolves. On terminal collapse, `✗` lines retain their error detail in the flat list.
 
 ---
 
@@ -393,8 +422,8 @@ enum ChatChild {
     /// mechanism for showing parallelism: multiple LaneBlocks visible
     /// = multiple lanes executing concurrently.
     LaneBlock {
-        subtasks: Vec<Subtask>,  // subtasks in this lane (✓/▸/○)
-        footer: BlockFooter,     // agent/model, context %, cost, elapsed
+        subtasks: Vec<LaneSubtask>,  // subtasks in this lane (✓/▸/○)
+        footer: BlockFooter,         // agent/model, context %, cost, elapsed
     },
     /// A review issue
     Issue {
@@ -405,8 +434,9 @@ enum ChatChild {
     },
 }
 
-/// A subtask within a LaneBlock
-struct Subtask {
+/// A subtask within a LaneBlock — distinct from ChatChild::Subtask because
+/// in-lane subtasks inherit their agent from the lane's BlockFooter.
+struct LaneSubtask {
     name: String,
     status: MessageKind,     // Done/Active/Pending/Error
     elapsed: Option<String>,
@@ -655,13 +685,13 @@ fn chat_lane_blocks_have_surface_bg() {
             children: vec![
                 ChatChild::LaneBlock { agent: "claude".into(), elapsed: Some("32s".into()),
                     subtasks: vec![
-                        Subtask { name: "Explore".into(), status: Done, elapsed: Some("8s".into()), .. },
-                        Subtask { name: "Verify signatures".into(), status: Active, .. },
+                        LaneSubtask { name: "Explore".into(), status: Done, elapsed: Some("8s".into()), .. },
+                        LaneSubtask { name: "Verify signatures".into(), status: Active, .. },
                     ] },
                 ChatChild::LaneBlock { agent: "cursor".into(), elapsed: Some("12s".into()),
                     subtasks: vec![
-                        Subtask { name: "Implement handler".into(), status: Active, .. },
-                        Subtask { name: "Write tests".into(), status: Pending, .. },
+                        LaneSubtask { name: "Implement handler".into(), status: Active, .. },
+                        LaneSubtask { name: "Write tests".into(), status: Pending, .. },
                     ] },
                 ChatChild::Subtask { name: "Add tracking".into(), status: Pending, .. },
             ], .. },

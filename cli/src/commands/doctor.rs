@@ -1,4 +1,5 @@
-use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
+use crate::commands::agents_template::AIKI_BLOCK_VERSION;
+use crate::instructions;
 use crate::commands::zed_detection;
 use crate::config;
 use crate::editors::zed as ide_config;
@@ -306,84 +307,70 @@ pub fn run(fix: bool) -> Result<()> {
         println!();
     }
 
-    // Check AGENTS.md for task system instructions
+    // Check instruction files (AGENTS.md / CLAUDE.md)
     println!("Agent Instructions:");
 
-    let agents_path = project_root.join("AGENTS.md");
-    if agents_path.exists() {
-        match fs::read_to_string(&agents_path) {
-            Ok(content) => {
-                if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
-                    println!("  ✓ AGENTS.md has current <aiki> block");
-                } else if content.contains("<aiki version=") {
-                    println!("  ⚠ AGENTS.md has outdated <aiki> block");
-                    if fix {
-                        // Replace old block with new one
-                        if let Some(start) = content.find("<aiki version=") {
-                            if let Some(end) = content.find("</aiki>") {
-                                let before = &content[..start];
-                                let after = &content[end + "</aiki>".len()..];
-                                let updated = format!(
-                                    "{}{}{}",
-                                    before.trim_end(),
-                                    aiki_block_template(),
-                                    after.trim_start()
-                                );
-                                match fs::write(&agents_path, updated) {
-                                    Ok(()) => {
-                                        println!(
-                                            "    ✓ Updated <aiki> block to version {}",
-                                            AIKI_BLOCK_VERSION
-                                        );
-                                    }
-                                    Err(e) => {
-                                        println!("    ✗ Failed to update AGENTS.md: {}", e);
-                                        issues_found += 1;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        println!("    → Run: aiki doctor --fix (to update block)");
-                    }
-                } else {
-                    println!("  ⚠ AGENTS.md missing <aiki> block");
-                    if fix {
-                        // Prepend block to existing content
-                        let updated = format!("{}\n{}", aiki_block_template(), content);
-                        match fs::write(&agents_path, updated) {
-                            Ok(()) => {
-                                println!("    ✓ Added <aiki> block to AGENTS.md");
-                            }
-                            Err(e) => {
-                                println!("    ✗ Failed to update AGENTS.md: {}", e);
-                                issues_found += 1;
-                            }
-                        }
-                    } else {
-                        println!("    → Run: aiki doctor --fix (to add block)");
-                    }
-                }
-            }
-            Err(e) => {
-                println!("  ✗ Failed to read AGENTS.md: {}", e);
-                issues_found += 1;
-            }
-        }
-    } else {
-        println!("  ⚠ AGENTS.md not found");
-        if fix {
-            match fs::write(&agents_path, aiki_block_template()) {
-                Ok(()) => {
-                    println!("    ✓ Created AGENTS.md with task system instructions");
-                }
-                Err(e) => {
-                    println!("    ✗ Failed to create AGENTS.md: {}", e);
+    match instructions::detect_canonical(&project_root, None) {
+        Ok(canonical) => {
+            println!("  ✓ Canonical instruction file: {}", canonical);
+
+            let link_name = if canonical == instructions::AGENTS_MD {
+                instructions::CLAUDE_MD
+            } else {
+                instructions::AGENTS_MD
+            };
+
+            if fix {
+                if let Err(e) = instructions::ensure_aiki_block(&project_root, canonical, false) {
+                    println!("  ✗ Failed to ensure <aiki> block: {}", e);
                     issues_found += 1;
                 }
+                if let Err(e) = instructions::ensure_symlink(&project_root, canonical, link_name, false) {
+                    println!("  ✗ Failed to ensure symlink: {}", e);
+                    issues_found += 1;
+                }
+            } else {
+                // Check-only mode: report status
+                let file_path = project_root.join(canonical);
+                match std::fs::read_to_string(&file_path) {
+                    Ok(content) => {
+                        if content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
+                            println!("  ✓ {} has current <aiki> block", canonical);
+                        } else if content.contains("<aiki version=") {
+                            println!("  ⚠ {} has outdated <aiki> block", canonical);
+                            println!("    → Run: aiki doctor --fix (to update block)");
+                        } else {
+                            println!("  ⚠ {} missing <aiki> block", canonical);
+                            println!("    → Run: aiki doctor --fix (to add block)");
+                        }
+                    }
+                    Err(e) => {
+                        println!("  ✗ Failed to read {}: {}", canonical, e);
+                        issues_found += 1;
+                    }
+                }
+
+                // Check symlink status
+                let link_path = project_root.join(link_name);
+                if link_path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                    println!("  ✓ {} symlinked to {}", link_name, canonical);
+                } else if link_path.exists() {
+                    println!("  ⚠ {} exists as a separate file (not symlinked)", link_name);
+                } else {
+                    println!("  ⚠ {} not found (no symlink)", link_name);
+                    println!("    → Run: aiki doctor --fix (to create symlink)");
+                }
             }
-        } else {
-            println!("    → Run: aiki doctor --fix (to create)");
+        }
+        Err(crate::error::AikiError::InstructionsConflict) => {
+            println!("  ⚠ Both AGENTS.md and CLAUDE.md exist as separate files");
+            println!("    → Run: aiki init --instructions-file AGENTS.md");
+            println!("      or:  aiki init --instructions-file CLAUDE.md");
+            issues_found += 1;
+        }
+        Err(e) => {
+            println!("  ✗ Failed to detect instruction file: {}", e);
+            issues_found += 1;
         }
     }
 
