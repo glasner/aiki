@@ -507,6 +507,59 @@ pub fn absorb_workspace(
         )));
     }
 
+    // Post-absorption safety check: verify ws_head is in @'s ancestry.
+    // If not, a concurrent absorption (or hook-created `jj new` between turns)
+    // stranded our commits on a side branch. Fix by rebasing @ onto ws_head.
+    let verify_check = jj_cmd()
+        .current_dir(&target_dir)
+        .args([
+            "log", "-r", &format!("{} & ::@", ws_head),
+            "--no-graph", "-T", "change_id", "--limit", "1",
+            "--ignore-working-copy",
+        ])
+        .output();
+
+    if let Ok(verify_output) = verify_check {
+        if verify_output.status.success() {
+            let in_ancestry = String::from_utf8_lossy(&verify_output.stdout);
+            if in_ancestry.trim().is_empty() {
+                // ws_head is NOT in @'s ancestry — stranded! Fix it.
+                debug_log(|| {
+                    format!(
+                        "[workspace] Post-absorption: ws_head {} stranded \
+                         (not in ::@), rebasing @ onto ws_head to fix",
+                        &ws_head[..ws_head.len().min(12)]
+                    )
+                });
+                let fix_output = jj_cmd()
+                    .current_dir(&target_dir)
+                    .args([
+                        "rebase", "-s", "@", "-d", &ws_head,
+                        "--ignore-working-copy",
+                    ])
+                    .output();
+                match fix_output {
+                    Ok(fo) if !fo.status.success() => {
+                        let stderr = String::from_utf8_lossy(&fo.stderr);
+                        eprintln!(
+                            "[aiki] WARNING: post-absorption fix rebase failed: {}",
+                            stderr.trim()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[aiki] WARNING: post-absorption fix rebase failed to run: {}",
+                            e
+                        );
+                    }
+                    _ => {
+                        debug_log(|| "[workspace] Post-absorption fix: rebased @ onto ws_head".to_string());
+                    }
+                }
+            }
+        }
+    }
+
     // Sync the working copy after both rebases used --ignore-working-copy.
     // Without this, the filesystem would be stale and the next snapshot would
     // see the workspace's files as "deleted" — silently reverting the absorbed

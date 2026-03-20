@@ -609,7 +609,10 @@ pub fn detect_target(
 pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateReviewResult> {
     let scope = params.scope;
 
-    // Determine worker for reviewer assignment (for task scope)
+    // Determine worker for reviewer assignment.
+    // For task scope, use the task's assignee. For all other scopes (code, plan,
+    // session), detect the current agent from the active session so that
+    // determine_reviewer() can pick a cross-reviewer.
     let worker = match scope.kind {
         ReviewScopeKind::Task => {
             let events = read_events(cwd)?;
@@ -617,11 +620,10 @@ pub fn create_review(cwd: &Path, params: CreateReviewParams) -> Result<CreateRev
             let task = find_task(&tasks, &scope.id)?;
             task.assignee.as_deref().map(|s| s.to_string())
         }
-        ReviewScopeKind::Session => {
+        _ => {
             find_active_session(cwd)
                 .map(|s| s.agent_type.as_str().to_string())
         }
-        _ => None,
     };
 
     // Determine assignee for review task

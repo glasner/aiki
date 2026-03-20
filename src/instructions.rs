@@ -44,8 +44,10 @@ pub fn detect_canonical(repo_root: &Path, preferred: Option<&str>) -> Result<&'s
                     if let Some(pref) = preferred {
                         if pref == AGENTS_MD {
                             Ok(AGENTS_MD)
-                        } else {
+                        } else if pref == CLAUDE_MD {
                             Ok(CLAUDE_MD)
+                        } else {
+                            Err(AikiError::InvalidPreferred(pref.to_string()))
                         }
                     } else {
                         Err(AikiError::InstructionsConflict)
@@ -59,8 +61,10 @@ pub fn detect_canonical(repo_root: &Path, preferred: Option<&str>) -> Result<&'s
             if let Some(pref) = preferred {
                 if pref == AGENTS_MD {
                     Ok(AGENTS_MD)
-                } else {
+                } else if pref == CLAUDE_MD {
                     Ok(CLAUDE_MD)
+                } else {
+                    Err(AikiError::InvalidPreferred(pref.to_string()))
                 }
             } else {
                 Ok(AGENTS_MD)
@@ -72,7 +76,7 @@ pub fn detect_canonical(repo_root: &Path, preferred: Option<&str>) -> Result<&'s
 /// Ensure the <aiki> block is present in the given instruction file.
 ///
 /// - If file exists and has current block -> no-op, print checkmark
-/// - If file exists with outdated block -> print warning to run doctor --fix
+/// - If file exists with outdated block -> replace with current block
 /// - If file exists without block -> prepend block
 /// - If file doesn't exist -> create it with block
 pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Result<()> {
@@ -101,10 +105,26 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
                 println!("✓ Added <aiki> block to {}", filename);
             }
         } else if !content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
-            // Version is outdated
+            // Version is outdated — replace the old block
+            let start = content.find("<aiki version=")
+                .expect("already checked content contains <aiki version=");
+            let end_tag = "</aiki>";
+            let end = content[start..].find(end_tag)
+                .map(|pos| start + pos + end_tag.len())
+                .ok_or_else(|| anyhow::anyhow!("Malformed <aiki> block in {}: missing </aiki> closing tag", filename))?;
+            // Skip a trailing newline if present
+            let end = if content[end..].starts_with("\r\n") {
+                end + 2
+            } else if content[end..].starts_with('\n') {
+                end + 1
+            } else {
+                end
+            };
+            let updated = format!("{}{}{}", &content[..start], aiki_block_template(), &content[end..]);
+            fs::write(&file_path, updated)
+                .with_context(|| format!("Failed to update {}", filename))?;
             if !quiet {
-                println!("⚠ {} has outdated <aiki> block", filename);
-                println!("  Run `aiki doctor --fix` to update");
+                println!("✓ Updated <aiki> block in {}", filename);
             }
         } else if !quiet {
             println!("✓ {} already has <aiki> block", filename);
@@ -125,7 +145,7 @@ pub fn ensure_aiki_block(repo_root: &Path, filename: &str, quiet: bool) -> Resul
 ///
 /// - If symlink already exists pointing to correct target -> no-op, print checkmark
 /// - If symlink exists with wrong target -> remove and recreate
-/// - If path exists as real file -> skip (caller handles conflicts)
+/// - If path exists as real file -> warn and skip
 pub fn ensure_symlink(repo_root: &Path, target_name: &str, link_name: &str, quiet: bool) -> Result<()> {
     let link_path = repo_root.join(link_name);
 
@@ -149,7 +169,10 @@ pub fn ensure_symlink(repo_root: &Path, target_name: &str, link_name: &str, quie
             fs::remove_file(&link_path)
                 .with_context(|| format!("Failed to remove old symlink {}", link_name))?;
         } else {
-            // Real file exists -> skip, caller handles conflicts
+            // Real file exists — can't create symlink
+            if !quiet {
+                println!("⚠ {} exists as a regular file, skipping symlink", link_name);
+            }
             return Ok(());
         }
     }

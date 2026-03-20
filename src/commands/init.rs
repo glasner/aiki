@@ -1,8 +1,8 @@
-use crate::commands::agents_template::{aiki_block_template, AIKI_BLOCK_VERSION};
 use crate::config;
 use crate::editors::zed as ide_config;
 use crate::error::Result;
 use crate::global;
+use crate::instructions;
 use crate::jj;
 use crate::prerequisites;
 use crate::repos::RepoDetector;
@@ -113,7 +113,7 @@ include:
 #   # Use for: blocking external requests, domain allowlisting
 "#;
 
-pub fn run(quiet: bool) -> Result<()> {
+pub fn run(quiet: bool, instructions_file: Option<String>) -> Result<()> {
     prerequisites::check_prerequisites(quiet)?;
 
     // Get current directory
@@ -336,11 +336,18 @@ pub fn run(quiet: bool) -> Result<()> {
     // Ensure hookfile exists for workflow automation
     ensure_hooks_yml(&repo_root, quiet)?;
 
-    // Ensure AGENTS.md has task system instructions
+    // Ensure instruction file has <aiki> block and symlink exists
     if !quiet {
         println!("\nConfiguring agent instructions...");
     }
-    ensure_agents_md(&repo_root, quiet)?;
+    let canonical = instructions::detect_canonical(&repo_root, instructions_file.as_deref())?;
+    instructions::ensure_aiki_block(&repo_root, canonical, quiet)?;
+    let link_name = if canonical == instructions::AGENTS_MD {
+        instructions::CLAUDE_MD
+    } else {
+        instructions::AGENTS_MD
+    };
+    instructions::ensure_symlink(&repo_root, canonical, link_name, quiet)?;
 
     // Sync built-in templates
     if !quiet {
@@ -403,42 +410,6 @@ fn ensure_hooks_yml(repo_root: &Path, quiet: bool) -> Result<()> {
 
     if !quiet {
         println!("Created .aiki/hooks.yml with default workflow automation");
-    }
-
-    Ok(())
-}
-
-/// Ensure AGENTS.md exists with the <aiki> block for task system instructions
-fn ensure_agents_md(repo_root: &Path, quiet: bool) -> Result<()> {
-    let agents_path = repo_root.join("AGENTS.md");
-
-    if agents_path.exists() {
-        // Read existing file
-        let content = fs::read_to_string(&agents_path).context("Failed to read AGENTS.md")?;
-
-        // Check for <aiki> block
-        if !content.contains("<aiki version=") {
-            // Prepend block
-            let updated = format!("{}\n{}", aiki_block_template(), content);
-            fs::write(&agents_path, updated).context("Failed to update AGENTS.md")?;
-            if !quiet {
-                println!("✓ Added <aiki> block to AGENTS.md");
-            }
-        } else if !content.contains(&format!("<aiki version=\"{}\">", AIKI_BLOCK_VERSION)) {
-            // Version is outdated
-            if !quiet {
-                println!("⚠ AGENTS.md has outdated <aiki> block");
-                println!("  Run `aiki doctor --fix` to update");
-            }
-        } else if !quiet {
-            println!("✓ AGENTS.md already has <aiki> block");
-        }
-    } else {
-        // Create new AGENTS.md with just the block
-        fs::write(&agents_path, aiki_block_template()).context("Failed to create AGENTS.md")?;
-        if !quiet {
-            println!("✓ Created AGENTS.md with task system instructions");
-        }
     }
 
     Ok(())
