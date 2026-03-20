@@ -191,7 +191,7 @@ fn output_loop_started(loop_id: &str, parent_id: &str) -> Result<()> {
             "## Loop Started\n- **Loop ID:** {}\n- **Parent ID:** {}\n",
             loop_id, parent_id
         );
-        MdBuilder::new("loop").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -203,7 +203,7 @@ fn output_loop_completed(loop_id: &str, parent_id: &str) -> Result<()> {
             "## Loop Completed\n- **Loop ID:** {}\n- **Parent ID:** {}\n",
             loop_id, parent_id
         );
-        MdBuilder::new("loop").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -215,7 +215,7 @@ fn output_loop_async(loop_id: &str, parent_id: &str) -> Result<()> {
             "## Loop Started\n- **Loop ID:** {}\n- **Parent ID:** {}\n- Loop started in background.\n",
             loop_id, parent_id
         );
-        MdBuilder::new("loop").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }

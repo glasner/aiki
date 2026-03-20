@@ -13,7 +13,7 @@
 /// ```ignore
 /// emit(|| {
 ///     let content = format_command_output(&output);
-///     MdBuilder::new("review").build(&content, &in_progress, &ready)
+///     MdBuilder::new().build(&content)
 /// });
 /// ```
 pub fn emit(formatter: impl FnOnce() -> String) {

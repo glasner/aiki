@@ -210,8 +210,8 @@ pub fn run(args: ExploreArgs) -> Result<()> {
 fn output_explore_started(
     explore_id: &str,
     scope: &ReviewScope,
-    in_progress: &[&Task],
-    ready: &[&Task],
+    _in_progress: &[&Task],
+    _ready: &[&Task],
 ) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
     output_utils::emit(|| {
@@ -224,7 +224,7 @@ fn output_explore_started(
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("explore").build(&content, in_progress, ready)
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -242,7 +242,7 @@ fn output_explore_async(explore_id: &str, scope: &ReviewScope) -> Result<()> {
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("explore").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -260,7 +260,7 @@ fn output_explore_completed(explore_id: &str, scope: &ReviewScope) -> Result<()>
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("explore").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }

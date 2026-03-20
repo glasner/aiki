@@ -1173,22 +1173,24 @@ fn test_parent_auto_starts_when_all_subtasks_closed() {
         .output()
         .expect("Failed to start subtask 2");
 
-    // Close subtask 2 - parent should auto-start (visible in In Progress section)
-    let close_output = aiki_task(
+    // Close subtask 2 - this should trigger parent auto-start
+    aiki_task(
         temp_dir.path(),
         &["close", &subtask2_id, "--summary", "All done"],
     )
-    .success()
-    .get_output()
-    .stdout
-    .clone();
-    let close_stdout = String::from_utf8_lossy(&close_output);
+    .success();
 
     // Verify the parent task is now in progress (auto-started after all subtasks closed)
+    let list_output = aiki_task(temp_dir.path(), &["list"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_stdout = String::from_utf8_lossy(&list_output);
     assert!(
-        close_stdout.contains("In Progress:") && close_stdout.contains("Parent task"),
+        list_stdout.contains("In Progress:") && list_stdout.contains("Parent task"),
         "Parent should auto-start when all subtasks closed. Output: {}",
-        close_stdout
+        list_stdout
     );
 }
 
