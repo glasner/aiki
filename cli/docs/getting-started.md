@@ -1,45 +1,12 @@
 # Getting Started with Aiki
 
-## 1) Install prerequisites
+## 1) Install Aiki
 
-> Git is assumed to be installed already.
-
-### macOS
+Aiki is now installed via Homebrew.
 
 ```bash
-brew install jj rust
-rustup-init -y
-```
-
-### Linux (Debian/Ubuntu)
-
-```bash
-sudo apt update
-sudo apt install -y jj curl build-essential
-curl https://sh.rustup.rs -sSf | sh -s -- -y
-```
-
-Make sure Cargo binaries are on your PATH:
-
-```bash
-# zsh
-grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.zshrc || \
-  echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-
-# bash
-grep -qxF 'export PATH="$HOME/.cargo/bin:$PATH"' ~/.bashrc || \
-  echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-
-# Reload shell
-source ~/.zshrc   # or source ~/.bashrc
-```
-
-## 2) Install Aiki
-
-```bash
-git clone https://github.com/glasner/aiki.git
-cd aiki
-cargo install --path cli
+brew tap glasner/tap
+brew install aiki
 ```
 
 Then confirm:
@@ -48,7 +15,7 @@ Then confirm:
 aiki --version
 ```
 
-## 3) Initialize Aiki in a repo
+## 2) Initialize Aiki in a repo
 
 From any Git repository:
 
@@ -68,11 +35,11 @@ Hooks are global, so one restart after first init is usually enough.
 
 > **Note:** If you run into setup issues, you can run `aiki doctor` to diagnose common problems with your environment, dependencies, and configuration.
 
-## 4) First workflow: Chat mode with task tracking
+## 3) First workflow: Chat mode with task tracking
 
 This workflow shows you how Aiki tracks work across different AI agents in real-time.
 
-### 4.1 Ask Claude to make a change
+### 3.1 Ask Claude to make a change
 
 Open Claude Code and ask it to make a simple change to your project. For example:
 
@@ -100,7 +67,7 @@ You'll see Claude automatically start a task before making changes. The output w
 
 Notice the agent is working from `/tmp/aiki/.../`. Each agent session gets its own [Jujutsu workspace](https://jj-vcs.github.io/jj/latest/working-copy/) — an isolated copy of the repo. This means multiple agents can work concurrently without stepping on each other. When a task closes, its changes are tracked as a JJ change and automatically merged back. Any conflicts are resolved intelligently by agents through their understanding of the assocated tasks. 
 
-### 4.2 See the task in progress
+### 3.2 See the task in progress
 
 While Claude is working, check the task status in another terminal:
 
@@ -108,7 +75,7 @@ While Claude is working, check the task status in another terminal:
 aiki task show <task-id> 
 ```
 
-### 4.3 See Claude's task summary
+### 3.3 See Claude's task summary
 
 When Claude finishes, it will close the task with a summary of what was done.
 
@@ -130,7 +97,7 @@ To see the actual code changes, run:
 aiki task diff <task-id> 
 ```
 
-### 4.4 Ask Codex to review by referencing the task ID
+### 3.4 Ask Codex to review by referencing the task ID
 
 Now switch to Codex (or another AI agent) and ask it to review Claude's work by providing the task ID:
 
@@ -155,7 +122,7 @@ Codex will automatically create a review task, examine the changes, and provide 
 - Each agent session is isolated in its own JJ workspace — no conflicts between concurrent agents
 - Changes are tracked as JJ changes, which is what powers `aiki task diff`
 
-## 5) First headless workflow
+## 4) First headless workflow
 
 After you're comfortable with chat mode, try the fully automated headless workflow. Aiki's [SDLC](sdlc.md) is four commands that form a closed loop:
 
@@ -164,7 +131,7 @@ After you're comfortable with chat mode, try the fully automated headless workfl
 - **`aiki review`** — evaluate the output against structured criteria
 - **`aiki fix`** — auto-fix review issues, re-reviewing until clean
 
-### 5.1 Start planning with `aiki plan`
+### 4.1 Start planning with `aiki plan`
 
 Run `aiki plan` with a path to start or continue planning:
 
@@ -187,7 +154,7 @@ This skips the interactive prompt and jumps straight to planning with your provi
 
 At the end of planning, `aiki plan` reports a summary of the conversation and closes the planning session when you give the thumbs up.
 
-### 5.2 Build from the plan
+### 4.2 Build from the plan
 
 After plan is ready and saved as `path/to/my-feature.md`:
 
@@ -197,7 +164,7 @@ aiki build path/to/my-feature.md --fix
 
 The `--fix` flag automatically runs a code review after the build completes, then creates and executes followup tasks for any issues found. This gives you a fully automated pipeline: that runs `aiki build | aiki review | aiki fix` automatically.
 
-### 5.3 Track headless workflow
+### 4.3 Track headless workflow
 
 The build automatically displays a live status screen as it progresses through stages:
 
@@ -248,7 +215,7 @@ The screen continues through review and fix stages automatically:
 
 Aiki keeps work organized and visible no matter which AI agent you're using. Tasks, plans, and changes are tracked in your repository, so you never lose context when switching tools or coming back later.
 
-## 6) Next docs
+## 5) Next docs
 
 - [SDLC: Plan, Build, Review, Fix](sdlc.md)
 - [Customizing Defaults](customizing-defaults.md)
