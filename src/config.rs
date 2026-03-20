@@ -579,10 +579,22 @@ pub fn wait_for_otel_receiver() -> Result<()> {
     anyhow::bail!("OTel receiver did not become ready within 2 seconds")
 }
 
+
+#[cfg(target_os = "macos")]
+fn launchctl_domain_target() -> String {
+    format!("gui/{}", unsafe { libc::getuid() })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launchctl_domain_target() -> String {
+    // Never called on non-macOS because this is only used by launchctl helpers.
+    "gui/0".to_string()
+}
+
 fn restart_otel_receiver_macos() -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let plist_path = home_dir.join("Library/LaunchAgents/com.aiki.otel-receive.plist");
-    let domain_target = format!("gui/{}", unsafe { libc::getuid() });
+    let domain_target = launchctl_domain_target();
     let service_target = format!("{}/com.aiki.otel-receive", domain_target);
 
     // Bootout (stop) — ignore errors, may not be loaded
@@ -629,7 +641,7 @@ fn install_otel_receiver_macos(aiki_path: &str) -> Result<()> {
     let home_dir = dirs::home_dir().context("Could not find home directory")?;
     let agents_dir = home_dir.join("Library/LaunchAgents");
     let plist_path = agents_dir.join("com.aiki.otel-receive.plist");
-    let domain_target = format!("gui/{}", unsafe { libc::getuid() });
+    let domain_target = launchctl_domain_target();
     let service_target = format!("{}/com.aiki.otel-receive", domain_target);
 
     fs::create_dir_all(&agents_dir).context("Failed to create ~/Library/LaunchAgents")?;

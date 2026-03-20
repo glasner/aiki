@@ -441,6 +441,7 @@ fn get_unix_socket_peer_pid() -> Option<u32> {
 ///
 /// Calls getpeername(0) to get the peer's ephemeral port, then runs
 /// `lsof -i TCP@127.0.0.1:{port} -sTCP:ESTABLISHED -t` to resolve the PID.
+#[cfg(not(windows))]
 fn get_tcp_peer_pid() -> Option<u32> {
     // getpeername on fd 0 to learn the peer's address:port
     let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
@@ -467,34 +468,38 @@ fn get_tcp_peer_pid() -> Option<u32> {
 
     // Use lsof to find which process owns this ephemeral port
     let output = match std::process::Command::new("lsof")
-        .args([
-            "-i",
-            &format!("TCP@127.0.0.1:{}", peer_port),
-            "-sTCP:ESTABLISHED",
-            "-t",
-        ])
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            debug_log(|| format!("OTel: lsof failed: {}", e));
-            return None;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // lsof -t outputs one PID per line; pick the first that isn't us
-    let our_pid = std::process::id();
-    for line in stdout.lines() {
-        if let Ok(pid) = line.trim().parse::<u32>() {
-            if pid != our_pid && pid > 0 {
-                debug_log(|| format!("OTel: socket peer PID = {} (via lsof)", pid));
-                return Some(pid);
+        .args(["-n", "-i", &format!("TCP@127.0.0.1:{peer_port}"), "-sTCP:ESTABLISHED", "-t"])
+        .output() {
+            Ok(out) => out,
+            Err(err) => {
+                debug_log(|| format!("OTel: lsof failed: {}", err));
+                return None;
             }
+        };
+
+    if !output.status.success() {
+        debug_log(|| {
+            format!(
+                "OTel: lsof failed for peer port {}: {}",
+                peer_port,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        });
+        return None;
+    }
+
+    let out_text = String::from_utf8_lossy(&output.stdout);
+    for line in out_text.lines() {
+        if let Ok(pid) = line.trim().parse::<u32>() {
+            return Some(pid);
         }
     }
 
-    debug_log(|| format!("OTel: lsof found no peer PID for port {}", peer_port));
+    None
+}
+
+#[cfg(windows)]
+fn get_tcp_peer_pid() -> Option<u32> {
     None
 }
 

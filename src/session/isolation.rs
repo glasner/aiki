@@ -225,7 +225,15 @@ impl Drop for AbsorbLock {
 }
 
 fn is_pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn read_lock_owner_pid(lock_path: &Path) -> Option<u32> {

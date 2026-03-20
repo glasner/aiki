@@ -783,12 +783,20 @@ pub fn list_all_sessions() -> Result<Vec<SessionInfo>> {
 /// load or due to timing issues with `sysctl`-based process listing.
 #[must_use]
 pub fn get_parent_pid() -> Option<u32> {
-    // SAFETY: getppid() is always safe and always returns a valid PID
-    let ppid = unsafe { libc::getppid() };
-    if ppid > 0 {
-        Some(ppid as u32)
-    } else {
-        None // Should never happen — even init has ppid=0
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid() is always safe and always returns a valid PID
+        let ppid = unsafe { libc::getppid() };
+        if ppid > 0 {
+            Some(ppid as u32)
+        } else {
+            None // Should never happen — even init has ppid=0
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 
