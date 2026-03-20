@@ -1,10 +1,14 @@
 Bugs:
 - async session end
-- better agent detection
-- better recovery from api errors
+- rhai conditionals
+- session isolation
+
+- task heartbeat
 
 Now:
-
+- chatty
+- remove context banner
+- automatic agent failover
 
 Next:
 

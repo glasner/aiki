@@ -61,24 +61,44 @@ aiki/tasks
 
 ### Step 1: Change `write_event()` to chain + advance
 
-After creating the new change, get the change ID and advance the bookmark to point at it. The next `write_event` call will then fork from the new head, creating a chain.
+After creating the new change, capture its change ID from `jj new` and advance
+the bookmark to point at it. The next `write_event` call will then fork from
+the new head, creating a chain.
 
-#### Getting the change ID reliably
+#### Use the change ID emitted by `jj new`
 
-Generate a unique marker and include it in the commit message. Then resolve the new
-change directly via template output:
+`jj new` already tells us which change it created, so we can use that directly.
+In a scratch repo, this exact command:
 
-1. Create a random marker like `aiki-task-event-id=<random_hex>` in memory.
-2. Run `jj new ... -m "<metadata>\nMARKER"`.
-3. Resolve the new full change id using template output:
-   `jj log -r "description(substring:'MARKER')" -T "change_id ++ \"\\n\""`
-4. Move the bookmark with the returned full change id.
+```bash
+jj new aiki/tasks --no-edit --ignore-working-copy -m $'[aiki-task]\nkind=start\n[/aiki-task]'
+```
+
+produced:
+
+```text
+# stdout
+(empty)
+
+# stderr
+Created new commit xlulsuvp 9ca401f0 (empty) [aiki-task]
+```
+
+So the parser should be concrete:
+
+1. Run `jj new ... -m "<metadata>"`.
+2. Read `stderr`, not `stdout`.
+3. Find the line starting with `Created new commit `.
+4. Split that line on ASCII whitespace. The fields are:
+   `Created`=`1`, `new`=`2`, `commit`=`3`, `<change_id>`=`4`, `<commit_id>`=`5`, ...
+   so use the **4th whitespace-separated token** as `<new_change_id>`.
+5. Validate that the parsed token matches JJ's short change-id shape (`[a-z]{8}` today), and fail if the line is missing or malformed.
+6. Move the bookmark with `jj bookmark set ... -r <new_change_id>`.
 
 ```rust
 fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     ensure_tasks_branch(cwd)?;
-    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
-    let metadata = append_write_marker(&event_to_metadata_block(&event), &marker);
+    let metadata = event_to_metadata_block(&event);
 
     // Create child of current bookmark head
     let result = jj_cmd()
@@ -95,7 +115,7 @@ fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    let new_id = resolve_change_id_by_marker(cwd, &marker)?;
+    let new_id = parse_new_change_id(&result.stderr)?;
     jj_cmd()
         .current_dir(cwd)
         .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
@@ -117,15 +137,11 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
     if events.len() == 1 { return write_event(cwd, &events[0]); }
 
     ensure_tasks_branch(cwd)?;
-    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
-    let metadata = append_write_marker(
-        &events
-            .iter()
-            .map(|e| event_to_metadata_block(e))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        &marker,
-    );
+    let metadata = events
+        .iter()
+        .map(|e| event_to_metadata_block(e))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // Single jj new for all events (existing behavior)
     let result = jj_cmd()
@@ -136,8 +152,7 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
     if !result.status.success() { return Err(...); }
 
     // Single bookmark advance at the end (new)
-    let new_id = resolve_change_id_by_marker(cwd, &marker)?;
-
+    let new_id = parse_new_change_id(&result.stderr)?;
     jj_cmd()
         .current_dir(cwd)
         .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
@@ -160,7 +175,6 @@ Multiple agents may write task events concurrently. With fan-out, this was safe 
 1. Using `--allow-backwards` on `bookmark set` (in case of rebase)
 2. Accepting temporary forks — they resolve naturally as one agent's next write builds on the other's
 
-Alternatively: reuse the existing `acquire_absorb_lock()` pattern from `isolation.rs` to serialize task writes. This is the safest approach if task writes are infrequent enough (they are — humans type slowly).
 
 ### Step 3: Migrate existing heads (one-time cleanup)
 

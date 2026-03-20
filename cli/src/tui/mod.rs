@@ -1,5 +1,5 @@
 pub mod buffer_ansi;
-pub mod builder;
+pub mod chat_builder;
 pub mod live_screen;
 pub mod loading_screen;
 pub mod theme;

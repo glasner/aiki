@@ -936,16 +936,8 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
             .or_else(|| review_task.data.get("plan"))
             .map(|s| s.as_str())
             .unwrap_or("unknown");
-        let mut subtasks = graph.children_of(&review_task.id);
-        subtasks.sort_by_key(|t| t.created_at);
-        let view = tui::builder::build_plan_review_view(
-            review_task,
-            &subtasks,
-            plan_path,
-            &repo_name,
-            &graph,
-        );
-        let buf = tui::views::workflow::render_workflow(&view, &theme);
+        let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
+        let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
         return Ok(buffer_to_ansi(&buf));
     }
 
@@ -957,10 +949,8 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     };
 
     let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
-    let subtasks: Vec<&Task> = graph.children_of(&epic.id);
-
-    let view = tui::builder::build_workflow_view_focused(epic, &subtasks, plan_path, &repo_name, &graph, Some(review_id));
-    let buf = tui::views::workflow::render_workflow(&view, &theme);
+    let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
+    let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
     Ok(buffer_to_ansi(&buf))
 }
 
