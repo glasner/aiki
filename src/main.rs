@@ -176,7 +176,6 @@ enum Commands {
     Plan {
         /// Subcommand and arguments. First arg can be 'epic' or 'fix',
         /// otherwise defaults to epic behavior.
-        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
         /// Plan template to use (default: plan)
         #[arg(long)]
@@ -191,7 +190,6 @@ enum Commands {
     /// (deprecated alias for 'aiki plan')
     #[command(hide = true)]
     Spec {
-        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
         #[arg(long)]
         template: Option<String>,
@@ -324,6 +322,55 @@ fn run() -> Result<()> {
         } => {
             eprintln!("Warning: 'aiki spec' is deprecated, use 'aiki plan' instead.");
             commands::plan::run(args, template, agent, None)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_parses_agent_after_freeform_args() {
+        let cli = Cli::try_parse_from([
+            "aiki",
+            "plan",
+            "ops/now/feature.md",
+            "add",
+            "auth",
+            "--agent",
+            "codex",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plan { args, agent, .. } => {
+                assert_eq!(args, vec!["ops/now/feature.md", "add", "auth"]);
+                assert_eq!(agent.as_deref(), Some("codex"));
+            }
+            _ => panic!("expected plan command"),
+        }
+    }
+
+    #[test]
+    fn spec_parses_agent_after_freeform_args() {
+        let cli = Cli::try_parse_from([
+            "aiki",
+            "spec",
+            "ops/now/feature.md",
+            "add",
+            "auth",
+            "--agent",
+            "codex",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Spec { args, agent, .. } => {
+                assert_eq!(args, vec!["ops/now/feature.md", "add", "auth"]);
+                assert_eq!(agent.as_deref(), Some("codex"));
+            }
+            _ => panic!("expected spec command"),
         }
     }
 }
