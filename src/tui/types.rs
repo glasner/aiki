@@ -1,17 +1,4 @@
-use crate::tui::widgets::lane_dag::DagLayout;
-
-/// State of a workflow stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StageState {
-    Pending,
-    Starting,
-    Active,
-    Done,
-    Skipped,
-    Failed,
-}
-
-/// Status for subtask lines.
+/// Status for subtask lines (used by epic_show).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtaskStatus {
     Pending,
@@ -21,7 +8,7 @@ pub enum SubtaskStatus {
     Failed,
 }
 
-/// A subtask line in the epic tree or inside a stage.
+/// A subtask line in the epic tree (used by epic_show).
 #[derive(Debug, Clone)]
 pub struct SubtaskLine {
     pub name: String,
@@ -31,48 +18,7 @@ pub struct SubtaskLine {
     pub error: Option<String>,
 }
 
-/// A child of a fix stage.
-#[derive(Debug, Clone)]
-pub enum FixChild {
-    Subtask(SubtaskLine),
-    ReviewFix {
-        number: Option<u32>,
-        state: StageState,
-        result: Option<String>,
-        agent: Option<String>,
-        elapsed: Option<String>,
-    },
-}
-
-/// A sub-stage within a group stage.
-#[derive(Debug, Clone)]
-pub struct SubStageView {
-    pub name: String,
-    pub state: StageState,
-    pub progress: Option<String>,
-    pub elapsed: Option<String>,
-    pub children: Vec<StageChild>,
-}
-
-/// Children under a stage.
-#[derive(Debug, Clone)]
-pub enum StageChild {
-    Subtask(SubtaskLine),
-    Fix(FixChild),
-}
-
-/// A workflow stage.
-#[derive(Debug, Clone)]
-pub struct StageView {
-    pub name: String,
-    pub state: StageState,
-    pub progress: Option<String>,
-    pub elapsed: Option<String>,
-    pub sub_stages: Vec<SubStageView>,
-    pub children: Vec<StageChild>,
-}
-
-/// The epic header and subtask list.
+/// The epic header and subtask list (used by epic_show).
 #[derive(Debug, Clone)]
 pub struct EpicView {
     pub short_id: String,
@@ -80,17 +26,6 @@ pub struct EpicView {
     pub subtasks: Vec<SubtaskLine>,
     pub collapsed: bool,
     pub collapsed_summary: Option<String>,
-}
-
-/// Top-level workflow view data model.
-#[derive(Debug, Clone)]
-pub struct WorkflowView {
-    /// Repository folder name shown as `[name]` prefix in the path line.
-    pub repo_name: String,
-    pub plan_path: String,
-    pub epic: EpicView,
-    pub stages: Vec<StageView>,
-    pub lane_dag: Option<DagLayout>,
 }
 
 // ── Chat data model ─────────────────────────────────────────────────

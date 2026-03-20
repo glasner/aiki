@@ -127,38 +127,22 @@ impl StatusMonitor {
 
         // Review tasks use the plan review pipeline: plan → review → build
         if root_task.task_type.as_deref() == Some("review") {
-            let subtasks = self.get_sorted_subtasks(&graph, &root_task.id);
-            let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
             let plan_path = root_task
                 .data
                 .get("scope.id")
                 .or_else(|| root_task.data.get("plan"))
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            let view = tui::builder::build_plan_review_view(
-                root_task,
-                &subtask_refs,
-                plan_path,
-                &repo_name,
-                &graph,
-            );
-            return Ok(tui::views::workflow::render_workflow(&view, &theme));
+            let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
+            return Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path));
         }
 
         // Default: build pipeline (build → review → fix)
-        let (epic, subtasks, focus_task_id) = self.resolve_epic(&graph, root_task);
+        let (epic, _subtasks, _focus_task_id) = self.resolve_epic(&graph, root_task);
 
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
-        let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
-        let view = tui::builder::build_workflow_view_focused(
-            epic,
-            &subtask_refs,
-            plan_path,
-            &repo_name,
-            &graph,
-            focus_task_id,
-        );
-        Ok(tui::views::workflow::render_workflow(&view, &theme))
+        let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
+        Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path))
     }
 
     /// Resolve epic from the running task.

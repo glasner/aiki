@@ -994,14 +994,14 @@ fn output_build_completed(build_id: &str, epic_id: &str, subtasks: &[&Task]) -> 
 }
 
 /// Output build show (detailed status display)
-fn output_build_show(epic: &Task, subtasks: &[&Task], _build_tasks: &[&Task], graph: &crate::tasks::graph::TaskGraph) -> Result<()> {
+fn output_build_show(epic: &Task, _subtasks: &[&Task], _build_tasks: &[&Task], graph: &crate::tasks::graph::TaskGraph) -> Result<()> {
     let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
     let cwd = std::env::current_dir().unwrap_or_default();
     let repo_name = crate::repos::repo_folder_name(&cwd);
     output_utils::emit(|| {
         let theme = Theme::from_mode(detect_mode());
-        let view = tui::builder::build_workflow_view(epic, subtasks, plan_path, &repo_name, graph);
-        let buf = tui::views::workflow::render_workflow(&view, &theme);
+        let chat = tui::chat_builder::build_pipeline_chat(graph, plan_path);
+        let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
         tui::buffer_ansi::buffer_to_ansi(&buf)
     });
     Ok(())
