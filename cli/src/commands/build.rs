@@ -296,13 +296,16 @@ fn run_build_plan(
     } else {
         match existing_epic {
             Some(epic) if epic.status != TaskStatus::Closed => {
-                // Valid incomplete epic — use it (deterministic, no prompt)
+                // Valid incomplete epic — reuse it (deterministic, no prompt)
                 let subtasks = get_subtasks(&graph, &epic.id);
                 if subtasks.is_empty() {
                     // Invalid epic (no subtasks) — close and create new
                     close_epic_as_invalid(cwd, &epic.id)?;
                     None
                 } else {
+                    // Restart the epic via `aiki task start` which stops
+                    // stale in-progress subtasks and re-starts the parent.
+                    restart_epic(cwd, &epic.id)?;
                     Some(epic.id.clone())
                 }
             }
@@ -780,6 +783,41 @@ fn close_epic(cwd: &Path, epic_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Restart an epic by stopping it and re-starting via `aiki task start`.
+///
+/// `aiki task start` on a parent with subtasks stops any stale in-progress
+/// subtasks, giving the new orchestrator a clean slate.
+fn restart_epic(cwd: &Path, epic_id: &str) -> Result<()> {
+    // Stop the epic to record why it was restarted
+    let stop_event = TaskEvent::Stopped {
+        task_ids: vec![epic_id.to_string()],
+        reason: Some("Restarted by new build".to_string()),
+        session_id: None,
+        turn_id: None,
+        timestamp: chrono::Utc::now(),
+    };
+    write_event(cwd, &stop_event)?;
+
+    // Re-start via `aiki task start` which handles stopping stale subtasks
+    let output = std::process::Command::new(get_aiki_binary_path())
+        .current_dir(cwd)
+        .args(["task", "start", epic_id])
+        .output()
+        .map_err(|e| {
+            AikiError::JjCommandFailed(format!("Failed to restart epic: {}", e))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to restart epic: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
 /// Check if an epic is blocked by unresolved dependencies.
 ///
 /// Returns an error if the epic has `depends-on` links to tasks that are not yet
@@ -923,7 +961,7 @@ fn output_build_review_completed(review_id: &str, plan_path: &str, with_fix: boo
                 review_id
             ));
         }
-        MdBuilder::new("build").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -950,7 +988,7 @@ fn output_build_completed(build_id: &str, epic_id: &str, subtasks: &[&Task]) -> 
             epic_id
         ));
 
-        MdBuilder::new("build").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }

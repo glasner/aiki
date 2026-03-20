@@ -333,7 +333,7 @@ aiki task start <id>
 ### Parent Task Behavior
 
 When you start a parent task with subtasks:
-1. A `.0` subtask auto-starts: "Review all subtasks and start first batch"
+1. Any stale in-progress subtasks from a previous session are stopped
 2. `aiki task` now shows only subtasks (scoped view)
 3. Subtask IDs are `<parent-id>.1`, `<parent-id>.2`, etc.
 4. **After all subtasks are done**, review the work to make sure nothing was missed, then close the parent with a summary comment:
