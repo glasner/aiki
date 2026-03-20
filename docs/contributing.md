@@ -4,6 +4,8 @@ This guide covers everything you need to develop Aiki itself — the CLI, core f
 
 ## Development Setup
 
+### Build from source
+
 ```bash
 git clone https://github.com/glasner/aiki.git
 cd aiki/cli
@@ -11,8 +13,13 @@ cargo build
 cargo test
 ```
 
-The project uses standard Rust tooling. No pinned toolchain version — stable Rust should work.
+To install a local binary for development work, run:
 
+```bash
+cargo install --path .
+```
+
+The project uses standard Rust tooling. No pinned toolchain version — stable Rust should work.
 ## Project Structure
 
 ```
