@@ -1,7 +1,7 @@
 //! Markdown output generation for task commands
 //!
 //! Action commands (add, start, comment) return slim single-line confirmations.
-//! State-transition commands (stop, close) return confirmation + full context.
+//! State-transition commands (stop, close) return confirmation + context footer.
 //! Read commands (list, show) return full context.
 
 use super::types::Task;
@@ -16,40 +16,18 @@ pub fn short_id(id: &str) -> &str {
 }
 
 /// Markdown builder for task command responses (used by read commands and errors)
-pub struct MdBuilder {
-    is_error: bool,
-    scopes: Vec<String>,
-}
+pub struct MdBuilder;
 
 impl MdBuilder {
-    /// Create a new builder for a command
+    /// Create a new builder
     #[must_use]
-    pub fn new(_cmd: &str) -> Self {
-        Self {
-            is_error: false,
-            scopes: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Mark this response as an error
+    /// Build the full markdown response (content only, no context banner).
     #[must_use]
-    pub fn error(mut self) -> Self {
-        self.is_error = true;
-        self
-    }
-
-    /// Set multiple scopes (when working on subtasks from multiple parents)
-    #[must_use]
-    pub fn with_scopes(mut self, scopes: &[String]) -> Self {
-        self.scopes = scopes.to_vec();
-        self
-    }
-
-    /// Build the full markdown response with context (no header/footer hint).
-    ///
-    /// Used by `task show` which doesn't need the navigation hint.
-    #[must_use]
-    pub fn build(&self, content: &str, in_progress: &[&Task], ready_queue: &[&Task]) -> String {
+    pub fn build(&self, content: &str) -> String {
         let mut md = String::new();
 
         if !content.is_empty() {
@@ -59,8 +37,6 @@ impl MdBuilder {
             }
             md.push('\n');
         }
-
-        md.push_str(&build_context(in_progress, ready_queue));
 
         md
     }
@@ -141,16 +117,6 @@ pub fn build_list_output(in_progress: &[&Task], ready_queue: &[&Task]) -> String
     out
 }
 
-/// Build the context block for state-transition commands (stop, close).
-///
-/// Returns `---\n` separator + context sections + footer, to be appended after the action line.
-#[must_use]
-pub fn build_transition_context(in_progress: &[&Task], ready_queue: &[&Task]) -> String {
-    let mut out = String::from("---\n");
-    out.push_str(&build_context(in_progress, ready_queue));
-    out.push_str(&build_footer(ready_queue.len()));
-    out
-}
 
 /// Format a list of tasks for filtered list views
 #[must_use]
@@ -427,57 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn test_transition_context() {
-        let task = make_task(
-            "abcdefghijklmnopqrstuvwxyzabcdef",
-            "Test",
-            TaskPriority::P2,
-            TaskStatus::Open,
-        );
-        let md = build_transition_context(&[], &[&task]);
-        assert!(md.contains("Ready (1):"));
-        assert!(md.contains("---\nTasks (1 ready)"));
-        assert!(md.contains(NAV_HINT));
-    }
-
-    #[test]
-    fn test_close_plus_transition() {
-        let task = make_task(
-            "abcdefghijklmnopqrstuvwxyzabcdef",
-            "Test",
-            TaskPriority::P2,
-            TaskStatus::Open,
-        );
-        let md = format!(
-            "{}{}",
-            format_action_closed(&task),
-            build_transition_context(&[], &[&task])
-        );
-        assert!(md.contains("Closed abcdefg"));
-        assert!(md.contains("Test"));
-        assert!(md.contains("---\n"));
-        assert!(md.contains("Ready (1):"));
-    }
-
-    #[test]
     fn test_builder_basic() {
-        let task = make_task(
-            "abcdefghijklmnopqrstuvwxyzabcdef",
-            "Test task",
-            TaskPriority::P2,
-            TaskStatus::Open,
-        );
-        let md = MdBuilder::new("show").build("", &[], &[&task]);
-        assert!(md.contains("Ready (1):"));
-        assert!(md.contains("[p2] abcdefg  Test task"));
-        // MdBuilder::build does NOT include nav hint
+        let md = MdBuilder::new().build("");
+        // MdBuilder::build no longer includes context
+        assert!(!md.contains("Ready"));
         assert!(!md.contains(NAV_HINT));
     }
 
     #[test]
     fn test_builder_error() {
-        let md = MdBuilder::new("start")
-            .error()
+        let md = MdBuilder::new()
             .build_error("Task not found");
         assert!(md.contains("Error: Task not found"));
     }

@@ -385,7 +385,7 @@ fn run_list(cwd: &Path) -> Result<()> {
         ));
     }
 
-    output_utils::emit(|| MdBuilder::new("epic-list").build(&content, &[], &[]));
+    output_utils::emit(|| MdBuilder::new().build(&content));
 
     Ok(())
 }
@@ -502,7 +502,7 @@ fn output_epic_created(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
             "\n- Review:  `aiki epic show {}`\n- Execute: `aiki build {}`\n",
             epic_id, epic_id
         ));
-        MdBuilder::new("epic").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -532,7 +532,7 @@ fn output_epic_resumed(epic_id: &str, subtasks: &[&Task]) -> Result<()> {
             "\n- Review:  `aiki epic show {}`\n- Execute: `aiki build {}`\n",
             epic_id, epic_id
         ));
-        MdBuilder::new("epic").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -602,7 +602,7 @@ fn output_epic_show(epic: &Task, subtasks: &[&Task]) -> Result<()> {
             }
         }
 
-        MdBuilder::new("epic-show").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
 
     Ok(())

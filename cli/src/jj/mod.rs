@@ -3,6 +3,7 @@ pub mod workspace;
 
 pub use workspace::JJWorkspace;
 
+use rand::random;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -13,11 +14,7 @@ use crate::error::{AikiError, Result};
 
 /// Common locations where `jj` may be installed (not in default PATH for
 /// processes spawned by GUI apps / OTel receivers).
-const JJ_FALLBACK_PATHS: &[&str] = &[
-    "/opt/homebrew/bin/jj",
-    "/usr/local/bin/jj",
-    "/usr/bin/jj",
-];
+const JJ_FALLBACK_PATHS: &[&str] = &["/opt/homebrew/bin/jj", "/usr/local/bin/jj", "/usr/bin/jj"];
 
 /// Resolve the absolute path to the `jj` binary, caching the result.
 ///
@@ -72,6 +69,84 @@ pub fn jj_cmd() -> Command {
 /// Use with `command.args(jj_readonly_args())` or include these in your args array.
 pub const JJ_READONLY_ARGS: &[&str] = &["--no-pager", "--no-graph", "--ignore-working-copy"];
 
+/// Create a unique marker string for write operations.
+///
+/// This marker is a random token we can match via a template query to
+/// locate the newly created change.
+pub fn new_jj_write_marker(prefix: &str) -> String {
+    format!("{}={:016x}", prefix, random::<u64>())
+}
+
+/// Resolve one change id by matching a unique description marker.
+pub fn resolve_change_id_by_marker(cwd: &Path, marker: &str) -> Result<String> {
+    let revset = format!("description(substring:'{}')", marker);
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args(["log", "-r"])
+        .arg(&revset)
+        .args(["-T", "change_id ++ \"\\n\""])
+        .args(JJ_READONLY_ARGS)
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to resolve change id: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to resolve change id for '{}': {}",
+            revset, stderr
+        )));
+    }
+
+    let mut ids = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+    if ids.len() != 1 {
+        return Err(AikiError::JjCommandFailed(format!(
+            "Expected a single full change id for '{}', got {} matches",
+            revset,
+            ids.len()
+        )));
+    }
+
+    Ok(ids.remove(0))
+}
+
+/// Move a bookmark to a specific change id.
+pub fn set_bookmark_to_change(cwd: &Path, branch: &str, change_id: &str) -> Result<()> {
+    let output = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "bookmark",
+            "set",
+            branch,
+            "-r",
+            change_id,
+            "--allow-backwards",
+            "--ignore-working-copy",
+        ])
+        .output()
+        .map_err(|e| {
+            AikiError::JjCommandFailed(format!(
+                "Failed to move branch '{}' to '{}': {}",
+                branch, change_id, e
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to move branch '{}' to '{}': {}",
+            branch, change_id, stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Get all JJ change IDs that have a specific task ID in their provenance.
 ///
 /// Queries JJ with revset `description("task=<id>")` to find changes where
@@ -91,13 +166,11 @@ pub fn get_changes_for_task(cwd: &std::path::Path, task_id: &str) -> Vec<String>
         .output();
 
     match output {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|line| !line.is_empty())
-                .map(|s| s.to_string())
-                .collect()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|s| s.to_string())
+            .collect(),
         _ => vec![],
     }
 }
@@ -235,15 +308,16 @@ fn ensure_branch_impl(cwd: &Path, branch: &str) -> Result<()> {
         let result = jj_cmd()
             .current_dir(cwd)
             .args([
-                "bookmark", "create", branch, "-r", "root()",
+                "bookmark",
+                "create",
+                branch,
+                "-r",
+                "root()",
                 "--ignore-working-copy",
             ])
             .output()
             .map_err(|e| {
-                AikiError::JjCommandFailed(format!(
-                    "Failed to create bookmark '{}': {}",
-                    branch, e
-                ))
+                AikiError::JjCommandFailed(format!("Failed to create bookmark '{}': {}", branch, e))
             })?;
 
         if !result.status.success() {

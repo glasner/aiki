@@ -143,7 +143,7 @@ fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
 
 ### Fix 2: Session file TTL cleanup
 
-Add a maximum age check to session files. Any session file older than 24h with a dead PID should be cleaned up regardless of `prune_dead_pid_sessions` throughput:
+Add a maximum age check to session files. Any session file older than 36h with a dead PID should be cleaned up regardless of `prune_dead_pid_sessions` throughput:
 
 ```rust
 fn cleanup_stale_sessions() {
@@ -155,8 +155,8 @@ fn cleanup_stale_sessions() {
                 .and_then(|m| m.elapsed().ok())
                 .unwrap_or_default();
 
-            if age > Duration::from_secs(86400) {
-                // 24h old — remove regardless
+            if age > Duration::from_secs(129600) {
+                // 36h old — remove regardless
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -164,26 +164,11 @@ fn cleanup_stale_sessions() {
 }
 ```
 
-### Fix 3: Fix the Rhai condition evaluation bug
-
-The `hooks.yaml` condition:
-```yaml
-- if: absorb_result != "ok" and absorb_result != "0" and absorb_result
-```
-
-Fails with "Data type incorrect: i64 (expecting bool)" when `absorb_result` is an integer. The trailing `and absorb_result` is treated as a truthy check but Rhai doesn't auto-coerce i64 to bool. Fix:
-
-```yaml
-- if: absorb_result != "ok" and absorb_result != "0" and absorb_result != ""
-```
-
-This is in the conflict detection path — not critical for absorption itself, but produces noisy warnings.
-
 ## Priority Order
 
 1. **Fix 1** — immediate stale lock detection (biggest impact, simplest change)
 2. **Fix 2** — session file TTL cleanup (prevents accumulation)
-3. **Fix 3** — Rhai condition fix (cosmetic, reduces log noise)
+3. ~~**Fix 3**~~ — moved to `ops/now/fix-rhai-int-conditionals.md`
 
 ## Manual Cleanup Commands
 

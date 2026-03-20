@@ -742,8 +742,8 @@ fn output_plan_started(
     plan_id: &str,
     plan_path: &Path,
     is_new: bool,
-    in_progress: &[&Task],
-    ready: &[&Task],
+    _in_progress: &[&Task],
+    _ready: &[&Task],
 ) -> Result<()> {
     let action = if is_new { "Creating" } else { "Editing" };
     output_utils::emit(|| {
@@ -754,7 +754,7 @@ fn output_plan_started(
             action,
             plan_path.display()
         );
-        MdBuilder::new("plan").build(&content, in_progress, ready)
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -769,7 +769,7 @@ fn output_plan_completed(plan_id: &str, plan_path: &Path) -> Result<()> {
             plan_path.display(),
             plan_path.display()
         );
-        MdBuilder::new("plan").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -780,7 +780,7 @@ fn output_plan_error(plan_id: &str, error: &str) -> Result<()> {
         "Plan task {}: {}",
         plan_id, error
     );
-    let md = MdBuilder::new("plan").error().build_error(&content);
+    let md = MdBuilder::new().build_error(&content);
     eprintln!("{}", md);
     Ok(())
 }

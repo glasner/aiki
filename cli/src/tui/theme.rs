@@ -74,6 +74,8 @@ pub struct Theme {
     /// Background (used by render_png in test builds).
     #[allow(dead_code)]
     pub bg: Color,
+    /// Subtle background for agent blocks.
+    pub surface: Color,
 }
 
 impl Theme {
@@ -90,6 +92,7 @@ impl Theme {
             text: Color::Rgb(0xcc, 0xcc, 0xcc),
             hi: Color::Rgb(0xe8, 0xe8, 0xe8),
             bg: Color::Rgb(0x1a, 0x1a, 0x24),
+            surface: Color::Rgb(0x25, 0x25, 0x2f),
         }
     }
 
@@ -106,6 +109,7 @@ impl Theme {
             text: Color::Rgb(0x2a, 0x2a, 0x2a),
             hi: Color::Rgb(0x11, 0x11, 0x11),
             bg: Color::Rgb(0xf5, 0xf5, 0xf0),
+            surface: Color::Rgb(0xe8, 0xe8, 0xec),
         }
     }
 

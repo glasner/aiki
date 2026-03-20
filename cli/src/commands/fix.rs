@@ -664,7 +664,7 @@ fn output_approved(task_id: &str) -> Result<()> {
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("fix").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }

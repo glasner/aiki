@@ -61,35 +61,73 @@ aiki/tasks
 
 ### Step 1: Change `write_event()` to chain + advance
 
-```rust
-// Before (fan-out):
-jj new aiki/tasks --no-edit --ignore-working-copy -m "<metadata>"
+After creating the new change, get the change ID and advance the bookmark to point at it. The next `write_event` call will then fork from the new head, creating a chain.
 
-// After (chain):
-jj new aiki/tasks --no-edit --ignore-working-copy -m "<metadata>"
-jj bookmark set aiki/tasks -r <new-change-id> --ignore-working-copy
-```
+#### Getting the change ID reliably
 
-After creating the new change, resolve its change ID and advance the bookmark to point at it. The next `write_event` call will then fork from the new head, creating a chain.
+Generate a unique marker and include it in the commit message. Then resolve the new
+change directly via template output:
 
-**Implementation detail:** `jj new` prints the new change ID to stderr. Parse it, or use `jj log -r 'children(aiki/tasks) & description(substring:"[aiki-task]")' --limit 1` to find the just-created change, then `jj bookmark set`.
-
-A simpler approach: use `jj commit` semantics. Instead of `jj new --no-edit`, we can:
-1. `jj new aiki/tasks --no-edit --ignore-working-copy` (creates child)
-2. Parse the new change ID from output
-3. `jj bookmark set aiki/tasks -r <id> --ignore-working-copy`
-
-Or even simpler — use `jj describe` + `jj new` on the bookmark directly:
-1. `jj describe aiki/tasks -m "<metadata>" --ignore-working-copy --no-edit` — NO, this overwrites the previous event.
-
-**Recommended approach:** Wrap the existing `jj new` + add a bookmark advance:
+1. Create a random marker like `aiki-task-event-id=<random_hex>` in memory.
+2. Run `jj new ... -m "<metadata>\nMARKER"`.
+3. Resolve the new full change id using template output:
+   `jj log -r "description(substring:'MARKER')" -T "change_id ++ \"\\n\""`
+4. Move the bookmark with the returned full change id.
 
 ```rust
 fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     ensure_tasks_branch(cwd)?;
-    let metadata = event_to_metadata_block(event);
+    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
+    let metadata = append_write_marker(&event_to_metadata_block(&event), &marker);
 
     // Create child of current bookmark head
+    let result = jj_cmd()
+        .current_dir(cwd)
+        .args(["new", TASKS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to create task event: {}", e)))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to write task event: {}",
+            stderr
+        )));
+    }
+
+    let new_id = resolve_change_id_by_marker(cwd, &marker)?;
+    jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
+        .output()?;
+
+    Ok(())
+}
+```
+
+### Step 1b: Batch writes (`write_events_batch`)
+
+`write_events_batch` already packs N events into a **single** `jj new` call — one commit with multiple `[aiki-task]...[/aiki-task]` blocks concatenated in the commit message. So the batch path already does 1 JJ invocation for N events today.
+
+After the chaining change, `write_events_batch` needs the same bookmark-advance treatment as `write_event`, but only **once at the end** — not per event. The change is minimal:
+
+```rust
+pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
+    if events.is_empty() { return Ok(()); }
+    if events.len() == 1 { return write_event(cwd, &events[0]); }
+
+    ensure_tasks_branch(cwd)?;
+    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
+    let metadata = append_write_marker(
+        &events
+            .iter()
+            .map(|e| event_to_metadata_block(e))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        &marker,
+    );
+
+    // Single jj new for all events (existing behavior)
     let result = jj_cmd()
         .current_dir(cwd)
         .args(["new", TASKS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
@@ -97,73 +135,39 @@ fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
 
     if !result.status.success() { return Err(...); }
 
-    // Advance bookmark to the new change
-    // Find the just-created child (most recent child of aiki/tasks)
-    advance_tasks_bookmark(cwd)?;
-
-    Ok(())
-}
-
-fn advance_tasks_bookmark(cwd: &Path) -> Result<()> {
-    // Find the newest child of the current bookmark
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "log", "-r",
-            &format!("children({}) & description(substring:\"{}\")", TASKS_BRANCH, METADATA_START),
-            "--no-graph", "-T", "change_id", "--limit", "1",
-            "--ignore-working-copy",
-        ])
-        .output()?;
-
-    let new_head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if new_head.is_empty() {
-        return Ok(()); // No child found, skip
-    }
+    // Single bookmark advance at the end (new)
+    let new_id = resolve_change_id_by_marker(cwd, &marker)?;
 
     jj_cmd()
         .current_dir(cwd)
-        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_head, "--ignore-working-copy"])
+        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
         .output()?;
 
     Ok(())
 }
 ```
+
+**Cost:** 2 JJ invocations total per batch (1 `jj new` + 1 `bookmark set`), same as a single-event write. No per-event overhead.
+
+**Note:** The `write_event` → `write_events_batch` delegation for single events (line `if events.len() == 1`) means the bookmark advance logic could be extracted into a shared `advance_bookmark` helper called by both paths, avoiding duplication.
 
 ### Step 2: Concurrency safety
 
 Multiple agents may write task events concurrently. With fan-out, this was safe because each `jj new` created an independent sibling. With chaining, two concurrent writes could both fork from the same bookmark position, creating a temporary fork.
 
-**This is acceptable.** JJ handles divergent bookmarks gracefully. The next `write_event` call from either agent will see both children and the `children()` revset will return multiple results. We can handle this by:
+**This is acceptable.** JJ handles divergent bookmarks gracefully. We handle this by:
 
 1. Using `--allow-backwards` on `bookmark set` (in case of rebase)
 2. Accepting temporary forks — they resolve naturally as one agent's next write builds on the other's
 
-Or: reuse the existing `acquire_absorb_lock()` pattern from `isolation.rs` to serialize task writes. This is the safest approach if task writes are infrequent enough (they are — humans type slowly).
+Alternatively: reuse the existing `acquire_absorb_lock()` pattern from `isolation.rs` to serialize task writes. This is the safest approach if task writes are infrequent enough (they are — humans type slowly).
 
 ### Step 3: Migrate existing heads (one-time cleanup)
 
-After deploying the fix, run a one-time migration to collapse the 30K existing heads:
+Task state is ephemeral — reconstructed from event descriptions each time `read_events()` runs. So we can just abandon the old fan-out heads:
 
 ```bash
-# Abandon all task event heads (their metadata is in descriptions,
-# but we need to preserve it)
-#
-# BETTER: squash all children into a single summary change
-jj log -r 'children(root()) & description(substring:"[aiki-task]")' \
-    --no-graph -T 'change_id ++ "\n"' | head -5
-```
-
-**Migration strategy:**
-1. Read all existing events via `read_events()` (already works — reads from descriptions)
-2. Abandon all existing task-branch children: `jj abandon 'children(ancestors(aiki/tasks)) & description(substring:"[aiki-task]")'`
-3. Replay events as a chain by calling the new `write_event()` for each
-4. Or: just abandon them — the task graph is rebuilt from events on read, and we can export a snapshot first
-
-**Simplest migration:** Just abandon the old heads. Task state is ephemeral (reconstructed from events each time). If we need history, export it first.
-
-```bash
-# Export current task state
+# Export current task state as backup
 aiki task > /tmp/task-backup.txt
 
 # Abandon all old fan-out heads
@@ -193,9 +197,10 @@ After migration, reads will actually be **faster** because JJ doesn't need to en
 
 | File | Change |
 |------|--------|
-| `cli/src/tasks/storage.rs` | `write_event()` and `write_events_batch()`: add bookmark advance after write |
+| `cli/src/tasks/storage.rs` | `write_event()`: add bookmark advance after write; `write_events_batch()`: same, single advance at end (not per-event); extract shared `advance_bookmark` helper |
 | `cli/src/history/storage.rs` | Same pattern for conversation events |
-| `cli/src/jj.rs` (maybe) | Add `advance_bookmark()` helper if shared |
+| `cli/src/jj/mod.rs` | Add marker helper + marker-based change-id resolution by template |
+| `cli/tests/` | Keep/extend `new_jj_write_marker` coverage as needed |
 
 ---
 
@@ -204,6 +209,7 @@ After migration, reads will actually be **faster** because JJ doesn't need to en
 - **Concurrent writes**: Two agents writing simultaneously could create a temporary fork. Mitigated by lock or by accepting JJ's natural fork resolution.
 - **Migration data loss**: Abandoning old heads loses the JJ change metadata. But task events are parsed from descriptions into the TaskGraph in memory — the graph reconstruction doesn't depend on JJ change structure, just on the description content being queryable.
 - **Bookmark advancement failure**: If the `bookmark set` fails (e.g., JJ lock contention), the event is still written — it just creates a fan-out head. Next write will pick it up. Degraded but not broken.
+- **Marker mismatch**: If marker generation collided (extremely unlikely with random hex token) or if marker propagation is filtered by `jj` in a future output change, bookmark movement can fail. Full-id resolution by template query still surfaces the mismatch and fails with a clear single-match error.
 
 ---
 
@@ -213,3 +219,17 @@ After migration, reads will actually be **faster** because JJ doesn't need to en
 - `jj log` and `jj status` return to sub-second performance
 - Task operations (`aiki task start`, `close`, etc.) remain correct
 - Existing task state is preserved through migration
+- Regression monitored via existing test suite
+
+---
+
+## Abandoned Ideas
+
+### Replay migration (re-chain all events)
+
+Instead of simply abandoning old heads, re-chain them:
+1. Read all existing events via `read_events()`
+2. Abandon all existing task-branch children
+3. Replay events as a chain by calling the new `write_event()` for each
+
+**Rejected:** Unnecessary complexity. Task state is ephemeral — `read_events()` reconstructs the graph from descriptions regardless of change structure. Simply abandoning the fan-out heads is sufficient. The revset query works the same on a chain as on a fan-out.

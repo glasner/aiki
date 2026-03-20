@@ -104,20 +104,6 @@ fn sanitize_task_name(name: &str) -> String {
 
 Apply to `run_add` and `run_start` (quick-start path) before the task event is written.
 
-### Phase 3: Fix the corrupted task data
-
-Close the corrupted task so it stops polluting output:
-
-```bash
-aiki task close ynsrusv --wont-do --summary "Corrupted: task name contained aiki --help output"
-```
-
-Or, if we want to preserve the task but fix its name, use `task set`:
-
-```bash
-aiki task set ynsrusv --name "Improve AI code review engine"
-```
-
 ---
 
 ## What This Does NOT Change

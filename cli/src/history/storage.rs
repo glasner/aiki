@@ -4,12 +4,31 @@
 //! Each event is a JJ change with metadata in the description.
 
 use crate::error::{AikiError, Result};
-use crate::jj::jj_cmd;
+use crate::jj::{jj_cmd, new_jj_write_marker, resolve_change_id_by_marker, set_bookmark_to_change};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::types::{AgentType, ConversationEvent, ConversationSummary, SessionMode, TurnSource, CONVERSATIONS_BRANCH, METADATA_END, METADATA_START};
+use super::types::{
+    AgentType, ConversationEvent, ConversationSummary, SessionMode, TurnSource,
+    CONVERSATIONS_BRANCH, METADATA_END, METADATA_START,
+};
+
+const CONVERSATIONS_MARKER_PREFIX: &str = "aiki-conversation-event-id";
+
+fn append_write_marker(metadata: &str, marker: &str) -> String {
+    format!("{}\n{}", metadata, marker)
+}
+
+fn set_conversations_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
+    if let Err(err) = set_bookmark_to_change(cwd, CONVERSATIONS_BRANCH, change_id) {
+        eprintln!(
+            "Warning: failed to advance '{}' to '{}': {}",
+            CONVERSATIONS_BRANCH, change_id, err
+        );
+    }
+    Ok(())
+}
 
 /// Ensure the aiki/conversations branch exists (cached per process)
 pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
@@ -19,15 +38,23 @@ pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
 /// Write a conversation event to the aiki/conversations branch
 ///
 /// Uses `jj new --no-edit` to create the event change without affecting the working copy.
-/// Single atomic command — no bookmark advancement needed (flat sibling model).
+/// Advance the branch to the new change so the next event is appended as a chain.
 pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
     ensure_conversations_branch(cwd)?;
 
-    let metadata = event_to_metadata_block(event);
+    let marker = new_jj_write_marker(CONVERSATIONS_MARKER_PREFIX);
+    let metadata = append_write_marker(&event_to_metadata_block(event), &marker);
 
     let result = jj_cmd()
         .current_dir(cwd)
-        .args(["new", CONVERSATIONS_BRANCH, "--no-edit", "--ignore-working-copy", "-m", &metadata])
+        .args([
+            "new",
+            CONVERSATIONS_BRANCH,
+            "--no-edit",
+            "--ignore-working-copy",
+            "-m",
+            &metadata,
+        ])
         .output()
         .map_err(|e| {
             AikiError::JjCommandFailed(format!("Failed to create conversation event: {}", e))
@@ -40,6 +67,9 @@ pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
             stderr
         )));
     }
+
+    let change_id = resolve_change_id_by_marker(cwd, &marker)?;
+    set_conversations_bookmark(cwd, &change_id)?;
 
     Ok(())
 }
@@ -361,9 +391,9 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
 
     for (_session_id, session_events) in &sessions {
         // Find the SessionStart event
-        let session_start = session_events.iter().find(|e| {
-            matches!(e, ConversationEvent::SessionStart { .. })
-        });
+        let session_start = session_events
+            .iter()
+            .find(|e| matches!(e, ConversationEvent::SessionStart { .. }));
 
         let session_start = match session_start {
             Some(s) => s,
@@ -377,7 +407,12 @@ pub fn list_conversations(cwd: &Path, limit: Option<usize>) -> Result<Vec<Conver
                 timestamp,
                 session_mode,
                 ..
-            } => (session_id.clone(), agent_type.clone(), *timestamp, *session_mode),
+            } => (
+                session_id.clone(),
+                agent_type.clone(),
+                *timestamp,
+                *session_mode,
+            ),
             _ => unreachable!(),
         };
 
@@ -607,8 +642,14 @@ fn parse_list_field(fields: &HashMap<&str, Vec<&str>>, key: &str) -> Vec<String>
 
 /// Parse location metadata (repo_id and cwd) from fields
 fn parse_location_metadata(fields: &HashMap<&str, Vec<&str>>) -> (Option<String>, Option<String>) {
-    let repo_id = fields.get("repo").and_then(|v| v.first()).map(|s| s.to_string());
-    let cwd = fields.get("cwd").and_then(|v| v.first()).map(|s| unescape_metadata_value(s));
+    let repo_id = fields
+        .get("repo")
+        .and_then(|v| v.first())
+        .map(|s| s.to_string());
+    let cwd = fields
+        .get("cwd")
+        .and_then(|v| v.first())
+        .map(|s| unescape_metadata_value(s));
     (repo_id, cwd)
 }
 
@@ -730,7 +771,8 @@ fn parse_metadata_block(block: &str) -> Option<ConversationEvent> {
         }
         "session_end" => {
             let session_id = fields.get("session")?.first()?.to_string();
-            let reason = fields.get("reason")
+            let reason = fields
+                .get("reason")
                 .and_then(|v| v.first())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
@@ -797,11 +839,7 @@ mod tests {
         for original in &test_cases {
             let escaped = escape_metadata_value(original);
             let unescaped = unescape_metadata_value(&escaped);
-            assert_eq!(
-                original, &unescaped,
-                "Roundtrip failed for: {:?}",
-                original
-            );
+            assert_eq!(original, &unescaped, "Roundtrip failed for: {:?}", original);
         }
     }
 
@@ -989,10 +1027,7 @@ timestamp=2026-01-09T10:30:00Z
 
         let event = parse_metadata_block(block).expect("Should parse");
         match event {
-            ConversationEvent::Response {
-                turn,
-                ..
-            } => {
+            ConversationEvent::Response { turn, .. } => {
                 assert_eq!(turn, 0); // Default when missing
             }
             _ => panic!("Expected Response event"),

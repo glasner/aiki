@@ -910,8 +910,8 @@ fn run_continue_async(
 /// Output message when there's nothing to review
 fn output_nothing_to_review() -> Result<()> {
     output_utils::emit(|| {
-        MdBuilder::new("review")
-            .build("Nothing to review — no closed tasks in session.\n", &[], &[])
+        MdBuilder::new()
+            .build("Nothing to review — no closed tasks in session.\n")
     });
     Ok(())
 }
@@ -1156,7 +1156,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
             } else {
                 "No open review tasks. Use --all to see closed reviews.\n"
             };
-            MdBuilder::new("review-list").build(content, &[], &[])
+            MdBuilder::new().build(content)
         });
         return Ok(());
     }
@@ -1192,7 +1192,7 @@ fn list_reviews(cwd: &Path, all: bool) -> Result<()> {
                 &review.name
             ));
         }
-        MdBuilder::new("review-list").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
 
     Ok(())

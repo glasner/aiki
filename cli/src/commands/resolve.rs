@@ -156,8 +156,8 @@ pub fn run(args: ResolveArgs) -> Result<()> {
 fn output_resolve_started(
     resolve_id: &str,
     change_id: &str,
-    in_progress: &[&Task],
-    ready: &[&Task],
+    _in_progress: &[&Task],
+    _ready: &[&Task],
 ) -> Result<()> {
     use super::output::{format_command_output, CommandOutput};
     output_utils::emit(|| {
@@ -170,7 +170,7 @@ fn output_resolve_started(
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("resolve").build(&content, in_progress, ready)
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -188,7 +188,7 @@ fn output_resolve_async(resolve_id: &str, change_id: &str) -> Result<()> {
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("resolve").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
@@ -206,7 +206,7 @@ fn output_resolve_completed(resolve_id: &str, change_id: &str) -> Result<()> {
             hint: None,
         };
         let content = format_command_output(&output);
-        MdBuilder::new("resolve").build(&content, &[], &[])
+        MdBuilder::new().build(&content)
     });
     Ok(())
 }
