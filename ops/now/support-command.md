@@ -2,32 +2,32 @@
 
 ## Overview
 
-Add an `aiki support` command group for user-facing support actions. Initial subcommands:
+Add an `aiki support` command group for user-facing support actions. First subcommand:
 
-- **`aiki support bug`** — file a bug report as a GitHub issue on `glasner/aiki`
-- **`aiki support feature`** — file a feature request as a GitHub issue on `glasner/aiki`
+- **`aiki support issue`** — create a GitHub issue on `glasner/aiki` (bug or feature request)
 
 Future subcommands (not in scope now): `chat`, `docs`.
 
 ## Design Decisions
 
-### Command structure: flat subcommands under `support`
+### Command structure: `support issue` with `--bug`/`--feature` flags
 
 ```
-aiki support bug "task close crashes with circular link error"
-aiki support feature "support custom task priorities"
-aiki support bug                  # interactive: prompts for description
-aiki support feature              # interactive: prompts for description
+aiki support issue "crashes on close"                # bug by default
+aiki support issue "crashes on close" --bug          # explicit bug
+aiki support issue "custom priorities" --feature     # feature request
+aiki support issue                                   # interactive: prompts for description
 ```
 
-**Why flat, not `aiki support issue --bug`:**
-- Consistent with existing patterns (`aiki task add`, `aiki plugin install`)
-- More discoverable than flags
-- `support` namespace accommodates non-issue subcommands (`chat`, `docs`) naturally as peers
+**Why `issue` as a subcommand, not `bug`/`feature`:**
+- Developers know what a GitHub issue is — lean into that
+- `support` namespace accommodates non-issue subcommands (`chat`, `docs`) later
+- One command, not two parallel code paths
 
-**Why not `aiki bug` (as in plan.md):**
-- `support` groups all user-support actions under one namespace
-- Leaves `bug` available as a future alias if desired
+**Why `--bug`/`--feature` flags, not `--tag`:**
+- These are the two things we need; no reason to expose arbitrary labels
+- `--bug` is the default (most common support case) — you usually don't need to type it
+- Mutually exclusive flags, enforced by clap
 
 ### GitHub issue creation via `gh` CLI
 
@@ -41,11 +41,11 @@ aiki support feature              # interactive: prompts for description
 - Hardcoded to `glasner/aiki` via `--repo glasner/aiki` flag on `gh issue create`
 - Works regardless of which repo the user is currently in
 
-## Subcommand Details
+## Command Details
 
-### `aiki support bug [description]`
+### `aiki support issue [description] [--bug|--feature]`
 
-**Collects diagnostic snapshot** (subsumes the plan.md `aiki bug` design):
+**Bug (default)** — collects diagnostic snapshot (subsumes the plan.md `aiki bug` design):
 
 1. **Environment** — aiki version, OS/arch, shell, git version, jj version
 2. **Repository state** — project root, jj/git/aiki init status, working copy change ID, jj status
@@ -53,52 +53,37 @@ aiki support feature              # interactive: prompts for description
 4. **Configuration** — hooks installed, plugins, instructions file
 5. **Sessions** — active session count and details
 
-**Creates GitHub issue:**
-- **Title:** user-provided description (or prompted)
-- **Labels:** `bug`
-- **Body:** markdown report with description + diagnostic snapshot
-
-**Flow:**
-1. Collect diagnostic snapshot (resilient — each section catches its own errors)
-2. If no description arg, prompt: `Describe the bug: `
-3. Show preview of what will be submitted
-4. Confirm: `Create issue on glasner/aiki? [Y/n]`
-5. Run `gh issue create --repo glasner/aiki --title "..." --label bug --body "..."`
-6. Print issue URL on success
-
-**Flags:**
-- `--dry-run` — print the report to stdout without creating an issue (replaces original `aiki bug` stdout behavior)
-- `--output <file>` — write report to file instead of creating issue (backward compat with plan.md)
-
-### `aiki support feature [description]`
-
-**Simpler — no full diagnostic snapshot.**
-
-Collects minimal context:
+**Feature (`--feature`)** — minimal context only:
 - aiki version
 - OS/arch
 
 **Creates GitHub issue:**
-- **Title:** user-provided description (or prompted)
-- **Labels:** `enhancement`
-- **Body:** markdown template with description + minimal context
+- **Title:** user-provided description (or prompted interactively)
+- **Labels:** `bug` (default) or `enhancement` (with `--feature`)
+- **Body:** markdown report with description + diagnostics (bug) or minimal context (feature)
 
 **Flow:**
-1. If no description arg, prompt: `Describe the feature: `
-2. Show preview
-3. Confirm: `Create issue on glasner/aiki? [Y/n]`
-4. Run `gh issue create --repo glasner/aiki --title "..." --label enhancement --body "..."`
-5. Print issue URL on success
+1. Check `gh` is available
+2. If no description arg, prompt: `Describe the issue: `
+3. Collect diagnostics (full for bug, minimal for feature)
+4. Show preview of what will be submitted
+5. Confirm: `Create issue on glasner/aiki? [Y/n]`
+6. Run `gh issue create --repo glasner/aiki --title "..." --label {label} --body "..."`
+7. Print issue URL on success
+
+**Flags:**
+- `--bug` — file as bug report with full diagnostics (default)
+- `--feature` — file as feature request with minimal context
+- `--dry-run` — print the report to stdout without creating an issue
 
 ## Implementation
 
 ### Files to create/modify
 
 1. **`src/commands/support.rs`** (new) — command implementation
-   - `SupportCommands` enum with `Bug` and `Feature` variants
+   - `SupportCommands` enum with `Issue` variant
    - `pub fn run(command: SupportCommands) -> Result<()>`
-   - `fn run_bug(description: Option<String>, dry_run: bool, output: Option<PathBuf>) -> Result<()>`
-   - `fn run_feature(description: Option<String>) -> Result<()>`
+   - `fn run_issue(description: Option<String>, is_feature: bool, dry_run: bool) -> Result<()>`
    - Diagnostic snapshot collectors (reuse infra from doctor.rs, prerequisites.rs)
    - `fn create_github_issue(repo: &str, title: &str, labels: &[&str], body: &str) -> Result<String>`
 
@@ -125,6 +110,32 @@ Collects minimal context:
    #[error("Failed to create GitHub issue: {0}")]
    GhIssueFailed(String),
    ```
+
+### CLI definition (clap)
+
+```rust
+#[derive(Subcommand)]
+#[command(disable_help_subcommand = true)]
+pub enum SupportCommands {
+    /// Create a GitHub issue on the aiki repo
+    Issue {
+        /// Description of the issue (used as title)
+        description: Option<String>,
+
+        /// File as a feature request instead of a bug report
+        #[arg(long, conflicts_with = "bug")]
+        feature: bool,
+
+        /// File as a bug report (default)
+        #[arg(long)]
+        bug: bool,
+
+        /// Print report to stdout without creating an issue
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+```
 
 ### Diagnostic snapshot implementation
 
@@ -228,7 +239,7 @@ fn create_github_issue(repo: &str, title: &str, labels: &[&str], body: &str) -> 
 
 - Unit test: snapshot formatting produces valid markdown
 - Unit test: `SupportCommands` enum parses correctly via clap
-- Integration: `aiki support bug --dry-run "test"` prints report without calling `gh`
+- Integration: `aiki support issue --dry-run "test"` prints report without calling `gh`
 
 ## Not in scope (for now)
 
@@ -238,4 +249,4 @@ fn create_github_issue(repo: &str, title: &str, labels: &[&str], body: &str) -> 
 - Log file attachment
 - Anonymization/redaction of paths
 - Issue templates on the GitHub repo side
-- `--title` separate from description (title = first line or truncated description)
+- Separate `--title` flag (title = description, truncated if long)
