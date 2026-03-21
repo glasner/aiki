@@ -39,6 +39,5 @@ pub mod review;
 pub mod plan;
 pub mod resolve;
 
-pub mod status;
 pub mod task;
 pub mod zed_detection;

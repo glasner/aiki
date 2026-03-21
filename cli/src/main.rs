@@ -36,10 +36,46 @@ use error::Result;
 #[command(name = "aiki")]
 #[command(version)]
 #[command(about = "AI code review engine", long_about = None)]
+#[command(disable_help_subcommand = true)]
+#[command(help_template = HELP_TEMPLATE)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
+
+const HELP_TEMPLATE: &str = "\
+{about-with-newline}
+{usage-heading} {usage}
+
+Setup:
+  init        Initialize Aiki in the current repository
+  doctor      Diagnose and fix configuration issues
+  plugin      Manage plugins (install, update, list, remove)
+
+For Humans:
+  plan        Interactive plan authoring with AI agent
+  build       Build from a plan file (decompose and execute all subtasks)
+  review      Create and run code review tasks
+  fix         Create and run followup tasks from review comments
+
+For Agents:
+  epic        Manage epics (create from plan files, show status, list)
+  task        Manage tasks
+  explore     Explore a scope (plan, code, task, or session)
+  decompose   Decompose a plan into subtasks under a target task
+  loop        Orchestrate a parent task's subtasks via lanes
+  resolve     Resolve JJ merge conflicts
+
+For Everyone:
+  session     Manage sessions
+  blame       Show line-by-line AI attribution for a file
+  authors     Show authors who contributed to changes
+  benchmark   Run end-to-end performance benchmark
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -97,11 +133,6 @@ enum Commands {
     Session {
         #[command(subcommand)]
         command: commands::session::SessionCommands,
-    },
-    /// Show status dashboard
-    Status {
-        /// Target to show status for
-        target: Option<String>,
     },
     /// Manage tasks
     Task {
@@ -278,7 +309,6 @@ fn run() -> Result<()> {
         Commands::Authors { changes, format } => commands::authors::run(changes, format),
         Commands::Benchmark { edits } => commands::benchmark::run("aiki/core".to_string(), edits),
         Commands::Session { command } => commands::session::run(command),
-        Commands::Status { target } => Ok(commands::status::run(target)?),
         Commands::Task { command } => commands::task::run(command),
         Commands::Event { command } => match command {
             EventCommands::PrepareCommitMessage => commands::event::run_prepare_commit_message(),
