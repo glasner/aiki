@@ -9,9 +9,9 @@ Add an `aiki support` command that uses the task template system to interactivel
 ### UX
 
 ```
-aiki support "crashes on close"              # bug by default, spawns Claude
-aiki support "custom priorities" --feature   # feature request
-aiki support                                 # prompts for description
+aiki support issue "crashes on close"              # bug by default, spawns Claude
+aiki support issue "custom priorities" --feature   # feature request
+aiki support issue                                 # prompts for description
 ```
 
 The command:
@@ -30,7 +30,7 @@ The command:
 ### Command shape
 
 ```
-aiki support [description] [--bug|--feature]
+aiki support issue [description] [--bug|--feature]
 ```
 
 - `--bug` is the default (full diagnostic collection)
@@ -204,7 +204,7 @@ Close subtask when diagnostics are collected (or skipped for features).
 
 3. **`src/commands/mod.rs`** — add `pub mod support;`
 
-4. **`src/main.rs`** — add `Support` variant and dispatch
+4. **`src/main.rs`** — add `Support` variant with subcommand dispatch
 
 ### Command implementation (thin wrapper)
 
@@ -253,25 +253,34 @@ pub fn run(description: Option<String>, is_feature: bool) -> Result<()> {
 ```rust
 /// Get support — file bugs, request features
 Support {
-    /// Description of the issue
-    description: Vec<String>,
-
-    /// File as a feature request instead of a bug report
-    #[arg(long)]
-    feature: bool,
-
-    /// File as a bug report (default)
-    #[arg(long, conflicts_with = "feature")]
-    bug: bool,
-
-    /// Override which agent to use
-    #[arg(long)]
-    agent: Option<String>,
-
-    /// Output format
-    #[arg(long)]
-    output: Option<OutputFormat>,
+    #[command(subcommand)]
+    command: SupportCommands,
 },
+
+#[derive(Subcommand)]
+pub enum SupportCommands {
+    /// File a bug report or feature request as a GitHub issue
+    Issue {
+        /// Description of the issue
+        description: Vec<String>,
+
+        /// File as a feature request instead of a bug report
+        #[arg(long)]
+        feature: bool,
+
+        /// File as a bug report (default)
+        #[arg(long, conflicts_with = "feature")]
+        bug: bool,
+
+        /// Override which agent to use
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Output format
+        #[arg(long)]
+        output: Option<OutputFormat>,
+    },
+}
 ```
 
 ### Error handling
