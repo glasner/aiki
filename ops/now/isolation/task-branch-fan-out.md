@@ -116,11 +116,41 @@ fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     }
 
     let new_id = parse_new_change_id(&result.stderr)?;
-    jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
-        .output()?;
+    advance_bookmark(cwd, TASKS_BRANCH, &new_id)?;
 
+    Ok(())
+}
+
+/// Advance bookmark to new_id. If it fails (concurrent writer moved the
+/// bookmark forward), rebase our change onto the new bookmark tip and retry.
+/// No --allow-backwards — we always move forward.
+fn advance_bookmark(cwd: &Path, branch: &str, new_id: &str) -> Result<()> {
+    for _ in 0..3 {
+        let bm = jj_cmd()
+            .current_dir(cwd)
+            .args(["bookmark", "set", branch, "-r", new_id, "--ignore-working-copy"])
+            .output()?;
+
+        if bm.status.success() {
+            return Ok(());
+        }
+
+        // Bookmark moved — rebase our event onto the (now-advanced) bookmark tip
+        let rebase = jj_cmd()
+            .current_dir(cwd)
+            .args(["rebase", "-r", new_id, "--onto", branch, "--ignore-working-copy"])
+            .output()?;
+
+        if !rebase.status.success() {
+            let stderr = String::from_utf8_lossy(&rebase.stderr);
+            return Err(AikiError::JjCommandFailed(format!(
+                "Failed to rebase orphaned event: {}", stderr
+            )));
+        }
+    }
+
+    // After retries, give up. Event is written (just orphaned as a head).
+    // Next writer or read_events() can clean it up.
     Ok(())
 }
 ```
@@ -153,10 +183,7 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
 
     // Single bookmark advance at the end (new)
     let new_id = parse_new_change_id(&result.stderr)?;
-    jj_cmd()
-        .current_dir(cwd)
-        .args(["bookmark", "set", TASKS_BRANCH, "-r", &new_id, "--ignore-working-copy"])
-        .output()?;
+    advance_bookmark(cwd, TASKS_BRANCH, &new_id)?;
 
     Ok(())
 }
@@ -166,14 +193,21 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
 
 **Note:** The `write_event` → `write_events_batch` delegation for single events (line `if events.len() == 1`) means the bookmark advance logic could be extracted into a shared `advance_bookmark` helper called by both paths, avoiding duplication.
 
-### Step 2: Concurrency safety
+### Step 2: Concurrency safety (rebase-on-conflict)
 
 Multiple agents may write task events concurrently. With fan-out, this was safe because each `jj new` created an independent sibling. With chaining, two concurrent writes could both fork from the same bookmark position, creating a temporary fork.
 
-**This is acceptable.** JJ handles divergent bookmarks gracefully. We handle this by:
+We handle this with **rebase-on-conflict** — no `--allow-backwards`:
 
-1. Using `--allow-backwards` on `bookmark set` (in case of rebase)
-2. Accepting temporary forks — they resolve naturally as one agent's next write builds on the other's
+1. Agent A and Agent B both fork from bookmark at commit X, creating siblings A and B.
+2. Agent A advances bookmark to A (succeeds — A is a child of X).
+3. Agent B tries `bookmark set` to B — **fails** because B is not a descendant of A.
+4. Agent B detects the failure, rebases B onto the new bookmark tip (A): `jj rebase -r B -d aiki/tasks`.
+5. Agent B retries `bookmark set` — now succeeds because B is a descendant of A.
+
+This is implemented in the shared `advance_bookmark` helper (see Step 1) with a bounded retry loop (3 attempts). If all retries fail (extremely unlikely — requires 3+ concurrent writers within the same millisecond window), the event is still written as an orphaned head. The read path finds it regardless, and the next writer's retry loop will clean it up.
+
+**Why not `--allow-backwards`?** It creates last-writer-wins semantics where concurrent writers silently clobber each other's bookmark advancement, producing orphaned heads with no error signal. Rebase-on-conflict is strictly better: you either advance forward correctly or detect the conflict and fix it.
 
 
 ### Step 3: Migrate existing heads (one-time cleanup)
@@ -211,7 +245,7 @@ After migration, reads will actually be **faster** because JJ doesn't need to en
 
 | File | Change |
 |------|--------|
-| `cli/src/tasks/storage.rs` | `write_event()`: add bookmark advance after write; `write_events_batch()`: same, single advance at end (not per-event); extract shared `advance_bookmark` helper |
+| `cli/src/tasks/storage.rs` | `write_event()` and `write_events_batch()`: call shared `advance_bookmark` helper after write; helper does `bookmark set` with rebase-on-conflict retry (no `--allow-backwards`) |
 | `cli/src/history/storage.rs` | Same pattern for conversation events |
 | `cli/src/jj/mod.rs` | Add marker helper + marker-based change-id resolution by template |
 | `cli/tests/` | Keep/extend `new_jj_write_marker` coverage as needed |
@@ -220,9 +254,9 @@ After migration, reads will actually be **faster** because JJ doesn't need to en
 
 ## Risks
 
-- **Concurrent writes**: Two agents writing simultaneously could create a temporary fork. Mitigated by lock or by accepting JJ's natural fork resolution.
+- **Concurrent writes**: Two agents writing simultaneously fork from the same parent. The second writer's `bookmark set` fails; it rebases onto the new tip and retries (up to 3 times). In the pathological case (3+ concurrent writers within the same millisecond), the event is still written as an orphaned head — the read path finds it regardless, and the next writer cleans it up.
 - **Migration data loss**: Abandoning old heads loses the JJ change metadata. But task events are parsed from descriptions into the TaskGraph in memory — the graph reconstruction doesn't depend on JJ change structure, just on the description content being queryable.
-- **Bookmark advancement failure**: If the `bookmark set` fails (e.g., JJ lock contention), the event is still written — it just creates a fan-out head. Next write will pick it up. Degraded but not broken.
+- **Bookmark advancement failure**: If all retry attempts fail (lock contention, extreme concurrency), the event is still written — it just remains as a fan-out head. Next write's retry loop will rebase it. Degraded but not broken.
 - **Marker mismatch**: If marker generation collided (extremely unlikely with random hex token) or if marker propagation is filtered by `jj` in a future output change, bookmark movement can fail. Full-id resolution by template query still surfaces the mismatch and fails with a clear single-match error.
 
 ---

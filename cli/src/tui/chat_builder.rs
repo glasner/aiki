@@ -420,15 +420,38 @@ fn build_active_build(
             }
         }
     } else {
-        // No orchestrator — show all subtasks flat
-        for task in subtasks {
-            children.push(ChatChild::Subtask {
-                name: task.name.clone(),
-                status: task_to_kind(task),
-                elapsed: format_elapsed(task),
-                agent: agent_label(task),
-                error: error_text(task),
+        // No orchestrator — check if any subtask is actively running
+        let active_subtask = subtasks
+            .iter()
+            .find(|t| t.status == TaskStatus::InProgress);
+
+        if let Some(active) = active_subtask {
+            // Implicit single lane: wrap all subtasks in a LaneBlock
+            let lane_subtasks: Vec<LaneSubtask> = subtasks
+                .iter()
+                .map(|task| LaneSubtask {
+                    name: task.name.clone(),
+                    status: task_to_kind(task),
+                    elapsed: format_elapsed(task),
+                    error: error_text(task),
+                })
+                .collect();
+
+            children.push(ChatChild::LaneBlock {
+                subtasks: lane_subtasks,
+                footer: build_footer(active),
             });
+        } else {
+            // All done/pending — flat subtasks (collapsed form)
+            for task in subtasks {
+                children.push(ChatChild::Subtask {
+                    name: task.name.clone(),
+                    status: task_to_kind(task),
+                    elapsed: format_elapsed(task),
+                    agent: agent_label(task),
+                    error: error_text(task),
+                });
+            }
         }
     }
 
@@ -867,15 +890,21 @@ fn build_summary_messages(
     let total_secs = compute_total_elapsed_secs(epic, subtasks, graph);
     let total_elapsed = format_secs(total_secs).unwrap_or_else(|| "0s".to_string());
 
-    messages.push(Message {
-        stage: Stage::Summary,
-        kind: MessageKind::Done,
-        text: format!(
+    let summary_text = if iterations == 0 {
+        format!("Done, {} total", total_elapsed)
+    } else {
+        format!(
             "Done in {} iteration{}, {} total",
             iterations,
             if iterations == 1 { "" } else { "s" },
             total_elapsed
-        ),
+        )
+    };
+
+    messages.push(Message {
+        stage: Stage::Summary,
+        kind: MessageKind::Summary,
+        text: summary_text,
         meta: None,
         children: Vec::new(),
     });

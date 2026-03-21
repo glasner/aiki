@@ -143,6 +143,254 @@ This keeps the orchestrator autonomous for transient hangs while still bounding 
 
 The retry should be visible in the existing chatty pipeline output from `chatty-output.md`. When a run is killed for comment silence and restarted, the UI should emit a narrative update such as "agent became unresponsive, retrying once" so the user can see that the task did not just pause and resume invisibly.
 
+### Chatty Output: Heartbeat Events
+
+The following mockups show how comment-timeout events appear in the chatty pipeline output from [chatty-output.md](chatty-output.md). They follow the same chatty rules: past tense for done, present tense for active, progressive dimming, surface-bg blocks for live agents.
+
+**What's new in blocks:**
+- **Heartbeat line** — active agent blocks show the latest progress comment as a dim italic line above the footer. This is the happy-path liveness signal: visible proof the agent is working.
+
+**New `MessageKind` usage for failures:**
+- **Attention** (yellow) — "Agent unresponsive — retrying {task}"
+- **Error** (red) — "Agent unresponsive — stopped {task}" (retry also failed)
+
+No new `MessageKind` variants needed. `Attention` and `Error` already express these states.
+
+#### Happy path: progress comments visible in blocks
+
+The latest task comment appears as a dim line below the footer, prefixed with `⎿` to visually hang off the block. This is the primary way users see that an agent is alive and what it's doing.
+
+**AgentBlock with heartbeat:**
+
+[80 cols]
+```
+ ┃  ▸ Reviewing changes                                                       ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 18% · $0.12                                18s         ← surface bg, dim footer
+ ┃  ⎿ Scanning auth handler for null checks                                   ← surface bg, dim ⎿
+```
+
+**LaneBlock with heartbeat:**
+
+```
+ ┃  ✓ Explore webhook requirements                             8s             ← surface bg, green ✓
+ ┃  ✓ Create implementation plan                               6s             ← surface bg, green ✓
+ ┃  ▸ Verify Stripe signatures                                                ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 42% · $0.35                                32s         ← surface bg, dim footer
+ ┃  ⎿ Checking signature against test vectors                                 ← surface bg, dim ⎿
+```
+
+**Two parallel lanes, both with heartbeats:**
+
+```
+ ┃  ✓ Explore webhook requirements                             8s             ← surface bg, green ✓
+ ┃  ✓ Create implementation plan                               6s             ← surface bg, green ✓
+ ┃  ▸ Verify Stripe signatures                                                ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 42% · $0.35                                32s         ← surface bg, dim footer
+ ┃  ⎿ Checking signature against test vectors                                 ← surface bg, dim ⎿
+
+ ┃  ▸ Implement webhook route handler                                         ← surface bg, yellow ▸
+ ┃  cursor/sonnet-4.6 · 28% · $0.14                              48s         ← surface bg, dim footer
+ ┃  ⎿ Writing route handler for /api/webhooks                                 ← surface bg, dim ⎿
+ ┃  ○ Write integration tests                                                 ← surface bg, dim ○
+
+ ○ Add idempotency key tracking                                               ← dim ○
+```
+
+The heartbeat line is the agent's own words — whatever it last wrote via `aiki task comment add`. It updates in place as new comments arrive (the block always shows only the latest). When the block collapses to a `✓` line on completion, the heartbeat line disappears with it.
+
+**Block anatomy (updated):**
+
+```
+   ▸ {task_name}                                                      ← surface bg, yellow ▸
+   {agent}/{model} · {ctx_pct}% · ${cost}                {elapsed}   ← surface bg, dim footer
+   ⎿ {latest_comment}                                                ← surface bg, dim ⎿
+```
+
+Three layers: **what** (task), **who** (footer), **status** (comment). The `⎿` prefix makes the comment visually subordinate to the footer — a leaf hanging off the agent identity. The comment line is optional — if no comments have been left yet (agent just started), the block renders without it:
+
+```
+   ▸ {task_name}                                                      ← surface bg, yellow ▸
+   {agent}/{model} · {ctx_pct}% · ${cost}                {elapsed}   ← surface bg, dim footer
+```
+
+#### Build lane: agent goes silent, retry in progress
+
+[80 cols]
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Decomposed into 6 subtasks                                        12s        ← dim
+
+ ✓ Explore webhook requirements                              8s  claude      ← green
+ ✓ Create implementation plan                                6s  claude
+
+ Agent unresponsive — retrying Verify Stripe signatures                       ← yellow, Attention
+
+ ┃  ▸ Verify Stripe signatures (retry)                                        ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 8% · $0.02                                  4s         ← surface bg, dim footer
+
+ ┃  ▸ Implement webhook route handler                                         ← surface bg, yellow ▸
+ ┃  ○ Write integration tests                                                 ← surface bg, dim ○
+ ┃  cursor/sonnet-4.6 · 28% · $0.14                              48s         ← surface bg, dim footer
+
+ ○ Add idempotency key tracking                                               ← dim ○
+```
+
+The first attempt timed out after 120s of silence. The runner killed the child and restarted the task. The attention line tells the user what happened. The new block starts fresh (reset context, cost, elapsed). The other lane is unaffected and continues running.
+
+The `(retry)` suffix in the task name is informational — the builder appends it when the task's run history shows a prior unresponsive termination.
+
+#### Build lane: retry succeeds, build completes
+
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Built 6/6 subtasks (1 retried)                                   3m12       ← STAGE-DIM
+
+ ┃  ▸ Reviewing changes                                                       ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 18% · $0.12                                18s         ← surface bg, dim footer
+```
+
+Build collapses to the summary line as normal. The `(1 retried)` note is the only trace — the retry attention line dims with the rest of the build stage. Review proceeds normally.
+
+#### Build lane: retry also fails, task stopped
+
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Decomposed into 6 subtasks                                        12s        ← dim
+
+ ✓ Explore webhook requirements                              8s  claude      ← green
+ ✓ Create implementation plan                                6s  claude
+ ✓ Implement webhook route handler                          48s  cursor      ← green
+ ✓ Write integration tests                                  22s  cursor
+ ✓ Add idempotency key tracking                             30s  claude
+
+ Agent unresponsive — retrying Verify Stripe signatures                       ← dim (stage-dimmed)
+ Agent unresponsive — stopped Verify Stripe signatures                        ← red, Error
+
+ Build failed: 1 subtask stopped (unresponsive)                               ← red
+```
+
+Both attempts went silent. The first attention line is now dim (completed stage). The second line is `Error` (red). The task is stopped and surfaced as a build failure. The `✗` symbol is not used here because the task didn't error — it was killed by the monitor. The phrasing "stopped (unresponsive)" distinguishes this from a code error.
+
+#### Review: single-task agent goes silent, retry in progress
+
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Built 6/6 subtasks                                                1m54      ← STAGE-DIM
+
+ Agent unresponsive — retrying Reviewing changes                              ← yellow, Attention
+
+ ┃  ▸ Reviewing changes (retry)                                               ← surface bg, yellow ▸
+ ┃  claude/opus-4.6 · 6% · $0.04                                  8s         ← surface bg, dim footer
+```
+
+Same pattern for single-task agents (decompose, review, plan-fix, review-fix). The agent block is an `AgentBlock`, not a `LaneBlock`. The attention line appears above the new block.
+
+#### Review: retry succeeds
+
+```
+ webhooks.md                                                                   ← hi+bold
+
+ Created plan                                                      14:32      ← STAGE-DIM
+ Edited with claude                                                2m08      ← STAGE-DIM
+
+ Built 6/6 subtasks                                                1m54      ← STAGE-DIM
+
+ Agent unresponsive — retried Reviewing changes                    42s        ← dim (stage-dimmed)
+ Review passed — approved                                          28s        ← green
+```
+
+On success, the attention line picks up past tense ("retried") and the elapsed time of the failed attempt. It dims with the rest of the review stage. The review result renders normally.
+
+#### Data model additions
+
+The heartbeat line and retry events extend the existing `Chat` / `Message` / `ChatChild` model from chatty-output.md.
+
+**Heartbeat line in blocks** — add an optional `heartbeat` field to `AgentBlock` and `LaneBlock`:
+
+```rust
+/// A single-task agent session — task line + footer + heartbeat, surface background.
+AgentBlock {
+    task_name: String,
+    heartbeat: Option<String>,   // latest task comment, e.g. "Scanning auth handler..."
+    footer: BlockFooter,
+}
+
+/// An active lane — subtask lines + footer + heartbeat, surface background.
+LaneBlock {
+    subtasks: Vec<LaneSubtask>,
+    heartbeat: Option<String>,   // latest task comment from the active subtask
+    footer: BlockFooter,
+}
+```
+
+The builder populates `heartbeat` from the latest comment on the active task (for `AgentBlock`) or the active subtask (for `LaneBlock`). `None` means no comments yet — the block renders without the heartbeat line.
+
+**Rendering rule:** The heartbeat line renders below the footer with a `⎿` prefix, `dim` foreground on `theme.surface` background. The `⎿` makes it visually subordinate — a leaf hanging off the agent identity. It is never shown outside a block (collapsed `✓` lines don't carry the heartbeat).
+
+**Retry events** — fit existing types, no new `MessageKind` needed:
+
+```rust
+// Retry attention line — emitted when runner kills a silent agent
+Message {
+    stage: Build,                    // or Review, Fix — matches the agent's stage
+    kind: Attention,                 // yellow
+    text: "Agent unresponsive — retrying Verify Stripe signatures".into(),
+    meta: None,                      // no elapsed yet (retry just started)
+    children: vec![],
+}
+
+// Final failure line — emitted when retry also goes silent
+Message {
+    stage: Build,
+    kind: Error,                     // red
+    text: "Agent unresponsive — stopped Verify Stripe signatures".into(),
+    meta: None,
+    children: vec![],
+}
+
+// Collapsed retry line (after stage completes and dims)
+Message {
+    stage: Build,
+    kind: Attention,
+    text: "Agent unresponsive — retried Verify Stripe signatures".into(),
+    meta: Some("42s".into()),        // elapsed of the failed attempt
+    children: vec![],
+}
+```
+
+The builder reads the task's run history to detect unresponsive terminations and emit the appropriate messages. The `(retry)` suffix on task names inside blocks is added by the builder when the current run is a retry.
+
+#### Build summary line: retry annotation
+
+When at least one subtask was retried during build, the collapsed summary includes the count:
+
+```
+ Built 6/6 subtasks (1 retried)                                   3m12       ← green (or STAGE-DIM)
+```
+
+If retries failed and the build stopped:
+```
+ Build failed: 1 subtask stopped (unresponsive)                               ← red
+```
+
+These follow the chatty rules: past tense, inline detail, no drill-down needed.
+
 ### Scope
 
 This plan covers monitored, blocking runs only:
@@ -174,6 +422,6 @@ It does **not** cover `task_run_async(...)` yet. Background runs return immediat
 3. **Startup grace period** — 180s is a safer default for cold-start + context-reading time, but should it vary by command or agent?
 4. **Retry budget semantics** — Should the fixed timeout apply across the original run plus retry, or should each attempt get its own full timeout budget?
 5. **Audit trail format** — When a retry is triggered, should we record it as a regular task comment, a structured event, or both?
-6. **Chatty output shape** — Should retrying appear as a meta line, an attention message, or a dedicated restart event in the pipeline chat?
-7. **Final failure semantics** — After the retry fails, should the task end as `Stopped` with a structured reason, or as a distinct failure outcome surfaced separately in the UI?
+6. ~~**Chatty output shape**~~ — **Resolved:** Attention message (yellow) for retries, Error message (red) for final failure. See "Chatty Output: Heartbeat Events" section above.
+7. ~~**Final failure semantics**~~ — **Resolved:** Task ends as stopped. The chatty output shows `Error` line "Agent unresponsive — stopped {task}" and the build summary reads "Build failed: 1 subtask stopped (unresponsive)". See mockups above.
 8. **Comment overhead** — Frequent progress comments add noise to the task history. Is that acceptable, or do we eventually want a dedicated activity signal?

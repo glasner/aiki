@@ -115,35 +115,48 @@ pub fn resolve_change_id_by_marker(cwd: &Path, marker: &str) -> Result<String> {
     Ok(ids.remove(0))
 }
 
-/// Move a bookmark to a specific change id.
-pub fn set_bookmark_to_change(cwd: &Path, branch: &str, change_id: &str) -> Result<()> {
-    let output = jj_cmd()
-        .current_dir(cwd)
-        .args([
-            "bookmark",
-            "set",
-            branch,
-            "-r",
-            change_id,
-            "--allow-backwards",
-            "--ignore-working-copy",
-        ])
-        .output()
-        .map_err(|e| {
-            AikiError::JjCommandFailed(format!(
-                "Failed to move branch '{}' to '{}': {}",
-                branch, change_id, e
-            ))
-        })?;
+/// Advance bookmark to new_id without --allow-backwards.
+/// If a concurrent writer moved the bookmark forward, rebase our change onto
+/// the new tip and retry (up to 3 times).
+pub fn advance_bookmark(cwd: &Path, branch: &str, new_id: &str) -> Result<()> {
+    for _ in 0..3 {
+        let bm = jj_cmd()
+            .current_dir(cwd)
+            .args(["bookmark", "set", branch, "-r", new_id, "--ignore-working-copy"])
+            .output()
+            .map_err(|e| {
+                AikiError::JjCommandFailed(format!(
+                    "Failed to advance bookmark '{}': {}",
+                    branch, e
+                ))
+            })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to move branch '{}' to '{}': {}",
-            branch, change_id, stderr
-        )));
+        if bm.status.success() {
+            return Ok(());
+        }
+
+        // Bookmark moved — rebase our event onto the (now-advanced) bookmark tip
+        let rebase = jj_cmd()
+            .current_dir(cwd)
+            .args(["rebase", "-r", new_id, "--destination", branch, "--ignore-working-copy"])
+            .output()
+            .map_err(|e| {
+                AikiError::JjCommandFailed(format!(
+                    "Failed to rebase orphaned event: {}",
+                    e
+                ))
+            })?;
+
+        if !rebase.status.success() {
+            let stderr = String::from_utf8_lossy(&rebase.stderr);
+            return Err(AikiError::JjCommandFailed(format!(
+                "Failed to rebase orphaned event: {}",
+                stderr
+            )));
+        }
     }
 
+    // After retries, give up. Event is written (just orphaned as a head).
     Ok(())
 }
 

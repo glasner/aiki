@@ -91,10 +91,12 @@ Plan stage dims. The decompose agent gets a block: task line + footer. The foote
  ┃  ✓ Create implementation plan                               6s              ← surface bg, green ✓
  ┃  ▸ Verify Stripe signatures                                                ← surface bg, yellow ▸
  ┃  claude/opus-4.6 · 42% · $0.35                                32s          ← surface bg, dim footer
+ ┃  ⎿ Checking signature against test vectors                                  ← surface bg, dim ⎿
 
  ┃  ▸ Implement webhook route handler                                          ← surface bg, yellow ▸
  ┃  ○ Write integration tests                                                  ← surface bg, dim ○
  ┃  cursor/sonnet-4.6 · 28% · $0.14                              48s          ← surface bg, dim footer
+ ┃  ⎿ Writing route handler for /api/webhooks                                  ← surface bg, dim ⎿
 
  ○ Add idempotency key tracking                                               ← dim ○ (unassigned)
 
@@ -103,7 +105,7 @@ Plan stage dims. The decompose agent gets a block: task line + footer. The foote
 
 Each lane block is a **lane from the lane decomposition** — subtasks that must run serially within that lane. **Two blocks = two parallel lanes.** The `theme.surface` background makes each lane pop as a live panel.
 
-The **footer** is the last line of each block. It identifies who's doing the work and how it's going:
+The **footer** is the second-to-last line of each block (or last, if no heartbeat yet). It identifies who's doing the work and how it's going:
 - `claude/opus-4.6` — agent and model with version
 - `42%` — context window usage (how much runway is left)
 - `$0.35` — session cost so far
@@ -132,9 +134,10 @@ When a lane finishes all its subtasks, the block disappears and its `✓` lines 
 
  ┃  ▸ Reviewing changes                                                         ← surface bg, yellow ▸
  ┃  claude/opus-4.6 · 18% · $0.12                                18s          ← surface bg, dim footer
+ ┃  ⎿ Scanning auth handler for null checks                                    ← surface bg, dim ⎿
 ```
 
-Build collapses to "Built 6/6 subtasks" and dims. Review agent gets its own block.
+Build collapses to "Built 6/6 subtasks" and dims. Review agent gets its own block. The `⎿` heartbeat line shows the agent's latest progress comment — it updates in place as new comments arrive.
 
 ### 6. Review — issues found
 
@@ -410,19 +413,21 @@ enum ChatChild {
         agent: Option<String>,   // right-aligned: "claude", "cursor"
         error: Option<String>,   // shown on next line if Error
     },
-    /// A single-task agent session — task line + footer, surface background.
+    /// A single-task agent session — task line + heartbeat + footer, surface background.
     /// Used for decompose, review, plan-fix, review-fix — sessions that
     /// run a single task rather than a lane of subtasks.
     AgentBlock {
-        task_name: String,       // "Decomposing plan", "Reviewing changes"
-        footer: BlockFooter,     // agent/model, context %, cost, elapsed
+        task_name: String,           // "Decomposing plan", "Reviewing changes"
+        heartbeat: Option<String>,   // latest task comment (dim italic, above footer)
+        footer: BlockFooter,         // agent/model, context %, cost, elapsed
     },
-    /// An active lane — subtask lines + footer, surface background.
+    /// An active lane — subtask lines + heartbeat + footer, surface background.
     /// Contains the subtasks assigned to this lane. This is the primary
     /// mechanism for showing parallelism: multiple LaneBlocks visible
     /// = multiple lanes executing concurrently.
     LaneBlock {
         subtasks: Vec<LaneSubtask>,  // subtasks in this lane (✓/▸/○)
+        heartbeat: Option<String>,   // latest comment from the active subtask
         footer: BlockFooter,         // agent/model, context %, cost, elapsed
     },
     /// A review issue
@@ -456,16 +461,17 @@ struct BlockFooter {
 
 ### Block rendering
 
-Two block types share the same visual treatment — `theme.surface` background spanning full width, **content first, footer last**:
+Two block types share the same visual treatment — `theme.surface` background spanning full width, **content first, footer + heartbeat last**:
 
 **AgentBlock** — single-task sessions (decompose, review, plan-fix, review-fix):
 
 ```
    ▸ {task_name}                                                      ← surface bg, yellow ▸
    {agent}/{model} · {ctx_pct}% · ${cost}                {elapsed}    ← surface bg, dim footer
+   ⎿ {heartbeat}                                                     ← surface bg, dim ⎿ (optional)
 ```
 
-Task line + footer. Content first, identity second.
+Task line + footer + heartbeat. The heartbeat is the agent's latest progress comment (e.g. "Scanning auth handler for null checks"), hanging off the footer with `⎿`. It's omitted if no comments have been left yet.
 
 **LaneBlock** — multi-subtask lanes (build loop, fix loop):
 
@@ -475,9 +481,10 @@ Task line + footer. Content first, identity second.
    ▸ {subtask_3}                                                      ← surface bg, yellow ▸
    ○ {subtask_4}                                                      ← surface bg, dim ○
    {agent}/{model} · {ctx_pct}% · ${cost}                {elapsed}    ← surface bg, dim footer
+   ⎿ {heartbeat}                                                     ← surface bg, dim ⎿ (optional)
 ```
 
-Subtask lines + footer. No header — the background delineates the block, the footer identifies who's running it.
+Subtask lines + footer + heartbeat. The heartbeat shows the latest comment from the active subtask, hanging off the footer with `⎿`. No header — the background delineates the block, the footer identifies who's running it.
 
 **Footer format:** `claude/opus-4.6 · 42% · $0.35                    32s`
 - `claude/opus-4.6` — agent/model-version as one compound identifier
@@ -655,10 +662,12 @@ The old TUI used `lane_dag.rs` to show parallelism as an abstract graph (`●━
  ┃  ✓ Create implementation plan                               6s
  ┃  ▸ Verify Stripe signatures
  ┃  claude/opus-4.6 · 42% · $0.35                                32s
+ ┃  ⎿ Checking signature against test vectors
 
  ┃  ▸ Implement webhook route handler
  ┃  ○ Write integration tests
  ┃  cursor/sonnet-4.6 · 28% · $0.14                              12s
+ ┃  ⎿ Setting up route at /api/webhooks
 
  ○ Add idempotency key tracking
 ```

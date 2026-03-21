@@ -4,7 +4,7 @@
 //! Each event is a JJ change with metadata in the description.
 
 use crate::error::{AikiError, Result};
-use crate::jj::{jj_cmd, new_jj_write_marker, resolve_change_id_by_marker, set_bookmark_to_change};
+use crate::jj::{jj_cmd, new_jj_write_marker, resolve_change_id_by_marker, advance_bookmark};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
@@ -21,7 +21,7 @@ fn append_write_marker(metadata: &str, marker: &str) -> String {
 }
 
 fn set_conversations_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
-    if let Err(err) = set_bookmark_to_change(cwd, CONVERSATIONS_BRANCH, change_id) {
+    if let Err(err) = advance_bookmark(cwd, CONVERSATIONS_BRANCH, change_id) {
         eprintln!(
             "Warning: failed to advance '{}' to '{}': {}",
             CONVERSATIONS_BRANCH, change_id, err

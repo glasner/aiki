@@ -1,24 +1,21 @@
-# Always Absorb: Eliminate Silent Data Loss in Workspace Absorption
+# Step 1d: Never Delete Unabsorbed Files
 
-**Date**: 2026-03-19
-**Status**: Draft
-**Priority**: P0 (silent data loss — agent file writes disappear without warning)
-**Related**:
-- [bug-absorption-concurrency.md](bug-absorption-concurrency.md) — rebase topology fix (already patched)
-- [stale-absorbtion-locks.md](stale-absorbtion-locks.md) — lock and session cleanup
-- [jj-conflict-cleanup.md](jj-conflict-cleanup.md) — incident report from manual recovery
-
----
-
-## Principle
-
-**Every file written to a workspace MUST reach the main working copy.** There should be no code path that silently deletes workspace files without absorbing them first. If absorption fails, preserve the workspace for manual recovery — never `rm -rf` unabsorbed work.
+**Date**: 2026-03-21
+**Status**: Ready
+**Priority**: P0
+**Phase**: 1 — Stop the bleeding (prevent data loss now)
+**Source**: "Always Absorb" design (2026-03-19) — Rules 2-4
+**Depends on**: Nothing (but most valuable after 1a reduces failure frequency)
 
 ---
 
-## Current Data Loss Paths
+## Problem
 
-### Path 1: `AbsorbResult::Skipped` → cleanup deletes files
+Even after fixing stale locks, absorptions can still fail (JJ errors, corrupted `.jj/repo`, snapshot failures). Today, every failure path ends with `cleanup_workspace` deleting files — causing silent data loss.
+
+### Current Data Loss Paths
+
+#### Path 1: `AbsorbResult::Skipped` → cleanup deletes files
 
 **File:** `functions.rs:1163-1164`
 
@@ -35,7 +32,7 @@ Ok(isolation::AbsorbResult::Skipped) => {
 
 The idempotency case is genuinely safe (already absorbed). The other two cases may have unabsorbed files on disk that get deleted.
 
-### Path 2: `absorb_workspace` errors → cleanup deletes files
+#### Path 2: `absorb_workspace` errors → cleanup deletes files
 
 **File:** `functions.rs:1166-1171`
 
@@ -48,7 +45,7 @@ Err(e) => {
 
 Rebase failures, JJ errors, lock issues — any error means files are deleted with only an eprintln warning.
 
-### Path 3: Can't find repo root → `rm -rf` the workspace
+#### Path 3: Can't find repo root → `rm -rf` the workspace
 
 **File:** `functions.rs:1058-1067`
 
@@ -60,9 +57,9 @@ None => {
 }
 ```
 
-If `find_repo_root_from_workspace` fails (e.g., `.jj/repo` file is corrupted), the entire workspace directory is deleted, files and all.
+If `find_repo_root_from_workspace` fails (e.g., `.jj/repo` file is corrupted), the entire workspace directory is deleted.
 
-### Path 4: `jj status` snapshot failure is ignored
+#### Path 4: `jj status` snapshot failure is ignored
 
 **File:** `isolation.rs:369-372`
 
@@ -73,30 +70,11 @@ let _ = jj_cmd()
     .output();
 ```
 
-The snapshot that captures pending file writes is fire-and-forget. If it fails, absorption proceeds with stale data. The files exist on disk but JJ doesn't know about them, so the rebase moves an empty commit and the files are lost on cleanup.
+The snapshot that captures pending file writes is fire-and-forget. If it fails, absorption proceeds with stale data.
 
 ---
 
-## Fix: Never Delete Unabsorbed Work
-
-### Rule 1: Split `Skipped` into `Skipped` and `Empty`
-
-Currently `Skipped` means both "nothing to absorb" (safe to clean up) and "couldn't absorb" (NOT safe). Split the enum:
-
-```rust
-pub enum AbsorbResult {
-    /// Workspace changes absorbed into target
-    Absorbed,
-    /// Workspace had no file changes (safe to clean up)
-    Empty,
-    /// Absorption was skipped but workspace may have changes (NOT safe to clean up)
-    Skipped { reason: String },
-}
-```
-
-- `Empty` → safe to cleanup (root change, empty diff)
-- `Skipped` → NOT safe to cleanup without checking for files first
-- `Absorbed` → safe to cleanup (changes are in target)
+## Fixes
 
 ### Rule 2: Check for files before cleanup on skip/error
 
@@ -209,30 +187,21 @@ for each workspace:
 
 ---
 
-## Implementation Order
+## Files to Change
 
-1. **Rule 4** — Log snapshot failures (1 line change, immediate visibility)
-2. **Rule 2** — `workspace_has_changes` check before cleanup (~15 lines)
-3. **Rule 1** — Split `AbsorbResult` enum (~20 lines across 3 files)
-4. **Rule 3** — `fallback_copy_files` (~25 lines, last resort safety net)
-
-Total: ~60 lines of new code, no architectural changes.
+| File | Change |
+|------|--------|
+| `cli/src/session/isolation.rs` | Add `workspace_has_changes()` function; update snapshot to check errors |
+| `cli/src/flows/core/functions.rs` | Add `fallback_copy_files()`; add `workspace_has_changes` guard before every `cleanup_workspace` call; update `find_repo_root` failure path to not delete |
 
 ---
 
-## Verification
+## Implementation Steps
 
-```bash
-# After implementation, this scenario should NEVER lose files:
-
-# 1. Create a workspace and write a file
-jj workspace add /tmp/test-ws --name test-ws
-cd /tmp/test-ws && echo "test" > test-file.md
-
-# 2. Corrupt the workspace so absorption fails
-# (e.g., remove .jj/repo pointer)
-
-# 3. Run absorption
-# Before fix: test-file.md is deleted
-# After fix: test-file.md is copied to main workspace via fallback
-```
+1. Add `workspace_has_changes()` to `isolation.rs` (~15 lines)
+2. Update the `jj status` snapshot in `isolation.rs` to check for failures (Rule 4)
+3. Add `fallback_copy_files()` to `functions.rs` (~25 lines)
+4. In `functions.rs`, wrap every `cleanup_workspace` call with a `workspace_has_changes` check
+5. In the `find_repo_root` failure path, log a warning instead of `remove_dir_all`
+6. Run `cargo test` to verify no regressions
+7. **Run the full isolation test:** Execute the test plan at `cli/tests/prompts/test_session_isolation.md`

@@ -1,13 +1,12 @@
 Bugs:
-- async session end
 - rhai conditionals
+- task branch problem
 - session isolation
 
 - task heartbeat
 
 Now:
-- chatty
-- remove context banner
+- chatty -> polish
 - automatic agent failover
 
 Next:
