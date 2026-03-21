@@ -72,6 +72,8 @@ pub enum MessageKind {
     Error,
     /// Dim, plan created/edited/summary.
     Meta,
+    /// Green text, no symbol. Used for the final summary line.
+    Summary,
 }
 
 /// Children of a message.

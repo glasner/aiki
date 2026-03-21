@@ -425,16 +425,27 @@ fn run_build_plan(
         .map(|p| p.id.as_str())
         .unwrap_or(epic_id.as_str());
 
-    let subtasks = final_epic
-        .map(|p| get_subtasks(&graph, &p.id))
-        .unwrap_or_default();
+    // Resolve the epic task from the graph (prefer final_epic, fall back to epic_id lookup)
+    let epic_task = final_epic
+        .or_else(|| graph.tasks.get(epic_id.as_str()))
+        .ok_or_else(|| AikiError::InvalidArgument(format!("Epic task not found: {}", epic_id)))?;
+
+    let subtasks = get_subtasks(&graph, &epic_task.id);
     let subtask_refs: Vec<&Task> = subtasks.into_iter().collect();
 
     if output_id {
         println!("{}", loop_task_id);
-        println!("{}", final_epic_id);
+        println!("{}", epic_task.id);
     } else {
-        output_build_completed(&loop_task_id, final_epic_id, &subtask_refs)?;
+        let build_tasks: Vec<&Task> = graph
+            .tasks
+            .values()
+            .filter(|t| {
+                t.task_type.as_deref() == Some("orchestrator")
+                    && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path)
+            })
+            .collect();
+        output_build_show(epic_task, &subtask_refs, &build_tasks, &graph)?;
     }
 
     // Run post-build review if requested (sync path) — needs its own session
@@ -580,13 +591,23 @@ fn run_build_epic(
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
 
+    let epic_task = graph.tasks.get(epic_id)
+        .ok_or_else(|| AikiError::InvalidArgument(format!("Epic task not found: {}", epic_id)))?;
     let subtasks = get_subtasks(&graph, epic_id);
 
     if output_id {
         println!("{}", loop_task_id);
         println!("{}", epic_id);
     } else {
-        output_build_completed(&loop_task_id, epic_id, &subtasks)?;
+        let build_tasks: Vec<&Task> = graph
+            .tasks
+            .values()
+            .filter(|t| {
+                t.task_type.as_deref() == Some("orchestrator")
+                    && t.data.get("plan").map(|s| s.as_str()) == Some(plan_path.as_str())
+            })
+            .collect();
+        output_build_show(epic_task, &subtasks, &build_tasks, &graph)?;
     }
 
     // Run post-build review if requested (sync path) — needs its own session
@@ -966,32 +987,6 @@ fn output_build_review_completed(review_id: &str, plan_path: &str, with_fix: boo
     Ok(())
 }
 
-/// Output build completed message to stderr
-fn output_build_completed(build_id: &str, epic_id: &str, subtasks: &[&Task]) -> Result<()> {
-    output_utils::emit(|| {
-        let mut content = format!(
-            "## Build Completed\n- **Build ID:** {}\n- **Epic ID:** {}\n- **Subtasks:** {}\n\n",
-            build_id, epic_id, subtasks.len()
-        );
-
-        for (i, subtask) in subtasks.iter().enumerate() {
-            let status = if subtask.status == TaskStatus::Closed {
-                "done"
-            } else {
-                "pending"
-            };
-            content.push_str(&format!("{}. {} ({})\n", i + 1, &subtask.name, status));
-        }
-
-        content.push_str(&format!(
-            "\n---\nRun `aiki review {}` to review.\n",
-            epic_id
-        ));
-
-        MdBuilder::new().build(&content)
-    });
-    Ok(())
-}
 
 /// Output build show (detailed status display)
 fn output_build_show(epic: &Task, _subtasks: &[&Task], _build_tasks: &[&Task], graph: &crate::tasks::graph::TaskGraph) -> Result<()> {
@@ -1368,22 +1363,6 @@ mod tests {
     // --- Build show output formatting tests ---
 
     #[test]
-    fn test_output_build_completed_no_subtasks() {
-        let subtasks: Vec<&Task> = vec![];
-        let result = output_build_completed("build123", "epic456", &subtasks);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_output_build_completed_with_subtasks() {
-        let task1 = make_task("sub1", "Implement auth", TaskStatus::Closed);
-        let task2 = make_task("sub2", "Add tests", TaskStatus::Open);
-        let subtasks: Vec<&Task> = vec![&task1, &task2];
-        let result = output_build_completed("build123", "epic456", &subtasks);
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_output_build_show_basic() {
         let mut data = HashMap::new();
         data.insert("plan".to_string(), "ops/now/feature.md".to_string());
@@ -1434,15 +1413,6 @@ mod tests {
         let build_tasks: Vec<&Task> = vec![];
         let graph = empty_graph();
         let result = output_build_show(&epic, &subtasks, &build_tasks, &graph);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_xml_escaping_in_output() {
-        // Verify XML special characters are properly escaped
-        let task = make_task("sub1", "Fix <angle> & \"quote\" 'apos'", TaskStatus::Open);
-        let subtasks: Vec<&Task> = vec![&task];
-        let result = output_build_completed("build<1>", "epic&2", &subtasks);
         assert!(result.is_ok());
     }
 

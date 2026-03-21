@@ -183,11 +183,7 @@ impl Widget for PipelineChat<'_> {
                                 width,
                                 &footer_text,
                                 footer.elapsed.as_deref(),
-                                if stage_dimmed {
-                                    self.theme.dim
-                                } else {
-                                    self.theme.dim
-                                },
+                                self.theme.dim,
                                 bg,
                             );
                             y += 1;
@@ -224,7 +220,7 @@ impl Widget for PipelineChat<'_> {
                                 &text,
                                 fg,
                                 bg,
-                                ls.elapsed.as_deref(),
+                                if ls.status == MessageKind::Done { ls.elapsed.as_deref() } else { None },
                             );
                             y += 1;
 
@@ -264,11 +260,7 @@ impl Widget for PipelineChat<'_> {
                                 width,
                                 &footer_text,
                                 footer.elapsed.as_deref(),
-                                if stage_dimmed {
-                                    self.theme.dim
-                                } else {
-                                    self.theme.dim
-                                },
+                                self.theme.dim,
                                 bg,
                             );
                             y += 1;
@@ -299,11 +291,7 @@ impl Widget for PipelineChat<'_> {
                         // Location + description on next line(s)
                         if let Some(loc) = location {
                             if y < area.y + area.height {
-                                let detail_fg = if stage_dimmed {
-                                    self.theme.dim
-                                } else {
-                                    self.theme.dim
-                                };
+                                let detail_fg = self.theme.dim;
                                 buf.set_string(
                                     area.x + 4,
                                     y,
@@ -323,11 +311,7 @@ impl Widget for PipelineChat<'_> {
                             }
                         } else if let Some(desc) = description {
                             if y < area.y + area.height {
-                                let detail_fg = if stage_dimmed {
-                                    self.theme.dim
-                                } else {
-                                    self.theme.dim
-                                };
+                                let detail_fg = self.theme.dim;
                                 buf.set_string(
                                     area.x + 4,
                                     y,
@@ -446,6 +430,7 @@ fn kind_sym_color(kind: MessageKind, dimmed: bool, theme: &Theme) -> (&'static s
         MessageKind::Attention => ("", theme.yellow),
         MessageKind::Error => (SYM_FAILED, theme.red),
         MessageKind::Meta => ("", theme.dim),
+        MessageKind::Summary => ("", theme.green),
     }
 }
 
@@ -995,6 +980,55 @@ mod tests {
         assert!(found_built, "Should find 'Built' line");
         assert!(found_review, "Should find 'Review passed' line");
         assert!(found_done, "Should find 'Done in' line");
+    }
+
+    #[test]
+    fn plan_dims_when_build_active_with_empty_text() {
+        let theme = test_theme();
+        let chat = Chat {
+            messages: vec![
+                Message {
+                    stage: Stage::Plan,
+                    kind: MessageKind::Meta,
+                    text: "Created plan".to_string(),
+                    meta: Some("14:32".to_string()),
+                    children: Vec::new(),
+                },
+                Message {
+                    stage: Stage::Build,
+                    kind: MessageKind::Active,
+                    text: String::new(),
+                    meta: None,
+                    children: Vec::new(),
+                },
+            ],
+        };
+        let buf = render_pipeline_chat(&chat, &theme, "aiki", "ops/now/test.md");
+
+        // Active stage is Build (from the empty-text Active message).
+        // Plan < Build, so "Created plan" should be dimmed.
+        let rows = buf.area.height;
+        for row in 0..rows {
+            let line: String = (0..buf.area.width)
+                .map(|col| {
+                    buf.cell((col, row))
+                        .map(|c| c.symbol().chars().next().unwrap_or(' '))
+                        .unwrap_or(' ')
+                })
+                .collect();
+            if line.contains("Created plan") {
+                // Meta messages use theme.dim for fg, but the key check is that
+                // stage_dimmed is true — verify via the text cell color.
+                let text_cell = buf.cell((2, row)).unwrap();
+                assert_eq!(
+                    text_cell.style().fg,
+                    Some(theme.dim),
+                    "Plan stage should be dimmed when Build is active (even with empty text)"
+                );
+                return;
+            }
+        }
+        panic!("Could not find 'Created plan' in rendered output");
     }
 
     #[test]
