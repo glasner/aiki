@@ -4,7 +4,9 @@
 
 use std::process::{Command, Stdio};
 
-use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild};
+use super::{
+    AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild,
+};
 use crate::error::{AikiError, Result};
 
 /// Runtime for Claude Code agent
@@ -99,11 +101,9 @@ impl AgentRuntime for ClaudeCodeRuntime {
         let child = cmd.spawn();
 
         match child {
-            Ok(_child) => {
-                Ok(BackgroundHandle {
-                    task_id: options.task_id.clone(),
-                })
-            }
+            Ok(_child) => Ok(BackgroundHandle {
+                task_id: options.task_id.clone(),
+            }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn claude in background: {}",
                 e
@@ -126,9 +126,10 @@ impl AgentRuntime for ClaudeCodeRuntime {
             .env("AIKI_TASK", &options.task_id)
             // Mark as monitored session for mode detection
             .env("AIKI_SESSION_MODE", "monitored")
-            // Detach stdin/stdout so process runs independently
+            // Detach stdin so process runs independently
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            // Capture stdout/stderr so failures surface the real CLI message
+            .stdout(Stdio::piped())
             // Capture stderr so we can report errors when the agent fails
             .stderr(Stdio::piped());
         // Propagate parent session UUID for workspace isolation chaining
@@ -151,10 +152,7 @@ impl AgentRuntime for ClaudeCodeRuntime {
 ///
 /// Takes the last few non-empty lines as a summary, up to ~500 chars
 fn extract_summary(output: &str) -> String {
-    let lines: Vec<&str> = output
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
         return "Task completed".to_string();
@@ -198,7 +196,10 @@ mod tests {
     #[test]
     fn test_extract_summary_long() {
         // Create output longer than 500 chars
-        let long_output = (0..100).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+        let long_output = (0..100)
+            .map(|i| format!("Line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let summary = extract_summary(&long_output);
         assert!(summary.len() <= 600); // Allow some margin
     }
