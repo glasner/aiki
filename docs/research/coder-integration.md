@@ -160,6 +160,32 @@ Process-level firewalls for agents:
 - Audit logging to workspace
 - Configuration via inline module config or external `config.yaml`
 
+### AgentAPI
+
+Open-source Go HTTP server ([github.com/coder/agentapi](https://github.com/coder/agentapi)) that controls coding agents through terminal emulation:
+- `POST /message` — send messages to agent
+- `GET /status` — check agent status (stable/running)
+- `GET /events` — SSE stream for real-time updates
+- Built-in chat UI at `http://localhost:3284/chat`
+- Works by running an in-memory terminal emulator, translating API calls to terminal keystrokes
+
+### Tool SDK (`codersdk/toolsdk`)
+
+Pre-built Go tool definitions for AI/agent integration:
+- `ToolNameReportTask` — report task status back to Coder
+- `ToolNameGetWorkspace` / `ToolNameCreateWorkspace` / `ToolNameListWorkspaces` — workspace management
+- `ToolNameListTemplates` — template discovery
+- Designed for building custom AI tool integrations with Coder
+
+### GitHub Actions Integration
+
+Coder provides a workflow for issue-to-PR automation:
+1. Label a GitHub issue with "coder"
+2. GitHub Action triggers, launches a Coder Task with Claude Code
+3. Agent reads issue description, comments, and context from GitHub
+4. Agent works on the issue and opens a PR
+5. Full lifecycle managed via Coder Tasks API
+
 ---
 
 ## Integration Points with Aiki
