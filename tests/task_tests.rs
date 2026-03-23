@@ -888,13 +888,13 @@ fn test_task_comment_with_data() {
         ));
 
     // Verify the data fields are persisted in jj task events
-    // Read the events from the aiki/tasks branch via jj log
+    // Read ALL events on the aiki/tasks branch (bookmark points to the tip)
     let output = Command::new("jj")
         .current_dir(temp_dir.path())
         .args([
             "log",
             "-r",
-            "children(aiki/tasks)",
+            "aiki/tasks",
             "--no-graph",
             "-T",
             "description",

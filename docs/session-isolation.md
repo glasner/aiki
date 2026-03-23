@@ -309,7 +309,7 @@ Triggered on:
                             │
                             ▼
  ┌──────────────────────────────────────────────────────────────┐
- │  RELEASE LOCK (RAII: AbsorbLock drops)                       │
+ │  RELEASE LOCK (RAII: fd-lock guard drops)                     │
  └──────────────────────────────────────────────────────────────┘
 ```
 

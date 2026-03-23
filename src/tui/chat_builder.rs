@@ -4,6 +4,7 @@
 //! Reads the TaskGraph directly and produces a flat list of Chat messages
 //! that tell the story of a plan from creation to completion.
 
+use crate::plans::PlanGraph;
 use crate::tasks::graph::TaskGraph;
 use crate::tasks::lanes::{derive_lanes, lane_status, LaneStatus};
 use crate::tasks::manager::get_subtasks;
@@ -14,13 +15,31 @@ use crate::tui::types::{
 
 /// Build chat messages directly from the TaskGraph for a given plan.
 pub fn build_pipeline_chat(graph: &TaskGraph, plan_path: &str) -> Chat {
-    let mut messages = Vec::new();
-
     // Find the epic task for this plan (implements-plan link)
     let epic = match find_epic(graph, plan_path) {
         Some(e) => e,
-        None => return Chat { messages },
+        None => return Chat { messages: Vec::new() },
     };
+
+    build_pipeline_chat_from_epic(graph, epic)
+}
+
+/// Build chat messages using a task directly as the epic.
+///
+/// Used by the fix pipeline where the fix-parent task acts as the epic
+/// but has no `implements-plan` link (so `build_pipeline_chat` can't find it).
+pub fn build_pipeline_chat_for_task(graph: &TaskGraph, task_id: &str) -> Chat {
+    let epic = match graph.tasks.get(task_id) {
+        Some(e) => e,
+        None => return Chat { messages: Vec::new() },
+    };
+
+    build_pipeline_chat_from_epic(graph, epic)
+}
+
+/// Shared implementation: build pipeline messages from a resolved epic.
+fn build_pipeline_chat_from_epic(graph: &TaskGraph, epic: &Task) -> Chat {
+    let mut messages = Vec::new();
 
     // 1. Plan stage
     build_plan_messages(&mut messages, epic);
@@ -47,20 +66,42 @@ pub fn build_pipeline_chat(graph: &TaskGraph, plan_path: &str) -> Chat {
     Chat { messages }
 }
 
+/// Build chat messages for a standalone review (code/plan review).
+///
+/// Unlike `build_pipeline_chat` which renders an epic's full lifecycle,
+/// this renders just the review task's own subtasks and results.
+pub fn build_review_chat(graph: &TaskGraph, review_task_id: &str) -> Chat {
+    let mut messages = Vec::new();
+
+    let review_task = match graph.tasks.get(review_task_id) {
+        Some(t) => t,
+        None => return Chat { messages },
+    };
+
+    // Determine label from scope kind
+    let scope_kind = review_task.data.get("scope.kind").map(|s| s.as_str());
+    let active_label = match scope_kind {
+        Some("code") => "Reviewing code",
+        Some("plan") => "Reviewing plan",
+        _ => "Reviewing",
+    };
+
+    let subtasks = get_subtasks(graph, review_task_id);
+
+    // 1. Subtask progress
+    build_review_work_messages(&mut messages, review_task, &subtasks, active_label);
+
+    // 2. Review result (approved / issues / failed)
+    build_review_result_messages(&mut messages, review_task);
+
+    Chat { messages }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Find the epic task that implements the given plan path.
 fn find_epic<'a>(graph: &'a TaskGraph, plan_path: &str) -> Option<&'a Task> {
-    // Look for tasks with implements-plan → plan_path
-    for (id, task) in &graph.tasks {
-        let targets = graph.edges.targets(id, "implements-plan");
-        for target in targets {
-            if target.ends_with(plan_path) || target == plan_path {
-                return Some(task);
-            }
-        }
-    }
-    None
+    PlanGraph::build(graph).find_epic_for_plan(plan_path, graph)
 }
 
 /// Convert task status to MessageKind.
@@ -290,6 +331,16 @@ fn build_build_messages(
     let all_done = completed == total;
     let all_terminal = completed + failed == total;
 
+    // Epic header above subtasks
+    let short_id = &epic.id[..epic.id.len().min(8)];
+    messages.push(Message {
+        stage: Stage::Build,
+        kind: MessageKind::Meta,
+        text: format!("{} {}", short_id, epic.name),
+        meta: None,
+        children: Vec::new(),
+    });
+
     if all_done {
         // Collapsed: "Built N/N subtasks"
         let elapsed = compute_build_elapsed(epic, graph);
@@ -408,8 +459,24 @@ fn build_active_build(
         }
 
         // Unassigned subtasks (not in any lane)
-        for task in subtasks {
-            if !assigned_task_ids.contains(&task.id) {
+        // Active tasks get a LaneBlock; done/pending stay flat.
+        let unassigned: Vec<&&Task> = subtasks
+            .iter()
+            .filter(|t| !assigned_task_ids.contains(&t.id))
+            .collect();
+
+        for task in &unassigned {
+            if task.status == TaskStatus::InProgress {
+                children.push(ChatChild::LaneBlock {
+                    subtasks: vec![LaneSubtask {
+                        name: task.name.clone(),
+                        status: task_to_kind(task),
+                        elapsed: format_elapsed(task),
+                        error: error_text(task),
+                    }],
+                    footer: build_footer(task),
+                });
+            } else {
                 children.push(ChatChild::Subtask {
                     name: task.name.clone(),
                     status: task_to_kind(task),
@@ -616,6 +683,203 @@ fn collect_review_issues(review_task: &Task) -> Vec<ChatChild> {
     }
 
     issues
+}
+
+// ── Standalone review (code/plan) ───────────────────────────────────
+
+fn build_review_work_messages(
+    messages: &mut Vec<Message>,
+    review_task: &Task,
+    subtasks: &[&Task],
+    active_label: &str,
+) {
+    let total = subtasks.len();
+
+    if total == 0 {
+        // No subtasks — single agent block
+        if review_task.status == TaskStatus::InProgress {
+            messages.push(Message {
+                stage: Stage::Review,
+                kind: MessageKind::Active,
+                text: String::new(),
+                meta: None,
+                children: vec![ChatChild::AgentBlock {
+                    task_name: active_label.to_string(),
+                    footer: build_footer(review_task),
+                }],
+            });
+        }
+        return;
+    }
+
+    let completed = subtasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Closed && t.closed_outcome == Some(TaskOutcome::Done))
+        .count();
+    let failed = subtasks
+        .iter()
+        .filter(|t| {
+            t.status == TaskStatus::Stopped
+                || (t.status == TaskStatus::Closed
+                    && t.closed_outcome == Some(TaskOutcome::WontDo))
+        })
+        .count();
+    let all_done = completed == total;
+    let all_terminal = completed + failed == total;
+
+    if all_done {
+        // Collapsed: "Reviewed N/N checks" with flat subtask children
+        let mut children = Vec::new();
+        for task in subtasks {
+            children.push(ChatChild::Subtask {
+                name: task.name.clone(),
+                status: task_to_kind(task),
+                elapsed: format_elapsed(task),
+                agent: agent_label(task),
+                error: None,
+            });
+        }
+        messages.push(Message {
+            stage: Stage::Review,
+            kind: MessageKind::Done,
+            text: format!("Reviewed {}/{} checks", completed, total),
+            meta: format_elapsed(review_task),
+            children,
+        });
+    } else if all_terminal && failed > 0 {
+        // Some checks failed
+        let mut children = Vec::new();
+        for task in subtasks {
+            children.push(ChatChild::Subtask {
+                name: task.name.clone(),
+                status: task_to_kind(task),
+                elapsed: format_elapsed(task),
+                agent: agent_label(task),
+                error: error_text(task),
+            });
+        }
+        messages.push(Message {
+            stage: Stage::Review,
+            kind: MessageKind::Error,
+            text: format!(
+                "Review failed: {} check{} errored",
+                failed,
+                if failed == 1 { "" } else { "s" }
+            ),
+            meta: format_elapsed(review_task),
+            children,
+        });
+    } else {
+        // Active: done subtasks flat, remaining in lane block
+        let mut children = Vec::new();
+
+        for task in subtasks.iter().filter(|t| t.status == TaskStatus::Closed) {
+            children.push(ChatChild::Subtask {
+                name: task.name.clone(),
+                status: task_to_kind(task),
+                elapsed: format_elapsed(task),
+                agent: agent_label(task),
+                error: None,
+            });
+        }
+
+        let remaining: Vec<&&Task> = subtasks
+            .iter()
+            .filter(|t| t.status != TaskStatus::Closed)
+            .collect();
+        let active_subtask = subtasks
+            .iter()
+            .find(|t| t.status == TaskStatus::InProgress);
+
+        if let Some(active) = active_subtask {
+            let lane_subtasks: Vec<LaneSubtask> = remaining
+                .iter()
+                .map(|task| LaneSubtask {
+                    name: task.name.clone(),
+                    status: task_to_kind(task),
+                    elapsed: format_elapsed(task),
+                    error: error_text(task),
+                })
+                .collect();
+            children.push(ChatChild::LaneBlock {
+                subtasks: lane_subtasks,
+                footer: build_footer(active),
+            });
+        } else {
+            // No active subtask — flat pending
+            for task in &remaining {
+                children.push(ChatChild::Subtask {
+                    name: task.name.clone(),
+                    status: task_to_kind(task),
+                    elapsed: format_elapsed(task),
+                    agent: agent_label(task),
+                    error: error_text(task),
+                });
+            }
+        }
+
+        messages.push(Message {
+            stage: Stage::Review,
+            kind: MessageKind::Active,
+            text: active_label.to_string(),
+            meta: None,
+            children,
+        });
+    }
+}
+
+fn build_review_result_messages(messages: &mut Vec<Message>, review_task: &Task) {
+    match review_task.status {
+        TaskStatus::Closed => {
+            let approved =
+                review_task.data.get("approved").map(|s| s.as_str()) == Some("true");
+
+            if approved {
+                messages.push(Message {
+                    stage: Stage::Summary,
+                    kind: MessageKind::Done,
+                    text: "Review passed — approved".to_string(),
+                    meta: format_elapsed(review_task),
+                    children: Vec::new(),
+                });
+            } else {
+                let issues = collect_review_issues(review_task);
+                let issue_count = issues.len();
+
+                if issue_count > 0 {
+                    messages.push(Message {
+                        stage: Stage::Summary,
+                        kind: MessageKind::Attention,
+                        text: format!(
+                            "Review found {} issue{}",
+                            issue_count,
+                            if issue_count == 1 { "" } else { "s" }
+                        ),
+                        meta: format_elapsed(review_task),
+                        children: issues,
+                    });
+                } else {
+                    messages.push(Message {
+                        stage: Stage::Summary,
+                        kind: MessageKind::Done,
+                        text: "Review completed".to_string(),
+                        meta: format_elapsed(review_task),
+                        children: Vec::new(),
+                    });
+                }
+            }
+        }
+        TaskStatus::Stopped => {
+            messages.push(Message {
+                stage: Stage::Summary,
+                kind: MessageKind::Error,
+                text: "Review failed".to_string(),
+                meta: format_elapsed(review_task),
+                children: Vec::new(),
+            });
+        }
+        _ => {} // Still in progress — no result yet
+    }
 }
 
 // ── Fix ─────────────────────────────────────────────────────────────

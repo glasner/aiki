@@ -918,8 +918,9 @@ fn output_nothing_to_review() -> Result<()> {
 
 /// Render the workflow view for a review task.
 ///
-/// For plan/code reviews, uses the plan review pipeline (plan → review → build).
-/// For task reviews with a validates edge, falls back to the build pipeline.
+/// For code/plan reviews, renders the review task's own subtask progress.
+/// For task reviews, follows the validates edge to find the epic and shows
+/// the full build pipeline.
 fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     let events = read_events(cwd)?;
     let graph = materialize_graph(&events);
@@ -928,27 +929,31 @@ fn render_review_workflow(cwd: &Path, review_id: &str) -> Result<String> {
     let repo_name = crate::repos::repo_folder_name(cwd);
     let theme = Theme::from_mode(detect_mode());
 
-    // Plan/code reviews: use the plan review pipeline (plan → review → build)
-    if review_task.task_type.as_deref() == Some("review") {
+    let scope_kind = review_task.data.get("scope.kind").map(|s| s.as_str());
+
+    // Code/plan reviews: render the review task's own subtask progress
+    if matches!(scope_kind, Some("code") | Some("plan")) {
         let plan_path = review_task
             .data
             .get("scope.id")
-            .or_else(|| review_task.data.get("plan"))
             .map(|s| s.as_str())
             .unwrap_or("unknown");
-        let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
+        let chat = tui::chat_builder::build_review_chat(&graph, review_id);
         let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
         return Ok(buffer_to_ansi(&buf));
     }
 
-    // Task reviews: follow validates edge to find the epic, use build pipeline
-    let epic_ids = graph.edges.targets(review_id, "validates");
-    let epic = match epic_ids.first().and_then(|id| graph.tasks.get(id.as_str())) {
-        Some(epic) => epic,
-        None => return Ok(String::new()),
-    };
+    // Task/session reviews: find the epic via validates edge, show build pipeline
+    let epic = graph.edges.targets(review_id, "validates")
+        .first()
+        .and_then(|id| graph.tasks.get(id.as_str()));
 
-    let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("unknown");
+    let plan_path = epic
+        .and_then(|e| e.data.get("plan"))
+        .or_else(|| review_task.data.get("scope.id"))
+        .map(|s| s.as_str())
+        .unwrap_or("unknown");
+
     let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
     let buf = tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path);
     Ok(buffer_to_ansi(&buf))

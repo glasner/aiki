@@ -11,10 +11,11 @@ use crate::cache::debug_log;
 use crate::error::{AikiError, Result};
 use crate::jj::{jj_cmd, JJWorkspace};
 use crate::repos;
+use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
 
 /// Base directory for isolated workspaces: `/tmp/aiki/`
 ///
@@ -208,107 +209,67 @@ pub fn create_isolated_workspace(
     Ok(workspace)
 }
 
-/// RAII guard that removes the lock file on drop.
-struct AbsorbLock {
-    path: PathBuf,
-}
+/// Wrapper for `fd_lock::RwLock<File>` enabling interior mutability in a static cache.
+///
+/// `fd_lock::RwLock::write()` requires `&mut self`, but the underlying `flock(2)`
+/// system call is inherently thread-safe. This wrapper uses `UnsafeCell` to provide
+/// the required interior mutability for cached lock instances.
+struct CachedLock(UnsafeCell<fd_lock::RwLock<std::fs::File>>);
 
-impl Drop for AbsorbLock {
-    fn drop(&mut self) {
-        let expected = std::process::id().to_string();
-        if let Ok(content) = fs::read_to_string(&self.path) {
-            if content.trim() == expected {
-                let _ = fs::remove_file(&self.path);
-            }
-        }
-    }
-}
+// SAFETY: The underlying flock(2) is thread-safe. In practice, concurrent access
+// to the same CachedLock is prevented by callers serializing through higher-level
+// locks (e.g., the workspace-absorption lock).
+unsafe impl Sync for CachedLock {}
 
-fn is_pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
+/// Cache of leaked `RwLock<File>` instances keyed by lock-file path.
+///
+/// Ensures that repeated calls to `acquire_named_lock` with the same name
+/// return the same `&'static RwLock<File>` instead of creating duplicate FDs.
+static LOCK_CACHE: LazyLock<Mutex<HashMap<PathBuf, &'static CachedLock>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn read_lock_owner_pid(lock_path: &Path) -> Option<u32> {
-    fs::read_to_string(lock_path)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-}
-
-/// Get the absorb lock file path for a repo.
-fn absorb_lock_path(repo_root: &Path) -> Result<PathBuf> {
+/// Acquire a named file lock for the given repo.
+///
+/// Uses OS-level `flock(2)` via `fd-lock`. The lock is automatically
+/// released when the returned guard drops — even on panic or SIGKILL.
+/// Blocks until the lock is available (no timeout, no polling).
+///
+/// Lock instances are cached per path — subsequent calls with the same name
+/// return the same underlying lock, preventing duplicate FDs and ensuring
+/// mutual exclusion within the process.
+pub fn acquire_named_lock(repo_root: &Path, name: &str) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
     let repo_id = repos::ensure_repo_id(repo_root)?;
     let lock_dir = workspaces_dir().join(&repo_id);
-    let _ = fs::create_dir_all(&lock_dir);
-    Ok(lock_dir.join(".absorb.lock"))
-}
+    fs::create_dir_all(&lock_dir).map_err(|e| AikiError::LockFailed(format!("Failed to create lock directory: {e}")))?;
+    let lock_path = lock_dir.join(format!(".{}.lock", name));
 
-/// Acquire an exclusive file lock for workspace absorption.
-///
-/// Uses atomic file creation (O_CREAT|O_EXCL) via `hard_link` as a
-/// cross-platform advisory lock. Retries with backoff for up to 30 seconds.
-fn acquire_absorb_lock(lock_path: &Path) -> Result<AbsorbLock> {
-    let max_wait = Duration::from_secs(30);
-    let poll_interval = Duration::from_millis(100);
-    let start = std::time::Instant::now();
-
-    loop {
-        // Try to atomically create the lock file.
-        // OpenOptions with create_new is atomic (O_CREAT|O_EXCL).
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(lock_path)
-        {
-            Ok(mut file) => {
-                if write!(file, "{}", std::process::id()).is_err() {
-                    let _ = fs::remove_file(lock_path);
-                    return Err(AikiError::WorkspaceAbsorbFailed(
-                        "Failed to write absorb lock owner pid".to_string(),
-                    ));
-                }
-                debug_log(|| format!("Acquired absorb lock at {}", lock_path.display()));
-                return Ok(AbsorbLock {
-                    path: lock_path.to_path_buf(),
-                });
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if start.elapsed() > max_wait {
-                    // If this lock is stale and the owner died, remove it; otherwise,
-                    // keep waiting for the slow holder to finish.
-                    let holder_alive = read_lock_owner_pid(lock_path)
-                        .map(is_pid_alive)
-                        .unwrap_or(false);
-
-                    if holder_alive {
-                        debug_log(|| {
-                            format!(
-                                "Absorb lock still held by live pid after {:?}, waiting",
-                                max_wait
-                            )
-                        });
-                        std::thread::sleep(poll_interval);
-                        continue;
-                    }
-
-                    debug_log(|| {
-                        format!(
-                            "Absorb lock timed out after {:?}, removing stale lock",
-                            max_wait
-                        )
-                    });
-                    let _ = fs::remove_file(lock_path);
-                    continue;
-                }
-                std::thread::sleep(poll_interval);
-            }
-            Err(e) => {
-                return Err(AikiError::WorkspaceAbsorbFailed(format!(
-                    "Failed to acquire absorb lock: {}",
-                    e
-                )));
-            }
+    let cached: &'static CachedLock = {
+        let mut cache = LOCK_CACHE.lock().unwrap();
+        if let Some(&existing) = cache.get(&lock_path) {
+            existing
+        } else {
+            let file = std::fs::File::create(&lock_path).map_err(|e| {
+                AikiError::LockFailed(format!("Failed to create lock file: {}", e))
+            })?;
+            let leaked: &'static CachedLock = Box::leak(Box::new(CachedLock(
+                UnsafeCell::new(fd_lock::RwLock::new(file)),
+            )));
+            cache.insert(lock_path.clone(), leaked);
+            leaked
         }
-    }
+    };
+
+    // SAFETY: The pointer from UnsafeCell::get() points to Box::leaked memory
+    // valid for 'static. The underlying flock(2) call is thread-safe, and in
+    // practice callers serialize access through higher-level locks.
+    let lock: &'static mut fd_lock::RwLock<std::fs::File> = unsafe { &mut *cached.0.get() };
+
+    let guard = lock.write().map_err(|e| {
+        AikiError::LockFailed(format!("Failed to acquire {} lock: {}", name, e))
+    })?;
+
+    debug_log(|| format!("Acquired '{}' lock at {}", name, lock_path.display()));
+    Ok(guard)
 }
 
 /// Result of attempting to absorb a workspace
@@ -402,8 +363,7 @@ pub fn absorb_workspace(
     // Acquire file lock to serialize absorptions across concurrent agents.
     // Without this, concurrent absorptions interleave their two-step rebases,
     // causing each to disconnect from the previous absorption's changes.
-    let lock_path = absorb_lock_path(repo_root)?;
-    let _lock = acquire_absorb_lock(&lock_path)?;
+    let _lock = acquire_named_lock(repo_root, "workspace-absorption")?;
 
     // Snapshot target working copy while holding the absorption lock.
     // Without this, changes made in the target workspace while an agent is

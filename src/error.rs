@@ -88,6 +88,9 @@ pub enum AikiError {
     #[error("Failed to absorb workspace changes: {0}")]
     WorkspaceAbsorbFailed(String),
 
+    #[error("Lock failed: {0}")]
+    LockFailed(String),
+
     // Hook composition errors (Milestone 1.3)
     #[error("Not in an Aiki project. No .aiki/ directory found searching upward from: {searched_from}")]
     NotInAikiProject { searched_from: PathBuf },

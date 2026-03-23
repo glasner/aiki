@@ -4,27 +4,34 @@
 //! Each event is a JJ change with metadata in the description.
 
 use crate::error::{AikiError, Result};
-use crate::jj::{jj_cmd, new_jj_write_marker, resolve_change_id_by_marker, advance_bookmark};
+use crate::jj::{jj_cmd, parse_change_id_from_stderr};
+use crate::session::isolation::acquire_named_lock;
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
 use super::types::{TaskEvent, TaskOutcome, TaskPriority};
 
 const TASKS_BRANCH: &str = "aiki/tasks";
-const TASKS_MARKER_PREFIX: &str = "aiki-task-event-id";
 const METADATA_START: &str = "[aiki-task]";
 const METADATA_END: &str = "[/aiki-task]";
 
-fn append_write_marker(metadata: &str, marker: &str) -> String {
-    format!("{}\n{}", metadata, marker)
+fn acquire_task_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
+    let repo_root = crate::jj::get_repo_root(cwd)?;
+    acquire_named_lock(&repo_root, "task-event-write")
 }
 
 fn set_tasks_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
-    if let Err(err) = advance_bookmark(cwd, TASKS_BRANCH, change_id) {
-        eprintln!(
-            "Warning: failed to advance '{}' to '{}': {}",
-            TASKS_BRANCH, change_id, err
-        );
+    let bm = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "set", TASKS_BRANCH, "-r", change_id, "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to set bookmark: {}", e)))?;
+
+    if !bm.status.success() {
+        let stderr = String::from_utf8_lossy(&bm.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to advance '{}': {}", TASKS_BRANCH, stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -39,9 +46,9 @@ pub fn ensure_tasks_branch(cwd: &Path) -> Result<()> {
 /// Uses `jj new --no-edit` to create the event change without affecting the working copy.
 pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
     ensure_tasks_branch(cwd)?;
+    let _lock = acquire_task_write_lock(cwd)?;
 
-    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
-    let metadata = append_write_marker(&event_to_metadata_block(event), &marker);
+    let metadata = event_to_metadata_block(event);
 
     // Create a new change as child of aiki/tasks WITHOUT switching working copy
     let result = jj_cmd()
@@ -65,7 +72,7 @@ pub fn write_event(cwd: &Path, event: &TaskEvent) -> Result<()> {
         )));
     }
 
-    let change_id = resolve_change_id_by_marker(cwd, &marker)?;
+    let change_id = parse_change_id_from_stderr(&result.stderr)?;
     set_tasks_bookmark(cwd, &change_id)?;
 
     Ok(())
@@ -86,16 +93,13 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
     }
 
     ensure_tasks_branch(cwd)?;
+    let _lock = acquire_task_write_lock(cwd)?;
 
-    let marker = new_jj_write_marker(TASKS_MARKER_PREFIX);
-    let metadata = append_write_marker(
-        &events
-            .iter()
-            .map(|e| event_to_metadata_block(e))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        &marker,
-    );
+    let metadata = events
+        .iter()
+        .map(|e| event_to_metadata_block(e))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let result = jj_cmd()
         .current_dir(cwd)
@@ -120,7 +124,7 @@ pub fn write_events_batch(cwd: &Path, events: &[TaskEvent]) -> Result<()> {
         )));
     }
 
-    let change_id = resolve_change_id_by_marker(cwd, &marker)?;
+    let change_id = parse_change_id_from_stderr(&result.stderr)?;
     set_tasks_bookmark(cwd, &change_id)?;
 
     Ok(())
@@ -212,8 +216,7 @@ pub fn write_link_event_with_autorun(
                                 timestamp,
                             };
                             write_event(cwd, &supersedes_event)?;
-                            eprintln!(
-                                // stderr-ok: write-path only, never called during monitoring
+                            eprintln!( // stderr-ok: write-path only, never called during monitoring
                                 "Superseded: {} previously {} {}",
                                 short_id(old_target),
                                 if kind == "implements-plan" {
@@ -226,8 +229,7 @@ pub fn write_link_event_with_autorun(
                         }
                         // If old_target is a file path, skip the supersedes link silently (bug #4 fix)
                     } else if kind == "subtask-of" {
-                        eprintln!(
-                            // stderr-ok: write-path only, never called during monitoring
+                        eprintln!( // stderr-ok: write-path only, never called during monitoring
                             "Re-parented: {} moved from {} to {}",
                             short_id(from),
                             short_id(old_target),
@@ -266,8 +268,7 @@ pub fn write_link_event_with_autorun(
                             timestamp,
                         };
                         write_event(cwd, &supersedes_event)?;
-                        eprintln!(
-                            // stderr-ok: write-path only, never called during monitoring
+                        eprintln!( // stderr-ok: write-path only, never called during monitoring
                             "Superseded: {} previously {} {}",
                             short_id(old_from),
                             if kind == "orchestrates" {

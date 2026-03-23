@@ -3,7 +3,6 @@ pub mod workspace;
 
 pub use workspace::JJWorkspace;
 
-use rand::random;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -69,94 +68,71 @@ pub fn jj_cmd() -> Command {
 /// Use with `command.args(jj_readonly_args())` or include these in your args array.
 pub const JJ_READONLY_ARGS: &[&str] = &["--no-pager", "--no-graph", "--ignore-working-copy"];
 
-/// Create a unique marker string for write operations.
+/// Parse the change ID from `jj new` stderr output.
 ///
-/// This marker is a random token we can match via a template query to
-/// locate the newly created change.
-pub fn new_jj_write_marker(prefix: &str) -> String {
-    format!("{}={:016x}", prefix, random::<u64>())
+/// `jj new` emits a line like:
+///   `Created new commit xlulsuvp 9ca401f0 (empty) [aiki-task]`
+/// The 4th whitespace-separated token is the short change ID.
+pub fn parse_change_id_from_stderr(stderr: &[u8]) -> Result<String> {
+    let text = String::from_utf8_lossy(stderr);
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Created new commit ") {
+            if let Some(change_id) = rest.split_whitespace().next() {
+                return Ok(change_id.to_string());
+            }
+        }
+    }
+    Err(AikiError::JjCommandFailed(format!(
+        "Could not parse change ID from jj new output: {}",
+        String::from_utf8_lossy(stderr)
+    )))
 }
 
-/// Resolve one change id by matching a unique description marker.
-pub fn resolve_change_id_by_marker(cwd: &Path, marker: &str) -> Result<String> {
-    let revset = format!("description(substring:'{}')", marker);
+/// Resolve a conflicted bookmark by picking the latest target.
+///
+/// JJ creates bookmark conflicts when two concurrent operations both move the
+/// same bookmark. This makes the bare name unusable in revsets and `jj new`.
+/// We resolve by querying all targets and setting the bookmark to the latest one.
+pub fn resolve_bookmark_conflict(cwd: &Path, branch: &str) -> Result<()> {
+    // Get all targets of the conflicted bookmark
+    let revset = format!("bookmarks(exact:\"{}\")", branch);
     let output = jj_cmd()
         .current_dir(cwd)
-        .args(["log", "-r"])
-        .arg(&revset)
-        .args(["-T", "change_id ++ \"\\n\""])
+        .args(["log", "-r", &revset, "-T", r#"commit_id ++ "\n""#])
         .args(JJ_READONLY_ARGS)
         .output()
-        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to resolve change id: {}", e)))?;
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmark targets: {}", e)))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(AikiError::JjCommandFailed(format!(
-            "Failed to resolve change id for '{}': {}",
-            revset, stderr
-        )));
+        return Ok(()); // Can't list targets, let the caller handle it
     }
 
-    let mut ids = String::from_utf8_lossy(&output.stdout)
+    let targets: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
+        .filter(|l| !l.is_empty())
+        .map(|s| s.trim().to_string())
+        .collect();
 
-    if ids.len() != 1 {
-        return Err(AikiError::JjCommandFailed(format!(
-            "Expected a single full change id for '{}', got {} matches",
-            revset,
-            ids.len()
-        )));
+    if targets.len() <= 1 {
+        return Ok(()); // Not actually conflicted or empty
     }
 
-    Ok(ids.remove(0))
-}
+    // Set the bookmark to the first target (latest in default JJ order).
+    // --allow-backwards is needed because the "current" position is ambiguous.
+    let result = jj_cmd()
+        .current_dir(cwd)
+        .args([
+            "bookmark", "set", branch, "-r", &targets[0],
+            "--allow-backwards", "--ignore-working-copy",
+        ])
+        .output();
 
-/// Advance bookmark to new_id without --allow-backwards.
-/// If a concurrent writer moved the bookmark forward, rebase our change onto
-/// the new tip and retry (up to 3 times).
-pub fn advance_bookmark(cwd: &Path, branch: &str, new_id: &str) -> Result<()> {
-    for _ in 0..3 {
-        let bm = jj_cmd()
-            .current_dir(cwd)
-            .args(["bookmark", "set", branch, "-r", new_id, "--ignore-working-copy"])
-            .output()
-            .map_err(|e| {
-                AikiError::JjCommandFailed(format!(
-                    "Failed to advance bookmark '{}': {}",
-                    branch, e
-                ))
-            })?;
-
-        if bm.status.success() {
-            return Ok(());
-        }
-
-        // Bookmark moved — rebase our event onto the (now-advanced) bookmark tip
-        let rebase = jj_cmd()
-            .current_dir(cwd)
-            .args(["rebase", "-r", new_id, "--destination", branch, "--ignore-working-copy"])
-            .output()
-            .map_err(|e| {
-                AikiError::JjCommandFailed(format!(
-                    "Failed to rebase orphaned event: {}",
-                    e
-                ))
-            })?;
-
-        if !rebase.status.success() {
-            let stderr = String::from_utf8_lossy(&rebase.stderr);
-            return Err(AikiError::JjCommandFailed(format!(
-                "Failed to rebase orphaned event: {}",
-                stderr
-            )));
+    if let Ok(out) = &result {
+        if out.status.success() {
+            eprintln!("Resolved conflicted bookmark '{}' → {}", branch, &targets[0][..12.min(targets[0].len())]);
         }
     }
 
-    // After retries, give up. Event is written (just orphaned as a head).
     Ok(())
 }
 
@@ -301,10 +277,43 @@ pub fn branch_exists(cwd: &Path, branch: &str) -> Result<bool> {
     let bookmarks = String::from_utf8_lossy(&output.stdout);
     let exists = bookmarks.contains(branch);
     if exists {
+        // Resolve bookmark conflict if detected (zero extra JJ calls — we already have the output)
+        if is_bookmark_conflicted(&bookmarks, branch) {
+            let _ = resolve_bookmark_conflict(cwd, branch);
+        }
         // Cache the positive result so future calls skip the check
         set.lock().unwrap().insert(key);
     }
     Ok(exists)
+}
+
+/// Check if a bookmark is conflicted in `jj bookmark list` output.
+///
+/// JJ shows conflicted bookmarks as `name (conflicted):` in the listing.
+fn is_bookmark_conflicted(bookmark_list_output: &str, branch: &str) -> bool {
+    bookmark_list_output.lines().any(|line| {
+        line.starts_with(branch) && line.contains("(conflicted)")
+    })
+}
+
+/// Resolve the main JJ repo root from any path (workspace or repo).
+///
+/// JJ workspaces have a `.jj/repo` file (text or symlink) pointing to the
+/// main repo's `.jj/repo` directory. If `cwd` is inside a workspace, we
+/// follow that pointer back to the real repo root. If it's already the
+/// main repo, we return the workspace root directly.
+pub fn get_repo_root(cwd: &Path) -> Result<PathBuf> {
+    let ws = workspace::JJWorkspace::find(cwd)
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to find JJ workspace: {}", e)))?;
+    let ws_root = ws.workspace_root();
+
+    // Check if this is a workspace (not the main repo)
+    if let Some(repo_root) = crate::session::isolation::find_repo_root_from_workspace(ws_root) {
+        return Ok(repo_root);
+    }
+
+    // Already the main repo
+    Ok(ws_root.to_path_buf())
 }
 
 /// Implementation: check if branch exists via `jj bookmark list`, create if missing.
@@ -316,6 +325,11 @@ fn ensure_branch_impl(cwd: &Path, branch: &str) -> Result<()> {
         .map_err(|e| AikiError::JjCommandFailed(format!("Failed to list bookmarks: {}", e)))?;
 
     let bookmarks = String::from_utf8_lossy(&output.stdout);
+
+    // Resolve bookmark conflict if detected (zero extra JJ calls — we already have the output)
+    if is_bookmark_conflicted(&bookmarks, branch) {
+        let _ = resolve_bookmark_conflict(cwd, branch);
+    }
 
     if !bookmarks.contains(branch) {
         let result = jj_cmd()

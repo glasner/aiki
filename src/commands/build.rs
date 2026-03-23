@@ -389,9 +389,11 @@ fn run_build_plan(
     };
 
     // Ensure we always have an epic before running.
-    // If no existing epic was found, create one via the decompose agent.
+    // For --restart, always create fresh — bypass find_or_create_epic to avoid
+    // race conditions where the close event isn't yet visible to concurrent reads.
     let epic_id = match epic_id {
         Some(id) => id,
+        None if restart => super::epic::create_epic(cwd, plan_path, decompose_template.as_deref(), None, session.as_mut())?,
         None => find_or_create_epic(cwd, plan_path, decompose_template.as_deref(), session.as_mut())?,
     };
 
