@@ -1,20 +1,19 @@
-//! Integration tests for advance_bookmark and event chaining
+//! Integration tests for event storage and JJ helpers
 //!
 //! Tests cover:
-//! 1. advance_bookmark happy path (moves bookmark forward)
-//! 2. Event chaining via write_event (sequential events form a chain)
-//! 3. read_events returns all chained events in order
-//! 4. new_jj_write_marker and resolve_change_id_by_marker roundtrip
+//! 1. parse_change_id_from_stderr
+//! 2. ensure_branch
+//! 3. Event chaining via write_event (sequential events form a chain)
+//! 4. read_events returns all chained events in order
 
 mod common;
 
 use common::{init_jj_workspace, jj_available};
-use std::process::Command;
 use tempfile::tempdir;
 
 /// Helper: run a jj command and return stdout
 fn jj_run(cwd: &std::path::Path, args: &[&str]) -> String {
-    let output = Command::new("jj")
+    let output = std::process::Command::new("jj")
         .current_dir(cwd)
         .args(args)
         .output()
@@ -45,236 +44,33 @@ fn bookmark_change_id(cwd: &std::path::Path, bookmark: &str) -> String {
     )
 }
 
-/// Helper: get parent change_ids for a given revision
-fn parent_change_ids(cwd: &std::path::Path, rev: &str) -> Vec<String> {
-    let output = jj_run(
-        cwd,
-        &[
-            "log",
-            "-r",
-            &format!("parents({})", rev),
-            "-T",
-            r#"change_id ++ "\n""#,
-            "--no-graph",
-            "--ignore-working-copy",
-        ],
-    );
-    output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|s| s.to_string())
-        .collect()
-}
-
 // ============================================================================
-// 1. advance_bookmark happy path
+// 1. parse_change_id_from_stderr
 // ============================================================================
 
 #[test]
-fn test_advance_bookmark_moves_bookmark_forward() {
-    if !jj_available() {
-        eprintln!("Skipping test: jj binary not found in PATH");
-        return;
-    }
-
-    let temp = tempdir().unwrap();
-    let cwd = temp.path();
-    init_jj_workspace(cwd).unwrap();
-
-    // Create a bookmark on root()
-    jj_run(
-        cwd,
-        &[
-            "bookmark",
-            "create",
-            "test-branch",
-            "-r",
-            "root()",
-            "--ignore-working-copy",
-        ],
-    );
-
-    // Create a new change as child of the bookmark
-    jj_run(
-        cwd,
-        &[
-            "new",
-            "test-branch",
-            "--no-edit",
-            "--ignore-working-copy",
-            "-m",
-            "event-1",
-        ],
-    );
-
-    // Find the change_id of the new change
-    let new_id = jj_run(
-        cwd,
-        &[
-            "log",
-            "-r",
-            "description(substring:'event-1')",
-            "-T",
-            "change_id",
-            "--no-graph",
-            "--ignore-working-copy",
-        ],
-    );
-    assert!(!new_id.is_empty(), "Should find the new change");
-
-    // advance_bookmark should succeed
-    aiki::jj::advance_bookmark(cwd, "test-branch", &new_id).unwrap();
-
-    // Verify bookmark now points to the new change
-    let bm_id = bookmark_change_id(cwd, "test-branch");
-    assert_eq!(bm_id, new_id, "Bookmark should point to the new change");
+fn test_parse_change_id_from_stderr() {
+    let stderr = b"Created new commit xlulsuvp 9ca401f0 (empty) [aiki-task]\n";
+    let id = aiki::jj::parse_change_id_from_stderr(stderr).unwrap();
+    assert_eq!(id, "xlulsuvp");
 }
 
 #[test]
-fn test_advance_bookmark_multiple_advances() {
-    if !jj_available() {
-        eprintln!("Skipping test: jj binary not found in PATH");
-        return;
-    }
-
-    let temp = tempdir().unwrap();
-    let cwd = temp.path();
-    init_jj_workspace(cwd).unwrap();
-
-    // Create a bookmark on root()
-    jj_run(
-        cwd,
-        &[
-            "bookmark",
-            "create",
-            "test-chain",
-            "-r",
-            "root()",
-            "--ignore-working-copy",
-        ],
-    );
-
-    // Write 3 events sequentially, advancing the bookmark each time
-    let mut prev_ids = Vec::new();
-    for i in 1..=3 {
-        let msg = format!("chain-event-{}", i);
-        jj_run(
-            cwd,
-            &[
-                "new",
-                "test-chain",
-                "--no-edit",
-                "--ignore-working-copy",
-                "-m",
-                &msg,
-            ],
-        );
-
-        let new_id = jj_run(
-            cwd,
-            &[
-                "log",
-                "-r",
-                &format!("description(substring:'{}')", msg),
-                "-T",
-                "change_id",
-                "--no-graph",
-                "--ignore-working-copy",
-            ],
-        );
-        assert!(!new_id.is_empty(), "Should find change for {}", msg);
-
-        aiki::jj::advance_bookmark(cwd, "test-chain", &new_id).unwrap();
-        prev_ids.push(new_id);
-    }
-
-    // Bookmark should point to the last event
-    let bm_id = bookmark_change_id(cwd, "test-chain");
-    assert_eq!(
-        bm_id, prev_ids[2],
-        "Bookmark should point to the third event"
-    );
-
-    // Each event should be a child of the previous
-    // Event 2's parent should be event 1
-    let parents_2 = parent_change_ids(cwd, &prev_ids[1]);
-    assert!(
-        parents_2.contains(&prev_ids[0]),
-        "Event 2 parent should be event 1"
-    );
-
-    // Event 3's parent should be event 2
-    let parents_3 = parent_change_ids(cwd, &prev_ids[2]);
-    assert!(
-        parents_3.contains(&prev_ids[1]),
-        "Event 3 parent should be event 2"
-    );
-}
-
-// ============================================================================
-// 2. new_jj_write_marker + resolve_change_id_by_marker roundtrip
-// ============================================================================
-
-#[test]
-fn test_write_marker_roundtrip() {
-    if !jj_available() {
-        eprintln!("Skipping test: jj binary not found in PATH");
-        return;
-    }
-
-    let temp = tempdir().unwrap();
-    let cwd = temp.path();
-    init_jj_workspace(cwd).unwrap();
-
-    // Create a marker
-    let marker = aiki::jj::new_jj_write_marker("test-prefix");
-    assert!(marker.starts_with("test-prefix="));
-
-    // Create a change with the marker in its description
-    jj_run(
-        cwd,
-        &[
-            "new",
-            "root()",
-            "--no-edit",
-            "--ignore-working-copy",
-            "-m",
-            &marker,
-        ],
-    );
-
-    // Resolve should find exactly one change
-    let resolved = aiki::jj::resolve_change_id_by_marker(cwd, &marker).unwrap();
-    assert!(!resolved.is_empty(), "Should resolve to a change id");
-
-    // Verify the resolved id matches
-    let expected = jj_run(
-        cwd,
-        &[
-            "log",
-            "-r",
-            &format!("description(substring:'{}')", marker),
-            "-T",
-            "change_id",
-            "--no-graph",
-            "--ignore-working-copy",
-        ],
-    );
-    assert_eq!(resolved, expected);
+fn test_parse_change_id_from_stderr_with_prefix_lines() {
+    // jj may emit warnings before the "Created" line
+    let stderr = b"Warning: some warning\nCreated new commit abcdefgh 12345678 (empty) test\n";
+    let id = aiki::jj::parse_change_id_from_stderr(stderr).unwrap();
+    assert_eq!(id, "abcdefgh");
 }
 
 #[test]
-fn test_write_markers_are_unique() {
-    // Two markers from the same prefix should be different
-    let m1 = aiki::jj::new_jj_write_marker("aiki-test");
-    let m2 = aiki::jj::new_jj_write_marker("aiki-test");
-    assert_ne!(m1, m2, "Markers should be unique");
-    assert!(m1.starts_with("aiki-test="));
-    assert!(m2.starts_with("aiki-test="));
+fn test_parse_change_id_from_stderr_missing() {
+    let stderr = b"Some other output\n";
+    assert!(aiki::jj::parse_change_id_from_stderr(stderr).is_err());
 }
 
 // ============================================================================
-// 3. ensure_branch
+// 2. ensure_branch
 // ============================================================================
 
 #[test]
@@ -306,7 +102,7 @@ fn test_ensure_branch_creates_and_caches() {
 }
 
 // ============================================================================
-// 4. Integration: write_event chaining via task storage
+// 3. Integration: write_event chaining via task storage
 // ============================================================================
 
 #[test]
@@ -398,6 +194,8 @@ fn test_task_event_chaining_multiple_writes() {
             task_ids: vec!["chain001".to_string()],
             outcome: TaskOutcome::Done,
             summary: Some("Completed the test".to_string()),
+            session_id: None,
+            turn_id: None,
             timestamp: t + chrono::Duration::seconds(2),
         },
     ];

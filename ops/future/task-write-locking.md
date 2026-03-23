@@ -11,11 +11,11 @@ The task-branch-fan-out fix chains task events linearly and advances the `aiki/t
 
 ## Idea
 
-Reuse the existing `acquire_absorb_lock()` pattern from `isolation.rs` to serialize task writes. This would guarantee strictly linear chains with no temporary forks.
+Reuse the existing `acquire_named_lock()` pattern from `isolation.rs` to serialize task writes. This would guarantee strictly linear chains with no temporary forks.
 
 ```rust
 // Pseudocode
-let _lock = acquire_task_write_lock(cwd)?;
+let _lock = acquire_named_lock(cwd, "task-write")?;
 write_event(cwd, &event)?;
 // lock drops here, next writer proceeds
 ```

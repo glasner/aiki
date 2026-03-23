@@ -141,8 +141,17 @@ impl StatusMonitor {
         let (epic, _subtasks, _focus_task_id) = self.resolve_epic(&graph, root_task);
 
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
-        let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
-        Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path))
+        let (chat, display_path) = if plan_path.is_empty() {
+            // Fix pipeline or task without plan — build view directly from epic
+            let path = epic.data.get("scope.name")
+                .or_else(|| epic.data.get("scope.id"))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            (tui::chat_builder::build_pipeline_chat_for_task(&graph, &epic.id), path)
+        } else {
+            (tui::chat_builder::build_pipeline_chat(&graph, plan_path), plan_path)
+        };
+        Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, display_path))
     }
 
     /// Resolve epic from the running task.

@@ -179,7 +179,7 @@ fn run_add(
 /// 2. Calls `run_decompose()` which handles implements-plan link, decompose task,
 ///    decomposes-plan link, depends-on link, and running the decompose agent
 /// 3. Returns the epic task ID
-fn create_epic(
+pub(super) fn create_epic(
     cwd: &Path,
     plan_path: &str,
     template_name: Option<&str>,

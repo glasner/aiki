@@ -4,7 +4,8 @@
 //! Each event is a JJ change with metadata in the description.
 
 use crate::error::{AikiError, Result};
-use crate::jj::{jj_cmd, new_jj_write_marker, resolve_change_id_by_marker, advance_bookmark};
+use crate::jj::{jj_cmd, parse_change_id_from_stderr};
+use crate::session::isolation::acquire_named_lock;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,18 +15,23 @@ use super::types::{
     CONVERSATIONS_BRANCH, METADATA_END, METADATA_START,
 };
 
-const CONVERSATIONS_MARKER_PREFIX: &str = "aiki-conversation-event-id";
-
-fn append_write_marker(metadata: &str, marker: &str) -> String {
-    format!("{}\n{}", metadata, marker)
+fn acquire_conversation_write_lock(cwd: &Path) -> Result<fd_lock::RwLockWriteGuard<'static, std::fs::File>> {
+    let repo_root = crate::jj::get_repo_root(cwd)?;
+    acquire_named_lock(&repo_root, "conversation-event-write")
 }
 
 fn set_conversations_bookmark(cwd: &Path, change_id: &str) -> Result<()> {
-    if let Err(err) = advance_bookmark(cwd, CONVERSATIONS_BRANCH, change_id) {
-        eprintln!(
-            "Warning: failed to advance '{}' to '{}': {}",
-            CONVERSATIONS_BRANCH, change_id, err
-        );
+    let bm = jj_cmd()
+        .current_dir(cwd)
+        .args(["bookmark", "set", CONVERSATIONS_BRANCH, "-r", change_id, "--ignore-working-copy"])
+        .output()
+        .map_err(|e| AikiError::JjCommandFailed(format!("Failed to set bookmark: {}", e)))?;
+
+    if !bm.status.success() {
+        let stderr = String::from_utf8_lossy(&bm.stderr);
+        return Err(AikiError::JjCommandFailed(format!(
+            "Failed to advance '{}': {}", CONVERSATIONS_BRANCH, stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -41,9 +47,9 @@ pub fn ensure_conversations_branch(cwd: &Path) -> Result<()> {
 /// Advance the branch to the new change so the next event is appended as a chain.
 pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
     ensure_conversations_branch(cwd)?;
+    let _lock = acquire_conversation_write_lock(cwd)?;
 
-    let marker = new_jj_write_marker(CONVERSATIONS_MARKER_PREFIX);
-    let metadata = append_write_marker(&event_to_metadata_block(event), &marker);
+    let metadata = event_to_metadata_block(event);
 
     let result = jj_cmd()
         .current_dir(cwd)
@@ -68,7 +74,7 @@ pub fn write_event(cwd: &Path, event: &ConversationEvent) -> Result<()> {
         )));
     }
 
-    let change_id = resolve_change_id_by_marker(cwd, &marker)?;
+    let change_id = parse_change_id_from_stderr(&result.stderr)?;
     set_conversations_bookmark(cwd, &change_id)?;
 
     Ok(())
