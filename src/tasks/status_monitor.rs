@@ -29,6 +29,8 @@ pub enum MonitorExitReason {
     UserDetached,
     /// Agent process exited without task reaching terminal state
     AgentExited {
+        /// Captured stdout output from the agent (if any)
+        stdout: String,
         /// Captured stderr output from the agent (if any)
         stderr: String,
     },
@@ -134,7 +136,9 @@ impl StatusMonitor {
                 .map(|s| s.as_str())
                 .unwrap_or("");
             let chat = tui::chat_builder::build_pipeline_chat(&graph, plan_path);
-            return Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, plan_path));
+            return Ok(tui::views::pipeline_chat::render_pipeline_chat(
+                &chat, &theme, &repo_name, plan_path,
+            ));
         }
 
         // Default: build pipeline (build → review → fix)
@@ -143,15 +147,28 @@ impl StatusMonitor {
         let plan_path = epic.data.get("plan").map(|s| s.as_str()).unwrap_or("");
         let (chat, display_path) = if plan_path.is_empty() {
             // Fix pipeline or task without plan — build view directly from epic
-            let path = epic.data.get("scope.name")
+            let path = epic
+                .data
+                .get("scope.name")
                 .or_else(|| epic.data.get("scope.id"))
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            (tui::chat_builder::build_pipeline_chat_for_task(&graph, &epic.id), path)
+            (
+                tui::chat_builder::build_pipeline_chat_for_task(&graph, &epic.id),
+                path,
+            )
         } else {
-            (tui::chat_builder::build_pipeline_chat(&graph, plan_path), plan_path)
+            (
+                tui::chat_builder::build_pipeline_chat(&graph, plan_path),
+                plan_path,
+            )
         };
-        Ok(tui::views::pipeline_chat::render_pipeline_chat(&chat, &theme, &repo_name, display_path))
+        Ok(tui::views::pipeline_chat::render_pipeline_chat(
+            &chat,
+            &theme,
+            &repo_name,
+            display_path,
+        ))
     }
 
     /// Resolve epic from the running task.
@@ -177,12 +194,7 @@ impl StatusMonitor {
             .edges
             .targets(&root_task.id, "validates")
             .first()
-            .or_else(|| {
-                graph
-                    .edges
-                    .targets(&root_task.id, "remediates")
-                    .first()
-            })
+            .or_else(|| graph.edges.targets(&root_task.id, "remediates").first())
         {
             if let Some(epic_task) = graph.tasks.get(epic_id) {
                 let subs = self.get_sorted_subtasks(graph, epic_id);
@@ -232,7 +244,7 @@ impl StatusMonitor {
                     const RECONCILE_RETRIES: usize = 5;
                     const RECONCILE_DELAY_MS: u64 = 200;
 
-                    let stderr_output = child.read_stderr();
+                    let output = child.read_output();
                     for _ in 0..RECONCILE_RETRIES {
                         match self.poll(cwd) {
                             Ok((_, is_terminal)) => {
@@ -249,7 +261,8 @@ impl StatusMonitor {
                         std::thread::sleep(Duration::from_millis(RECONCILE_DELAY_MS));
                     }
                     return Ok(Some(ExitReason::AgentExited {
-                        stderr: stderr_output,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
                     }));
                 }
                 Ok(None) => {
@@ -261,7 +274,7 @@ impl StatusMonitor {
                     const RECONCILE_DELAY_MS: u64 = 200;
 
                     errors.push(format!("Error checking agent status: {}", e));
-                    let stderr_output = child.read_stderr();
+                    let output = child.read_output();
                     for _ in 0..RECONCILE_RETRIES {
                         if let Ok((_, true)) = self.poll(cwd) {
                             return Ok(Some(ExitReason::TaskCompleted));
@@ -269,7 +282,8 @@ impl StatusMonitor {
                         std::thread::sleep(Duration::from_millis(RECONCILE_DELAY_MS));
                     }
                     return Ok(Some(ExitReason::AgentExited {
-                        stderr: stderr_output,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
                     }));
                 }
             }
@@ -289,8 +303,16 @@ impl StatusMonitor {
                 Err(e) => {
                     consecutive_poll_failures += 1;
                     if consecutive_poll_failures >= 5 {
-                        errors.push(format!("Persistent poll failure ({}x): {}", consecutive_poll_failures, e));
-                        Ok(Some(ExitReason::MonitorFailed { reason: format!("Persistent poll failure ({}x): {}", consecutive_poll_failures, e) }))
+                        errors.push(format!(
+                            "Persistent poll failure ({}x): {}",
+                            consecutive_poll_failures, e
+                        ));
+                        Ok(Some(ExitReason::MonitorFailed {
+                            reason: format!(
+                                "Persistent poll failure ({}x): {}",
+                                consecutive_poll_failures, e
+                            ),
+                        }))
                     } else {
                         // Silently retry — jj contention during agent shutdown is expected.
                         Ok(None)
@@ -309,7 +331,9 @@ impl StatusMonitor {
             ExitReason::TaskCompleted => Ok(MonitorExitReason::TaskCompleted),
             ExitReason::UserDetached => Ok(MonitorExitReason::UserDetached),
             ExitReason::MonitorFailed { reason } => Ok(MonitorExitReason::MonitorFailed { reason }),
-            ExitReason::AgentExited { stderr } => Ok(MonitorExitReason::AgentExited { stderr }),
+            ExitReason::AgentExited { stdout, stderr } => {
+                Ok(MonitorExitReason::AgentExited { stdout, stderr })
+            }
         }
     }
 
@@ -414,6 +438,7 @@ mod tests {
         let _completed = MonitorExitReason::TaskCompleted;
         let _detached = MonitorExitReason::UserDetached;
         let _exited = MonitorExitReason::AgentExited {
+            stdout: "test output".to_string(),
             stderr: "test error".to_string(),
         };
         let _monitor_failed = MonitorExitReason::MonitorFailed {
@@ -422,9 +447,11 @@ mod tests {
 
         // Test that AgentExited carries stderr
         let exit_reason = MonitorExitReason::AgentExited {
+            stdout: "captured output".to_string(),
             stderr: "captured error".to_string(),
         };
-        if let MonitorExitReason::AgentExited { stderr } = exit_reason {
+        if let MonitorExitReason::AgentExited { stdout, stderr } = exit_reason {
+            assert_eq!(stdout, "captured output");
             assert_eq!(stderr, "captured error");
         } else {
             panic!("Expected AgentExited variant");

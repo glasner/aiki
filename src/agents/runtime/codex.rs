@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::{AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild};
+use super::{
+    AgentRuntime, AgentSessionResult, AgentSpawnOptions, BackgroundHandle, MonitoredChild,
+};
 use crate::error::{AikiError, Result};
 
 /// Check if the working directory is inside a git repository.
@@ -138,11 +140,9 @@ impl AgentRuntime for CodexRuntime {
         let child = cmd.spawn();
 
         match child {
-            Ok(_child) => {
-                Ok(BackgroundHandle {
-                    task_id: options.task_id.clone(),
-                })
-            }
+            Ok(_child) => Ok(BackgroundHandle {
+                task_id: options.task_id.clone(),
+            }),
             Err(e) => Err(AikiError::AgentSpawnFailed(format!(
                 "Failed to spawn codex in background: {}",
                 e
@@ -162,9 +162,10 @@ impl AgentRuntime for CodexRuntime {
             .env("AIKI_TASK", &options.task_id)
             // Mark as monitored session for mode detection
             .env("AIKI_SESSION_MODE", "monitored")
-            // Detach stdin/stdout so process runs independently
+            // Detach stdin so process runs independently
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            // Capture stdout/stderr so failures surface the real CLI message
+            .stdout(Stdio::piped())
             // Capture stderr so we can report errors when the agent fails
             .stderr(Stdio::piped());
         apply_jj_flags(&mut cmd, &options.cwd);
@@ -188,10 +189,7 @@ impl AgentRuntime for CodexRuntime {
 ///
 /// Takes the last few non-empty lines as a summary, up to ~500 chars
 fn extract_summary(output: &str) -> String {
-    let lines: Vec<&str> = output
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
 
     if lines.is_empty() {
         return "Task completed".to_string();

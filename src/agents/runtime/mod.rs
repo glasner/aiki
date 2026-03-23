@@ -12,7 +12,7 @@ pub use codex::CodexRuntime;
 use crate::error::Result;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ExitStatus};
+use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
 
 use super::AgentType;
 
@@ -34,6 +34,8 @@ pub struct BackgroundHandle {
 pub struct MonitoredChild {
     /// The child process handle
     child: Child,
+    /// Stdout handle for capturing agent output on failure
+    stdout: Option<ChildStdout>,
     /// Stderr handle for capturing error output
     stderr: Option<ChildStderr>,
 }
@@ -42,10 +44,12 @@ impl MonitoredChild {
     /// Create a new monitored child from a Child process
     #[must_use]
     pub fn new(mut child: Child) -> Self {
+        let stdout = child.stdout.take();
         // Take stderr handle from child so we can read it later
         let stderr = child.stderr.take();
         Self {
             child,
+            stdout,
             stderr,
         }
     }
@@ -63,21 +67,37 @@ impl MonitoredChild {
         self.child.try_wait()
     }
 
-    /// Read any captured stderr output
+    /// Read any captured stdout/stderr output
     ///
-    /// Should be called after the process has exited to get error messages.
-    /// Returns an empty string if stderr wasn't captured or is empty.
-    pub fn read_stderr(&mut self) -> String {
+    /// Should be called after the process has exited to get diagnostic messages.
+    /// Returns empty strings when a stream wasn't captured or had no output.
+    pub fn read_output(&mut self) -> ProcessOutput {
+        let mut stdout_output = String::new();
+        if let Some(ref mut stdout) = self.stdout {
+            let _ = stdout.read_to_string(&mut stdout_output);
+        }
+
+        let mut stderr_output = String::new();
         if let Some(ref mut stderr) = self.stderr {
-            let mut output = String::new();
             // Read whatever is available in the stderr buffer
             // This is non-blocking since the process has already exited
-            if stderr.read_to_string(&mut output).is_ok() {
-                return output;
-            }
+            let _ = stderr.read_to_string(&mut stderr_output);
         }
-        String::new()
+
+        ProcessOutput {
+            stdout: stdout_output,
+            stderr: stderr_output,
+        }
     }
+}
+
+/// Captured output from an exited agent process.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessOutput {
+    /// Anything the agent wrote to stdout before exiting.
+    pub stdout: String,
+    /// Anything the agent wrote to stderr before exiting.
+    pub stderr: String,
 }
 
 /// Result of an agent session
@@ -132,7 +152,6 @@ impl AgentSessionResult {
     pub fn detached() -> Self {
         Self::Detached
     }
-
 }
 
 /// Options for spawning an agent session
@@ -181,7 +200,8 @@ impl AgentSpawnOptions {
         if let Some(ref chain) = self.chain_task_ids {
             // Chain session: agent works through multiple tasks in sequence
             let first = &chain[0];
-            let chain_list = chain.iter()
+            let chain_list = chain
+                .iter()
                 .enumerate()
                 .map(|(i, id)| format!("{}. `{}`", i + 1, id))
                 .collect::<Vec<_>>()

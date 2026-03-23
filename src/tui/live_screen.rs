@@ -65,6 +65,8 @@ pub enum ExitReason {
     UserDetached,
     /// Agent process exited without task reaching terminal state.
     AgentExited {
+        /// Captured stdout output from the agent (if any).
+        stdout: String,
         /// Captured stderr output from the agent (if any).
         stderr: String,
     },
@@ -131,7 +133,9 @@ impl LiveScreen {
     where
         F: FnOnce(&mut ratatui::Frame),
     {
-        self.terminal.draw(render_fn).map_err(crate::error::AikiError::Io)?;
+        self.terminal
+            .draw(render_fn)
+            .map_err(crate::error::AikiError::Io)?;
         Ok(())
     }
 
@@ -159,7 +163,10 @@ impl LiveScreen {
             if event::poll(poll_interval)? {
                 let ev = event::read()?;
                 match ev {
-                    Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Event::Key(key)
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         return Ok(ExitReason::UserDetached);
                     }
                     Event::Resize(_, _) => {
@@ -242,8 +249,7 @@ impl Widget for BlitWidget {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-static CLEANUP_CALLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static CLEANUP_CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 impl LiveScreen {

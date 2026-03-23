@@ -15,14 +15,12 @@ use crate::agents::{
 use crate::error::{AikiError, Result};
 use crate::session::find_active_session;
 use crate::tasks::{
-    find_task,
-    materialize_graph,
+    find_task, materialize_graph,
+    md::MdBuilder,
     read_events,
     status_monitor::{MonitorExitReason, StatusMonitor},
     types::{Task, TaskEvent, TaskStatus},
-    write_event,
-    md::MdBuilder,
-    TaskGraph,
+    write_event, TaskGraph,
 };
 use crate::tui::live_screen::LiveScreen;
 use crate::tui::loading_screen::LoadingScreen;
@@ -228,11 +226,9 @@ fn prepare_task_run(
     }
 
     // Get runtime for the agent
-    let runtime = get_runtime(agent_type).ok_or_else(|| {
-        AikiError::AgentNotInstalled {
-            agent: agent_type.as_str().to_string(),
-            hint: agent_type.install_hint().to_string(),
-        }
+    let runtime = get_runtime(agent_type).ok_or_else(|| AikiError::AgentNotInstalled {
+        agent: agent_type.as_str().to_string(),
+        hint: agent_type.install_hint().to_string(),
     })?;
 
     // Emit Started event before spawning to transition task to InProgress immediately.
@@ -249,8 +245,8 @@ fn prepare_task_run(
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
-    let mut spawn_options = AgentSpawnOptions::new(cwd, task_id)
-        .with_parent_session_uuid(parent_uuid);
+    let mut spawn_options =
+        AgentSpawnOptions::new(cwd, task_id).with_parent_session_uuid(parent_uuid);
 
     // Pass chain IDs for needs-context session scoping
     if let Some(chain) = chain_task_ids {
@@ -274,20 +270,16 @@ fn map_exit_reason(
     exit_reason: MonitorExitReason,
 ) -> Result<AgentSessionResult> {
     match exit_reason {
-        MonitorExitReason::UserDetached => {
-            Ok(AgentSessionResult::detached())
-        }
-        MonitorExitReason::AgentExited { stderr } => {
+        MonitorExitReason::UserDetached => Ok(AgentSessionResult::detached()),
+        MonitorExitReason::AgentExited { stdout, stderr } => {
             let events = read_events(cwd)?;
             let tasks = materialize_graph(&events).tasks;
+            let agent_output = format_agent_exit_output(&stdout, &stderr);
 
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
                     TaskStatus::Closed => {
-                        let summary = task
-                            .effective_summary()
-                            .unwrap_or_default()
-                            .to_string();
+                        let summary = task.effective_summary().unwrap_or_default().to_string();
                         Ok(AgentSessionResult::Completed { summary })
                     }
                     TaskStatus::Stopped => {
@@ -298,22 +290,22 @@ fn map_exit_reason(
                         Ok(AgentSessionResult::Stopped { reason })
                     }
                     _ => {
-                        let error = if stderr.trim().is_empty() {
+                        let error = if agent_output.is_empty() {
                             "Agent process exited without completing task".to_string()
                         } else {
                             format!(
                                 "Agent process exited without completing task:\n{}",
-                                stderr.trim()
+                                agent_output
                             )
                         };
                         Ok(AgentSessionResult::Failed { error })
                     }
                 }
             } else {
-                let error = if stderr.trim().is_empty() {
+                let error = if agent_output.is_empty() {
                     "Task not found after agent exit".to_string()
                 } else {
-                    format!("Task not found after agent exit:\n{}", stderr.trim())
+                    format!("Task not found after agent exit:\n{}", agent_output)
                 };
                 Ok(AgentSessionResult::Failed { error })
             }
@@ -325,10 +317,7 @@ fn map_exit_reason(
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
                     TaskStatus::Closed => {
-                        let summary = task
-                            .effective_summary()
-                            .unwrap_or_default()
-                            .to_string();
+                        let summary = task.effective_summary().unwrap_or_default().to_string();
                         Ok(AgentSessionResult::Completed { summary })
                     }
                     TaskStatus::Stopped => {
@@ -336,13 +325,13 @@ fn map_exit_reason(
                             .stopped_reason
                             .clone()
                             .unwrap_or_else(|| "Task stopped".to_string());
-                        Ok(AgentSessionResult::Stopped { reason: stop_reason })
-                    }
-                    _ => {
-                        Ok(AgentSessionResult::Failed {
-                            error: format!("Monitor failed: {}", reason),
+                        Ok(AgentSessionResult::Stopped {
+                            reason: stop_reason,
                         })
                     }
+                    _ => Ok(AgentSessionResult::Failed {
+                        error: format!("Monitor failed: {}", reason),
+                    }),
                 }
             } else {
                 Ok(AgentSessionResult::Failed {
@@ -357,10 +346,7 @@ fn map_exit_reason(
             if let Some(task) = tasks.get(task_id) {
                 match task.status {
                     TaskStatus::Closed => {
-                        let summary = task
-                            .effective_summary()
-                            .unwrap_or_default()
-                            .to_string();
+                        let summary = task.effective_summary().unwrap_or_default().to_string();
                         Ok(AgentSessionResult::Completed { summary })
                     }
                     TaskStatus::Stopped => {
@@ -370,11 +356,9 @@ fn map_exit_reason(
                             .unwrap_or_else(|| "Task stopped".to_string());
                         Ok(AgentSessionResult::Stopped { reason })
                     }
-                    _ => {
-                        Ok(AgentSessionResult::Completed {
-                            summary: String::new(),
-                        })
-                    }
+                    _ => Ok(AgentSessionResult::Completed {
+                        summary: String::new(),
+                    }),
                 }
             } else {
                 Ok(AgentSessionResult::Failed {
@@ -382,6 +366,18 @@ fn map_exit_reason(
                 })
             }
         }
+    }
+}
+
+fn format_agent_exit_output(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("stdout:\n{}\n\nstderr:\n{}", stdout, stderr),
     }
 }
 
@@ -420,7 +416,8 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
 
     // Print status for non-TTY path
     if !show_status && !quiet {
-        eprintln!( // stderr-ok: non-TTY path
+        eprintln!(
+            // stderr-ok: non-TTY path
             "Spawning {} agent session for task {}...",
             prepared.agent_type.display_name(),
             task_id
@@ -429,7 +426,13 @@ pub fn task_run(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()
 
     // Spawn agent session and optionally monitor status
     let result = if show_status {
-        run_with_status_monitor_loading(cwd, task_id, prepared.runtime.as_ref(), &prepared.spawn_options, loading)?
+        run_with_status_monitor_loading(
+            cwd,
+            task_id,
+            prepared.runtime.as_ref(),
+            &prepared.spawn_options,
+            loading,
+        )?
     } else {
         prepared.runtime.spawn_blocking(&prepared.spawn_options)?
     };
@@ -476,7 +479,11 @@ fn run_with_status_monitor_loading(
         if let Some(l) = loading {
             // Transition loading screen to live screen (stays in alternate screen)
             let mut screen = l.into_live_screen()?;
-            monitor.monitor_until_complete_with_child_on_screen(cwd, &mut monitored_child, &mut screen)
+            monitor.monitor_until_complete_with_child_on_screen(
+                cwd,
+                &mut monitored_child,
+                &mut screen,
+            )
         } else {
             monitor.monitor_until_complete_with_child(cwd, &mut monitored_child)
         }
@@ -571,12 +578,19 @@ pub fn handle_session_result(
 
                     // Cascade-close subtasks if this is an orchestrator task
                     if is_orchestrator {
-                        use crate::tasks::manager::get_all_unclosed_descendants;
                         use crate::commands::task::cascade_close_tasks;
+                        use crate::tasks::manager::get_all_unclosed_descendants;
                         let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
                         if !unclosed.is_empty() {
-                            let cascade_ids: Vec<String> = unclosed.iter().map(|t| t.id.clone()).collect();
-                            cascade_close_tasks(cwd, &mut refreshed_graph.tasks, &cascade_ids, crate::tasks::types::TaskOutcome::WontDo, "Parent orchestrator stopped")?;
+                            let cascade_ids: Vec<String> =
+                                unclosed.iter().map(|t| t.id.clone()).collect();
+                            cascade_close_tasks(
+                                cwd,
+                                &mut refreshed_graph.tasks,
+                                &cascade_ids,
+                                crate::tasks::types::TaskOutcome::WontDo,
+                                "Parent orchestrator stopped",
+                            )?;
                         }
                     }
                 }
@@ -586,7 +600,8 @@ pub fn handle_session_result(
         AgentSessionResult::Detached => {
             // User detached via Ctrl+C - agent continues running in background
             // Do NOT emit TaskEvent::Stopped since the agent is still working
-            eprintln!( // stderr-ok: post-LiveScreen
+            eprintln!(
+                // stderr-ok: post-LiveScreen
                 "Detached. Task {} still running. Use `aiki task show {}` to check status.",
                 &task_id[..8.min(task_id.len())],
                 task_id
@@ -611,12 +626,19 @@ pub fn handle_session_result(
 
                     // Cascade-close subtasks if this is an orchestrator task
                     if is_orchestrator {
-                        use crate::tasks::manager::get_all_unclosed_descendants;
                         use crate::commands::task::cascade_close_tasks;
+                        use crate::tasks::manager::get_all_unclosed_descendants;
                         let unclosed = get_all_unclosed_descendants(&refreshed_graph, task_id);
                         if !unclosed.is_empty() {
-                            let cascade_ids: Vec<String> = unclosed.iter().map(|t| t.id.clone()).collect();
-                            cascade_close_tasks(cwd, &mut refreshed_graph.tasks, &cascade_ids, crate::tasks::types::TaskOutcome::WontDo, "Parent orchestrator failed")?;
+                            let cascade_ids: Vec<String> =
+                                unclosed.iter().map(|t| t.id.clone()).collect();
+                            cascade_close_tasks(
+                                cwd,
+                                &mut refreshed_graph.tasks,
+                                &cascade_ids,
+                                crate::tasks::types::TaskOutcome::WontDo,
+                                "Parent orchestrator failed",
+                            )?;
                         }
                     }
                 }
@@ -634,15 +656,13 @@ pub fn handle_session_result(
 pub fn run_task_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
     match task_run(cwd, task_id, options) {
         Ok(()) => {
-            let md = MdBuilder::new()
-                .build(&format!("## Run Completed\n- **Task:** {}\n", task_id));
+            let md =
+                MdBuilder::new().build(&format!("## Run Completed\n- **Task:** {}\n", task_id));
             println!("{}", md);
             Ok(())
         }
         Err(e) => {
-            let md = MdBuilder::new()
-                
-                .build_error(&e.to_string());
+            let md = MdBuilder::new().build_error(&e.to_string());
             println!("{}", md);
             Err(e)
         }
@@ -689,11 +709,9 @@ pub fn task_run_async(
     }
 
     // Get runtime for the agent
-    let runtime = get_runtime(agent_type).ok_or_else(|| {
-        AikiError::AgentNotInstalled {
-            agent: agent_type.as_str().to_string(),
-            hint: agent_type.install_hint().to_string(),
-        }
+    let runtime = get_runtime(agent_type).ok_or_else(|| AikiError::AgentNotInstalled {
+        agent: agent_type.as_str().to_string(),
+        hint: agent_type.install_hint().to_string(),
     })?;
 
     // Emit Started event before spawning to transition task to InProgress immediately.
@@ -710,8 +728,7 @@ pub fn task_run_async(
 
     // Build spawn options with parent session UUID for workspace isolation chaining
     let parent_uuid = find_active_session(cwd).map(|s| s.session_id);
-    let spawn_options = AgentSpawnOptions::new(cwd, task_id)
-        .with_parent_session_uuid(parent_uuid);
+    let spawn_options = AgentSpawnOptions::new(cwd, task_id).with_parent_session_uuid(parent_uuid);
 
     // Spawn agent session in background
     // The agent inherits AIKI_TASK env var which gets recorded in its session file
@@ -740,15 +757,17 @@ pub fn task_run_async(
 /// Run a task asynchronously and output XML result
 ///
 /// Wrapper around `task_run_async` that outputs formatted results.
-pub fn run_task_async_with_output(cwd: &Path, task_id: &str, options: TaskRunOptions) -> Result<()> {
+pub fn run_task_async_with_output(
+    cwd: &Path,
+    task_id: &str,
+    options: TaskRunOptions,
+) -> Result<()> {
     match task_run_async(cwd, task_id, options) {
         Ok(handle) => {
-            let md = MdBuilder::new().build(
-                &format!(
-                    "## Run Started\n- **Task:** {}\n- Task started asynchronously.\n",
-                    handle.task_id
-                ),
-            );
+            let md = MdBuilder::new().build(&format!(
+                "## Run Started\n- **Task:** {}\n- Task started asynchronously.\n",
+                handle.task_id
+            ));
             println!("{}", md);
             Ok(())
         }
@@ -782,10 +801,7 @@ pub enum SubtaskResolution<'a> {
 /// - `AllComplete` if all subtasks are closed
 /// - `Blocked(unclosed)` if subtasks exist but none are ready
 /// - `NoSubtasks` if the parent has no subtasks
-pub fn resolve_next_subtask<'a>(
-    graph: &'a TaskGraph,
-    parent_id: &str,
-) -> SubtaskResolution<'a> {
+pub fn resolve_next_subtask<'a>(graph: &'a TaskGraph, parent_id: &str) -> SubtaskResolution<'a> {
     use crate::tasks::manager::get_subtasks;
 
     let subtasks: Vec<&Task> = get_subtasks(graph, parent_id);
@@ -846,10 +862,7 @@ pub enum SessionResolution<'a> {
 /// subtask is the head of a `needs-context` chain, returns `Chain` with the
 /// full ordered list of chain task IDs. For standalone tasks, returns
 /// `Standalone`.
-pub fn resolve_next_session<'a>(
-    graph: &'a TaskGraph,
-    parent_id: &str,
-) -> SessionResolution<'a> {
+pub fn resolve_next_session<'a>(graph: &'a TaskGraph, parent_id: &str) -> SessionResolution<'a> {
     match resolve_next_subtask(graph, parent_id) {
         SubtaskResolution::Ready(task) => {
             if graph.is_needs_context_head(&task.id) {
@@ -885,10 +898,9 @@ pub fn resolve_next_session_in_lane<'a>(
         .map_err(|msg| crate::error::AikiError::InvalidArgument(msg))?;
 
     // Get task IDs in the lane
-    let lane_task_ids = get_lane_task_ids(&decomp, &lane_head)
-        .ok_or_else(|| crate::error::AikiError::InvalidArgument(
-            format!("Lane '{}' not found", lane_head)
-        ))?;
+    let lane_task_ids = get_lane_task_ids(&decomp, &lane_head).ok_or_else(|| {
+        crate::error::AikiError::InvalidArgument(format!("Lane '{}' not found", lane_head))
+    })?;
 
     // Get subtasks filtered to this lane
     let subtasks: Vec<&Task> = get_subtasks(graph, parent_id)
@@ -1019,7 +1031,10 @@ mod tests {
             SessionResolution::Standalone(task) => {
                 assert_eq!(task.id, "A");
             }
-            other => panic!("Expected Standalone, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "Expected Standalone, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -1101,7 +1116,10 @@ mod tests {
             SessionResolution::Standalone(task) => {
                 assert_eq!(task.id, "B");
             }
-            other => panic!("Expected Standalone(B), got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "Expected Standalone(B), got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }
